@@ -3,7 +3,12 @@ import { env as testEnv } from "cloudflare:test";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { handleScheduled, type JobsWorkerEnv } from "../../apps/jobs-worker/src/index";
+import {
+  defaultRetrySchedule,
+  handleScheduled,
+  type JobDefinition,
+  type JobsWorkerEnv,
+} from "../../apps/jobs-worker/src/index";
 
 const env = testEnv as unknown as JobsWorkerEnv;
 
@@ -52,15 +57,26 @@ describe("Effect.timeout real interruption (workerd)", () => {
 
   it("interruption propagates through the lane scheduler and reports the timeout", async () => {
     let started = false;
-    const result = await handleScheduled(env, "spike-timeout", {
+    const job: JobDefinition = {
       name: "spike.hangs",
       lane: "spike-timeout",
+      schedule: "*/5 * * * *",
       timeout: 150,
+      retry: defaultRetrySchedule,
+      expectedFailures: [],
+      severity: {
+        expectedFailure: {},
+        timeout: "medium",
+        transactionOutcomeUnknown: "high",
+        defect: "high",
+      },
+      writes: [],
       run: Effect.gen(function* () {
         started = true;
         yield* Effect.forever(Effect.sleep(10));
       }),
-    });
+    };
+    const result = await handleScheduled(env, "spike-timeout", job);
     expect(started).toBe(true); // it was in-flight, not gated at start
     expect(result.acquired).toBe(true);
     expect(result.timedOut).toBe(true);
