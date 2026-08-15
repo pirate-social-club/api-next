@@ -23,9 +23,17 @@ export type RequiredActionSet = {
   readonly items: readonly RequiredActionNode[];
 };
 
+export type GateAtomIdentity = { readonly gate_id?: string | null };
+
 export type GateExpressionNode<Atom> =
+  | { readonly op: "gate"; readonly gate: Atom & GateAtomIdentity }
   | { readonly op: "gate"; readonly gate: Atom; readonly gate_id?: string | null }
   | { readonly op: "and" | "or"; readonly children: readonly GateExpressionNode<Atom>[] };
+
+export type GatePolicy<Atom> = {
+  readonly version: 1;
+  readonly expression: GateExpressionNode<Atom>;
+};
 
 export type AtomEvaluation = {
   readonly outcome: GateEvaluationOutcome;
@@ -76,7 +84,12 @@ export function evaluateGateExpression<Atom>(
   evaluateAtom: (atom: Atom, gateId: string | null) => AtomEvaluation,
 ): ExpressionEvaluation {
   if (expression.op === "gate") {
-    const gateId = expression.gate_id ?? null;
+    const gate = expression.gate as Atom & GateAtomIdentity;
+    const gateId = Object.hasOwn(gate, "gate_id")
+      ? (gate.gate_id ?? null)
+      : "gate_id" in expression
+        ? (expression.gate_id ?? null)
+        : null;
     const result = evaluateAtom(expression.gate, gateId);
     return {
       outcome: result.outcome,

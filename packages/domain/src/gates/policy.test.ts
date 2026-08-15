@@ -178,4 +178,28 @@ describe("evaluateGateExpression", () => {
       items: [{ kind: "action", gate_id: "gate_9" }],
     });
   });
+
+  test("old serialized atoms keep their nested gate identity through evaluation", () => {
+    const oldSerializedPolicy = JSON.parse(`{
+      "version": 1,
+      "expression": {
+        "op": "gate",
+        "gate": { "gate_id": "gate_9", "label": "legacy" }
+      }
+    }`);
+    const observedGateIds: Array<string | null> = [];
+
+    const result = evaluateGateExpression(
+      oldSerializedPolicy.expression as GateExpressionNode<Atom>,
+      (_candidate, gateId) => {
+        observedGateIds.push(gateId);
+        return evaluate("action_required");
+      },
+    );
+
+    expect(observedGateIds).toEqual(["gate_9"]);
+    expect(result.requiredActionSet).toMatchObject({
+      items: [{ kind: "action", gate_id: "gate_9" }],
+    });
+  });
 });
