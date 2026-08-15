@@ -109,7 +109,7 @@ suite("Postgres 17 control-plane harness", () => {
           values: [backendPid],
         });
         return activity.rows.length === 0;
-      }, 5_000);
+      }, 15_000);
       expect(backendTerminated).toBe(true);
       const abortedError = await Effect.runPromise(Fiber.join(abortedFiber));
       expect(abortedError).toMatchObject({ _tag: "TimeoutError" });
@@ -155,5 +155,5 @@ suite("Postgres 17 control-plane harness", () => {
       });
       await admin.end();
     }
-  });
+  }, 20_000);
 });

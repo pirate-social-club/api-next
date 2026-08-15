@@ -132,10 +132,13 @@ describe("Postgres control-plane adapter", () => {
     expect(client.queries.map(({ text, values }) => ({ text, values }))).toEqual([
       { text: statement.text, values: statement.values },
       { text: "BEGIN", values: [] },
-      { text: "SET LOCAL statement_timeout = $1", values: [CONTROL_PLANE_STATEMENT_TIMEOUT_MS] },
       {
-        text: "SET LOCAL idle_in_transaction_session_timeout = $1",
-        values: [CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS],
+        text: "SELECT set_config('statement_timeout', $1, true)",
+        values: [`${CONTROL_PLANE_STATEMENT_TIMEOUT_MS}ms`],
+      },
+      {
+        text: "SELECT set_config('idle_in_transaction_session_timeout', $1, true)",
+        values: [`${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`],
       },
       { text: statement.text, values: statement.values },
       { text: "COMMIT", values: [] },

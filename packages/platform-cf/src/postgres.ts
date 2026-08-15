@@ -28,8 +28,6 @@ export const CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS = 30_000;
  */
 export const CONTROL_PLANE_SLOW_STATEMENT_MS = 1_000;
 
-const TERMINATION_MESSAGE = "control-plane PostgreSQL operation interrupted";
-
 export interface PostgresStreamLike {
   readonly destroy: (reason?: Error) => unknown;
 }
@@ -288,14 +286,14 @@ class PostgresSession {
       });
       yield* session.executeInternal({
         label: "control-plane.transaction.statement-timeout",
-        text: "SET LOCAL statement_timeout = $1",
-        values: [CONTROL_PLANE_STATEMENT_TIMEOUT_MS],
+        text: "SELECT set_config('statement_timeout', $1, true)",
+        values: [`${CONTROL_PLANE_STATEMENT_TIMEOUT_MS}ms`],
         readonly: false,
       });
       yield* session.executeInternal({
         label: "control-plane.transaction.idle-timeout",
-        text: "SET LOCAL idle_in_transaction_session_timeout = $1",
-        values: [CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS],
+        text: "SELECT set_config('idle_in_transaction_session_timeout', $1, true)",
+        values: [`${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`],
         readonly: false,
       });
       return new PostgresTransaction(session);
@@ -345,7 +343,7 @@ class PostgresSession {
       try {
         const stream = this.client.connection?.stream;
         if (stream !== undefined) {
-          stream.destroy(new Error(TERMINATION_MESSAGE));
+          stream.destroy();
           streamDestroyed = true;
         }
       } catch {
@@ -353,9 +351,23 @@ class PostgresSession {
           phase: "stream-destroy",
         });
       }
+      if (streamDestroyed) {
+        this.terminationState = "aborted";
+        try {
+          void this.client.end().catch(() => {
+            this.logger.error("control-plane connection termination failed", {
+              phase: "client-end",
+            });
+          });
+        } catch {
+          this.logger.error("control-plane connection termination failed", {
+            phase: "client-end",
+          });
+        }
+        return;
+      }
       try {
         await this.client.end();
-        if (streamDestroyed) this.terminationState = "aborted";
       } catch {
         this.logger.error("control-plane connection termination failed", {
           phase: "client-end",
@@ -400,8 +412,9 @@ class PostgresTransaction implements ControlPlaneTransaction {
   }
 }
 
-function makeClientConfig(): ClientConfig {
+function makeClientConfig(connectionString: string): ClientConfig {
   return {
+    connectionString,
     connectionTimeoutMillis: CONTROL_PLANE_CONNECT_TIMEOUT_MS,
     statement_timeout: CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
     idle_in_transaction_session_timeout: CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
@@ -422,9 +435,9 @@ function makeControlPlaneLayer(
       const session = yield* Effect.acquireRelease(
         Effect.tryPromise({
           try: () =>
-            Promise.resolve(clientFactory(connectionString, makeClientConfig())).then(
-              (client) => new PostgresSession(client, logger, now),
-            ),
+            Promise.resolve(
+              clientFactory(connectionString, makeClientConfig(connectionString)),
+            ).then((client) => new PostgresSession(client, logger, now)),
           catch: () =>
             new ControlPlaneAcquireFailed({
               phase: "acquisition",
