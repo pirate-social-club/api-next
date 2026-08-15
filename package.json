@@ -3,10 +3,15 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*", "apps/*"],
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
   "scripts": {
     "check": "biome check . && tsc --noEmit -p tsconfig.json && bun run lint:deps",
     "lint:deps": "node scripts/check-deps.mjs",
+    "generate:contracts": "bun scripts/generate-contracts.ts",
+    "check:fresh": "bun scripts/check-contract-fresh.ts",
     "knip": "knip",
     "test": "bun test"
   },
