@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Keep the Effect dependency graph on one reviewed version. This checks the
-// declarations, Bun's resolved lockfile entries, and the root installation so
+// declarations, Bun's resolved lockfile entries, and every installed copy so
 // an API mismatch cannot be papered over by changing a dependency version.
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -14,6 +14,7 @@ const rootManifestPath = join(root, "package.json");
 const rootManifest = readJson(rootManifestPath);
 const violations = [];
 const effectPackages = new Set();
+const rootEffectDependencies = new Set();
 
 function readJson(path) {
   try {
@@ -67,6 +68,7 @@ for (const path of packageManifestPaths()) {
   for (const { name, range, section } of dependencyEntries(manifest)) {
     if (!isEffectPackage(name)) continue;
     effectPackages.add(name);
+    if (path === rootManifestPath) rootEffectDependencies.add(name);
     if (range !== EXPECTED_VERSION) {
       addViolation(
         `${relative(root, path)} ${section}.${name} declares ${range}; expected ${EXPECTED_VERSION}`,
@@ -76,19 +78,17 @@ for (const path of packageManifestPaths()) {
 }
 
 const lockfile = readFileSync(join(root, "bun.lock"), "utf8");
-const lockEntryPattern = /^\s+"(effect|@effect\/[^"]+)":\s+\["([^"]+)"/gm;
+const lockEntryPattern = /^\s+"[^"]+":\s+\["([^"]+)"/gm;
+const resolvedEffectPattern = /^(effect|@effect\/[^@]+)@(.+)$/;
 let lockEntryCount = 0;
 
 for (const match of lockfile.matchAll(lockEntryPattern)) {
-  const [, name, resolved] = match;
+  const [, resolved] = match;
+  const resolution = resolved.match(resolvedEffectPattern);
+  if (!resolution) continue;
+  const [, name, version] = resolution;
   lockEntryCount += 1;
   effectPackages.add(name);
-  const prefix = `${name}@`;
-  if (!resolved.startsWith(prefix)) {
-    addViolation(`bun.lock resolves ${name} as ${resolved}; unable to determine its version`);
-    continue;
-  }
-  const version = resolved.slice(prefix.length);
   if (version !== EXPECTED_VERSION) {
     addViolation(`bun.lock resolves ${name} to ${version}; expected ${EXPECTED_VERSION}`);
   }
@@ -98,20 +98,77 @@ if (lockEntryCount === 0) {
   addViolation("bun.lock contains no effect or @effect/* resolution");
 }
 
-for (const name of effectPackages) {
-  const installedPath = join(root, "node_modules", ...name.split("/"), "package.json");
-  if (!existsSync(installedPath)) {
-    if (name === "effect" || Object.hasOwn(rootManifest.dependencies ?? {}, name)) {
-      addViolation(`${name} is not installed at ${relative(root, installedPath)}`);
+function scanNodeModules(directory, installedPackages) {
+  if (!existsSync(directory)) return;
+
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const path = join(directory, entry.name);
+
+    if (entry.name === ".bun") {
+      scanBunStore(path, installedPackages);
+    } else if (entry.name.startsWith("@") && !existsSync(join(path, "package.json"))) {
+      scanScope(path, entry.name, installedPackages);
+    } else {
+      scanPackage(path, entry.name, installedPackages);
     }
-    continue;
+  }
+}
+
+function scanBunStore(directory, installedPackages) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    scanPackage(join(directory, entry.name), undefined, installedPackages);
+  }
+}
+
+function scanScope(directory, scope, installedPackages) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    scanPackage(join(directory, entry.name), `${scope}/${entry.name}`, installedPackages);
+  }
+}
+
+function scanPackage(directory, name, installedPackages) {
+  const manifestPath = join(directory, "package.json");
+  if (name && existsSync(manifestPath) && isEffectPackage(name)) {
+    const version = readJson(manifestPath).version;
+    installedPackages.push({ name, path: manifestPath, version });
   }
 
-  const installedVersion = readJson(installedPath).version;
-  if (installedVersion !== EXPECTED_VERSION) {
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const path = join(directory, entry.name);
+    if (entry.name === "node_modules") {
+      scanNodeModules(path, installedPackages);
+    } else if (entry.name === ".bun") {
+      scanBunStore(path, installedPackages);
+    }
+  }
+}
+
+const installedPackages = [];
+scanNodeModules(join(root, "node_modules"), installedPackages);
+
+for (const installed of installedPackages) {
+  effectPackages.add(installed.name);
+  if (installed.version !== EXPECTED_VERSION) {
     addViolation(
-      `${relative(root, installedPath)} resolves ${name} to ${installedVersion}; expected ${EXPECTED_VERSION}`,
+      relative(root, installed.path) +
+        " resolves " +
+        installed.name +
+        " to " +
+        installed.version +
+        "; expected " +
+        EXPECTED_VERSION,
     );
+  }
+}
+
+for (const name of rootEffectDependencies) {
+  const installedPath = join(root, "node_modules", ...name.split("/"), "package.json");
+  if (!existsSync(installedPath)) {
+    addViolation(`${name} is not installed at ${relative(root, installedPath)}`);
   }
 }
 
