@@ -1,4 +1,4 @@
-import { Context, type Effect } from "effect";
+import { Context, Data, type Effect } from "effect";
 
 /**
  * Initial service-tag catalog (api-next 000 §7; 001 phase 0 step 4).
@@ -43,11 +43,76 @@ export class AlertCollector extends Context.Service<
   }
 >()("AlertCollector") {}
 
+/** Safe outcome states used when a deadline races with driver I/O. */
+export type ControlPlaneOutcomeCertainty = "not-started" | "completed" | "aborted" | "unknown";
+
+/** Connection and acquisition failures contain no driver-specific detail. */
+export class ControlPlaneAcquireFailed extends Data.TaggedError("ControlPlaneAcquireFailed")<{
+  readonly phase: "connection" | "acquisition";
+  readonly limitMs: number;
+  readonly elapsedMs: number;
+}> {}
+
+/** A timed-out operation is only retryable after its outcome is proven safe. */
+export class ControlPlaneOperationTimedOut extends Data.TaggedError(
+  "ControlPlaneOperationTimedOut",
+)<{
+  readonly label: string;
+  readonly limitMs: number;
+  readonly elapsedMs: number;
+  readonly outcomeCertainty: ControlPlaneOutcomeCertainty;
+}> {}
+
+/** Statement failures expose only safe Postgres classification fields. */
+export class ControlPlaneStatementFailed extends Data.TaggedError("ControlPlaneStatementFailed")<{
+  readonly label: string;
+  readonly sqlState: string | null;
+  readonly constraint: string | null;
+  readonly outcomeCertainty: ControlPlaneOutcomeCertainty;
+}> {}
+
+/** Commit and rollback uncertainty is never an ordinary retryable query error. */
+export class ControlPlaneTransactionOutcomeUnknown extends Data.TaggedError(
+  "ControlPlaneTransactionOutcomeUnknown",
+)<{
+  readonly phase: "commit" | "rollback";
+  readonly label: string;
+  readonly limitMs: number;
+  readonly elapsedMs: number;
+}> {}
+
+export type ControlPlaneError =
+  | ControlPlaneAcquireFailed
+  | ControlPlaneOperationTimedOut
+  | ControlPlaneStatementFailed
+  | ControlPlaneTransactionOutcomeUnknown;
+
+/** A parameterized PostgreSQL statement with safe logging metadata. */
+export interface ControlPlaneStatement {
+  readonly label: string;
+  readonly text: string;
+  readonly values: readonly unknown[];
+  readonly readonly: boolean;
+}
+
+export interface ControlPlaneResult<Row> {
+  readonly rows: readonly Row[];
+  readonly rowCount: number;
+}
+
+export interface ControlPlaneTransaction {
+  readonly execute: <Row = unknown>(
+    statement: ControlPlaneStatement,
+  ) => Effect.Effect<ControlPlaneResult<Row>, ControlPlaneError>;
+}
+
 /** Control-plane (Postgres) access; transactions via scoped acquire. */
 export class ControlPlaneDb extends Context.Service<
   ControlPlaneDb,
-  {
-    readonly withTransaction: <A, E, R>(use: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+  ControlPlaneTransaction & {
+    readonly withTransaction: <A, E, R>(
+      use: (transaction: ControlPlaneTransaction) => Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | ControlPlaneError, R>;
   }
 >()("ControlPlaneDb") {}
 
