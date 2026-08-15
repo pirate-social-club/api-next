@@ -20,6 +20,8 @@ export type LabelClaimRule = {
   expression_json: string;
 };
 
+export type LabelClaimExpressionValidator = (expression: unknown) => unknown;
+
 /** First matching rule wins: "any" matches everything, "exact" matches its labels. */
 export function findMatchingLabelClaimRule(
   rules: LabelClaimRule[],
@@ -164,18 +166,25 @@ function assertMatchValuePlaceholders(node: unknown): void {
   for (const value of Object.values(record)) assertMatchValuePlaceholders(value);
 }
 
-export function validateLabelClaimRulesInput(input: unknown): Array<{
+export function validateLabelClaimRulesInput(
+  input: unknown,
+  validateExpression: LabelClaimExpressionValidator,
+): Array<{
   label_claim_rule_id: string | null;
   selector_type: "exact" | "any";
   selector_labels: string[] | null;
+  expression: unknown;
 }> {
   if (!Array.isArray(input)) {
     throw new Error("label_claim_rules_must_be_array");
   }
+  if (typeof validateExpression !== "function") {
+    throw new Error("label_claim_rules_require_expression_validator");
+  }
   if (input.length > MAX_LABEL_CLAIM_RULES) {
     throw new Error("label_claim_rules_too_many");
   }
-  const rules = input.map((raw) => validateLabelClaimRuleInput(raw));
+  const rules = input.map((raw) => validateLabelClaimRuleInput(raw, validateExpression));
   const seenIds = new Set<string>();
   for (const rule of rules) {
     if (!rule.label_claim_rule_id) continue;
@@ -187,10 +196,14 @@ export function validateLabelClaimRulesInput(input: unknown): Array<{
   return rules;
 }
 
-function validateLabelClaimRuleInput(raw: unknown): {
+function validateLabelClaimRuleInput(
+  raw: unknown,
+  validateExpression: LabelClaimExpressionValidator,
+): {
   label_claim_rule_id: string | null;
   selector_type: "exact" | "any";
   selector_labels: string[] | null;
+  expression: unknown;
 } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("label_claim_rules_entries_must_be_objects");
@@ -229,10 +242,16 @@ function validateLabelClaimRuleInput(raw: unknown): {
   } else {
     throw new Error("selector_type_must_be_exact_or_any");
   }
+  if (!("claim_gate_expression" in rule)) {
+    throw new Error("label_claim_rules_require_expression");
+  }
+  const expression = validateExpression(rule.claim_gate_expression);
+  assertPlaceholderPositions(expression);
   return {
     label_claim_rule_id: labelClaimRuleId,
     selector_type: selectorType,
     selector_labels: labels,
+    expression,
   };
 }
 
