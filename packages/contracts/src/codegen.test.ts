@@ -8,6 +8,16 @@ import { Cents } from "./money.ts";
 import { diffBreaking, type OpenApiDocument } from "./openapi-diff.ts";
 import { registry } from "./registry.ts";
 
+const fixture = endpoint({
+  method: "POST",
+  path: "/echo/:message",
+  auth: Auth.user(),
+  request: Schema.Struct({ uppercase: Schema.optional(Schema.Boolean) }),
+  response: Schema.Struct({ message: Schema.String }),
+  errors: [RateLimited],
+});
+const fixtureDoc = () => generateOpenApi([fixture]);
+
 describe("codegen pipeline", () => {
   test("registry round-trips: every endpoint appears in OpenAPI, route table, client", () => {
     const doc = generateOpenApi(registry);
@@ -57,7 +67,7 @@ describe("codegen pipeline", () => {
 
 describe("openapi breaking-change diff", () => {
   const doc = (overrides?: (d: OpenApiDocument) => void): OpenApiDocument => {
-    const base = generateOpenApi(registry);
+    const base = fixtureDoc();
     if (overrides) overrides(base);
     return JSON.parse(JSON.stringify(base)) as OpenApiDocument;
   };
@@ -75,9 +85,9 @@ describe("openapi breaking-change diff", () => {
 
   test("removed operation breaks", () => {
     const removed = doc((d) => {
-      delete d.paths["/health"];
+      delete d.paths["/echo/{message}"];
     });
-    expect(diffBreaking(doc(), removed)).toContain("operation removed: GET /health");
+    expect(diffBreaking(doc(), removed)).toContain("operation removed: POST /echo/{message}");
   });
 
   test("removed response status breaks", () => {
@@ -105,10 +115,11 @@ describe("openapi breaking-change diff", () => {
 
   test("operation id rename breaks (client method stability)", () => {
     const changed = doc((d) => {
-      (d.paths["/health"]?.get as Record<string, unknown>).operationId = "get_healthz";
+      (d.paths["/echo/{message}"]?.post as Record<string, unknown>).operationId =
+        "post_echoMessage2";
     });
     expect(diffBreaking(doc(), changed)).toContain(
-      "operation id changed on GET /health: get_health",
+      "operation id changed on POST /echo/{message}: post_echoMessage",
     );
   });
 });

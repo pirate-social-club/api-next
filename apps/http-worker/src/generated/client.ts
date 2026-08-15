@@ -2,7 +2,20 @@
 import type { Schema } from "effect";
 import {
   Health,
-  Echo,
+  CastPostVote,
+  ClearPostVote,
+  CreateCommentReply,
+  CreatePost,
+  FollowCommunity,
+  GetCommunityPreview,
+  GetHomeFeed,
+  GetJoinEligibility,
+  GetMe,
+  GetPost,
+  GetPublicHomeFeed,
+  JoinCommunity,
+  SessionExchange,
+  UnfollowCommunity,
 } from "@pirate/contracts";
 
 type ClientInput<E> = E extends { readonly request: Schema.Schema<infer I> } ? I : undefined;
@@ -10,7 +23,20 @@ type ClientOutput<E> = E extends { readonly response: Schema.Schema<infer A> } ?
 
 export interface PirateApiClient {
   get_health: (input: ClientInput<typeof Health>) => Promise<ClientOutput<typeof Health>>;
-  post_echoMessage: (input: ClientInput<typeof Echo>) => Promise<ClientOutput<typeof Echo>>;
+  post_communitiesCommunityIdPostsPostIdVote: (input: ClientInput<typeof CastPostVote>) => Promise<ClientOutput<typeof CastPostVote>>;
+  post_communitiesCommunityIdPostsPostIdClearVote: (input: ClientInput<typeof ClearPostVote>) => Promise<ClientOutput<typeof ClearPostVote>>;
+  post_communitiesCommunityIdCommentsCommentIdReplies: (input: ClientInput<typeof CreateCommentReply>) => Promise<ClientOutput<typeof CreateCommentReply>>;
+  post_communitiesCommunityIdPosts: (input: ClientInput<typeof CreatePost>) => Promise<ClientOutput<typeof CreatePost>>;
+  post_communitiesCommunityIdFollow: (input: ClientInput<typeof FollowCommunity>) => Promise<ClientOutput<typeof FollowCommunity>>;
+  get_communitiesCommunityIdPreview: (input: ClientInput<typeof GetCommunityPreview>) => Promise<ClientOutput<typeof GetCommunityPreview>>;
+  get_feedHome: (input: ClientInput<typeof GetHomeFeed>) => Promise<ClientOutput<typeof GetHomeFeed>>;
+  get_communitiesCommunityIdJoinEligibility: (input: ClientInput<typeof GetJoinEligibility>) => Promise<ClientOutput<typeof GetJoinEligibility>>;
+  get_me: (input: ClientInput<typeof GetMe>) => Promise<ClientOutput<typeof GetMe>>;
+  get_communitiesCommunityIdPostsPostId: (input: ClientInput<typeof GetPost>) => Promise<ClientOutput<typeof GetPost>>;
+  get_feedHomePublic: (input: ClientInput<typeof GetPublicHomeFeed>) => Promise<ClientOutput<typeof GetPublicHomeFeed>>;
+  post_communitiesCommunityIdJoin: (input: ClientInput<typeof JoinCommunity>) => Promise<ClientOutput<typeof JoinCommunity>>;
+  post_authSessionExchange: (input: ClientInput<typeof SessionExchange>) => Promise<ClientOutput<typeof SessionExchange>>;
+  post_communitiesCommunityIdUnfollow: (input: ClientInput<typeof UnfollowCommunity>) => Promise<ClientOutput<typeof UnfollowCommunity>>;
 }
 
 export function createPirateApiClient(
@@ -32,6 +58,19 @@ export function createPirateApiClient(
   };
   return {
   get_health: (input) => request("GET", "/health", input),
-  post_echoMessage: (input) => request("POST", "/echo/:message", input),
+  post_communitiesCommunityIdPostsPostIdVote: (input) => request("POST", "/communities/:communityId/posts/:postId/vote", input),
+  post_communitiesCommunityIdPostsPostIdClearVote: (input) => request("POST", "/communities/:communityId/posts/:postId/clear_vote", input),
+  post_communitiesCommunityIdCommentsCommentIdReplies: (input) => request("POST", "/communities/:communityId/comments/:commentId/replies", input),
+  post_communitiesCommunityIdPosts: (input) => request("POST", "/communities/:communityId/posts", input),
+  post_communitiesCommunityIdFollow: (input) => request("POST", "/communities/:communityId/follow", input),
+  get_communitiesCommunityIdPreview: (input) => request("GET", "/communities/:communityId/preview", input),
+  get_feedHome: (input) => request("GET", "/feed/home", input),
+  get_communitiesCommunityIdJoinEligibility: (input) => request("GET", "/communities/:communityId/join-eligibility", input),
+  get_me: (input) => request("GET", "/me", input),
+  get_communitiesCommunityIdPostsPostId: (input) => request("GET", "/communities/:communityId/posts/:postId", input),
+  get_feedHomePublic: (input) => request("GET", "/feed/home/public", input),
+  post_communitiesCommunityIdJoin: (input) => request("POST", "/communities/:communityId/join", input),
+  post_authSessionExchange: (input) => request("POST", "/auth/session/exchange", input),
+  post_communitiesCommunityIdUnfollow: (input) => request("POST", "/communities/:communityId/unfollow", input),
   };
 }
