@@ -4,6 +4,7 @@ import {
   buildDefaultVerificationCapabilities,
   deriveRewardIdentityId,
   deriveVerificationState,
+  hasActiveUniqueHumanNullifier,
   INTERACTIVE_VERIFICATION_TTL_MS,
   parseVerificationCapabilities,
   type RewardIdentityCandidate,
@@ -174,6 +175,13 @@ describe("unique-human eligibility", () => {
         evidence: [{ provider: "self", sourceIdentityNullifierId: "nullifier_1" }],
       })?.provider,
     ).toBe("self");
+  });
+
+  test("answers active unique-human eligibility only for the requested provider", () => {
+    const evidence = [{ provider: "self", sourceIdentityNullifierId: "nullifier_1" }];
+    expect(hasActiveUniqueHumanNullifier(evidence, "self")).toBe(true);
+    expect(hasActiveUniqueHumanNullifier(evidence, "very")).toBe(false);
+    expect(hasActiveUniqueHumanNullifier(evidence, null)).toBe(false);
   });
 
   test("derives the same opaque reward identity for the same provider material", async () => {

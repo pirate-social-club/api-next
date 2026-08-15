@@ -287,6 +287,14 @@ export function selectActiveSupportedRewardIdentity(input: {
   return null;
 }
 
+export function hasActiveUniqueHumanNullifier(
+  evidence: readonly ActiveUniqueHumanEvidence[],
+  requiredProvider: RewardIdentityProvider | null,
+): boolean {
+  if (!requiredProvider) return false;
+  return evidence.some((item) => item.provider === requiredProvider);
+}
+
 export function selectActiveRewardIdentity(input: {
   candidates: readonly RewardIdentityCandidate[];
   requiredProvider: RewardIdentityProvider | null;
