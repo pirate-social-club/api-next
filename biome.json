@@ -1,0 +1,25 @@
+{
+  "$schema": "https://biome.sh/schemas/2.0.0/schema.json",
+  "files": {
+    "includes": ["packages/**/*.ts", "apps/**/*.ts", "scripts/**/*.mjs"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  }
+}
