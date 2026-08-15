@@ -17,6 +17,23 @@ export {
 export { CRON_LOCK_NAME, evaluateLease, type LeaseDecision, type LeaseRecord } from "./cron-lock";
 export { ScheduledCronLockDO } from "./cron-lock-do";
 export {
+  CONTROL_PLANE_CONNECT_TIMEOUT_MS,
+  CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
+  CONTROL_PLANE_SLOW_STATEMENT_MS,
+  CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
+  type ControlPlaneLogFields,
+  type ControlPlaneLogger,
+  type ControlPlaneLogValue,
+  type HyperdriveConnection,
+  makeDirectPostgresControlPlaneLayer,
+  makeHyperdriveControlPlaneLayer,
+  type PostgresClientFactory,
+  type PostgresClientLike,
+  type PostgresControlPlaneOptions,
+  type PostgresQueryConfig,
+  type PostgresStreamLike,
+} from "./postgres";
+export {
   QUEUE_RETRY_BASE_SECONDS,
   QUEUE_RETRY_CAP_SECONDS,
   queueRetryBackoffSeconds,
