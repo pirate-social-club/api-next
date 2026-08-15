@@ -1,0 +1,19 @@
+{
+  "name": "pirate-jobs-worker",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-01",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "CRON_LOCK",
+        "class_name": "ScheduledCronLockDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["ScheduledCronLockDO"]
+    }
+  ]
+}

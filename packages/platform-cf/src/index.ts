@@ -6,3 +6,13 @@
  * owns because config schema and contracts co-evolve (001 §3).
  */
 export const platformCf = "api-next/platform-cf: lane C (001 §5), config/ lane A" as const;
+
+export {
+  type AlertDigest,
+  type AlertGroup,
+  type AlertSink,
+  aggregateAlerts,
+  alertTick,
+} from "./alerts";
+export { CRON_LOCK_NAME, evaluateLease, type LeaseDecision, type LeaseRecord } from "./cron-lock";
+export { ScheduledCronLockDO } from "./cron-lock-do";

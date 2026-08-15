@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "@cloudflare/workers-types",
+      "@cloudflare/vitest-pool-workers/types"
+    ]
+  },
+  "include": [
+    "packages/platform-cf",
+    "apps/jobs-worker",
+    "tests"
+  ],
+  "exclude": [
+    "tests/workerd/vitest.config.ts",
+    "packages/platform-cf/src/cron-lock.test.ts"
+  ]
+}
