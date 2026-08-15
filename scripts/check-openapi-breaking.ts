@@ -1,14 +1,23 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { diffBreaking, type OpenApiDocument } from "@pirate/contracts";
 
-// Diff the committed OpenAPI document against the one on HEAD. CI runs this
-// after check:fresh on a full checkout; locally HEAD works for uncommitted
-// reviews. Absence of the tracked file (first introduction) is additive.
-//
-// A removal may be declared explicitly in packages/contracts/deprecations.json
-// (000 §5: "breaking changes require a new path or an explicit deprecation
-// entry") — an undeclared removal is always a failure.
+export type BaselineEvent = "pull_request" | "push";
+
+export interface BaselineSelectionInput {
+  readonly eventName: BaselineEvent;
+  readonly pullRequestBaseSha?: string;
+  readonly pushBaseSha?: string;
+}
+
+export function selectBaselineSha(input: BaselineSelectionInput): string {
+  const sha = input.eventName === "pull_request" ? input.pullRequestBaseSha : input.pushBaseSha;
+  if (sha === undefined || sha.trim() === "") {
+    throw new Error(`Missing baseline SHA for ${input.eventName} event`);
+  }
+  return sha;
+}
+
 interface Deprecations {
   readonly deprecatedOperations: readonly {
     readonly operationId: string;
@@ -16,38 +25,96 @@ interface Deprecations {
   }[];
 }
 
-const path = "apps/http-worker/src/generated/openapi.json";
-const oldText = (() => {
-  try {
-    return execFileSync("git", ["show", `HEAD:${path}`], { encoding: "utf8" });
-  } catch {
-    process.exit(0);
+function readBaselineDocument(baseSha: string, documentPath: string): string | undefined {
+  if (baseSha.trim() === "" || baseSha.startsWith("-")) {
+    throw new Error(`Invalid baseline SHA: ${JSON.stringify(baseSha)}`);
   }
-})();
-const oldDoc = JSON.parse(oldText) as OpenApiDocument;
-const newDoc = JSON.parse(await readFile(path, "utf8")) as OpenApiDocument;
-const deprecations = JSON.parse(
-  await readFile(new URL("../packages/contracts/deprecations.json", import.meta.url), "utf8"),
-) as Deprecations;
-const declared = new Set(deprecations.deprecatedOperations.map((entry) => entry.operationId));
 
-// Map "METHOD /path" of removed operations back to their old operation ids
-// so a declared deprecation can retire exactly one entry.
-const operationIds = new Map<string, string>();
-for (const [route, methods] of Object.entries(oldDoc.paths)) {
-  for (const [method, operation] of Object.entries(methods)) {
-    const id = (operation as Record<string, unknown>).operationId;
-    if (typeof id === "string") operationIds.set(`${method.toUpperCase()} ${route}`, id);
+  let resolvedSha: string;
+  try {
+    resolvedSha = execFileSync("git", ["rev-parse", "--verify", `${baseSha}^{commit}`], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (error) {
+    throw new Error(`Unable to resolve baseline commit ${JSON.stringify(baseSha)}`, {
+      cause: error,
+    });
+  }
+
+  const show = spawnSync("git", ["show", `${resolvedSha}:${documentPath}`], {
+    encoding: "utf8",
+  });
+  if (show.status === 0) return show.stdout;
+
+  const tree = spawnSync("git", ["ls-tree", "-r", "--name-only", resolvedSha, "--", documentPath], {
+    encoding: "utf8",
+  });
+  if (tree.status !== 0) {
+    throw new Error(`Unable to inspect baseline tree ${resolvedSha}: ${tree.stderr.trim()}`);
+  }
+  if (tree.stdout.trim() === "") return undefined;
+
+  throw new Error(`Unable to read ${documentPath} from baseline commit ${resolvedSha}`);
+}
+
+// Diff the generated OpenAPI document against an explicitly supplied
+// baseline. A valid baseline commit without the document is the only
+// bootstrap case; all other baseline failures are fatal.
+const path = "apps/http-worker/src/generated/openapi.json";
+
+async function main(): Promise<void> {
+  const args = Bun.argv.slice(2);
+  if (args.length !== 2 || args[0] !== "--base-sha" || args[1] === undefined) {
+    throw new Error("Usage: bun scripts/check-openapi-breaking.ts --base-sha <commit>");
+  }
+  const baseSha = args[1];
+  const oldText = readBaselineDocument(baseSha, path);
+  if (oldText === undefined) {
+    console.log(`No ${path} existed at baseline ${baseSha}; treating as bootstrap.`);
+    return;
+  }
+
+  const oldDoc = JSON.parse(oldText) as OpenApiDocument;
+  const newDoc = JSON.parse(
+    await readFile(process.env.OPENAPI_DOCUMENT_PATH ?? path, "utf8"),
+  ) as OpenApiDocument;
+  const deprecations = JSON.parse(
+    await readFile(
+      process.env.OPENAPI_DEPRECATIONS_PATH ??
+        new URL("../packages/contracts/deprecations.json", import.meta.url),
+      "utf8",
+    ),
+  ) as Deprecations;
+  const declared = new Set(deprecations.deprecatedOperations.map((entry) => entry.operationId));
+
+  // Map "METHOD /path" of removed operations back to their old operation ids
+  // so a declared deprecation can retire exactly one entry.
+  const operationIds = new Map<string, string>();
+  for (const [route, methods] of Object.entries(oldDoc.paths)) {
+    for (const [method, operation] of Object.entries(methods)) {
+      const id = (operation as Record<string, unknown>).operationId;
+      if (typeof id === "string") operationIds.set(`${method.toUpperCase()} ${route}`, id);
+    }
+  }
+
+  const breaks = diffBreaking(oldDoc, newDoc).filter((violation) => {
+    if (!violation.startsWith("operation removed: ")) return true;
+    const key = violation.slice("operation removed: ".length);
+    return !declared.has(operationIds.get(key) ?? "");
+  });
+  if (breaks.length > 0) {
+    console.error(
+      "Breaking OpenAPI changes detected (000 §5: append-only within a major version):",
+    );
+    for (const violation of breaks) console.error(`  - ${violation}`);
+    process.exitCode = 1;
   }
 }
 
-const breaks = diffBreaking(oldDoc, newDoc).filter((violation) => {
-  if (!violation.startsWith("operation removed: ")) return true;
-  const key = violation.slice("operation removed: ".length);
-  return !declared.has(operationIds.get(key) ?? "");
-});
-if (breaks.length > 0) {
-  console.error("Breaking OpenAPI changes detected (000 §5: append-only within a major version):");
-  for (const violation of breaks) console.error(`  - ${violation}`);
-  process.exit(1);
+if (import.meta.main) {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
 }

@@ -17,7 +17,7 @@ small, and pathspec-limited; never a blanket `git add -A`.
 Run from the repo root, smallest first:
 
 1. `bun run check` — Biome, `tsc --noEmit`, dependency-matrix lint
-2. `bun test` — unit tests (workerd integration tests join the required
+2. `bun run test` — unit tests (workerd integration tests join the required
    gate when lane C's pool-workers harness lands)
 
 CI must be green before merge; until a remote CI gate exists, the merging

@@ -14,7 +14,7 @@
     "check:fresh": "bun scripts/check-contract-fresh.ts",
     "knip": "knip",
     "test": "bun test",
-    "check:breaking": "bun scripts/check-openapi-breaking.ts"
+    "check:breaking": "bun scripts/check-openapi-breaking.ts --base-sha \"${OPENAPI_BASE_SHA:-HEAD^1}\""
   },
   "dependencies": {
     "effect": "4.0.0-rc.109"

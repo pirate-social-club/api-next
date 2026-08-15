@@ -8,8 +8,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      # Full history: the breaking-change check diffs against HEAD's
-      # committed OpenAPI document (git show HEAD:...).
+      # Full history: the breaking-change check diffs against the pushed
+      # commit's first parent or the pull request base commit.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -18,6 +18,23 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run check
-      - run: bun test
+      - run: bun run test
       - run: bun run check:fresh
+      - name: Resolve OpenAPI baseline
+        id: openapi-baseline
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            test -n "$PR_BASE_SHA"
+            baseline="$PR_BASE_SHA"
+          else
+            baseline="$(git rev-parse --verify "$PUSH_SHA^1")"
+          fi
+          echo "sha=$baseline" >> "$GITHUB_OUTPUT"
       - run: bun run check:breaking
+        env:
+          OPENAPI_BASE_SHA: ${{ steps.openapi-baseline.outputs.sha }}
