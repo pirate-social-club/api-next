@@ -123,10 +123,9 @@ describe("custodyRefundEvidenceMatches", () => {
 });
 
 describe("custodyIncidentEvidenceMatches", () => {
-  const transfers = [
-    { senderAddress: "0xA", observedAmountAtomic: "100", transferCount: 1 },
-    { senderAddress: "0xB", observedAmountAtomic: "200", transferCount: 2 },
-  ];
+  const firstTransfer = { senderAddress: "0xA", observedAmountAtomic: "100", transferCount: 1 };
+  const secondTransfer = { senderAddress: "0xB", observedAmountAtomic: "200", transferCount: 2 };
+  const transfers = [firstTransfer, secondTransfer];
   const evidence = { claimedTxRef: "0xabc", status: "custody_operator_incident", transfers };
 
   test("matches a re-observed identical transfer list", () => {
@@ -148,13 +147,13 @@ describe("custodyIncidentEvidenceMatches", () => {
     expect(
       custodyIncidentEvidenceMatches(evidence, {
         claimedTxRef: "0xabc",
-        transfers: [transfers[0]!],
+        transfers: [firstTransfer],
       }),
     ).toBe(false);
     expect(
       custodyIncidentEvidenceMatches(evidence, {
         claimedTxRef: "0xabc",
-        transfers: [{ ...transfers[0]!, transferCount: 3 }, transfers[1]!],
+        transfers: [{ ...firstTransfer, transferCount: 3 }, secondTransfer],
       }),
     ).toBe(false);
     expect(

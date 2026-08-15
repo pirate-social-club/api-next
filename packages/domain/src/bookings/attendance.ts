@@ -29,9 +29,10 @@ function intervals(
     .map(Date.parse)
     .filter(Number.isFinite)
     .sort((a, b) => a - b);
-  if (!timestamps.length) return [];
+  const first = timestamps[0];
+  if (first === undefined) return [];
   const raw: Array<[number, number]> = [];
-  let start = timestamps[0]!;
+  let start = first;
   let previous = start;
   for (const timestamp of timestamps.slice(1)) {
     if (timestamp - previous <= staleMs) previous = timestamp;

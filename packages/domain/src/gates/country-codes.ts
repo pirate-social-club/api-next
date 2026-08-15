@@ -1,0 +1,70 @@
+const ISO_COUNTRY_CODE_PAIRS =
+  "AF:AFG,AL:ALB,DZ:DZA,AS:ASM,AD:AND,AO:AGO,AI:AIA,AQ:ATA,AG:ATG,AR:ARG,AM:ARM,AW:ABW,AU:AUS,AT:AUT,AZ:AZE,BS:BHS,BH:BHR,BD:BGD,BB:BRB,BY:BLR,BE:BEL,BZ:BLZ,BJ:BEN,BM:BMU,BT:BTN,BO:BOL,BA:BIH,BW:BWA,BV:BVT,BR:BRA,IO:IOT,BN:BRN,BG:BGR,BF:BFA,BI:BDI,KH:KHM,CM:CMR,CA:CAN,CV:CPV,KY:CYM,CF:CAF,TD:TCD,CL:CHL,CN:CHN,CX:CXR,CC:CCK,CO:COL,KM:COM,CG:COG,CD:COD,CK:COK,CR:CRI,CI:CIV,HR:HRV,CU:CUB,CY:CYP,CZ:CZE,DK:DNK,DJ:DJI,DM:DMA,DO:DOM,EC:ECU,EG:EGY,SV:SLV,GQ:GNQ,ER:ERI,EE:EST,ET:ETH,FK:FLK,FO:FRO,FJ:FJI,FI:FIN,FR:FRA,GF:GUF,PF:PYF,TF:ATF,GA:GAB,GM:GMB,GE:GEO,DE:DEU,GH:GHA,GI:GIB,GR:GRC,GL:GRL,GD:GRD,GP:GLP,GU:GUM,GT:GTM,GN:GIN,GW:GNB,GY:GUY,HT:HTI,HM:HMD,VA:VAT,HN:HND,HK:HKG,HU:HUN,IS:ISL,IN:IND,ID:IDN,IR:IRN,IQ:IRQ,IE:IRL,IL:ISR,IT:ITA,JM:JAM,JP:JPN,JO:JOR,KZ:KAZ,KE:KEN,KI:KIR,KP:PRK,KR:KOR,KW:KWT,KG:KGZ,LA:LAO,LV:LVA,LB:LBN,LS:LSO,LR:LBR,LY:LBY,LI:LIE,LT:LTU,LU:LUX,MO:MAC,MG:MDG,MW:MWI,MY:MYS,MV:MDV,ML:MLI,MT:MLT,MH:MHL,MQ:MTQ,MR:MRT,MU:MUS,YT:MYT,MX:MEX,FM:FSM,MD:MDA,MC:MCO,MN:MNG,MS:MSR,MA:MAR,MZ:MOZ,MM:MMR,NA:NAM,NR:NRU,NP:NPL,NL:NLD,NC:NCL,NZ:NZL,NI:NIC,NE:NER,NG:NGA,NU:NIU,NF:NFK,MP:MNP,MK:MKD,NO:NOR,OM:OMN,PK:PAK,PW:PLW,PS:PSE,PA:PAN,PG:PNG,PY:PRY,PE:PER,PH:PHL,PN:PCN,PL:POL,PT:PRT,PR:PRI,QA:QAT,RE:REU,RO:ROU,RU:RUS,RW:RWA,SH:SHN,KN:KNA,LC:LCA,PM:SPM,VC:VCT,WS:WSM,SM:SMR,ST:STP,SA:SAU,SN:SEN,SC:SYC,SL:SLE,SG:SGP,SK:SVK,SI:SVN,SB:SLB,SO:SOM,ZA:ZAF,GS:SGS,ES:ESP,LK:LKA,SD:SDN,SR:SUR,SJ:SJM,SZ:SWZ,SE:SWE,CH:CHE,SY:SYR,TW:TWN,TJ:TJK,TZ:TZA,TH:THA,TL:TLS,TG:TGO,TK:TKL,TO:TON,TT:TTO,TN:TUN,TR:TUR,TM:TKM,TC:TCA,TV:TUV,UG:UGA,UA:UKR,AE:ARE,GB:GBR,US:USA,UM:UMI,UY:URY,UZ:UZB,VU:VUT,VE:VEN,VN:VNM,VG:VGB,VI:VIR,WF:WLF,EH:ESH,YE:YEM,ZM:ZMB,ZW:ZWE,AX:ALA,BQ:BES,CW:CUW,GG:GGY,IM:IMN,JE:JEY,ME:MNE,BL:BLM,MF:MAF,RS:SRB,SX:SXM,SS:SSD,XK:XKK";
+
+const COUNTRY_CODE_PAIRS = ISO_COUNTRY_CODE_PAIRS.split(",").map(
+  (pair) => pair.split(":") as [string, string],
+);
+const ISO3_BY_ISO2 = new Map(COUNTRY_CODE_PAIRS);
+const ISO2_BY_ISO3 = new Map(COUNTRY_CODE_PAIRS.map(([alpha2, alpha3]) => [alpha3, alpha2]));
+const ISO3_CODES = new Set(COUNTRY_CODE_PAIRS.map(([, alpha3]) => alpha3));
+
+// Existing policies use XKK as Pirate's canonical Kosovo value. ICAO Doc 9303
+// assigns KS/RKS to Kosovo travel documents, so normalize those inputs without
+// rewriting stored policies or public contracts.
+const IDENTITY_COUNTRY_CODE_ALIASES = new Map([
+  ["KS", "XKK"],
+  ["RKS", "XKK"],
+  ["XKX", "XKK"],
+]);
+
+export function normalizeIdentityCountryCode(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toUpperCase();
+  const aliased = IDENTITY_COUNTRY_CODE_ALIASES.get(normalized);
+  if (aliased) {
+    return aliased;
+  }
+  if (/^[A-Z]{2}$/.test(normalized)) {
+    return ISO3_BY_ISO2.get(normalized) ?? null;
+  }
+  if (/^[A-Z]{3}$/.test(normalized) && ISO3_CODES.has(normalized)) {
+    return normalized;
+  }
+  return null;
+}
+
+export function normalizeIdentityCountryAlpha2(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = value.trim().toUpperCase();
+  if (IDENTITY_COUNTRY_CODE_ALIASES.has(normalized)) {
+    return "XK";
+  }
+  if (/^[A-Z]{2}$/.test(normalized)) {
+    return ISO3_BY_ISO2.has(normalized) ? normalized : null;
+  }
+  if (/^[A-Z]{3}$/.test(normalized)) {
+    return ISO2_BY_ISO3.get(normalized) ?? null;
+  }
+  return null;
+}
+
+export function normalizeIdentityCountryCodes(values: unknown): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  const normalized = new Set<string>();
+  for (const value of values) {
+    const countryCode = normalizeIdentityCountryCode(value);
+    if (countryCode) {
+      normalized.add(countryCode);
+    }
+  }
+  return Array.from(normalized);
+}
