@@ -1,3 +1,5 @@
+import { applyMachineEvent, type MoneyFlowMachine } from "../money/state-machine";
+
 export type StorySettlementStepState =
   | "planned"
   | "reserving"
@@ -33,7 +35,7 @@ export type StorySettlementStepTransition = {
   receipt?: StorySettlementReceiptEvidence;
 };
 
-const ALLOWED_TRANSITIONS: Readonly<
+export const STORY_SETTLEMENT_STEP_ALLOWED_TRANSITIONS: Readonly<
   Record<StorySettlementStepState, readonly StorySettlementStepState[]>
 > = {
   planned: ["reserving"],
@@ -52,7 +54,7 @@ export function canTransitionStorySettlementStep(
   from: StorySettlementStepState,
   to: StorySettlementStepState,
 ): boolean {
-  return ALLOWED_TRANSITIONS[from].includes(to);
+  return STORY_SETTLEMENT_STEP_ALLOWED_TRANSITIONS[from].includes(to);
 }
 export function isTerminalStorySettlementStepState(state: StorySettlementStepState): boolean {
   return state === "confirmed" || state === "reverted" || state === "replaced";
@@ -112,11 +114,10 @@ function assertSnapshot(snapshot: StorySettlementStepSnapshot): void {
     throw new Error("reverted_step_requires_reverted_receipt");
 }
 
-export function transitionStorySettlementStep(
+function reduceStorySettlementStep(
   current: StorySettlementStepSnapshot,
   transition: StorySettlementStepTransition,
 ): StorySettlementStepSnapshot {
-  assertSnapshot(current);
   if (transition.expectedVersion !== current.version)
     throw new Error("story_settlement_step_version_conflict");
   if (!canTransitionStorySettlementStep(current.state, transition.to))
@@ -167,6 +168,23 @@ export function transitionStorySettlementStep(
     transactionHash,
     receipt,
   };
-  assertSnapshot(next);
   return next;
+}
+
+export const storySettlementStepMachine: MoneyFlowMachine<
+  StorySettlementStepSnapshot,
+  StorySettlementStepTransition,
+  StorySettlementStepState
+> = {
+  stateOf: (state) => state.state,
+  allowedTransitions: STORY_SETTLEMENT_STEP_ALLOWED_TRANSITIONS,
+  assertInvariants: assertSnapshot,
+  reduce: reduceStorySettlementStep,
+};
+
+export function transitionStorySettlementStep(
+  current: StorySettlementStepSnapshot,
+  transition: StorySettlementStepTransition,
+): StorySettlementStepSnapshot {
+  return applyMachineEvent(storySettlementStepMachine, current, transition);
 }

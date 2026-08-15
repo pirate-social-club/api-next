@@ -1,0 +1,2 @@
+ALTER TABLE posts
+ADD COLUMN flair_id TEXT;

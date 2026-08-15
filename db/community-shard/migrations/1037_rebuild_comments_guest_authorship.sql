@@ -1,0 +1,17 @@
+-- Forward compatibility / repair migration.
+--
+-- The 1036_comment_agent_authorship.sql migration was originally shipped with
+-- a CHECK constraint that excluded 'guest' from comments.authorship_mode.
+-- That was corrected in the canonical migration file, but existing community
+-- databases may still have the old constraint.
+--
+-- SQLite does not support ALTER TABLE to change a CHECK constraint, and the
+-- column set in the comments table varies depending on whether runtime
+-- preflight columns (e.g. replies_locked) have already been added.  Because
+-- of this, the actual schema repair is performed by runtime preflight in the
+-- API worker (ensureRemoteCommentGuestAuthorship), which inspects the live
+-- schema and rebuilds the table only when needed.
+--
+-- This migration file exists so that the migration ledger stays consistent
+-- and doctor/provisioning tools can reason about the expected state.
+SELECT 1;
