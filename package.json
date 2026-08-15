@@ -8,7 +8,8 @@
     "apps/*"
   ],
   "scripts": {
-    "check": "biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.workers.json && bun run lint:deps",
+    "check": "bun run check:effect && biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.workers.json && bun run lint:deps",
+    "check:effect": "node scripts/check-effect-version.mjs",
     "lint:deps": "node scripts/check-deps.mjs",
     "generate:contracts": "bun scripts/generate-contracts.ts",
     "check:fresh": "bun scripts/check-contract-fresh.ts",

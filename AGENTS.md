@@ -5,6 +5,16 @@ Workers. The architecture, non-negotiables, and milestones live in the
 workspace control plane: `../docs/specs/api-next/000-foundation.md` and
 `001-execution-lanes.md`. Read both before working here.
 
+## Effect v4
+
+This repository pins `effect` to `4.0.0-rc.109`. Before writing or reviewing
+Effect code:
+
+1. Read `node_modules/effect/AGENTS.md` in full.
+2. Verify every API against `node_modules/effect/src`, not memory or docs.
+3. Repository patterns beat skill guidance. Skill guidance beats memory.
+4. Run `bun run check` and `bun run test`. Both must pass.
+
 ## Commit policy
 
 Commit directly to `main` — no feature branches for canonical work (mirrors
@@ -16,7 +26,8 @@ small, and pathspec-limited; never a blanket `git add -A`.
 
 Run from the repo root, smallest first:
 
-1. `bun run check` — Biome, `tsc --noEmit`, dependency-matrix lint
+1. `bun run check` — Effect version guard, Biome, `tsc --noEmit`, and
+   dependency-matrix lint
 2. `bun run test` — unit tests (workerd integration tests join the required
    gate when lane C's pool-workers harness lands)
 
@@ -39,8 +50,11 @@ nothing imports apps; domain uses only Schema/Data effect modules.
 
 ## Runtime
 
-Effect is pinned to an exact version (`4.0.0-rc.109` at bootstrap).
-Upgrades are deliberate, reviewed bumps — never transitive drift. All
-`cloudflare:workers` and Effect platform-adapter imports stay in
-`platform-cf`. No `unstable/*` Effect modules in money paths until v4 is
-stable.
+Effect is pinned to an exact version (`4.0.0-rc.109` at bootstrap), and
+`bun run check` fails if `effect` or any `@effect/*` package declares or
+resolves to another version. Upgrades are deliberate, reviewed bumps — never
+transitive drift. Never change an Effect version to resolve an API mismatch;
+report the mismatch instead. All `cloudflare:workers` and Effect
+platform-adapter imports stay in `platform-cf`. `effect/unstable/*` is beta;
+confirm the export exists in `node_modules/effect/src` before using it. No
+unstable Effect modules in money paths until v4 is stable.
