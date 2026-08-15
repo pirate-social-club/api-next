@@ -1,5 +1,5 @@
-// GENERATED FILE. DO NOT EDIT.
-import { endpoints } from "@pirate/contracts";
+// GENERATED FILE. DO NOT EDIT. Regenerate with bun run generate:contracts.
+import { generateRouteTable, registry } from "@pirate/contracts";
 
-export const routeTable = endpoints.map((endpoint) => ({ method: endpoint.method, path: endpoint.path, endpoint }));
-export { endpoints };
+export const routeTable = generateRouteTable(registry);
+export { registry };

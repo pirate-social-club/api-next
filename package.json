@@ -13,7 +13,8 @@
     "generate:contracts": "bun scripts/generate-contracts.ts",
     "check:fresh": "bun scripts/check-contract-fresh.ts",
     "knip": "knip",
-    "test": "bun test"
+    "test": "bun test",
+    "check:breaking": "bun scripts/check-openapi-breaking.ts"
   },
   "dependencies": {
     "effect": "4.0.0-rc.109"
