@@ -6,6 +6,7 @@
       "apps/**/*.ts",
       "scripts/**/*.ts",
       "scripts/**/*.mjs",
+      "tests/**/*.ts",
       "!**/generated"
     ]
   },

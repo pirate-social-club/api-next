@@ -8,12 +8,14 @@
     "apps/*"
   ],
   "scripts": {
-    "check": "biome check . && tsc --noEmit -p tsconfig.json && bun run lint:deps",
+    "check": "biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.workers.json && bun run lint:deps",
     "lint:deps": "node scripts/check-deps.mjs",
     "generate:contracts": "bun scripts/generate-contracts.ts",
     "check:fresh": "bun scripts/check-contract-fresh.ts",
     "knip": "knip",
-    "test": "bun test",
+    "test": "bun test packages apps && bun run test:workerd",
+    "test:unit": "bun test packages apps",
+    "test:workerd": "vitest run --config tests/workerd/vitest.config.ts",
     "check:breaking": "bun scripts/check-openapi-breaking.ts --base-sha \"${OPENAPI_BASE_SHA:-HEAD^1}\""
   },
   "dependencies": {
@@ -21,8 +23,12 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.8",
+    "@cloudflare/vitest-pool-workers": "^0.21.3",
+    "@cloudflare/workers-types": "^5.20260815.1",
     "@types/bun": "^1.3.14",
     "knip": "^6.32.2",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.123.0"
   }
 }

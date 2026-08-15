@@ -20,5 +20,6 @@
       "@pirate/testing": ["./packages/testing/src/index.ts"]
     }
   },
-  "include": ["packages", "apps"]
+  "include": ["packages", "apps"],
+    "exclude": ["packages/platform-cf", "apps/jobs-worker"]
 }
