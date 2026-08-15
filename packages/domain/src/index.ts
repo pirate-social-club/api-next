@@ -15,4 +15,6 @@ export * from "./handles/label-claim-rules.ts";
 export * from "./handles/policy.ts";
 export * from "./money/failure-fence.ts";
 export * from "./money/state-machine.ts";
+export * from "./rewards/capacity-freshness.ts";
+export * from "./rewards/payout-fairness.ts";
 export * from "./story/story-settlement-step-state-machine.ts";
