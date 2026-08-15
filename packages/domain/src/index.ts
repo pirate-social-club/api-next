@@ -17,4 +17,5 @@ export * from "./money/failure-fence.ts";
 export * from "./money/state-machine.ts";
 export * from "./rewards/capacity-freshness.ts";
 export * from "./rewards/payout-fairness.ts";
+export * from "./rewards/vault-revert.ts";
 export * from "./story/story-settlement-step-state-machine.ts";
