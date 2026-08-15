@@ -20,6 +20,12 @@ interface WireArgs {
   readonly details?: Record<string, unknown> | null;
 }
 
+/** Gate failures always carry structured evaluation evidence. */
+interface GateFailedArgs {
+  readonly message: string;
+  readonly details: Record<string, unknown>;
+}
+
 export class AuthError extends Data.TaggedError("AuthError")<WireArgs> {
   readonly status = 401 as const;
   readonly code = "auth_error" as const;
@@ -75,7 +81,7 @@ export class GateUnsatisfied extends Data.TaggedError("GateUnsatisfied")<WireArg
   readonly retryable = false as const;
 }
 
-export class GateFailed extends Data.TaggedError("GateFailed")<WireArgs> {
+export class GateFailed extends Data.TaggedError("GateFailed")<GateFailedArgs> {
   readonly status = 403 as const;
   readonly code = "gate_failed" as const;
   readonly retryable = false as const;

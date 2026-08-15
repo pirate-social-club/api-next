@@ -1,0 +1,9 @@
+{
+  "deprecatedOperations": [
+    {
+      "operationId": "post_echoMessage",
+      "removedIn": "unreleased",
+      "reason": "Pipeline placeholder retired when the real v1 slice contracts landed; no client ever consumed it."
+    }
+  ]
+}

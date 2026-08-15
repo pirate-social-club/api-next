@@ -8,10 +8,16 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
+      # Full history: the breaking-change check diffs against HEAD's
+      # committed OpenAPI document (git show HEAD:...).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun test
+      - run: bun run check:fresh
+      - run: bun run check:breaking

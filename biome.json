@@ -1,7 +1,13 @@
 {
   "$schema": "https://biome.sh/schemas/2.0.0/schema.json",
   "files": {
-    "includes": ["packages/**/*.ts", "apps/**/*.ts", "scripts/**/*.mjs"]
+    "includes": [
+      "packages/**/*.ts",
+      "apps/**/*.ts",
+      "scripts/**/*.ts",
+      "scripts/**/*.mjs",
+      "!**/generated"
+    ]
   },
   "formatter": {
     "enabled": true,

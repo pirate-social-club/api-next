@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import {
   Auth,
   DecimalStringSchema,
+  GateFailed,
   NotFound,
   PaymentRequired,
   ProviderMisconfigured,
@@ -48,6 +49,11 @@ describe("wire-error catalog", () => {
     expect(toErrorBody(new NotFound({ message: "x", details: { id: 7 } })).body.details).toEqual({
       id: 7,
     });
+  });
+
+  it("requires structured details for gate failures", () => {
+    const error = new GateFailed({ message: "gate failed", details: { gate: "age" } });
+    expect(toErrorBody(error).body.details).toEqual({ gate: "age" });
   });
 
   it("splits provider_unavailable retryability across two members", () => {

@@ -1,0 +1,21 @@
+// One wrangler config with a small per-env overlay (api-next 000 §9).
+// Money-path variables, when money flows land (M3+), are declared BOTH here
+// under env.production.vars and in packages/platform-cf/config — the
+// money-path invariant test ratchets the two against each other.
+{
+  "name": "api-next",
+  "main": "apps/http-worker/src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "env": {
+    "production": {
+      "vars": {
+        "API_NEXT_ENV": "production"
+      }
+    },
+    "staging": {
+      "vars": {
+        "API_NEXT_ENV": "staging"
+      }
+    }
+  }
+}
