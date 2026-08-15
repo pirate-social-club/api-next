@@ -5,6 +5,8 @@ import {
   DecimalStringSchema,
   NotFound,
   PaymentRequired,
+  ProviderMisconfigured,
+  ProviderUnavailable,
   RateLimited,
   RetryableConflict,
   toErrorBody,
@@ -45,6 +47,23 @@ describe("wire-error catalog", () => {
     expect(toErrorBody(new NotFound({ message: "x" })).body.details).toBeUndefined();
     expect(toErrorBody(new NotFound({ message: "x", details: { id: 7 } })).body.details).toEqual({
       id: 7,
+    });
+  });
+
+  it("splits provider_unavailable retryability across two members", () => {
+    // Regression: a `retryable` constructor prop on ProviderUnavailable was
+    // clobbered by the class field initializer, silently forcing true. The
+    // old API's retryable=false call sites (campaign-config validation) are
+    // now ProviderMisconfigured; wire code is unchanged.
+    expect(toErrorBody(new ProviderUnavailable({ message: "upstream down" })).body).toMatchObject({
+      code: "provider_unavailable",
+      retryable: true,
+    });
+    expect(
+      toErrorBody(new ProviderMisconfigured({ message: "RPC URL is invalid" })).body,
+    ).toMatchObject({
+      code: "provider_unavailable",
+      retryable: false,
     });
   });
 });

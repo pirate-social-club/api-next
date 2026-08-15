@@ -170,12 +170,25 @@ export class VerifierContractIncompatible extends Data.TaggedError(
   readonly retryable = false as const;
 }
 
-export class ProviderUnavailable extends Data.TaggedError("ProviderUnavailable")<
-  WireArgs & { readonly retryable?: boolean }
-> {
+export class ProviderUnavailable extends Data.TaggedError("ProviderUnavailable")<WireArgs> {
   readonly status = 502 as const;
   readonly code = "provider_unavailable" as const;
   readonly retryable = true as const;
+}
+
+/**
+ * Terminal provider failure — the old `providerUnavailable(msg, details,
+ * retryable: false)` call sites (invalid campaign config, unsupported chain,
+ * bad RPC URL, inconsistent guardrails). Same wire code as
+ * {@link ProviderUnavailable}; a separate member rather than an override,
+ * because a `retryable` constructor prop is silently clobbered by the class
+ * field initializer, and retryability is a property of the error type
+ * (000 §7), never a boolean on an instance.
+ */
+export class ProviderMisconfigured extends Data.TaggedError("ProviderMisconfigured")<WireArgs> {
+  readonly status = 502 as const;
+  readonly code = "provider_unavailable" as const;
+  readonly retryable = false as const;
 }
 
 export class FundingConfirmationTimeout extends Data.TaggedError(
@@ -223,6 +236,7 @@ export type ApiError =
   | StructuredSurfaceDisabled
   | VerifierContractIncompatible
   | ProviderUnavailable
+  | ProviderMisconfigured
   | FundingConfirmationTimeout
   | InternalError
   | NotImplemented;
