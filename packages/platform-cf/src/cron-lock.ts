@@ -11,9 +11,19 @@ export interface LeaseRecord {
   readonly expiresAt: number;
 }
 
+/** A lease record plus the write-boundary token carried by adapters. */
+export interface FencedLeaseRecord extends LeaseRecord {
+  readonly generation: number;
+}
+
 export interface LeaseDecision {
   readonly acquired: boolean;
   readonly lease: LeaseRecord | null;
+}
+
+export interface FencedLeaseDecision {
+  readonly acquired: boolean;
+  readonly lease: FencedLeaseRecord | null;
 }
 
 /**
@@ -31,4 +41,27 @@ export function evaluateLease(
   const heldByOther = current !== null && current.expiresAt > now && current.owner !== owner;
   if (heldByOther) return { acquired: false, lease: current };
   return { acquired: true, lease: { expiresAt: now + ttlMs, owner } };
+}
+
+/**
+ * Pure lease plus fencing-token semantics. Every successful acquisition or
+ * renewal advances the generation, so a late runner cannot reuse an older
+ * token even when it still knows the owner string.
+ */
+export function evaluateFencedLease(
+  current: FencedLeaseRecord | null,
+  ttlMs: number,
+  owner: string,
+  now: number,
+): FencedLeaseDecision {
+  const heldByOther = current !== null && current.expiresAt > now && current.owner !== owner;
+  if (heldByOther) return { acquired: false, lease: current };
+  return {
+    acquired: true,
+    lease: {
+      expiresAt: now + ttlMs,
+      generation: (current?.generation ?? 0) + 1,
+      owner,
+    },
+  };
 }

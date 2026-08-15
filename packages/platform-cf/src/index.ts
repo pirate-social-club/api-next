@@ -14,7 +14,15 @@ export {
   aggregateAlerts,
   alertTick,
 } from "./alerts";
-export { CRON_LOCK_NAME, evaluateLease, type LeaseDecision, type LeaseRecord } from "./cron-lock";
+export {
+  CRON_LOCK_NAME,
+  evaluateFencedLease,
+  evaluateLease,
+  type FencedLeaseDecision,
+  type FencedLeaseRecord,
+  type LeaseDecision,
+  type LeaseRecord,
+} from "./cron-lock";
 export { ScheduledCronLockDO } from "./cron-lock-do";
 export {
   CONTROL_PLANE_CONNECT_TIMEOUT_MS,
