@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import { makeProductHandlers, type ProductHandlerServices } from "./product-handlers.ts";
+import {
+  followCommunityInputFrom,
+  makeProductHandlers,
+  type ProductHandlerServices,
+  unfollowCommunityInputFrom,
+} from "./product-handlers.ts";
 import type { DecodedRequest } from "./transport.ts";
 
 type CommunityStore = ProductHandlerServices["communityStore"];
@@ -116,11 +121,22 @@ describe("HTTP product handlers", () => {
       scopes: ["community:write"],
     };
 
+    expect(followCommunityInputFrom(request({ principal, body: {} }))).toEqual({
+      communityId: "community-a",
+      actor: { userId: "admin-a", kind: "admin", scopes: ["community:write"] },
+      body: {},
+    });
+    expect(unfollowCommunityInputFrom(request({ principal, body: {} }))).toEqual({
+      communityId: "community-a",
+      actor: { userId: "admin-a", kind: "admin", scopes: ["community:write"] },
+      body: {},
+    });
+
     await handlers.GetCommunityPreview(request({ query: { locale: "ka" }, principal }));
     await handlers.GetJoinEligibility(request({ principal }));
     await handlers.JoinCommunity(request({ principal }));
-    await handlers.FollowCommunity(request({ principal }));
-    await handlers.UnfollowCommunity(request({ principal }));
+    await handlers.FollowCommunity(request({ principal, body: {} }));
+    await handlers.UnfollowCommunity(request({ principal, body: {} }));
 
     expect(observed.preview[0]).toEqual({
       communityId: "community-a",
@@ -198,6 +214,9 @@ describe("HTTP product handlers", () => {
           handler(request({ principal: { kind, subject: `${kind}-a` } })),
         ).rejects.toMatchObject({ code: "auth_error" });
       }
+      await expect(
+        handlers.GetHomeFeed(request({ principal: { kind, subject: `${kind}-a` } })),
+      ).rejects.toMatchObject({ code: "auth_error" });
     }
   });
 

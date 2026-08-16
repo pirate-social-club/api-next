@@ -1,8 +1,14 @@
-import { followCommunity } from "@pirate/application/use-cases/community/follow-community";
+import {
+  type FollowCommunityInput,
+  followCommunity,
+} from "@pirate/application/use-cases/community/follow-community";
 import { getCommunityPreview } from "@pirate/application/use-cases/community/get-community-preview";
 import { getJoinEligibility } from "@pirate/application/use-cases/community/get-join-eligibility";
 import { joinCommunity } from "@pirate/application/use-cases/community/join-community";
-import { unfollowCommunity } from "@pirate/application/use-cases/community/unfollow-community";
+import {
+  type UnfollowCommunityInput,
+  unfollowCommunity,
+} from "@pirate/application/use-cases/community/unfollow-community";
 import { getHomeFeed, getPublicHomeFeed } from "@pirate/application/use-cases/feed/home-feed";
 import { AuthError, type JoinCommunity } from "@pirate/contracts";
 import { Effect, type Schema } from "effect";
@@ -63,6 +69,20 @@ const communityActor = (principal: Principal | null): CommunityActor => {
 const optionalCommunityViewer = (principal: Principal | null): string | undefined =>
   principal === null ? undefined : communityActor(principal).userId;
 
+export const followCommunityInputFrom = (request: DecodedRequest): FollowCommunityInput => {
+  const { communityId } = communityPath(request);
+  const actor = communityActor(request.principal);
+  const body = request.body as FollowCommunityInput["body"];
+  return body === undefined ? { communityId, actor } : { communityId, actor, body };
+};
+
+export const unfollowCommunityInputFrom = (request: DecodedRequest): UnfollowCommunityInput => {
+  const { communityId } = communityPath(request);
+  const actor = communityActor(request.principal);
+  const body = request.body as UnfollowCommunityInput["body"];
+  return body === undefined ? { communityId, actor } : { communityId, actor, body };
+};
+
 const communityPreview = async (request: DecodedRequest, services: ProductHandlerServices) => {
   const { communityId } = communityPath(request);
   const { locale } = localeQuery(request);
@@ -100,18 +120,18 @@ const eligibility = async (request: DecodedRequest, services: ProductHandlerServ
 };
 
 const follow = async (request: DecodedRequest, services: ProductHandlerServices) => {
-  const { communityId } = communityPath(request);
-  const actor = communityActor(request.principal);
   return Effect.runPromise(
-    followCommunity({ communityId, actor }, { communityStore: services.communityStore }),
+    followCommunity(followCommunityInputFrom(request), {
+      communityStore: services.communityStore,
+    }),
   );
 };
 
 const unfollow = async (request: DecodedRequest, services: ProductHandlerServices) => {
-  const { communityId } = communityPath(request);
-  const actor = communityActor(request.principal);
   return Effect.runPromise(
-    unfollowCommunity({ communityId, actor }, { communityStore: services.communityStore }),
+    unfollowCommunity(unfollowCommunityInputFrom(request), {
+      communityStore: services.communityStore,
+    }),
   );
 };
 
@@ -120,7 +140,7 @@ const publicHomeFeed = async (request: DecodedRequest, services: ProductHandlerS
 
 const homeFeed = async (request: DecodedRequest, services: ProductHandlerServices) => {
   const query = feedQuery(request);
-  const viewerUserId = request.principal?.subject;
+  const viewerUserId = optionalCommunityViewer(request.principal);
   return Effect.runPromise(
     getHomeFeed(viewerUserId === undefined ? { query } : { query, viewerUserId }, {
       feedStore: services.feedStore,
