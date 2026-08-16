@@ -13,7 +13,7 @@ const RSA_IMPORT_ALGORITHM = {
   hash: "SHA-256",
 } as const;
 
-const PRIVATE_JWK_MEMBERS = new Set(["d", "dp", "dq", "p", "q", "oth"]);
+const PRIVATE_JWK_MEMBERS = new Set(["d", "dp", "dq", "p", "q", "qi", "oth"]);
 
 export type SessionBridgeErrorCode =
   | "configuration_invalid"
