@@ -19,6 +19,33 @@
     "API_NEXT_ENV": "development"
   },
   "env": {
+    "staging": {
+      "name": "pirate-jobs-worker-staging",
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CRON_LOCK",
+            "class_name": "ScheduledCronLockDO"
+          }
+        ]
+      },
+      "triggers": {
+        "crons": ["*/5 * * * *"]
+      },
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          // Replace with the user-provisioned staging Hyperdrive ID.
+          "id": "00000000-0000-0000-0000-000000000000",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "vars": {
+        "API_NEXT_ENV": "staging"
+        // Staging uses the local alert sink. If external delivery is enabled,
+        // inject endpoint URLs and tokens from the staging secret environment.
+      }
+    },
     "production": {
       "name": "pirate-jobs-worker-production",
       "durable_objects": {
@@ -42,11 +69,7 @@
         }
       ],
       "vars": {
-        "API_NEXT_ENV": "production",
-        // These placeholders are rejected by makeConfiguredAlertSink until
-        // reviewed provider endpoints are supplied; no secrets are stored here.
-        "API_NEXT_ALERT_EMAIL_URL": "https://replace-with-user-provisioned-email-endpoint.invalid",
-        "API_NEXT_ALERT_WEBHOOK_URL": "https://replace-with-user-provisioned-webhook-endpoint.invalid"
+        "API_NEXT_ENV": "production"
       }
     }
   },
