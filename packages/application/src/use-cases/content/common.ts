@@ -12,6 +12,8 @@ import {
   ContentRepositoryError,
   type ContentRepositoryFailure,
   type ContentStore,
+  type CreateCommentBody,
+  type CreatePostBody,
   type M2Actor,
 } from "../../ports.ts";
 
@@ -79,25 +81,7 @@ export const validateHumanDirectActor = (actor: M2Actor): Effect.Effect<void, Ba
     ? Effect.fail(new BadRequest({ message: "Only human-direct actors are supported" }))
     : Effect.void;
 
-export const validPublicHumanDirectPost = (body: {
-  readonly post_type: string;
-  readonly authorship_mode?: string;
-  readonly identity_mode?: string;
-  readonly agent_id?: string | null;
-  readonly agent_action_proof?: unknown;
-  readonly anonymous_scope?: string | null;
-  readonly media_refs?: readonly unknown[];
-  readonly caption?: string | null;
-  readonly link_url?: string | null;
-  readonly asset_id?: string | null;
-  readonly file_upload?: string | null;
-  readonly song_artifact_bundle?: string | null;
-  readonly song_mode?: string | null;
-  readonly source_post?: string | null;
-  readonly source_community?: string | null;
-  readonly crosspost_source?: unknown;
-  readonly lyrics?: string | null;
-}): boolean =>
+export const validPublicHumanDirectPost = (body: CreatePostBody): boolean =>
   body.post_type === "text" &&
   (body.authorship_mode === undefined || body.authorship_mode === "human_direct") &&
   (body.identity_mode === undefined || body.identity_mode === "public") &&
@@ -116,14 +100,7 @@ export const validPublicHumanDirectPost = (body: {
   body.crosspost_source == null &&
   body.lyrics == null;
 
-export const validPublicHumanDirectComment = (body: {
-  readonly authorship_mode?: string;
-  readonly identity_mode?: string;
-  readonly agent_id?: string | null;
-  readonly agent_action_proof?: unknown;
-  readonly anonymous_scope?: string | null;
-  readonly media_refs?: readonly unknown[];
-}): boolean =>
+export const validPublicHumanDirectComment = (body: CreateCommentBody): boolean =>
   (body.authorship_mode === undefined || body.authorship_mode === "human_direct") &&
   (body.identity_mode === undefined || body.identity_mode === "public") &&
   body.agent_id == null &&

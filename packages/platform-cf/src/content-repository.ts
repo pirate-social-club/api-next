@@ -154,25 +154,41 @@ const numberValue = (row: Row, key: string): number | null => {
   return null;
 };
 
+const safeIntegerValue = (row: Row, key: string): number | null => {
+  const value = numberValue(row, key);
+  return value !== null && Number.isSafeInteger(value) ? value : null;
+};
+
+const nonNegativeIntegerValue = (row: Row, key: string): number | null => {
+  const value = safeIntegerValue(row, key);
+  return value !== null && value >= 0 ? value : null;
+};
+
+const epochSeconds = (value: number): number | null => {
+  if (!Number.isFinite(value)) return null;
+  const seconds = Math.abs(value) >= 100_000_000_000 ? value / 1000 : value;
+  const normalized = Math.floor(seconds);
+  return Number.isSafeInteger(normalized) ? normalized : null;
+};
+
 const epochValue = (row: Row, key: string): number | null => {
   const value = row[key];
   if (value instanceof Date && Number.isFinite(value.getTime())) {
-    return Math.floor(value.getTime() / 1000);
+    return epochSeconds(value.getTime());
   }
+  if (typeof value === "number") return epochSeconds(value);
   if (typeof value === "string") {
+    if (/^-?\d+(?:\.\d+)?$/u.test(value)) return epochSeconds(Number(value));
     const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? Math.floor(parsed / 1000) : null;
+    return Number.isFinite(parsed) ? epochSeconds(parsed) : null;
   }
-  if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value);
   return null;
 };
 
-const booleanValue = (row: Row, key: string, fallback = false): boolean => {
+const booleanValue = (row: Row, key: string): boolean | null => {
   const value = row[key];
   if (typeof value === "boolean") return value;
-  if (value === 1 || value === "1") return true;
-  if (value === 0 || value === "0") return false;
-  return fallback;
+  return null;
 };
 
 const allowedPostType = (value: string): value is PostDocument["post_type"] =>
@@ -183,6 +199,14 @@ const allowedPostStatus = (value: string): value is PostDocument["status"] =>
 
 const allowedVisibility = (value: string): value is PostDocument["visibility"] =>
   value === "public" || value === "members_only";
+
+const allowedCommunityStatus = (value: string): value is "active" | "hidden" | "archived" =>
+  ["active", "hidden", "archived"].includes(value);
+
+const allowedMembershipStatus = (
+  value: string,
+): value is "pending" | "member" | "left" | "banned" =>
+  ["pending", "member", "left", "banned"].includes(value);
 
 const postFromRow = (row: Row): PostDocument | null => {
   const id = stringValue(row, "post_id");
@@ -195,13 +219,17 @@ const postFromRow = (row: Row): PostDocument | null => {
   if (
     id === null ||
     community === null ||
+    !validId(id) ||
+    !validId(community) ||
     postType === null ||
     !allowedPostType(postType) ||
     status === null ||
     !allowedPostStatus(status) ||
     visibility === null ||
     !allowedVisibility(visibility) ||
-    created === null
+    created === null ||
+    booleanValue(row, "comments_locked") === null ||
+    (author !== null && !validId(author))
   ) {
     return null;
   }
@@ -219,7 +247,7 @@ const postFromRow = (row: Row): PostDocument | null => {
     anonymous_label: null,
     post_type: postType,
     status,
-    comments_locked: booleanValue(row, "comments_locked"),
+    comments_locked: booleanValue(row, "comments_locked") as boolean,
     visibility,
     title: stringValue(row, "title"),
     body: stringValue(row, "body"),
@@ -242,9 +270,15 @@ const commentFromRow = (row: Row): CommentDocument | null => {
     id === null ||
     community === null ||
     post === null ||
+    !validId(id) ||
+    !validId(community) ||
+    !validId(post) ||
+    (parent !== null && !validId(parent)) ||
     status === null ||
     !["published", "hidden", "removed", "deleted"].includes(status) ||
-    created === null
+    created === null ||
+    (author !== null && !validId(author)) ||
+    nonNegativeIntegerValue(row, "depth") === null
   ) {
     return null;
   }
@@ -264,7 +298,7 @@ const commentFromRow = (row: Row): CommentDocument | null => {
     anonymous_label: null,
     body: stringValue(row, "body"),
     status: status as CommentDocument["status"],
-    depth: numberValue(row, "depth") ?? 0,
+    depth: nonNegativeIntegerValue(row, "depth") as number,
     direct_reply_count: 0,
     descendant_count: 0,
     upvote_count: 0,
@@ -279,45 +313,103 @@ const commentFromRow = (row: Row): CommentDocument | null => {
 
 const rowAt = <T extends Row>(rows: readonly T[]): T | null => rows[0] ?? null;
 
+const oneRow = <T extends Row>(
+  rows: readonly T[],
+  operation: ContentRepositoryOperation,
+): Effect.Effect<T | null, ContentRepositoryError> =>
+  rows.length > 1 ? Effect.fail(invalid(operation)) : Effect.succeed(rowAt(rows));
+
+const exactlyOneRow = <T extends Row>(
+  rows: readonly T[],
+  operation: ContentRepositoryOperation,
+): Effect.Effect<T, ContentRepositoryError> =>
+  rows.length !== 1 ? Effect.fail(invalid(operation)) : Effect.succeed(rows[0] as T);
+
 const makePostId = (): string => `post_${crypto.randomUUID()}`;
 const makeCommentId = (): string => `cmt_${crypto.randomUUID()}`;
 const makeVoteId = (): string => `vote_${crypto.randomUUID()}`;
 
 type Transaction = ControlPlaneTransaction;
 
-const resolvePostIn = (transaction: Transaction, postId: string) =>
+const resolvePostIn = (
+  transaction: Transaction,
+  postId: string,
+  operation: ContentRepositoryOperation,
+) =>
   Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: "content.posts.resolve-global",
-      text: "SELECT community_id, post_id FROM posts WHERE post_id = $1",
+      text: `SELECT p.community_id, p.post_id, p.status, c.status AS community_status
+             FROM posts p
+             JOIN communities c ON c.community_id = p.community_id
+             WHERE p.post_id = $1`,
       values: [postId],
       readonly: true,
     });
-    const row = rowAt(result.rows);
+    const row = yield* oneRow(result.rows, operation);
     if (row === null) return null;
     const communityId = stringValue(row, "community_id");
     const resolvedPostId = stringValue(row, "post_id");
-    return communityId === null || resolvedPostId === null
-      ? null
-      : ({ communityId, postId: resolvedPostId } satisfies PostLocation);
+    const postStatus = stringValue(row, "status");
+    const communityStatus = stringValue(row, "community_status");
+    if (
+      communityId === null ||
+      resolvedPostId === null ||
+      postStatus === null ||
+      communityStatus === null ||
+      !validId(communityId) ||
+      !validId(resolvedPostId) ||
+      resolvedPostId !== postId ||
+      !allowedPostStatus(postStatus) ||
+      !allowedCommunityStatus(communityStatus)
+    ) {
+      return yield* invalid(operation);
+    }
+    return communityStatus === "active"
+      ? ({ communityId, postId: resolvedPostId } satisfies PostLocation)
+      : null;
   });
 
-const resolveCommentIn = (transaction: Transaction, commentId: string) =>
+const resolveCommentIn = (
+  transaction: Transaction,
+  commentId: string,
+  operation: ContentRepositoryOperation,
+) =>
   Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: "content.comments.resolve-global",
-      text: "SELECT community_id, post_id, comment_id FROM comments WHERE comment_id = $1",
+      text: `SELECT c.community_id, c.post_id, c.comment_id, c.status, cm.status AS community_status
+             FROM comments c
+             JOIN communities cm ON cm.community_id = c.community_id
+             WHERE c.comment_id = $1`,
       values: [commentId],
       readonly: true,
     });
-    const row = rowAt(result.rows);
+    const row = yield* oneRow(result.rows, operation);
     if (row === null) return null;
     const communityId = stringValue(row, "community_id");
     const postId = stringValue(row, "post_id");
     const resolvedCommentId = stringValue(row, "comment_id");
-    return communityId === null || postId === null || resolvedCommentId === null
-      ? null
-      : ({ communityId, postId, commentId: resolvedCommentId } satisfies CommentLocation);
+    const commentStatus = stringValue(row, "status");
+    const communityStatus = stringValue(row, "community_status");
+    if (
+      communityId === null ||
+      postId === null ||
+      resolvedCommentId === null ||
+      commentStatus === null ||
+      communityStatus === null ||
+      !validId(communityId) ||
+      !validId(postId) ||
+      !validId(resolvedCommentId) ||
+      resolvedCommentId !== commentId ||
+      !["published", "hidden", "removed", "deleted"].includes(commentStatus) ||
+      !allowedCommunityStatus(communityStatus)
+    ) {
+      return yield* invalid(operation);
+    }
+    return communityStatus === "active"
+      ? ({ communityId, postId, commentId: resolvedCommentId } satisfies CommentLocation)
+      : null;
   });
 
 const requireActiveMembershipIn = (
@@ -328,22 +420,46 @@ const requireActiveMembershipIn = (
 ) =>
   Effect.gen(function* () {
     const community = yield* transaction.execute<Row>({
-      label: "content.communities.exists",
-      text: "SELECT community_id FROM communities WHERE community_id = $1",
+      label: "content.communities.lock-active",
+      text: "SELECT community_id, status FROM communities WHERE community_id = $1 FOR UPDATE",
       values: [communityId],
-      readonly: true,
+      readonly: false,
     });
-    if (rowAt(community.rows) === null) return yield* notFound(operation);
+    const communityRow = yield* oneRow(community.rows, operation);
+    if (communityRow === null) return yield* notFound(operation);
+    const storedCommunityId = stringValue(communityRow, "community_id");
+    const communityStatus = stringValue(communityRow, "status");
+    if (
+      storedCommunityId === null ||
+      storedCommunityId !== communityId ||
+      !validId(storedCommunityId) ||
+      communityStatus === null ||
+      !allowedCommunityStatus(communityStatus)
+    ) {
+      return yield* invalid(operation);
+    }
+    if (communityStatus !== "active") return yield* notFound(operation);
     const membership = yield* transaction.execute<Row>({
-      label: "content.community-memberships.active",
+      label: "content.community-memberships.lock-active",
       text: `SELECT status
              FROM community_memberships
              WHERE community_id = $1 AND user_id = $2
-             LIMIT 1`,
+             FOR UPDATE`,
       values: [communityId, userId],
-      readonly: true,
+      readonly: false,
     });
-    if (stringValue(rowAt(membership.rows) ?? {}, "status") !== "member") {
+    const membershipRow = yield* oneRow(membership.rows, operation);
+    if (membershipRow === null) {
+      return yield* new ContentRepositoryError({
+        operation,
+        reason: "membership-required",
+      });
+    }
+    const membershipStatus = stringValue(membershipRow, "status");
+    if (membershipStatus === null || !allowedMembershipStatus(membershipStatus)) {
+      return yield* invalid(operation);
+    }
+    if (membershipStatus !== "member") {
       return yield* new ContentRepositoryError({
         operation,
         reason: "membership-required",
@@ -356,9 +472,10 @@ const loadPostStateIn = (transaction: Transaction, communityId: string, postId: 
     label: "content.posts.state",
     text: `SELECT community_id, post_id, author_user_id, status, visibility, comments_locked
            FROM posts
-           WHERE community_id = $1 AND post_id = $2`,
+           WHERE community_id = $1 AND post_id = $2
+           FOR UPDATE`,
     values: [communityId, postId],
-    readonly: true,
+    readonly: false,
   });
 
 const loadCommentStateIn = (transaction: Transaction, communityId: string, commentId: string) =>
@@ -366,10 +483,87 @@ const loadCommentStateIn = (transaction: Transaction, communityId: string, comme
     label: "content.comments.state",
     text: `SELECT community_id, comment_id, post_id, status, depth
            FROM comments
-           WHERE community_id = $1 AND comment_id = $2`,
+           WHERE community_id = $1 AND comment_id = $2
+           FOR UPDATE`,
     values: [communityId, commentId],
-    readonly: true,
+    readonly: false,
   });
+
+type PostState = Readonly<{
+  readonly communityId: string;
+  readonly postId: string;
+  readonly authorUserId: string | null;
+  readonly status: PostDocument["status"];
+  readonly visibility: PostDocument["visibility"];
+  readonly commentsLocked: boolean;
+}>;
+
+const postStateFromRow = (row: Row, operation: ContentRepositoryOperation) => {
+  const communityId = stringValue(row, "community_id");
+  const postId = stringValue(row, "post_id");
+  const authorUserId = stringValue(row, "author_user_id");
+  const status = stringValue(row, "status");
+  const visibility = stringValue(row, "visibility");
+  const commentsLocked = booleanValue(row, "comments_locked");
+  if (
+    communityId === null ||
+    postId === null ||
+    !validId(communityId) ||
+    !validId(postId) ||
+    status === null ||
+    !allowedPostStatus(status) ||
+    visibility === null ||
+    !allowedVisibility(visibility) ||
+    commentsLocked === null ||
+    (authorUserId !== null && !validId(authorUserId))
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return Effect.succeed({
+    communityId,
+    postId,
+    authorUserId,
+    status,
+    visibility,
+    commentsLocked,
+  } satisfies PostState);
+};
+
+type CommentState = Readonly<{
+  readonly communityId: string;
+  readonly commentId: string;
+  readonly postId: string;
+  readonly status: CommentDocument["status"];
+  readonly depth: number;
+}>;
+
+const commentStateFromRow = (row: Row, operation: ContentRepositoryOperation) => {
+  const communityId = stringValue(row, "community_id");
+  const commentId = stringValue(row, "comment_id");
+  const postId = stringValue(row, "post_id");
+  const status = stringValue(row, "status");
+  const depth = nonNegativeIntegerValue(row, "depth");
+  if (
+    communityId === null ||
+    commentId === null ||
+    postId === null ||
+    !validId(communityId) ||
+    !validId(commentId) ||
+    !validId(postId) ||
+    status === null ||
+    !["published", "hidden", "removed", "deleted"].includes(status) ||
+    depth === null
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return Effect.succeed({
+    communityId,
+    commentId,
+    postId,
+    status: status as CommentDocument["status"],
+    depth,
+  } satisfies CommentState);
+};
 
 const loadPostByIdempotency = (
   transaction: Transaction,
@@ -422,14 +616,14 @@ export function makeControlPlaneContentRepository(): ContentRepository {
     Effect.gen(function* () {
       if (!validId(postId)) return null;
       const db = yield* ControlPlaneDb;
-      return yield* resolvePostIn(db, postId);
+      return yield* resolvePostIn(db, postId, "resolve-post");
     });
 
   const resolveComment: ContentRepository["resolveComment"] = ({ commentId }) =>
     Effect.gen(function* () {
       if (!validId(commentId)) return null;
       const db = yield* ControlPlaneDb;
-      return yield* resolveCommentIn(db, commentId);
+      return yield* resolveCommentIn(db, commentId, "resolve-comment");
     });
 
   const createPost: ContentRepository["createPost"] = ({
@@ -457,7 +651,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             actor.userId,
             body.idempotency_key,
           );
-          const found = rowAt(existing.rows);
+          const found = yield* oneRow(existing.rows, "create-post");
           if (found !== null) {
             if (stringValue(found, "idempotency_body_hash") !== idempotencyBodyHash) {
               return yield* idempotencyConflict();
@@ -489,7 +683,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             ],
             readonly: false,
           });
-          const insertedRow = rowAt(inserted.rows);
+          const insertedRow = yield* oneRow(inserted.rows, "create-post");
           if (insertedRow !== null) return yield* postDocument(insertedRow, "create-post");
 
           const concurrent = yield* loadPostByIdempotency(
@@ -498,7 +692,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             actor.userId,
             body.idempotency_key,
           );
-          const concurrentRow = rowAt(concurrent.rows);
+          const concurrentRow = yield* oneRow(concurrent.rows, "create-post");
           if (concurrentRow === null) return yield* constraint("create-post");
           if (stringValue(concurrentRow, "idempotency_body_hash") !== idempotencyBodyHash) {
             return yield* idempotencyConflict();
@@ -510,11 +704,11 @@ export function makeControlPlaneContentRepository(): ContentRepository {
 
   const getPost: ContentRepository["getPost"] = ({ communityId, postId, viewerUserId, locale }) =>
     Effect.gen(function* () {
-      if (!validId(communityId) || !validId(postId)) return null;
+      if (!validId(communityId) || !validId(postId) || !validId(viewerUserId)) return null;
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
-          const location = yield* resolvePostIn(transaction, postId);
+          const location = yield* resolvePostIn(transaction, postId, "get-post");
           if (location === null || location.communityId !== communityId) return null;
           const result = yield* transaction.execute<Row>({
             label: "content.posts.get",
@@ -524,10 +718,13 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             values: [communityId, postId],
             readonly: true,
           });
-          const row = rowAt(result.rows);
+          const row = yield* oneRow(result.rows, "get-post");
           if (row === null) return null;
           const post = postFromRow(row);
           if (post === null) return yield* invalid("get-post");
+          if (post.community !== communityId || post.id !== postId) {
+            return yield* invalid("get-post");
+          }
           if (["hidden", "removed", "deleted"].includes(post.status)) return null;
           if (post.status !== "published" && post.status !== "processing") return null;
           if (post.status === "processing" && post.author_user !== viewerUserId) return null;
@@ -537,11 +734,20 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               text: `SELECT status
                      FROM community_memberships
                      WHERE community_id = $1 AND user_id = $2
-                     LIMIT 1`,
+                     `,
               values: [communityId, viewerUserId],
               readonly: true,
             });
-            if (stringValue(rowAt(membership.rows) ?? {}, "status") !== "member") return null;
+            const membershipRow = yield* oneRow(membership.rows, "get-post");
+            if (membershipRow !== null) {
+              const membershipStatus = stringValue(membershipRow, "status");
+              if (membershipStatus === null || !allowedMembershipStatus(membershipStatus)) {
+                return yield* invalid("get-post");
+              }
+              if (membershipStatus !== "member") return null;
+            } else {
+              return null;
+            }
           }
           const counts = yield* transaction.execute<Row>({
             label: "content.posts.counts",
@@ -552,22 +758,34 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             values: [communityId, postId],
             readonly: true,
           });
-          const countRow = rowAt(counts.rows);
+          const countRow = yield* exactlyOneRow(counts.rows, "get-post");
           const viewerVote = yield* transaction.execute<Row>({
             label: "content.posts.viewer-vote",
             text: "SELECT vote_value FROM post_votes WHERE community_id = $1 AND post_id = $2 AND user_id = $3",
             values: [communityId, postId, viewerUserId],
             readonly: true,
           });
-          const vote = numberValue(rowAt(viewerVote.rows) ?? {}, "vote_value");
+          const viewerVoteRow = yield* oneRow(viewerVote.rows, "get-post");
+          const voteValue =
+            viewerVoteRow === null ? null : safeIntegerValue(viewerVoteRow, "vote_value");
+          if (viewerVoteRow !== null && voteValue !== -1 && voteValue !== 1) {
+            return yield* invalid("get-post");
+          }
+          const vote: -1 | 1 | null = voteValue === -1 ? -1 : voteValue === 1 ? 1 : null;
+          const upvoteCount = nonNegativeIntegerValue(countRow, "upvote_count");
+          const downvoteCount = nonNegativeIntegerValue(countRow, "downvote_count");
+          const commentCount = nonNegativeIntegerValue(countRow, "comment_count");
+          if (upvoteCount === null || downvoteCount === null || commentCount === null) {
+            return yield* invalid("get-post");
+          }
           return {
             post,
             thread_snapshot: null,
-            upvote_count: numberValue(countRow ?? {}, "upvote_count") ?? 0,
-            downvote_count: numberValue(countRow ?? {}, "downvote_count") ?? 0,
+            upvote_count: upvoteCount,
+            downvote_count: downvoteCount,
             like_count: 0,
-            comment_count: numberValue(countRow ?? {}, "comment_count") ?? 0,
-            viewer_vote: vote === -1 || vote === 1 ? vote : null,
+            comment_count: commentCount,
+            viewer_vote: vote,
             viewer_is_author: post.author_user === viewerUserId,
             viewer_reaction_kinds: [],
             resolved_locale: locale ?? "en",
@@ -609,8 +827,12 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             actor.userId,
             "create-comment-reply",
           );
-          const post = yield* resolvePostIn(transaction, postId);
-          const parent = yield* resolveCommentIn(transaction, parentCommentId);
+          const post = yield* resolvePostIn(transaction, postId, "create-comment-reply");
+          const parent = yield* resolveCommentIn(
+            transaction,
+            parentCommentId,
+            "create-comment-reply",
+          );
           if (
             post === null ||
             parent === null ||
@@ -620,23 +842,44 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           ) {
             return yield* notFound("create-comment-reply");
           }
-          const postState = rowAt((yield* loadPostStateIn(transaction, communityId, postId)).rows);
-          if (postState === null || stringValue(postState, "status") !== "published") {
+          const postStateRow = yield* oneRow(
+            (yield* loadPostStateIn(transaction, communityId, postId)).rows,
+            "create-comment-reply",
+          );
+          if (postStateRow === null) {
             return yield* notFound("create-comment-reply");
           }
-          if (booleanValue(postState, "comments_locked")) {
+          const postState = yield* postStateFromRow(postStateRow, "create-comment-reply");
+          if (
+            postState.communityId !== communityId ||
+            postState.postId !== postId ||
+            postState.status !== "published"
+          ) {
+            return yield* notFound("create-comment-reply");
+          }
+          if (postState.commentsLocked) {
             return yield* new ContentRepositoryError({
               operation: "create-comment-reply",
               reason: "comments-locked",
             });
           }
-          const parentState = rowAt(
+          const parentStateRow = yield* oneRow(
             (yield* loadCommentStateIn(transaction, communityId, parentCommentId)).rows,
+            "create-comment-reply",
           );
-          if (parentState === null || stringValue(parentState, "status") !== "published") {
+          if (parentStateRow === null) {
             return yield* notFound("create-comment-reply");
           }
-          const depth = (numberValue(parentState, "depth") ?? 0) + 1;
+          const parentState = yield* commentStateFromRow(parentStateRow, "create-comment-reply");
+          if (
+            parentState.communityId !== communityId ||
+            parentState.commentId !== parentCommentId ||
+            parentState.postId !== postId ||
+            parentState.status !== "published"
+          ) {
+            return yield* notFound("create-comment-reply");
+          }
+          const depth = parentState.depth + 1;
           const key = body.idempotency_key ?? "";
           if (key !== "") {
             const existing = yield* loadCommentByIdempotency(
@@ -645,7 +888,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               actor.userId,
               key,
             );
-            const found = rowAt(existing.rows);
+            const found = yield* oneRow(existing.rows, "create-comment-reply");
             if (found !== null) {
               if (stringValue(found, "idempotency_body_hash") !== (idempotencyBodyHash ?? null)) {
                 return yield* new ContentRepositoryError({
@@ -681,7 +924,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             ],
             readonly: false,
           });
-          const insertedRow = rowAt(inserted.rows);
+          const insertedRow = yield* oneRow(inserted.rows, "create-comment-reply");
           if (insertedRow !== null) return yield* commentDocument(insertedRow);
           if (key === "") return yield* constraint("create-comment-reply");
           const concurrent = yield* loadCommentByIdempotency(
@@ -690,7 +933,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             actor.userId,
             key,
           );
-          const concurrentRow = rowAt(concurrent.rows);
+          const concurrentRow = yield* oneRow(concurrent.rows, "create-comment-reply");
           if (concurrentRow === null) return yield* constraint("create-comment-reply");
           if (
             stringValue(concurrentRow, "idempotency_body_hash") !== (idempotencyBodyHash ?? null)
@@ -719,12 +962,23 @@ export function makeControlPlaneContentRepository(): ContentRepository {
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
           yield* requireActiveMembershipIn(transaction, communityId, actor.userId, "cast-vote");
-          const location = yield* resolvePostIn(transaction, postId);
+          const location = yield* resolvePostIn(transaction, postId, "cast-vote");
           if (location === null || location.communityId !== communityId) {
             return yield* notFound("cast-vote");
           }
-          const post = rowAt((yield* loadPostStateIn(transaction, communityId, postId)).rows);
-          if (post === null || stringValue(post, "status") !== "published") {
+          const postRow = yield* oneRow(
+            (yield* loadPostStateIn(transaction, communityId, postId)).rows,
+            "cast-vote",
+          );
+          if (postRow === null) {
+            return yield* notFound("cast-vote");
+          }
+          const post = yield* postStateFromRow(postRow, "cast-vote");
+          if (
+            post.communityId !== communityId ||
+            post.postId !== postId ||
+            post.status !== "published"
+          ) {
             return yield* notFound("cast-vote");
           }
           const result = yield* transaction.execute<Row>({
@@ -738,12 +992,17 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             values: [communityId, makeVoteId(), postId, actor.userId, body.value, new Date()],
             readonly: false,
           });
-          const row = rowAt(result.rows);
-          const value = numberValue(row ?? {}, "vote_value");
-          const returnedPost = stringValue(row ?? {}, "post_id");
-          if (returnedPost === null || (value !== -1 && value !== 1))
+          const row = yield* exactlyOneRow(result.rows, "cast-vote");
+          const value = safeIntegerValue(row, "vote_value");
+          const returnedPost = stringValue(row, "post_id");
+          if (
+            returnedPost === null ||
+            !validId(returnedPost) ||
+            returnedPost !== postId ||
+            (value !== -1 && value !== 1)
+          )
             return yield* invalid("cast-vote");
-          const voteValue: -1 | 1 = value;
+          const voteValue: -1 | 1 = value as -1 | 1;
           return { post: returnedPost, value: voteValue };
         }),
       );
@@ -763,12 +1022,23 @@ export function makeControlPlaneContentRepository(): ContentRepository {
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
           yield* requireActiveMembershipIn(transaction, communityId, actor.userId, "clear-vote");
-          const location = yield* resolvePostIn(transaction, postId);
+          const location = yield* resolvePostIn(transaction, postId, "clear-vote");
           if (location === null || location.communityId !== communityId) {
             return yield* notFound("clear-vote");
           }
-          const post = rowAt((yield* loadPostStateIn(transaction, communityId, postId)).rows);
-          if (post === null || stringValue(post, "status") !== "published") {
+          const postRow = yield* oneRow(
+            (yield* loadPostStateIn(transaction, communityId, postId)).rows,
+            "clear-vote",
+          );
+          if (postRow === null) {
+            return yield* notFound("clear-vote");
+          }
+          const post = yield* postStateFromRow(postRow, "clear-vote");
+          if (
+            post.communityId !== communityId ||
+            post.postId !== postId ||
+            post.status !== "published"
+          ) {
             return yield* notFound("clear-vote");
           }
           yield* transaction.execute({

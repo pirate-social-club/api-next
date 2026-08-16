@@ -25,9 +25,7 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
   yield* validateHumanDirectActor(input.actor);
   const body = yield* decodeBody(CreateCommentReply.request.body, input.body);
   if (
-    !validPublicHumanDirectComment(
-      body as unknown as Parameters<typeof validPublicHumanDirectComment>[0],
-    ) ||
+    !validPublicHumanDirectComment(body) ||
     typeof body.body !== "string" ||
     body.body.trim().length === 0
   ) {

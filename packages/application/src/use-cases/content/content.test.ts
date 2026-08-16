@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { InternalError } from "@pirate/contracts";
 import { Cause, Effect, Exit, Result } from "effect";
-import type { ContentStore } from "../../ports.ts";
+import { ContentRepositoryError, type ContentStore } from "../../ports.ts";
 import { castPostVote } from "./cast-post-vote.ts";
 import { createCommentReply } from "./create-comment-reply.ts";
 import { createPost } from "./create-post.ts";
@@ -206,5 +207,23 @@ describe("M2 content use cases", () => {
       getPost({ postId: "post_missing", viewer: actor }, { contentStore: fakeStore() }),
     );
     expect(failureOf(missing)).toMatchObject({ _tag: "NotFound" });
+  });
+
+  test("maps malformed repository rows to InternalError", async () => {
+    const result = await run(
+      getPost(
+        { postId: "post_1", viewer: actor },
+        {
+          contentStore: fakeStore({
+            resolvePost: () => Effect.succeed({ communityId: "community_1", postId: "post_1" }),
+            getPost: () =>
+              Effect.fail(
+                new ContentRepositoryError({ operation: "get-post", reason: "invalid-row" }),
+              ),
+          }),
+        },
+      ),
+    );
+    expect(failureOf(result)).toBeInstanceOf(InternalError);
   });
 });

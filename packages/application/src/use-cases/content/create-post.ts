@@ -17,7 +17,7 @@ export type CreatePostInput = Readonly<{
   readonly body: unknown;
 }>;
 
-const hasUnsupportedMetadata = (body: Record<string, unknown>): boolean => {
+const hasUnsupportedMetadata = (body: object): boolean => {
   const disallowed = [
     "agent_id",
     "agent_action_proof",
@@ -51,7 +51,7 @@ const hasUnsupportedMetadata = (body: Record<string, unknown>): boolean => {
     "publish_mode",
   ];
   return disallowed.some((key) => {
-    const value = body[key];
+    const value = (body as Record<string, unknown>)[key];
     return value !== undefined && value !== null && !(Array.isArray(value) && value.length === 0);
   });
 };
@@ -64,12 +64,9 @@ export const createPost = Effect.fn("createPost")(function* (
   yield* validateHumanDirectActor(input.actor);
 
   const body = yield* decodeBody(CreatePost.request.body, input.body);
-  const record = body as Record<string, unknown>;
   if (
-    !validPublicHumanDirectPost(
-      record as unknown as Parameters<typeof validPublicHumanDirectPost>[0],
-    ) ||
-    hasUnsupportedMetadata(record) ||
+    !validPublicHumanDirectPost(body) ||
+    hasUnsupportedMetadata(body) ||
     body.idempotency_key.trim().length === 0 ||
     typeof body.body !== "string" ||
     body.body.trim().length === 0
