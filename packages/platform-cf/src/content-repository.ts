@@ -1,0 +1,1231 @@
+import {
+  type ClearVoteBody,
+  type CommentDocument,
+  type CommentLocation,
+  ContentRepositoryError,
+  type ContentRepositoryFailure,
+  type ContentRepositoryOperation,
+  type ContentStore,
+  ControlPlaneDb,
+  type ControlPlaneError,
+  type ControlPlaneTransaction,
+  type CreateCommentBody,
+  type CreatePostBody,
+  type LocalizedPostDocument,
+  type M2Actor,
+  type PostDocument,
+  type PostLocation,
+  type VoteBody,
+} from "@pirate/application";
+import { Effect, type Layer } from "effect";
+
+export interface ContentRepository {
+  readonly resolvePost: (input: {
+    readonly postId: string;
+  }) => Effect.Effect<PostLocation | null, ContentRepositoryFailure, ControlPlaneDb>;
+  readonly resolveComment: (input: {
+    readonly commentId: string;
+  }) => Effect.Effect<CommentLocation | null, ContentRepositoryFailure, ControlPlaneDb>;
+  readonly createPost: (input: {
+    readonly communityId: string;
+    readonly actor: M2Actor;
+    readonly body: CreatePostBody;
+    readonly idempotencyBodyHash: string;
+  }) => Effect.Effect<PostDocument, ContentRepositoryFailure, ControlPlaneDb>;
+  readonly getPost: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly viewerUserId: string;
+    readonly locale?: string;
+  }) => Effect.Effect<LocalizedPostDocument | null, ContentRepositoryFailure, ControlPlaneDb>;
+  readonly createCommentReply: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly parentCommentId: string;
+    readonly actor: M2Actor;
+    readonly body: CreateCommentBody;
+    readonly idempotencyBodyHash?: string;
+  }) => Effect.Effect<CommentDocument, ContentRepositoryFailure, ControlPlaneDb>;
+  readonly castPostVote: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actor: M2Actor;
+    readonly body: VoteBody;
+  }) => Effect.Effect<
+    { readonly post: string; readonly value: -1 | 1 },
+    ContentRepositoryFailure,
+    ControlPlaneDb
+  >;
+  readonly clearPostVote: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actor: M2Actor;
+    readonly body: ClearVoteBody;
+  }) => Effect.Effect<
+    { readonly post: string; readonly value: null },
+    ContentRepositoryFailure,
+    ControlPlaneDb
+  >;
+}
+
+type Row = Readonly<Record<string, unknown>>;
+
+const invalid = (operation: ContentRepositoryOperation) =>
+  new ContentRepositoryError({ operation, reason: "invalid-row" });
+
+const constraint = (operation: ContentRepositoryOperation) =>
+  new ContentRepositoryError({ operation, reason: "constraint" });
+
+const notFound = (operation: ContentRepositoryOperation) =>
+  new ContentRepositoryError({ operation, reason: "not-found" });
+
+const idempotencyConflict = () =>
+  new ContentRepositoryError({ operation: "create-post", reason: "idempotency-conflict" });
+
+const validId = (value: string): boolean =>
+  value.length > 0 && value.trim() === value && !value.includes("\u0000");
+
+const directTextBody = (body: CreatePostBody): boolean =>
+  body.post_type === "text" &&
+  (body.authorship_mode === undefined || body.authorship_mode === "human_direct") &&
+  (body.identity_mode === undefined || body.identity_mode === "public") &&
+  body.agent_id == null &&
+  body.agent_action_proof == null &&
+  body.anonymous_scope == null &&
+  (body.disclosed_qualifier_ids === undefined ||
+    body.disclosed_qualifier_ids === null ||
+    body.disclosed_qualifier_ids.length === 0) &&
+  body.parent_post_id == null &&
+  body.label_id == null &&
+  (body.media_refs === undefined || body.media_refs.length === 0) &&
+  body.caption == null &&
+  body.link_url == null &&
+  body.creator_relation == null &&
+  body.promotion_disclosure == null &&
+  body.translation_policy == null &&
+  body.age_gate_policy == null &&
+  body.access_mode == null &&
+  body.asset_id == null &&
+  body.file_upload == null &&
+  body.song_artifact_bundle == null &&
+  body.song_mode == null &&
+  body.rights_basis == null &&
+  (body.upstream_asset_refs === undefined ||
+    body.upstream_asset_refs === null ||
+    body.upstream_asset_refs.length === 0) &&
+  body.license_preset == null &&
+  body.commercial_rev_share_pct == null &&
+  (body.royalty_allocations === undefined ||
+    body.royalty_allocations === null ||
+    body.royalty_allocations.length === 0) &&
+  body.source_post == null &&
+  body.source_community == null &&
+  body.crosspost_source == null &&
+  body.event == null &&
+  body.publish_mode == null &&
+  body.listing_draft == null &&
+  body.lyrics == null &&
+  typeof body.body === "string" &&
+  body.body.trim().length > 0 &&
+  body.idempotency_key.trim().length > 0;
+
+const directCommentBody = (body: CreateCommentBody): boolean =>
+  (body.authorship_mode === undefined || body.authorship_mode === "human_direct") &&
+  (body.identity_mode === undefined || body.identity_mode === "public") &&
+  body.agent_id == null &&
+  body.agent_action_proof == null &&
+  body.anonymous_scope == null &&
+  (body.media_refs === undefined || body.media_refs.length === 0) &&
+  typeof body.body === "string" &&
+  body.body.trim().length > 0;
+
+const stringValue = (row: Row, key: string): string | null => {
+  const value = row[key];
+  return value === null || value === undefined ? null : typeof value === "string" ? value : null;
+};
+
+const numberValue = (row: Row, key: string): number | null => {
+  const value = row[key];
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+};
+
+const safeIntegerValue = (row: Row, key: string): number | null => {
+  const value = numberValue(row, key);
+  return value !== null && Number.isSafeInteger(value) ? value : null;
+};
+
+const nonNegativeIntegerValue = (row: Row, key: string): number | null => {
+  const value = safeIntegerValue(row, key);
+  return value !== null && value >= 0 ? value : null;
+};
+
+const epochSeconds = (value: number): number | null => {
+  if (!Number.isFinite(value)) return null;
+  const seconds = Math.abs(value) >= 100_000_000_000 ? value / 1000 : value;
+  const normalized = Math.floor(seconds);
+  return Number.isSafeInteger(normalized) ? normalized : null;
+};
+
+const epochValue = (row: Row, key: string): number | null => {
+  const value = row[key];
+  if (value instanceof Date && Number.isFinite(value.getTime())) {
+    return epochSeconds(value.getTime());
+  }
+  if (typeof value === "number") return epochSeconds(value);
+  if (typeof value === "string") {
+    if (/^-?\d+(?:\.\d+)?$/u.test(value)) return epochSeconds(Number(value));
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? epochSeconds(parsed) : null;
+  }
+  return null;
+};
+
+const booleanValue = (row: Row, key: string): boolean | null => {
+  const value = row[key];
+  if (typeof value === "boolean") return value;
+  return null;
+};
+
+const allowedPostType = (value: string): value is PostDocument["post_type"] =>
+  ["text", "image", "video", "link", "song", "crosspost", "file"].includes(value);
+
+const allowedPostStatus = (value: string): value is PostDocument["status"] =>
+  ["draft", "processing", "published", "failed", "hidden", "removed", "deleted"].includes(value);
+
+const allowedVisibility = (value: string): value is PostDocument["visibility"] =>
+  value === "public" || value === "members_only";
+
+const allowedCommunityStatus = (value: string): value is "active" | "hidden" | "archived" =>
+  ["active", "hidden", "archived"].includes(value);
+
+const allowedMembershipStatus = (
+  value: string,
+): value is "pending" | "member" | "left" | "banned" =>
+  ["pending", "member", "left", "banned"].includes(value);
+
+const validIdempotencyHash = (value: string | null): value is string =>
+  value !== null && /^[0-9a-f]{64}$/u.test(value);
+
+const postFromRow = (row: Row): PostDocument | null => {
+  const id = stringValue(row, "post_id");
+  const community = stringValue(row, "community_id");
+  const author = stringValue(row, "author_user_id");
+  const postType = stringValue(row, "post_type");
+  const status = stringValue(row, "status");
+  const visibility = stringValue(row, "visibility");
+  const created = epochValue(row, "created_at");
+  if (
+    id === null ||
+    community === null ||
+    !validId(id) ||
+    !validId(community) ||
+    postType === null ||
+    !allowedPostType(postType) ||
+    status === null ||
+    !allowedPostStatus(status) ||
+    visibility === null ||
+    !allowedVisibility(visibility) ||
+    created === null ||
+    booleanValue(row, "comments_locked") === null ||
+    (author !== null && !validId(author))
+  ) {
+    return null;
+  }
+  return {
+    id,
+    object: "post",
+    community,
+    author_user: author,
+    author_public_handle: null,
+    authorship_mode: "human_direct",
+    agent: null,
+    agent_ownership_record: null,
+    identity_mode: "public",
+    anonymous_scope: null,
+    anonymous_label: null,
+    post_type: postType,
+    status,
+    comments_locked: booleanValue(row, "comments_locked") as boolean,
+    visibility,
+    title: stringValue(row, "title"),
+    body: stringValue(row, "body"),
+    analysis_state: "pending",
+    content_safety_state: "pending",
+    age_gate_policy: "none",
+    created,
+  };
+};
+
+const commentFromRow = (row: Row): CommentDocument | null => {
+  const id = stringValue(row, "comment_id");
+  const community = stringValue(row, "community_id");
+  const post = stringValue(row, "post_id");
+  const parent = stringValue(row, "parent_comment_id");
+  const status = stringValue(row, "status");
+  const created = epochValue(row, "created_at");
+  const author = stringValue(row, "author_user_id");
+  if (
+    id === null ||
+    community === null ||
+    post === null ||
+    !validId(id) ||
+    !validId(community) ||
+    !validId(post) ||
+    (parent !== null && !validId(parent)) ||
+    status === null ||
+    !["published", "hidden", "removed", "deleted"].includes(status) ||
+    created === null ||
+    (author !== null && !validId(author)) ||
+    nonNegativeIntegerValue(row, "depth") === null
+  ) {
+    return null;
+  }
+  return {
+    id,
+    object: "comment",
+    community,
+    thread_root_post: post,
+    parent_comment: parent,
+    author_user: author,
+    author_public_handle: null,
+    authorship_mode: "human_direct",
+    agent: null,
+    agent_ownership_record: null,
+    identity_mode: "public",
+    anonymous_scope: null,
+    anonymous_label: null,
+    body: stringValue(row, "body"),
+    status: status as CommentDocument["status"],
+    depth: nonNegativeIntegerValue(row, "depth") as number,
+    direct_reply_count: 0,
+    descendant_count: 0,
+    upvote_count: 0,
+    downvote_count: 0,
+    score: 0,
+    content_hash: null,
+    swarm_body_ref: null,
+    idempotency_key: stringValue(row, "idempotency_key") || null,
+    created,
+  };
+};
+
+const rowAt = <T extends Row>(rows: readonly T[]): T | null => rows[0] ?? null;
+
+const oneRow = <T extends Row>(
+  rows: readonly T[],
+  operation: ContentRepositoryOperation,
+): Effect.Effect<T | null, ContentRepositoryError> =>
+  rows.length > 1 ? Effect.fail(invalid(operation)) : Effect.succeed(rowAt(rows));
+
+const exactlyOneRow = <T extends Row>(
+  rows: readonly T[],
+  operation: ContentRepositoryOperation,
+): Effect.Effect<T, ContentRepositoryError> =>
+  rows.length !== 1 ? Effect.fail(invalid(operation)) : Effect.succeed(rows[0] as T);
+
+const makePostId = (): string => `post_${crypto.randomUUID()}`;
+const makeCommentId = (): string => `cmt_${crypto.randomUUID()}`;
+const makeVoteId = (): string => `vote_${crypto.randomUUID()}`;
+
+type Transaction = ControlPlaneTransaction;
+
+const resolvePostIn = (
+  transaction: Transaction,
+  postId: string,
+  operation: ContentRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: "content.posts.resolve-global",
+      text: `SELECT p.community_id, p.post_id, p.status, c.status AS community_status
+             FROM posts p
+             LEFT JOIN communities c ON c.community_id = p.community_id
+             WHERE p.post_id = $1`,
+      values: [postId],
+      readonly: true,
+    });
+    const row = yield* oneRow(result.rows, operation);
+    if (row === null) return null;
+    const communityId = stringValue(row, "community_id");
+    const resolvedPostId = stringValue(row, "post_id");
+    const postStatus = stringValue(row, "status");
+    const communityStatus = stringValue(row, "community_status");
+    if (
+      communityId === null ||
+      resolvedPostId === null ||
+      postStatus === null ||
+      communityStatus === null ||
+      !validId(communityId) ||
+      !validId(resolvedPostId) ||
+      resolvedPostId !== postId ||
+      !allowedPostStatus(postStatus) ||
+      !allowedCommunityStatus(communityStatus)
+    ) {
+      return yield* invalid(operation);
+    }
+    return communityStatus === "active"
+      ? ({ communityId, postId: resolvedPostId } satisfies PostLocation)
+      : null;
+  });
+
+const resolveCommentIn = (
+  transaction: Transaction,
+  commentId: string,
+  operation: ContentRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: "content.comments.resolve-global",
+      text: `SELECT c.community_id, c.post_id, c.comment_id, c.status, cm.status AS community_status
+             FROM comments c
+             LEFT JOIN communities cm ON cm.community_id = c.community_id
+             WHERE c.comment_id = $1`,
+      values: [commentId],
+      readonly: true,
+    });
+    const row = yield* oneRow(result.rows, operation);
+    if (row === null) return null;
+    const communityId = stringValue(row, "community_id");
+    const postId = stringValue(row, "post_id");
+    const resolvedCommentId = stringValue(row, "comment_id");
+    const commentStatus = stringValue(row, "status");
+    const communityStatus = stringValue(row, "community_status");
+    if (
+      communityId === null ||
+      postId === null ||
+      resolvedCommentId === null ||
+      commentStatus === null ||
+      communityStatus === null ||
+      !validId(communityId) ||
+      !validId(postId) ||
+      !validId(resolvedCommentId) ||
+      resolvedCommentId !== commentId ||
+      !["published", "hidden", "removed", "deleted"].includes(commentStatus) ||
+      !allowedCommunityStatus(communityStatus)
+    ) {
+      return yield* invalid(operation);
+    }
+    return communityStatus === "active"
+      ? ({ communityId, postId, commentId: resolvedCommentId } satisfies CommentLocation)
+      : null;
+  });
+
+const requireActiveMembershipIn = (
+  transaction: Transaction,
+  communityId: string,
+  userId: string,
+  operation: ContentRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    const community = yield* transaction.execute<Row>({
+      label: "content.communities.lock-active",
+      text: "SELECT community_id, status FROM communities WHERE community_id = $1 FOR UPDATE",
+      values: [communityId],
+      readonly: false,
+    });
+    const communityRow = yield* oneRow(community.rows, operation);
+    if (communityRow === null) return yield* notFound(operation);
+    const storedCommunityId = stringValue(communityRow, "community_id");
+    const communityStatus = stringValue(communityRow, "status");
+    if (
+      storedCommunityId === null ||
+      storedCommunityId !== communityId ||
+      !validId(storedCommunityId) ||
+      communityStatus === null ||
+      !allowedCommunityStatus(communityStatus)
+    ) {
+      return yield* invalid(operation);
+    }
+    if (communityStatus !== "active") return yield* notFound(operation);
+    const membership = yield* transaction.execute<Row>({
+      label: "content.community-memberships.lock-active",
+      text: `SELECT status
+             FROM community_memberships
+             WHERE community_id = $1 AND user_id = $2
+             FOR UPDATE`,
+      values: [communityId, userId],
+      readonly: false,
+    });
+    const membershipRow = yield* oneRow(membership.rows, operation);
+    if (membershipRow === null) {
+      return yield* new ContentRepositoryError({
+        operation,
+        reason: "membership-required",
+      });
+    }
+    const membershipStatus = stringValue(membershipRow, "status");
+    if (membershipStatus === null || !allowedMembershipStatus(membershipStatus)) {
+      return yield* invalid(operation);
+    }
+    if (membershipStatus !== "member") {
+      return yield* new ContentRepositoryError({
+        operation,
+        reason: "membership-required",
+      });
+    }
+  });
+
+const loadPostStateIn = (transaction: Transaction, communityId: string, postId: string) =>
+  transaction.execute<Row>({
+    label: "content.posts.state",
+    text: `SELECT community_id, post_id, author_user_id, status, visibility, comments_locked
+           FROM posts
+           WHERE community_id = $1 AND post_id = $2
+           FOR UPDATE`,
+    values: [communityId, postId],
+    readonly: false,
+  });
+
+const loadCommentStateIn = (transaction: Transaction, communityId: string, commentId: string) =>
+  transaction.execute<Row>({
+    label: "content.comments.state",
+    text: `SELECT community_id, comment_id, post_id, status, depth
+           FROM comments
+           WHERE community_id = $1 AND comment_id = $2
+           FOR UPDATE`,
+    values: [communityId, commentId],
+    readonly: false,
+  });
+
+type PostState = Readonly<{
+  readonly communityId: string;
+  readonly postId: string;
+  readonly authorUserId: string | null;
+  readonly status: PostDocument["status"];
+  readonly visibility: PostDocument["visibility"];
+  readonly commentsLocked: boolean;
+}>;
+
+const postStateFromRow = (row: Row, operation: ContentRepositoryOperation) => {
+  const communityId = stringValue(row, "community_id");
+  const postId = stringValue(row, "post_id");
+  const authorUserId = stringValue(row, "author_user_id");
+  const status = stringValue(row, "status");
+  const visibility = stringValue(row, "visibility");
+  const commentsLocked = booleanValue(row, "comments_locked");
+  if (
+    communityId === null ||
+    postId === null ||
+    !validId(communityId) ||
+    !validId(postId) ||
+    status === null ||
+    !allowedPostStatus(status) ||
+    visibility === null ||
+    !allowedVisibility(visibility) ||
+    commentsLocked === null ||
+    (authorUserId !== null && !validId(authorUserId))
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return Effect.succeed({
+    communityId,
+    postId,
+    authorUserId,
+    status,
+    visibility,
+    commentsLocked,
+  } satisfies PostState);
+};
+
+type CommentState = Readonly<{
+  readonly communityId: string;
+  readonly commentId: string;
+  readonly postId: string;
+  readonly status: CommentDocument["status"];
+  readonly depth: number;
+}>;
+
+type ActorVote = Readonly<{
+  readonly communityId: string;
+  readonly postVoteId: string;
+  readonly postId: string;
+  readonly userId: string;
+  readonly value: -1 | 1;
+}>;
+
+const commentStateFromRow = (row: Row, operation: ContentRepositoryOperation) => {
+  const communityId = stringValue(row, "community_id");
+  const commentId = stringValue(row, "comment_id");
+  const postId = stringValue(row, "post_id");
+  const status = stringValue(row, "status");
+  const depth = nonNegativeIntegerValue(row, "depth");
+  if (
+    communityId === null ||
+    commentId === null ||
+    postId === null ||
+    !validId(communityId) ||
+    !validId(commentId) ||
+    !validId(postId) ||
+    status === null ||
+    !["published", "hidden", "removed", "deleted"].includes(status) ||
+    depth === null
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return Effect.succeed({
+    communityId,
+    commentId,
+    postId,
+    status: status as CommentDocument["status"],
+    depth,
+  } satisfies CommentState);
+};
+
+const actorVoteFromRow = (row: Row, operation: ContentRepositoryOperation) => {
+  const communityId = stringValue(row, "community_id");
+  const postVoteId = stringValue(row, "post_vote_id");
+  const postId = stringValue(row, "post_id");
+  const userId = stringValue(row, "user_id");
+  const value = safeIntegerValue(row, "vote_value");
+  if (
+    communityId === null ||
+    postVoteId === null ||
+    postId === null ||
+    userId === null ||
+    !validId(communityId) ||
+    !validId(postVoteId) ||
+    !validId(postId) ||
+    !validId(userId) ||
+    (value !== -1 && value !== 1)
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return Effect.succeed({
+    communityId,
+    postVoteId,
+    postId,
+    userId,
+    value: value as -1 | 1,
+  } satisfies ActorVote);
+};
+
+const loadActorVoteIn = (
+  transaction: Transaction,
+  communityId: string,
+  postId: string,
+  userId: string,
+  operation: ContentRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: "content.post-votes.lock-actor",
+      text: `SELECT community_id, post_vote_id, post_id, user_id, vote_value
+             FROM post_votes
+             WHERE community_id = $1 AND post_id = $2 AND user_id = $3
+             FOR UPDATE`,
+      values: [communityId, postId, userId],
+      readonly: false,
+    });
+    const row = yield* oneRow(result.rows, operation);
+    if (row === null) return null;
+    const vote = yield* actorVoteFromRow(row, operation);
+    if (vote.communityId !== communityId || vote.postId !== postId || vote.userId !== userId) {
+      return yield* invalid(operation);
+    }
+    return vote;
+  });
+
+const loadPostByIdempotency = (
+  transaction: Transaction,
+  communityId: string,
+  userId: string,
+  key: string,
+) =>
+  transaction.execute<Row>({
+    label: "content.posts.find-idempotency",
+    text: `SELECT community_id, post_id, author_user_id, post_type, status, visibility, title, body,
+                  idempotency_key, idempotency_body_hash, comments_locked, created_at
+           FROM posts
+           WHERE community_id = $1 AND author_user_id = $2 AND idempotency_key = $3
+           FOR UPDATE`,
+    values: [communityId, userId, key],
+    readonly: false,
+  });
+
+const loadCommentByIdempotency = (
+  transaction: Transaction,
+  communityId: string,
+  userId: string,
+  key: string,
+) =>
+  transaction.execute<Row>({
+    label: "content.comments.find-idempotency",
+    text: `SELECT community_id, comment_id, post_id, parent_comment_id, author_user_id, status, body,
+                  idempotency_key, idempotency_body_hash, depth, created_at
+           FROM comments
+           WHERE community_id = $1 AND author_user_id = $2 AND idempotency_key = $3
+           FOR UPDATE`,
+    values: [communityId, userId, key],
+    readonly: false,
+  });
+
+const postDocument = (row: Row, operation: ContentRepositoryOperation) => {
+  const document = postFromRow(row);
+  return document === null ? Effect.fail(invalid(operation)) : Effect.succeed(document);
+};
+
+const commentDocument = (row: Row) => {
+  const document = commentFromRow(row);
+  return document === null
+    ? Effect.fail(invalid("create-comment-reply"))
+    : Effect.succeed(document);
+};
+
+const postIdempotencyDocument = (row: Row, key: string, operation: ContentRepositoryOperation) => {
+  if (
+    stringValue(row, "idempotency_key") !== key ||
+    !validIdempotencyHash(stringValue(row, "idempotency_body_hash"))
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return postDocument(row, operation);
+};
+
+const commentIdempotencyDocument = (
+  row: Row,
+  key: string,
+  operation: ContentRepositoryOperation,
+  expectedHash?: string,
+) => {
+  const persistedKey = stringValue(row, "idempotency_key");
+  const persistedHash = stringValue(row, "idempotency_body_hash");
+  if (
+    key === ""
+      ? persistedKey !== "" || persistedHash !== null
+      : persistedKey !== key ||
+        !validIdempotencyHash(persistedHash) ||
+        (expectedHash !== undefined && persistedHash !== expectedHash)
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return commentDocument(row);
+};
+
+export function makeControlPlaneContentRepository(): ContentRepository {
+  const resolvePost: ContentRepository["resolvePost"] = ({ postId }) =>
+    Effect.gen(function* () {
+      if (!validId(postId)) return null;
+      const db = yield* ControlPlaneDb;
+      return yield* resolvePostIn(db, postId, "resolve-post");
+    });
+
+  const resolveComment: ContentRepository["resolveComment"] = ({ commentId }) =>
+    Effect.gen(function* () {
+      if (!validId(commentId)) return null;
+      const db = yield* ControlPlaneDb;
+      return yield* resolveCommentIn(db, commentId, "resolve-comment");
+    });
+
+  const createPost: ContentRepository["createPost"] = ({
+    communityId,
+    actor,
+    body,
+    idempotencyBodyHash,
+  }) =>
+    Effect.gen(function* () {
+      if (
+        actor.kind === "agent" ||
+        !validId(communityId) ||
+        !validId(actor.userId) ||
+        !directTextBody(body) ||
+        !validIdempotencyHash(idempotencyBodyHash)
+      ) {
+        return yield* constraint("create-post");
+      }
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        Effect.gen(function* () {
+          yield* requireActiveMembershipIn(transaction, communityId, actor.userId, "create-post");
+          const existing = yield* loadPostByIdempotency(
+            transaction,
+            communityId,
+            actor.userId,
+            body.idempotency_key,
+          );
+          const found = yield* oneRow(existing.rows, "create-post");
+          if (found !== null) {
+            const persistedHash = stringValue(found, "idempotency_body_hash");
+            if (!validIdempotencyHash(persistedHash)) {
+              return yield* invalid("create-post");
+            }
+            if (persistedHash !== idempotencyBodyHash) {
+              return yield* idempotencyConflict();
+            }
+            return yield* postIdempotencyDocument(found, body.idempotency_key, "create-post");
+          }
+
+          const postId = makePostId();
+          const now = new Date();
+          const inserted = yield* transaction.execute<Row>({
+            label: "content.posts.insert",
+            text: `INSERT INTO posts
+              (community_id, post_id, author_user_id, post_type, status, visibility, title, body,
+               created_at, updated_at, idempotency_key, idempotency_body_hash)
+             VALUES ($1, $2, $3, 'text', 'processing', $4, $5, $6, $7, $7, $8, $9)
+             ON CONFLICT DO NOTHING
+            RETURNING community_id, post_id, author_user_id, post_type, status, visibility, title, body,
+                       idempotency_key, idempotency_body_hash, comments_locked, created_at`,
+            values: [
+              communityId,
+              postId,
+              actor.userId,
+              body.visibility ?? "public",
+              body.title ?? null,
+              body.body ?? null,
+              now,
+              body.idempotency_key,
+              idempotencyBodyHash,
+            ],
+            readonly: false,
+          });
+          const insertedRow = yield* oneRow(inserted.rows, "create-post");
+          if (insertedRow !== null) {
+            const persistedHash = stringValue(insertedRow, "idempotency_body_hash");
+            if (!validIdempotencyHash(persistedHash)) {
+              return yield* invalid("create-post");
+            }
+            if (persistedHash !== idempotencyBodyHash) {
+              return yield* invalid("create-post");
+            }
+            return yield* postIdempotencyDocument(insertedRow, body.idempotency_key, "create-post");
+          }
+
+          const concurrent = yield* loadPostByIdempotency(
+            transaction,
+            communityId,
+            actor.userId,
+            body.idempotency_key,
+          );
+          const concurrentRow = yield* oneRow(concurrent.rows, "create-post");
+          if (concurrentRow === null) return yield* constraint("create-post");
+          const persistedHash = stringValue(concurrentRow, "idempotency_body_hash");
+          if (!validIdempotencyHash(persistedHash)) {
+            return yield* invalid("create-post");
+          }
+          if (persistedHash !== idempotencyBodyHash) {
+            return yield* idempotencyConflict();
+          }
+          return yield* postIdempotencyDocument(concurrentRow, body.idempotency_key, "create-post");
+        }),
+      );
+    });
+
+  const getPost: ContentRepository["getPost"] = ({ communityId, postId, viewerUserId, locale }) =>
+    Effect.gen(function* () {
+      if (!validId(communityId) || !validId(postId) || !validId(viewerUserId)) return null;
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        Effect.gen(function* () {
+          const location = yield* resolvePostIn(transaction, postId, "get-post");
+          if (location === null || location.communityId !== communityId) return null;
+          const result = yield* transaction.execute<Row>({
+            label: "content.posts.get",
+            text: `SELECT community_id, post_id, author_user_id, post_type, status, visibility, title, body,
+                          comments_locked, created_at
+                   FROM posts WHERE community_id = $1 AND post_id = $2`,
+            values: [communityId, postId],
+            readonly: true,
+          });
+          const row = yield* oneRow(result.rows, "get-post");
+          if (row === null) return null;
+          const post = postFromRow(row);
+          if (post === null) return yield* invalid("get-post");
+          if (post.community !== communityId || post.id !== postId) {
+            return yield* invalid("get-post");
+          }
+          if (["hidden", "removed", "deleted"].includes(post.status)) return null;
+          if (post.status !== "published" && post.status !== "processing") return null;
+          if (post.status === "processing" && post.author_user !== viewerUserId) return null;
+          if (post.visibility === "members_only") {
+            const membership = yield* transaction.execute<Row>({
+              label: "content.community-memberships.read-access",
+              text: `SELECT status
+                     FROM community_memberships
+                     WHERE community_id = $1 AND user_id = $2
+                     `,
+              values: [communityId, viewerUserId],
+              readonly: true,
+            });
+            const membershipRow = yield* oneRow(membership.rows, "get-post");
+            if (membershipRow !== null) {
+              const membershipStatus = stringValue(membershipRow, "status");
+              if (membershipStatus === null || !allowedMembershipStatus(membershipStatus)) {
+                return yield* invalid("get-post");
+              }
+              if (membershipStatus !== "member") return null;
+            } else {
+              return null;
+            }
+          }
+          const counts = yield* transaction.execute<Row>({
+            label: "content.posts.counts",
+            text: `SELECT
+              (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2) AS vote_row_count,
+              (SELECT COUNT(DISTINCT user_id)::int FROM post_votes WHERE community_id = $1 AND post_id = $2) AS distinct_voter_count,
+              (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2 AND user_id IS NULL) AS null_voter_count,
+              (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2
+                 AND (vote_value IS NULL OR vote_value NOT IN (1, -1))) AS invalid_vote_count,
+              (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2 AND vote_value = 1) AS upvote_count,
+              (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2 AND vote_value = -1) AS downvote_count,
+              (SELECT COUNT(*)::int FROM comments WHERE community_id = $1 AND post_id = $2 AND status = 'published') AS comment_count`,
+            values: [communityId, postId],
+            readonly: true,
+          });
+          const countRow = yield* exactlyOneRow(counts.rows, "get-post");
+          const viewerVote = yield* transaction.execute<Row>({
+            label: "content.posts.viewer-vote",
+            text: "SELECT vote_value FROM post_votes WHERE community_id = $1 AND post_id = $2 AND user_id = $3",
+            values: [communityId, postId, viewerUserId],
+            readonly: true,
+          });
+          const viewerVoteRow = yield* oneRow(viewerVote.rows, "get-post");
+          const voteValue =
+            viewerVoteRow === null ? null : safeIntegerValue(viewerVoteRow, "vote_value");
+          if (viewerVoteRow !== null && voteValue !== -1 && voteValue !== 1) {
+            return yield* invalid("get-post");
+          }
+          const vote: -1 | 1 | null = voteValue === -1 ? -1 : voteValue === 1 ? 1 : null;
+          const upvoteCount = nonNegativeIntegerValue(countRow, "upvote_count");
+          const downvoteCount = nonNegativeIntegerValue(countRow, "downvote_count");
+          const commentCount = nonNegativeIntegerValue(countRow, "comment_count");
+          const voteRowCount = nonNegativeIntegerValue(countRow, "vote_row_count");
+          const distinctVoterCount = nonNegativeIntegerValue(countRow, "distinct_voter_count");
+          const nullVoterCount = nonNegativeIntegerValue(countRow, "null_voter_count");
+          const invalidVoteCount = nonNegativeIntegerValue(countRow, "invalid_vote_count");
+          if (
+            upvoteCount === null ||
+            downvoteCount === null ||
+            commentCount === null ||
+            voteRowCount === null ||
+            distinctVoterCount === null ||
+            nullVoterCount === null ||
+            invalidVoteCount === null ||
+            nullVoterCount !== 0 ||
+            invalidVoteCount !== 0 ||
+            voteRowCount !== distinctVoterCount ||
+            upvoteCount + downvoteCount !== voteRowCount
+          ) {
+            return yield* invalid("get-post");
+          }
+          return {
+            post,
+            thread_snapshot: null,
+            upvote_count: upvoteCount,
+            downvote_count: downvoteCount,
+            like_count: 0,
+            comment_count: commentCount,
+            viewer_vote: vote,
+            viewer_is_author: post.author_user === viewerUserId,
+            viewer_reaction_kinds: [],
+            resolved_locale: locale ?? "en",
+            translation_state: "same_language",
+            machine_translated: false,
+            source_hash: "",
+          } satisfies LocalizedPostDocument;
+        }),
+      );
+    });
+
+  const createCommentReply: ContentRepository["createCommentReply"] = ({
+    communityId,
+    postId,
+    parentCommentId,
+    actor,
+    body,
+    idempotencyBodyHash,
+  }) =>
+    Effect.gen(function* () {
+      if (
+        actor.kind === "agent" ||
+        !validId(communityId) ||
+        !validId(postId) ||
+        !validId(parentCommentId) ||
+        !validId(actor.userId)
+      ) {
+        return yield* constraint("create-comment-reply");
+      }
+      if (!directCommentBody(body)) {
+        return yield* constraint("create-comment-reply");
+      }
+      const key = body.idempotency_key ?? "";
+      if (key !== "" && !validIdempotencyHash(idempotencyBodyHash ?? null)) {
+        return yield* constraint("create-comment-reply");
+      }
+      const persistedHash = key === "" ? null : idempotencyBodyHash;
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        Effect.gen(function* () {
+          yield* requireActiveMembershipIn(
+            transaction,
+            communityId,
+            actor.userId,
+            "create-comment-reply",
+          );
+          const post = yield* resolvePostIn(transaction, postId, "create-comment-reply");
+          const parent = yield* resolveCommentIn(
+            transaction,
+            parentCommentId,
+            "create-comment-reply",
+          );
+          if (
+            post === null ||
+            parent === null ||
+            post.communityId !== communityId ||
+            parent.communityId !== communityId ||
+            parent.postId !== postId
+          ) {
+            return yield* notFound("create-comment-reply");
+          }
+          const postStateRow = yield* oneRow(
+            (yield* loadPostStateIn(transaction, communityId, postId)).rows,
+            "create-comment-reply",
+          );
+          const parentStateRow = yield* oneRow(
+            (yield* loadCommentStateIn(transaction, communityId, parentCommentId)).rows,
+            "create-comment-reply",
+          );
+          if (postStateRow === null || parentStateRow === null) {
+            return yield* notFound("create-comment-reply");
+          }
+          const postState = yield* postStateFromRow(postStateRow, "create-comment-reply");
+          const parentState = yield* commentStateFromRow(parentStateRow, "create-comment-reply");
+          if (
+            postState.communityId !== communityId ||
+            postState.postId !== postId ||
+            postState.status !== "published"
+          ) {
+            return yield* notFound("create-comment-reply");
+          }
+          if (
+            parentState.communityId !== communityId ||
+            parentState.commentId !== parentCommentId ||
+            parentState.postId !== postId ||
+            parentState.status !== "published"
+          ) {
+            return yield* notFound("create-comment-reply");
+          }
+          if (postState.commentsLocked) {
+            return yield* new ContentRepositoryError({
+              operation: "create-comment-reply",
+              reason: "comments-locked",
+            });
+          }
+          const depth = parentState.depth + 1;
+          if (!Number.isSafeInteger(depth)) {
+            return yield* invalid("create-comment-reply");
+          }
+          if (key !== "") {
+            const existing = yield* loadCommentByIdempotency(
+              transaction,
+              communityId,
+              actor.userId,
+              key,
+            );
+            const found = yield* oneRow(existing.rows, "create-comment-reply");
+            if (found !== null) {
+              const foundHash = stringValue(found, "idempotency_body_hash");
+              if (!validIdempotencyHash(foundHash)) {
+                return yield* invalid("create-comment-reply");
+              }
+              if (foundHash !== idempotencyBodyHash) {
+                return yield* new ContentRepositoryError({
+                  operation: "create-comment-reply",
+                  reason: "idempotency-conflict",
+                });
+              }
+              return yield* commentIdempotencyDocument(found, key, "create-comment-reply");
+            }
+          }
+          const commentId = makeCommentId();
+          const now = new Date();
+          const inserted = yield* transaction.execute<Row>({
+            label: "content.comments.insert",
+            text: `INSERT INTO comments
+              (community_id, comment_id, post_id, parent_comment_id, author_user_id, status, body,
+               depth, created_at, updated_at, idempotency_key, idempotency_body_hash)
+             VALUES ($1, $2, $3, $4, $5, 'published', $6, $7, $8, $8, $9, $10)
+             ON CONFLICT DO NOTHING
+             RETURNING community_id, comment_id, post_id, parent_comment_id, author_user_id, status, body,
+                       idempotency_key, idempotency_body_hash, depth, created_at`,
+            values: [
+              communityId,
+              commentId,
+              postId,
+              parentCommentId,
+              actor.userId,
+              body.body,
+              depth,
+              now,
+              key,
+              persistedHash,
+            ],
+            readonly: false,
+          });
+          const insertedRow = yield* oneRow(inserted.rows, "create-comment-reply");
+          if (insertedRow !== null) {
+            return yield* commentIdempotencyDocument(
+              insertedRow,
+              key,
+              "create-comment-reply",
+              idempotencyBodyHash,
+            );
+          }
+          if (key === "") return yield* constraint("create-comment-reply");
+          const concurrent = yield* loadCommentByIdempotency(
+            transaction,
+            communityId,
+            actor.userId,
+            key,
+          );
+          const concurrentRow = yield* oneRow(concurrent.rows, "create-comment-reply");
+          if (concurrentRow === null) return yield* constraint("create-comment-reply");
+          const concurrentHash = stringValue(concurrentRow, "idempotency_body_hash");
+          if (!validIdempotencyHash(concurrentHash)) {
+            return yield* invalid("create-comment-reply");
+          }
+          if (concurrentHash !== idempotencyBodyHash) {
+            return yield* new ContentRepositoryError({
+              operation: "create-comment-reply",
+              reason: "idempotency-conflict",
+            });
+          }
+          return yield* commentIdempotencyDocument(concurrentRow, key, "create-comment-reply");
+        }),
+      );
+    });
+
+  const castPostVote: ContentRepository["castPostVote"] = ({ communityId, postId, actor, body }) =>
+    Effect.gen(function* () {
+      if (
+        actor.kind === "agent" ||
+        !validId(communityId) ||
+        !validId(postId) ||
+        !validId(actor.userId)
+      ) {
+        return yield* constraint("cast-vote");
+      }
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        Effect.gen(function* () {
+          yield* requireActiveMembershipIn(transaction, communityId, actor.userId, "cast-vote");
+          const location = yield* resolvePostIn(transaction, postId, "cast-vote");
+          if (location === null || location.communityId !== communityId) {
+            return yield* notFound("cast-vote");
+          }
+          const postRow = yield* oneRow(
+            (yield* loadPostStateIn(transaction, communityId, postId)).rows,
+            "cast-vote",
+          );
+          if (postRow === null) {
+            return yield* notFound("cast-vote");
+          }
+          const post = yield* postStateFromRow(postRow, "cast-vote");
+          if (
+            post.communityId !== communityId ||
+            post.postId !== postId ||
+            post.status !== "published"
+          ) {
+            return yield* notFound("cast-vote");
+          }
+          yield* loadActorVoteIn(transaction, communityId, postId, actor.userId, "cast-vote");
+          const result = yield* transaction.execute<Row>({
+            label: "content.post-votes.upsert",
+            text: `INSERT INTO post_votes
+              (community_id, post_vote_id, post_id, user_id, vote_value, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $6)
+             ON CONFLICT (community_id, post_id, user_id)
+             DO UPDATE SET vote_value = EXCLUDED.vote_value, updated_at = EXCLUDED.updated_at
+             RETURNING post_id, vote_value`,
+            values: [communityId, makeVoteId(), postId, actor.userId, body.value, new Date()],
+            readonly: false,
+          });
+          const row = yield* exactlyOneRow(result.rows, "cast-vote");
+          const value = safeIntegerValue(row, "vote_value");
+          const returnedPost = stringValue(row, "post_id");
+          if (
+            returnedPost === null ||
+            !validId(returnedPost) ||
+            returnedPost !== postId ||
+            (value !== -1 && value !== 1)
+          )
+            return yield* invalid("cast-vote");
+          const voteValue: -1 | 1 = value as -1 | 1;
+          return { post: returnedPost, value: voteValue };
+        }),
+      );
+    });
+
+  const clearPostVote: ContentRepository["clearPostVote"] = ({ communityId, postId, actor }) =>
+    Effect.gen(function* () {
+      if (
+        actor.kind === "agent" ||
+        !validId(communityId) ||
+        !validId(postId) ||
+        !validId(actor.userId)
+      ) {
+        return yield* constraint("clear-vote");
+      }
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        Effect.gen(function* () {
+          yield* requireActiveMembershipIn(transaction, communityId, actor.userId, "clear-vote");
+          const location = yield* resolvePostIn(transaction, postId, "clear-vote");
+          if (location === null || location.communityId !== communityId) {
+            return yield* notFound("clear-vote");
+          }
+          const postRow = yield* oneRow(
+            (yield* loadPostStateIn(transaction, communityId, postId)).rows,
+            "clear-vote",
+          );
+          if (postRow === null) {
+            return yield* notFound("clear-vote");
+          }
+          const post = yield* postStateFromRow(postRow, "clear-vote");
+          if (
+            post.communityId !== communityId ||
+            post.postId !== postId ||
+            post.status !== "published"
+          ) {
+            return yield* notFound("clear-vote");
+          }
+          yield* loadActorVoteIn(transaction, communityId, postId, actor.userId, "clear-vote");
+          yield* transaction.execute({
+            label: "content.post-votes.clear",
+            text: "DELETE FROM post_votes WHERE community_id = $1 AND post_id = $2 AND user_id = $3",
+            values: [communityId, postId, actor.userId],
+            readonly: false,
+          });
+          return { post: postId, value: null } as const;
+        }),
+      );
+    });
+
+  return {
+    resolvePost,
+    resolveComment,
+    createPost,
+    getPost,
+    createCommentReply,
+    castPostVote,
+    clearPostVote,
+  };
+}
+
+export function makeControlPlaneContentStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): ContentStore["Service"] {
+  const repository = makeControlPlaneContentRepository();
+  const provide = <A, E>(
+    effect: Effect.Effect<A, E, ControlPlaneDb>,
+  ): Effect.Effect<A, E | ControlPlaneError> => Effect.provide(runtime)(effect);
+  return {
+    resolvePost: (input) => provide(repository.resolvePost(input)),
+    resolveComment: (input) => provide(repository.resolveComment(input)),
+    createPost: (input) => provide(repository.createPost(input)),
+    getPost: (input) => provide(repository.getPost(input)),
+    createCommentReply: (input) => provide(repository.createCommentReply(input)),
+    castPostVote: (input) => provide(repository.castPostVote(input)),
+    clearPostVote: (input) => provide(repository.clearPostVote(input)),
+  };
+}
