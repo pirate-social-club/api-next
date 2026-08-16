@@ -7262,7 +7262,8 @@
         "x-auth": {
           "policy": {
             "kind": "userOrAdmin"
-          }
+          },
+          "optionalUser": true
         },
         "x-errors": [
           "AuthError",

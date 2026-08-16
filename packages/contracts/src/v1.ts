@@ -811,7 +811,7 @@ export const GetMyProfile = endpoint({
 export const GetCommunityPreview = endpoint({
   method: "GET",
   path: "/communities/:communityId/preview",
-  auth: Auth.userOrAdmin(),
+  auth: Auth.userOrAdmin({ optionalUser: true }),
   request: { path: PathCommunity, query: LocaleQuery },
   response: CommunityPreview,
   successStatus: 200,

@@ -4,6 +4,7 @@ import {
   Auth,
   DecimalStringSchema,
   GateFailed,
+  GetCommunityPreview,
   NotFound,
   PaymentRequired,
   ProviderMisconfigured,
@@ -90,6 +91,10 @@ describe("auth policy vocabulary", () => {
     });
     expect(Auth.sharedSecret("telegram")).toEqual({
       policy: { kind: "sharedSecret", name: "telegram" },
+    });
+    expect(GetCommunityPreview.auth).toEqual({
+      policy: { kind: "userOrAdmin" },
+      optionalUser: true,
     });
   });
 });
