@@ -21,7 +21,15 @@ async function sentinelSet(): Promise<{
 }> {
   const directory = await mkdtemp(join("/tmp", "api-next-postgres-sentinels-"));
   temporaryDirectories.push(directory);
-  const sentinels = ["adapter", "foundation", "migration", "identity"].map((name) => ({
+  const sentinels = [
+    "adapter",
+    "foundation",
+    "migration",
+    "identity",
+    "community",
+    "feed",
+    "content",
+  ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),
     contents: `${name}-complete\n`,

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import type { CommunityStore } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
@@ -13,6 +13,11 @@ if (required && connectionString === undefined) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 }
 const suite = connectionString === undefined ? describe.skip : describe;
+const sentinelPath =
+  process.env.CONTROL_PLANE_POSTGRES_COMMUNITY_TEST_SENTINEL ??
+  "/tmp/api-next-control-plane-postgres-community-suite-complete";
+const sentinelContents = "api-next-control-plane-postgres-community-suite-complete\n";
+let completedTestCount = 0;
 
 function schemaIdentifier(): string {
   return `api_next_community_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -96,6 +101,7 @@ suite("Postgres 17 community repository", () => {
       });
       expect(follows.rows).toEqual([{ community_id: "community-a" }]);
     });
+    completedTestCount += 1;
   }, 30_000);
 
   test("makes join and follow idempotent while protecting active follows", async () => {
@@ -165,6 +171,7 @@ suite("Postgres 17 community repository", () => {
         ),
       ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "constraint" });
     });
+    completedTestCount += 1;
   }, 30_000);
 
   test("does not turn a gated compatibility default into an implicit join", async () => {
@@ -191,6 +198,7 @@ suite("Postgres 17 community repository", () => {
       });
       expect(memberships.rows[0]?.count).toBe(0);
     });
+    completedTestCount += 1;
   }, 30_000);
 
   test("persists request notes, preserves explicit follows, and supports pending follow/unfollow", async () => {
@@ -269,6 +277,7 @@ suite("Postgres 17 community repository", () => {
       });
       expect(unfollowed.rows[0]?.status).toBe("inactive");
     });
+    completedTestCount += 1;
   }, 30_000);
 
   test("allows follow regardless of membership state while left members rejoin atomically", async () => {
@@ -326,6 +335,7 @@ suite("Postgres 17 community repository", () => {
       });
       expect(follow.rows[0]?.status).toBe("active");
     });
+    completedTestCount += 1;
   }, 30_000);
 
   test("serializes concurrent join/follow/unfollow operations under the community lock", async () => {
@@ -380,5 +390,12 @@ suite("Postgres 17 community repository", () => {
       });
       expect(rows.rows[0]).toEqual({ memberships: 1, follows: 1 });
     });
+    completedTestCount += 1;
   }, 30_000);
+
+  afterAll(async () => {
+    if (connectionString !== undefined && completedTestCount === 6) {
+      await Bun.write(sentinelPath, sentinelContents);
+    }
+  });
 });

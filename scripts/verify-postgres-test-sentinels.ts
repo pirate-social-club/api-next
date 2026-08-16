@@ -35,6 +35,27 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-identity-suite-complete",
     contents: "api-next-control-plane-postgres-identity-suite-complete\n",
   },
+  {
+    name: "postgres community repository",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_COMMUNITY_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-community-suite-complete",
+    contents: "api-next-control-plane-postgres-community-suite-complete\n",
+  },
+  {
+    name: "postgres feed repository",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_FEED_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-feed-suite-complete",
+    contents: "api-next-control-plane-postgres-feed-suite-complete\n",
+  },
+  {
+    name: "postgres content repository",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_CONTENT_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-content-suite-complete",
+    contents: "api-next-control-plane-postgres-content-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

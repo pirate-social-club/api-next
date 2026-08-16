@@ -73,6 +73,9 @@ jobs:
           /tmp/api-next-control-plane-postgres-foundation-suite-complete
           /tmp/api-next-control-plane-postgres-migration-suite-complete
           /tmp/api-next-control-plane-postgres-identity-suite-complete
+          /tmp/api-next-control-plane-postgres-community-suite-complete
+          /tmp/api-next-control-plane-postgres-feed-suite-complete
+          /tmp/api-next-control-plane-postgres-content-suite-complete
       - name: Run required Postgres 17 suite
         env:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
@@ -81,11 +84,17 @@ jobs:
           CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-foundation-suite-complete
           CONTROL_PLANE_POSTGRES_MIGRATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-migration-suite-complete
           CONTROL_PLANE_POSTGRES_IDENTITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-identity-suite-complete
+          CONTROL_PLANE_POSTGRES_COMMUNITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-suite-complete
+          CONTROL_PLANE_POSTGRES_FEED_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-feed-suite-complete
+          CONTROL_PLANE_POSTGRES_CONTENT_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-content-suite-complete
         run: >-
           timeout 180s bun test
           packages/platform-cf/src/postgres.pg.test.ts
           packages/platform-cf/src/postgres-foundation.pg.test.ts
           packages/platform-cf/src/postgres-migrations-runner.pg.test.ts
           packages/platform-cf/src/identity.pg.test.ts
+          packages/platform-cf/src/community-repository.pg.test.ts
+          packages/platform-cf/src/feed-repository.pg.test.ts
+          packages/platform-cf/src/content-repository.pg.test.ts
       - name: Verify Postgres 17 completion sentinel
         run: bun run verify:postgres-sentinels
