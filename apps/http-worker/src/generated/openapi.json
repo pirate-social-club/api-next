@@ -21453,6 +21453,41 @@
             "x-error-codes": [
               "rate_limited"
             ]
+          },
+          "500": {
+            "description": "Error envelope (old wire format)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
           }
         },
         "x-auth": {
@@ -21463,6 +21498,7 @@
         "x-errors": [
           "AuthError",
           "BadRequest",
+          "InternalError",
           "RateLimited"
         ]
       }

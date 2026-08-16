@@ -80,7 +80,10 @@ for (const [dir, pkg] of Object.entries(INTERNAL)) {
         violations.push(`${rel}: nothing imports apps (found ${spec})`);
         continue;
       }
-      if (!ALLOWED[pkg].includes(spec)) {
+      const allowed = ALLOWED[pkg].some(
+        (dependency) => spec === dependency || spec.startsWith(`${dependency}/`),
+      );
+      if (!allowed) {
         violations.push(`${rel}: ${pkg} may not import ${spec}`);
       }
     }

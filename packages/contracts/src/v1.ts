@@ -8,6 +8,7 @@ import {
   CommentsLocked,
   Conflict,
   GateUnsatisfied,
+  InternalError,
   MembershipRequired,
   NotFound,
   ProviderUnavailable,
@@ -783,7 +784,7 @@ export const SessionExchange = endpoint({
   request: { body: Schema.Struct({ proof: AuthProof }) },
   response: SessionExchangeResponse,
   successStatus: 200,
-  errors: [AuthError, BadRequest, RateLimited],
+  errors: [AuthError, BadRequest, InternalError, RateLimited],
 });
 
 export const GetCurrentUser = endpoint({

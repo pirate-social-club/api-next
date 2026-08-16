@@ -1,9 +1,66 @@
 import { describe, expect, it } from "bun:test";
+import type { SessionExchangeServices } from "@pirate/application/use-cases/session-exchange";
 import { Conflict } from "@pirate/contracts";
+import { Effect } from "effect";
 import { createHttpWorker, type EndpointHandler, withEndpointResult } from "./transport.ts";
 
 const feed = { items: [], top_communities: [], next_cursor: null };
 const vote = { post: "post_1", value: 1 as const };
+
+const sessionServices: SessionExchangeServices = {
+  proofVerifier: {
+    verifyPrivy: () => Effect.succeed({ sourceUserId: "source-user", classification: "user" }),
+    verifyJwt: () => Effect.succeed({ sourceUserId: "source-user", classification: "user" }),
+  },
+  identityStore: {
+    resolve: () =>
+      Effect.succeed({
+        canonicalUserId: "canonical-user",
+        user: {
+          id: "canonical-user",
+          object: "user",
+          verification_state: "unverified",
+          verification_capabilities: {
+            unique_human: { state: "unverified" },
+            age_over_18: { state: "unverified" },
+            minimum_age: { state: "unverified" },
+            nationality: { state: "unverified" },
+            gender: { state: "unverified" },
+            wallet_score: { state: "unverified" },
+          },
+          created: 1_700_000_000,
+        },
+        profile: {
+          id: "canonical-user",
+          object: "profile",
+          global_handle: {
+            id: "handle-1",
+            object: "global_handle",
+            label: "captain",
+            tier: "generated",
+            status: "active",
+            issuance_source: "generated_signup",
+            issued_at: 1_700_000_000,
+          },
+          created: 1_700_000_000,
+        },
+        onboarding: {
+          generated_handle_assigned: true,
+          cleanup_rename_available: false,
+          unique_human_verification_status: "not_started",
+          namespace_verification_status: "not_started",
+          community_creation_ready: false,
+          missing_requirements: [],
+          reddit_verification_status: "not_started",
+          reddit_import_status: "not_started",
+        },
+        wallet_attachments: [],
+      }),
+  },
+  tokenMinter: {
+    mint: ({ subject }) => Effect.succeed(`token-for-${subject}`),
+  },
+};
 
 const protectedWorker = (name: string, handler: EndpointHandler, corsOrigin?: string) =>
   createHttpWorker({
@@ -25,6 +82,40 @@ describe("contracts-generated HTTP worker", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ status: "ok" });
     expect(response.headers.get("x-request-id")).toBeTruthy();
+  });
+
+  it("installs session exchange through the generated route binding", async () => {
+    const response = await createHttpWorker({ sessionExchange: sessionServices }).request(
+      "http://worker.test/auth/session/exchange",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ access_token: "token-for-canonical-user" });
+  });
+
+  it("returns the declared redacted internal error for an adapter defect", async () => {
+    const response = await createHttpWorker({
+      sessionExchange: {
+        ...sessionServices,
+        tokenMinter: {
+          mint: () => Effect.fail(new Error("private key and bearer token")),
+        },
+      },
+    }).request("http://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } }),
+    });
+
+    const body = (await response.json()) as { code?: string; message?: string };
+    expect(response.status).toBe(500);
+    expect(body).toMatchObject({ code: "internal_error" });
+    expect(JSON.stringify(body)).not.toContain("private key and bearer token");
   });
 
   it("requires an authorizer for an installed protected handler", () => {

@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./use-cases/session-exchange": "./src/use-cases/session-exchange.ts"
   }
 }

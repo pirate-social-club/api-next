@@ -1,4 +1,8 @@
 import {
+  makeSessionExchangeHandler,
+  type SessionExchangeServices,
+} from "@pirate/application/use-cases/session-exchange";
+import {
   AuthError,
   BadRequest,
   type EndpointDefinition,
@@ -65,6 +69,8 @@ export interface HttpWorkerConfig {
 export interface HttpWorkerOptions {
   readonly config?: HttpWorkerConfig;
   readonly handlers?: Readonly<Record<string, EndpointHandler>>;
+  /** Application use cases are installed by generated route name. */
+  readonly sessionExchange?: SessionExchangeServices;
   /** Runs before any request location is decoded. It receives no Hono data. */
   readonly authenticate?: (args: AuthenticationArgs) => Principal | Promise<Principal>;
   /** Runs after decoding and receives only the frozen request shape. */
@@ -207,6 +213,10 @@ const validateHandlerStatus = (endpoint: EndpointDefinition, status: number): vo
 };
 
 export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWorkerEnv> {
+  const sessionExchangeHandler =
+    options.sessionExchange === undefined
+      ? undefined
+      : makeSessionExchangeHandler(options.sessionExchange);
   const installedProtectedHandlers = routeTable.filter(
     (binding) => options.handlers?.[binding.name] !== undefined && !isPublic(binding.endpoint),
   );
@@ -238,7 +248,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
 
   for (const binding of routeTable) {
     app.on(binding.method, binding.path, async (context) => {
-      const handler = options.handlers?.[binding.name];
+      const handler =
+        options.handlers?.[binding.name] ??
+        (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined);
       if (handler === undefined) {
         if (binding.name === "Health") {
           return json(context, decodeResponse(binding.endpoint, { status: "ok" }), 200, false);
