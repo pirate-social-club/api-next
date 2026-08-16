@@ -72,15 +72,3 @@ export {
   queueRetryBackoffSeconds,
   queueRetryDelaySeconds,
 } from "./queue-retry";
-export {
-  BindingPending,
-  CommunityBindingResolver,
-  type CommunityBindingResolverOptions,
-  CommunityDecommissioned,
-  CommunityNotRouted,
-  type CommunityProvisioningState,
-  type CommunityRoutingRow,
-  type ResolvedCommunityBinding,
-  ROUTING_CACHE_TTL_MS,
-  SHORT_CACHE_TTL_MS,
-} from "./shard-resolver";

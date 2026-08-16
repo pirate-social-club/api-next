@@ -116,13 +116,10 @@ export class ControlPlaneDb extends Context.Service<
   }
 >()("ControlPlaneDb") {}
 
-/** Per-community D1 shard access; resolution and fencing are lane C's. */
-export class CommunityShard extends Context.Service<
-  CommunityShard,
-  {
-    readonly shardFor: (communityId: string) => Effect.Effect<unknown>;
-  }
->()("CommunityShard") {}
+// CommunityShard was removed by the Postgres foundation amendment
+// (specs 000/001, 2026-08-16): api-next has a single Postgres per
+// environment and no runtime D1 shard access. See the TASKS.md
+// "postgres-foundation@f4c69e4 ruling" for the removal sequencing.
 
 /** Operator key custody and signing decisions (money paths only). */
 export class OperatorSigner extends Context.Service<
