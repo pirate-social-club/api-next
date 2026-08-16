@@ -19,7 +19,7 @@ import {
   makeHyperdriveControlPlaneLayer,
   type ScheduledCronLockDO,
 } from "@pirate/platform-cf";
-import { Cause, Data, Effect, Exit, type Layer, Option } from "effect";
+import { Cause, Deferred, Effect, Exit, Fiber, type Layer, Option, Schedule, Schema } from "effect";
 
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityRoutingIntegrityJob } from "./routing-integrity";
@@ -85,7 +85,12 @@ export interface LaneRunOptions {
 
 const LANE_LEASE_TTL_MS = 30_000;
 
-export class LaneLeaseLost extends Data.TaggedError("LaneLeaseLost") {}
+export class LaneLeaseLost extends Schema.TaggedError<LaneLeaseLost>()("LaneLeaseLost", {}) {}
+
+export class LaneAdapterSafetyUnproven extends Schema.TaggedError<LaneAdapterSafetyUnproven>()(
+  "LaneAdapterSafetyUnproven",
+  { job: Schema.String },
+) {}
 
 function tagOf(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null || !("_tag" in error)) return undefined;
@@ -161,19 +166,130 @@ export function runnerAlert<Failure, Requirements>(
  * A tick that loses the lease runs nothing — the one-writing-scheduler rule
  * (000 §13) starts here.
  */
-export async function handleScheduled<Failure = unknown, Requirements = never>(
+interface LaneState {
+  currentLease: FencedLeaseRecord;
+  leaseLost: boolean;
+  releaseSafe: boolean;
+  leaseRenewals: number;
+  leaseAfterRun: LeaseRecord | null;
+}
+
+const acquireLaneLease = Effect.fn("acquireLaneLease")(function* (
+  stub: DurableObjectStub<ScheduledCronLockDO>,
+  ttlMs: number,
+  owner: string,
+  now: number,
+) {
+  return yield* Effect.tryPromise({
+    try: () => stub.tryAcquireWithFence(ttlMs, owner, now),
+    catch: () => new LaneLeaseLost(),
+  });
+});
+
+const renewLaneLease = Effect.fn("renewLaneLease")(function* (
+  stub: DurableObjectStub<ScheduledCronLockDO>,
+  state: LaneState,
+  ttlMs: number,
+  owner: string,
+) {
+  const renewed = yield* Effect.tryPromise({
+    try: () => stub.renew(ttlMs, owner, state.currentLease.generation, Date.now()),
+    catch: () => new LaneLeaseLost(),
+  });
+  if (renewed === null) return yield* Effect.fail(new LaneLeaseLost());
+  state.currentLease = renewed;
+  state.leaseRenewals += 1;
+});
+
+const releaseLaneLease = Effect.fn("releaseLaneLease")(function* (
+  stub: DurableObjectStub<ScheduledCronLockDO>,
+  state: LaneState,
+  owner: string,
+) {
+  const released = yield* Effect.tryPromise({
+    try: () => stub.releaseWithFence(owner, state.currentLease.generation),
+    catch: () => new LaneLeaseLost(),
+  });
+  if (!released) return yield* Effect.fail(new LaneLeaseLost());
+  state.leaseAfterRun = yield* Effect.tryPromise({
+    try: () => stub.currentLease(),
+    catch: () => new LaneLeaseLost(),
+  });
+});
+
+const runScheduledJob = Effect.fn("runScheduledJob")(function* <Failure, Requirements>(
+  job: JobDefinition<Failure, Requirements>,
+  state: LaneState,
+  leaseLoss: Deferred.Deferred<void, LaneLeaseLost>,
+  owner: string,
+  options: LaneRunOptions,
+) {
+  const adapterSafety = { proven: false };
+  const runContext = {
+    owner,
+    attemptId: `${owner}:${job.name}`,
+    lease: () => state.currentLease,
+    adapterSafety: {
+      markAbortedOrFenced: () => {
+        adapterSafety.proven = true;
+      },
+      isProven: () => adapterSafety.proven,
+    },
+  };
+  const withContext = Effect.provideService(job.run, JobContext, runContext);
+  const retried = Effect.retry(withContext, {
+    schedule: job.retry,
+    while: (error: unknown) => {
+      const tag = tagOf(error);
+      return tag !== undefined && job.expectedFailures.includes(tag);
+    },
+  });
+  const withRuntime: Effect.Effect<void, unknown, never> =
+    options.runtime === undefined
+      ? (retried as Effect.Effect<void, unknown, never>)
+      : Effect.scoped(
+          Effect.provide(options.runtime)(retried as Effect.Effect<void, unknown, ControlPlaneDb>),
+        );
+  const leaseGuard = Deferred.await(leaseLoss);
+  const timed = Effect.raceFirst(Effect.timeout(withRuntime, job.timeout), leaseGuard);
+  const alertSink = job.alertSink ?? options.alertSink;
+  const observed =
+    alertSink === undefined
+      ? timed
+      : alertTick(
+          alertSink,
+          Effect.gen(function* () {
+            const collector = yield* AlertCollector;
+            const result = yield* Effect.exit(timed);
+            if (Exit.isFailure(result)) {
+              yield* collector.emit(runnerAlert(job, result.cause));
+              return yield* Effect.failCause(result.cause);
+            }
+            return result.value;
+          }),
+        );
+  return {
+    exit: yield* Effect.exit(observed as Effect.Effect<void, unknown, never>),
+    adapterSafety,
+  };
+});
+
+const runScheduledEffect = Effect.fn("runScheduled")(function* <
+  Failure = unknown,
+  Requirements = never,
+>(
   env: JobsWorkerEnv,
   lane: string,
   jobsInput: JobDefinition<Failure, Requirements> | readonly JobDefinition<Failure, Requirements>[],
   now: number = Date.now(),
   options: LaneRunOptions = {},
-): Promise<LaneRunResult> {
+) {
   const jobs = Array.isArray(jobsInput) ? jobsInput : [jobsInput];
   const stub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:${lane}`);
   const owner = crypto.randomUUID();
   const leaseTtlMs = options.leaseTtlMs ?? LANE_LEASE_TTL_MS;
   const renewIntervalMs = Math.max(1, options.renewIntervalMs ?? Math.floor(leaseTtlMs / 3));
-  const grant = await stub.tryAcquireWithFence(leaseTtlMs, owner, now);
+  const grant = yield* acquireLaneLease(stub, leaseTtlMs, owner, now);
   if (grant === null) {
     return {
       lane,
@@ -185,146 +301,122 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
       leaseAfterRun: null,
     };
   }
-  let currentLease: FencedLeaseRecord = grant;
-  let leaseRenewals = 0;
-  let renewalInFlight = Promise.resolve();
-  let leaseLost = false;
-  let resolveLeaseLoss: (() => void) | undefined;
-  const leaseLossPromise = new Promise<void>((resolve) => {
-    resolveLeaseLoss = resolve;
-  });
-  const markLeaseLost = () => {
-    if (leaseLost) return;
-    leaseLost = true;
-    resolveLeaseLoss?.();
-  };
-  const renewalTimer = setInterval(() => {
-    renewalInFlight = renewalInFlight
-      .then(async () => {
-        if (leaseLost) return;
-        try {
-          const renewed = await stub.renew(leaseTtlMs, owner, currentLease.generation, Date.now());
-          if (renewed === null) {
-            markLeaseLost();
-            return;
-          }
-          currentLease = renewed;
-          leaseRenewals += 1;
-        } catch {
-          markLeaseLost();
-        }
-      })
-      .catch(markLeaseLost);
-  }, renewIntervalMs);
-  let timedOut = false;
-  let releaseSafe = true;
-  let firstFailure: Cause.Cause<unknown> | undefined;
-  const ranJobs: string[] = [];
-
-  const runJob = async (job: JobDefinition<Failure, Requirements>) => {
-    const adapterSafety = { proven: false };
-    try {
-      const runContext = {
-        owner,
-        attemptId: `${owner}:${job.name}`,
-        lease: () => currentLease,
-        adapterSafety: {
-          markAbortedOrFenced: () => {
-            adapterSafety.proven = true;
-          },
-          isProven: () => adapterSafety.proven,
-        },
+  const releaseResult: { error: LaneLeaseLost | null } = { error: null };
+  const scopedRun = Effect.acquireRelease(
+    Effect.gen(function* () {
+      const state: LaneState = {
+        currentLease: grant,
+        leaseLost: false,
+        releaseSafe: true,
+        leaseRenewals: 0,
+        leaseAfterRun: null,
       };
-      const withContext = Effect.provideService(job.run, JobContext, runContext);
-      const retried = Effect.retry(withContext, {
-        schedule: job.retry,
-        while: (error: unknown) => {
-          const tag = tagOf(error);
-          return tag !== undefined && job.expectedFailures.includes(tag);
-        },
-      });
-      const withRuntime: Effect.Effect<void, unknown, never> =
-        options.runtime === undefined
-          ? (retried as Effect.Effect<void, unknown, never>)
-          : Effect.scoped(
-              Effect.provide(options.runtime)(
-                retried as Effect.Effect<void, unknown, ControlPlaneDb>,
-              ),
-            );
-      const leaseGuard = Effect.promise(() => leaseLossPromise).pipe(
-        Effect.flatMap(() => Effect.fail(new LaneLeaseLost())),
+      const leaseLoss = yield* Deferred.make<void, LaneLeaseLost>();
+      const renewal = Effect.repeat(
+        Effect.sleep(renewIntervalMs).pipe(
+          Effect.flatMap(() => renewLaneLease(stub, state, leaseTtlMs, owner)),
+        ),
+        Schedule.forever,
+      ).pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            state.leaseLost = true;
+            return error;
+          }).pipe(
+            Effect.flatMap((leaseError) =>
+              Deferred.fail(leaseLoss, leaseError).pipe(Effect.andThen(Effect.fail(leaseError))),
+            ),
+          ),
+        ),
       );
-      const timed = Effect.raceFirst(Effect.timeout(withRuntime, job.timeout), leaseGuard);
-      const alertSink = job.alertSink ?? options.alertSink;
-      const observed =
-        alertSink === undefined
-          ? timed
-          : alertTick(
-              alertSink,
-              Effect.gen(function* () {
-                const collector = yield* AlertCollector;
-                const result = yield* Effect.exit(timed);
-                if (Exit.isFailure(result)) {
-                  yield* collector.emit(runnerAlert(job, result.cause));
-                  return yield* Effect.failCause(result.cause);
-                }
-                return result.value;
-              }),
-            );
-      return {
-        exit: await Effect.runPromise(Effect.exit(observed as Effect.Effect<void, unknown, never>)),
-        adapterSafety,
-      };
-    } catch (error) {
-      return {
-        exit: Exit.die(error),
-        adapterSafety,
-      };
-    }
-  };
+      const renewalFiber = yield* renewal.pipe(Effect.forkScoped);
+      return { state, leaseLoss, renewalFiber };
+    }),
+    ({ state, renewalFiber }) =>
+      Fiber.interrupt(renewalFiber).pipe(
+        Effect.andThen(
+          state.releaseSafe && !state.leaseLost
+            ? Effect.exit(releaseLaneLease(stub, state, owner)).pipe(
+                Effect.flatMap((exit) =>
+                  Effect.sync(() => {
+                    if (Exit.isFailure(exit)) {
+                      const error = typedErrorOf(exit.cause);
+                      releaseResult.error =
+                        error instanceof LaneLeaseLost ? error : new LaneLeaseLost();
+                    }
+                  }),
+                ),
+              )
+            : Effect.void,
+        ),
+      ),
+  ).pipe(
+    Effect.flatMap(({ state, leaseLoss }) =>
+      Effect.gen(function* () {
+        const timedOutJobs: string[] = [];
+        const ranJobs: string[] = [];
+        let firstFailure: Cause.Cause<unknown> | undefined;
 
-  try {
-    for (const job of jobs) {
-      const result = await runJob(job);
-      ranJobs.push(job.name);
-      if (Exit.isSuccess(result.exit)) continue;
-      if (tagOf(typedErrorOf(result.exit.cause)) === "LaneLeaseLost") {
-        releaseSafe = false;
-        break;
-      }
-      if (isRunnerTimeout(result.exit.cause)) {
-        timedOut = true;
-        if (job.requiresAdapterSafety && !result.adapterSafety.proven) {
-          releaseSafe = false;
-          break;
+        for (const job of jobs) {
+          const result = yield* runScheduledJob(job, state, leaseLoss, owner, options);
+          ranJobs.push(job.name);
+          if (Exit.isSuccess(result.exit)) continue;
+          if (tagOf(typedErrorOf(result.exit.cause)) === "LaneLeaseLost") {
+            state.releaseSafe = false;
+            break;
+          }
+          if (isRunnerTimeout(result.exit.cause)) {
+            timedOutJobs.push(job.name);
+            if (job.requiresAdapterSafety && !result.adapterSafety.proven) {
+              state.releaseSafe = false;
+              return yield* Effect.fail(new LaneAdapterSafetyUnproven({ job: job.name }));
+            }
+            continue;
+          }
+          firstFailure ??= result.exit.cause;
         }
-        continue;
-      }
-      firstFailure ??= result.exit.cause;
-    }
-  } finally {
-    clearInterval(renewalTimer);
-    await renewalInFlight;
-    if (releaseSafe && !leaseLost) await stub.releaseWithFence(owner, currentLease.generation);
-  }
-  if (leaseLost) {
-    throw new Error("lane lease renewal failed or ownership was lost");
-  }
-  if (!releaseSafe) {
-    throw new Error("job timeout had no adapter abort or fence evidence");
-  }
-  if (firstFailure !== undefined) {
-    await Effect.runPromise(Effect.failCause(firstFailure));
-  }
-  return {
-    lane,
-    acquired: true,
-    ranJob: ranJobs[0] ?? null,
-    ranJobs,
-    timedOut,
-    leaseRenewals,
-    leaseAfterRun: await stub.currentLease(),
-  };
+        if (state.leaseLost) return yield* Effect.fail(new LaneLeaseLost());
+        if (firstFailure !== undefined) return yield* Effect.failCause(firstFailure);
+        return {
+          lane,
+          acquired: true,
+          ranJob: ranJobs[0] ?? null,
+          ranJobs,
+          timedOut: timedOutJobs.length > 0,
+          leaseRenewals: state.leaseRenewals,
+          leaseAfterRun: state.leaseAfterRun,
+        } satisfies LaneRunResult;
+      }),
+    ),
+  );
+  const result = yield* Effect.scoped(scopedRun);
+  if (releaseResult.error !== null) return yield* Effect.fail(releaseResult.error);
+  return result;
+});
+
+type RunScheduled = <Failure = unknown, Requirements = never>(
+  env: JobsWorkerEnv,
+  lane: string,
+  jobsInput: JobDefinition<Failure, Requirements> | readonly JobDefinition<Failure, Requirements>[],
+  now?: number,
+  options?: LaneRunOptions,
+) => Effect.Effect<LaneRunResult, unknown, never>;
+
+export const runScheduled: RunScheduled = (env, lane, jobsInput, now, options) =>
+  runScheduledEffect(env, lane, jobsInput, now, options) as Effect.Effect<
+    LaneRunResult,
+    unknown,
+    never
+  >;
+
+export async function handleScheduled<Failure = unknown, Requirements = never>(
+  env: JobsWorkerEnv,
+  lane: string,
+  jobsInput: JobDefinition<Failure, Requirements> | readonly JobDefinition<Failure, Requirements>[],
+  now: number = Date.now(),
+  options: LaneRunOptions = {},
+): Promise<LaneRunResult> {
+  return Effect.runPromise(runScheduled(env, lane, jobsInput, now, options));
 }
 
 export function makeJobsWorkerDeclarations(
