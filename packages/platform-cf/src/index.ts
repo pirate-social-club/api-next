@@ -43,6 +43,14 @@ export {
 } from "./cron-lock";
 export { ScheduledCronLockDO } from "./cron-lock-do";
 export {
+  type CanonicalIdentity,
+  type IdentityRepository,
+  IdentityRepositoryError,
+  type IdentityUser,
+  MAX_CANONICAL_ALIAS_HOPS,
+  makeControlPlaneIdentityRepository,
+} from "./identity-repository";
+export {
   CONTROL_PLANE_CONNECT_TIMEOUT_MS,
   CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
   CONTROL_PLANE_SLOW_STATEMENT_MS,
@@ -72,3 +80,36 @@ export {
   queueRetryBackoffSeconds,
   queueRetryDelaySeconds,
 } from "./queue-retry";
+export {
+  MAX_SESSION_TOKEN_LENGTH,
+  makeSessionBridge,
+  makeSessionBridgeFromEnv,
+  type SessionBridge,
+  type SessionBridgeEnvironment,
+  SessionBridgeError,
+  type SessionBridgeOptions,
+  type SessionClaimsInput,
+  type SessionJwks,
+  type SessionPublicJwk,
+  type VerifiedSessionClaims,
+} from "./session-bridge";
+export {
+  makeJwksSessionProofVerifier,
+  SESSION_PROOF_CACHE_TTL_MS,
+  SESSION_PROOF_FETCH_TIMEOUT_MS,
+  SESSION_PROOF_MAX_JWKS_BYTES,
+  SESSION_PROOF_MAX_TOKEN_LENGTH,
+  type SessionProofAdapterOptions,
+  type SessionProofFetcher,
+  type SessionProofProviderConfig,
+} from "./session-proof";
+export {
+  makeRs256SessionTokenMinter,
+  makeRs256SessionTokenVerifier,
+  type SessionPrincipal,
+  type SessionTokenClassification,
+  type SessionTokenFailureCode,
+  type SessionTokenScope,
+  SessionTokenVerificationError,
+  type SessionTokenVerifier,
+} from "./session-tokens";
