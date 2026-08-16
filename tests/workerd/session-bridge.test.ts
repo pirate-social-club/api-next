@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  MAX_SESSION_TOKEN_LENGTH,
   makeSessionBridge,
   makeSessionBridgeFromEnv,
   SessionBridgeError,
@@ -226,6 +227,10 @@ describe("session bridge WebCrypto primitives (workerd)", () => {
           bridge.verify,
         ),
       "claims_invalid",
+    );
+    await expectCode(
+      () => bridge.verify("A".repeat(MAX_SESSION_TOKEN_LENGTH + 1)),
+      "token_malformed",
     );
     await expectCode(() => bridge.verify("not-a-jwt"), "token_malformed");
 

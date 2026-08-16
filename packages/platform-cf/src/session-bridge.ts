@@ -6,6 +6,8 @@ const DEFAULT_ISSUER = "pirate-api";
 const DEFAULT_AUDIENCE = "pirate-app";
 const DEFAULT_SCOPE = "pirate_app_session";
 const DEFAULT_TTL_SECONDS = 3_600;
+/** Conservative bound for this fixed-claim bearer token before any decoding. */
+export const MAX_SESSION_TOKEN_LENGTH = 16 * 1024;
 const RSA_IMPORT_ALGORITHM = {
   name: "RSASSA-PKCS1-v1_5",
   hash: "SHA-256",
@@ -176,7 +178,7 @@ async function importPrivateKey(pem: string): Promise<CryptoKey> {
 }
 
 async function importPublicKey(pem: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey("spki", pemToDer(pem, "PUBLIC KEY"), RSA_IMPORT_ALGORITHM, true, [
+  return crypto.subtle.importKey("spki", pemToDer(pem, "PUBLIC KEY"), RSA_IMPORT_ALGORITHM, false, [
     "verify",
   ]);
 }
@@ -253,20 +255,27 @@ async function publicMaterial(
 ): Promise<SessionPublicJwk> {
   let n: string;
   let e: string;
+  let exported: unknown = null;
   try {
-    const exported = await crypto.subtle.exportKey("jwk", publicKey);
+    exported = await crypto.subtle.exportKey("jwk", publicKey);
+  } catch {}
+  if (exported === null) {
+    ({ n, e } = publicMaterialFromSpki(publicKeyPem));
+  } else {
+    if (typeof exported !== "object" || exported === null || Array.isArray(exported)) {
+      throw new Error("invalid public JWK");
+    }
+    const exportedJwk = exported as Record<string, unknown>;
     if (
-      exported.kty !== "RSA" ||
-      typeof exported.n !== "string" ||
-      typeof exported.e !== "string" ||
-      Object.keys(exported).some((member) => PRIVATE_JWK_MEMBERS.has(member))
+      exportedJwk.kty !== "RSA" ||
+      typeof exportedJwk.n !== "string" ||
+      typeof exportedJwk.e !== "string" ||
+      Object.keys(exportedJwk).some((member) => PRIVATE_JWK_MEMBERS.has(member))
     ) {
       throw new Error("invalid public JWK");
     }
-    n = exported.n;
-    e = exported.e;
-  } catch {
-    ({ n, e } = publicMaterialFromSpki(publicKeyPem));
+    n = exportedJwk.n;
+    e = exportedJwk.e;
   }
   return {
     kty: "RSA",
@@ -473,8 +482,14 @@ export async function makeSessionBridge(options: SessionBridgeOptions): Promise<
     if (typeof token !== "string" || token.length === 0) {
       throw error("verify", "token_malformed");
     }
+    if (token.length > MAX_SESSION_TOKEN_LENGTH) {
+      throw error("verify", "token_malformed");
+    }
     const parts = token.split(".");
-    if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
+    if (
+      parts.length !== 3 ||
+      parts.some((part) => part.length === 0 || part.length > MAX_SESSION_TOKEN_LENGTH)
+    ) {
       throw error("verify", "token_malformed");
     }
     let header: Record<string, unknown>;
