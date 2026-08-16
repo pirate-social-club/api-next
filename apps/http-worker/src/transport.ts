@@ -293,7 +293,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
 
         // Authentication deliberately precedes every request-schema decode.
         const input = await decodeInput(binding.endpoint, context, principal);
-        if (!isPublic(binding.endpoint)) {
+        if (
+          !isPublic(binding.endpoint) &&
+          (!isOptionalUser(binding.endpoint) || principal !== null)
+        ) {
           await options.authorize?.({ endpoint: binding.endpoint, input });
         }
 

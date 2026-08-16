@@ -213,6 +213,38 @@ describe("contracts-generated HTTP worker", () => {
     expect(JSON.stringify(await response.json())).not.toContain("must-not-cross-boundary");
   });
 
+  it("skips authorization only for a signed-out optional-user request", async () => {
+    const principals: Array<string | null> = [];
+    const authorizedSubjects: string[] = [];
+    const app = createHttpWorker({
+      handlers: {
+        GetHomeFeed: (input) => {
+          principals.push(input.principal?.subject ?? null);
+          return feed;
+        },
+      },
+      authenticate: ({ credentials }) => ({
+        kind: "user",
+        subject: credentials.authorization,
+      }),
+      authorize: ({ input }) => {
+        if (input.principal === null) throw new Error("signed-out request reached authorization");
+        authorizedSubjects.push(input.principal.subject);
+      },
+    });
+
+    const signedOut = await app.request("http://worker.test/feed/home");
+    const signedIn = await app.request("http://worker.test/feed/home", {
+      headers: { authorization: "Bearer test" },
+    });
+
+    expect(signedOut.status).toBe(200);
+    expect(signedOut.headers.get("cache-control")).toBe("no-store");
+    expect(signedIn.status).toBe(200);
+    expect(principals).toEqual([null, "Bearer test"]);
+    expect(authorizedSubjects).toEqual(["Bearer test"]);
+  });
+
   it("encodes the response schema and strips an undeclared response field", async () => {
     const response = await createHttpWorker({
       handlers: {
