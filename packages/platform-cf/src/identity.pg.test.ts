@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { ControlPlaneDb } from "@pirate/application";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
-import { makeControlPlaneIdentityRepository } from "./identity-repository";
+import { makeControlPlaneIdentityStore } from "./identity-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { applyPostgresMigrations, type PostgresMigration } from "./postgres-migrations";
 
@@ -83,14 +83,10 @@ function failureOf<A, E>(exit: Exit.Exit<A, E>): E {
 }
 
 async function resolve(connection: string, sourceUserId: string) {
-  const repository = makeControlPlaneIdentityRepository();
-  return Effect.runPromiseExit(
-    Effect.scoped(
-      Effect.gen(function* () {
-        return yield* repository.resolveCanonical({ sourceUserId });
-      }).pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
-    ),
+  const identityStore = makeControlPlaneIdentityStore(
+    makeDirectPostgresControlPlaneLayer(connection),
   );
+  return Effect.runPromiseExit(identityStore.resolveCanonical({ sourceUserId }));
 }
 
 suite("Postgres 17 identity repository", () => {
@@ -134,10 +130,10 @@ suite("Postgres 17 identity repository", () => {
       );
 
       const cycle = await resolve(connection, "usr_cycle_a");
-      expect(failureOf(cycle)).toMatchObject({ _tag: "IdentityRepositoryError", reason: "cyclic" });
+      expect(failureOf(cycle)).toMatchObject({ _tag: "IdentityResolutionError", reason: "cyclic" });
       const missing = await resolve(connection, "usr_missing_source");
       expect(failureOf(missing)).toMatchObject({
-        _tag: "IdentityRepositoryError",
+        _tag: "IdentityResolutionError",
         reason: "missing",
       });
     });

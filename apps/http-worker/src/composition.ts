@@ -4,13 +4,24 @@ import {
   authenticateSession,
   authorizeSession,
 } from "@pirate/application/use-cases/session-authentication";
-import { makeNotImplementedSessionExchangeServices } from "@pirate/application/use-cases/session-exchange";
+import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-exchange";
 import {
   HttpWorkerConfig,
   type HttpWorkerConfigValue,
   loadConfigFrom,
 } from "@pirate/platform-cf/config";
-import { Effect } from "effect";
+import { makeControlPlaneIdentityStore } from "@pirate/platform-cf/identity-repository";
+import {
+  type HyperdriveConnection,
+  makeHyperdriveControlPlaneLayer,
+} from "@pirate/platform-cf/postgres";
+import { makeSessionBridge } from "@pirate/platform-cf/session-bridge";
+import { makeJwksSessionProofVerifier } from "@pirate/platform-cf/session-proof";
+import {
+  makeRs256SessionTokenMinter,
+  makeRs256SessionTokenVerifier,
+} from "@pirate/platform-cf/session-tokens";
+import { Effect, Redacted, Schema } from "effect";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 
 export interface HttpWorkerBindings {
@@ -25,6 +36,12 @@ export interface HttpWorkerBindings {
   readonly PRIVY_APP_ID?: string;
   readonly PRIVY_APP_SECRET?: string;
   readonly PRIVY_API_URL?: string;
+  readonly PRIVY_JWKS_URL?: string;
+  readonly PRIVY_JWT_ISSUER?: string;
+  readonly PRIVY_JWT_AUDIENCE?: string;
+  readonly AUTH_UPSTREAM_JWT_JWKS_URL?: string;
+  readonly AUTH_UPSTREAM_JWT_ISSUER?: string;
+  readonly AUTH_UPSTREAM_JWT_AUDIENCE?: string;
 }
 
 type WorkerConfig = HttpWorkerConfigValue;
@@ -41,8 +58,18 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     PRIVY_APP_ID: bindings.PRIVY_APP_ID,
     PRIVY_APP_SECRET: bindings.PRIVY_APP_SECRET,
     PRIVY_API_URL: bindings.PRIVY_API_URL,
+    PRIVY_JWKS_URL: bindings.PRIVY_JWKS_URL,
+    PRIVY_JWT_ISSUER: bindings.PRIVY_JWT_ISSUER,
+    PRIVY_JWT_AUDIENCE: bindings.PRIVY_JWT_AUDIENCE,
+    AUTH_UPSTREAM_JWT_JWKS_URL: bindings.AUTH_UPSTREAM_JWT_JWKS_URL,
+    AUTH_UPSTREAM_JWT_ISSUER: bindings.AUTH_UPSTREAM_JWT_ISSUER,
+    AUTH_UPSTREAM_JWT_AUDIENCE: bindings.AUTH_UPSTREAM_JWT_AUDIENCE,
   };
 }
+
+const HyperdriveBinding = Schema.Struct({
+  connectionString: Schema.NonEmptyString,
+});
 
 function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
   try {
@@ -57,6 +84,14 @@ function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
   }
 }
 
+function loadHyperdrive(bindings: HttpWorkerBindings): HyperdriveConnection {
+  try {
+    return Schema.decodeUnknownSync(HyperdriveBinding)(bindings.CONTROL_PLANE);
+  } catch {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  }
+}
+
 function principal(session: AuthenticatedSession): Principal {
   return {
     kind: session.kind,
@@ -67,24 +102,62 @@ function principal(session: AuthenticatedSession): Principal {
 
 export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const config = loadWorkerConfig(bindings);
-  const sessionExchange = makeNotImplementedSessionExchangeServices();
+  const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
+  const identityStore = makeControlPlaneIdentityStore(controlPlane);
+  const bridge = await makeSessionBridge({
+    privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
+    publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),
+    issuer: config.PIRATE_APP_JWT_ISSUER,
+    audience: config.PIRATE_APP_JWT_AUDIENCE,
+    defaultTtlSeconds: config.PIRATE_APP_JWT_TTL_SECONDS,
+  });
+  const sessionExchange = {
+    proofVerifier: makeJwksSessionProofVerifier({
+      privy: {
+        jwksUrl: config.PRIVY_JWKS_URL,
+        issuer: config.PRIVY_JWT_ISSUER,
+        audience: config.PRIVY_JWT_AUDIENCE,
+      },
+      jwt: {
+        jwksUrl: config.AUTH_UPSTREAM_JWT_JWKS_URL,
+        issuer: config.AUTH_UPSTREAM_JWT_ISSUER,
+        audience: config.AUTH_UPSTREAM_JWT_AUDIENCE,
+      },
+    }),
+    identityStore: makeSessionIdentityStore(identityStore),
+    tokenMinter: makeRs256SessionTokenMinter(bridge),
+  };
+  const tokenVerifier = makeRs256SessionTokenVerifier(bridge, identityStore);
   const authenticate = ({
     credentials,
   }: {
     readonly credentials: { readonly authorization: string };
   }) =>
     Effect.runPromise(
-      authenticateSession({ authorization: credentials.authorization }).pipe(Effect.map(principal)),
+      authenticateSession(
+        { authorization: credentials.authorization },
+        { verifier: tokenVerifier },
+      ).pipe(Effect.map(principal)),
     );
   const profile: EndpointHandler = ({ principal: session }) =>
-    Effect.runPromise(getMyProfile({ userId: session?.subject ?? "" }));
+    Effect.runPromise(getMyProfile({ userId: session?.subject ?? "" }, { identityStore }));
 
   return createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
+    handlers: { GetJwks: () => bridge.jwks() },
     sessionExchange,
     profile,
     authenticate,
     authorize: ({ input }) =>
-      Effect.runPromise(authorizeSession({ subject: input.principal?.subject ?? "" })),
+      Effect.runPromise(
+        authorizeSession({
+          session: {
+            subject: input.principal?.subject ?? "",
+            kind: input.principal?.kind ?? "device",
+            ...(input.principal?.scopes === undefined ? {} : { scopes: input.principal.scopes }),
+          },
+          allowedKinds: ["user", "admin"],
+        }),
+      ),
   });
 }

@@ -1,8 +1,8 @@
-import type { ControlPlaneDb } from "@pirate/application";
+import { IdentityResolutionError, type IdentityStore } from "@pirate/application";
 import type { SessionTokenMinter } from "@pirate/application/use-cases/session-exchange";
 import { Data, Effect } from "effect";
 
-import type { CanonicalIdentity, IdentityRepository } from "./identity-repository";
+import type { CanonicalIdentity } from "./identity-repository";
 import { type SessionBridge, SessionBridgeError } from "./session-bridge";
 
 export type SessionTokenClassification = "user" | "device";
@@ -41,7 +41,7 @@ export interface SessionTokenVerifier {
     readonly token: string;
     readonly requiredScope?: string;
     readonly requiredClassification?: SessionTokenClassification;
-  }) => Effect.Effect<SessionPrincipal, SessionTokenVerificationError, ControlPlaneDb>;
+  }) => Effect.Effect<SessionPrincipal, SessionTokenVerificationError>;
 }
 
 function bridgeFailureCode(error: SessionBridgeError): SessionTokenFailureCode {
@@ -65,6 +65,11 @@ function bridgeFailureCode(error: SessionBridgeError): SessionTokenFailureCode {
 }
 
 function identityFailureCode(error: unknown): SessionTokenFailureCode {
+  if (error instanceof IdentityResolutionError) {
+    return error.reason === "missing" || error.reason === "deleted"
+      ? "control_plane_record_missing"
+      : "canonical_alias_invalid";
+  }
   if (
     typeof error === "object" &&
     error !== null &&
@@ -95,7 +100,7 @@ export function makeRs256SessionTokenMinter(bridge: SessionBridge): SessionToken
  */
 export function makeRs256SessionTokenVerifier(
   bridge: SessionBridge,
-  identityRepository: Pick<IdentityRepository, "resolveCanonical">,
+  identityRepository: Pick<IdentityStore["Service"], "resolveCanonical">,
 ): SessionTokenVerifier {
   return {
     verify: ({ token, requiredScope, requiredClassification }) =>
