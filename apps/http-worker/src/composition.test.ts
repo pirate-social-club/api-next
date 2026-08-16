@@ -54,6 +54,9 @@ describe("HTTP production composition", () => {
 
     const jwks = await worker.request("https://worker.test/.well-known/jwks.json");
     expect(jwks.status).toBe(200);
+    // Bounded cache so a future key rotation propagates within the TTL rather
+    // than being defeated by unbounded intermediary caching.
+    expect(jwks.headers.get("cache-control")).toBe("public, max-age=3600, must-revalidate");
     expect((await jwks.json()) as unknown).toMatchObject({
       keys: [{ alg: "RS256", use: "sig", key_ops: ["verify"] }],
     });

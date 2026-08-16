@@ -189,12 +189,17 @@ const requestId = (context: HttpContext): string => {
   return generated;
 };
 
+// Public responses (JWKS, discovery) carry a bounded max-age so a future
+// signing-key rotation propagates within the TTL instead of being defeated
+// by unbounded intermediary caching. Well under any sane rotation interval.
+const PUBLIC_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
+
 const json = (context: HttpContext, body: unknown, status: number, noStore: boolean): Response => {
   const headers = new Headers({
     "content-type": "application/json; charset=UTF-8",
     "x-request-id": requestId(context),
   });
-  if (noStore) headers.set("cache-control", "no-store");
+  headers.set("cache-control", noStore ? "no-store" : PUBLIC_CACHE_CONTROL);
   return new Response(JSON.stringify(body), { status, headers });
 };
 
