@@ -22,6 +22,7 @@ const baseJob: JobDeclaration = {
     transactionOutcomeUnknown: "high",
     defect: "high",
   },
+  reads: ["control-plane:communities"],
   writes: ["control-plane:job_attempts"],
   run: Effect.void,
 };
@@ -76,5 +77,18 @@ describe("jobs-kernel declaration registry", () => {
       },
     ]);
     expect(missingSeverity).toMatchObject({ reason: "missing-severity-mapping" });
+  });
+
+  test("rejects duplicate table declarations in the read inventory", async () => {
+    const error = await errorOf([
+      {
+        ...baseJob,
+        name: "control-plane.read-duplicate",
+        lane: "control-plane-read-duplicate",
+        reads: ["control-plane:communities", "control-plane:communities"],
+        writes: [],
+      },
+    ]);
+    expect(error).toMatchObject({ reason: "duplicate-table-read" });
   });
 });

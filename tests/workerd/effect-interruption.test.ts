@@ -1,6 +1,8 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
+
 import { env as testEnv } from "cloudflare:test";
-import { Effect } from "effect";
+import { ControlPlaneDb } from "@pirate/application";
+import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,6 +10,7 @@ import {
   handleScheduled,
   type JobDefinition,
   type JobsWorkerEnv,
+  makeCommunityRoutingIntegrityJob,
 } from "../../apps/jobs-worker/src/index";
 
 const env = testEnv as unknown as JobsWorkerEnv;
@@ -70,6 +73,7 @@ describe("Effect.timeout real interruption (workerd)", () => {
         transactionOutcomeUnknown: "high",
         defect: "high",
       },
+      reads: [],
       writes: [],
       run: Effect.gen(function* () {
         started = true;
@@ -81,6 +85,36 @@ describe("Effect.timeout real interruption (workerd)", () => {
     expect(result.acquired).toBe(true);
     expect(result.timedOut).toBe(true);
     // The scheduler survived the interruption and released the lease.
+    expect(result.leaseAfterRun).toBeNull();
+  });
+
+  it("proves the real job abort path before the DO lease is released", async () => {
+    const trace: string[] = [];
+    const db = {
+      execute: () =>
+        Effect.never.pipe(
+          Effect.onInterrupt(() =>
+            Effect.sync(() => {
+              trace.push("adapter_aborted");
+            }),
+          ),
+        ),
+      withTransaction: () => Effect.die("routing audit must remain read-only"),
+    } as unknown as ControlPlaneDb["Service"];
+    const sink = {
+      email: () => Effect.void,
+      webhook: () => Effect.void,
+    };
+    const job = makeCommunityRoutingIntegrityJob(sink, { timeout: 50 });
+
+    const result = await handleScheduled(env, job.lane, job, Date.now(), {
+      runtime: Layer.succeed(ControlPlaneDb, db),
+      leaseTtlMs: 1_000,
+      renewIntervalMs: 100,
+    });
+
+    expect(result.timedOut).toBe(true);
+    expect(trace).toEqual(["adapter_aborted"]);
     expect(result.leaseAfterRun).toBeNull();
   });
 });
