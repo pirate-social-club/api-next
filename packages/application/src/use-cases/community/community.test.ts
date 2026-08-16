@@ -1,16 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { GateUnsatisfied, MembershipRequired, NotFound } from "@pirate/contracts";
+import {
+  Conflict,
+  GateUnsatisfied,
+  InternalError,
+  MembershipRequired,
+  NotFound,
+} from "@pirate/contracts";
 import { Effect } from "effect";
-import type {
-  CommunityPreviewDocument,
-  CommunityStore,
-  JoinEligibilityDocument,
-  M2Actor,
+import {
+  type CommunityPreviewDocument,
+  CommunityRepositoryError,
+  type CommunityStore,
+  ControlPlaneStatementFailed,
+  type JoinEligibilityDocument,
+  type M2Actor,
 } from "../../ports.ts";
 import { followCommunity } from "./follow-community.ts";
 import { getCommunityPreview } from "./get-community-preview.ts";
 import { joinCommunity } from "./join-community.ts";
 import type { CommunityServices } from "./services.ts";
+import { unfollowCommunity } from "./unfollow-community.ts";
 
 const actor: M2Actor = { userId: "user-a", kind: "user" };
 
@@ -102,5 +111,32 @@ describe("community application use cases", () => {
     await expect(
       Effect.runPromise(followCommunity({ communityId: "community-a", actor }, scoped)),
     ).rejects.toBeInstanceOf(MembershipRequired);
+  });
+
+  test("redacts storage failures instead of converting them to a 4xx", async () => {
+    const storageFailure = new ControlPlaneStatementFailed({
+      label: "community.communities.get-preview",
+      sqlState: "XX000",
+      constraint: null,
+      outcomeCertainty: "completed",
+    });
+    const scoped = services({
+      getPreview: () => Effect.fail(storageFailure),
+    });
+
+    await expect(
+      Effect.runPromise(getCommunityPreview({ communityId: "community-a" }, scoped)),
+    ).rejects.toBeInstanceOf(InternalError);
+  });
+
+  test("maps the repository's active-member unfollow conflict", async () => {
+    const scoped = services({
+      unfollow: () =>
+        Effect.fail(new CommunityRepositoryError({ operation: "unfollow", reason: "constraint" })),
+    });
+
+    await expect(
+      Effect.runPromise(unfollowCommunity({ communityId: "community-a", actor }, scoped)),
+    ).rejects.toBeInstanceOf(Conflict);
   });
 });

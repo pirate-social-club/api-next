@@ -1,4 +1,9 @@
-import { type FollowCommunity, MembershipRequired, NotFound } from "@pirate/contracts";
+import {
+  type FollowCommunity,
+  InternalError,
+  MembershipRequired,
+  NotFound,
+} from "@pirate/contracts";
 import { Effect, type Schema } from "effect";
 import { CommunityRepositoryError, type FollowDocument, type M2Actor } from "../../ports.ts";
 import { type CommunityServices, isMember, isUsableId } from "./services.ts";
@@ -12,19 +17,31 @@ export type FollowCommunityInput = Readonly<{
 export const followCommunity = Effect.fn("followCommunity")(function* (
   input: FollowCommunityInput,
   services: CommunityServices,
-): Effect.fn.Return<FollowDocument, MembershipRequired | NotFound> {
+): Effect.fn.Return<FollowDocument, InternalError | MembershipRequired | NotFound> {
   if (!isUsableId(input.communityId) || !isUsableId(input.actor.userId)) {
     return yield* new NotFound({ message: "Community not found" });
   }
 
   const preview = yield* services.communityStore
     .getPreview({ communityId: input.communityId, viewerUserId: input.actor.userId })
-    .pipe(Effect.mapError(() => new NotFound({ message: "Community not found" })));
+    .pipe(
+      Effect.mapError((error) =>
+        error instanceof CommunityRepositoryError && error.reason === "not-found"
+          ? new NotFound({ message: "Community not found" })
+          : new InternalError({ message: "Community preview lookup failed" }),
+      ),
+    );
   if (preview === null) return yield* new NotFound({ message: "Community not found" });
 
   const status = yield* services.communityStore
     .membershipStatus({ communityId: input.communityId, userId: input.actor.userId })
-    .pipe(Effect.mapError(() => new NotFound({ message: "Community not found" })));
+    .pipe(
+      Effect.mapError((error) =>
+        error instanceof CommunityRepositoryError && error.reason === "not-found"
+          ? new NotFound({ message: "Community not found" })
+          : new InternalError({ message: "Community membership lookup failed" }),
+      ),
+    );
   if (!isMember(status)) {
     return yield* new MembershipRequired({ message: "Community membership is required" });
   }
@@ -33,9 +50,13 @@ export const followCommunity = Effect.fn("followCommunity")(function* (
     .follow({ communityId: input.communityId, actor: input.actor })
     .pipe(
       Effect.mapError((error) =>
-        error instanceof CommunityRepositoryError && error.reason === "membership-required"
-          ? new MembershipRequired({ message: "Community membership is required" })
-          : new NotFound({ message: "Community not found" }),
+        error instanceof CommunityRepositoryError
+          ? error.reason === "membership-required"
+            ? new MembershipRequired({ message: "Community membership is required" })
+            : error.reason === "not-found"
+              ? new NotFound({ message: "Community not found" })
+              : new InternalError({ message: "Community follow failed" })
+          : new InternalError({ message: "Community follow failed" }),
       ),
     );
 });

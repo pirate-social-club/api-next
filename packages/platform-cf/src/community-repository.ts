@@ -1,11 +1,16 @@
 import {
   type CommunityPreviewDocument,
   CommunityRepositoryError,
+  type CommunityRepositoryFailure,
   type CommunityStore,
   type CommunityStoreService,
   ControlPlaneDb,
   type ControlPlaneError,
+  type FollowDocument,
+  type JoinDocument,
+  type JoinEligibilityDocument,
   type MembershipStatus,
+  type UnfollowDocument,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 
@@ -23,6 +28,7 @@ type CommunityRow = {
 
 type MembershipRow = {
   readonly status: unknown;
+  readonly request_note?: unknown;
 };
 
 type JoinCommunityRow = {
@@ -44,6 +50,11 @@ const invalid = (
 
 const asString = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
+const asPersistedId = (value: unknown): string | null => {
+  const parsed = asString(value);
+  return parsed !== null && validId(parsed) ? parsed : null;
+};
+
 const asCount = (value: unknown): number | null => {
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return value;
   if (typeof value === "string" && /^\d+$/.test(value)) {
@@ -58,12 +69,16 @@ const asBoolean = (value: unknown): boolean | null => (typeof value === "boolean
 const asTimestamp = (value: unknown): number | null => {
   if (value instanceof Date) {
     const time = value.getTime();
-    return Number.isFinite(time) ? time : null;
+    return Number.isFinite(time) ? Math.floor(time / 1_000) : null;
   }
-  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    // pg returns TIMESTAMPTZ as Date, while test doubles and alternate
+    // drivers may expose epoch milliseconds or seconds directly.
+    return Math.floor(Math.abs(value) >= 100_000_000_000 ? value / 1_000 : value);
+  }
   if (typeof value === "string") {
     const time = Date.parse(value);
-    return Number.isFinite(time) ? time : null;
+    return Number.isFinite(time) ? Math.floor(time / 1_000) : null;
   }
   return null;
 };
@@ -71,8 +86,11 @@ const asTimestamp = (value: unknown): number | null => {
 const membershipMode = (value: unknown): "open" | "request" | "gated" | null =>
   value === "open" || value === "request" || value === "gated" ? value : null;
 
-const verificationLane = (value: unknown): "very" | "self" | null =>
-  value === "very" || value === "self" ? value : null;
+const verificationLane = (value: unknown): "very" | "self" | null | undefined => {
+  if (value === null) return null;
+  if (value === "very" || value === "self") return value;
+  return undefined;
+};
 
 const parseMembershipStatus = (value: unknown): MembershipStatus | null =>
   value === "missing" ||
@@ -83,12 +101,15 @@ const parseMembershipStatus = (value: unknown): MembershipStatus | null =>
     ? value
     : null;
 
-const viewerMembershipStatus = (value: unknown): "member" | "not_member" | "banned" | null => {
+const viewerMembershipStatus = (value: unknown): "member" | "not_member" | "banned" | undefined => {
   if (value === "member") return "member";
   if (value === "banned") return "banned";
   if (value === "missing" || value === "pending" || value === "left") return "not_member";
-  return null;
+  return undefined;
 };
+
+const generatedId = (kind: "membership" | "follow"): string =>
+  `${kind}_${globalThis.crypto.randomUUID()}`;
 
 const row = <T>(rows: readonly T[]): T | undefined => rows[0];
 
@@ -128,12 +149,25 @@ const communityLookup = (communityId: string, viewerUserId?: string) => ({
 });
 
 interface CommunityRepository {
-  readonly membershipStatus: CommunityStoreService["membershipStatus"];
-  readonly getPreview: CommunityStoreService["getPreview"];
-  readonly getJoinEligibility: CommunityStoreService["getJoinEligibility"];
-  readonly join: CommunityStoreService["join"];
-  readonly follow: CommunityStoreService["follow"];
-  readonly unfollow: CommunityStoreService["unfollow"];
+  /** Internal methods retain their database requirement until the wrapper provisions it. */
+  readonly membershipStatus: (
+    input: Parameters<CommunityStoreService["membershipStatus"]>[0],
+  ) => Effect.Effect<MembershipStatus, CommunityRepositoryFailure, ControlPlaneDb>;
+  readonly getPreview: (
+    input: Parameters<CommunityStoreService["getPreview"]>[0],
+  ) => Effect.Effect<CommunityPreviewDocument | null, CommunityRepositoryFailure, ControlPlaneDb>;
+  readonly getJoinEligibility: (
+    input: Parameters<CommunityStoreService["getJoinEligibility"]>[0],
+  ) => Effect.Effect<JoinEligibilityDocument | null, CommunityRepositoryFailure, ControlPlaneDb>;
+  readonly join: (
+    input: Parameters<CommunityStoreService["join"]>[0],
+  ) => Effect.Effect<JoinDocument, CommunityRepositoryFailure, ControlPlaneDb>;
+  readonly follow: (
+    input: Parameters<CommunityStoreService["follow"]>[0],
+  ) => Effect.Effect<FollowDocument, CommunityRepositoryFailure, ControlPlaneDb>;
+  readonly unfollow: (
+    input: Parameters<CommunityStoreService["unfollow"]>[0],
+  ) => Effect.Effect<UnfollowDocument, CommunityRepositoryFailure, ControlPlaneDb>;
 }
 
 /**
@@ -159,6 +193,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         values: [input.communityId, input.userId],
         readonly: true,
       });
+      if (result.rows.length > 1) return yield* Effect.fail(invalid("membership"));
       const status = row(result.rows);
       if (status === undefined) return "missing";
       const parsed = parseMembershipStatus(status.status);
@@ -178,10 +213,11 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
       const result = yield* db.execute<CommunityRow>(
         communityLookup(input.communityId, input.viewerUserId),
       );
+      if (result.rows.length > 1) return yield* Effect.fail(invalid("preview"));
       const community = row(result.rows);
       if (community === undefined) return null;
 
-      const id = asString(community.community_id);
+      const id = asPersistedId(community.community_id);
       const displayName = asString(community.display_name);
       const mode = membershipMode(community.membership_mode);
       const created = asTimestamp(community.created_at);
@@ -190,13 +226,25 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
       const verification = verificationLane(community.human_verification_lane);
       if (
         id === null ||
+        id !== input.communityId ||
         displayName === null ||
         mode === null ||
         created === null ||
         memberCount === null ||
-        followerCount === null
+        followerCount === null ||
+        verification === undefined
       ) {
         return yield* Effect.fail(invalid("preview"));
+      }
+
+      let viewerStatus: "member" | "not_member" | "banned" | undefined;
+      let viewerFollowing: boolean | undefined;
+      if (input.viewerUserId !== undefined) {
+        viewerStatus = viewerMembershipStatus(community.viewer_membership_status);
+        viewerFollowing = asBoolean(community.viewer_following) ?? undefined;
+        if (viewerStatus === undefined || viewerFollowing === undefined) {
+          return yield* Effect.fail(invalid("preview"));
+        }
       }
 
       const preview: CommunityPreviewDocument = {
@@ -214,8 +262,8 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         ...(input.viewerUserId === undefined
           ? {}
           : {
-              viewer_membership_status: viewerMembershipStatus(community.viewer_membership_status),
-              viewer_following: asBoolean(community.viewer_following) ?? false,
+              viewer_membership_status: viewerStatus,
+              viewer_following: viewerFollowing,
             }),
       };
       return preview;
@@ -227,14 +275,11 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         return yield* Effect.fail(invalid("eligibility"));
       }
       const db = yield* ControlPlaneDb;
-      const result = yield* db.execute<
-        JoinCommunityRow & { readonly status: unknown; readonly created_at: unknown }
-      >({
+      const result = yield* db.execute<JoinCommunityRow & { readonly status: unknown }>({
         label: "community.memberships.get-eligibility",
         text: `SELECT c.community_id,
                       c.membership_mode,
                       c.human_verification_lane,
-                      c.created_at,
                       COALESCE(m.status, 'missing') AS status
                  FROM communities AS c
                  LEFT JOIN community_memberships AS m
@@ -245,12 +290,15 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         values: [input.communityId, input.userId],
         readonly: true,
       });
+      if (result.rows.length > 1) return yield* Effect.fail(invalid("eligibility"));
       const community = row(result.rows);
       if (community === undefined) return null;
-      const id = asString(community.community_id);
+      const id = asPersistedId(community.community_id);
       const mode = membershipMode(community.membership_mode);
       const verification = verificationLane(community.human_verification_lane);
-      if (id === null || mode === null) return yield* Effect.fail(invalid("eligibility"));
+      if (id === null || id !== input.communityId || mode === null || verification === undefined) {
+        return yield* Effect.fail(invalid("eligibility"));
+      }
 
       const status = parseMembershipStatus(community.status);
       if (status === null) return yield* Effect.fail(invalid("eligibility"));
@@ -324,14 +372,23 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             values: [input.communityId],
             readonly: false,
           });
+          if (communityResult.rows.length > 1) return yield* Effect.fail(invalid("join"));
           const community = row(communityResult.rows);
-          const communityId = community === undefined ? null : asString(community.community_id);
+          const communityId =
+            community === undefined ? null : asPersistedId(community.community_id);
           const mode = community === undefined ? null : membershipMode(community.membership_mode);
-          if (communityId === null || mode === null) return yield* Effect.fail(invalid("join"));
+          if (community === undefined) {
+            return yield* Effect.fail(
+              new CommunityRepositoryError({ operation: "join", reason: "not-found" }),
+            );
+          }
+          if (communityId === null || mode === null || communityId !== input.communityId) {
+            return yield* Effect.fail(invalid("join"));
+          }
 
           const existingResult = yield* transaction.execute<MembershipRow>({
             label: "community.memberships.lock-member",
-            text: `SELECT status
+            text: `SELECT status, request_note
                      FROM community_memberships
                     WHERE community_id = $1
                       AND user_id = $2
@@ -339,15 +396,65 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             values: [input.communityId, input.actor.userId],
             readonly: false,
           });
+          if (existingResult.rows.length > 1) return yield* Effect.fail(invalid("join"));
           const existing = row(existingResult.rows);
           const existingStatus =
             existing === undefined ? null : parseMembershipStatus(existing.status);
           if (existing !== undefined && existingStatus === null) {
             return yield* Effect.fail(invalid("join"));
           }
-          if (existingStatus === "member")
+          if (
+            existing !== undefined &&
+            existing.request_note !== undefined &&
+            existing.request_note !== null &&
+            typeof existing.request_note !== "string"
+          ) {
+            return yield* Effect.fail(invalid("join"));
+          }
+
+          const requestNote = input.body.note ?? null;
+          if (existingStatus === "member") {
+            if (mode === "open") {
+              yield* transaction.execute({
+                label: "community.follows.activate",
+                text: `INSERT INTO community_follows
+                          (community_follow_id, community_id, user_id, status, unfollowed_at, created_at, updated_at)
+                        VALUES ($1, $2, $3, 'active', NULL, now(), now())
+                        ON CONFLICT (community_id, user_id)
+                        DO UPDATE SET status = 'active', unfollowed_at = NULL, updated_at = now()`,
+                values: [generatedId("follow"), input.communityId, input.actor.userId],
+                readonly: false,
+              });
+            }
             return { community: communityId, status: "joined" as const };
+          }
           if (existingStatus === "pending") {
+            if (
+              requestNote !== null &&
+              (existing?.request_note === null || existing?.request_note === undefined)
+            ) {
+              yield* transaction.execute({
+                label: "community.memberships.update-request-note",
+                text: `UPDATE community_memberships
+                           SET request_note = $3, updated_at = now()
+                         WHERE community_id = $1
+                           AND user_id = $2`,
+                values: [input.communityId, input.actor.userId, requestNote],
+                readonly: false,
+              });
+            }
+            // A pending request never follows, including a replay after a
+            // previous membership was left or downgraded.
+            yield* transaction.execute({
+              label: "community.follows.deactivate",
+              text: `UPDATE community_follows
+                        SET status = 'inactive', unfollowed_at = now(), updated_at = now()
+                      WHERE community_id = $1
+                        AND user_id = $2
+                        AND status = 'active'`,
+              values: [input.communityId, input.actor.userId],
+              readonly: false,
+            });
             return { community: communityId, status: "requested" as const };
           }
           if (existingStatus === "banned" || mode === "gated") {
@@ -364,26 +471,56 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                         SET status = $3,
                             joined_at = CASE WHEN $3 = 'member' THEN now() ELSE NULL END,
                             left_at = NULL,
+                            request_note = $4,
                             updated_at = now()
                       WHERE community_id = $1
                         AND user_id = $2`,
-              values: [input.communityId, input.actor.userId, status],
+              values: [
+                input.communityId,
+                input.actor.userId,
+                status,
+                status === "pending" ? requestNote : null,
+              ],
               readonly: false,
             });
           } else {
             yield* transaction.execute({
               label: "community.memberships.insert",
               text: `INSERT INTO community_memberships
-                        (community_id, membership_id, user_id, status, joined_at, created_at, updated_at)
+                        (community_id, membership_id, user_id, status, joined_at, request_note, created_at, updated_at)
                       VALUES ($1, $2, $3, $4,
                               CASE WHEN $4 = 'member' THEN now() ELSE NULL END,
-                              now(), now())`,
+                              $5, now(), now())`,
               values: [
                 input.communityId,
-                `membership:${input.communityId}:${input.actor.userId}`,
+                generatedId("membership"),
                 input.actor.userId,
                 status,
+                status === "pending" ? requestNote : null,
               ],
+              readonly: false,
+            });
+          }
+          if (status === "member") {
+            yield* transaction.execute({
+              label: "community.follows.activate",
+              text: `INSERT INTO community_follows
+                        (community_follow_id, community_id, user_id, status, unfollowed_at, created_at, updated_at)
+                      VALUES ($1, $2, $3, 'active', NULL, now(), now())
+                      ON CONFLICT (community_id, user_id)
+                      DO UPDATE SET status = 'active', unfollowed_at = NULL, updated_at = now()`,
+              values: [generatedId("follow"), input.communityId, input.actor.userId],
+              readonly: false,
+            });
+          } else {
+            yield* transaction.execute({
+              label: "community.follows.deactivate",
+              text: `UPDATE community_follows
+                        SET status = 'inactive', unfollowed_at = now(), updated_at = now()
+                      WHERE community_id = $1
+                        AND user_id = $2
+                        AND status = 'active'`,
+              values: [input.communityId, input.actor.userId],
               readonly: false,
             });
           }
@@ -403,7 +540,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
-          const community = yield* transaction.execute({
+          const community = yield* transaction.execute<{ readonly community_id: unknown }>({
             label: "community.follows.lock-community",
             text: `SELECT community_id
                      FROM communities
@@ -413,7 +550,14 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             values: [input.communityId],
             readonly: false,
           });
-          if (community.rowCount !== 1) return yield* Effect.fail(invalid("follow"));
+          if (community.rows.length === 0) {
+            return yield* Effect.fail(
+              new CommunityRepositoryError({ operation: "follow", reason: "not-found" }),
+            );
+          }
+          if (community.rows.length !== 1) return yield* Effect.fail(invalid("follow"));
+          const lockedCommunityId = asPersistedId(row(community.rows)?.community_id);
+          if (lockedCommunityId !== input.communityId) return yield* Effect.fail(invalid("follow"));
 
           const membership = yield* transaction.execute<MembershipRow>({
             label: "community.follows.require-member",
@@ -425,6 +569,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             values: [input.communityId, input.actor.userId],
             readonly: false,
           });
+          if (membership.rows.length > 1) return yield* Effect.fail(invalid("follow"));
           const status = row(membership.rows);
           if (status === undefined) {
             return yield* Effect.fail(
@@ -446,11 +591,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                     VALUES ($1, $2, $3, 'active', NULL, now(), now())
                     ON CONFLICT (community_id, user_id)
                     DO UPDATE SET status = 'active', unfollowed_at = NULL, updated_at = now()`,
-            values: [
-              `follow:${input.communityId}:${input.actor.userId}`,
-              input.communityId,
-              input.actor.userId,
-            ],
+            values: [generatedId("follow"), input.communityId, input.actor.userId],
             readonly: false,
           });
           const count = yield* transaction.execute<FollowCountRow>({
@@ -462,6 +603,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             values: [input.communityId],
             readonly: true,
           });
+          if (count.rows.length !== 1) return yield* Effect.fail(invalid("follow"));
           const followerCount = asCount(row(count.rows)?.follower_count);
           if (followerCount === null) return yield* Effect.fail(invalid("follow"));
           return { community: input.communityId, following: true, follower_count: followerCount };
@@ -477,7 +619,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
-          const community = yield* transaction.execute({
+          const community = yield* transaction.execute<{ readonly community_id: unknown }>({
             label: "community.follows.lock-community-unfollow",
             text: `SELECT community_id
                      FROM communities
@@ -487,7 +629,38 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             values: [input.communityId],
             readonly: false,
           });
-          if (community.rowCount !== 1) return yield* Effect.fail(invalid("unfollow"));
+          if (community.rows.length === 0) {
+            return yield* Effect.fail(
+              new CommunityRepositoryError({ operation: "unfollow", reason: "not-found" }),
+            );
+          }
+          if (community.rows.length !== 1) return yield* Effect.fail(invalid("unfollow"));
+          const lockedCommunityId = asPersistedId(row(community.rows)?.community_id);
+          if (lockedCommunityId !== input.communityId) {
+            return yield* Effect.fail(invalid("unfollow"));
+          }
+
+          const membership = yield* transaction.execute<MembershipRow>({
+            label: "community.follows.require-member-unfollow",
+            text: `SELECT status
+                     FROM community_memberships
+                    WHERE community_id = $1
+                      AND user_id = $2
+                    FOR UPDATE`,
+            values: [input.communityId, input.actor.userId],
+            readonly: false,
+          });
+          if (membership.rows.length > 1) return yield* Effect.fail(invalid("unfollow"));
+          const membershipRow = row(membership.rows);
+          if (membershipRow !== undefined) {
+            const parsedMembership = parseMembershipStatus(membershipRow.status);
+            if (parsedMembership === null) return yield* Effect.fail(invalid("unfollow"));
+            if (parsedMembership === "member") {
+              return yield* Effect.fail(
+                new CommunityRepositoryError({ operation: "unfollow", reason: "constraint" }),
+              );
+            }
+          }
 
           yield* transaction.execute({
             label: "community.follows.deactivate",
@@ -508,6 +681,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             values: [input.communityId],
             readonly: true,
           });
+          if (count.rows.length !== 1) return yield* Effect.fail(invalid("unfollow"));
           const followerCount = asCount(row(count.rows)?.follower_count);
           if (followerCount === null) return yield* Effect.fail(invalid("unfollow"));
           const following = false;

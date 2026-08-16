@@ -2,6 +2,7 @@ import {
   BadRequest,
   Conflict,
   GateUnsatisfied,
+  InternalError,
   type JoinCommunity,
   MembershipRequired,
   NotFound,
@@ -28,7 +29,10 @@ const mapJoinFailure = (error: CommunityRepositoryError) => {
   if (error.reason === "constraint") {
     return new Conflict({ message: "Community join conflicts with existing membership" });
   }
-  return invalidJoin();
+  if (error.reason === "not-found") {
+    return new NotFound({ message: "Community not found" });
+  }
+  return new InternalError({ message: "Community join failed" });
 };
 
 export const joinCommunity = Effect.fn("joinCommunity")(function* (
@@ -36,7 +40,7 @@ export const joinCommunity = Effect.fn("joinCommunity")(function* (
   services: CommunityServices,
 ): Effect.fn.Return<
   JoinDocument,
-  BadRequest | Conflict | GateUnsatisfied | MembershipRequired | NotFound
+  BadRequest | Conflict | GateUnsatisfied | InternalError | MembershipRequired | NotFound
 > {
   if (!isUsableId(input.communityId) || !isUsableId(input.actor.userId)) {
     return yield* invalidJoin();
@@ -44,7 +48,13 @@ export const joinCommunity = Effect.fn("joinCommunity")(function* (
 
   const eligibility = yield* services.communityStore
     .getJoinEligibility({ communityId: input.communityId, userId: input.actor.userId })
-    .pipe(Effect.mapError(() => new NotFound({ message: "Community not found" })));
+    .pipe(
+      Effect.mapError((error) =>
+        error instanceof CommunityRepositoryError && error.reason === "not-found"
+          ? new NotFound({ message: "Community not found" })
+          : new InternalError({ message: "Community eligibility lookup failed" }),
+      ),
+    );
   if (eligibility === null) return yield* new NotFound({ message: "Community not found" });
   if (eligibility.status === "gate_failed") {
     return yield* new GateUnsatisfied({
@@ -63,7 +73,7 @@ export const joinCommunity = Effect.fn("joinCommunity")(function* (
       Effect.mapError((error) =>
         error instanceof CommunityRepositoryError
           ? mapJoinFailure(error)
-          : new NotFound({ message: "Community not found" }),
+          : new InternalError({ message: "Community join failed" }),
       ),
     );
 });

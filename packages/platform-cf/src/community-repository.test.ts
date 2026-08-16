@@ -12,19 +12,27 @@ import { makeControlPlaneCommunityRepository } from "./community-repository.ts";
 type CommunityState = {
   readonly ids: ReadonlySet<string>;
   readonly names: ReadonlyMap<string, string>;
-  readonly memberships: ReadonlyMap<string, "pending" | "member" | "left" | "banned">;
-  readonly follows: ReadonlySet<string>;
+  readonly memberships: readonly {
+    readonly communityId: string;
+    readonly userId: string;
+    readonly status: "pending" | "member" | "left" | "banned";
+  }[];
+  readonly follows: readonly { readonly communityId: string; readonly userId: string }[];
 };
-
-const key = (communityId: string, userId: string): string => `${communityId}:${userId}`;
 
 function fakeDb(state: CommunityState): ControlPlaneDb["Service"] {
   const execute = <Row = unknown>(
     statement: ControlPlaneStatement,
   ): Effect.Effect<ControlPlaneResult<Row>, never> => {
     const [communityId, userId] = statement.values as readonly [string?, string?];
-    const membership = state.memberships.get(key(communityId ?? "", userId ?? ""));
-    const follow = state.follows.has(key(communityId ?? "", userId ?? ""));
+    const membership = state.memberships.find(
+      (candidate) =>
+        candidate.communityId === (communityId ?? "") && candidate.userId === (userId ?? ""),
+    )?.status;
+    const follow = state.follows.some(
+      (candidate) =>
+        candidate.communityId === (communityId ?? "") && candidate.userId === (userId ?? ""),
+    );
     let rows: readonly Record<string, unknown>[] = [];
 
     switch (statement.label) {
@@ -33,11 +41,11 @@ function fakeDb(state: CommunityState): ControlPlaneDb["Service"] {
         break;
       case "community.communities.get-preview":
         if (state.ids.has(communityId ?? "")) {
-          const memberCount = [...state.memberships].filter(
-            ([compound, status]) => compound.startsWith(`${communityId}:`) && status === "member",
+          const memberCount = state.memberships.filter(
+            (candidate) => candidate.communityId === communityId && candidate.status === "member",
           ).length;
-          const followerCount = [...state.follows].filter((compound) =>
-            compound.startsWith(`${communityId}:`),
+          const followerCount = state.follows.filter(
+            (candidate) => candidate.communityId === communityId,
           ).length;
           rows = [
             {
@@ -80,8 +88,8 @@ function fakeDb(state: CommunityState): ControlPlaneDb["Service"] {
       case "community.follows.count-after-unfollow":
         rows = [
           {
-            follower_count: [...state.follows].filter((compound) =>
-              compound.startsWith(`${communityId}:`),
+            follower_count: state.follows.filter(
+              (candidate) => candidate.communityId === communityId,
             ).length,
           },
         ];
@@ -117,8 +125,8 @@ const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
             ["community-a", "A"],
             ["community-b", "B"],
           ]),
-          memberships: new Map([[key("community-b", "user-a"), "member"]]),
-          follows: new Set(),
+          memberships: [{ communityId: "community-b", userId: "user-a", status: "member" }],
+          follows: [],
         }),
       ),
     ),

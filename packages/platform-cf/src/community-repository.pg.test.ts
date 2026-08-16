@@ -89,7 +89,7 @@ suite("Postgres 17 community repository", () => {
     });
   }, 30_000);
 
-  test("makes join and follow/unfollow idempotent for an open community", async () => {
+  test("makes join and follow idempotent while protecting active follows", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
       await admin.query({
@@ -115,6 +115,12 @@ suite("Postgres 17 community repository", () => {
       expect(firstJoin).toEqual({ community: "community-open", status: "joined" });
       expect(secondJoin).toEqual(firstJoin);
 
+      const membership = await admin.query({
+        text: "SELECT membership_id FROM community_memberships WHERE community_id = $1 AND user_id = $2",
+        values: ["community-open", "user-a"],
+      });
+      expect(membership.rows[0]?.membership_id).toMatch(/^membership_[0-9a-f-]{36}$/);
+
       const firstFollow = await runStore(connection, (store) =>
         store.follow({
           communityId: "community-open",
@@ -134,24 +140,21 @@ suite("Postgres 17 community repository", () => {
       });
       expect(secondFollow).toEqual(firstFollow);
 
-      const firstUnfollow = await runStore(connection, (store) =>
-        store.unfollow({
-          communityId: "community-open",
-          actor: { userId: "user-a", kind: "user" },
-        }),
-      );
-      const secondUnfollow = await runStore(connection, (store) =>
-        store.unfollow({
-          communityId: "community-open",
-          actor: { userId: "user-a", kind: "user" },
-        }),
-      );
-      expect(firstUnfollow).toEqual({
-        community: "community-open",
-        following: false,
-        follower_count: 0,
+      const follow = await admin.query({
+        text: "SELECT community_follow_id, status FROM community_follows WHERE community_id = $1 AND user_id = $2",
+        values: ["community-open", "user-a"],
       });
-      expect(secondUnfollow).toEqual(firstUnfollow);
+      expect(follow.rows[0]?.community_follow_id).toMatch(/^follow_[0-9a-f-]{36}$/);
+      expect(follow.rows[0]?.status).toBe("active");
+
+      await expect(
+        runStore(connection, (store) =>
+          store.unfollow({
+            communityId: "community-open",
+            actor: { userId: "user-a", kind: "user" },
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "constraint" });
     });
   }, 30_000);
 
@@ -178,6 +181,172 @@ suite("Postgres 17 community repository", () => {
         values: ["community-gated"],
       });
       expect(memberships.rows[0]?.count).toBe(0);
+    });
+  }, 30_000);
+
+  test("persists request notes, replays pending joins, and never follows pending members", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      await admin.query({
+        text: `INSERT INTO communities
+          (community_id, display_name, status, membership_mode, created_by_user_id, created_at, updated_at)
+          VALUES ('community-request', 'Request', 'active', 'request', 'owner', now(), now())`,
+      });
+
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "community-request",
+            actor: { userId: "user-a", kind: "user" },
+            body: { note: "please let me in" },
+          }),
+        ),
+      ).resolves.toEqual({ community: "community-request", status: "requested" });
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "community-request",
+            actor: { userId: "user-a", kind: "user" },
+            body: { note: "replay must be idempotent" },
+          }),
+        ),
+      ).resolves.toEqual({ community: "community-request", status: "requested" });
+
+      const membership = await admin.query({
+        text: "SELECT membership_id, status, request_note FROM community_memberships WHERE community_id = $1 AND user_id = $2",
+        values: ["community-request", "user-a"],
+      });
+      expect(membership.rows).toHaveLength(1);
+      expect(membership.rows[0]).toMatchObject({
+        status: "pending",
+        request_note: "please let me in",
+      });
+      expect(membership.rows[0]?.membership_id).toMatch(/^membership_[0-9a-f-]{36}$/);
+
+      await expect(
+        runStore(connection, (store) =>
+          store.follow({
+            communityId: "community-request",
+            actor: { userId: "user-a", kind: "user" },
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "membership-required" });
+      const follow = await admin.query({
+        text: "SELECT COUNT(*)::int AS count FROM community_follows WHERE community_id = $1 AND user_id = $2 AND status = 'active'",
+        values: ["community-request", "user-a"],
+      });
+      expect(follow.rows[0]?.count).toBe(0);
+    });
+  }, 30_000);
+
+  test("rejects banned, pending, and left follow attempts, while a left member can rejoin atomically", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      await admin.query({
+        text: `INSERT INTO communities
+          (community_id, display_name, status, membership_mode, created_by_user_id, created_at, updated_at)
+          VALUES ('community-states', 'States', 'active', 'open', 'owner', now(), now())`,
+      });
+      await admin.query({
+        text: `INSERT INTO community_memberships
+          (community_id, membership_id, user_id, status, created_at, updated_at)
+          VALUES ('community-states', 'membership-banned', 'user-banned', 'banned', now(), now()),
+                 ('community-states', 'membership-pending', 'user-pending', 'pending', now(), now()),
+                 ('community-states', 'membership-left', 'user-left', 'left', now(), now())`,
+      });
+
+      for (const userId of ["user-banned", "user-pending"]) {
+        await expect(
+          runStore(connection, (store) =>
+            store.follow({
+              communityId: "community-states",
+              actor: { userId, kind: "user" },
+            }),
+          ),
+        ).rejects.toMatchObject({
+          _tag: "CommunityRepositoryError",
+          reason: "membership-required",
+        });
+      }
+
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "community-states",
+            actor: { userId: "user-banned", kind: "user" },
+            body: {},
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "membership-required" });
+
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "community-states",
+            actor: { userId: "user-left", kind: "user" },
+            body: {},
+          }),
+        ),
+      ).resolves.toEqual({ community: "community-states", status: "joined" });
+      const follow = await admin.query({
+        text: "SELECT status FROM community_follows WHERE community_id = $1 AND user_id = $2",
+        values: ["community-states", "user-left"],
+      });
+      expect(follow.rows[0]?.status).toBe("active");
+    });
+  }, 30_000);
+
+  test("serializes concurrent join/follow/unfollow operations under the community lock", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      await admin.query({
+        text: `INSERT INTO communities
+          (community_id, display_name, status, created_by_user_id, created_at, updated_at)
+          VALUES ('community-concurrent', 'Concurrent', 'active', 'owner', now(), now())`,
+      });
+      const joins = await Promise.all(
+        Array.from({ length: 6 }, () =>
+          runStore(connection, (store) =>
+            store.join({
+              communityId: "community-concurrent",
+              actor: { userId: "user-a", kind: "user" },
+              body: {},
+            }),
+          ),
+        ),
+      );
+      expect(joins.every((result) => result.status === "joined")).toBe(true);
+
+      const follows = await Promise.all(
+        Array.from({ length: 6 }, () =>
+          runStore(connection, (store) =>
+            store.follow({
+              communityId: "community-concurrent",
+              actor: { userId: "user-a", kind: "user" },
+            }),
+          ),
+        ),
+      );
+      expect(follows.every((result) => result.following)).toBe(true);
+
+      const unfollows = await Promise.allSettled(
+        Array.from({ length: 6 }, () =>
+          runStore(connection, (store) =>
+            store.unfollow({
+              communityId: "community-concurrent",
+              actor: { userId: "user-a", kind: "user" },
+            }),
+          ),
+        ),
+      );
+      expect(unfollows.every((result) => result.status === "rejected")).toBe(true);
+      const rows = await admin.query({
+        text: `SELECT
+                 (SELECT COUNT(*)::int FROM community_memberships WHERE community_id = $1 AND user_id = $2) AS memberships,
+                 (SELECT COUNT(*)::int FROM community_follows WHERE community_id = $1 AND user_id = $2 AND status = 'active') AS follows`,
+        values: ["community-concurrent", "user-a"],
+      });
+      expect(rows.rows[0]).toEqual({ memberships: 1, follows: 1 });
     });
   }, 30_000);
 });
