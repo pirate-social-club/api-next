@@ -1,11 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import {
-  Conflict,
-  GateUnsatisfied,
-  InternalError,
-  MembershipRequired,
-  NotFound,
-} from "@pirate/contracts";
+import { Conflict, GateUnsatisfied, InternalError, NotFound } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   type CommunityPreviewDocument,
@@ -101,16 +95,14 @@ describe("community application use cases", () => {
     expect(joinCalls).toBe(0);
   });
 
-  test("requires membership for follow, even when another community has membership", async () => {
+  test("allows a nonmember to follow a live community", async () => {
     const scoped = services({
       getPreview: ({ communityId }) => Effect.succeed(preview(communityId)),
-      membershipStatus: ({ communityId }) =>
-        Effect.succeed(communityId === "community-a" ? ("missing" as const) : ("member" as const)),
     });
 
     await expect(
       Effect.runPromise(followCommunity({ communityId: "community-a", actor }, scoped)),
-    ).rejects.toBeInstanceOf(MembershipRequired);
+    ).resolves.toMatchObject({ community: "community-a", following: true });
   });
 
   test("redacts storage failures instead of converting them to a 4xx", async () => {

@@ -85,7 +85,16 @@ suite("Postgres 17 community repository", () => {
             actor: { userId: "user-a", kind: "user" },
           }),
         ),
-      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "membership-required" });
+      ).resolves.toEqual({
+        community: "community-a",
+        following: true,
+        follower_count: 1,
+      });
+      const follows = await admin.query({
+        text: "SELECT community_id FROM community_follows WHERE user_id = $1",
+        values: ["user-a"],
+      });
+      expect(follows.rows).toEqual([{ community_id: "community-a" }]);
     });
   }, 30_000);
 
@@ -184,13 +193,26 @@ suite("Postgres 17 community repository", () => {
     });
   }, 30_000);
 
-  test("persists request notes, replays pending joins, and never follows pending members", async () => {
+  test("persists request notes, preserves explicit follows, and supports pending follow/unfollow", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
       await admin.query({
         text: `INSERT INTO communities
           (community_id, display_name, status, membership_mode, created_by_user_id, created_at, updated_at)
           VALUES ('community-request', 'Request', 'active', 'request', 'owner', now(), now())`,
+      });
+
+      await expect(
+        runStore(connection, (store) =>
+          store.follow({
+            communityId: "community-request",
+            actor: { userId: "user-a", kind: "user" },
+          }),
+        ),
+      ).resolves.toEqual({
+        community: "community-request",
+        following: true,
+        follower_count: 1,
       });
 
       await expect(
@@ -223,23 +245,33 @@ suite("Postgres 17 community repository", () => {
       });
       expect(membership.rows[0]?.membership_id).toMatch(/^membership_[0-9a-f-]{36}$/);
 
+      const follow = await admin.query({
+        text: "SELECT status FROM community_follows WHERE community_id = $1 AND user_id = $2",
+        values: ["community-request", "user-a"],
+      });
+      expect(follow.rows[0]?.status).toBe("active");
+
       await expect(
         runStore(connection, (store) =>
-          store.follow({
+          store.unfollow({
             communityId: "community-request",
             actor: { userId: "user-a", kind: "user" },
           }),
         ),
-      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "membership-required" });
-      const follow = await admin.query({
-        text: "SELECT COUNT(*)::int AS count FROM community_follows WHERE community_id = $1 AND user_id = $2 AND status = 'active'",
+      ).resolves.toEqual({
+        community: "community-request",
+        following: false,
+        follower_count: 0,
+      });
+      const unfollowed = await admin.query({
+        text: "SELECT status FROM community_follows WHERE community_id = $1 AND user_id = $2",
         values: ["community-request", "user-a"],
       });
-      expect(follow.rows[0]?.count).toBe(0);
+      expect(unfollowed.rows[0]?.status).toBe("inactive");
     });
   }, 30_000);
 
-  test("rejects banned, pending, and left follow attempts, while a left member can rejoin atomically", async () => {
+  test("allows follow regardless of membership state while left members rejoin atomically", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
       await admin.query({
@@ -255,7 +287,7 @@ suite("Postgres 17 community repository", () => {
                  ('community-states', 'membership-left', 'user-left', 'left', now(), now())`,
       });
 
-      for (const userId of ["user-banned", "user-pending"]) {
+      for (const userId of ["user-banned", "user-pending", "user-left"]) {
         await expect(
           runStore(connection, (store) =>
             store.follow({
@@ -263,9 +295,9 @@ suite("Postgres 17 community repository", () => {
               actor: { userId, kind: "user" },
             }),
           ),
-        ).rejects.toMatchObject({
-          _tag: "CommunityRepositoryError",
-          reason: "membership-required",
+        ).resolves.toMatchObject({
+          community: "community-states",
+          following: true,
         });
       }
 

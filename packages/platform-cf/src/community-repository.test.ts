@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import {
-  CommunityRepositoryError,
   ControlPlaneDb,
   type ControlPlaneResult,
   type ControlPlaneStatement,
@@ -133,7 +132,7 @@ const run = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
   );
 
 describe("community Postgres repository boundary", () => {
-  test("does not let membership in community B authorize a follow in community A", async () => {
+  test("allows a nonmember to follow only the requested community", async () => {
     const repository = makeControlPlaneCommunityRepository();
     await expect(
       run(
@@ -142,7 +141,7 @@ describe("community Postgres repository boundary", () => {
           actor: { userId: "user-a", kind: "user" },
         }),
       ),
-    ).rejects.toBeInstanceOf(CommunityRepositoryError);
+    ).resolves.toMatchObject({ community: "community-a", following: true });
 
     await expect(
       run(repository.getPreview({ communityId: "community-a", viewerUserId: "user-a" })),

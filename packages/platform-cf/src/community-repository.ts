@@ -443,18 +443,8 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                 readonly: false,
               });
             }
-            // A pending request never follows, including a replay after a
-            // previous membership was left or downgraded.
-            yield* transaction.execute({
-              label: "community.follows.deactivate",
-              text: `UPDATE community_follows
-                        SET status = 'inactive', unfollowed_at = now(), updated_at = now()
-                      WHERE community_id = $1
-                        AND user_id = $2
-                        AND status = 'active'`,
-              values: [input.communityId, input.actor.userId],
-              readonly: false,
-            });
+            // A pending request never activates a follow. An explicit prior
+            // follow remains active until the user explicitly unfollows.
             return { community: communityId, status: "requested" as const };
           }
           if (existingStatus === "banned" || mode === "gated") {
@@ -512,17 +502,6 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
               values: [generatedId("follow"), input.communityId, input.actor.userId],
               readonly: false,
             });
-          } else {
-            yield* transaction.execute({
-              label: "community.follows.deactivate",
-              text: `UPDATE community_follows
-                        SET status = 'inactive', unfollowed_at = now(), updated_at = now()
-                      WHERE community_id = $1
-                        AND user_id = $2
-                        AND status = 'active'`,
-              values: [input.communityId, input.actor.userId],
-              readonly: false,
-            });
           }
           return {
             community: communityId,
@@ -558,31 +537,6 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
           if (community.rows.length !== 1) return yield* Effect.fail(invalid("follow"));
           const lockedCommunityId = asPersistedId(row(community.rows)?.community_id);
           if (lockedCommunityId !== input.communityId) return yield* Effect.fail(invalid("follow"));
-
-          const membership = yield* transaction.execute<MembershipRow>({
-            label: "community.follows.require-member",
-            text: `SELECT status
-                     FROM community_memberships
-                    WHERE community_id = $1
-                      AND user_id = $2
-                    FOR UPDATE`,
-            values: [input.communityId, input.actor.userId],
-            readonly: false,
-          });
-          if (membership.rows.length > 1) return yield* Effect.fail(invalid("follow"));
-          const status = row(membership.rows);
-          if (status === undefined) {
-            return yield* Effect.fail(
-              new CommunityRepositoryError({ operation: "follow", reason: "membership-required" }),
-            );
-          }
-          const parsedStatus = parseMembershipStatus(status.status);
-          if (parsedStatus === null) return yield* Effect.fail(invalid("follow"));
-          if (parsedStatus !== "member") {
-            return yield* Effect.fail(
-              new CommunityRepositoryError({ operation: "follow", reason: "membership-required" }),
-            );
-          }
 
           yield* transaction.execute({
             label: "community.follows.activate",
