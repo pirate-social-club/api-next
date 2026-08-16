@@ -321,6 +321,63 @@ function isOlderThanTtl(verifiedAt: number | string | null | undefined, nowMs: n
   return verifiedMs !== null && verifiedMs + 90 * 24 * 60 * 60 * 1_000 <= nowMs;
 }
 
+function normalizeCapabilityTimestamp(value: unknown): number | null {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? Math.floor(value) : null;
+  }
+  if (typeof value === "string") {
+    const timestampMs = Date.parse(value);
+    return Number.isFinite(timestampMs) ? Math.floor(timestampMs / 1_000) : null;
+  }
+  return null;
+}
+
+function normalizeCapabilityTimestampField(capability: { readonly verified_at?: unknown }): {
+  readonly verified_at?: number | null;
+} {
+  return capability.verified_at === undefined
+    ? {}
+    : { verified_at: normalizeCapabilityTimestamp(capability.verified_at) };
+}
+
+function normalizeVerificationCapabilityTimestamps(
+  capabilities: VerificationCapabilitiesResponse,
+): VerificationCapabilitiesResponse {
+  const walletScore = capabilities.wallet_score;
+  return {
+    unique_human: {
+      ...capabilities.unique_human,
+      ...normalizeCapabilityTimestampField(capabilities.unique_human),
+    },
+    age_over_18: {
+      ...capabilities.age_over_18,
+      ...normalizeCapabilityTimestampField(capabilities.age_over_18),
+    },
+    minimum_age: {
+      ...capabilities.minimum_age,
+      ...normalizeCapabilityTimestampField(capabilities.minimum_age),
+    },
+    nationality: {
+      ...capabilities.nationality,
+      ...normalizeCapabilityTimestampField(capabilities.nationality),
+    },
+    gender: {
+      ...capabilities.gender,
+      ...normalizeCapabilityTimestampField(capabilities.gender),
+    },
+    wallet_score: {
+      ...walletScore,
+      ...normalizeCapabilityTimestampField(walletScore),
+      ...(walletScore.last_scored_at === undefined
+        ? {}
+        : { last_scored_at: normalizeCapabilityTimestamp(walletScore.last_scored_at) }),
+      ...(walletScore.expires_at === undefined
+        ? {}
+        : { expires_at: normalizeCapabilityTimestamp(walletScore.expires_at) }),
+    },
+  };
+}
+
 function applyLazyCapabilityExpiry(
   capabilities: VerificationCapabilitiesResponse,
   nowMs = Date.now(),
@@ -366,23 +423,26 @@ function parseProfileVerificationCapabilities(
   nowMs = Date.now(),
 ): VerificationCapabilitiesResponse {
   const defaults = buildDefaultVerificationCapabilities();
-  if (!raw) return applyLazyCapabilityExpiry(defaults, nowMs);
+  if (!raw)
+    return normalizeVerificationCapabilityTimestamps(applyLazyCapabilityExpiry(defaults, nowMs));
 
   try {
     const parsed = JSON.parse(raw) as Partial<VerificationCapabilitiesResponse>;
-    return applyLazyCapabilityExpiry(
-      {
-        unique_human: parsed.unique_human ?? defaults.unique_human,
-        age_over_18: parsed.age_over_18 ?? defaults.age_over_18,
-        minimum_age: parsed.minimum_age ?? defaults.minimum_age,
-        nationality: parsed.nationality ?? defaults.nationality,
-        gender: parsed.gender ?? defaults.gender,
-        wallet_score: parsed.wallet_score ?? defaults.wallet_score,
-      },
-      nowMs,
+    return normalizeVerificationCapabilityTimestamps(
+      applyLazyCapabilityExpiry(
+        {
+          unique_human: parsed.unique_human ?? defaults.unique_human,
+          age_over_18: parsed.age_over_18 ?? defaults.age_over_18,
+          minimum_age: parsed.minimum_age ?? defaults.minimum_age,
+          nationality: parsed.nationality ?? defaults.nationality,
+          gender: parsed.gender ?? defaults.gender,
+          wallet_score: parsed.wallet_score ?? defaults.wallet_score,
+        },
+        nowMs,
+      ),
     );
   } catch {
-    return applyLazyCapabilityExpiry(defaults, nowMs);
+    return normalizeVerificationCapabilityTimestamps(applyLazyCapabilityExpiry(defaults, nowMs));
   }
 }
 

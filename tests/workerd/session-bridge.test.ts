@@ -7,6 +7,7 @@ import {
   makeSessionBridgeFromEnv,
   SessionBridgeError,
 } from "../../packages/platform-cf/src/session-bridge";
+import { SESSION_CONFORMANCE_CORPUS } from "../../packages/testing/src/session-bridge";
 
 const NOW = Math.floor(Date.now() / 1_000);
 
@@ -90,6 +91,32 @@ const claims = (overrides: Record<string, unknown> = {}): Record<string, unknown
   exp: NOW + 3_590,
   ...overrides,
 });
+
+function matrixHeader(
+  recipe: (typeof SESSION_CONFORMANCE_CORPUS)[number]["recipe"],
+): Record<string, unknown> {
+  return {
+    alg: "RS256",
+    typ: "JWT",
+    ...recipe.header,
+  };
+}
+
+function matrixClaims(
+  recipe: (typeof SESSION_CONFORMANCE_CORPUS)[number]["recipe"],
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    iss: "pirate-api",
+    aud: "pirate-app",
+    sub: "usr_session_vector",
+    scope: "pirate_app_session",
+    iat: NOW,
+    exp: NOW + 3_600,
+    ...recipe.claims,
+  };
+  for (const claim of recipe.omitClaims ?? []) delete result[claim];
+  return result;
+}
 
 async function expectCode(
   action: () => Promise<unknown>,
@@ -279,5 +306,70 @@ describe("session bridge WebCrypto primitives (workerd)", () => {
 
     const verifier = await makeSessionBridge({ publicKeyPem: material.publicPem });
     await expectCode(() => verifier.sign({ sub: "usr_workerd_session" }), "configuration_invalid");
+  });
+
+  it("runs the complete 32-vector matrix in workerd", async () => {
+    const material = await keyMaterial();
+    const wrong = await keyMaterial();
+    const expectedRejects = new Set([
+      "valid-default-scope-when-omitted",
+      "valid-default-scope-when-empty",
+      "reject-wrong-algorithm",
+      "reject-wrong-typ-contract",
+      "reject-wrong-issuer",
+      "reject-wrong-audience",
+      "reject-missing-sub",
+      "reject-empty-sub",
+      "contract-reject-missing-iat",
+      "contract-reject-missing-exp",
+      "reject-malformed-exp",
+      "reject-zero-ttl-exp",
+      "reject-negative-ttl-exp",
+      "reject-expired",
+      "reject-not-yet-valid",
+      "reject-malformed-signature",
+      "reject-wrong-public-key",
+      "contract-reject-malformed-iat",
+      "contract-reject-nonstring-scope",
+    ]);
+    const observations: Array<{ readonly id: string; readonly result: "accept" | "reject" }> = [];
+
+    for (const vector of SESSION_CONFORMANCE_CORPUS) {
+      let token = await signedToken(
+        material.privateKey,
+        matrixHeader(vector.recipe),
+        matrixClaims(vector.recipe),
+      );
+      if (vector.recipe.signature === "malformed") {
+        const parts = token.split(".");
+        const signature = parts[2] ?? "";
+        token = [
+          parts[0],
+          parts[1],
+          `${signature.startsWith("A") ? "B" : "A"}${signature.slice(1)}`,
+        ].join(".");
+      }
+      const bridge = await makeSessionBridge({
+        publicKeyPem:
+          vector.id === "reject-wrong-public-key" ? wrong.publicPem : material.publicPem,
+        nowSeconds: () => NOW,
+      });
+      let result: "accept" | "reject" = "accept";
+      try {
+        await bridge.verify(token);
+      } catch {
+        result = "reject";
+      }
+      observations.push({ id: vector.id, result });
+    }
+
+    expect(observations).toHaveLength(32);
+    expect(
+      observations
+        .filter((observation) => observation.result === "reject")
+        .map((observation) => observation.id)
+        .sort(),
+    ).toEqual([...expectedRejects].sort());
+    expect(observations.filter((observation) => observation.result === "accept")).toHaveLength(13);
   });
 });

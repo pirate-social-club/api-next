@@ -207,6 +207,31 @@ describe("profile and identity projections", () => {
     ).toBeNull();
   });
 
+  test("normalizes old-wire capability timestamps and fails closed for malformed strings", () => {
+    const baseline = capabilities();
+    const oldWireCapabilities = {
+      ...baseline,
+      unique_human: {
+        ...baseline.unique_human,
+        verified_at: "2026-08-10T00:00:01.999Z",
+      },
+      nationality: {
+        ...baseline.nationality,
+        verified_at: "not-a-timestamp",
+      },
+    };
+
+    const result = serializeUserRow(
+      row({ verification_capabilities_json: JSON.stringify(oldWireCapabilities) }),
+    );
+
+    expect(result.verification_capabilities.unique_human.verified_at).toBe(
+      Math.floor(Date.parse("2026-08-10T00:00:01.999Z") / 1000),
+    );
+    expect(result.verification_capabilities.nationality.verified_at).toBeNull();
+    expect(Number.isNaN(result.verification_capabilities.nationality.verified_at ?? 0)).toBeFalse();
+  });
+
   test("assembles the profile with old ordering, badge policy, handle ids, and defaults", () => {
     const user = serializeUserRow(row());
     const result = assembleProfile(profileRow, globalHandle, linkedHandles, "0xprimary", user);
