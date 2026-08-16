@@ -5,6 +5,7 @@
     "0002_identity.sql": "c017a6681711f3edcb7e0cb247b60c96ed847bf94c766974cda2e74664f37112",
     "0003_m2_community_content.sql": "7201fac3e446d8f22056e412e938f595a17a71489cff83b74aec5440ee33007b",
     "0004_post_comment_lock.sql": "c14be1d97828bf424305860080a845953827babb36fd523d167cade523cef4cd",
-    "0005_m2_behavior_invariants.sql": "707bbc14af35783fd4f41f351122a55815e62b92680351ff671e94da554142e9"
+    "0005_m2_behavior_invariants.sql": "707bbc14af35783fd4f41f351122a55815e62b92680351ff671e94da554142e9",
+    "0006_public_profile_handle_index.sql": "200ca6edac5a8ba9a2a20c709a04652f90547baacae867743e0a15cef71fa522"
   }
 }

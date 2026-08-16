@@ -24,6 +24,7 @@ const migrationFiles = [
   "0003_m2_community_content.sql",
   "0004_post_comment_lock.sql",
   "0005_m2_behavior_invariants.sql",
+  "0006_public_profile_handle_index.sql",
 ] as const;
 const migrations: readonly PostgresMigration[] = await Promise.all(
   migrationFiles.map(async (version) => {
