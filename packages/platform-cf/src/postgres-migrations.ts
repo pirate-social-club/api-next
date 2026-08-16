@@ -18,7 +18,10 @@ export class MigrationDefinitionInvalid extends Data.TaggedError("MigrationDefin
 }> {}
 
 export class MigrationLedgerMismatch extends Data.TaggedError("MigrationLedgerMismatch")<{
+  readonly reason: "unknown-version" | "checksum" | "not-prefix";
   readonly version: string;
+  readonly expectedVersion: string | null;
+  readonly actualVersion: string | null;
   readonly expectedChecksum: string | null;
   readonly actualChecksum: string | null;
 }> {}
@@ -117,17 +120,42 @@ export const applyPostgresMigrations = Effect.fn("applyPostgresMigrations")(func
       for (const [version, checksum] of applied) {
         if (!defined.has(version)) {
           return yield* new MigrationLedgerMismatch({
+            reason: "unknown-version",
             version,
+            expectedVersion: null,
+            actualVersion: version,
             expectedChecksum: null,
             actualChecksum: checksum,
           });
         }
+      }
+
+      const appliedVersions = [...applied.keys()];
+      for (let index = 0; index < appliedVersions.length; index += 1) {
+        const expected = migrations[index];
+        const actualVersion = appliedVersions[index];
+        if (actualVersion === undefined) continue;
+        if (expected?.version === actualVersion) continue;
+        return yield* new MigrationLedgerMismatch({
+          reason: "not-prefix",
+          version: expected?.version ?? actualVersion,
+          expectedVersion: expected?.version ?? null,
+          actualVersion,
+          expectedChecksum: expected?.checksum ?? null,
+          actualChecksum: applied.get(actualVersion) ?? null,
+        });
+      }
+
+      for (const [version, checksum] of applied) {
         const expected = migrations.find((migration) => migration.version === version);
         if (expected?.checksum !== checksum) {
           return yield* new MigrationLedgerMismatch({
+            reason: "checksum",
             version,
             expectedChecksum: expected?.checksum ?? null,
             actualChecksum: checksum,
+            expectedVersion: version,
+            actualVersion: version,
           });
         }
       }

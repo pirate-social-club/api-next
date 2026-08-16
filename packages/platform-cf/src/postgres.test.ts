@@ -14,6 +14,7 @@ import {
   makeDirectPostgresControlPlaneLayer,
   type PostgresClientLike,
   type PostgresQueryConfig,
+  type PostgresQueryResult,
 } from "./postgres";
 
 const statement = {
@@ -48,10 +49,9 @@ class FakePostgresClient implements PostgresClientLike {
     return Promise.resolve();
   }
 
-  query(config: PostgresQueryConfig): Promise<{
-    readonly rows: readonly Record<string, unknown>[];
-    readonly rowCount: number;
-  }> {
+  query(
+    config: PostgresQueryConfig,
+  ): Promise<PostgresQueryResult | readonly PostgresQueryResult[]> {
     this.queries.push(config);
     if (config.text === "SELECT stall") {
       return new Promise((_, reject) => {
@@ -67,6 +67,12 @@ class FakePostgresClient implements PostgresClientLike {
         constraint: "communities_pkey",
       });
       return Promise.reject(failure);
+    }
+    if (config.text === "SELECT multi") {
+      return Promise.resolve([
+        { rows: [{ id: "first" }], rowCount: 1 },
+        { rows: [{ id: "last" }], rowCount: null },
+      ]);
     }
     const rows = config.text.startsWith("SELECT") ? [{ id: "community_9" }] : [];
     return Promise.resolve({ rows, rowCount: rows.length });
@@ -144,6 +150,20 @@ describe("Postgres control-plane adapter", () => {
       { text: "COMMIT", values: [] },
     ]);
     expect(client.events).toEqual(["connect", "end"]);
+  });
+
+  test("uses the single result or final result for multi-statement queries", async () => {
+    const client = new FakePostgresClient();
+    const output = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.execute({ ...statement, text: "SELECT multi" });
+        }).pipe(Effect.provide(layerFor(client))),
+      ),
+    );
+
+    expect(output).toEqual({ rows: [{ id: "last" }], rowCount: 1 });
   });
 
   test("exposes safe SQLSTATE classification and inclusive slow logging", async () => {

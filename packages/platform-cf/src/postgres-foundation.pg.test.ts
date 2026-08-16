@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { ControlPlaneDb } from "@pirate/application";
 import { Effect } from "effect";
@@ -20,6 +20,12 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
+const foundationTestCount = 4;
+const sentinelPath =
+  process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
+  "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
+const sentinelContents = "api-next-control-plane-postgres-foundation-suite-complete\n";
+let completedTestCount = 0;
 const baselineSql = await Bun.file(
   new URL("../../../db/postgres/schema.sql", import.meta.url),
 ).text();
@@ -152,6 +158,7 @@ suite("Postgres 17 v1 foundation", () => {
       expect(postStatus.rows[0]?.definition).toContain("processing");
       expect(postStatus.rows[0]?.definition).toContain("removed");
     });
+    completedTestCount += 1;
   });
 
   test("rejects duplicate, out-of-order, and checksum-mismatched migrations", async () => {
@@ -175,7 +182,24 @@ suite("Postgres 17 v1 foundation", () => {
       ]).catch((error) => error);
       expect(mismatch).toBeInstanceOf(MigrationLedgerMismatch);
       expect(mismatch).toMatchObject({ version: migration.version });
+
+      const secondMigration = { ...migration, version: "0002_v1_follow-up.sql" };
+      await withSchema(async (_admin, secondScopedConnectionString) => {
+        await applyMigrations(secondScopedConnectionString, [secondMigration]);
+        const gap = await applyMigrations(secondScopedConnectionString, [
+          migration,
+          secondMigration,
+        ]).catch((error) => error);
+        expect(gap).toBeInstanceOf(MigrationLedgerMismatch);
+        expect(gap).toMatchObject({
+          reason: "not-prefix",
+          version: migration.version,
+          expectedVersion: migration.version,
+          actualVersion: secondMigration.version,
+        });
+      });
     });
+    completedTestCount += 1;
   });
 
   test("rejects cross-community post, comment, and vote references", async () => {
@@ -202,6 +226,7 @@ suite("Postgres 17 v1 foundation", () => {
         ["community-b", "vote-b", "post-a", "user-b", 1, now],
       );
     });
+    completedTestCount += 1;
   });
 
   test("scopes repository reads, updates, and deletes by community", async () => {
@@ -264,5 +289,12 @@ suite("Postgres 17 v1 foundation", () => {
       expect(await readPost("community-a", "post-a")).toEqual([]);
       expect(await readPost("community-b", "post-b")).toEqual([{ body: "community B" }]);
     });
+    completedTestCount += 1;
+  });
+
+  afterAll(async () => {
+    if (connectionString !== undefined && completedTestCount === foundationTestCount) {
+      await Bun.write(sentinelPath, sentinelContents);
+    }
   });
 });

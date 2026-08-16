@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { ControlPlaneDb } from "@pirate/application";
 import { Effect, Fiber } from "effect";
 import { Client } from "pg";
@@ -9,14 +9,15 @@ const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_TEST_SENTINEL ??
-  "/tmp/api-next-control-plane-postgres-suite-complete";
-const sentinelContents = "api-next-control-plane-postgres-suite-complete\n";
+  "/tmp/api-next-control-plane-postgres-adapter-suite-complete";
+const sentinelContents = "api-next-control-plane-postgres-adapter-suite-complete\n";
 
 if (required && connectionString === undefined) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
+let completedTestCount = 0;
 
 type ProbeRow = { readonly run_id: string; readonly phase: string };
 
@@ -146,8 +147,6 @@ suite("Postgres 17 control-plane harness", () => {
       );
       await expect(Effect.runPromise(rollbackProgram)).rejects.toBe("expected body failure");
       expect(await queryProbe(admin, rolledBackId)).toEqual([]);
-
-      await Bun.write(sentinelPath, sentinelContents);
     } finally {
       await admin.query({
         text: "DELETE FROM api_next_pg17_abort_probe WHERE run_id = ANY($1)",
@@ -155,5 +154,12 @@ suite("Postgres 17 control-plane harness", () => {
       });
       await admin.end();
     }
+    completedTestCount += 1;
   }, 20_000);
+
+  afterAll(async () => {
+    if (connectionString !== undefined && completedTestCount === 1) {
+      await Bun.write(sentinelPath, sentinelContents);
+    }
+  });
 });
