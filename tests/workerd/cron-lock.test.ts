@@ -37,4 +37,23 @@ describe("ScheduledCronLockDO lease semantics (workerd)", () => {
     expect(lease?.owner).toBe("owner-b");
     await s.release("owner-b");
   });
+
+  it("requires the current fencing generation for renew and release", async () => {
+    const s = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:fenced-generation`);
+    const first = await s.tryAcquireWithFence(5_000, "owner-a", 20_000);
+    expect(first).toMatchObject({ owner: "owner-a", generation: 1 });
+    if (!first) throw new Error("expected fenced lease");
+
+    const renewed = await s.renew(5_000, "owner-a", first.generation, 21_000);
+    expect(renewed).toMatchObject({ owner: "owner-a", generation: 2 });
+    if (!renewed) throw new Error("expected renewal");
+
+    expect(await s.releaseWithFence("owner-a", first.generation)).toBe(false);
+    expect(await s.currentLeaseWithFence()).toMatchObject({ generation: 2 });
+    expect(await s.releaseWithFence("owner-a", renewed.generation)).toBe(true);
+
+    const next = await s.tryAcquireWithFence(5_000, "owner-b", 22_000);
+    expect(next).toMatchObject({ owner: "owner-b", generation: 3 });
+    await s.releaseWithFence("owner-b", next?.generation ?? -1);
+  });
 });

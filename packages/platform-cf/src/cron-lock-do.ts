@@ -1,7 +1,7 @@
 /// <reference types="@cloudflare/workers-types" />
 import { DurableObject } from "cloudflare:workers";
 
-import { evaluateLease, type LeaseRecord } from "./cron-lock";
+import { evaluateFencedLease, type FencedLeaseRecord, type LeaseRecord } from "./cron-lock";
 
 /**
  * Durable-Object-backed lease guaranteeing only ONE scheduled batch runs at a
@@ -17,7 +17,10 @@ export class ScheduledCronLockDO extends DurableObject {
     super(ctx, env);
     ctx.blockConcurrencyWhile(async () => {
       this.ctx.storage.sql.exec(
-        "CREATE TABLE IF NOT EXISTS lease (id INTEGER PRIMARY KEY CHECK (id = 1), owner TEXT NOT NULL, expires_at INTEGER NOT NULL)",
+        "CREATE TABLE IF NOT EXISTS lease (id INTEGER PRIMARY KEY CHECK (id = 1), owner TEXT NOT NULL, expires_at INTEGER NOT NULL, generation INTEGER NOT NULL)",
+      );
+      this.ctx.storage.sql.exec(
+        "CREATE TABLE IF NOT EXISTS lease_fence (id INTEGER PRIMARY KEY CHECK (id = 1), generation INTEGER NOT NULL)",
       );
     });
   }
@@ -29,15 +32,39 @@ export class ScheduledCronLockDO extends DurableObject {
    * atomic.
    */
   tryAcquire(ttlMs: number, owner: string, now: number): boolean {
-    const decision = evaluateLease(this.readLease(), ttlMs, owner, now);
+    return this.tryAcquireWithFence(ttlMs, owner, now) !== null;
+  }
+
+  /** Acquires or renews and returns the generation used for write fencing. */
+  tryAcquireWithFence(ttlMs: number, owner: string, now: number): FencedLeaseRecord | null {
+    const decision = evaluateFencedLease(this.readFencedLease(), ttlMs, owner, now);
     if (decision.acquired && decision.lease) {
+      const lease: FencedLeaseRecord = {
+        ...decision.lease,
+        generation: this.nextGeneration(),
+      };
       this.ctx.storage.sql.exec(
-        "INSERT INTO lease (id, owner, expires_at) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, expires_at = excluded.expires_at",
-        decision.lease.owner,
-        decision.lease.expiresAt,
+        "INSERT INTO lease_fence (id, generation) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET generation = excluded.generation",
+        lease.generation,
       );
+      this.ctx.storage.sql.exec(
+        "INSERT INTO lease (id, owner, expires_at, generation) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET owner = excluded.owner, expires_at = excluded.expires_at, generation = excluded.generation",
+        lease.owner,
+        lease.expiresAt,
+        lease.generation,
+      );
+      return lease;
     }
-    return decision.acquired;
+    return null;
+  }
+
+  /** Renews only the exact active token; a stale runner cannot extend a lease. */
+  renew(ttlMs: number, owner: string, generation: number, now: number): FencedLeaseRecord | null {
+    const current = this.readFencedLease();
+    if (current === null || current.owner !== owner || current.generation !== generation) {
+      return null;
+    }
+    return this.tryAcquireWithFence(ttlMs, owner, now);
   }
 
   /** Releases the lease only if still held by `owner` (never clobbers a newer holder). */
@@ -45,18 +72,55 @@ export class ScheduledCronLockDO extends DurableObject {
     this.ctx.storage.sql.exec("DELETE FROM lease WHERE id = 1 AND owner = ?", owner);
   }
 
+  /** Releases only the exact active token, preserving a newer holder. */
+  releaseWithFence(owner: string, generation: number): boolean {
+    const current = this.readFencedLease();
+    if (current === null || current.owner !== owner || current.generation !== generation) {
+      return false;
+    }
+    this.ctx.storage.sql.exec(
+      "DELETE FROM lease WHERE id = 1 AND owner = ? AND generation = ?",
+      owner,
+      generation,
+    );
+    return true;
+  }
+
   /** Current lease record, or null — exposed for observability and tests. */
   currentLease(): LeaseRecord | null {
     return this.readLease();
   }
 
+  /** Current owner, expiry, and fencing generation for adapter boundaries. */
+  currentLeaseWithFence(): FencedLeaseRecord | null {
+    return this.readFencedLease();
+  }
+
   private readLease(): LeaseRecord | null {
+    const fenced = this.readFencedLease();
+    return fenced === null ? null : { expiresAt: fenced.expiresAt, owner: fenced.owner };
+  }
+
+  private readFencedLease(): FencedLeaseRecord | null {
     const rows = this.ctx.storage.sql
-      .exec<{ owner: string; expires_at: number }>(
-        "SELECT owner, expires_at FROM lease WHERE id = 1",
+      .exec<{ owner: string; expires_at: number; generation: number }>(
+        "SELECT owner, expires_at, generation FROM lease WHERE id = 1",
       )
       .toArray();
     const row = rows[0];
-    return row ? { expiresAt: Number(row.expires_at), owner: row.owner } : null;
+    return row
+      ? {
+          expiresAt: Number(row.expires_at),
+          generation: Number(row.generation),
+          owner: row.owner,
+        }
+      : null;
+  }
+
+  private nextGeneration(): number {
+    const rows = this.ctx.storage.sql
+      .exec<{ generation: number }>("SELECT generation FROM lease_fence WHERE id = 1")
+      .toArray();
+    return Number(rows[0]?.generation ?? 0) + 1;
   }
 }

@@ -1,21 +1,39 @@
 /// <reference types="@cloudflare/workers-types" />
 
-import { CRON_LOCK_NAME, type LeaseRecord, type ScheduledCronLockDO } from "@pirate/platform-cf";
-import { type Duration, Effect } from "effect";
+import {
+  CRON_LOCK_NAME,
+  type FencedLeaseRecord,
+  type LeaseRecord,
+  type ScheduledCronLockDO,
+} from "@pirate/platform-cf";
+import { Effect } from "effect";
+
+import {
+  buildJobRegistry,
+  defaultRetrySchedule,
+  JobContext,
+  type JobDeclaration,
+} from "./registry";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
+export {
+  buildJobRegistry,
+  defaultRetrySchedule,
+  JobContext,
+  type JobDeclaration,
+  type JobRegistry,
+  type JobRuntimeContext,
+  RegistryConfigurationError,
+  type SeverityMapping,
+  type TableKey,
+} from "./registry";
 
 export interface JobsWorkerEnv {
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
 }
 
-/** One job as an Effect program (000 §12): declarative metadata plus run. */
-export interface JobDefinition {
-  readonly name: string;
-  readonly lane: string;
-  readonly timeout: Duration.Input;
-  readonly run: Effect.Effect<unknown, unknown, never>;
-}
+/** One job as declaration-as-data (000 §12), consumed by the generic runner. */
+export type JobDefinition = JobDeclaration;
 
 export interface LaneRunResult {
   readonly lane: string;
@@ -27,6 +45,7 @@ export interface LaneRunResult {
 }
 
 const LANE_LEASE_TTL_MS = 30_000;
+const LANE_RENEW_INTERVAL_MS = Math.floor(LANE_LEASE_TTL_MS / 3);
 
 /**
  * One scheduled lane tick: acquire the lane's DO lease, run the lane's single
@@ -42,14 +61,34 @@ export async function handleScheduled(
 ): Promise<LaneRunResult> {
   const stub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:${lane}`);
   const owner = crypto.randomUUID();
-  const acquired = await stub.tryAcquire(LANE_LEASE_TTL_MS, owner, now);
-  if (!acquired) {
+  const grant = await stub.tryAcquireWithFence(LANE_LEASE_TTL_MS, owner, now);
+  if (grant === null) {
     return { lane, acquired: false, ranJob: null, timedOut: false, leaseAfterRun: null };
   }
+  let currentLease: FencedLeaseRecord = grant;
+  let renewalInFlight = Promise.resolve();
+  const renewalTimer = setInterval(() => {
+    renewalInFlight = renewalInFlight
+      .then(async () => {
+        const renewed = await stub.renew(
+          LANE_LEASE_TTL_MS,
+          owner,
+          currentLease.generation,
+          Date.now(),
+        );
+        if (renewed !== null) currentLease = renewed;
+      })
+      .catch(() => undefined);
+  }, LANE_RENEW_INTERVAL_MS);
   let timedOut = false;
   try {
+    const run = Effect.provideService(job.run, JobContext, {
+      owner,
+      attemptId: owner,
+      lease: () => currentLease,
+    });
     await Effect.runPromise(
-      Effect.timeout(job.run, job.timeout).pipe(
+      Effect.timeout(run, job.timeout).pipe(
         Effect.catchIf(
           (error: unknown): boolean =>
             typeof error === "object" &&
@@ -63,7 +102,9 @@ export async function handleScheduled(
       ),
     );
   } finally {
-    await stub.release(owner);
+    clearInterval(renewalTimer);
+    await renewalInFlight;
+    await stub.releaseWithFence(owner, currentLease.generation);
   }
   return {
     lane,
@@ -80,9 +121,20 @@ export default {
     const spikeJob: JobDefinition = {
       name: "spike.noop",
       lane: event.cron,
+      schedule: event.cron,
       timeout: "5 seconds",
+      retry: defaultRetrySchedule,
+      expectedFailures: [],
+      severity: {
+        expectedFailure: {},
+        timeout: "low",
+        transactionOutcomeUnknown: "high",
+        defect: "high",
+      },
+      writes: [],
       run: Effect.void,
     };
+    await Effect.runPromise(buildJobRegistry([spikeJob]));
     await ctx.waitUntil(handleScheduled(env, spikeJob.lane, spikeJob));
   },
 };
