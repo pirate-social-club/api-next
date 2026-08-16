@@ -8,11 +8,22 @@
 export const platformCf = "api-next/platform-cf: lane C (001 §5), config/ lane A" as const;
 
 export {
+  type AlertSinkBindings,
+  AlertSinkConfigurationError,
+  makeConfiguredAlertSink,
+} from "./alert-config";
+export {
+  type AlertDeliveryLedger,
+  type AlertDeliveryStore,
   type AlertDigest,
   type AlertGroup,
   type AlertSink,
+  AlertSinkDeliveryFailed,
   aggregateAlerts,
   alertTick,
+  makeAlertDeliveryLedger,
+  makeHttpAlertSink,
+  makeLocalAlertSink,
 } from "./alerts";
 export {
   CRON_LOCK_NAME,

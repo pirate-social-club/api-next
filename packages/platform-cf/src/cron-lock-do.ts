@@ -3,6 +3,8 @@ import { DurableObject } from "cloudflare:workers";
 
 import { evaluateFencedLease, type FencedLeaseRecord, type LeaseRecord } from "./cron-lock";
 
+const ALERT_DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
 /**
  * Durable-Object-backed lease guaranteeing only ONE scheduled batch runs at a
  * time per lane across the deployment, ported from the old API's
@@ -21,6 +23,9 @@ export class ScheduledCronLockDO extends DurableObject {
       );
       this.ctx.storage.sql.exec(
         "CREATE TABLE IF NOT EXISTS lease_fence (id INTEGER PRIMARY KEY CHECK (id = 1), generation INTEGER NOT NULL)",
+      );
+      this.ctx.storage.sql.exec(
+        "CREATE TABLE IF NOT EXISTS alert_delivery (delivery_key TEXT PRIMARY KEY, marked_at INTEGER NOT NULL)",
       );
     });
   }
@@ -94,6 +99,33 @@ export class ScheduledCronLockDO extends DurableObject {
   /** Current owner, expiry, and fencing generation for adapter boundaries. */
   currentLeaseWithFence(): FencedLeaseRecord | null {
     return this.readFencedLease();
+  }
+
+  /** Marks an aggregated alert before dispatch; duplicates are suppressed. */
+  markAlertSent(deliveryKey: string): boolean {
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      "DELETE FROM alert_delivery WHERE marked_at < ?",
+      now - ALERT_DELIVERY_RETENTION_MS,
+    );
+    const existing = this.ctx.storage.sql
+      .exec<{ delivery_key: string }>(
+        "SELECT delivery_key FROM alert_delivery WHERE delivery_key = ?",
+        deliveryKey,
+      )
+      .toArray();
+    if (existing.length > 0) return false;
+    this.ctx.storage.sql.exec(
+      "INSERT INTO alert_delivery (delivery_key, marked_at) VALUES (?, ?)",
+      deliveryKey,
+      now,
+    );
+    return true;
+  }
+
+  /** Compensates a mark only after the sink reports a known dispatch failure. */
+  compensateAlert(deliveryKey: string): void {
+    this.ctx.storage.sql.exec("DELETE FROM alert_delivery WHERE delivery_key = ?", deliveryKey);
   }
 
   private readLease(): LeaseRecord | null {

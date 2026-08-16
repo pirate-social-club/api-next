@@ -2,6 +2,10 @@
   "name": "pirate-jobs-worker",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "API_NEXT_ENV": "development"
+  },
   "durable_objects": {
     "bindings": [
       {
