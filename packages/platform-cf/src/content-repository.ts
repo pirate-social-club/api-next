@@ -147,10 +147,6 @@ const stringValue = (row: Row, key: string): string | null => {
 const numberValue = (row: Row, key: string): number | null => {
   const value = row[key];
   if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && /^-?\d+(?:\.\d+)?$/u.test(value)) {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
   return null;
 };
 
@@ -207,6 +203,9 @@ const allowedMembershipStatus = (
   value: string,
 ): value is "pending" | "member" | "left" | "banned" =>
   ["pending", "member", "left", "banned"].includes(value);
+
+const validIdempotencyHash = (value: string | null): value is string =>
+  value !== null && /^[0-9a-f]{64}$/u.test(value);
 
 const postFromRow = (row: Row): PostDocument | null => {
   const id = stringValue(row, "post_id");
@@ -341,7 +340,7 @@ const resolvePostIn = (
       label: "content.posts.resolve-global",
       text: `SELECT p.community_id, p.post_id, p.status, c.status AS community_status
              FROM posts p
-             JOIN communities c ON c.community_id = p.community_id
+             LEFT JOIN communities c ON c.community_id = p.community_id
              WHERE p.post_id = $1`,
       values: [postId],
       readonly: true,
@@ -380,7 +379,7 @@ const resolveCommentIn = (
       label: "content.comments.resolve-global",
       text: `SELECT c.community_id, c.post_id, c.comment_id, c.status, cm.status AS community_status
              FROM comments c
-             JOIN communities cm ON cm.community_id = c.community_id
+             LEFT JOIN communities cm ON cm.community_id = c.community_id
              WHERE c.comment_id = $1`,
       values: [commentId],
       readonly: true,
@@ -537,6 +536,14 @@ type CommentState = Readonly<{
   readonly depth: number;
 }>;
 
+type ActorVote = Readonly<{
+  readonly communityId: string;
+  readonly postVoteId: string;
+  readonly postId: string;
+  readonly userId: string;
+  readonly value: -1 | 1;
+}>;
+
 const commentStateFromRow = (row: Row, operation: ContentRepositoryOperation) => {
   const communityId = stringValue(row, "community_id");
   const commentId = stringValue(row, "comment_id");
@@ -564,6 +571,55 @@ const commentStateFromRow = (row: Row, operation: ContentRepositoryOperation) =>
     depth,
   } satisfies CommentState);
 };
+
+const actorVoteFromRow = (row: Row, operation: ContentRepositoryOperation) => {
+  const communityId = stringValue(row, "community_id");
+  const postVoteId = stringValue(row, "post_vote_id");
+  const postId = stringValue(row, "post_id");
+  const userId = stringValue(row, "user_id");
+  const value = safeIntegerValue(row, "vote_value");
+  if (
+    communityId === null ||
+    postVoteId === null ||
+    postId === null ||
+    userId === null ||
+    !validId(communityId) ||
+    !validId(postVoteId) ||
+    !validId(postId) ||
+    !validId(userId) ||
+    (value !== -1 && value !== 1)
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return Effect.succeed({
+    communityId,
+    postVoteId,
+    postId,
+    userId,
+    value: value as -1 | 1,
+  } satisfies ActorVote);
+};
+
+const loadActorVoteIn = (
+  transaction: Transaction,
+  communityId: string,
+  postId: string,
+  userId: string,
+  operation: ContentRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: "content.post-votes.lock-actor",
+      text: `SELECT community_id, post_vote_id, post_id, user_id, vote_value
+             FROM post_votes
+             WHERE community_id = $1 AND post_id = $2 AND user_id = $3
+             FOR UPDATE`,
+      values: [communityId, postId, userId],
+      readonly: false,
+    });
+    const row = yield* oneRow(result.rows, operation);
+    return row === null ? null : yield* actorVoteFromRow(row, operation);
+  });
 
 const loadPostByIdempotency = (
   transaction: Transaction,
@@ -611,6 +667,33 @@ const commentDocument = (row: Row) => {
     : Effect.succeed(document);
 };
 
+const postIdempotencyDocument = (row: Row, key: string, operation: ContentRepositoryOperation) => {
+  if (
+    stringValue(row, "idempotency_key") !== key ||
+    !validIdempotencyHash(stringValue(row, "idempotency_body_hash"))
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return postDocument(row, operation);
+};
+
+const commentIdempotencyDocument = (
+  row: Row,
+  key: string,
+  operation: ContentRepositoryOperation,
+) => {
+  const persistedKey = stringValue(row, "idempotency_key");
+  const persistedHash = stringValue(row, "idempotency_body_hash");
+  if (
+    key === ""
+      ? persistedKey !== null || persistedHash !== null
+      : persistedKey !== key || !validIdempotencyHash(persistedHash)
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return commentDocument(row);
+};
+
 export function makeControlPlaneContentRepository(): ContentRepository {
   const resolvePost: ContentRepository["resolvePost"] = ({ postId }) =>
     Effect.gen(function* () {
@@ -637,7 +720,8 @@ export function makeControlPlaneContentRepository(): ContentRepository {
         actor.kind === "agent" ||
         !validId(communityId) ||
         !validId(actor.userId) ||
-        !directTextBody(body)
+        !directTextBody(body) ||
+        !validIdempotencyHash(idempotencyBodyHash)
       ) {
         return yield* constraint("create-post");
       }
@@ -653,10 +737,14 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           );
           const found = yield* oneRow(existing.rows, "create-post");
           if (found !== null) {
-            if (stringValue(found, "idempotency_body_hash") !== idempotencyBodyHash) {
+            const persistedHash = stringValue(found, "idempotency_body_hash");
+            if (!validIdempotencyHash(persistedHash)) {
+              return yield* invalid("create-post");
+            }
+            if (persistedHash !== idempotencyBodyHash) {
               return yield* idempotencyConflict();
             }
-            return yield* postDocument(found, "create-post");
+            return yield* postIdempotencyDocument(found, body.idempotency_key, "create-post");
           }
 
           const postId = makePostId();
@@ -684,7 +772,16 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             readonly: false,
           });
           const insertedRow = yield* oneRow(inserted.rows, "create-post");
-          if (insertedRow !== null) return yield* postDocument(insertedRow, "create-post");
+          if (insertedRow !== null) {
+            const persistedHash = stringValue(insertedRow, "idempotency_body_hash");
+            if (!validIdempotencyHash(persistedHash)) {
+              return yield* invalid("create-post");
+            }
+            if (persistedHash !== idempotencyBodyHash) {
+              return yield* idempotencyConflict();
+            }
+            return yield* postIdempotencyDocument(insertedRow, body.idempotency_key, "create-post");
+          }
 
           const concurrent = yield* loadPostByIdempotency(
             transaction,
@@ -694,10 +791,14 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           );
           const concurrentRow = yield* oneRow(concurrent.rows, "create-post");
           if (concurrentRow === null) return yield* constraint("create-post");
-          if (stringValue(concurrentRow, "idempotency_body_hash") !== idempotencyBodyHash) {
+          const persistedHash = stringValue(concurrentRow, "idempotency_body_hash");
+          if (!validIdempotencyHash(persistedHash)) {
+            return yield* invalid("create-post");
+          }
+          if (persistedHash !== idempotencyBodyHash) {
             return yield* idempotencyConflict();
           }
-          return yield* postDocument(concurrentRow, "create-post");
+          return yield* postIdempotencyDocument(concurrentRow, body.idempotency_key, "create-post");
         }),
       );
     });
@@ -752,6 +853,11 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           const counts = yield* transaction.execute<Row>({
             label: "content.posts.counts",
             text: `SELECT
+              (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2) AS vote_row_count,
+              (SELECT COUNT(DISTINCT user_id)::int FROM post_votes WHERE community_id = $1 AND post_id = $2) AS distinct_voter_count,
+              (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2 AND user_id IS NULL) AS null_voter_count,
+              (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2
+                 AND (vote_value IS NULL OR vote_value NOT IN (1, -1))) AS invalid_vote_count,
               (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2 AND vote_value = 1) AS upvote_count,
               (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2 AND vote_value = -1) AS downvote_count,
               (SELECT COUNT(*)::int FROM comments WHERE community_id = $1 AND post_id = $2 AND status = 'published') AS comment_count`,
@@ -775,7 +881,23 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           const upvoteCount = nonNegativeIntegerValue(countRow, "upvote_count");
           const downvoteCount = nonNegativeIntegerValue(countRow, "downvote_count");
           const commentCount = nonNegativeIntegerValue(countRow, "comment_count");
-          if (upvoteCount === null || downvoteCount === null || commentCount === null) {
+          const voteRowCount = nonNegativeIntegerValue(countRow, "vote_row_count");
+          const distinctVoterCount = nonNegativeIntegerValue(countRow, "distinct_voter_count");
+          const nullVoterCount = nonNegativeIntegerValue(countRow, "null_voter_count");
+          const invalidVoteCount = nonNegativeIntegerValue(countRow, "invalid_vote_count");
+          if (
+            upvoteCount === null ||
+            downvoteCount === null ||
+            commentCount === null ||
+            voteRowCount === null ||
+            distinctVoterCount === null ||
+            nullVoterCount === null ||
+            invalidVoteCount === null ||
+            nullVoterCount !== 0 ||
+            invalidVoteCount !== 0 ||
+            voteRowCount !== distinctVoterCount ||
+            upvoteCount + downvoteCount !== voteRowCount
+          ) {
             return yield* invalid("get-post");
           }
           return {
@@ -818,6 +940,11 @@ export function makeControlPlaneContentRepository(): ContentRepository {
       if (!directCommentBody(body)) {
         return yield* constraint("create-comment-reply");
       }
+      const key = body.idempotency_key ?? "";
+      if (key !== "" && !validIdempotencyHash(idempotencyBodyHash ?? null)) {
+        return yield* constraint("create-comment-reply");
+      }
+      const persistedHash = key === "" ? null : idempotencyBodyHash;
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
@@ -846,14 +973,27 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             (yield* loadPostStateIn(transaction, communityId, postId)).rows,
             "create-comment-reply",
           );
-          if (postStateRow === null) {
+          const parentStateRow = yield* oneRow(
+            (yield* loadCommentStateIn(transaction, communityId, parentCommentId)).rows,
+            "create-comment-reply",
+          );
+          if (postStateRow === null || parentStateRow === null) {
             return yield* notFound("create-comment-reply");
           }
           const postState = yield* postStateFromRow(postStateRow, "create-comment-reply");
+          const parentState = yield* commentStateFromRow(parentStateRow, "create-comment-reply");
           if (
             postState.communityId !== communityId ||
             postState.postId !== postId ||
             postState.status !== "published"
+          ) {
+            return yield* notFound("create-comment-reply");
+          }
+          if (
+            parentState.communityId !== communityId ||
+            parentState.commentId !== parentCommentId ||
+            parentState.postId !== postId ||
+            parentState.status !== "published"
           ) {
             return yield* notFound("create-comment-reply");
           }
@@ -863,24 +1003,10 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               reason: "comments-locked",
             });
           }
-          const parentStateRow = yield* oneRow(
-            (yield* loadCommentStateIn(transaction, communityId, parentCommentId)).rows,
-            "create-comment-reply",
-          );
-          if (parentStateRow === null) {
-            return yield* notFound("create-comment-reply");
-          }
-          const parentState = yield* commentStateFromRow(parentStateRow, "create-comment-reply");
-          if (
-            parentState.communityId !== communityId ||
-            parentState.commentId !== parentCommentId ||
-            parentState.postId !== postId ||
-            parentState.status !== "published"
-          ) {
-            return yield* notFound("create-comment-reply");
-          }
           const depth = parentState.depth + 1;
-          const key = body.idempotency_key ?? "";
+          if (!Number.isSafeInteger(depth)) {
+            return yield* invalid("create-comment-reply");
+          }
           if (key !== "") {
             const existing = yield* loadCommentByIdempotency(
               transaction,
@@ -890,13 +1016,17 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             );
             const found = yield* oneRow(existing.rows, "create-comment-reply");
             if (found !== null) {
-              if (stringValue(found, "idempotency_body_hash") !== (idempotencyBodyHash ?? null)) {
+              const foundHash = stringValue(found, "idempotency_body_hash");
+              if (!validIdempotencyHash(foundHash)) {
+                return yield* invalid("create-comment-reply");
+              }
+              if (foundHash !== idempotencyBodyHash) {
                 return yield* new ContentRepositoryError({
                   operation: "create-comment-reply",
                   reason: "idempotency-conflict",
                 });
               }
-              return yield* commentDocument(found);
+              return yield* commentIdempotencyDocument(found, key, "create-comment-reply");
             }
           }
           const commentId = makeCommentId();
@@ -919,13 +1049,15 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               body.body,
               depth,
               now,
-              key,
-              idempotencyBodyHash ?? null,
+              key === "" ? null : key,
+              persistedHash,
             ],
             readonly: false,
           });
           const insertedRow = yield* oneRow(inserted.rows, "create-comment-reply");
-          if (insertedRow !== null) return yield* commentDocument(insertedRow);
+          if (insertedRow !== null) {
+            return yield* commentIdempotencyDocument(insertedRow, key, "create-comment-reply");
+          }
           if (key === "") return yield* constraint("create-comment-reply");
           const concurrent = yield* loadCommentByIdempotency(
             transaction,
@@ -935,15 +1067,17 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           );
           const concurrentRow = yield* oneRow(concurrent.rows, "create-comment-reply");
           if (concurrentRow === null) return yield* constraint("create-comment-reply");
-          if (
-            stringValue(concurrentRow, "idempotency_body_hash") !== (idempotencyBodyHash ?? null)
-          ) {
+          const concurrentHash = stringValue(concurrentRow, "idempotency_body_hash");
+          if (!validIdempotencyHash(concurrentHash)) {
+            return yield* invalid("create-comment-reply");
+          }
+          if (concurrentHash !== idempotencyBodyHash) {
             return yield* new ContentRepositoryError({
               operation: "create-comment-reply",
               reason: "idempotency-conflict",
             });
           }
-          return yield* commentDocument(concurrentRow);
+          return yield* commentIdempotencyDocument(concurrentRow, key, "create-comment-reply");
         }),
       );
     });
@@ -981,6 +1115,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           ) {
             return yield* notFound("cast-vote");
           }
+          yield* loadActorVoteIn(transaction, communityId, postId, actor.userId, "cast-vote");
           const result = yield* transaction.execute<Row>({
             label: "content.post-votes.upsert",
             text: `INSERT INTO post_votes
@@ -1041,6 +1176,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           ) {
             return yield* notFound("clear-vote");
           }
+          yield* loadActorVoteIn(transaction, communityId, postId, actor.userId, "clear-vote");
           yield* transaction.execute({
             label: "content.post-votes.clear",
             text: "DELETE FROM post_votes WHERE community_id = $1 AND post_id = $2 AND user_id = $3",
