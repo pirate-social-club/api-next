@@ -137,6 +137,56 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     expect(webhooks[0]?.every((alert) => !alert.body.includes("$1"))).toBe(true);
   });
 
+  it("interrupts in-flight work and refuses release when lease renewal is lost", async () => {
+    let interrupted = false;
+    let released = false;
+    const lease = { owner: "owner", expiresAt: Date.now() + 100, generation: 1 };
+    const stub = {
+      tryAcquireWithFence: async () => lease,
+      renew: async () => null,
+      releaseWithFence: async () => {
+        released = true;
+        return true;
+      },
+      currentLease: async () => lease,
+    };
+    const leaseEnv = {
+      CRON_LOCK: { getByName: () => stub },
+    } as unknown as JobsWorkerEnv;
+    const job: JobDefinition = {
+      name: "lease-loss.interruption",
+      lane: "lease-loss",
+      schedule: "*/5 * * * *",
+      timeout: 5_000,
+      retry: Schedule.recurs(0),
+      expectedFailures: [],
+      severity: {
+        expectedFailure: {},
+        timeout: "high",
+        transactionOutcomeUnknown: "high",
+        defect: "high",
+      },
+      reads: [],
+      writes: [],
+      run: Effect.never.pipe(
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            interrupted = true;
+          }),
+        ),
+      ),
+    };
+
+    await expect(
+      handleScheduled(leaseEnv, job.lane, job, Date.now(), {
+        leaseTtlMs: 100,
+        renewIntervalMs: 10,
+      }),
+    ).rejects.toThrow("lane lease renewal failed or ownership was lost");
+    expect(interrupted).toBe(true);
+    expect(released).toBe(false);
+  });
+
   it("routes expected failures, defects, and runner timeouts through declared severity", async () => {
     const emails: AlertDigest[] = [];
     const digests: AlertDigest[] = [];

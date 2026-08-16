@@ -19,7 +19,7 @@ import {
   makeHyperdriveControlPlaneLayer,
   type ScheduledCronLockDO,
 } from "@pirate/platform-cf";
-import { Cause, Effect, Exit, type Layer, Option } from "effect";
+import { Cause, Data, Effect, Exit, type Layer, Option } from "effect";
 
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityRoutingIntegrityJob } from "./routing-integrity";
@@ -84,6 +84,8 @@ export interface LaneRunOptions {
 }
 
 const LANE_LEASE_TTL_MS = 30_000;
+
+export class LaneLeaseLost extends Data.TaggedError("LaneLeaseLost") {}
 
 function tagOf(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null || !("_tag" in error)) return undefined;
@@ -186,16 +188,33 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
   let currentLease: FencedLeaseRecord = grant;
   let leaseRenewals = 0;
   let renewalInFlight = Promise.resolve();
+  let leaseLost = false;
+  let resolveLeaseLoss: (() => void) | undefined;
+  const leaseLossPromise = new Promise<void>((resolve) => {
+    resolveLeaseLoss = resolve;
+  });
+  const markLeaseLost = () => {
+    if (leaseLost) return;
+    leaseLost = true;
+    resolveLeaseLoss?.();
+  };
   const renewalTimer = setInterval(() => {
     renewalInFlight = renewalInFlight
       .then(async () => {
-        const renewed = await stub.renew(leaseTtlMs, owner, currentLease.generation, Date.now());
-        if (renewed !== null) {
+        if (leaseLost) return;
+        try {
+          const renewed = await stub.renew(leaseTtlMs, owner, currentLease.generation, Date.now());
+          if (renewed === null) {
+            markLeaseLost();
+            return;
+          }
           currentLease = renewed;
           leaseRenewals += 1;
+        } catch {
+          markLeaseLost();
         }
       })
-      .catch(() => undefined);
+      .catch(markLeaseLost);
   }, renewIntervalMs);
   let timedOut = false;
   let releaseSafe = true;
@@ -232,7 +251,10 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
                 retried as Effect.Effect<void, unknown, ControlPlaneDb>,
               ),
             );
-      const timed = Effect.timeout(withRuntime, job.timeout);
+      const leaseGuard = Effect.promise(() => leaseLossPromise).pipe(
+        Effect.flatMap(() => Effect.fail(new LaneLeaseLost())),
+      );
+      const timed = Effect.raceFirst(Effect.timeout(withRuntime, job.timeout), leaseGuard);
       const alertSink = job.alertSink ?? options.alertSink;
       const observed =
         alertSink === undefined
@@ -266,6 +288,10 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
       const result = await runJob(job);
       ranJobs.push(job.name);
       if (Exit.isSuccess(result.exit)) continue;
+      if (tagOf(typedErrorOf(result.exit.cause)) === "LaneLeaseLost") {
+        releaseSafe = false;
+        break;
+      }
       if (isRunnerTimeout(result.exit.cause)) {
         timedOut = true;
         if (job.requiresAdapterSafety && !result.adapterSafety.proven) {
@@ -279,7 +305,10 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
   } finally {
     clearInterval(renewalTimer);
     await renewalInFlight;
-    if (releaseSafe) await stub.releaseWithFence(owner, currentLease.generation);
+    if (releaseSafe && !leaseLost) await stub.releaseWithFence(owner, currentLease.generation);
+  }
+  if (leaseLost) {
+    throw new Error("lane lease renewal failed or ownership was lost");
   }
   if (!releaseSafe) {
     throw new Error("job timeout had no adapter abort or fence evidence");
