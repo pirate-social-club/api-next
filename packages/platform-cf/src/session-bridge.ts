@@ -178,7 +178,7 @@ async function importPrivateKey(pem: string): Promise<CryptoKey> {
 }
 
 async function importPublicKey(pem: string): Promise<CryptoKey> {
-  return crypto.subtle.importKey("spki", pemToDer(pem, "PUBLIC KEY"), RSA_IMPORT_ALGORITHM, false, [
+  return crypto.subtle.importKey("spki", pemToDer(pem, "PUBLIC KEY"), RSA_IMPORT_ALGORITHM, true, [
     "verify",
   ]);
 }
@@ -189,94 +189,24 @@ async function thumbprint(n: string, e: string): Promise<string> {
   return base64UrlEncode(new Uint8Array(digest));
 }
 
-function readDerElement(
-  input: Uint8Array,
-  offset: number,
-): {
-  readonly tag: number;
-  readonly value: Uint8Array;
-  readonly next: number;
-} {
-  const tag = input[offset];
-  const firstLength = input[offset + 1];
-  if (tag === undefined || firstLength === undefined) throw new Error("truncated DER");
-  let length = firstLength;
-  let cursor = offset + 2;
-  if ((firstLength & 0x80) !== 0) {
-    const lengthBytes = firstLength & 0x7f;
-    if (lengthBytes === 0 || lengthBytes > 4 || cursor + lengthBytes > input.length) {
-      throw new Error("invalid DER length");
-    }
-    length = 0;
-    for (let index = 0; index < lengthBytes; index += 1) {
-      length = length * 256 + (input[cursor + index] ?? 0);
-    }
-    cursor += lengthBytes;
+async function publicMaterial(publicKey: CryptoKey): Promise<SessionPublicJwk> {
+  const exported = await crypto.subtle.exportKey("jwk", publicKey);
+  if (typeof exported !== "object" || exported === null || Array.isArray(exported)) {
+    throw new Error("invalid public JWK");
   }
-  const end = cursor + length;
-  if (end > input.length) throw new Error("truncated DER value");
-  return { tag, value: input.subarray(cursor, end), next: end };
-}
-
-function publicMaterialFromSpki(pem: string): { readonly n: string; readonly e: string } {
-  const spki = new Uint8Array(pemToDer(pem, "PUBLIC KEY"));
-  const outer = readDerElement(spki, 0);
-  if (outer.tag !== 0x30 || outer.next !== spki.length) throw new Error("invalid SPKI");
-  const algorithm = readDerElement(outer.value, 0);
-  const bitString = readDerElement(outer.value, algorithm.next);
-  if (algorithm.tag !== 0x30 || bitString.tag !== 0x03 || bitString.value[0] !== 0) {
-    throw new Error("invalid RSA SPKI");
+  const exportedJwk = exported as Record<string, unknown>;
+  if (
+    exportedJwk.kty !== "RSA" ||
+    typeof exportedJwk.n !== "string" ||
+    typeof exportedJwk.e !== "string" ||
+    Object.entries(exportedJwk).some(
+      ([member, value]) => PRIVATE_JWK_MEMBERS.has(member) && value !== undefined,
+    )
+  ) {
+    throw new Error("invalid public JWK");
   }
-  const rsa = readDerElement(bitString.value.subarray(1), 0);
-  if (rsa.tag !== 0x30 || rsa.next !== bitString.value.length - 1) {
-    throw new Error("invalid RSA public key");
-  }
-  const modulus = readDerElement(rsa.value, 0);
-  const exponent = readDerElement(rsa.value, modulus.next);
-  if (modulus.tag !== 0x02 || exponent.tag !== 0x02 || exponent.next !== rsa.value.length) {
-    throw new Error("invalid RSA parameters");
-  }
-  const modulusBytes = modulus.value[0] === 0 ? modulus.value.subarray(1) : modulus.value;
-  if (modulusBytes.length === 0 || exponent.value.length === 0) {
-    throw new Error("empty RSA parameters");
-  }
-  return { n: base64UrlEncode(modulusBytes), e: base64UrlEncode(exponent.value) };
-}
-
-/**
- * WebCrypto is the authority when JWK export is available. The workerd
- * runtime currently imports SPKI keys successfully but rejects JWK export;
- * the bounded SPKI fallback keeps JWKS generation available there without
- * ever exporting or retaining private key components.
- */
-async function publicMaterial(
-  publicKey: CryptoKey,
-  publicKeyPem: string,
-): Promise<SessionPublicJwk> {
-  let n: string;
-  let e: string;
-  let exported: unknown = null;
-  try {
-    exported = await crypto.subtle.exportKey("jwk", publicKey);
-  } catch {}
-  if (exported === null) {
-    ({ n, e } = publicMaterialFromSpki(publicKeyPem));
-  } else {
-    if (typeof exported !== "object" || exported === null || Array.isArray(exported)) {
-      throw new Error("invalid public JWK");
-    }
-    const exportedJwk = exported as Record<string, unknown>;
-    if (
-      exportedJwk.kty !== "RSA" ||
-      typeof exportedJwk.n !== "string" ||
-      typeof exportedJwk.e !== "string" ||
-      Object.keys(exportedJwk).some((member) => PRIVATE_JWK_MEMBERS.has(member))
-    ) {
-      throw new Error("invalid public JWK");
-    }
-    n = exportedJwk.n;
-    e = exportedJwk.e;
-  }
+  const n = exportedJwk.n;
+  const e = exportedJwk.e;
   return {
     kty: "RSA",
     n,
@@ -442,7 +372,7 @@ export async function makeSessionBridge(options: SessionBridgeOptions): Promise<
 
   let publicJwk: SessionPublicJwk;
   try {
-    publicJwk = await publicMaterial(publicKey, publicKeyPem);
+    publicJwk = await publicMaterial(publicKey);
   } catch {
     throw error("configure", "key_import_failed");
   }

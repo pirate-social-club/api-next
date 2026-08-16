@@ -26,6 +26,7 @@ async function keyMaterial(): Promise<{
   readonly privateKey: CryptoKey;
   readonly privatePem: string;
   readonly publicPem: string;
+  readonly publicDer: ArrayBuffer;
 }> {
   const pair = await crypto.subtle.generateKey(
     {
@@ -37,10 +38,12 @@ async function keyMaterial(): Promise<{
     true,
     ["sign", "verify"],
   );
+  const publicDer = await crypto.subtle.exportKey("spki", pair.publicKey);
   return {
     privateKey: pair.privateKey,
     privatePem: toPem("PRIVATE KEY", await crypto.subtle.exportKey("pkcs8", pair.privateKey)),
-    publicPem: toPem("PUBLIC KEY", await crypto.subtle.exportKey("spki", pair.publicKey)),
+    publicPem: toPem("PUBLIC KEY", publicDer),
+    publicDer,
   };
 }
 
@@ -96,6 +99,29 @@ async function expectCode(
 }
 
 describe("session bridge WebCrypto primitives (workerd)", () => {
+  it("uses workerd's extractable SPKI JWK export as the public-key authority", async () => {
+    const material = await keyMaterial();
+    const imported = await crypto.subtle.importKey(
+      "spki",
+      material.publicDer,
+      {
+        name: "RSASSA-PKCS1-v1_5",
+        hash: "SHA-256",
+      },
+      true,
+      ["verify"],
+    );
+    const exported = (await crypto.subtle.exportKey("jwk", imported)) as Record<string, unknown>;
+    expect(exported).toMatchObject({
+      kty: "RSA",
+      n: expect.any(String),
+      e: expect.any(String),
+    });
+    for (const member of ["d", "dp", "dq", "p", "q", "qi", "oth"]) {
+      expect(exported[member]).toBeUndefined();
+    }
+  });
+
   it("mints and verifies the exact shared claims and publishes public-only JWKS", async () => {
     const material = await keyMaterial();
     const bridge = await makeSessionBridgeFromEnv({
