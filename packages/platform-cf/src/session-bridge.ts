@@ -22,6 +22,7 @@ export type SessionBridgeErrorCode =
   | "token_malformed"
   | "token_header_invalid"
   | "token_signature_invalid"
+  | "subject_invalid"
   | "claims_invalid"
   | "token_expired"
   | "token_not_yet_valid";
@@ -277,6 +278,7 @@ function requiredString(
 ): string {
   const value = claims[name];
   if (typeof value !== "string" || value.length === 0 || value.trim() !== value) {
+    if (name === "sub") throw error("verify", "subject_invalid");
     throw error("verify", "claims_invalid");
   }
   return value;
@@ -284,7 +286,7 @@ function requiredString(
 
 function requiredTime(claims: Record<string, unknown>, name: "iat" | "exp"): number {
   const value = claims[name];
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || (name === "iat" && value <= 0)) {
     throw error("verify", "claims_invalid");
   }
   return value;
@@ -453,19 +455,26 @@ export async function makeSessionBridge(options: SessionBridgeOptions): Promise<
     const iss = requiredString(payload, "iss");
     const aud = requiredString(payload, "aud");
     const sub = requiredString(payload, "sub");
-    const scope = requiredString(payload, "scope");
+    const rawScope = payload.scope;
+    const scope =
+      rawScope === undefined
+        ? defaultScope
+        : typeof rawScope === "string" && rawScope.trim().length === 0
+          ? defaultScope
+          : requiredString(payload, "scope");
     const iat = requiredTime(payload, "iat");
     const exp = requiredTime(payload, "exp");
     const nbf = optionalTime(payload, "nbf");
     const now = nowSeconds();
     if (!Number.isSafeInteger(now) || now <= 0) throw error("verify", "claims_invalid");
-    if (iss !== issuer || aud !== audience || exp <= iat) {
+    if (iss !== issuer || aud !== audience) {
       throw error("verify", "claims_invalid");
     }
     if (iat > now || (nbf !== undefined && nbf > now)) {
       throw error("verify", "token_not_yet_valid");
     }
     if (exp <= now) throw error("verify", "token_expired");
+    if (exp <= iat) throw error("verify", "claims_invalid");
     return nbf === undefined
       ? { iss, aud, sub, scope, iat, exp }
       : { iss, aud, sub, scope, iat, exp, nbf };

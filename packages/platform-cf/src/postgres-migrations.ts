@@ -90,6 +90,27 @@ function applyMigration(
   });
 }
 
+function validateLedgerPrefix(
+  applied: readonly AppliedMigration[],
+  migrations: readonly PostgresMigration[],
+): Effect.Effect<void, MigrationLedgerMismatch> {
+  for (const [index, actual] of applied.entries()) {
+    const expected = migrations[index];
+    if (expected?.version === actual.version) continue;
+    return Effect.fail(
+      new MigrationLedgerMismatch({
+        reason: "not-prefix",
+        version: expected?.version ?? actual.version,
+        expectedVersion: expected?.version ?? null,
+        actualVersion: actual.version,
+        expectedChecksum: expected?.checksum ?? null,
+        actualChecksum: actual.checksum,
+      }),
+    );
+  }
+  return Effect.void;
+}
+
 /**
  * Applies repository migrations in order. Existing versions are immutable:
  * changing a checksum or removing an applied version fails before any new
@@ -130,21 +151,10 @@ export const applyPostgresMigrations = Effect.fn("applyPostgresMigrations")(func
         }
       }
 
-      const appliedVersions = [...applied.keys()];
-      for (let index = 0; index < appliedVersions.length; index += 1) {
-        const expected = migrations[index];
-        const actualVersion = appliedVersions[index];
-        if (actualVersion === undefined) continue;
-        if (expected?.version === actualVersion) continue;
-        return yield* new MigrationLedgerMismatch({
-          reason: "not-prefix",
-          version: expected?.version ?? actualVersion,
-          expectedVersion: expected?.version ?? null,
-          actualVersion,
-          expectedChecksum: expected?.checksum ?? null,
-          actualChecksum: applied.get(actualVersion) ?? null,
-        });
-      }
+      yield* validateLedgerPrefix(
+        [...applied].map(([version, checksum]) => ({ version, checksum })),
+        migrations,
+      );
 
       for (const [version, checksum] of applied) {
         const expected = migrations.find((migration) => migration.version === version);

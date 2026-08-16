@@ -32,6 +32,9 @@ const baselineSql = await Bun.file(
 const migrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0001_v1_product_slice.sql", import.meta.url),
 ).text();
+const identityMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0002_identity.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -41,7 +44,12 @@ const migration: PostgresMigration = {
   checksum: checksumManifest.migrations["0001_v1_product_slice.sql"] ?? "",
   sql: migrationSql,
 };
-const migrations: readonly PostgresMigration[] = [migration];
+const identityMigration: PostgresMigration = {
+  version: "0002_identity.sql",
+  checksum: checksumManifest.migrations["0002_identity.sql"] ?? "",
+  sql: identityMigrationSql,
+};
+const migrations: readonly PostgresMigration[] = [migration, identityMigration];
 
 function checksum(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -186,6 +194,7 @@ suite("Postgres 17 v1 foundation", () => {
         "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()",
       );
       expect(tables.rows.map((row) => row.table_name).sort()).toEqual([
+        "account_aliases",
         "comments",
         "communities",
         "community_feed_projection",
@@ -196,6 +205,7 @@ suite("Postgres 17 v1 foundation", () => {
         "post_votes",
         "posts",
         "schema_migrations",
+        "users",
       ]);
 
       const columns = await admin.query<{
@@ -266,6 +276,20 @@ suite("Postgres 17 v1 foundation", () => {
           version: migration.version,
           expectedVersion: migration.version,
           actualVersion: secondMigration.version,
+        });
+      });
+
+      await withSchema(async (_admin, secondScopedConnectionString) => {
+        await applyMigrations(secondScopedConnectionString, [identityMigration]);
+        const gap = await applyMigrations(secondScopedConnectionString, migrations).catch(
+          (error) => error,
+        );
+        expect(gap).toBeInstanceOf(MigrationLedgerMismatch);
+        expect(gap).toMatchObject({
+          reason: "not-prefix",
+          version: migration.version,
+          expectedVersion: migration.version,
+          actualVersion: identityMigration.version,
         });
       });
     });

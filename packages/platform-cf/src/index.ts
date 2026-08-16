@@ -72,3 +72,30 @@ export {
   queueRetryBackoffSeconds,
   queueRetryDelaySeconds,
 } from "./queue-retry";
+export {
+  MAX_SESSION_TOKEN_LENGTH,
+  makeSessionBridge,
+  makeSessionBridgeFromEnv,
+  type SessionBridge,
+  type SessionBridgeEnvironment,
+  SessionBridgeError,
+  type SessionBridgeOptions,
+  type SessionClaimsInput,
+  type SessionJwks,
+  type SessionPublicJwk,
+  type VerifiedSessionClaims,
+} from "./session-bridge";
+export {
+  makeJwksSessionProofVerifier,
+  SESSION_PROOF_CACHE_TTL_MS,
+  SESSION_PROOF_FETCH_TIMEOUT_MS,
+  SESSION_PROOF_MAX_JWKS_BYTES,
+  SESSION_PROOF_MAX_TOKEN_LENGTH,
+  type SessionProofAdapterOptions,
+  type SessionProofFetcher,
+  type SessionProofProviderConfig,
+} from "./session-proof";
+export {
+  makeRs256SessionTokenMinter,
+  makeRs256SessionTokenVerifier,
+} from "./session-tokens";
