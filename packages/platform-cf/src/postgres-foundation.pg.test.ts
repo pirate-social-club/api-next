@@ -41,6 +41,7 @@ const migration: PostgresMigration = {
   checksum: checksumManifest.migrations["0001_v1_product_slice.sql"] ?? "",
   sql: migrationSql,
 };
+const migrations: readonly PostgresMigration[] = [migration];
 
 function checksum(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -74,7 +75,65 @@ async function applyMigrations(
   );
 }
 
-async function withSchema<A>(use: (admin: Client, connection: string) => Promise<A>): Promise<A> {
+interface SchemaCatalog {
+  readonly tables: readonly Record<string, unknown>[];
+  readonly columns: readonly Record<string, unknown>[];
+  readonly indexes: readonly Record<string, unknown>[];
+  readonly constraints: readonly Record<string, unknown>[];
+}
+
+async function catalogForSchema(admin: Client, schema: string): Promise<SchemaCatalog> {
+  const tables = await admin.query(
+    `SELECT table_name
+     FROM information_schema.tables
+     WHERE table_schema = $1 AND table_type = 'BASE TABLE'
+     ORDER BY table_name`,
+    [schema],
+  );
+  const columns = await admin.query(
+    `SELECT table_name, column_name, ordinal_position, data_type, is_nullable, column_default
+     FROM information_schema.columns
+     WHERE table_schema = $1
+     ORDER BY table_name, ordinal_position`,
+    [schema],
+  );
+  const indexes = await admin.query<{
+    readonly table_name: string;
+    readonly index_name: string;
+    readonly indexdef: string;
+  }>(
+    `SELECT tablename AS table_name, indexname AS index_name, indexdef
+     FROM pg_indexes
+     WHERE schemaname = $1
+     ORDER BY tablename, indexname`,
+    [schema],
+  );
+  const constraints = await admin.query(
+    `SELECT relation.relname AS table_name,
+            pg_constraint.conname AS constraint_name,
+            pg_constraint.contype AS constraint_type,
+            pg_get_constraintdef(pg_constraint.oid) AS definition
+     FROM pg_constraint
+     JOIN pg_class AS relation ON relation.oid = pg_constraint.conrelid
+     JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+     WHERE namespace.nspname = $1
+     ORDER BY relation.relname, constraint_name`,
+    [schema],
+  );
+  return {
+    tables: tables.rows,
+    columns: columns.rows,
+    indexes: indexes.rows.map((index) => ({
+      ...index,
+      indexdef: index.indexdef.replaceAll(`${schema}.`, ""),
+    })),
+    constraints: constraints.rows,
+  };
+}
+
+async function withSchema<A>(
+  use: (admin: Client, connection: string, schema: string) => Promise<A>,
+): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   const schema = schemaIdentifier();
   const admin = new Client({ connectionString });
@@ -83,7 +142,7 @@ async function withSchema<A>(use: (admin: Client, connection: string) => Promise
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   const scopedConnectionString = connectionForSchema(connectionString, schema);
   try {
-    return await use(admin, scopedConnectionString);
+    return await use(admin, scopedConnectionString, schema);
   } finally {
     await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
     await admin.end();
@@ -104,14 +163,25 @@ async function expectForeignKeyFailure(
 }
 
 suite("Postgres 17 v1 foundation", () => {
-  test("applies the baseline migration and matches the schema source", async () => {
-    await withSchema(async (admin, scopedConnectionString) => {
-      expect(baselineSql).toBe(migrationSql);
+  test("applies all migrations and matches the cumulative schema source", async () => {
+    await withSchema(async (admin, scopedConnectionString, schema) => {
       expect(checksum(migrationSql)).toBe(migration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
-      await applyMigrations(scopedConnectionString, [migration]);
+      await applyMigrations(scopedConnectionString, migrations);
+      const migratedCatalog = await catalogForSchema(admin, schema);
+      const baselineSchema = schemaIdentifier();
+      await admin.query(`CREATE SCHEMA ${quoteIdentifier(baselineSchema)}`);
+      try {
+        await admin.query(`SET search_path TO ${quoteIdentifier(baselineSchema)}`);
+        await admin.query(baselineSql);
+        expect(migratedCatalog).toEqual(await catalogForSchema(admin, baselineSchema));
+      } finally {
+        await admin.query(`DROP SCHEMA ${quoteIdentifier(baselineSchema)} CASCADE`);
+        await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      }
+
       const tables = await admin.query<{ table_name: string }>(
         "SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema()",
       );
@@ -204,7 +274,7 @@ suite("Postgres 17 v1 foundation", () => {
 
   test("rejects cross-community post, comment, and vote references", async () => {
     await withSchema(async (admin, scopedConnectionString) => {
-      await applyMigrations(scopedConnectionString, [migration]);
+      await applyMigrations(scopedConnectionString, migrations);
       const now = new Date();
       await admin.query({
         text: "INSERT INTO communities (community_id, display_name, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $4), ($5, $6, $7, $4, $4)",
@@ -231,7 +301,7 @@ suite("Postgres 17 v1 foundation", () => {
 
   test("scopes repository reads, updates, and deletes by community", async () => {
     await withSchema(async (admin, scopedConnectionString) => {
-      await applyMigrations(scopedConnectionString, [migration]);
+      await applyMigrations(scopedConnectionString, migrations);
       const now = new Date();
       await admin.query({
         text: "INSERT INTO communities (community_id, display_name, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $4), ($5, $6, $7, $4, $4)",
