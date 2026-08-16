@@ -122,4 +122,23 @@ describe("openapi breaking-change diff", () => {
       "operation id changed on POST /echo/{message}: post_echoMessage",
     );
   });
+
+  test("preserves compatible request union alternatives", () => {
+    const proof = Schema.Union([
+      Schema.Struct({ type: Schema.Literal("privy"), token: Schema.String }),
+      Schema.Struct({ type: Schema.Literal("jwt"), jwt: Schema.String }),
+    ]);
+    const oldDocument = generateOpenApi([
+      endpoint({
+        method: "POST",
+        path: "/session",
+        auth: Auth.public(),
+        request: Schema.Struct({ proof }),
+        response: Schema.Struct({ ok: Schema.Boolean }),
+      }),
+    ]);
+    const newDocument = JSON.parse(JSON.stringify(oldDocument)) as OpenApiDocument;
+
+    expect(diffBreaking(oldDocument, newDocument)).toEqual([]);
+  });
 });

@@ -7,8 +7,9 @@ import type { ApiError } from "./errors.ts";
  *
  * Every route in api-next is declared as one of these values; the HTTP
  * adapter, OpenAPI document, and Solid client are generated from them. The
- * SHAPE is frozen at phase 0 — request/response carry Effect Schema values
- * whose precise typing lane A's DSL refines without changing this surface.
+ * The shape amendment is coordinator-mediated: request locations and success
+ * statuses are first-class so the generated adapter can enforce the frozen
+ * wire boundary without exposing an untyped context escape hatch.
  */
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";

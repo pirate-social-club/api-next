@@ -1,20 +1,30 @@
 import {
+  AuthError,
   BadRequest,
   type EndpointDefinition,
   type EndpointRequest,
   InternalError,
-  NotImplemented,
+  NotFound,
   toErrorBody,
 } from "@pirate/contracts";
 import { Schema } from "effect";
 import type { Context } from "hono";
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { routeTable } from "./generated/route-table.ts";
 
+export interface Principal {
+  readonly kind: "user" | "admin" | "agent" | "device";
+  readonly subject: string;
+  readonly scopes?: readonly string[];
+}
+
+/** The only request value a handler or policy authorizer can observe. */
 export interface DecodedRequest {
-  readonly body?: unknown;
-  readonly path?: unknown;
-  readonly query?: unknown;
+  readonly body: unknown;
+  readonly params: unknown;
+  readonly query: unknown;
+  readonly principal: Principal | null;
 }
 
 const endpointResultTag = Symbol("endpoint-result");
@@ -33,24 +43,43 @@ export function withEndpointResult(body: unknown, status?: number): EndpointHand
 
 export type EndpointHandler = (
   input: DecodedRequest,
-  context: Context,
 ) => EndpointHandlerResult | unknown | Promise<EndpointHandlerResult | unknown>;
 
-export interface AuthorizeArgs {
+export interface AuthenticationArgs {
+  readonly endpoint: EndpointDefinition;
+  readonly credentials: {
+    readonly authorization: string;
+  };
+}
+
+export interface AuthorizationArgs {
   readonly endpoint: EndpointDefinition;
   readonly input: DecodedRequest;
-  readonly context: Context;
+}
+
+export interface HttpWorkerConfig {
+  /** Exact allowed origin, or `*`, supplied by Worker configuration. */
+  readonly corsOrigin: string;
 }
 
 export interface HttpWorkerOptions {
+  readonly config?: HttpWorkerConfig;
   readonly handlers?: Readonly<Record<string, EndpointHandler>>;
-  readonly authorize?: (args: AuthorizeArgs) => void | Promise<void>;
+  /** Runs before any request location is decoded. It receives no Hono data. */
+  readonly authenticate?: (args: AuthenticationArgs) => Principal | Promise<Principal>;
+  /** Runs after decoding and receives only the frozen request shape. */
+  readonly authorize?: (args: AuthorizationArgs) => void | Promise<void>;
 }
+
+type HttpWorkerEnv = {
+  Variables: { requestId: string };
+};
+type HttpContext = Context<HttpWorkerEnv>;
 
 const isRequestShape = (request: EndpointDefinition["request"]): request is EndpointRequest =>
   typeof request === "object" &&
   request !== null &&
-  ("body" in request || "path" in request || "query" in request);
+  ("body" in request || "bodyRequired" in request || "path" in request || "query" in request);
 
 const requestShape = (endpoint: EndpointDefinition): EndpointRequest | undefined => {
   if (endpoint.request === undefined) return undefined;
@@ -70,7 +99,7 @@ const decode = (
   }
 };
 
-const decodeBody = async (context: Context, request: EndpointRequest): Promise<unknown> => {
+const decodeBody = async (context: HttpContext, request: EndpointRequest): Promise<unknown> => {
   if (request.body === undefined) return undefined;
   const text = await context.req.text();
   if (text.trim() === "") {
@@ -88,76 +117,189 @@ const decodeBody = async (context: Context, request: EndpointRequest): Promise<u
 
 const decodeInput = async (
   endpoint: EndpointDefinition,
-  context: Context,
+  context: HttpContext,
+  principal: Principal | null,
 ): Promise<DecodedRequest> => {
   const request = requestShape(endpoint);
-  if (request === undefined) return {};
   return {
-    ...(request.body === undefined ? {} : { body: await decodeBody(context, request) }),
-    ...(request.path === undefined
-      ? {}
-      : { path: decode(request.path, context.req.param(), "path") }),
-    ...(request.query === undefined
-      ? {}
-      : { query: decode(request.query, context.req.query(), "query") }),
+    body: request?.body === undefined ? undefined : await decodeBody(context, request),
+    params:
+      request?.path === undefined ? undefined : decode(request.path, context.req.param(), "path"),
+    query:
+      request?.query === undefined
+        ? undefined
+        : decode(request.query, context.req.query(), "query"),
+    principal,
   };
 };
 
-const defaultSuccessStatus = (endpoint: EndpointDefinition): number => {
-  if (endpoint.successStatus === undefined) return 200;
+const isPublic = (endpoint: EndpointDefinition): boolean => endpoint.auth.policy.kind === "public";
+const isOptionalUser = (endpoint: EndpointDefinition): boolean =>
+  endpoint.auth.optionalUser === true;
+
+const declaredStatuses = (endpoint: EndpointDefinition): readonly number[] => {
+  if (endpoint.successStatus === undefined) return [200];
   return typeof endpoint.successStatus === "number"
-    ? endpoint.successStatus
-    : (endpoint.successStatus[0] ?? 200);
+    ? [endpoint.successStatus]
+    : endpoint.successStatus;
 };
 
-const isHandlerResult = (value: unknown): value is EndpointHandlerResult =>
-  typeof value === "object" &&
-  value !== null &&
-  endpointResultTag in value &&
-  value[endpointResultTag] === true;
+const errorCodeAndStatus = (error: unknown): { readonly code: string; readonly status: number } => {
+  const serialized = toErrorBody(error);
+  return { code: serialized.body.code, status: serialized.status };
+};
 
-const json = (_context: Context, body: unknown, status: number): Response =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json; charset=UTF-8" },
+const declaredError = (endpoint: EndpointDefinition, error: unknown): boolean => {
+  const actual = errorCodeAndStatus(error);
+  return (endpoint.errors ?? []).some((Ctor) => {
+    if (!(error instanceof Ctor)) return false;
+    const declared = new Ctor({} as never) as { readonly code: string; readonly status: number };
+    return declared.code === actual.code && declared.status === actual.status;
   });
+};
 
-export function createHttpWorker(options: HttpWorkerOptions = {}): Hono {
-  const app = new Hono();
+const constrainedError = (endpoint: EndpointDefinition, error: unknown): unknown => {
+  const actual = errorCodeAndStatus(error);
+  if (actual.code === "internal_error" || declaredError(endpoint, error)) return error;
+  return new InternalError({ message: "Endpoint failed with an undeclared error" });
+};
+
+const corsOrigin = (
+  context: HttpContext,
+  config: HttpWorkerConfig | undefined,
+): string | undefined => {
+  const configured =
+    config?.corsOrigin ?? (context.env as { CORS_ORIGIN?: string } | undefined)?.CORS_ORIGIN;
+  return configured === "" ? undefined : configured;
+};
+
+const requestId = (context: HttpContext): string => {
+  const existing = context.get("requestId");
+  if (existing !== undefined) return existing;
+  const generated = context.req.header("x-request-id")?.trim() || crypto.randomUUID();
+  context.set("requestId", generated);
+  return generated;
+};
+
+const json = (context: HttpContext, body: unknown, status: number, noStore: boolean): Response => {
+  const headers = new Headers({
+    "content-type": "application/json; charset=UTF-8",
+    "x-request-id": requestId(context),
+  });
+  if (noStore) headers.set("cache-control", "no-store");
+  return new Response(JSON.stringify(body), { status, headers });
+};
+
+const decodeResponse = (endpoint: EndpointDefinition, body: unknown): unknown => {
+  try {
+    return Schema.decodeUnknownSync(
+      endpoint.response as unknown as Schema.ConstraintDecoder<unknown>,
+    )(body);
+  } catch {
+    throw new InternalError({ message: "Endpoint returned an invalid response" });
+  }
+};
+
+const validateHandlerStatus = (endpoint: EndpointDefinition, status: number): void => {
+  if (!declaredStatuses(endpoint).includes(status)) {
+    throw new InternalError({ message: "Endpoint returned an undeclared success status" });
+  }
+};
+
+export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWorkerEnv> {
+  const installedProtectedHandlers = routeTable.filter(
+    (binding) => options.handlers?.[binding.name] !== undefined && !isPublic(binding.endpoint),
+  );
+  if (installedProtectedHandlers.length > 0 && options.authenticate === undefined) {
+    throw new Error("Protected handlers require an authenticator");
+  }
+  if (installedProtectedHandlers.length > 0 && options.authorize === undefined) {
+    throw new Error("Protected handlers require an authorizer");
+  }
+
+  const app = new Hono<HttpWorkerEnv>();
+  app.use("*", async (context, next) => {
+    requestId(context);
+    await next();
+  });
+  app.use(
+    "*",
+    cors({
+      origin: (origin, context) => {
+        const configured = corsOrigin(context, options.config);
+        if (configured === "*") return "*";
+        return configured !== undefined && configured === origin ? configured : undefined;
+      },
+      allowHeaders: ["Authorization", "Content-Type", "X-Request-Id"],
+      exposeHeaders: ["X-Request-Id"],
+      allowMethods: ["GET", "POST", "OPTIONS"],
+    }),
+  );
 
   for (const binding of routeTable) {
     app.on(binding.method, binding.path, async (context) => {
-      const input = await decodeInput(binding.endpoint, context);
-      await options.authorize?.({ endpoint: binding.endpoint, input, context });
       const handler = options.handlers?.[binding.name];
       if (handler === undefined) {
-        if (binding.name === "Health") return json(context, { status: "ok" }, 200);
-        throw new NotImplemented({
-          message: "Endpoint handler is not installed",
-          details: { endpoint: binding.name },
+        if (binding.name === "Health") {
+          return json(context, decodeResponse(binding.endpoint, { status: "ok" }), 200, false);
+        }
+        throw new NotFound({ message: "Endpoint not found" });
+      }
+
+      const authorization = context.req.header("authorization");
+      const hasAuthorizationHeader = authorization !== undefined;
+      const hasCredentials = authorization !== undefined && authorization.trim() !== "";
+      let principal: Principal | null = null;
+      if (!isPublic(binding.endpoint) && !hasCredentials && !isOptionalUser(binding.endpoint)) {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      if (!isPublic(binding.endpoint) && hasAuthorizationHeader && !hasCredentials) {
+        throw new AuthError({ message: "Authentication required" });
+      }
+      if (hasCredentials && options.authenticate !== undefined) {
+        principal = await options.authenticate({
+          endpoint: binding.endpoint,
+          credentials: { authorization },
         });
       }
-      const result = await handler(input, context);
-      const body = isHandlerResult(result) ? result.body : result;
-      const status = isHandlerResult(result)
-        ? (result.status ?? defaultSuccessStatus(binding.endpoint))
-        : defaultSuccessStatus(binding.endpoint);
-      try {
-        Schema.decodeUnknownSync(
-          binding.endpoint.response as unknown as Schema.ConstraintDecoder<unknown>,
-        )(body);
-      } catch {
-        throw new InternalError({ message: "Endpoint returned an invalid response" });
+
+      // Authentication deliberately precedes every request-schema decode.
+      const input = await decodeInput(binding.endpoint, context, principal);
+      if (!isPublic(binding.endpoint)) {
+        await options.authorize?.({ endpoint: binding.endpoint, input });
       }
-      return json(context, body, status);
+
+      try {
+        const result = await handler(input);
+        const body = isHandlerResult(result) ? result.body : result;
+        const status = isHandlerResult(result)
+          ? (result.status ?? declaredStatuses(binding.endpoint)[0] ?? 200)
+          : (declaredStatuses(binding.endpoint)[0] ?? 200);
+        validateHandlerStatus(binding.endpoint, status);
+        const decoded = decodeResponse(binding.endpoint, body);
+        const request = requestShape(binding.endpoint);
+        const noStore =
+          !isPublic(binding.endpoint) || authorization !== undefined || request?.body !== undefined;
+        return json(context, decoded, status, noStore);
+      } catch (error) {
+        throw constrainedError(binding.endpoint, error);
+      }
     });
   }
 
   app.onError((error, context) => {
-    const requestId = context.req.header("x-request-id");
-    const serialized = toErrorBody(error, requestId);
-    return json(context, serialized.body, serialized.status);
+    const serialized = toErrorBody(error, requestId(context));
+    return json(context, serialized.body, serialized.status, true);
   });
 
   return app;
+}
+
+function isHandlerResult(value: unknown): value is EndpointHandlerResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    endpointResultTag in value &&
+    value[endpointResultTag] === true
+  );
 }

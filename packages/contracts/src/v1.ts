@@ -949,7 +949,7 @@ export const UnfollowCommunity = endpoint({
     follower_count: Schema.optional(Schema.NullOr(Schema.Number)),
   }),
   successStatus: 200,
-  errors: [AuthError, NotFound, RateLimited],
+  errors: [AuthError, Conflict, NotFound, RateLimited],
 });
 
 // --- posts, comments, votes ----------------------------------------------
@@ -957,7 +957,7 @@ export const UnfollowCommunity = endpoint({
 export const CreatePost = endpoint({
   method: "POST",
   path: "/communities/:communityId/posts",
-  auth: Auth.agentDelegated("posts"),
+  auth: Auth.userOrAdminOrAgentDelegated("posts"),
   request: { path: PathCommunity, body: CreatePostRequest },
   response: Post,
   successStatus: [201, 202],
@@ -1004,7 +1004,15 @@ export const CastPostVote = endpoint({
   request: { path: PathPost, body: VoteRequest },
   response: VoteResponse,
   successStatus: 200,
-  errors: [AuthError, BadRequest, VerificationRequired, RateLimited],
+  errors: [
+    AuthError,
+    BadRequest,
+    VerificationRequired,
+    MembershipRequired,
+    GateUnsatisfied,
+    NotFound,
+    RateLimited,
+  ],
 });
 
 export const ClearPostVote = endpoint({
@@ -1018,13 +1026,21 @@ export const ClearPostVote = endpoint({
   },
   response: ClearVoteResponse,
   successStatus: 200,
-  errors: [AuthError, BadRequest, VerificationRequired, RateLimited],
+  errors: [
+    AuthError,
+    BadRequest,
+    VerificationRequired,
+    MembershipRequired,
+    GateUnsatisfied,
+    NotFound,
+    RateLimited,
+  ],
 });
 
 export const CreateCommentReply = endpoint({
   method: "POST",
   path: "/comments/:commentId/replies",
-  auth: Auth.agentDelegated("comments"),
+  auth: Auth.userOrAdminOrAgentDelegated("comments"),
   request: { path: PathComment, body: CreateComment },
   response: Comment,
   successStatus: 201,

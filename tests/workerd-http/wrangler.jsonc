@@ -1,0 +1,8 @@
+{
+  "name": "pirate-http-worker-test",
+  "main": "./entry.ts",
+  "compatibility_date": "2026-08-01",
+  "vars": {
+    "CORS_ORIGIN": "https://solid.test"
+  }
+}

@@ -216,7 +216,44 @@
               }
             },
             "x-error-codes": [
-              "verification_required"
+              "verification_required",
+              "membership_required",
+              "gate_unsatisfied"
+            ]
+          },
+          "404": {
+            "description": "Error envelope (old wire format)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
             ]
           },
           "429": {
@@ -265,6 +302,9 @@
           "AuthError",
           "BadRequest",
           "VerificationRequired",
+          "MembershipRequired",
+          "GateUnsatisfied",
+          "NotFound",
           "RateLimited"
         ]
       }
@@ -431,7 +471,44 @@
               }
             },
             "x-error-codes": [
-              "verification_required"
+              "verification_required",
+              "membership_required",
+              "gate_unsatisfied"
+            ]
+          },
+          "404": {
+            "description": "Error envelope (old wire format)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
             ]
           },
           "429": {
@@ -480,6 +557,9 @@
           "AuthError",
           "BadRequest",
           "VerificationRequired",
+          "MembershipRequired",
+          "GateUnsatisfied",
+          "NotFound",
           "RateLimited"
         ]
       }
@@ -1379,7 +1459,7 @@
         },
         "x-auth": {
           "policy": {
-            "kind": "agentDelegated",
+            "kind": "userOrAdminOrAgentDelegated",
             "scope": "comments"
           }
         },
@@ -5528,7 +5608,7 @@
         },
         "x-auth": {
           "policy": {
-            "kind": "agentDelegated",
+            "kind": "userOrAdminOrAgentDelegated",
             "scope": "posts"
           }
         },
@@ -21540,6 +21620,41 @@
               "not_found"
             ]
           },
+          "409": {
+            "description": "Error envelope (old wire format)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
+            ]
+          },
           "429": {
             "description": "Error envelope (old wire format)",
             "content": {
@@ -21583,6 +21698,7 @@
         },
         "x-errors": [
           "AuthError",
+          "Conflict",
           "NotFound",
           "RateLimited"
         ]
