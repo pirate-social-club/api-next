@@ -6,7 +6,7 @@
  * seams; they are not presented as old-api source.
  */
 export const OLD_API_SESSION_VENDOR = {
-  repository: "https://github.com/technohippi3/pirate-workspace.git",
+  repository: "https://github.com/pirate-social-club/api.git",
   sourceProject: "api",
   sourceCommit: "0b44698b0bdc16c057f9a8d33b61f8336d730abc",
   verifier: {

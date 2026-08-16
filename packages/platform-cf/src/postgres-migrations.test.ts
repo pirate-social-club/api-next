@@ -65,6 +65,16 @@ describe("Postgres migration ledger prefix", () => {
     });
   });
 
+  test("rejects non-zero-padded migration numbers", async () => {
+    const result = await Effect.runPromiseExit(
+      applyPostgresMigrations([{ ...first, version: "1_unpadded.sql" }, second]).pipe(
+        Effect.provideService(ControlPlaneDb, fakeDb([])),
+      ),
+    );
+    const failure = failureOf(result);
+    expect(failure).toMatchObject({ reason: "format", version: "1_unpadded.sql" });
+  });
+
   test("accepts the contiguous prefix and applies the remaining migration", async () => {
     const result = await Effect.runPromise(
       applyPostgresMigrations([first, second]).pipe(

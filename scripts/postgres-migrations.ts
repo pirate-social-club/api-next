@@ -7,6 +7,7 @@ import { makeDirectPostgresControlPlaneLayer } from "../packages/platform-cf/src
 import {
   applyPostgresMigrations,
   type MigrationApplyResult,
+  POSTGRES_MIGRATION_VERSION_PATTERN,
   type PostgresMigration,
 } from "../packages/platform-cf/src/postgres-migrations.ts";
 
@@ -48,6 +49,10 @@ export async function loadPostgresMigrations(
   const names = (await readdir(fileURLToPath(directory)))
     .filter((name) => name.endsWith(".sql"))
     .sort();
+  const invalidName = names.find((name) => !POSTGRES_MIGRATION_VERSION_PATTERN.test(name));
+  if (invalidName !== undefined) {
+    throw new Error(`Invalid Postgres migration filename: ${invalidName}`);
+  }
   const manifestNames = Object.keys(manifest.migrations).sort();
   if (names.length === 0 || names.join("\n") !== manifestNames.join("\n")) {
     throw new Error("Postgres migration files do not match their checksum manifest");

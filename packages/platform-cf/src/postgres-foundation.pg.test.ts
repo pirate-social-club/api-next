@@ -250,8 +250,8 @@ suite("Postgres 17 v1 foundation", () => {
       expect(duplicate).toMatchObject({ reason: "duplicate" });
 
       const outOfOrder = await applyMigrations(scopedConnectionString, [
-        { ...migration, version: "0002" },
-        { ...migration, version: "0001" },
+        { ...migration, version: "0002_out_of_order.sql" },
+        { ...migration, version: "0001_out_of_order.sql" },
       ]).catch((error) => error);
       expect(outOfOrder).toBeInstanceOf(MigrationDefinitionInvalid);
       expect(outOfOrder).toMatchObject({ reason: "out-of-order" });

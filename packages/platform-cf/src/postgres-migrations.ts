@@ -12,8 +12,11 @@ export type PostgresMigration = {
   readonly sql: string;
 };
 
+/** Migration filenames use a fixed-width numeric prefix so lexical order is numeric order. */
+export const POSTGRES_MIGRATION_VERSION_PATTERN = /^\d{4}(?:_[^/]+)?\.sql$/;
+
 export class MigrationDefinitionInvalid extends Data.TaggedError("MigrationDefinitionInvalid")<{
-  readonly reason: "empty" | "duplicate" | "out-of-order";
+  readonly reason: "empty" | "format" | "duplicate" | "out-of-order";
   readonly version: string;
 }> {}
 
@@ -47,11 +50,16 @@ function validateDefinitions(
   migrations: readonly PostgresMigration[],
 ): Effect.Effect<void, MigrationDefinitionInvalid> {
   const seen = new Set<string>();
-  let previous: string | undefined;
+  let previousNumber: number | undefined;
   for (const migration of migrations) {
     if (migration.version.length === 0 || migration.sql.trim().length === 0) {
       return Effect.fail(
         new MigrationDefinitionInvalid({ reason: "empty", version: migration.version }),
+      );
+    }
+    if (!POSTGRES_MIGRATION_VERSION_PATTERN.test(migration.version)) {
+      return Effect.fail(
+        new MigrationDefinitionInvalid({ reason: "format", version: migration.version }),
       );
     }
     if (seen.has(migration.version)) {
@@ -59,13 +67,14 @@ function validateDefinitions(
         new MigrationDefinitionInvalid({ reason: "duplicate", version: migration.version }),
       );
     }
-    if (previous !== undefined && migration.version <= previous) {
+    const currentNumber = Number(migration.version.slice(0, 4));
+    if (previousNumber !== undefined && currentNumber <= previousNumber) {
       return Effect.fail(
         new MigrationDefinitionInvalid({ reason: "out-of-order", version: migration.version }),
       );
     }
     seen.add(migration.version);
-    previous = migration.version;
+    previousNumber = currentNumber;
   }
   return Effect.void;
 }
