@@ -4,7 +4,7 @@
  * adapter, driver, RPC, queue, or lease.
  */
 
-export type AdapterKind = "postgres" | "d1-shard-rpc" | "queue-send";
+export type AdapterKind = "postgres" | "queue-send";
 
 export type SafetyProof = "aborted" | "fenced";
 
@@ -23,14 +23,6 @@ export const ADAPTER_ABORT_CASES: readonly AdapterAbortCase[] = [
     adapter: "postgres",
     proof: "aborted",
     operation: "statement",
-    mustStartBeforeTimeout: true,
-    lateResolutionMustBe: "ignored",
-  },
-  {
-    id: "d1-shard-write-rejects-stale-token",
-    adapter: "d1-shard-rpc",
-    proof: "fenced",
-    operation: "batchWrite",
     mustStartBeforeTimeout: true,
     lateResolutionMustBe: "ignored",
   },

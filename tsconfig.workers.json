@@ -13,7 +13,6 @@
   ],
   "exclude": [
     "tests/workerd/vitest.config.ts",
-    "packages/platform-cf/src/cron-lock.test.ts",
-    "packages/platform-cf/src/shard-resolver.test.ts"
+    "packages/platform-cf/src/cron-lock.test.ts"
   ]
 }
