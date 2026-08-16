@@ -299,6 +299,32 @@ suite("Postgres 17 content repository", () => {
         ),
       );
       expect(nested.depth).toBe(2);
+
+      const keyless = await Effect.runPromise(
+        Effect.scoped(
+          store.createCommentReply({
+            communityId: "community_1",
+            postId: "post_parent",
+            parentCommentId: "comment_parent",
+            actor,
+            body: {
+              body: "keyless reply",
+              authorship_mode: "human_direct",
+              identity_mode: "public",
+            },
+            idempotencyBodyHash: "a".repeat(64),
+          }),
+        ),
+      );
+      expect(keyless.idempotency_key).toBeNull();
+      const keylessRow = await admin.query<{
+        idempotency_key: string;
+        idempotency_body_hash: string | null;
+      }>("SELECT idempotency_key, idempotency_body_hash FROM comments WHERE comment_id = $1", [
+        keyless.id,
+      ]);
+      expect(keylessRow.rows[0]?.idempotency_key).toBe("");
+      expect(keylessRow.rows[0]?.idempotency_body_hash).toBeNull();
     });
     completedTestCount += 1;
   });

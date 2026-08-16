@@ -5,7 +5,7 @@ import { makeControlPlaneContentRepository } from "./content-repository";
 
 type Row = Readonly<Record<string, unknown>>;
 
-const failureOf = <A, E>(exit: Exit.Exit<A, E>): E | undefined => {
+const failureOf = <E>(exit: Exit.Exit<unknown, E>): E | undefined => {
   if (!Exit.isFailure(exit)) return undefined;
   const failure = Cause.findError(exit.cause);
   return Result.isSuccess(failure) ? failure.success : undefined;
@@ -387,6 +387,58 @@ describe("M2 content repository row and lock defenses", () => {
     expect(fake.calls[4]?.text).toContain("FOR UPDATE");
   });
 
+  test.each([
+    ["community", { community_id: "community_other" }],
+    ["post", { post_id: "post_other" }],
+    ["user", { user_id: "usr_bob" }],
+  ])("rejects an actor vote with a mismatched %s identity", async (_label, mismatch) => {
+    for (const operation of ["cast", "clear"] as const) {
+      const fake = fakeDb([
+        [{ community_id: "community_1", status: "active" }],
+        [{ status: "member" }],
+        [resolvedPost],
+        [{ ...validPost }],
+        [
+          {
+            community_id: "community_1",
+            post_vote_id: "vote_1",
+            post_id: "post_1",
+            user_id: "usr_alice",
+            vote_value: 1,
+            ...mismatch,
+          },
+        ],
+      ]);
+      const result =
+        operation === "cast"
+          ? await runWith(
+              makeControlPlaneContentRepository().castPostVote({
+                communityId: "community_1",
+                postId: "post_1",
+                actor: { userId: "usr_alice", kind: "user" },
+                body: { value: 1 },
+              }),
+              fake.db,
+            )
+          : await runWith(
+              makeControlPlaneContentRepository().clearPostVote({
+                communityId: "community_1",
+                postId: "post_1",
+                actor: { userId: "usr_alice", kind: "user" },
+                body: {},
+              }),
+              fake.db,
+            );
+      expect(failureOf(result)).toMatchObject({
+        operation: operation === "cast" ? "cast-vote" : "clear-vote",
+        reason: "invalid-row",
+      });
+      expect(fake.calls.map((call) => call.label)).not.toContain(
+        operation === "cast" ? "content.post-votes.upsert" : "content.post-votes.clear",
+      );
+    }
+  });
+
   test("rejects malformed membership and parent depth instead of coercing state", async () => {
     const membershipFake = fakeDb([
       [{ community_id: "community_1", status: "active" }],
@@ -519,7 +571,7 @@ describe("M2 content repository row and lock defenses", () => {
     });
   });
 
-  test("persists no-key replies with null idempotency fields", async () => {
+  test("persists no-key replies with an empty key and null hash", async () => {
     const fake = fakeDb([
       [{ community_id: "community_1", status: "active" }],
       [{ status: "member" }],
@@ -552,7 +604,7 @@ describe("M2 content repository row and lock defenses", () => {
           author_user_id: "usr_alice",
           status: "published",
           body: "reply",
-          idempotency_key: null,
+          idempotency_key: "",
           idempotency_body_hash: null,
           depth: 1,
           created_at: new Date("2026-01-01T00:00:00Z"),
@@ -572,8 +624,66 @@ describe("M2 content repository row and lock defenses", () => {
     );
     expect(Exit.isSuccess(result)).toBe(true);
     const insert = fake.calls.find((call) => call.label === "content.comments.insert");
-    expect(insert?.values.at(-2)).toBeNull();
+    expect(insert?.values.at(-2)).toBe("");
     expect(insert?.values.at(-1)).toBeNull();
+  });
+
+  test("rejects a fresh keyed reply whose returned hash differs", async () => {
+    const fake = fakeDb([
+      [{ community_id: "community_1", status: "active" }],
+      [{ status: "member" }],
+      [resolvedPost],
+      [
+        {
+          community_id: "community_1",
+          post_id: "post_1",
+          comment_id: "comment_parent",
+          status: "published",
+          community_status: "active",
+        },
+      ],
+      [{ ...validPost }],
+      [
+        {
+          community_id: "community_1",
+          comment_id: "comment_parent",
+          post_id: "post_1",
+          status: "published",
+          depth: 0,
+        },
+      ],
+      [],
+      [
+        {
+          community_id: "community_1",
+          comment_id: "comment_reply",
+          post_id: "post_1",
+          parent_comment_id: "comment_parent",
+          author_user_id: "usr_alice",
+          status: "published",
+          body: "reply",
+          idempotency_key: "reply-key",
+          idempotency_body_hash: "b".repeat(64),
+          depth: 1,
+          created_at: new Date("2026-01-01T00:00:00Z"),
+        },
+      ],
+    ]);
+    const result = await runWith(
+      makeControlPlaneContentRepository().createCommentReply({
+        communityId: "community_1",
+        postId: "post_1",
+        parentCommentId: "comment_parent",
+        actor: { userId: "usr_alice", kind: "user" },
+        body: { body: "reply", idempotency_key: "reply-key" },
+        idempotencyBodyHash: "a".repeat(64),
+      }),
+      fake.db,
+    );
+    expect(failureOf(result)).toMatchObject({
+      operation: "create-comment-reply",
+      reason: "invalid-row",
+    });
   });
 
   test.each([

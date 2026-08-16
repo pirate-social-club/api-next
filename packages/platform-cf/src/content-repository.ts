@@ -618,7 +618,12 @@ const loadActorVoteIn = (
       readonly: false,
     });
     const row = yield* oneRow(result.rows, operation);
-    return row === null ? null : yield* actorVoteFromRow(row, operation);
+    if (row === null) return null;
+    const vote = yield* actorVoteFromRow(row, operation);
+    if (vote.communityId !== communityId || vote.postId !== postId || vote.userId !== userId) {
+      return yield* invalid(operation);
+    }
+    return vote;
   });
 
 const loadPostByIdempotency = (
@@ -681,13 +686,16 @@ const commentIdempotencyDocument = (
   row: Row,
   key: string,
   operation: ContentRepositoryOperation,
+  expectedHash?: string,
 ) => {
   const persistedKey = stringValue(row, "idempotency_key");
   const persistedHash = stringValue(row, "idempotency_body_hash");
   if (
     key === ""
-      ? persistedKey !== null || persistedHash !== null
-      : persistedKey !== key || !validIdempotencyHash(persistedHash)
+      ? persistedKey !== "" || persistedHash !== null
+      : persistedKey !== key ||
+        !validIdempotencyHash(persistedHash) ||
+        (expectedHash !== undefined && persistedHash !== expectedHash)
   ) {
     return Effect.fail(invalid(operation));
   }
@@ -778,7 +786,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               return yield* invalid("create-post");
             }
             if (persistedHash !== idempotencyBodyHash) {
-              return yield* idempotencyConflict();
+              return yield* invalid("create-post");
             }
             return yield* postIdempotencyDocument(insertedRow, body.idempotency_key, "create-post");
           }
@@ -1049,14 +1057,19 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               body.body,
               depth,
               now,
-              key === "" ? null : key,
+              key,
               persistedHash,
             ],
             readonly: false,
           });
           const insertedRow = yield* oneRow(inserted.rows, "create-comment-reply");
           if (insertedRow !== null) {
-            return yield* commentIdempotencyDocument(insertedRow, key, "create-comment-reply");
+            return yield* commentIdempotencyDocument(
+              insertedRow,
+              key,
+              "create-comment-reply",
+              idempotencyBodyHash,
+            );
           }
           if (key === "") return yield* constraint("create-comment-reply");
           const concurrent = yield* loadCommentByIdempotency(
