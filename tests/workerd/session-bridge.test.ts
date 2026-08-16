@@ -312,8 +312,6 @@ describe("session bridge WebCrypto primitives (workerd)", () => {
     const material = await keyMaterial();
     const wrong = await keyMaterial();
     const expectedRejects = new Set([
-      "valid-default-scope-when-omitted",
-      "valid-default-scope-when-empty",
       "reject-wrong-algorithm",
       "reject-wrong-typ-contract",
       "reject-wrong-issuer",
@@ -370,6 +368,6 @@ describe("session bridge WebCrypto primitives (workerd)", () => {
         .map((observation) => observation.id)
         .sort(),
     ).toEqual([...expectedRejects].sort());
-    expect(observations.filter((observation) => observation.result === "accept")).toHaveLength(13);
+    expect(observations.filter((observation) => observation.result === "accept")).toHaveLength(15);
   });
 });

@@ -168,10 +168,10 @@ describe("session bridge conformance corpus", () => {
     }
 
     expect(observations).toHaveLength(32);
-    expect(observations.filter((row) => row.old !== row.apiNext)).toEqual([
-      { id: "valid-default-scope-when-omitted", old: "accept", apiNext: "reject" },
-      { id: "valid-default-scope-when-empty", old: "accept", apiNext: "reject" },
-    ]);
+    // Coordinator ruling 2026-08-16: api-next adopts the old verifier's
+    // omitted/empty-scope defaulting (spec 003 "old tokens pass api-next"),
+    // so the runtimes must not diverge on any vector.
+    expect(observations.filter((row) => row.old !== row.apiNext)).toEqual([]);
     expect(observations.filter((row) => row.old === "accept")).toHaveLength(15);
     expect(observations.filter((row) => row.old === "reject")).toHaveLength(17);
     expect(OLD_API_SESSION_VENDOR.sourceCommit).toBe("0b44698b0bdc16c057f9a8d33b61f8336d730abc");
