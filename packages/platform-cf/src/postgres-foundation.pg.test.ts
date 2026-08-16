@@ -35,6 +35,9 @@ const migrationSql = await Bun.file(
 const identityMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0002_identity.sql", import.meta.url),
 ).text();
+const m2MigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0003_m2_community_content.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -49,7 +52,12 @@ const identityMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0002_identity.sql"] ?? "",
   sql: identityMigrationSql,
 };
-const migrations: readonly PostgresMigration[] = [migration, identityMigration];
+const m2Migration: PostgresMigration = {
+  version: "0003_m2_community_content.sql",
+  checksum: checksumManifest.migrations["0003_m2_community_content.sql"] ?? "",
+  sql: m2MigrationSql,
+};
+const migrations: readonly PostgresMigration[] = [migration, identityMigration, m2Migration];
 
 function checksum(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -174,6 +182,8 @@ suite("Postgres 17 v1 foundation", () => {
   test("applies all migrations and matches the cumulative schema source", async () => {
     await withSchema(async (admin, scopedConnectionString, schema) => {
       expect(checksum(migrationSql)).toBe(migration.checksum);
+      expect(checksum(identityMigrationSql)).toBe(identityMigration.checksum);
+      expect(checksum(m2MigrationSql)).toBe(m2Migration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -198,6 +208,7 @@ suite("Postgres 17 v1 foundation", () => {
         "comments",
         "communities",
         "community_feed_projection",
+        "community_follows",
         "community_memberships",
         "home_feed_projection",
         "moderation_actions",
@@ -216,8 +227,9 @@ suite("Postgres 17 v1 foundation", () => {
         `SELECT table_name, column_name, is_nullable
          FROM information_schema.columns
          WHERE table_schema = current_schema()
-           AND ((table_name = 'posts' AND column_name IN ('author_user_id', 'body', 'post_type', 'visibility'))
-             OR (table_name = 'comments' AND column_name IN ('author_user_id', 'body')))`,
+           AND ((table_name = 'communities' AND column_name IN ('membership_mode', 'human_verification_lane'))
+             OR (table_name = 'posts' AND column_name IN ('author_user_id', 'body', 'post_type', 'visibility', 'idempotency_key', 'idempotency_body_hash'))
+             OR (table_name = 'comments' AND column_name IN ('author_user_id', 'body', 'idempotency_key', 'idempotency_body_hash')))`,
       );
       expect(columns.rows).toEqual(
         expect.arrayContaining([
@@ -225,8 +237,18 @@ suite("Postgres 17 v1 foundation", () => {
           { table_name: "posts", column_name: "body", is_nullable: "YES" },
           { table_name: "posts", column_name: "post_type", is_nullable: "NO" },
           { table_name: "posts", column_name: "visibility", is_nullable: "NO" },
+          { table_name: "posts", column_name: "idempotency_key", is_nullable: "NO" },
+          { table_name: "posts", column_name: "idempotency_body_hash", is_nullable: "YES" },
           { table_name: "comments", column_name: "author_user_id", is_nullable: "YES" },
           { table_name: "comments", column_name: "body", is_nullable: "YES" },
+          { table_name: "comments", column_name: "idempotency_key", is_nullable: "NO" },
+          { table_name: "comments", column_name: "idempotency_body_hash", is_nullable: "YES" },
+          { table_name: "communities", column_name: "membership_mode", is_nullable: "NO" },
+          {
+            table_name: "communities",
+            column_name: "human_verification_lane",
+            is_nullable: "YES",
+          },
         ]),
       );
 

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
+  CommunityRepositoryError,
+  ContentRepositoryError,
   ControlPlaneAcquireFailed,
   ControlPlaneDb,
   type ControlPlaneError,
@@ -82,5 +84,31 @@ describe("ControlPlaneDb port", () => {
     expect(Object.keys(timedOut)).not.toContain("cause");
     expect(Object.keys(statementFailed)).not.toContain("text");
     expect(Object.keys(statementFailed)).not.toContain("values");
+  });
+});
+
+describe("M2 repository ports", () => {
+  test("expose only typed semantic storage outcomes", () => {
+    const community = new CommunityRepositoryError({
+      operation: "join",
+      reason: "membership-required",
+    });
+    const content = new ContentRepositoryError({
+      operation: "create-post",
+      reason: "idempotency-conflict",
+    });
+
+    expect(community).toMatchObject({
+      _tag: "CommunityRepositoryError",
+      operation: "join",
+      reason: "membership-required",
+    });
+    expect(content).toMatchObject({
+      _tag: "ContentRepositoryError",
+      operation: "create-post",
+      reason: "idempotency-conflict",
+    });
+    expect(Object.keys(community)).not.toContain("cause");
+    expect(Object.keys(content)).not.toContain("sql");
   });
 });

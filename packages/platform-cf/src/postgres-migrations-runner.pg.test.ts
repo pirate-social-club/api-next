@@ -56,7 +56,7 @@ suite("Postgres 17 migration runner", () => {
         dryRun: false,
         result: {
           applied: migrations.map(({ version }) => version),
-          currentVersion: "0002_identity.sql",
+          currentVersion: migrations.at(-1)?.version,
         },
       });
       const noOp = await runPostgresMigrations({ connectionString: scopedConnection });
@@ -64,7 +64,7 @@ suite("Postgres 17 migration runner", () => {
       const ledger = await admin.query(
         "SELECT version, checksum FROM schema_migrations ORDER BY version",
       );
-      expect(ledger.rows).toHaveLength(2);
+      expect(ledger.rows).toHaveLength(migrations.length);
     });
     completedTestCount += 1;
   });

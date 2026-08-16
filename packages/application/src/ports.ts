@@ -1,4 +1,16 @@
-import { Context, Data, type Effect } from "effect";
+import type {
+  CastPostVote,
+  ClearPostVote,
+  CreateCommentReply,
+  CreatePost,
+  FollowCommunity,
+  GetCommunityPreview,
+  GetJoinEligibility,
+  GetPost,
+  JoinCommunity,
+  UnfollowCommunity,
+} from "@pirate/contracts";
+import { Context, Data, type Effect, type Schema } from "effect";
 
 /**
  * Initial service-tag catalog (api-next 000 §7; 001 phase 0 step 4).
@@ -200,3 +212,171 @@ export class IdentityStore extends Context.Service<
     }) => Effect.Effect<CanonicalIdentity, ControlPlaneError | IdentityResolutionError>;
   }
 >()("IdentityStore") {}
+
+// --- M2 community and content persistence (coordinator freeze 2026-08-16).
+// Runtime persistence is Postgres. Repositories return storage outcomes only;
+// application use cases map them into each endpoint's declared wire errors.
+
+export type M2Actor = Readonly<{
+  readonly userId: string;
+  readonly kind: "user" | "admin" | "agent";
+  readonly scopes?: readonly string[];
+}>;
+
+export type MembershipStatus = "missing" | "pending" | "member" | "left" | "banned";
+
+export type CommunityPreviewDocument = Schema.Schema.Type<typeof GetCommunityPreview.response>;
+export type JoinEligibilityDocument = Schema.Schema.Type<typeof GetJoinEligibility.response>;
+export type JoinDocument = Schema.Schema.Type<typeof JoinCommunity.response>;
+export type FollowDocument = Schema.Schema.Type<typeof FollowCommunity.response>;
+export type UnfollowDocument = Schema.Schema.Type<typeof UnfollowCommunity.response>;
+
+export type CreatePostBody = Schema.Schema.Type<(typeof CreatePost.request)["body"]>;
+export type CreateCommentBody = Schema.Schema.Type<(typeof CreateCommentReply.request)["body"]>;
+export type VoteBody = Schema.Schema.Type<(typeof CastPostVote.request)["body"]>;
+export type ClearVoteBody = Schema.Schema.Type<(typeof ClearPostVote.request)["body"]>;
+
+export type PostDocument = Schema.Schema.Type<typeof CreatePost.response>;
+export type LocalizedPostDocument = Schema.Schema.Type<typeof GetPost.response>;
+export type CommentDocument = Schema.Schema.Type<typeof CreateCommentReply.response>;
+export type VoteDocument = Schema.Schema.Type<typeof CastPostVote.response>;
+export type ClearVoteDocument = Schema.Schema.Type<typeof ClearPostVote.response>;
+
+export type CommunityRepositoryOperation =
+  | "membership"
+  | "preview"
+  | "eligibility"
+  | "join"
+  | "follow"
+  | "unfollow";
+
+export type ContentRepositoryOperation =
+  | "resolve-post"
+  | "resolve-comment"
+  | "create-post"
+  | "get-post"
+  | "create-comment-reply"
+  | "cast-vote"
+  | "clear-vote";
+
+export type M2RepositoryReason =
+  | "membership-required"
+  | "comments-locked"
+  | "idempotency-conflict"
+  | "constraint"
+  | "invalid-row";
+
+export class CommunityRepositoryError extends Data.TaggedError("CommunityRepositoryError")<{
+  readonly operation: CommunityRepositoryOperation;
+  readonly reason: M2RepositoryReason;
+}> {}
+
+export class ContentRepositoryError extends Data.TaggedError("ContentRepositoryError")<{
+  readonly operation: ContentRepositoryOperation;
+  readonly reason: M2RepositoryReason;
+}> {}
+
+export type CommunityRepositoryFailure = CommunityRepositoryError | ControlPlaneError;
+export type ContentRepositoryFailure = ContentRepositoryError | ControlPlaneError;
+
+export type PostLocation = Readonly<{
+  readonly communityId: string;
+  readonly postId: string;
+}>;
+
+export type CommentLocation = Readonly<{
+  readonly communityId: string;
+  readonly postId: string;
+  readonly commentId: string;
+}>;
+
+export interface CommunityStoreService {
+  readonly membershipStatus: (input: {
+    readonly communityId: string;
+    readonly userId: string;
+  }) => Effect.Effect<MembershipStatus, CommunityRepositoryFailure>;
+
+  readonly getPreview: (input: {
+    readonly communityId: string;
+    readonly locale?: string;
+    readonly viewerUserId?: string;
+  }) => Effect.Effect<CommunityPreviewDocument | null, CommunityRepositoryFailure>;
+
+  readonly getJoinEligibility: (input: {
+    readonly communityId: string;
+    readonly userId: string;
+  }) => Effect.Effect<JoinEligibilityDocument | null, CommunityRepositoryFailure>;
+
+  readonly join: (input: {
+    readonly communityId: string;
+    readonly actor: M2Actor;
+    readonly body: Schema.Schema.Type<(typeof JoinCommunity.request)["body"]>;
+  }) => Effect.Effect<JoinDocument, CommunityRepositoryFailure>;
+
+  readonly follow: (input: {
+    readonly communityId: string;
+    readonly actor: M2Actor;
+  }) => Effect.Effect<FollowDocument, CommunityRepositoryFailure>;
+
+  readonly unfollow: (input: {
+    readonly communityId: string;
+    readonly actor: M2Actor;
+  }) => Effect.Effect<UnfollowDocument, CommunityRepositoryFailure>;
+}
+
+export class CommunityStore extends Context.Service<CommunityStore, CommunityStoreService>()(
+  "CommunityStore",
+) {}
+
+export interface ContentStoreService {
+  /** Resolve the globally unique public post ID before scoped access. */
+  readonly resolvePost: (input: {
+    readonly postId: string;
+  }) => Effect.Effect<PostLocation | null, ContentRepositoryFailure>;
+
+  /** Resolve the globally unique public comment ID before scoped access. */
+  readonly resolveComment: (input: {
+    readonly commentId: string;
+  }) => Effect.Effect<CommentLocation | null, ContentRepositoryFailure>;
+
+  readonly createPost: (input: {
+    readonly communityId: string;
+    readonly actor: M2Actor;
+    readonly body: CreatePostBody;
+    readonly idempotencyBodyHash: string;
+  }) => Effect.Effect<PostDocument, ContentRepositoryFailure>;
+
+  readonly getPost: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly viewerUserId: string;
+    readonly locale?: string;
+  }) => Effect.Effect<LocalizedPostDocument | null, ContentRepositoryFailure>;
+
+  readonly createCommentReply: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly parentCommentId: string;
+    readonly actor: M2Actor;
+    readonly body: CreateCommentBody;
+    readonly idempotencyBodyHash?: string;
+  }) => Effect.Effect<CommentDocument, ContentRepositoryFailure>;
+
+  readonly castPostVote: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actor: M2Actor;
+    readonly body: VoteBody;
+  }) => Effect.Effect<VoteDocument, ContentRepositoryFailure>;
+
+  readonly clearPostVote: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actor: M2Actor;
+    readonly body: ClearVoteBody;
+  }) => Effect.Effect<ClearVoteDocument, ContentRepositoryFailure>;
+}
+
+export class ContentStore extends Context.Service<ContentStore, ContentStoreService>()(
+  "ContentStore",
+) {}

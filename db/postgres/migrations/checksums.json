@@ -2,6 +2,7 @@
   "algorithm": "sha256",
   "migrations": {
     "0001_v1_product_slice.sql": "6592c575801a7964dc5f051a611ec823a44db966759622d82a12ef964df71e93",
-    "0002_identity.sql": "c017a6681711f3edcb7e0cb247b60c96ed847bf94c766974cda2e74664f37112"
+    "0002_identity.sql": "c017a6681711f3edcb7e0cb247b60c96ed847bf94c766974cda2e74664f37112",
+    "0003_m2_community_content.sql": "7201fac3e446d8f22056e412e938f595a17a71489cff83b74aec5440ee33007b"
   }
 }

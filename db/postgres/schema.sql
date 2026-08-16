@@ -40,6 +40,13 @@ CREATE TABLE IF NOT EXISTS communities (
   created_by_user_id TEXT NOT NULL,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL,
+  membership_mode TEXT NOT NULL DEFAULT 'open'
+    CHECK (membership_mode IN ('open', 'request', 'gated')),
+  human_verification_lane TEXT
+    CHECK (
+      human_verification_lane IS NULL
+      OR human_verification_lane IN ('very', 'self')
+    ),
   CONSTRAINT communities_id_not_blank CHECK (btrim(community_id) <> '')
 );
 
@@ -64,6 +71,24 @@ CREATE TABLE IF NOT EXISTS community_memberships (
 CREATE INDEX IF NOT EXISTS community_memberships_status_idx
   ON community_memberships (community_id, status, updated_at DESC);
 
+CREATE TABLE IF NOT EXISTS community_follows (
+  community_follow_id TEXT PRIMARY KEY,
+  community_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK (status IN ('active', 'inactive')),
+  unfollowed_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT community_follows_community_fk
+    FOREIGN KEY (community_id) REFERENCES communities (community_id),
+  CONSTRAINT community_follows_user_unique
+    UNIQUE (community_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS community_follows_user_status_idx
+  ON community_follows (user_id, status);
+
 CREATE TABLE IF NOT EXISTS posts (
   community_id TEXT NOT NULL,
   post_id TEXT NOT NULL,
@@ -78,6 +103,8 @@ CREATE TABLE IF NOT EXISTS posts (
   body TEXT,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL,
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  idempotency_body_hash TEXT,
   PRIMARY KEY (community_id, post_id),
   CONSTRAINT posts_community_fk
     FOREIGN KEY (community_id) REFERENCES communities (community_id)
@@ -88,6 +115,13 @@ CREATE INDEX IF NOT EXISTS posts_status_created_idx
 
 CREATE INDEX IF NOT EXISTS posts_author_created_idx
   ON posts (community_id, author_user_id, created_at DESC, post_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS posts_author_idempotency_unique
+  ON posts (community_id, author_user_id, idempotency_key)
+  WHERE author_user_id IS NOT NULL AND idempotency_key <> '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS posts_post_id_global_unique
+  ON posts (post_id);
 
 CREATE TABLE IF NOT EXISTS comments (
   community_id TEXT NOT NULL,
@@ -100,6 +134,8 @@ CREATE TABLE IF NOT EXISTS comments (
   body TEXT,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL,
+  idempotency_key TEXT NOT NULL DEFAULT '',
+  idempotency_body_hash TEXT,
   PRIMARY KEY (community_id, comment_id),
   CONSTRAINT comments_community_fk
     FOREIGN KEY (community_id) REFERENCES communities (community_id),
@@ -118,6 +154,13 @@ CREATE INDEX IF NOT EXISTS comments_post_created_idx
 
 CREATE INDEX IF NOT EXISTS comments_parent_created_idx
   ON comments (community_id, parent_comment_id, created_at, comment_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS comments_author_idempotency_unique
+  ON comments (community_id, author_user_id, idempotency_key)
+  WHERE author_user_id IS NOT NULL AND idempotency_key <> '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS comments_comment_id_global_unique
+  ON comments (comment_id);
 
 CREATE TABLE IF NOT EXISTS post_votes (
   community_id TEXT NOT NULL,
