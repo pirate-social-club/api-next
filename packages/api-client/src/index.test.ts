@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  ApiClientError,
   ApiClientResponseValidationError,
   ApiClientUnexpectedError,
   createPirateApiClient,
-} from "./client";
+} from "./index.ts";
 
 describe("generated api client", () => {
   test("validates successful responses instead of returning unchecked JSON", async () => {

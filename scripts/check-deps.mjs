@@ -15,6 +15,7 @@ import { join, relative } from "node:path";
 
 const INTERNAL = {
   "packages/contracts": "@pirate/contracts",
+  "packages/api-client": "@pirate/api-client",
   "packages/domain": "@pirate/domain",
   "packages/application": "@pirate/application",
   "packages/platform-cf": "@pirate/platform-cf",
@@ -25,6 +26,7 @@ const INTERNAL = {
 
 const ALLOWED = {
   "@pirate/contracts": [],
+  "@pirate/api-client": ["@pirate/contracts"],
   "@pirate/domain": [],
   "@pirate/application": ["@pirate/contracts", "@pirate/domain"],
   "@pirate/platform-cf": ["@pirate/application", "@pirate/contracts", "@pirate/domain"],
