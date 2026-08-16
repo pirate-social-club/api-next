@@ -71,18 +71,21 @@ jobs:
           rm -f
           /tmp/api-next-control-plane-postgres-adapter-suite-complete
           /tmp/api-next-control-plane-postgres-foundation-suite-complete
+          /tmp/api-next-control-plane-postgres-migration-suite-complete
+          /tmp/api-next-control-plane-postgres-identity-suite-complete
       - name: Run required Postgres 17 suite
         env:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
           CONTROL_PLANE_POSTGRES_TEST_REQUIRED: "1"
           CONTROL_PLANE_POSTGRES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-adapter-suite-complete
           CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-foundation-suite-complete
+          CONTROL_PLANE_POSTGRES_MIGRATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-migration-suite-complete
+          CONTROL_PLANE_POSTGRES_IDENTITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-identity-suite-complete
         run: >-
-          timeout 120s bun test packages/platform-cf/src/postgres.pg.test.ts
+          timeout 180s bun test
+          packages/platform-cf/src/postgres.pg.test.ts
           packages/platform-cf/src/postgres-foundation.pg.test.ts
+          packages/platform-cf/src/postgres-migrations-runner.pg.test.ts
+          packages/platform-cf/src/identity.pg.test.ts
       - name: Verify Postgres 17 completion sentinel
-        run: >-
-          test "$(cat /tmp/api-next-control-plane-postgres-adapter-suite-complete)"
-          = "api-next-control-plane-postgres-adapter-suite-complete" &&
-          test "$(cat /tmp/api-next-control-plane-postgres-foundation-suite-complete)"
-          = "api-next-control-plane-postgres-foundation-suite-complete"
+        run: bun run verify:postgres-sentinels
