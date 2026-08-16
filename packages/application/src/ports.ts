@@ -7,6 +7,7 @@ import type {
   GetCommunityPreview,
   GetJoinEligibility,
   GetPost,
+  GetPublicHomeFeed,
   JoinCommunity,
   UnfollowCommunity,
 } from "@pirate/contracts";
@@ -241,6 +242,8 @@ export type LocalizedPostDocument = Schema.Schema.Type<typeof GetPost.response>;
 export type CommentDocument = Schema.Schema.Type<typeof CreateCommentReply.response>;
 export type VoteDocument = Schema.Schema.Type<typeof CastPostVote.response>;
 export type ClearVoteDocument = Schema.Schema.Type<typeof ClearPostVote.response>;
+export type HomeFeedQuery = Schema.Schema.Type<(typeof GetPublicHomeFeed.request)["query"]>;
+export type HomeFeedDocument = Schema.Schema.Type<typeof GetPublicHomeFeed.response>;
 
 export type CommunityRepositoryOperation =
   | "membership"
@@ -279,6 +282,15 @@ export class ContentRepositoryError extends Data.TaggedError("ContentRepositoryE
 
 export type CommunityRepositoryFailure = CommunityRepositoryError | ControlPlaneError;
 export type ContentRepositoryFailure = ContentRepositoryError | ControlPlaneError;
+
+export type FeedRepositoryOperation = "list-home";
+
+export class FeedRepositoryError extends Data.TaggedError("FeedRepositoryError")<{
+  readonly operation: FeedRepositoryOperation;
+  readonly reason: "invalid-cursor" | "invalid-row";
+}> {}
+
+export type FeedRepositoryFailure = FeedRepositoryError | ControlPlaneError;
 
 export type PostLocation = Readonly<{
   readonly communityId: string;
@@ -381,3 +393,12 @@ export interface ContentStoreService {
 export class ContentStore extends Context.Service<ContentStore, ContentStoreService>()(
   "ContentStore",
 ) {}
+
+export interface FeedStoreService {
+  readonly listHome: (input: {
+    readonly query: HomeFeedQuery;
+    readonly viewerUserId?: string;
+  }) => Effect.Effect<HomeFeedDocument, FeedRepositoryFailure>;
+}
+
+export class FeedStore extends Context.Service<FeedStore, FeedStoreService>()("FeedStore") {}
