@@ -1,10 +1,11 @@
-import { BadRequest, CastPostVote, NotFound } from "@pirate/contracts";
+import { CastPostVote, NotFound } from "@pirate/contracts";
 import { Effect } from "effect";
 import type { M2Actor } from "../../ports.ts";
 import {
   type ContentUseCaseServices,
   decodeBody,
   mapContentFailure,
+  validateHumanDirectActor,
   validateIdentifier,
 } from "./common.ts";
 
@@ -19,9 +20,7 @@ export const castPostVote = Effect.fn("castPostVote")(function* (
   services: ContentUseCaseServices,
 ) {
   yield* validateIdentifier(input.postId, "Invalid post identifier");
-  if (input.actor.userId.length === 0 || input.actor.userId.trim() !== input.actor.userId) {
-    return yield* new BadRequest({ message: "Invalid actor" });
-  }
+  yield* validateHumanDirectActor(input.actor);
   const body = yield* decodeBody(CastPostVote.request.body, input.body);
   const location = yield* services.contentStore
     .resolvePost({ postId: input.postId })

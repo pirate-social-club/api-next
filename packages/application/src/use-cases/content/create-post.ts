@@ -6,6 +6,7 @@ import {
   canonicalBodyHash,
   decodeBody,
   mapContentFailure,
+  validateHumanDirectActor,
   validateIdentifier,
   validPublicHumanDirectPost,
 } from "./common.ts";
@@ -44,6 +45,10 @@ const hasUnsupportedMetadata = (body: Record<string, unknown>): boolean => {
     "crosspost_source",
     "event",
     "listing_draft",
+    "age_gate_policy",
+    "access_mode",
+    "translation_policy",
+    "publish_mode",
   ];
   return disallowed.some((key) => {
     const value = body[key];
@@ -56,9 +61,7 @@ export const createPost = Effect.fn("createPost")(function* (
   services: ContentUseCaseServices,
 ) {
   yield* validateIdentifier(input.communityId, "Invalid community identifier");
-  if (input.actor.userId.length === 0 || input.actor.userId.trim() !== input.actor.userId) {
-    return yield* new BadRequest({ message: "Invalid actor" });
-  }
+  yield* validateHumanDirectActor(input.actor);
 
   const body = yield* decodeBody(CreatePost.request.body, input.body);
   const record = body as Record<string, unknown>;

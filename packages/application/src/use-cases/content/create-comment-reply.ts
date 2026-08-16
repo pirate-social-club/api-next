@@ -6,6 +6,7 @@ import {
   canonicalBodyHash,
   decodeBody,
   mapContentFailure,
+  validateHumanDirectActor,
   validateIdentifier,
   validPublicHumanDirectComment,
 } from "./common.ts";
@@ -21,9 +22,7 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
   services: ContentUseCaseServices,
 ) {
   yield* validateIdentifier(input.parentCommentId, "Invalid comment identifier");
-  if (input.actor.userId.length === 0 || input.actor.userId.trim() !== input.actor.userId) {
-    return yield* new BadRequest({ message: "Invalid actor" });
-  }
+  yield* validateHumanDirectActor(input.actor);
   const body = yield* decodeBody(CreateCommentReply.request.body, input.body);
   if (
     !validPublicHumanDirectComment(

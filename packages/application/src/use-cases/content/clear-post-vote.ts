@@ -5,6 +5,7 @@ import {
   type ContentUseCaseServices,
   decodeBody,
   mapContentFailure,
+  validateHumanDirectActor,
   validateIdentifier,
 } from "./common.ts";
 
@@ -19,9 +20,7 @@ export const clearPostVote = Effect.fn("clearPostVote")(function* (
   services: ContentUseCaseServices,
 ) {
   yield* validateIdentifier(input.postId, "Invalid post identifier");
-  if (input.actor.userId.length === 0 || input.actor.userId.trim() !== input.actor.userId) {
-    return yield* new NotFound({ message: "Post not found" });
-  }
+  yield* validateHumanDirectActor(input.actor);
   const body = yield* decodeBody(ClearPostVote.request.body, input.body ?? {});
   const location = yield* services.contentStore
     .resolvePost({ postId: input.postId })

@@ -5,12 +5,14 @@ import {
   Conflict,
   InternalError,
   MembershipRequired,
+  NotFound,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import {
   ContentRepositoryError,
   type ContentRepositoryFailure,
   type ContentStore,
+  type M2Actor,
 } from "../../ports.ts";
 
 export interface ContentUseCaseServices {
@@ -56,6 +58,8 @@ export const mapContentFailure = (failure: ContentRepositoryFailure): ApiError =
     return new InternalError({ message: "Content operation failed" });
   }
   switch (failure.reason) {
+    case "not-found":
+      return new NotFound({ message: "Content not found" });
     case "idempotency-conflict":
       return new Conflict({ message: "Idempotency key was already used with a different body" });
     case "membership-required":
@@ -68,6 +72,12 @@ export const mapContentFailure = (failure: ContentRepositoryFailure): ApiError =
       return new InternalError({ message: "Content operation returned an invalid record" });
   }
 };
+
+/** M2 content writes are human-direct; delegated agents are deferred. */
+export const validateHumanDirectActor = (actor: M2Actor): Effect.Effect<void, BadRequest> =>
+  actor.kind === "agent" || actor.userId.length === 0 || actor.userId.trim() !== actor.userId
+    ? Effect.fail(new BadRequest({ message: "Only human-direct actors are supported" }))
+    : Effect.void;
 
 export const validPublicHumanDirectPost = (body: {
   readonly post_type: string;

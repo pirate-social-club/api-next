@@ -87,12 +87,36 @@ describe("M2 content use cases", () => {
       "anonymous",
       { post_type: "text", idempotency_key: "k", body: "x", identity_mode: "anonymous" },
     ],
+    [
+      "age gate",
+      { post_type: "text", idempotency_key: "k", body: "x", age_gate_policy: "18_plus" },
+    ],
+    ["access mode", { post_type: "text", idempotency_key: "k", body: "x", access_mode: "locked" }],
+    [
+      "translation policy",
+      { post_type: "text", idempotency_key: "k", body: "x", translation_policy: "none" },
+    ],
+    ["publish mode", { post_type: "text", idempotency_key: "k", body: "x", publish_mode: "async" }],
     ["empty body", { post_type: "text", idempotency_key: "k", body: "   " }],
   ])("rejects unsupported post shape: %s", async (_label, body) => {
     const result = await run(
       createPost({ communityId: "community_1", actor, body }, { contentStore: fakeStore() }),
     );
     expect(Exit.isFailure(result) ? result.cause : undefined).toBeDefined();
+    expect(failureOf(result)).toMatchObject({ _tag: "BadRequest" });
+  });
+
+  test("rejects delegated actors before content persistence", async () => {
+    const result = await run(
+      createPost(
+        {
+          communityId: "community_1",
+          actor: { userId: "usr_agent_owner", kind: "agent" },
+          body: { post_type: "text", idempotency_key: "k", body: "hello" },
+        },
+        { contentStore: fakeStore() },
+      ),
+    );
     expect(failureOf(result)).toMatchObject({ _tag: "BadRequest" });
   });
 

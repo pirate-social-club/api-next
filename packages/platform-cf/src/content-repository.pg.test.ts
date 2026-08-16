@@ -28,6 +28,8 @@ const migrationFiles = [
   "0001_v1_product_slice.sql",
   "0002_identity.sql",
   "0003_m2_community_content.sql",
+  "0004_post_comment_lock.sql",
+  "0005_m2_behavior_invariants.sql",
 ] as const;
 const migrations: readonly PostgresMigration[] = await Promise.all(
   migrationFiles.map(async (version) => {
@@ -96,10 +98,17 @@ const commentBody = (key: string, body = "reply"): CreateCommentBody =>
 
 async function seed(admin: Client): Promise<void> {
   await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor.userId]);
+  await admin.query("INSERT INTO users (user_id) VALUES ('usr_bob')");
   await admin.query(
     `INSERT INTO communities
       (community_id, display_name, created_by_user_id, created_at, updated_at)
      VALUES ('community_1', 'Community', $1, now(), now())`,
+    [actor.userId],
+  );
+  await admin.query(
+    `INSERT INTO community_memberships
+      (community_id, membership_id, user_id, status, joined_at, created_at, updated_at)
+     VALUES ('community_1', 'membership_alice', $1, 'member', now(), now(), now())`,
     [actor.userId],
   );
   await admin.query(
@@ -137,8 +146,10 @@ suite("Postgres 17 content repository", () => {
         ),
       );
       expect(first.status).toBe("processing");
+      expect(first.id.startsWith("post_")).toBe(true);
       expect(first.analysis_state).toBe("pending");
       expect(first.content_safety_state).toBe("pending");
+      expect(Number.isInteger(first.created)).toBe(true);
       const row = await admin.query<{ status: string }>(
         "SELECT status FROM posts WHERE post_id = $1",
         [first.id],
@@ -156,6 +167,21 @@ suite("Postgres 17 content repository", () => {
         ),
       );
       expect(replay.id).toBe(first.id);
+      const concurrent = await Promise.all(
+        ["concurrent-a", "concurrent-b"].map(() =>
+          Effect.runPromise(
+            Effect.scoped(
+              store.createPost({
+                communityId: "community_1",
+                actor,
+                body: postBody("concurrent-key"),
+                idempotencyBodyHash: "c".repeat(64),
+              }),
+            ),
+          ),
+        ),
+      );
+      expect(concurrent[0]?.id).toBe(concurrent[1]?.id);
       const conflict = await Effect.runPromiseExit(
         Effect.scoped(
           store.createPost({
@@ -207,6 +233,8 @@ suite("Postgres 17 content repository", () => {
         ),
       );
       expect(reply.parent_comment).toBe("comment_parent");
+      expect(reply.id.startsWith("cmt_")).toBe(true);
+      expect(reply.depth).toBe(1);
       expect(reply.upvote_count).toBe(0);
       expect(reply.downvote_count).toBe(0);
       expect(reply.direct_reply_count).toBe(0);
@@ -252,11 +280,25 @@ suite("Postgres 17 content repository", () => {
           }),
         ),
       );
-      expect(failureOf(wrongScope)).toMatchObject({ reason: "constraint" });
+      expect(failureOf(wrongScope)).toMatchObject({ reason: "not-found" });
       const rows = await admin.query<{ count: string }>(
         "SELECT COUNT(*) AS count FROM comments WHERE idempotency_key = 'other-key'",
       );
       expect(rows.rows[0]?.count).toBe("0");
+
+      const nested = await Effect.runPromise(
+        Effect.scoped(
+          store.createCommentReply({
+            communityId: "community_1",
+            postId: "post_parent",
+            parentCommentId: reply.id,
+            actor,
+            body: commentBody("nested-key"),
+            idempotencyBodyHash: "f".repeat(64),
+          }),
+        ),
+      );
+      expect(nested.depth).toBe(2);
     });
     completedTestCount += 1;
   });
@@ -327,8 +369,171 @@ suite("Postgres 17 content repository", () => {
     completedTestCount += 1;
   });
 
+  test("requires active membership and rejects delegated actors", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seed(admin);
+      const store = await storeFor(connection);
+      const nonmember: M2Actor = { userId: "usr_bob", kind: "user" };
+      const create = await Effect.runPromiseExit(
+        Effect.scoped(
+          store.createPost({
+            communityId: "community_1",
+            actor: nonmember,
+            body: postBody("nonmember-key"),
+            idempotencyBodyHash: "1".repeat(64),
+          }),
+        ),
+      );
+      expect(failureOf(create)).toMatchObject({
+        _tag: "ContentRepositoryError",
+        reason: "membership-required",
+      });
+      const vote = await Effect.runPromiseExit(
+        Effect.scoped(
+          store.castPostVote({
+            communityId: "community_1",
+            postId: "post_parent",
+            actor: nonmember,
+            body: { value: 1 },
+          }),
+        ),
+      );
+      expect(failureOf(vote)).toMatchObject({ reason: "membership-required" });
+      const reply = await Effect.runPromiseExit(
+        Effect.scoped(
+          store.createCommentReply({
+            communityId: "community_1",
+            postId: "post_parent",
+            parentCommentId: "comment_parent",
+            actor: nonmember,
+            body: commentBody("nonmember-comment"),
+            idempotencyBodyHash: "2".repeat(64),
+          }),
+        ),
+      );
+      expect(failureOf(reply)).toMatchObject({ reason: "membership-required" });
+
+      const delegated = await Effect.runPromiseExit(
+        Effect.scoped(
+          store.createPost({
+            communityId: "community_1",
+            actor: { userId: actor.userId, kind: "agent" },
+            body: postBody("delegated-key"),
+            idempotencyBodyHash: "3".repeat(64),
+          }),
+        ),
+      );
+      expect(failureOf(delegated)).toMatchObject({ reason: "constraint" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("applies status and members-only visibility rules", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seed(admin);
+      const store = await storeFor(connection);
+      await admin.query("UPDATE posts SET status = 'processing' WHERE post_id = 'post_parent'");
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            store.getPost({
+              communityId: "community_1",
+              postId: "post_parent",
+              viewerUserId: actor.userId,
+            }),
+          ),
+        ),
+      ).resolves.toMatchObject({ post: { status: "processing" } });
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            store.getPost({
+              communityId: "community_1",
+              postId: "post_parent",
+              viewerUserId: "usr_bob",
+            }),
+          ),
+        ),
+      ).resolves.toBeNull();
+
+      await admin.query(
+        "UPDATE posts SET status = 'published', visibility = 'members_only' WHERE post_id = 'post_parent'",
+      );
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            store.getPost({
+              communityId: "community_1",
+              postId: "post_parent",
+              viewerUserId: actor.userId,
+            }),
+          ),
+        ),
+      ).resolves.toMatchObject({ post: { visibility: "members_only" } });
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            store.getPost({
+              communityId: "community_1",
+              postId: "post_parent",
+              viewerUserId: "usr_bob",
+            }),
+          ),
+        ),
+      ).resolves.toBeNull();
+
+      for (const status of ["hidden", "removed", "deleted"] as const) {
+        await admin.query("UPDATE posts SET status = $1 WHERE post_id = 'post_parent'", [status]);
+        await expect(
+          Effect.runPromise(
+            Effect.scoped(
+              store.getPost({
+                communityId: "community_1",
+                postId: "post_parent",
+                viewerUserId: actor.userId,
+              }),
+            ),
+          ),
+        ).resolves.toBeNull();
+      }
+    });
+    completedTestCount += 1;
+  });
+
+  test("blocks replies on locked posts and preserves transactional state", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seed(admin);
+      const store = await storeFor(connection);
+      await admin.query("UPDATE posts SET comments_locked = TRUE WHERE post_id = 'post_parent'");
+      const result = await Effect.runPromiseExit(
+        Effect.scoped(
+          store.createCommentReply({
+            communityId: "community_1",
+            postId: "post_parent",
+            parentCommentId: "comment_parent",
+            actor,
+            body: commentBody("locked-key"),
+            idempotencyBodyHash: "4".repeat(64),
+          }),
+        ),
+      );
+      expect(failureOf(result)).toMatchObject({
+        _tag: "ContentRepositoryError",
+        reason: "comments-locked",
+      });
+      const rows = await admin.query<{ count: string }>(
+        "SELECT COUNT(*) AS count FROM comments WHERE idempotency_key = 'locked-key'",
+      );
+      expect(rows.rows[0]?.count).toBe("0");
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 3) {
+    if (connectionString !== undefined && completedTestCount === 6) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });
