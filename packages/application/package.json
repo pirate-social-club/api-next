@@ -5,6 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./use-cases/profile": "./src/use-cases/profile.ts",
+    "./use-cases/session-authentication": "./src/use-cases/session-authentication.ts",
     "./use-cases/session-exchange": "./src/use-cases/session-exchange.ts"
   }
 }

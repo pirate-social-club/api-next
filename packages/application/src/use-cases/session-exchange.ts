@@ -71,6 +71,26 @@ export interface SessionExchangeServices {
   readonly tokenMinter: SessionTokenMinter;
 }
 
+/**
+ * Lane A's composition placeholder. The integration checkpoint replaces these
+ * typed ports with Lane C's bounded proof, identity, and token adapters.
+ */
+export function makeNotImplementedSessionExchangeServices(): SessionExchangeServices {
+  return {
+    proofVerifier: {
+      verifyPrivy: () => Effect.fail(new SessionProofRejected()),
+      verifyJwt: () => Effect.fail(new SessionProofRejected()),
+    },
+    identityStore: {
+      resolve: () => Effect.fail(new SessionIdentityRejected({ reason: "invalid" })),
+    },
+    tokenMinter: {
+      mint: () =>
+        Effect.fail(new InternalError({ message: "Session exchange is not implemented" })),
+    },
+  };
+}
+
 export type SessionExchangeResponse = Schema.Schema.Type<typeof SessionExchange.response>;
 
 type SessionExchangeFailure = AuthError | BadRequest | RateLimited | InternalError;

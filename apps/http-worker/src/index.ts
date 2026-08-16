@@ -1,8 +1,9 @@
 /**
- * @pirate/http-worker — route table from contracts + HTTP adapter only.
+ * @pirate/http-worker — generated route table and transport composition root.
  *
- * Lane A owns this app (api-next 001 §3). Routes are thin from day one:
- * generated from the contracts package, no product handlers in this slice.
+ * Lane A owns this app (api-next 001 §3). Product behavior enters through
+ * application use cases; this module does not validate bindings until Worker
+ * fetch receives them.
  */
 import type { ExecutionContext } from "@cloudflare/workers-types";
 import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
@@ -16,9 +17,10 @@ export { createHttpWorker, withEndpointResult } from "./transport.ts";
 let cachedProductionApp: ReturnType<typeof createProductionHttpWorker> | undefined;
 
 /**
- * Cloudflare supplies bindings to fetch, so configuration is resolved before
- * the first request and cached for the Worker isolate. A failed construction
- * rejects the health-check request before any route can limp into service.
+ * Cloudflare supplies bindings only to fetch, so true pre-serve validation is
+ * unavailable to this module. Configuration and composition are therefore
+ * validated lazily on the first request and cached for the isolate; missing
+ * configuration fails that health-check request before any route is served.
  */
 export const app = {
   async fetch(request: Request, bindings: HttpWorkerBindings, ctx: ExecutionContext) {

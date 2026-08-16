@@ -2,13 +2,13 @@ import { Config, ConfigProvider, Effect, Redacted } from "effect";
 import type { Redacted as RedactedType } from "effect/Redacted";
 
 /**
- * Configuration system (api-next 000 §9) — Effect `Config`, fail-at-startup.
+ * Configuration system (api-next 000 §9) — Effect `Config`, fail-closed.
  *
  * Every variable is declared exactly once, with type, default or required-
- * ness, and environment applicability. A Worker loads its config at module
- * init via {@link loadConfig}; invalid or missing required config therefore
- * fails the deploy health check rather than limping into a read path
- * (incident api#999 class).
+ * ness, and environment applicability. Binding-based Workers load their
+ * config before constructing the route application; invalid or missing
+ * required config therefore fails the first health-check request rather than
+ * limping into a read path (incident api#999 class).
  *
  * Semantics note: `Config.withDefault` swallows parse failures, so a
  * defaulted variable can never be *invalid* — it falls back. Money-path
@@ -27,8 +27,9 @@ export interface AppEnvValue {
 export const isProduction = (env: AppEnvValue): boolean => env.API_NEXT_ENV === "production";
 
 /**
- * Fail-at-startup loader. Run at module scope of a Worker entry so the
- * failure happens during deploy/init, never on a request path.
+ * Fail-closed loader for process-backed configuration. A binding-based Worker
+ * uses {@link loadConfigFrom} from its first-request composition boundary
+ * because Cloudflare supplies bindings only to `fetch`.
  */
 export function loadConfig<A>(config: Config.Config<A>): A {
   // The default provider snapshots process.env at import; building the
