@@ -165,3 +165,38 @@ export class Analytics extends Context.Service<
     readonly track: (event: string, properties?: unknown) => Effect.Effect<void>;
   }
 >()("Analytics") {}
+
+// --- Identity persistence (coordinator amendment 2026-08-16, wave-2
+// identity-boundary barrier). Derived from the reviewed platform-cf
+// implementation; the frozen physical schema is users(user_id, status,
+// account JSONB, created_at) + account_aliases. packages/application is
+// coordinator-owned: lanes contribute use-case implementations only via
+// reviewed proposals.
+
+export const MAX_CANONICAL_ALIAS_HOPS = 8;
+
+export class IdentityResolutionError extends Data.TaggedError("IdentityResolutionError")<{
+  readonly reason: "missing" | "deleted" | "cyclic" | "invalid";
+}> {}
+
+export type IdentityUser = {
+  readonly userId: string;
+  /** Account response data is owned by the application contract layer. */
+  readonly account: unknown;
+};
+
+export type CanonicalIdentity = {
+  readonly sourceUserId: string;
+  readonly canonicalUserId: string;
+  readonly aliasPath: readonly string[];
+};
+
+export class IdentityStore extends Context.Service<
+  IdentityStore,
+  {
+    readonly findUser: (userId: string) => Effect.Effect<IdentityUser | null, ControlPlaneError>;
+    readonly resolveCanonical: (input: {
+      readonly sourceUserId: string;
+    }) => Effect.Effect<CanonicalIdentity, ControlPlaneError | IdentityResolutionError>;
+  }
+>()("IdentityStore") {}
