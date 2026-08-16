@@ -24,6 +24,7 @@ export {
   type AlertSuppressionDecision,
   type AlertSuppressionLedger,
   type AlertSuppressionState,
+  type AlertTickOptions,
   aggregateAlerts,
   alertTick,
   decideAlertSuppression,

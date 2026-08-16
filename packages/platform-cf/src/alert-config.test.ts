@@ -19,14 +19,29 @@ describe("production alert configuration boundary", () => {
     expect(() =>
       makeConfiguredAlertSink({
         API_NEXT_ENV: "production",
-        API_NEXT_ALERT_EMAIL_URL: "https://email.invalid/alerts",
-        API_NEXT_ALERT_WEBHOOK_URL: "https://webhook.invalid/alerts",
+        API_NEXT_ALERT_EMAIL_URL: "https://email.example.test/alerts",
+        API_NEXT_ALERT_WEBHOOK_URL: "https://webhook.example.test/alerts",
         API_NEXT_ALERT_EMAIL_TOKEN: "email-secret",
       }),
     ).toThrow(AlertSinkConfigurationError);
 
     const redacted = Redacted.make("email-secret");
     expect(String(redacted)).not.toContain("email-secret");
+  });
+
+  test("rejects an unknown environment and placeholder production endpoints", () => {
+    expect(() => makeConfiguredAlertSink({ API_NEXT_ENV: "prod" })).toThrow(
+      AlertSinkConfigurationError,
+    );
+    expect(() =>
+      makeConfiguredAlertSink({
+        API_NEXT_ENV: "production",
+        API_NEXT_ALERT_EMAIL_URL: "https://replace-with-user-provisioned.invalid/email",
+        API_NEXT_ALERT_WEBHOOK_URL: "https://webhook.example.test/alerts",
+        API_NEXT_ALERT_EMAIL_TOKEN: "email-secret",
+        API_NEXT_ALERT_WEBHOOK_TOKEN: "webhook-secret",
+      }),
+    ).toThrow(AlertSinkConfigurationError);
   });
 
   test("HTTP adapters send bounded alert projections, never provider message bodies", async () => {

@@ -17,6 +17,7 @@ export interface AlertSinkBindings {
 
 export class AlertSinkConfigurationError extends Data.TaggedError("AlertSinkConfigurationError")<{
   readonly field:
+    | "API_NEXT_ENV"
     | "API_NEXT_ALERT_EMAIL_URL"
     | "API_NEXT_ALERT_WEBHOOK_URL"
     | "API_NEXT_ALERT_EMAIL_TOKEN"
@@ -28,7 +29,19 @@ function requiredUrl(
   field: "API_NEXT_ALERT_EMAIL_URL" | "API_NEXT_ALERT_WEBHOOK_URL",
 ): string {
   const value = bindings[field]?.trim();
-  if (value === undefined || value.length === 0 || !value.startsWith("https://")) {
+  let parsed: URL | undefined;
+  try {
+    parsed = value === undefined ? undefined : new URL(value);
+  } catch {
+    parsed = undefined;
+  }
+  if (
+    value === undefined ||
+    value.length === 0 ||
+    parsed?.protocol !== "https:" ||
+    parsed.hostname.endsWith(".invalid") ||
+    value.includes("replace-with")
+  ) {
     throw new AlertSinkConfigurationError({ field });
   }
   return value;
@@ -38,7 +51,7 @@ function requiredSecret(
   bindings: AlertSinkBindings,
   field: "API_NEXT_ALERT_EMAIL_TOKEN" | "API_NEXT_ALERT_WEBHOOK_TOKEN",
 ): Redacted.Redacted<string> {
-  const value = bindings[field];
+  const value = bindings[field]?.trim();
   if (value === undefined || value.length === 0) {
     throw new AlertSinkConfigurationError({ field });
   }
@@ -54,6 +67,14 @@ export function makeConfiguredAlertSink(
   bindings: AlertSinkBindings,
   delivery?: AlertDeliveryLedger,
 ): AlertSink {
+  if (
+    bindings.API_NEXT_ENV !== undefined &&
+    bindings.API_NEXT_ENV !== "development" &&
+    bindings.API_NEXT_ENV !== "staging" &&
+    bindings.API_NEXT_ENV !== "production"
+  ) {
+    throw new AlertSinkConfigurationError({ field: "API_NEXT_ENV" });
+  }
   if (bindings.API_NEXT_ENV !== "production") {
     return makeLocalAlertSink();
   }

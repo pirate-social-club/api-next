@@ -42,6 +42,12 @@ export interface AlertSuppressionLedger {
   readonly put: (state: AlertSuppressionState) => EffectType.Effect<void, unknown>;
 }
 
+export interface AlertTickOptions {
+  /** Injectable clock for deterministic scheduler and repeated-tick tests. */
+  readonly now?: () => number;
+  readonly activeWindowMs?: number;
+}
+
 /** Transition immediately, then remind after 1h, 4h, 12h, 24h, 3d, 7d. */
 export const ALERT_REMINDER_DELAYS_MS = [
   60 * 60 * 1000,
@@ -349,6 +355,7 @@ export function makeHttpAlertSink(config: AlertHttpSinkConfig): AlertSink {
 export function alertTick<A, E, R>(
   sink: AlertSink,
   body: EffectType.Effect<A, E, R | AlertCollector>,
+  options: AlertTickOptions = {},
 ): EffectType.Effect<A, E, Exclude<R, AlertCollector>> {
   return Effect.scoped(
     Effect.gen(function* () {
@@ -364,7 +371,7 @@ export function alertTick<A, E, R>(
           if (buffer.length === 0) return;
           const digest = aggregateAlerts(buffer);
           const ledger = sink.delivery ?? memoryDeliveryLedger();
-          const nowMs = Date.now();
+          const nowMs = options.now?.() ?? Date.now();
           const suppression = ledger.suppression;
           const pendingStates: AlertSuppressionState[] = [];
           const deliverGroups: AlertGroup[] = [];
@@ -377,6 +384,9 @@ export function alertTick<A, E, R>(
                 conditionKey: group.dedupeKey,
                 severity: group.severity,
                 nowMs,
+                ...(options.activeWindowMs === undefined
+                  ? {}
+                  : { activeWindowMs: options.activeWindowMs }),
                 ...(previous === null ? {} : { previous }),
               });
               if (decision.deliver) {

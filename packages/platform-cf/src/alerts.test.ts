@@ -133,4 +133,41 @@ describe("api-next alert delivery policy", () => {
     });
     expect(escalated).toMatchObject({ deliver: true, reason: "severity-escalation" });
   });
+
+  test("persists state across repeated ticks and widens reminders", async () => {
+    let nowMs = 0;
+    const states = new Map<string, ReturnType<typeof decideAlertSuppression>["state"]>();
+    const emails: AlertDigest[] = [];
+    const sink: AlertSink = {
+      email: (digest) => Effect.sync(() => emails.push(digest)),
+      webhook: () => Effect.void,
+      delivery: {
+        markSent: () => Effect.succeed(true),
+        compensate: () => Effect.void,
+        suppression: {
+          get: (key) => Effect.succeed(states.get(key) ?? null),
+          put: (state) => Effect.sync(() => void states.set(state.conditionKey, state)),
+        },
+      },
+    };
+    const tick = alertTick(
+      sink,
+      emit({ key: "routing:integrity", severity: "high", body: "condition", entity: "route:1" }),
+      { now: () => nowMs, activeWindowMs: 24 * 60 * 60 * 1000 },
+    );
+
+    await Effect.runPromise(tick);
+    nowMs = 5 * 60 * 1000;
+    await Effect.runPromise(tick);
+    expect(emails).toHaveLength(1);
+
+    nowMs = 60 * 60 * 1000;
+    await Effect.runPromise(tick);
+    expect(emails).toHaveLength(2);
+
+    nowMs = 5 * 60 * 60 * 1000;
+    await Effect.runPromise(tick);
+    expect(emails).toHaveLength(3);
+    expect(states.get("routing:integrity|route:1")?.reminderIndex).toBe(2);
+  });
 });

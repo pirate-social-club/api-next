@@ -235,3 +235,17 @@ export function selectDueJobs<Failure = unknown, Requirements = never>(
 ): readonly JobDeclaration<Failure, Requirements>[] {
   return registry.declarations.filter((job) => isScheduleDue(job.schedule, now));
 }
+
+/** Groups due declarations by lane; declaration order is the execution order. */
+export function groupDueJobsByLane<Failure = unknown, Requirements = never>(
+  registry: JobRegistry<Failure, Requirements>,
+  now: number,
+): ReadonlyMap<string, readonly JobDeclaration<Failure, Requirements>[]> {
+  const grouped = new Map<string, JobDeclaration<Failure, Requirements>[]>();
+  for (const job of selectDueJobs(registry, now)) {
+    const lane = grouped.get(job.lane);
+    if (lane === undefined) grouped.set(job.lane, [job]);
+    else lane.push(job);
+  }
+  return grouped;
+}

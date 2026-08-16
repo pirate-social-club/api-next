@@ -61,8 +61,9 @@ Registry construction rejects all of these before any schedule is registered:
    different lanes;
 2. a new declaration lists a table with a live old-API scheduler counterpart;
 3. a declaration writes a table without a `TableKey`; or
-4. two declarations share a job name or lane ownership that would make
-   release/retry identity ambiguous.
+4. two declarations share a job name. Multiple declarations may share a lane:
+   the lane lease serializes them in declaration order, while the global table
+   inventory prevents conflicting writers.
 
 The validation result is a typed configuration defect. It fails startup and
 the CI registry test; it does not choose a winner or silently disable one

@@ -9,6 +9,8 @@
   "hyperdrive": [
     {
       "binding": "CONTROL_PLANE",
+      // Local-only dry-run target; production must reference an existing
+      // reviewed Hyperdrive configuration before an authorized deploy.
       "id": "00000000-0000-0000-0000-000000000000",
       "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
     }
@@ -19,18 +21,30 @@
   "env": {
     "production": {
       "name": "pirate-jobs-worker-production",
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "CRON_LOCK",
+            "class_name": "ScheduledCronLockDO"
+          }
+        ]
+      },
       "triggers": {
         "crons": ["*/5 * * * *"]
       },
       "hyperdrive": [
         {
           "binding": "CONTROL_PLANE",
+          // Resource provisioning is intentionally out of scope for M1.
+          // The coordinator replaces this with an existing reviewed ID.
           "id": "00000000-0000-0000-0000-000000000000",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
       "vars": {
         "API_NEXT_ENV": "production",
+        // These placeholders are rejected by makeConfiguredAlertSink until
+        // reviewed provider endpoints are supplied; no secrets are stored here.
         "API_NEXT_ALERT_EMAIL_URL": "https://replace-with-user-provisioned-email-endpoint.invalid",
         "API_NEXT_ALERT_WEBHOOK_URL": "https://replace-with-user-provisioned-webhook-endpoint.invalid"
       }

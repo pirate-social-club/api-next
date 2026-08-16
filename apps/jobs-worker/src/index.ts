@@ -21,13 +21,14 @@ import {
 } from "@pirate/platform-cf";
 import { Cause, Effect, Exit, type Layer, Option } from "effect";
 
-import { buildJobRegistry, JobContext, type JobDeclaration, selectDueJobs } from "./registry";
+import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityRoutingIntegrityJob } from "./routing-integrity";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
 export {
   buildJobRegistry,
   defaultRetrySchedule,
+  groupDueJobsByLane,
   isScheduleDue,
   JobContext,
   type JobDeclaration,
@@ -75,6 +76,8 @@ export interface LaneRunResult {
 export interface LaneRunOptions {
   /** Runtime service layer for jobs that use application ports. */
   readonly runtime?: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>;
+  /** Tick-level sink; a declaration-specific sink takes precedence. */
+  readonly alertSink?: AlertSink;
   /** Narrower values are used by workerd tests to make renewal observable. */
   readonly leaseTtlMs?: number;
   readonly renewIntervalMs?: number;
@@ -96,7 +99,23 @@ function isRunnerTimeout(cause: Cause.Cause<unknown>): boolean {
   return tagOf(typedErrorOf(cause)) === "TimeoutError";
 }
 
-function runnerAlert<Failure, Requirements>(
+function isUnknownControlPlaneOutcome(error: unknown): boolean {
+  if (tagOf(error) === "ControlPlaneTransactionOutcomeUnknown") return true;
+  if (
+    tagOf(error) !== "ControlPlaneOperationTimedOut" &&
+    tagOf(error) !== "ControlPlaneStatementFailed"
+  ) {
+    return false;
+  }
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "outcomeCertainty" in error &&
+    error.outcomeCertainty === "unknown"
+  );
+}
+
+export function runnerAlert<Failure, Requirements>(
   job: JobDefinition<Failure, Requirements>,
   cause: Cause.Cause<unknown>,
 ): Alert {
@@ -110,7 +129,7 @@ function runnerAlert<Failure, Requirements>(
       entity: `job:${job.name}`,
     };
   }
-  if (tag === "ControlPlaneTransactionOutcomeUnknown") {
+  if (isUnknownControlPlaneOutcome(error)) {
     return {
       key: "jobs:transaction-outcome-unknown",
       severity: job.severity.transactionOutcomeUnknown,
@@ -214,11 +233,12 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
               ),
             );
       const timed = Effect.timeout(withRuntime, job.timeout);
+      const alertSink = job.alertSink ?? options.alertSink;
       const observed =
-        job.alertSink === undefined
+        alertSink === undefined
           ? timed
           : alertTick(
-              job.alertSink,
+              alertSink,
               Effect.gen(function* () {
                 const collector = yield* AlertCollector;
                 const result = yield* Effect.exit(timed);
@@ -281,7 +301,8 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
 export function makeJobsWorkerDeclarations(
   sink: AlertSink,
 ): readonly JobDefinition<ControlPlaneError, ControlPlaneDb | AlertCollector>[] {
-  return [makeCommunityRoutingIntegrityJob(sink)];
+  const factories = [makeCommunityRoutingIntegrityJob] as const;
+  return factories.map((factory) => factory(sink));
 }
 
 export default {
@@ -295,15 +316,7 @@ export default {
     const registry = await Effect.runPromise(
       buildJobRegistry(declarations, ["control-plane:community_database_routing"]),
     );
-    const dueByLane = new Map<
-      string,
-      JobDefinition<ControlPlaneError, ControlPlaneDb | AlertCollector>[]
-    >();
-    for (const job of selectDueJobs(registry, event.scheduledTime)) {
-      const laneJobs = dueByLane.get(job.lane) ?? [];
-      laneJobs.push(job);
-      dueByLane.set(job.lane, laneJobs);
-    }
+    const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
     await ctx.waitUntil(
       Promise.all(

@@ -174,6 +174,22 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     expect(emails[0]?.groups[0]?.severity).toBe("medium");
 
     emails.length = 0;
+    const ambiguous: JobDefinition = {
+      ...expectedFailure,
+      name: "severity.transaction-ambiguity",
+      lane: "severity-transaction-ambiguity",
+      expectedFailures: [],
+      severity: {
+        ...severity,
+        transactionOutcomeUnknown: "high",
+      },
+      run: Effect.fail({ _tag: "ControlPlaneOperationTimedOut", outcomeCertainty: "unknown" }),
+    };
+    await expect(handleScheduled(env, ambiguous.lane, ambiguous)).rejects.toBeDefined();
+    expect(emails).toHaveLength(1);
+    expect(emails[0]?.groups[0]?.severity).toBe("high");
+
+    emails.length = 0;
     const expectedHigh: JobDefinition = {
       ...expectedFailure,
       name: "severity.expected-high",

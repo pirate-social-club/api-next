@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import {
   buildJobRegistry,
   defaultRetrySchedule,
+  groupDueJobsByLane,
   isScheduleDue,
   type JobDeclaration,
   RegistryConfigurationError,
@@ -109,6 +110,13 @@ describe("jobs-kernel declaration registry", () => {
     expect(isScheduleDue(baseJob.schedule, atFivePast)).toBe(true);
     expect(isScheduleDue(secondJob.schedule, atFivePast)).toBe(false);
     expect(selectDueJobs(registry, atFivePast).map((job) => job.name)).toEqual([baseJob.name]);
+
+    const atTheHour = Date.UTC(2026, 7, 16, 1, 0);
+    expect(
+      groupDueJobsByLane(registry, atTheHour)
+        .get(baseJob.lane)
+        ?.map((job) => job.name),
+    ).toEqual([baseJob.name, secondJob.name]);
   });
 
   test("rejects malformed cron declarations", async () => {

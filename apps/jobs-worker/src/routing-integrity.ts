@@ -76,9 +76,9 @@ const ALERT_SEVERITY: Record<RoutingViolation, "medium" | "high"> = {
 
 export const COMMUNITY_ROUTING_SEVERITY: SeverityMapping = {
   expectedFailure: {
-    ControlPlaneAcquireFailed: "high",
+    ControlPlaneAcquireFailed: "medium",
     ControlPlaneOperationTimedOut: "medium",
-    ControlPlaneStatementFailed: "high",
+    ControlPlaneStatementFailed: "medium",
   },
   timeout: "high",
   transactionOutcomeUnknown: "high",
