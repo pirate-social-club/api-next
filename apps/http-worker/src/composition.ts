@@ -5,11 +5,13 @@ import {
   authorizeSession,
 } from "@pirate/application/use-cases/session-authentication";
 import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-exchange";
+import { makeControlPlaneCommunityStore } from "@pirate/platform-cf/community-repository";
 import {
   HttpWorkerConfig,
   type HttpWorkerConfigValue,
   loadConfigFrom,
 } from "@pirate/platform-cf/config";
+import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeControlPlaneIdentityStore } from "@pirate/platform-cf/identity-repository";
 import {
   type HyperdriveConnection,
@@ -22,6 +24,7 @@ import {
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
 import { Effect, Redacted, Schema } from "effect";
+import { makeProductHandlers } from "./product-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 
 export interface HttpWorkerBindings {
@@ -104,6 +107,9 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const config = loadWorkerConfig(bindings);
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
+  const communityStore = makeControlPlaneCommunityStore(controlPlane);
+  const feedStore = makeControlPlaneFeedStore(controlPlane);
+  const productHandlers = makeProductHandlers({ communityStore, feedStore });
   const bridge = await makeSessionBridge({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
     publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),
@@ -144,7 +150,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
 
   return createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
-    handlers: { GetJwks: () => bridge.jwks() },
+    handlers: { ...productHandlers, GetJwks: () => bridge.jwks() },
     sessionExchange,
     profile,
     authenticate,

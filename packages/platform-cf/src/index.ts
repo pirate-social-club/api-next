@@ -33,6 +33,10 @@ export {
   makeLocalAlertSink,
 } from "./alerts";
 export {
+  makeControlPlaneCommunityRepository,
+  makeControlPlaneCommunityStore,
+} from "./community-repository";
+export {
   CRON_LOCK_NAME,
   evaluateFencedLease,
   evaluateLease,
@@ -42,6 +46,12 @@ export {
   type LeaseRecord,
 } from "./cron-lock";
 export { ScheduledCronLockDO } from "./cron-lock-do";
+export {
+  type FeedRepository,
+  type FeedRepositoryOptions,
+  makeControlPlaneFeedRepository,
+  makeControlPlaneFeedStore,
+} from "./feed-repository";
 export {
   type CanonicalIdentity,
   type IdentityRepository,

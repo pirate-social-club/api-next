@@ -1,0 +1,139 @@
+import { followCommunity } from "@pirate/application/use-cases/community/follow-community";
+import { getCommunityPreview } from "@pirate/application/use-cases/community/get-community-preview";
+import { getJoinEligibility } from "@pirate/application/use-cases/community/get-join-eligibility";
+import { joinCommunity } from "@pirate/application/use-cases/community/join-community";
+import { unfollowCommunity } from "@pirate/application/use-cases/community/unfollow-community";
+import { getHomeFeed, getPublicHomeFeed } from "@pirate/application/use-cases/feed/home-feed";
+import { AuthError, type JoinCommunity } from "@pirate/contracts";
+import { Effect, type Schema } from "effect";
+import type { DecodedRequest, EndpointHandler, Principal } from "./transport.ts";
+
+type CommunityServices = Parameters<typeof getCommunityPreview>[1];
+type FeedServices = Parameters<typeof getHomeFeed>[1];
+type CommunityStoreService = CommunityServices["communityStore"];
+type FeedStoreService = FeedServices["feedStore"];
+type CommunityActor = Parameters<typeof joinCommunity>[0]["actor"];
+type HomeFeedQuery = Parameters<typeof getHomeFeed>[0]["query"];
+
+export interface ProductHandlerServices {
+  readonly communityStore: CommunityStoreService;
+  readonly feedStore: FeedStoreService;
+}
+
+export type ProductHandlers = Readonly<{
+  readonly GetCommunityPreview: EndpointHandler;
+  readonly GetJoinEligibility: EndpointHandler;
+  readonly JoinCommunity: EndpointHandler;
+  readonly FollowCommunity: EndpointHandler;
+  readonly UnfollowCommunity: EndpointHandler;
+  readonly GetPublicHomeFeed: EndpointHandler;
+  readonly GetHomeFeed: EndpointHandler;
+}>;
+
+type CommunityPath = Readonly<{ readonly communityId: string }>;
+type LocaleQuery = Readonly<{ readonly locale?: string }>;
+type JoinBody = Schema.Schema.Type<(typeof JoinCommunity.request)["body"]>;
+
+const communityPath = (request: DecodedRequest): CommunityPath => request.params as CommunityPath;
+
+const localeQuery = (request: DecodedRequest): LocaleQuery => (request.query ?? {}) as LocaleQuery;
+
+const feedQuery = (request: DecodedRequest): HomeFeedQuery =>
+  (request.query ?? {}) as HomeFeedQuery;
+
+const authorizationFailure = (): AuthError => new AuthError({ message: "Authorization failed" });
+
+/**
+ * Community operations are always attributed to a human user. The transport
+ * authorizer normally enforces this policy, but the adapter repeats the
+ * check so direct handler composition cannot accidentally widen it to device
+ * or agent principals.
+ */
+const communityActor = (principal: Principal | null): CommunityActor => {
+  if (principal === null || (principal.kind !== "user" && principal.kind !== "admin")) {
+    throw authorizationFailure();
+  }
+  return {
+    userId: principal.subject,
+    kind: principal.kind,
+    ...(principal.scopes === undefined ? {} : { scopes: principal.scopes }),
+  };
+};
+
+const optionalCommunityViewer = (principal: Principal | null): string | undefined =>
+  principal === null ? undefined : communityActor(principal).userId;
+
+const communityPreview = async (request: DecodedRequest, services: ProductHandlerServices) => {
+  const { communityId } = communityPath(request);
+  const { locale } = localeQuery(request);
+  const viewerUserId = optionalCommunityViewer(request.principal);
+  return Effect.runPromise(
+    getCommunityPreview(
+      {
+        communityId,
+        ...(locale === undefined ? {} : { locale }),
+        ...(viewerUserId === undefined ? {} : { viewerUserId }),
+      },
+      { communityStore: services.communityStore },
+    ),
+  );
+};
+
+const join = async (request: DecodedRequest, services: ProductHandlerServices) => {
+  const { communityId } = communityPath(request);
+  const actor = communityActor(request.principal);
+  const body = (request.body ?? {}) as JoinBody;
+  return Effect.runPromise(
+    joinCommunity({ communityId, actor, body }, { communityStore: services.communityStore }),
+  );
+};
+
+const eligibility = async (request: DecodedRequest, services: ProductHandlerServices) => {
+  const { communityId } = communityPath(request);
+  const actor = communityActor(request.principal);
+  return Effect.runPromise(
+    getJoinEligibility(
+      { communityId, userId: actor.userId },
+      { communityStore: services.communityStore },
+    ),
+  );
+};
+
+const follow = async (request: DecodedRequest, services: ProductHandlerServices) => {
+  const { communityId } = communityPath(request);
+  const actor = communityActor(request.principal);
+  return Effect.runPromise(
+    followCommunity({ communityId, actor }, { communityStore: services.communityStore }),
+  );
+};
+
+const unfollow = async (request: DecodedRequest, services: ProductHandlerServices) => {
+  const { communityId } = communityPath(request);
+  const actor = communityActor(request.principal);
+  return Effect.runPromise(
+    unfollowCommunity({ communityId, actor }, { communityStore: services.communityStore }),
+  );
+};
+
+const publicHomeFeed = async (request: DecodedRequest, services: ProductHandlerServices) =>
+  Effect.runPromise(getPublicHomeFeed(feedQuery(request), { feedStore: services.feedStore }));
+
+const homeFeed = async (request: DecodedRequest, services: ProductHandlerServices) => {
+  const query = feedQuery(request);
+  const viewerUserId = request.principal?.subject;
+  return Effect.runPromise(
+    getHomeFeed(viewerUserId === undefined ? { query } : { query, viewerUserId }, {
+      feedStore: services.feedStore,
+    }),
+  );
+};
+
+export const makeProductHandlers = (services: ProductHandlerServices): ProductHandlers => ({
+  GetCommunityPreview: (request) => communityPreview(request, services),
+  GetJoinEligibility: (request) => eligibility(request, services),
+  JoinCommunity: (request) => join(request, services),
+  FollowCommunity: (request) => follow(request, services),
+  UnfollowCommunity: (request) => unfollow(request, services),
+  GetPublicHomeFeed: (request) => publicHomeFeed(request, services),
+  GetHomeFeed: (request) => homeFeed(request, services),
+});
