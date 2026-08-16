@@ -71,6 +71,8 @@ export interface HttpWorkerOptions {
   readonly handlers?: Readonly<Record<string, EndpointHandler>>;
   /** Application use cases are installed by generated route name. */
   readonly sessionExchange?: SessionExchangeServices;
+  /** Profile projection is installed by the generated GetMyProfile binding. */
+  readonly profile?: EndpointHandler;
   /** Runs before any request location is decoded. It receives no Hono data. */
   readonly authenticate?: (args: AuthenticationArgs) => Principal | Promise<Principal>;
   /** Runs after decoding and receives only the frozen request shape. */
@@ -218,7 +220,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       ? undefined
       : makeSessionExchangeHandler(options.sessionExchange);
   const installedProtectedHandlers = routeTable.filter(
-    (binding) => options.handlers?.[binding.name] !== undefined && !isPublic(binding.endpoint),
+    (binding) =>
+      (options.handlers?.[binding.name] !== undefined ||
+        (binding.name === "GetMyProfile" && options.profile !== undefined)) &&
+      !isPublic(binding.endpoint),
   );
   if (installedProtectedHandlers.length > 0 && options.authenticate === undefined) {
     throw new Error("Protected handlers require an authenticator");
@@ -250,7 +255,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     app.on(binding.method, binding.path, async (context) => {
       const handler =
         options.handlers?.[binding.name] ??
-        (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined);
+        (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
+        (binding.name === "GetMyProfile" ? options.profile : undefined);
       if (handler === undefined) {
         if (binding.name === "Health") {
           return json(context, decodeResponse(binding.endpoint, { status: "ok" }), 200, false);

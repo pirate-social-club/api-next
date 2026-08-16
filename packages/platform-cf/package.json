@@ -5,7 +5,9 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./config": "./config/index.ts"
+    "./config": "./config/index.ts",
+    "./postgres": "./src/postgres.ts",
+    "./session-bridge": "./src/session-bridge.ts"
   },
   "dependencies": {
     "pg": "8.16.3"

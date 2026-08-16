@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Config } from "effect";
-import { AppEnv, loadConfig, secret } from "./index.ts";
+import { AppEnv, HttpWorkerConfig, loadConfig, loadConfigFrom, secret } from "./index.ts";
 
 describe("config system (000 §9)", () => {
   test("fail-at-startup: a missing required variable throws at load", () => {
@@ -33,5 +33,14 @@ describe("config system (000 §9)", () => {
     const value = loadConfig(secret("API_NEXT_TEST_SECRET"));
     expect(String(value)).toBe("<redacted>");
     delete process.env.API_NEXT_TEST_SECRET;
+  });
+
+  test("HTTP composition fails before route construction when required config is absent", () => {
+    expect(() =>
+      loadConfigFrom(HttpWorkerConfig, {
+        API_NEXT_ENV: "production",
+        CORS_ORIGIN: "https://pirate.app",
+      }),
+    ).toThrow();
   });
 });

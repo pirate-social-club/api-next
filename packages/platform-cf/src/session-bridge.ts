@@ -194,7 +194,7 @@ async function publicMaterial(publicKey: CryptoKey): Promise<SessionPublicJwk> {
   if (typeof exported !== "object" || exported === null || Array.isArray(exported)) {
     throw new Error("invalid public JWK");
   }
-  const exportedJwk = exported as Record<string, unknown>;
+  const exportedJwk = exported as unknown as Record<string, unknown>;
   if (
     exportedJwk.kty !== "RSA" ||
     typeof exportedJwk.n !== "string" ||

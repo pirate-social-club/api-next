@@ -27,6 +27,9 @@
       "@pirate/application": ["./packages/application/src/index.ts"],
       "@pirate/application/*": ["./packages/application/src/*"],
       "@pirate/platform-cf": ["./packages/platform-cf/src/index.ts"],
+      "@pirate/platform-cf/config": ["./packages/platform-cf/config/index.ts"],
+      "@pirate/platform-cf/postgres": ["./packages/platform-cf/src/postgres.ts"],
+      "@pirate/platform-cf/*": ["./packages/platform-cf/src/*"],
       "@pirate/testing": ["./packages/testing/src/index.ts"]
     }
   },

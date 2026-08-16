@@ -21,9 +21,16 @@ function communityMigrationFixtureDirectory(): URL {
   return new URL("../../../db/community-shard/migrations/", import.meta.url);
 }
 
+function filePath(url: URL): string {
+  return fileURLToPath(url as unknown as import("node:url").URL);
+}
+
 async function readChecksumsManifest(): Promise<ChecksumsManifest> {
   const manifest = JSON.parse(
-    await readFile(new URL("checksums.json", communityMigrationFixtureDirectory()), "utf8"),
+    await readFile(
+      filePath(new URL("checksums.json", communityMigrationFixtureDirectory())),
+      "utf8",
+    ),
   ) as ChecksumsManifest;
   if (manifest.algorithm !== "sha256" || manifest.migrations == null) {
     throw new Error("Invalid community migration checksum manifest");
@@ -34,9 +41,7 @@ async function readChecksumsManifest(): Promise<ChecksumsManifest> {
 export async function listCommunityMigrationFixtures(): Promise<CommunityMigrationFixture[]> {
   const directory = communityMigrationFixtureDirectory();
   const manifest = await readChecksumsManifest();
-  const names = (await readdir(fileURLToPath(directory)))
-    .filter((name) => name.endsWith(".sql"))
-    .sort();
+  const names = (await readdir(filePath(directory))).filter((name) => name.endsWith(".sql")).sort();
   const manifestNames = Object.keys(manifest.migrations).sort();
   if (names.join("\n") !== manifestNames.join("\n")) {
     throw new Error("Community migration fixture set does not match its checksum manifest");
@@ -45,12 +50,12 @@ export async function listCommunityMigrationFixtures(): Promise<CommunityMigrati
   const fixtures: CommunityMigrationFixture[] = [];
   for (const name of names) {
     const path = new URL(name, directory);
-    const sql = await readFile(path, "utf8");
+    const sql = await readFile(filePath(path), "utf8");
     const checksum = createHash("sha256").update(sql).digest("hex");
     if (checksum !== manifest.migrations[name]) {
       throw new Error(`Community migration checksum mismatch: ${name}`);
     }
-    fixtures.push({ name, path: fileURLToPath(path), checksum, sql });
+    fixtures.push({ name, path: filePath(path), checksum, sql });
   }
   return fixtures;
 }
@@ -106,7 +111,10 @@ export async function createCommunityDbFromSquashedSchema(
   client: CommunitySqliteDatabase,
 ): Promise<void> {
   client.exec(
-    await readFile(new URL("../../../db/community-shard/schema.sql", import.meta.url), "utf8"),
+    await readFile(
+      filePath(new URL("../../../db/community-shard/schema.sql", import.meta.url)),
+      "utf8",
+    ),
   );
 }
 

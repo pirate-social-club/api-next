@@ -12,6 +12,8 @@ import {
 import { Effect, Exit, Layer } from "effect";
 import type { ClientConfig } from "pg";
 
+export { ControlPlaneDb } from "@pirate/application";
+
 /**
  * The old API's runtime-deps.ts used these exact client-side bounds:
  * api/services/api/src/lib/runtime-deps.ts:30-46 and :518-551.

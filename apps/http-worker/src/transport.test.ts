@@ -80,7 +80,7 @@ describe("contracts-generated HTTP worker", () => {
     const response = await createHttpWorker().request("http://worker.test/health");
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: "ok" });
+    expect((await response.json()) as { status: string }).toEqual({ status: "ok" });
     expect(response.headers.get("x-request-id")).toBeTruthy();
   });
 
@@ -221,7 +221,7 @@ describe("contracts-generated HTTP worker", () => {
     }).request("http://worker.test/feed/home/public");
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual(feed);
+    expect((await response.json()) as typeof feed).toEqual(feed);
   });
 
   it("rejects a handler status that is not declared by the endpoint", async () => {

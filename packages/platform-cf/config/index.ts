@@ -56,3 +56,47 @@ export const secret = (name: string): Config.Config<RedactedType<string>> =>
   // Config.redacted does not read from the default env provider in this RC;
   // wrap explicitly until the pinned Effect bump fixes it.
   Config.string(name).pipe(Config.map((value: string) => Redacted.make(value)));
+
+/**
+ * Configuration required before the HTTP application layer is constructed.
+ * The Hyperdrive object is a Worker binding rather than an environment
+ * variable and is checked by the composition root alongside this group.
+ */
+export const HttpWorkerConfig = Config.all({
+  API_NEXT_ENV: AppEnv,
+  CORS_ORIGIN: Config.nonEmptyString("CORS_ORIGIN"),
+  PIRATE_APP_JWT_PRIVATE_KEY: secret("PIRATE_APP_JWT_PRIVATE_KEY"),
+  PIRATE_APP_JWT_PUBLIC_KEY: secret("PIRATE_APP_JWT_PUBLIC_KEY"),
+  PIRATE_APP_JWT_ISSUER: Config.string("PIRATE_APP_JWT_ISSUER").pipe(
+    Config.withDefault("pirate-api"),
+  ),
+  PIRATE_APP_JWT_AUDIENCE: Config.string("PIRATE_APP_JWT_AUDIENCE").pipe(
+    Config.withDefault("pirate-app"),
+  ),
+  PIRATE_APP_JWT_TTL_SECONDS: Config.int("PIRATE_APP_JWT_TTL_SECONDS").pipe(
+    Config.withDefault(3_600),
+  ),
+  PRIVY_APP_ID: Config.nonEmptyString("PRIVY_APP_ID"),
+  PRIVY_APP_SECRET: secret("PRIVY_APP_SECRET"),
+  PRIVY_API_URL: Config.string("PRIVY_API_URL").pipe(Config.withDefault("https://auth.privy.io")),
+});
+
+export type HttpWorkerConfigValue = Config.Success<typeof HttpWorkerConfig>;
+
+export type ConfigSource = Readonly<Record<string, string | undefined>>;
+
+/** Load against explicit Worker bindings in production and process.env in tests. */
+export function loadConfigFrom<A>(config: Config.Config<A>, source: ConfigSource): A {
+  const environment: Record<string, string> = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (value !== undefined) environment[key] = value;
+  }
+  return Effect.runSync(
+    (config as unknown as Effect.Effect<A>).pipe(
+      Effect.provideService(
+        ConfigProvider.ConfigProvider,
+        ConfigProvider.fromEnv({ env: environment }),
+      ),
+    ),
+  );
+}
