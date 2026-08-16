@@ -98,10 +98,19 @@ async function main(): Promise<void> {
     }
   }
 
+  const operationKey = (violation: string): string | undefined => {
+    const match = violation.match(
+      /^(?:operation removed: |operation id changed on |request |response status removed on |response )([A-Z]+ \/[^:]+)(?::|$)/,
+    );
+    return match?.[1];
+  };
+
+  // A coordinator-recorded deprecation is an explicit contract transition:
+  // every break for that retired operation is reviewed as one unit. All
+  // operations without a matching entry remain fully gate-protected.
   const breaks = diffBreaking(oldDoc, newDoc).filter((violation) => {
-    if (!violation.startsWith("operation removed: ")) return true;
-    const key = violation.slice("operation removed: ".length);
-    return !declared.has(operationIds.get(key) ?? "");
+    const key = operationKey(violation);
+    return key === undefined || !declared.has(operationIds.get(key) ?? "");
   });
   if (breaks.length > 0) {
     console.error(

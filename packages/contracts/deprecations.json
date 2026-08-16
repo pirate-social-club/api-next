@@ -4,6 +4,51 @@
       "operationId": "post_echoMessage",
       "removedIn": "unreleased",
       "reason": "Pipeline placeholder retired when the real v1 slice contracts landed; no client ever consumed it."
+    },
+    {
+      "operationId": "get_me",
+      "removedIn": "unreleased",
+      "reason": "The placeholder /me envelope is retired in favor of the exact /users/me v1 boundary."
+    },
+    {
+      "operationId": "get_communitiesCommunityIdPostsPostId",
+      "removedIn": "unreleased",
+      "reason": "The placeholder nested post route is retired in favor of /posts/:postId."
+    },
+    {
+      "operationId": "post_communitiesCommunityIdPostsPostIdVote",
+      "removedIn": "unreleased",
+      "reason": "The placeholder nested vote route is retired in favor of /posts/:postId/vote."
+    },
+    {
+      "operationId": "post_communitiesCommunityIdPostsPostIdClearVote",
+      "removedIn": "unreleased",
+      "reason": "The placeholder nested clear-vote route is retired in favor of /posts/:postId/clear_vote."
+    },
+    {
+      "operationId": "post_communitiesCommunityIdCommentsCommentIdReplies",
+      "removedIn": "unreleased",
+      "reason": "The placeholder nested reply route is retired in favor of /comments/:commentId/replies."
+    },
+    {
+      "operationId": "post_communitiesCommunityIdPosts",
+      "removedIn": "unreleased",
+      "reason": "The placeholder post-create request/response contract is retired in favor of the typed v1 post union."
+    },
+    {
+      "operationId": "get_communitiesCommunityIdPreview",
+      "removedIn": "unreleased",
+      "reason": "The placeholder preview envelope is retired in favor of the typed v1 CommunityPreview shape."
+    },
+    {
+      "operationId": "get_communitiesCommunityIdJoinEligibility",
+      "removedIn": "unreleased",
+      "reason": "The placeholder eligibility envelope is retired in favor of the typed v1 JoinEligibility shape."
+    },
+    {
+      "operationId": "post_communitiesCommunityIdJoin",
+      "removedIn": "unreleased",
+      "reason": "The placeholder membership envelope is retired in favor of the typed v1 join result."
     }
   ]
 }

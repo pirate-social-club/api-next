@@ -13,6 +13,7 @@ export type AuthPolicy =
   | { readonly kind: "public" }
   | { readonly kind: "user" }
   | { readonly kind: "userOrAdmin" }
+  | { readonly kind: "userOrAdminOrAgentDelegated"; readonly scope: AuthScope }
   | { readonly kind: "admin"; readonly scope: AuthScope }
   | { readonly kind: "operator"; readonly scope: AuthScope }
   | { readonly kind: "agentDelegated"; readonly scope: AuthScope }
@@ -38,6 +39,13 @@ export const Auth = {
   }),
   userOrAdmin: (modifiers: AuthModifiers = {}): AuthPolicyApplication => ({
     policy: { kind: "userOrAdmin" },
+    ...modifiers,
+  }),
+  userOrAdminOrAgentDelegated: (
+    scope: AuthScope,
+    modifiers: AuthModifiers = {},
+  ): AuthPolicyApplication => ({
+    policy: { kind: "userOrAdminOrAgentDelegated", scope },
     ...modifiers,
   }),
   admin: (scope: AuthScope, modifiers: AuthModifiers = {}): AuthPolicyApplication => ({

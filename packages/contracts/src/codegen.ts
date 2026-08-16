@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import type { ApiError, ApiErrorCtor, EndpointDefinition } from "./index.ts";
+import type { ApiError, ApiErrorCtor, EndpointDefinition, EndpointRequest } from "./index.ts";
 
 type JsonSchema = Record<string, unknown>;
 
@@ -12,6 +12,21 @@ export interface OpenApiDocument {
   readonly openapi: "3.1.0";
   readonly info: OpenApiInfo;
   readonly paths: Record<string, Record<string, JsonSchema>>;
+}
+
+function requestSchemas(endpoint: EndpointDefinition): EndpointRequest | undefined {
+  const request = endpoint.request;
+  if (request === undefined) return undefined;
+  if (
+    typeof request === "object" &&
+    request !== null &&
+    ("body" in request || "path" in request || "query" in request)
+  ) {
+    return request as EndpointRequest;
+  }
+  // Compatibility for the phase-0 request shorthand: a schema value meant a
+  // required JSON body. New endpoint declarations use the explicit shape.
+  return { body: request as Schema.Schema<unknown> };
 }
 
 /**
@@ -87,28 +102,56 @@ export function generateOpenApi(
     const pathName = openApiPath(endpoint.path);
     const path = paths[pathName] ?? {};
     paths[pathName] = path;
-    const parameters = pathParams(endpoint.path).map((name) => ({
-      name,
-      in: "path",
-      required: true,
-      schema: { type: "string" },
-    }));
+    const request = requestSchemas(endpoint);
+    const pathSchema = request?.path ? schemaToOpenApi(request.path) : undefined;
+    const querySchema = request?.query ? schemaToOpenApi(request.query) : undefined;
+    const pathProperties = (pathSchema?.properties as Record<string, JsonSchema> | undefined) ?? {};
+    const queryProperties =
+      (querySchema?.properties as Record<string, JsonSchema> | undefined) ?? {};
+    const requiredPath = new Set((pathSchema?.required as string[] | undefined) ?? []);
+    const requiredQuery = new Set((querySchema?.required as string[] | undefined) ?? []);
+    const parameters = [
+      ...pathParams(endpoint.path).map((name) => ({
+        name,
+        in: "path",
+        required: requiredPath.size === 0 || requiredPath.has(name),
+        schema: pathProperties[name] ?? { type: "string" },
+      })),
+      ...Object.entries(queryProperties).map(([name, schema]) => ({
+        name,
+        in: "query",
+        required: requiredQuery.has(name),
+        schema,
+      })),
+    ];
+    const successStatuses =
+      endpoint.successStatus === undefined
+        ? [200]
+        : Array.isArray(endpoint.successStatus)
+          ? endpoint.successStatus
+          : [endpoint.successStatus];
+    const successResponses = Object.fromEntries(
+      successStatuses.map((status) => [
+        String(status),
+        {
+          description: "Success",
+          content: { "application/json": { schema: schemaToOpenApi(endpoint.response) } },
+        },
+      ]),
+    );
     path[endpoint.method.toLowerCase()] = {
       operationId: operationId(endpoint, index),
       ...(parameters.length > 0 ? { parameters } : {}),
-      ...(endpoint.request
+      ...(request?.body
         ? {
             requestBody: {
-              required: true,
-              content: { "application/json": { schema: schemaToOpenApi(endpoint.request) } },
+              required: request.bodyRequired !== false,
+              content: { "application/json": { schema: schemaToOpenApi(request.body) } },
             },
           }
         : {}),
       responses: {
-        "200": {
-          description: "Success",
-          content: { "application/json": { schema: schemaToOpenApi(endpoint.response) } },
-        },
+        ...successResponses,
         ...errorResponses(endpoint.errors),
       },
       "x-auth": endpoint.auth,
@@ -119,13 +162,18 @@ export function generateOpenApi(
 }
 
 export interface RouteBinding {
+  readonly name: string;
   readonly method: EndpointDefinition["method"];
   readonly path: string;
   readonly endpoint: EndpointDefinition;
 }
 
 export function generateRouteTable(source: EndpointSource): readonly RouteBinding[] {
-  return endpointList(source).map((endpoint) => ({
+  const entries = Array.isArray(source)
+    ? source.map((endpoint, index) => [`endpoint_${index}`, endpoint] as const)
+    : Object.entries(source);
+  return entries.map(([name, endpoint]) => ({
+    name,
     method: endpoint.method,
     path: endpoint.path,
     endpoint,
@@ -159,11 +207,21 @@ export function generateClient(registry: Record<string, EndpointDefinition>): st
     .join("\n");
   return `// GENERATED FILE. DO NOT EDIT. Regenerate with bun run generate:contracts.
 import type { Schema } from "effect";
+import type { EndpointRequest } from "@pirate/contracts";
 import {
 ${imports}
 } from "@pirate/contracts";
 
-type ClientInput<E> = E extends { readonly request: Schema.Schema<infer I> } ? I : undefined;
+type Part<Name extends string, S, Optional extends boolean = false> = S extends Schema.Schema<infer I>
+  ? Optional extends true ? { [K in Name]?: I } : { [K in Name]: I }
+  : {};
+type ClientInput<E> = E extends { readonly request: infer R }
+  ? R extends EndpointRequest
+    ? Part<"body", R["body"], R["bodyRequired"] extends false ? true : false>
+      & Part<"path", R["path"]>
+      & Part<"query", R["query"], true>
+    : R extends Schema.Schema<infer I> ? { body: I } : undefined
+  : undefined;
 type ClientOutput<E> = E extends { readonly response: Schema.Schema<infer A> } ? A : never;
 
 export interface PirateApiClient {
@@ -175,14 +233,23 @@ export function createPirateApiClient(
   fetchImpl: typeof fetch = fetch,
 ): PirateApiClient {
   const request = async <T>(method: string, path: string, input: unknown): Promise<T> => {
-    const url = Object.entries((input ?? {}) as Record<string, unknown>).reduce(
+    const requestInput = (input ?? {}) as {
+      body?: unknown;
+      path?: Record<string, unknown>;
+      query?: Record<string, unknown>;
+    };
+    const pathValue = Object.entries(requestInput.path ?? {}).reduce(
       (u, [key, value]) => u.replaceAll(\`:\${key}\`, encodeURIComponent(String(value))),
       path,
     );
-    const response = await fetchImpl(new URL(url, baseUrl), {
+    const url = new URL(pathValue, baseUrl);
+    for (const [key, value] of Object.entries(requestInput.query ?? {})) {
+      if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
+    }
+    const response = await fetchImpl(url, {
       method,
       headers: { "content-type": "application/json" },
-      body: input === undefined ? undefined : JSON.stringify(input),
+      body: requestInput.body === undefined ? undefined : JSON.stringify(requestInput.body),
     });
     if (!response.ok) throw await response.json();
     return response.json() as Promise<T>;
