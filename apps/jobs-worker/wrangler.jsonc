@@ -3,8 +3,38 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
+  "triggers": {
+    "crons": ["*/5 * * * *"]
+  },
+  "hyperdrive": [
+    {
+      "binding": "CONTROL_PLANE",
+      "id": "00000000-0000-0000-0000-000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+    }
+  ],
   "vars": {
     "API_NEXT_ENV": "development"
+  },
+  "env": {
+    "production": {
+      "name": "pirate-jobs-worker-production",
+      "triggers": {
+        "crons": ["*/5 * * * *"]
+      },
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "00000000-0000-0000-0000-000000000000",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "vars": {
+        "API_NEXT_ENV": "production",
+        "API_NEXT_ALERT_EMAIL_URL": "https://replace-with-user-provisioned-email-endpoint.invalid",
+        "API_NEXT_ALERT_WEBHOOK_URL": "https://replace-with-user-provisioned-webhook-endpoint.invalid"
+      }
+    }
   },
   "durable_objects": {
     "bindings": [

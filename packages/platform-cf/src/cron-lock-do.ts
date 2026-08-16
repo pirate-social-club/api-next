@@ -1,9 +1,10 @@
 /// <reference types="@cloudflare/workers-types" />
 import { DurableObject } from "cloudflare:workers";
-
+import type { AlertSuppressionState } from "./alerts";
 import { evaluateFencedLease, type FencedLeaseRecord, type LeaseRecord } from "./cron-lock";
 
 const ALERT_DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const ALERT_SUPPRESSION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
  * Durable-Object-backed lease guaranteeing only ONE scheduled batch runs at a
@@ -26,6 +27,9 @@ export class ScheduledCronLockDO extends DurableObject {
       );
       this.ctx.storage.sql.exec(
         "CREATE TABLE IF NOT EXISTS alert_delivery (delivery_key TEXT PRIMARY KEY, marked_at INTEGER NOT NULL)",
+      );
+      this.ctx.storage.sql.exec(
+        "CREATE TABLE IF NOT EXISTS alert_suppression (condition_key TEXT PRIMARY KEY, severity TEXT NOT NULL, first_seen_at INTEGER NOT NULL, last_seen_at INTEGER NOT NULL, last_delivered_at INTEGER NOT NULL, reminder_index INTEGER NOT NULL)",
       );
     });
   }
@@ -126,6 +130,53 @@ export class ScheduledCronLockDO extends DurableObject {
   /** Compensates a mark only after the sink reports a known dispatch failure. */
   compensateAlert(deliveryKey: string): void {
     this.ctx.storage.sql.exec("DELETE FROM alert_delivery WHERE delivery_key = ?", deliveryKey);
+  }
+
+  getAlertSuppression(conditionKey: string): AlertSuppressionState | null {
+    const rows = this.ctx.storage.sql
+      .exec<{
+        condition_key: string;
+        severity: string;
+        first_seen_at: number;
+        last_seen_at: number;
+        last_delivered_at: number;
+        reminder_index: number;
+      }>(
+        "SELECT condition_key, severity, first_seen_at, last_seen_at, last_delivered_at, reminder_index FROM alert_suppression WHERE condition_key = ?",
+        conditionKey,
+      )
+      .toArray();
+    const row = rows[0];
+    if (row === undefined) return null;
+    const severity =
+      row.severity === "low" || row.severity === "medium" || row.severity === "high"
+        ? row.severity
+        : "high";
+    return {
+      conditionKey: row.condition_key,
+      severity,
+      firstSeenAt: Number(row.first_seen_at),
+      lastSeenAt: Number(row.last_seen_at),
+      lastDeliveredAt: Number(row.last_delivered_at),
+      reminderIndex: Number(row.reminder_index),
+    };
+  }
+
+  saveAlertSuppression(state: AlertSuppressionState): void {
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      "DELETE FROM alert_suppression WHERE last_seen_at < ?",
+      now - ALERT_SUPPRESSION_RETENTION_MS,
+    );
+    this.ctx.storage.sql.exec(
+      "INSERT INTO alert_suppression (condition_key, severity, first_seen_at, last_seen_at, last_delivered_at, reminder_index) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(condition_key) DO UPDATE SET severity = excluded.severity, first_seen_at = excluded.first_seen_at, last_seen_at = excluded.last_seen_at, last_delivered_at = excluded.last_delivered_at, reminder_index = excluded.reminder_index",
+      state.conditionKey,
+      state.severity,
+      state.firstSeenAt,
+      state.lastSeenAt,
+      state.lastDeliveredAt,
+      state.reminderIndex,
+    );
   }
 
   private readLease(): LeaseRecord | null {

@@ -7,16 +7,104 @@ export interface AlertDeliveryLedger {
   readonly markSent: (deliveryKey: string) => EffectType.Effect<boolean, unknown>;
   /** Removes a pre-dispatch mark after a known sink failure. */
   readonly compensate: (deliveryKey: string) => EffectType.Effect<void, unknown>;
+  readonly suppression?: AlertSuppressionLedger;
 }
 
 export interface AlertDeliveryStore {
   readonly markAlertSent: (deliveryKey: string) => Promise<boolean>;
   readonly compensateAlert: (deliveryKey: string) => Promise<void>;
+  readonly getAlertSuppression: (conditionKey: string) => Promise<AlertSuppressionState | null>;
+  readonly saveAlertSuppression: (state: AlertSuppressionState) => Promise<void>;
 }
 
 export class AlertSinkDeliveryFailed extends Data.TaggedError("AlertSinkDeliveryFailed")<{
   readonly sink: "email" | "webhook";
 }> {}
+
+export interface AlertSuppressionState {
+  readonly conditionKey: string;
+  readonly severity: AlertSeverity;
+  readonly firstSeenAt: number;
+  readonly lastSeenAt: number;
+  readonly lastDeliveredAt: number;
+  /** Index of the next widening reminder delay. */
+  readonly reminderIndex: number;
+}
+
+export interface AlertSuppressionDecision {
+  readonly deliver: boolean;
+  readonly reason: "transition" | "severity-escalation" | "reminder" | "suppressed";
+  readonly state: AlertSuppressionState;
+}
+
+export interface AlertSuppressionLedger {
+  readonly get: (conditionKey: string) => EffectType.Effect<AlertSuppressionState | null, unknown>;
+  readonly put: (state: AlertSuppressionState) => EffectType.Effect<void, unknown>;
+}
+
+/** Transition immediately, then remind after 1h, 4h, 12h, 24h, 3d, 7d. */
+export const ALERT_REMINDER_DELAYS_MS = [
+  60 * 60 * 1000,
+  4 * 60 * 60 * 1000,
+  12 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+  3 * 24 * 60 * 60 * 1000,
+  7 * 24 * 60 * 60 * 1000,
+] as const;
+
+/** A condition absent for two five-minute ticks is a new transition. */
+export const ALERT_CONDITION_ACTIVE_WINDOW_MS = 10 * 60 * 1000;
+
+/**
+ * Pure §12 state policy. Identical digests are not suppressed for a flat
+ * retention window: a new condition alerts immediately, then reminders widen.
+ */
+export function decideAlertSuppression(input: {
+  readonly conditionKey: string;
+  readonly severity: AlertSeverity;
+  readonly nowMs: number;
+  readonly previous?: AlertSuppressionState;
+  readonly activeWindowMs?: number;
+}): AlertSuppressionDecision {
+  const previous = input.previous;
+  const activeWindowMs = input.activeWindowMs ?? ALERT_CONDITION_ACTIVE_WINDOW_MS;
+  const severityEscalated =
+    previous !== undefined && SEVERITY_RANK[input.severity] > SEVERITY_RANK[previous.severity];
+  const transitioned =
+    previous === undefined || input.nowMs - previous.lastSeenAt >= activeWindowMs;
+
+  if (transitioned || severityEscalated) {
+    return {
+      deliver: true,
+      reason: transitioned ? "transition" : "severity-escalation",
+      state: {
+        conditionKey: input.conditionKey,
+        severity: input.severity,
+        firstSeenAt: transitioned ? input.nowMs : previous.firstSeenAt,
+        lastSeenAt: input.nowMs,
+        lastDeliveredAt: input.nowMs,
+        reminderIndex: 0,
+      },
+    };
+  }
+
+  const reminderIndex = Math.min(previous.reminderIndex, ALERT_REMINDER_DELAYS_MS.length - 1);
+  const reminderDelay = ALERT_REMINDER_DELAYS_MS[reminderIndex] ?? 0;
+  const deliver = input.nowMs - previous.lastDeliveredAt >= reminderDelay;
+  return {
+    deliver,
+    reason: deliver ? "reminder" : "suppressed",
+    state: {
+      ...previous,
+      severity: input.severity,
+      lastSeenAt: input.nowMs,
+      lastDeliveredAt: deliver ? input.nowMs : previous.lastDeliveredAt,
+      reminderIndex: deliver
+        ? Math.min(reminderIndex + 1, ALERT_REMINDER_DELAYS_MS.length - 1)
+        : reminderIndex,
+    },
+  };
+}
 
 /**
  * Production sinks for aggregated alert delivery (000 §12). One email per
@@ -101,6 +189,7 @@ export function aggregateAlerts(alerts: readonly Alert[]): AlertDigest {
 
 const memoryDeliveryLedger = (): AlertDeliveryLedger => {
   const marked = new Set<string>();
+  const states = new Map<string, AlertSuppressionState>();
   return {
     markSent: (deliveryKey) =>
       Effect.sync(() => {
@@ -109,6 +198,10 @@ const memoryDeliveryLedger = (): AlertDeliveryLedger => {
         return true;
       }),
     compensate: (deliveryKey) => Effect.sync(() => void marked.delete(deliveryKey)),
+    suppression: {
+      get: (conditionKey) => Effect.sync(() => states.get(conditionKey) ?? null),
+      put: (state) => Effect.sync(() => void states.set(state.conditionKey, state)),
+    },
   };
 };
 
@@ -117,14 +210,24 @@ export function makeAlertDeliveryLedger(store: AlertDeliveryStore): AlertDeliver
     markSent: (deliveryKey) => Effect.tryPromise(() => store.markAlertSent(deliveryKey)),
     compensate: (deliveryKey) =>
       Effect.tryPromise(() => store.compensateAlert(deliveryKey)).pipe(Effect.asVoid),
+    suppression: {
+      get: (conditionKey) => Effect.tryPromise(() => store.getAlertSuppression(conditionKey)),
+      put: (state) =>
+        Effect.tryPromise(() => store.saveAlertSuppression(state)).pipe(Effect.asVoid),
+    },
   };
 }
 
-function deliveryKey(kind: "digest" | "email" | "webhook", digest: AlertDigest): string {
+function deliveryKey(
+  kind: "digest" | "email" | "webhook",
+  digest: AlertDigest,
+  nowMs: number,
+): string {
   const groups = digest.groups
     .map((group) => `${group.dedupeKey}:${group.severity}:${group.count}`)
     .join(",");
-  return `api-next-alert:${kind}:${groups}:overflow-${digest.overflow}`;
+  const window = Math.floor(nowMs / (5 * 60 * 1000));
+  return `api-next-alert:${kind}:window-${window}:${groups}:overflow-${digest.overflow}`;
 }
 
 function deliverWithCompensatingRetry(
@@ -160,6 +263,7 @@ export function makeLocalAlertSink(
   log: (event: string, digest: AlertDigest) => void = (event, digest) =>
     console.info(event, { groups: digest.groups.length, overflow: digest.overflow }),
 ): AlertSink {
+  const delivery = memoryDeliveryLedger();
   return {
     email: (digest) => Effect.sync(() => log("api-next alert email-equivalent", digest)),
     digest: (digest) => Effect.sync(() => log("api-next alert digest", digest)),
@@ -176,6 +280,7 @@ export function makeLocalAlertSink(
           overflow: 0,
         }),
       ),
+    delivery,
   };
 }
 
@@ -259,34 +364,66 @@ export function alertTick<A, E, R>(
           if (buffer.length === 0) return;
           const digest = aggregateAlerts(buffer);
           const ledger = sink.delivery ?? memoryDeliveryLedger();
-          const hasEmailSeverity = digest.groups.some((group) => group.severity !== "low");
+          const nowMs = Date.now();
+          const suppression = ledger.suppression;
+          const pendingStates: AlertSuppressionState[] = [];
+          const deliverGroups: AlertGroup[] = [];
+          if (suppression === undefined) {
+            deliverGroups.push(...digest.groups);
+          } else {
+            for (const group of digest.groups) {
+              const previous = yield* suppression.get(group.dedupeKey);
+              const decision = decideAlertSuppression({
+                conditionKey: group.dedupeKey,
+                severity: group.severity,
+                nowMs,
+                ...(previous === null ? {} : { previous }),
+              });
+              if (decision.deliver) {
+                pendingStates.push(decision.state);
+                deliverGroups.push(group);
+              } else {
+                yield* suppression.put(decision.state);
+              }
+            }
+          }
+          if (deliverGroups.length === 0) return;
+          const deliverDigest: AlertDigest = { ...digest, groups: deliverGroups };
+          const deliverKeys = new Set(deliverGroups.map((group) => group.dedupeKey));
+          const paging = pageOnce(buffer).filter((alert) =>
+            deliverKeys.has(`${alert.key}|${alert.entity ?? ""}`),
+          );
+          const hasEmailSeverity = deliverGroups.some((group) => group.severity !== "low");
           if (hasEmailSeverity) {
             yield* deliverWithCompensatingRetry(
               ledger,
-              deliveryKey("email", digest),
-              sink.email(digest),
+              deliveryKey("email", deliverDigest, nowMs),
+              sink.email(deliverDigest),
             ).pipe(
               Effect.catch(() => Effect.die("alert email sink failed after compensating retry")),
             );
           } else if (sink.digest !== undefined) {
             yield* deliverWithCompensatingRetry(
               ledger,
-              deliveryKey("digest", digest),
-              sink.digest(digest),
+              deliveryKey("digest", deliverDigest, nowMs),
+              sink.digest(deliverDigest),
             ).pipe(
               Effect.catch(() => Effect.die("alert digest sink failed after compensating retry")),
             );
           }
-          if (digest.groups.some((group) => group.severity === "high")) {
+          if (deliverGroups.some((group) => group.severity === "high")) {
             yield* deliverWithCompensatingRetry(
               ledger,
-              deliveryKey("webhook", digest),
-              sink.webhook(pageOnce(buffer)),
+              deliveryKey("webhook", deliverDigest, nowMs),
+              sink.webhook(paging),
             ).pipe(
               Effect.catch(() => Effect.die("alert webhook sink failed after compensating retry")),
             );
           }
-        }),
+          if (suppression !== undefined) {
+            for (const state of pendingStates) yield* suppression.put(state);
+          }
+        }).pipe(Effect.catchCause(() => Effect.die("api-next alert finalizer failed"))),
       );
       return yield* Effect.provide(body, collector) as EffectType.Effect<A, E, R>;
     }),
