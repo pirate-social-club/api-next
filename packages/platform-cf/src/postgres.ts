@@ -138,6 +138,11 @@ function outcomeUnknown(
 class PostgresSession {
   private connected = false;
   private fenced = false;
+  // True only between a successful BEGIN and the moment COMMIT is handed to the
+  // driver. Socket destruction proves rollback ONLY inside that window: a bare
+  // autocommit statement (or an in-flight COMMIT) can complete server-side
+  // after the client destroys its socket, so its outcome stays "unknown".
+  private inTransaction = false;
   private terminationState: "not-requested" | "aborted" | "unknown" = "not-requested";
   private terminationPromise: Promise<void> | undefined;
 
@@ -236,7 +241,7 @@ class PostgresSession {
               label: statement.label,
               limitMs: CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
               elapsedMs: elapsedSince(startedAt, this.now),
-              outcomeCertainty: this.isAborted ? "aborted" : "unknown",
+              outcomeCertainty: this.isAborted && this.inTransaction ? "aborted" : "unknown",
             }),
           ),
         (error) => Effect.fail(error as ControlPlaneError),
@@ -284,6 +289,9 @@ class PostgresSession {
         values: [],
         readonly: false,
       });
+      yield* Effect.sync(() => {
+        session.inTransaction = true;
+      });
       yield* session.executeInternal({
         label: "control-plane.transaction.statement-timeout",
         text: "SELECT set_config('statement_timeout', $1, true)",
@@ -309,6 +317,11 @@ class PostgresSession {
     if (this.fenced) return Effect.void;
 
     const phase = Exit.isSuccess(exit) ? "commit" : "rollback";
+    // COMMIT leaves the provable-rollback window BEFORE it is handed to the
+    // driver: once sent, destroying the socket cannot prove the commit did not
+    // apply. ROLLBACK stays inside the window - disconnect mid-rollback still
+    // rolls back server-side.
+    if (phase === "commit") this.inTransaction = false;
     const startedAt = this.now();
     return this.executeInternal({
       label: `control-plane.transaction.${phase}`,
@@ -317,6 +330,11 @@ class PostgresSession {
       readonly: false,
     }).pipe(
       Effect.mapError(() => outcomeUnknown(phase, startedAt, this.now)),
+      Effect.ensuring(
+        Effect.sync(() => {
+          this.inTransaction = false;
+        }),
+      ),
       Effect.asVoid,
     );
   }

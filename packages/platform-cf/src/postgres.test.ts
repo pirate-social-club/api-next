@@ -212,11 +212,13 @@ describe("Postgres control-plane adapter", () => {
     ).pipe(Effect.provide(TestClock.layer()));
 
     const output = await Effect.runPromise(program);
+    // A bare autocommit statement can complete server-side after the socket
+    // is destroyed, so its timeout must NOT claim a proven abort.
     expect(output.timeout).toMatchObject({
       _tag: "ControlPlaneOperationTimedOut",
       label: "community.stall",
       limitMs: CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
-      outcomeCertainty: "aborted",
+      outcomeCertainty: "unknown",
     });
     expect(output.fenced).toMatchObject({
       _tag: "ControlPlaneOperationTimedOut",
@@ -225,5 +227,32 @@ describe("Postgres control-plane adapter", () => {
     expect(client.queries.filter(({ text }) => text === statement.text)).toHaveLength(0);
     expect(client.events.indexOf("destroy")).toBeGreaterThanOrEqual(0);
     expect(client.events.indexOf("destroy")).toBeLessThan(client.events.indexOf("end"));
+  });
+
+  test("reports a proven abort for a statement timed out inside a transaction", async () => {
+    const client = new FakePostgresClient();
+    const program = Effect.scoped(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const fiber = yield* Effect.flip(
+          db.withTransaction((tx) =>
+            tx.execute({ ...statement, label: "community.tx-stall", text: "SELECT stall" }),
+          ),
+        ).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(CONTROL_PLANE_STATEMENT_TIMEOUT_MS + 1);
+        return yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(layerFor(client))),
+    ).pipe(Effect.provide(TestClock.layer()));
+
+    // Inside an open transaction COMMIT was never sent, so socket destruction
+    // proves the server rolls back: this timeout MAY claim a proven abort.
+    const timeout = await Effect.runPromise(program);
+    expect(timeout).toMatchObject({
+      _tag: "ControlPlaneOperationTimedOut",
+      label: "community.tx-stall",
+      outcomeCertainty: "aborted",
+    });
+    expect(client.events.indexOf("destroy")).toBeGreaterThanOrEqual(0);
   });
 });
