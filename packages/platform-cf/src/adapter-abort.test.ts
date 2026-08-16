@@ -102,30 +102,6 @@ class FencedWriteStore {
   }
 }
 
-function stalledFencedCall(
-  store: FencedWriteStore,
-  token: FencingToken,
-  trace: AdapterTraceEvent[],
-  lateResolution: (write: () => boolean) => void,
-): Effect.Effect<never, unknown> {
-  return Effect.onInterrupt(
-    Effect.tryPromise(
-      () =>
-        new Promise<never>((resolve) => {
-          trace.push("started");
-          lateResolution(() => {
-            trace.push("late_resolution");
-            const published = store.writeAtFinalBoundary(token);
-            if (published) trace.push("late_publish");
-            return published;
-          });
-          void resolve;
-        }),
-    ),
-    () => Effect.sync(() => store.revoke(token)),
-  );
-}
-
 function expectStartedBeforeTimeout(trace: readonly AdapterTraceEvent[]): void {
   expect(trace.indexOf("started")).toBeGreaterThanOrEqual(0);
   expect(trace.indexOf("started")).toBeLessThan(trace.indexOf("timeout"));
@@ -172,50 +148,6 @@ describe("adapter abort and fencing contract", () => {
     expectStartedBeforeTimeout(trace);
     assertLeaseReleaseSafety(trace, "aborted");
     expect(trace).toContain("late_resolution");
-    expect(trace).not.toContain("late_publish");
-  });
-
-  test("D1 shard RPC fences the token at the final write boundary", async () => {
-    const trace: AdapterTraceEvent[] = [];
-    const lease = new GuardedLease(trace);
-    const token: FencingToken = {
-      laneOwner: "lane-c",
-      jobAttemptId: "attempt-1",
-      leaseGeneration: 7,
-    };
-    const store = new FencedWriteStore(trace, token);
-    let resolveLate: (() => void) | undefined;
-    const program = Effect.gen(function* () {
-      const fiber = yield* Effect.flip(
-        Effect.timeout(
-          stalledFencedCall(store, token, trace, (write) => {
-            resolveLate = () => {
-              write();
-            };
-          }),
-          100,
-        ),
-      ).pipe(Effect.forkChild);
-      yield* Effect.yieldNow;
-      trace.push("timeout");
-      return yield* Fiber.join(fiber);
-    });
-
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        const fiber = yield* Effect.forkChild(program);
-        yield* Effect.yieldNow;
-        yield* TestClock.adjust(101);
-        yield* Fiber.join(fiber);
-      }).pipe(Effect.provide(TestClock.layer())),
-    );
-    lease.acknowledgeSafety();
-    lease.release();
-    resolveLate?.();
-
-    expectStartedBeforeTimeout(trace);
-    assertLeaseReleaseSafety(trace, "fenced");
-    expect(store.writeCount()).toBe(0);
     expect(trace).not.toContain("late_publish");
   });
 

@@ -9,8 +9,7 @@ declarations required by foundation 000 section 12.
 
 ```ts
 type TableKey =
-  | `control-plane:${string}`
-  | `community-shard:${string}`;
+  | `postgres:${string}`;
 
 type SeverityMapping = {
   readonly expectedFailure: Readonly<Record<string, "low" | "medium" | "high">>;
@@ -52,23 +51,21 @@ boundary and the declared high-severity path.
 
 The primary enforcement point is the registry builder used during jobs-worker
 startup and in a dependency-free registry validation test. It receives the
-complete declarations and a coordinator-maintained inventory of still-live
-old-API writers.
+complete declarations for the Postgres-backed jobs in api-next.
 
 Registry construction rejects all of these before any schedule is registered:
 
 1. two active declarations list the same `TableKey`, even if they are in
    different lanes;
-2. a new declaration lists a table with a live old-API scheduler counterpart;
-3. a declaration writes a table without a `TableKey`; or
-4. two declarations share a job name. Multiple declarations may share a lane:
+2. a declaration writes a table without a `TableKey`; or
+3. two declarations share a job name. Multiple declarations may share a lane:
    the lane lease serializes them in declaration order, while the global table
    inventory prevents conflicting writers.
 
 The validation result is a typed configuration defect. It fails startup and
 the CI registry test; it does not choose a winner or silently disable one
-writer. The old counterpart inventory is removed only in the coordinator's
-strangler migration step.
+writer. `TableKey` is structurally restricted to `postgres:${string}`, so the
+retired D1 table-key families cannot re-enter the registry.
 
 The lane DO lease still serializes ticks for a lane, but it is not the table
 ownership proof: two jobs in one lane or two lanes can otherwise target the

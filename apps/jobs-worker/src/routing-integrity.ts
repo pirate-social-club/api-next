@@ -16,7 +16,7 @@ export const COMMUNITY_CATALOG_INTEGRITY_SCHEDULE = "*/5 * * * *";
 export const COMMUNITY_CATALOG_INTEGRITY_TIMEOUT = "20 seconds";
 
 export const COMMUNITY_CATALOG_READS = [
-  "control-plane:communities",
+  "postgres:communities",
 ] as const satisfies readonly TableKey[];
 
 /** Postgres-only, read-only checks against the api-next community catalog. */

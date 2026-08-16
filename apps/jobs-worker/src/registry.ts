@@ -2,7 +2,7 @@ import type { AlertSeverity } from "@pirate/application";
 import type { AlertSink, FencedLeaseRecord } from "@pirate/platform-cf";
 import { Context, Data, type Duration, Effect, Schedule } from "effect";
 
-export type TableKey = `control-plane:${string}` | `community-shard:${string}`;
+export type TableKey = `postgres:${string}`;
 
 export interface JobRuntimeContext {
   readonly owner: string;
@@ -45,7 +45,6 @@ export type RegistryConfigurationReason =
   | "duplicate-job-name"
   | "duplicate-table-writer"
   | "duplicate-table-read"
-  | "legacy-table-writer"
   | "invalid-table-key"
   | "invalid-schedule"
   | "missing-severity-mapping"
@@ -165,7 +164,7 @@ function invalid(reason: RegistryConfigurationReason, key: string) {
 }
 
 function isTableKey(value: string): value is TableKey {
-  return /^(control-plane|community-shard):[^:]+$/.test(value);
+  return /^postgres:[^:]+$/.test(value);
 }
 
 /**
@@ -174,11 +173,9 @@ function isTableKey(value: string): value is TableKey {
  */
 export function buildJobRegistry<Failure = unknown, Requirements = never>(
   declarations: readonly JobDeclaration<Failure, Requirements>[],
-  liveLegacyWriters: readonly TableKey[] = [],
 ): Effect.Effect<JobRegistry<Failure, Requirements>, RegistryConfigurationError> {
   const names = new Set<string>();
   const writers = new Map<string, string>();
-  const legacy = new Set(liveLegacyWriters);
 
   for (const declaration of declarations) {
     if (
@@ -211,7 +208,6 @@ export function buildJobRegistry<Failure = unknown, Requirements = never>(
 
     for (const table of declaration.writes) {
       if (!isTableKey(table)) return invalid("invalid-table-key", table);
-      if (legacy.has(table)) return invalid("legacy-table-writer", table);
       const previous = writers.get(table);
       if (previous !== undefined) return invalid("duplicate-table-writer", table);
       writers.set(table, declaration.name);

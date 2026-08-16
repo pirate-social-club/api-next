@@ -59,35 +59,13 @@ The real-backend proof is specified in the Postgres 17 harness plan. It must
 show the backend disappears from an independent admin connection and that a
 sentinel insert is rolled back after the session is terminated.
 
-## D1 shard RPC adapter
+## Postgres repository boundary
 
-An outbound Service Binding RPC may not provide a reliable abort primitive.
-The adapter therefore carries a fencing token composed of the lane owner,
-job attempt id, and lease generation. The shard must validate that token at
-the write boundary, not only when the RPC starts. A write is accepted only
-when the token is still the active token for the community/job operation.
-
-The fake shard test does the following:
-
-1. Acquire a token and start a blocked `batchWrite` carrying it.
-2. Time out the job and commit token revocation in the authoritative lease
-   store. Wait for the revocation acknowledgement.
-3. Release the DO lease only after that acknowledgement.
-4. Resolve the old RPC. The fake shard attempts its final D1 mutation with the
-   stale token; the mutation returns a typed fenced result or zero affected
-   rows and commits no state.
-5. Assert that the late RPC response cannot mark the job succeeded and that a
-   new token can write only after a fresh acquisition.
-
-The race case is mandatory: arrange the late RPC to resume between routing and
-the final write. The final D1 statement must still perform a token-aware CAS
-or equivalent atomic write predicate. A separate `isTokenValid` read followed
-by an unguarded write is not sufficient.
-
-The same contract covers single writes and shard-grouped bulk writes. Every
-operation in a bulk request carries the token or is rejected as an
-unfenceable batch; one successful item must not make the whole batch appear
-committed after the lease is released.
+Postgres repository writes carry the active owner/attempt fencing token where
+a scheduled job needs fencing, and the final SQL write predicate includes
+that token. A stale job must fail before it can publish a result. Data
+migration tooling and compatibility fixtures are outside this foundation task
+and remain unchanged in their existing repository locations.
 
 The old attempt-id CAS shape is the reference for this assertion: checkpoint,
 renew, success, and failure updates all require the active `attempt_id` in

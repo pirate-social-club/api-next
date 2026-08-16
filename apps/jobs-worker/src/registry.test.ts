@@ -9,7 +9,6 @@ import {
   type JobDeclaration,
   RegistryConfigurationError,
   selectDueJobs,
-  type TableKey,
 } from "./registry";
 
 const baseJob: JobDeclaration = {
@@ -25,13 +24,13 @@ const baseJob: JobDeclaration = {
     transactionOutcomeUnknown: "high",
     defect: "high",
   },
-  reads: ["control-plane:communities"],
-  writes: ["control-plane:job_attempts"],
+  reads: ["postgres:communities"],
+  writes: ["postgres:job_attempts"],
   run: Effect.void,
 };
 
-const errorOf = async (jobs: readonly JobDeclaration[], legacy: readonly TableKey[] = []) =>
-  Effect.runPromise(Effect.flip(buildJobRegistry(jobs, legacy)));
+const errorOf = async (jobs: readonly JobDeclaration[]) =>
+  Effect.runPromise(Effect.flip(buildJobRegistry(jobs)));
 
 describe("jobs-kernel declaration registry", () => {
   test("keeps complete declarations as data and builds a name index", async () => {
@@ -52,13 +51,8 @@ describe("jobs-kernel declaration registry", () => {
     expect(error).toBeInstanceOf(RegistryConfigurationError);
     expect(error).toMatchObject({
       reason: "duplicate-table-writer",
-      key: "control-plane:job_attempts",
+      key: "postgres:job_attempts",
     });
-  });
-
-  test("rejects a table still written by the old scheduler inventory", async () => {
-    const error = await errorOf([baseJob], ["control-plane:job_attempts"]);
-    expect(error).toMatchObject({ reason: "legacy-table-writer" });
   });
 
   test("rejects ambiguous lane/name ownership and missing failure severity", async () => {
@@ -88,11 +82,26 @@ describe("jobs-kernel declaration registry", () => {
         ...baseJob,
         name: "control-plane.read-duplicate",
         lane: "control-plane-read-duplicate",
-        reads: ["control-plane:communities", "control-plane:communities"],
+        reads: ["postgres:communities", "postgres:communities"],
         writes: [],
       },
     ]);
     expect(error).toMatchObject({ reason: "duplicate-table-read" });
+  });
+
+  test("rejects retired D1 table-key families after narrowing to Postgres", async () => {
+    for (const tableKey of ["control-plane:communities", "community-shard:community-a"]) {
+      const error = await errorOf([
+        {
+          ...baseJob,
+          name: `retired.${tableKey}`,
+          lane: `retired-${tableKey}`,
+          reads: [tableKey] as never,
+          writes: [],
+        },
+      ]);
+      expect(error).toMatchObject({ reason: "invalid-table-key", key: tableKey });
+    }
   });
 
   test("allows sequential jobs in one lane and selects only due schedules", async () => {
@@ -100,7 +109,7 @@ describe("jobs-kernel declaration registry", () => {
       ...baseJob,
       name: "control-plane.hourly",
       schedule: "0 * * * *",
-      reads: ["control-plane:communities"],
+      reads: ["postgres:communities"],
       writes: [],
     };
     const registry = await Effect.runPromise(buildJobRegistry([baseJob, secondJob]));
