@@ -38,3 +38,37 @@ jobs:
       - run: bun run check:breaking
         env:
           OPENAPI_BASE_SHA: ${{ steps.openapi-baseline.outputs.sha }}
+
+  postgres17:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - name: Remove stale completion sentinel
+        run: rm -f /tmp/api-next-control-plane-postgres-suite-complete
+      - name: Run required Postgres 17 suite
+        env:
+          CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+          CONTROL_PLANE_POSTGRES_TEST_REQUIRED: "1"
+          CONTROL_PLANE_POSTGRES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-suite-complete
+        run: timeout 120s bun test packages/platform-cf/src/postgres.pg.test.ts
+      - name: Verify Postgres 17 completion sentinel
+        run: test "$(cat /tmp/api-next-control-plane-postgres-suite-complete)" = "api-next-control-plane-postgres-suite-complete"
