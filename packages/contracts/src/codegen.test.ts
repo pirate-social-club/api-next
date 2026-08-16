@@ -141,4 +141,81 @@ describe("openapi breaking-change diff", () => {
 
     expect(diffBreaking(oldDocument, newDocument)).toEqual([]);
   });
+
+  test("uses request-direction compatibility for parameters and body requiredness", () => {
+    const optionalized = doc((d) => {
+      const post = d.paths["/echo/{message}"]?.post as {
+        parameters: Array<{ required: boolean }>;
+        requestBody: { required: boolean };
+      };
+      const path = post.parameters[0];
+      if (path) path.required = false;
+      post.requestBody.required = false;
+    });
+    expect(diffBreaking(doc(), optionalized)).toEqual([]);
+
+    const optionalOld = optionalized;
+    expect(diffBreaking(optionalOld, doc())).toEqual([
+      "request POST /echo/{message}: parameter became required: path:message",
+      "request body became required on POST /echo/{message}",
+    ]);
+  });
+
+  test("detects a newly added required request property", () => {
+    const changed = doc((d) => {
+      const post = d.paths["/echo/{message}"]?.post as unknown as {
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: { properties: Record<string, unknown>; required?: string[] };
+            };
+          };
+        };
+      };
+      const schema = post.requestBody.content["application/json"].schema;
+      schema.properties.new_field = { type: "string" };
+      schema.required = [...(schema.required ?? []), "new_field"];
+    });
+    expect(diffBreaking(doc(), changed)).toContain(
+      "request POST /echo/{message}: property became required: new_field",
+    );
+  });
+
+  test("allows response narrowing and rejects response widening", () => {
+    const withEnum = (values: readonly string[]) =>
+      doc((d) => {
+        const post = d.paths["/echo/{message}"]?.post as unknown as {
+          responses: {
+            "200": {
+              content: {
+                "application/json": {
+                  schema: { properties: { message: { enum?: readonly string[] } } };
+                };
+              };
+            };
+          };
+        };
+        post.responses["200"].content["application/json"].schema.properties.message.enum = values;
+      });
+
+    expect(diffBreaking(withEnum(["a", "b"]), withEnum(["a"]))).toEqual([]);
+    expect(diffBreaking(withEnum(["a"]), withEnum(["a", "b"]))).toContain(
+      'response POST /echo/{message}: enum value added: "b"',
+    );
+  });
+
+  test("detects removal of a declared wire-error code", () => {
+    const changed = doc((d) => {
+      const post = d.paths["/echo/{message}"]?.post as unknown as {
+        responses: Record<string, { "x-error-codes"?: string[] }>;
+      };
+      post.responses["429"] = {
+        ...post.responses["429"],
+        "x-error-codes": [],
+      };
+    });
+    expect(diffBreaking(doc(), changed)).toContain(
+      "error code removed on POST /echo/{message} status 429: rate_limited",
+    );
+  });
 });

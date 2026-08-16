@@ -142,21 +142,42 @@ function compareSchema(
 
   const oldType = oldSchema.type;
   const newType = newSchema.type;
-  if (oldType !== undefined && newType !== undefined && oldType !== newType) {
-    return [`${where}: type changed from ${String(oldType)} to ${String(newType)}`];
+  if (!valueEquals(oldType, newType)) {
+    const bothTyped = oldType !== undefined && newType !== undefined;
+    const requestNarrowed =
+      direction === "request" && oldType === undefined && newType !== undefined;
+    const responseWidened =
+      direction === "response" && oldType !== undefined && newType === undefined;
+    if (bothTyped || requestNarrowed || responseWidened) {
+      return [`${where}: type changed from ${String(oldType)} to ${String(newType)}`];
+    }
   }
-  if (oldSchema.const !== undefined && !valueEquals(oldSchema.const, newSchema.const)) {
-    return [`${where}: const changed`];
+  if (!valueEquals(oldSchema.const, newSchema.const)) {
+    const bothConstant = oldSchema.const !== undefined && newSchema.const !== undefined;
+    const requestNarrowed =
+      direction === "request" && oldSchema.const === undefined && newSchema.const !== undefined;
+    const responseWidened =
+      direction === "response" && oldSchema.const !== undefined && newSchema.const === undefined;
+    if (bothConstant || requestNarrowed || responseWidened) {
+      return [`${where}: const changed`];
+    }
   }
 
   const oldEnum = Array.isArray(oldSchema.enum) ? oldSchema.enum : undefined;
   const newEnum = Array.isArray(newSchema.enum) ? newSchema.enum : undefined;
   if (oldEnum !== undefined && newEnum !== undefined) {
-    for (const value of oldEnum) {
-      if (!newEnum.some((candidate) => valueEquals(value, candidate))) {
-        return [`${where}: enum value removed: ${JSON.stringify(value)}`];
+    const source = direction === "request" ? oldEnum : newEnum;
+    const target = direction === "request" ? newEnum : oldEnum;
+    for (const value of source) {
+      if (!target.some((candidate) => valueEquals(value, candidate))) {
+        const change = direction === "request" ? "removed" : "added";
+        return [`${where}: enum value ${change}: ${JSON.stringify(value)}`];
       }
     }
+  } else if (direction === "request" && oldEnum === undefined && newEnum !== undefined) {
+    return [`${where}: enum constraint added`];
+  } else if (direction === "response" && oldEnum !== undefined && newEnum === undefined) {
+    return [`${where}: enum constraint removed`];
   }
 
   const oldProperties = (oldSchema.properties ?? {}) as Record<string, JsonSchema>;
@@ -187,7 +208,7 @@ function compareSchema(
   const newRequired = new Set((newSchema.required ?? []) as string[]);
   if (direction === "request") {
     for (const name of newRequired) {
-      if (!oldRequired.has(name) && name in oldProperties) {
+      if (!oldRequired.has(name)) {
         breaks.push(`${where}: property became required: ${name}`);
       }
     }
@@ -212,30 +233,80 @@ function compareSchema(
         nextSeen,
       ),
     );
+  } else if (
+    direction === "request" &&
+    oldSchema.items === undefined &&
+    newSchema.items !== undefined
+  ) {
+    breaks.push(`${where}: array item constraint added`);
+  } else if (
+    direction === "response" &&
+    oldSchema.items !== undefined &&
+    newSchema.items === undefined
+  ) {
+    breaks.push(`${where}: array item constraint removed`);
   }
 
-  const bounds: readonly [string, (oldValue: number, newValue: number) => boolean][] = [
-    ["minimum", (oldValue, newValue) => newValue > oldValue],
-    ["minLength", (oldValue, newValue) => newValue > oldValue],
-    ["minItems", (oldValue, newValue) => newValue > oldValue],
-    ["maximum", (oldValue, newValue) => newValue < oldValue],
-    ["maxLength", (oldValue, newValue) => newValue < oldValue],
-    ["maxItems", (oldValue, newValue) => newValue < oldValue],
+  const bounds: readonly [
+    string,
+    (oldValue: number, newValue: number) => boolean,
+    (oldValue: number, newValue: number) => boolean,
+  ][] = [
+    [
+      "minimum",
+      (oldValue, newValue) => newValue > oldValue,
+      (oldValue, newValue) => newValue < oldValue,
+    ],
+    [
+      "minLength",
+      (oldValue, newValue) => newValue > oldValue,
+      (oldValue, newValue) => newValue < oldValue,
+    ],
+    [
+      "minItems",
+      (oldValue, newValue) => newValue > oldValue,
+      (oldValue, newValue) => newValue < oldValue,
+    ],
+    [
+      "maximum",
+      (oldValue, newValue) => newValue < oldValue,
+      (oldValue, newValue) => newValue > oldValue,
+    ],
+    [
+      "maxLength",
+      (oldValue, newValue) => newValue < oldValue,
+      (oldValue, newValue) => newValue > oldValue,
+    ],
+    [
+      "maxItems",
+      (oldValue, newValue) => newValue < oldValue,
+      (oldValue, newValue) => newValue > oldValue,
+    ],
   ];
-  for (const [name, isNarrower] of bounds) {
+  for (const [name, requestNarrowed, responseWidened] of bounds) {
     const oldValue = oldSchema[name];
     const newValue = newSchema[name];
-    if (
-      typeof oldValue === "number" &&
-      typeof newValue === "number" &&
-      isNarrower(oldValue, newValue)
-    ) {
-      breaks.push(`${where}: property ${name} narrowed`);
+    if (typeof oldValue === "number" && typeof newValue === "number") {
+      if (direction === "request" && requestNarrowed(oldValue, newValue)) {
+        breaks.push(`${where}: property ${name} narrowed`);
+      }
+      if (direction === "response" && responseWidened(oldValue, newValue)) {
+        breaks.push(`${where}: response property ${name} widened`);
+      }
+    } else if (direction === "request" && oldValue === undefined && typeof newValue === "number") {
+      breaks.push(`${where}: property ${name} constraint added`);
+    } else if (direction === "response" && typeof oldValue === "number" && newValue === undefined) {
+      breaks.push(`${where}: response property ${name} constraint removed`);
     }
   }
 
-  if (oldSchema.additionalProperties === true && newSchema.additionalProperties === false) {
+  const oldAllowsAdditional = oldSchema.additionalProperties !== false;
+  const newAllowsAdditional = newSchema.additionalProperties !== false;
+  if (direction === "request" && oldAllowsAdditional && !newAllowsAdditional) {
     breaks.push(`${where}: additional properties became forbidden`);
+  }
+  if (direction === "response" && !oldAllowsAdditional && newAllowsAdditional) {
+    breaks.push(`${where}: response additional properties became allowed`);
   }
   return breaks;
 }
@@ -277,8 +348,8 @@ function compareParameters(
       breaks.push(`${where}: parameter removed: ${key}`);
       continue;
     }
-    if (oldParameter.required === true && newParameter.required !== true) {
-      breaks.push(`${where}: parameter became optional: ${key}`);
+    if (oldParameter.required !== true && newParameter.required === true) {
+      breaks.push(`${where}: parameter became required: ${key}`);
     }
     const oldSchema = oldParameter.schema as JsonSchema | undefined;
     const newSchema = newParameter.schema as JsonSchema | undefined;
@@ -293,6 +364,11 @@ function compareParameters(
           newDocument,
         ),
       );
+    }
+  }
+  for (const [key, newParameter] of newParameters) {
+    if (!oldParameters.has(key) && newParameter.required === true) {
+      breaks.push(`${where}: required parameter added: ${key}`);
     }
   }
   return breaks;
@@ -327,12 +403,18 @@ export function diffBreaking(oldDoc: OpenApiDocument, newDoc: OpenApiDocument): 
     if (oldBody !== undefined && newBody === undefined) {
       breaks.push(`request body removed on ${opKey}`);
     } else if (oldBody !== undefined && newBody !== undefined) {
-      if (oldRequestBody?.required === true && newRequestBody?.required !== true) {
-        breaks.push(`request body became optional on ${opKey}`);
+      if (oldRequestBody?.required !== true && newRequestBody?.required === true) {
+        breaks.push(`request body became required on ${opKey}`);
       }
       breaks.push(
         ...compareSchema(oldBody, newBody, `request ${opKey}`, "request", oldDoc, newDoc),
       );
+    } else if (
+      oldBody === undefined &&
+      newBody !== undefined &&
+      newRequestBody?.required === true
+    ) {
+      breaks.push(`required request body added on ${opKey}`);
     }
 
     const oldResponses = (oldOp.operation.responses ?? {}) as Record<string, JsonSchema>;
@@ -345,9 +427,22 @@ export function diffBreaking(oldDoc: OpenApiDocument, newDoc: OpenApiDocument): 
       }
       const oldSchema = responseSchema(oldResponse);
       const newSchema = responseSchema(newResponse);
-      if (oldSchema !== undefined && newSchema !== undefined) {
+      if (oldSchema !== undefined && newSchema === undefined) {
+        breaks.push(`response body removed on ${opKey} status ${status}`);
+      } else if (oldSchema !== undefined && newSchema !== undefined) {
         const where = status === "200" ? `response ${opKey}` : `response ${opKey} status ${status}`;
         breaks.push(...compareSchema(oldSchema, newSchema, where, "response", oldDoc, newDoc));
+      }
+      const oldCodes = Array.isArray(oldResponse["x-error-codes"])
+        ? (oldResponse["x-error-codes"] as unknown[])
+        : [];
+      const newCodes = Array.isArray(newResponse["x-error-codes"])
+        ? (newResponse["x-error-codes"] as unknown[])
+        : [];
+      for (const code of oldCodes) {
+        if (!newCodes.some((candidate) => valueEquals(candidate, code))) {
+          breaks.push(`error code removed on ${opKey} status ${status}: ${String(code)}`);
+        }
       }
     }
   }

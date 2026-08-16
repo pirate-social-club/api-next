@@ -159,6 +159,45 @@ describe("contracts-generated HTTP worker", () => {
     expect(await response.json()).toMatchObject({ code: "internal_error" });
   });
 
+  it("constrains authentication and authorization failures to the declared union", async () => {
+    const authenticationFailure = createHttpWorker({
+      handlers: { CastPostVote: () => vote },
+      authenticate: () => {
+        throw new Conflict({ message: "not declared for voting" });
+      },
+      authorize: () => undefined,
+    });
+    const authenticationResponse = await authenticationFailure.request(
+      "http://worker.test/posts/post_1/vote",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer test", "content-type": "application/json" },
+        body: JSON.stringify({ value: 1 }),
+      },
+    );
+
+    const authorizationFailure = createHttpWorker({
+      handlers: { CastPostVote: () => vote },
+      authenticate: () => ({ kind: "user", subject: "user_1" }),
+      authorize: () => {
+        throw new Conflict({ message: "not declared for voting" });
+      },
+    });
+    const authorizationResponse = await authorizationFailure.request(
+      "http://worker.test/posts/post_1/vote",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer test", "content-type": "application/json" },
+        body: JSON.stringify({ value: 1 }),
+      },
+    );
+
+    expect(authenticationResponse.status).toBe(500);
+    expect(await authenticationResponse.json()).toMatchObject({ code: "internal_error" });
+    expect(authorizationResponse.status).toBe(500);
+    expect(await authorizationResponse.json()).toMatchObject({ code: "internal_error" });
+  });
+
   it("returns not_found for an uninstalled route instead of undeclared not_implemented", async () => {
     const response = await createHttpWorker().request("http://worker.test/posts/post_1");
 

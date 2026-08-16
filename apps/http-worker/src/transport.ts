@@ -246,30 +246,30 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         throw new NotFound({ message: "Endpoint not found" });
       }
 
-      const authorization = context.req.header("authorization");
-      const hasAuthorizationHeader = authorization !== undefined;
-      const hasCredentials = authorization !== undefined && authorization.trim() !== "";
-      let principal: Principal | null = null;
-      if (!isPublic(binding.endpoint) && !hasCredentials && !isOptionalUser(binding.endpoint)) {
-        throw new AuthError({ message: "Authentication required" });
-      }
-      if (!isPublic(binding.endpoint) && hasAuthorizationHeader && !hasCredentials) {
-        throw new AuthError({ message: "Authentication required" });
-      }
-      if (hasCredentials && options.authenticate !== undefined) {
-        principal = await options.authenticate({
-          endpoint: binding.endpoint,
-          credentials: { authorization },
-        });
-      }
-
-      // Authentication deliberately precedes every request-schema decode.
-      const input = await decodeInput(binding.endpoint, context, principal);
-      if (!isPublic(binding.endpoint)) {
-        await options.authorize?.({ endpoint: binding.endpoint, input });
-      }
-
       try {
+        const authorization = context.req.header("authorization");
+        const hasAuthorizationHeader = authorization !== undefined;
+        const hasCredentials = authorization !== undefined && authorization.trim() !== "";
+        let principal: Principal | null = null;
+        if (!isPublic(binding.endpoint) && !hasCredentials && !isOptionalUser(binding.endpoint)) {
+          throw new AuthError({ message: "Authentication required" });
+        }
+        if (!isPublic(binding.endpoint) && hasAuthorizationHeader && !hasCredentials) {
+          throw new AuthError({ message: "Authentication required" });
+        }
+        if (hasCredentials && options.authenticate !== undefined) {
+          principal = await options.authenticate({
+            endpoint: binding.endpoint,
+            credentials: { authorization },
+          });
+        }
+
+        // Authentication deliberately precedes every request-schema decode.
+        const input = await decodeInput(binding.endpoint, context, principal);
+        if (!isPublic(binding.endpoint)) {
+          await options.authorize?.({ endpoint: binding.endpoint, input });
+        }
+
         const result = await handler(input);
         const body = isHandlerResult(result) ? result.body : result;
         const status = isHandlerResult(result)
