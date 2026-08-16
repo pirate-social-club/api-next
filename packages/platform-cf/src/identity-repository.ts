@@ -1,6 +1,5 @@
+import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
 import { Data, Effect } from "effect";
-
-import { ControlPlaneDb, type ControlPlaneError } from "./ports.ts";
 
 export const MAX_CANONICAL_ALIAS_HOPS = 8;
 
@@ -54,8 +53,8 @@ const missing = (deleted = false): IdentityRepositoryError =>
   new IdentityRepositoryError({ reason: deleted ? "deleted" : "missing" });
 
 /**
- * Application repository implementation. It only knows the ControlPlaneDb
- * port, so its identity semantics are shared by direct Postgres and Hyperdrive
+ * Postgres repository implementation. It only knows the ControlPlaneDb port,
+ * so its identity semantics are shared by direct Postgres and Hyperdrive
  * deployments without importing a driver.
  */
 export function makeControlPlaneIdentityRepository(): IdentityRepository {

@@ -1,4 +1,7 @@
-import { SessionProofRejected, type SessionProofVerifier } from "@pirate/application";
+import {
+  SessionProofRejected,
+  type SessionProofVerifier,
+} from "@pirate/application/use-cases/session-exchange";
 import { Effect } from "effect";
 
 export const SESSION_PROOF_MAX_TOKEN_LENGTH = 16 * 1024;

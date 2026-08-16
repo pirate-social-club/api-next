@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { ControlPlaneDb, makeControlPlaneIdentityRepository } from "@pirate/application";
+import { ControlPlaneDb } from "@pirate/application";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
-
+import { makeControlPlaneIdentityRepository } from "./identity-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { applyPostgresMigrations, type PostgresMigration } from "./postgres-migrations";
 

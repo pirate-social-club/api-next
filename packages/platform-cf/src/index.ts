@@ -43,6 +43,14 @@ export {
 } from "./cron-lock";
 export { ScheduledCronLockDO } from "./cron-lock-do";
 export {
+  type CanonicalIdentity,
+  type IdentityRepository,
+  IdentityRepositoryError,
+  type IdentityUser,
+  MAX_CANONICAL_ALIAS_HOPS,
+  makeControlPlaneIdentityRepository,
+} from "./identity-repository";
+export {
   CONTROL_PLANE_CONNECT_TIMEOUT_MS,
   CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
   CONTROL_PLANE_SLOW_STATEMENT_MS,
@@ -98,4 +106,10 @@ export {
 export {
   makeRs256SessionTokenMinter,
   makeRs256SessionTokenVerifier,
+  type SessionPrincipal,
+  type SessionTokenClassification,
+  type SessionTokenFailureCode,
+  type SessionTokenScope,
+  SessionTokenVerificationError,
+  type SessionTokenVerifier,
 } from "./session-tokens";

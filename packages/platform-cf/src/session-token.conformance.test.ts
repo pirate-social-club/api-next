@@ -1,19 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import {
-  ControlPlaneDb,
-  type IdentityRepository,
-  IdentityRepositoryError,
-  SessionTokenVerificationError,
-} from "@pirate/application";
+import { ControlPlaneDb } from "@pirate/application";
 import {
   materializeSessionCorpus,
   PIRATE_SESSION_CONTRACT,
   SESSION_CONFORMANCE_CORPUS,
 } from "@pirate/testing";
 import { Cause, Effect, Exit, Result } from "effect";
-
+import { type IdentityRepository, IdentityRepositoryError } from "./identity-repository";
 import { makeSessionBridge } from "./session-bridge";
-import { makeRs256SessionTokenVerifier } from "./session-tokens";
+import { makeRs256SessionTokenVerifier, SessionTokenVerificationError } from "./session-tokens";
 
 async function pemFromKey(
   format: "pkcs8" | "spki",
