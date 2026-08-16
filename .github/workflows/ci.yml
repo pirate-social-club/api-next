@@ -65,12 +65,22 @@ jobs:
           bun-version: latest
       - run: bun install --frozen-lockfile
       - name: Remove stale completion sentinel
-        run: rm -f /tmp/api-next-control-plane-postgres-suite-complete
+        run: >-
+          rm -f
+          /tmp/api-next-control-plane-postgres-adapter-suite-complete
+          /tmp/api-next-control-plane-postgres-foundation-suite-complete
       - name: Run required Postgres 17 suite
         env:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
           CONTROL_PLANE_POSTGRES_TEST_REQUIRED: "1"
-          CONTROL_PLANE_POSTGRES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-suite-complete
-        run: timeout 120s bun test packages/platform-cf/src/postgres.pg.test.ts
+          CONTROL_PLANE_POSTGRES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-adapter-suite-complete
+          CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-foundation-suite-complete
+        run: >-
+          timeout 120s bun test packages/platform-cf/src/postgres.pg.test.ts
+          packages/platform-cf/src/postgres-foundation.pg.test.ts
       - name: Verify Postgres 17 completion sentinel
-        run: test "$(cat /tmp/api-next-control-plane-postgres-suite-complete)" = "api-next-control-plane-postgres-suite-complete"
+        run: >-
+          test "$(cat /tmp/api-next-control-plane-postgres-adapter-suite-complete)"
+          = "api-next-control-plane-postgres-adapter-suite-complete" &&
+          test "$(cat /tmp/api-next-control-plane-postgres-foundation-suite-complete)"
+          = "api-next-control-plane-postgres-foundation-suite-complete"

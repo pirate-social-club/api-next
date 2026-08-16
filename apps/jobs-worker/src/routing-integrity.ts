@@ -10,71 +10,56 @@ import {
   type TableKey,
 } from "./registry";
 
-export const COMMUNITY_ROUTING_INTEGRITY_JOB = "community-routing.integrity-audit";
-export const COMMUNITY_ROUTING_INTEGRITY_LANE = "control-plane-maintenance";
-export const COMMUNITY_ROUTING_INTEGRITY_SCHEDULE = "*/5 * * * *";
-export const COMMUNITY_ROUTING_INTEGRITY_TIMEOUT = "20 seconds";
-export const COMMUNITY_ROUTING_STALE_AFTER_MS = 15 * 60 * 1000;
+export const COMMUNITY_CATALOG_INTEGRITY_JOB = "community-catalog.integrity-audit";
+export const COMMUNITY_CATALOG_INTEGRITY_LANE = "control-plane-maintenance";
+export const COMMUNITY_CATALOG_INTEGRITY_SCHEDULE = "*/5 * * * *";
+export const COMMUNITY_CATALOG_INTEGRITY_TIMEOUT = "20 seconds";
 
-export const COMMUNITY_ROUTING_READS = [
-  "control-plane:community_database_routing",
+export const COMMUNITY_CATALOG_READS = [
+  "control-plane:communities",
 ] as const satisfies readonly TableKey[];
 
-/** Postgres-only, read-only invariant query for the authoritative route directory. */
-export const COMMUNITY_ROUTING_INTEGRITY_SQL = `
+/** Postgres-only, read-only checks against the api-next community catalog. */
+export const COMMUNITY_CATALOG_INTEGRITY_SQL = `
   SELECT violation, COUNT(*)::integer AS violation_count
   FROM (
-    SELECT 'stuck_provisioning' AS violation
-    FROM community_database_routing
-    WHERE backend = 'd1'
-      AND provisioning_state = 'provisioning'
-      AND updated_at < $1
+    SELECT 'blank_display_name' AS violation
+    FROM communities
+    WHERE btrim(display_name) = ''
     UNION ALL
-    SELECT 'ready_missing_binding' AS violation
-    FROM community_database_routing
-    WHERE backend = 'd1'
-      AND provisioning_state = 'ready'
-      AND (
-        shard_worker_id IS NULL
-        OR binding_name IS NULL
-        OR region IS NULL
-        OR decommissioned_at IS NOT NULL
-      )
+    SELECT 'blank_creator_user_id' AS violation
+    FROM communities
+    WHERE btrim(created_by_user_id) = ''
     UNION ALL
-    SELECT 'decommissioned_missing_timestamp' AS violation
-    FROM community_database_routing
-    WHERE backend = 'd1'
-      AND provisioning_state = 'decommissioned'
-      AND decommissioned_at IS NULL
-  ) AS route_violations
+    SELECT 'updated_before_created' AS violation
+    FROM communities
+    WHERE updated_at < created_at
+  ) AS catalog_violations
   GROUP BY violation
   ORDER BY violation
 `;
 
-type RoutingViolation =
-  | "stuck_provisioning"
-  | "ready_missing_binding"
-  | "decommissioned_missing_timestamp";
+type CatalogViolation = "blank_display_name" | "blank_creator_user_id" | "updated_before_created";
 
 interface RoutingViolationRow {
   readonly violation: unknown;
   readonly violation_count: unknown;
 }
 
-const ALERT_BODY: Record<RoutingViolation, string> = {
-  stuck_provisioning: "Community routing integrity invariant failed: stale provisioning.",
-  ready_missing_binding: "Community routing integrity invariant failed: ready route is incomplete.",
-  decommissioned_missing_timestamp:
-    "Community routing integrity invariant failed: decommissioned route has no timestamp.",
+const ALERT_BODY: Record<CatalogViolation, string> = {
+  blank_display_name: "Community catalog integrity invariant failed: display name is blank.",
+  blank_creator_user_id: "Community catalog integrity invariant failed: creator user id is blank.",
+  updated_before_created:
+    "Community catalog integrity invariant failed: updated_at precedes created_at.",
 };
 
-const ALERT_SEVERITY: Record<RoutingViolation, "medium" | "high"> = {
-  stuck_provisioning: "medium",
-  ready_missing_binding: "high",
-  decommissioned_missing_timestamp: "high",
+const ALERT_SEVERITY: Record<CatalogViolation, "medium" | "high"> = {
+  blank_display_name: "high",
+  blank_creator_user_id: "high",
+  updated_before_created: "high",
 };
 
-export const COMMUNITY_ROUTING_SEVERITY: SeverityMapping = {
+export const COMMUNITY_CATALOG_SEVERITY: SeverityMapping = {
   expectedFailure: {
     ControlPlaneAcquireFailed: "medium",
     ControlPlaneOperationTimedOut: "medium",
@@ -85,10 +70,10 @@ export const COMMUNITY_ROUTING_SEVERITY: SeverityMapping = {
   defect: "high",
 };
 
-function violationOf(value: unknown): RoutingViolation | null {
-  return value === "stuck_provisioning" ||
-    value === "ready_missing_binding" ||
-    value === "decommissioned_missing_timestamp"
+function violationOf(value: unknown): CatalogViolation | null {
+  return value === "blank_display_name" ||
+    value === "blank_creator_user_id" ||
+    value === "updated_before_created"
     ? value
     : null;
 }
@@ -102,30 +87,29 @@ function positiveCount(value: unknown): number | null {
   return null;
 }
 
-export interface CommunityRoutingIntegrityJobOptions {
-  readonly now?: () => number;
+export interface CommunityCatalogIntegrityJobOptions {
   readonly timeout?: Duration.Input;
 }
 
 /**
  * The only side effect is an AlertCollector emission. The control-plane query
  * is read-only and its table inventory is declared alongside the job metadata.
+ * The historical module name is retained because this job is the successor to
+ * the old routing audit, but api-next has no routing directory or D1 binding.
  */
-export function makeCommunityRoutingIntegrityJob(
+export function makeCommunityCatalogIntegrityJob(
   sink: AlertSink,
-  options: CommunityRoutingIntegrityJobOptions = {},
+  options: CommunityCatalogIntegrityJobOptions = {},
 ): JobDeclaration<ControlPlaneError, ControlPlaneDb | AlertCollector> {
-  const now = options.now ?? Date.now;
   const run = Effect.gen(function* () {
     const runtime = yield* JobContext;
     const db = yield* ControlPlaneDb;
     const collector = yield* AlertCollector;
-    const cutoff = new Date(now() - COMMUNITY_ROUTING_STALE_AFTER_MS).toISOString();
     const result = yield* Effect.onInterrupt(
       db.execute<RoutingViolationRow>({
-        label: "jobs.community-routing.integrity-audit",
-        text: COMMUNITY_ROUTING_INTEGRITY_SQL,
-        values: [cutoff],
+        label: "jobs.community-catalog.integrity-audit",
+        text: COMMUNITY_CATALOG_INTEGRITY_SQL,
+        values: [],
         readonly: true,
       }),
       () => Effect.sync(runtime.adapterSafety.markAbortedOrFenced),
@@ -136,27 +120,27 @@ export function makeCommunityRoutingIntegrityJob(
       const count = positiveCount(row.violation_count);
       if (violation === null || count === null) continue;
       yield* collector.emit({
-        key: "community-routing:integrity",
+        key: "community-catalog:integrity",
         severity: ALERT_SEVERITY[violation],
         body: ALERT_BODY[violation],
-        entity: `routing:${violation}`,
+        entity: `community:${violation}`,
       });
     }
   });
 
   return {
-    name: COMMUNITY_ROUTING_INTEGRITY_JOB,
-    lane: COMMUNITY_ROUTING_INTEGRITY_LANE,
-    schedule: COMMUNITY_ROUTING_INTEGRITY_SCHEDULE,
-    timeout: options.timeout ?? COMMUNITY_ROUTING_INTEGRITY_TIMEOUT,
+    name: COMMUNITY_CATALOG_INTEGRITY_JOB,
+    lane: COMMUNITY_CATALOG_INTEGRITY_LANE,
+    schedule: COMMUNITY_CATALOG_INTEGRITY_SCHEDULE,
+    timeout: options.timeout ?? COMMUNITY_CATALOG_INTEGRITY_TIMEOUT,
     retry: defaultRetrySchedule,
     expectedFailures: [
       "ControlPlaneAcquireFailed",
       "ControlPlaneOperationTimedOut",
       "ControlPlaneStatementFailed",
     ],
-    severity: COMMUNITY_ROUTING_SEVERITY,
-    reads: COMMUNITY_ROUTING_READS,
+    severity: COMMUNITY_CATALOG_SEVERITY,
+    reads: COMMUNITY_CATALOG_READS,
     writes: [],
     alertSink: sink,
     requiresAdapterSafety: true,

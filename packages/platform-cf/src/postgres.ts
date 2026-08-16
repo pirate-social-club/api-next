@@ -32,14 +32,18 @@ export interface PostgresStreamLike {
   readonly destroy: (reason?: Error) => unknown;
 }
 
+export interface PostgresQueryResult {
+  readonly rows: readonly Record<string, unknown>[];
+  readonly rowCount: number | null;
+}
+
+export type PostgresQueryResponse = PostgresQueryResult | readonly PostgresQueryResult[];
+
 /** The small driver surface makes abort ordering testable without a database. */
 export interface PostgresClientLike {
   readonly connection?: { readonly stream?: PostgresStreamLike };
   readonly connect: () => Promise<void>;
-  readonly query: (config: PostgresQueryConfig) => Promise<{
-    readonly rows: readonly Record<string, unknown>[];
-    readonly rowCount: number | null;
-  }>;
+  readonly query: (config: PostgresQueryConfig) => Promise<PostgresQueryResponse>;
   readonly end: () => Promise<void>;
 }
 
@@ -88,13 +92,26 @@ const defaultClientFactory: PostgresClientFactory = async (_connectionString, co
     connection: client.connection,
     connect: () => client.connect(),
     query: ({ text, values }) =>
-      client.query({ text, values: values === undefined ? [] : [...values] }).then((result) => ({
-        rows: result.rows as readonly Record<string, unknown>[],
-        rowCount: result.rowCount,
-      })),
+      client.query({
+        text,
+        values: values === undefined ? [] : [...values],
+      }) as unknown as Promise<PostgresQueryResponse>,
     end: () => client.end(),
   };
 };
+
+/**
+ * A simple-protocol multi-statement query returns results in statement order.
+ * The platform port exposes one result shape, so the final driver result is
+ * authoritative; a null rowCount falls back to that result's row count.
+ */
+function finalQueryResult(result: PostgresQueryResponse): PostgresQueryResult {
+  if (!Array.isArray(result)) return result as PostgresQueryResult;
+  const results = result as readonly PostgresQueryResult[];
+  const final = results[results.length - 1];
+  if (final === undefined) throw new Error("Postgres returned no query results");
+  return final;
+}
 
 function elapsedSince(startedAt: number, now: () => number): number {
   return Math.max(0, now() - startedAt);
@@ -258,10 +275,13 @@ class PostgresSession {
           }
         }),
       ),
-      Effect.map((result) => ({
-        rows: result.rows as readonly Row[],
-        rowCount: result.rowCount ?? result.rows.length,
-      })),
+      Effect.map((result) => {
+        const final = finalQueryResult(result);
+        return {
+          rows: final.rows as readonly Row[],
+          rowCount: final.rowCount ?? final.rows.length,
+        };
+      }),
     );
   }
 

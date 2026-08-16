@@ -22,7 +22,7 @@ import {
 import { Cause, Deferred, Effect, Exit, Fiber, type Layer, Option, Schedule, Schema } from "effect";
 
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
-import { makeCommunityRoutingIntegrityJob } from "./routing-integrity";
+import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
 export {
@@ -40,15 +40,14 @@ export {
   type TableKey,
 } from "./registry";
 export {
-  COMMUNITY_ROUTING_INTEGRITY_JOB,
-  COMMUNITY_ROUTING_INTEGRITY_LANE,
-  COMMUNITY_ROUTING_INTEGRITY_SCHEDULE,
-  COMMUNITY_ROUTING_INTEGRITY_SQL,
-  COMMUNITY_ROUTING_INTEGRITY_TIMEOUT,
-  COMMUNITY_ROUTING_READS,
-  COMMUNITY_ROUTING_STALE_AFTER_MS,
-  type CommunityRoutingIntegrityJobOptions,
-  makeCommunityRoutingIntegrityJob,
+  COMMUNITY_CATALOG_INTEGRITY_JOB,
+  COMMUNITY_CATALOG_INTEGRITY_LANE,
+  COMMUNITY_CATALOG_INTEGRITY_SCHEDULE,
+  COMMUNITY_CATALOG_INTEGRITY_SQL,
+  COMMUNITY_CATALOG_INTEGRITY_TIMEOUT,
+  COMMUNITY_CATALOG_READS,
+  type CommunityCatalogIntegrityJobOptions,
+  makeCommunityCatalogIntegrityJob,
 } from "./routing-integrity";
 
 export interface JobsWorkerEnv extends AlertSinkBindings {
@@ -422,7 +421,7 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
 export function makeJobsWorkerDeclarations(
   sink: AlertSink,
 ): readonly JobDefinition<ControlPlaneError, ControlPlaneDb | AlertCollector>[] {
-  const factories = [makeCommunityRoutingIntegrityJob] as const;
+  const factories = [makeCommunityCatalogIntegrityJob] as const;
   return factories.map((factory) => factory(sink));
 }
 
@@ -434,9 +433,7 @@ export default {
     const deliveryStub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alerts`);
     const sink = makeConfiguredAlertSink(env, makeAlertDeliveryLedger(deliveryStub));
     const declarations = makeJobsWorkerDeclarations(sink);
-    const registry = await Effect.runPromise(
-      buildJobRegistry(declarations, ["control-plane:community_database_routing"]),
-    );
+    const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
     await ctx.waitUntil(

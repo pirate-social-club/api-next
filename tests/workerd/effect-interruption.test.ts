@@ -10,7 +10,7 @@ import {
   handleScheduled,
   type JobDefinition,
   type JobsWorkerEnv,
-  makeCommunityRoutingIntegrityJob,
+  makeCommunityCatalogIntegrityJob,
 } from "../../apps/jobs-worker/src/index";
 
 const env = testEnv as unknown as JobsWorkerEnv;
@@ -105,7 +105,7 @@ describe("Effect.timeout real interruption (workerd)", () => {
       email: () => Effect.void,
       webhook: () => Effect.void,
     };
-    const job = makeCommunityRoutingIntegrityJob(sink, { timeout: 50 });
+    const job = makeCommunityCatalogIntegrityJob(sink, { timeout: 50 });
 
     const result = await handleScheduled(env, job.lane, job, Date.now(), {
       runtime: Layer.succeed(ControlPlaneDb, db),
