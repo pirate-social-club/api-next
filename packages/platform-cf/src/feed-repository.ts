@@ -72,10 +72,15 @@ const epochSeconds = (value: unknown): number | null => {
     return Number.isFinite(time) ? Math.floor(time / 1_000) : null;
   }
   if (typeof value === "string") {
+    if (/^-?\d+(?:\.\d+)?$/u.test(value)) return epochSeconds(Number(value));
     const time = Date.parse(value);
     return Number.isFinite(time) ? Math.floor(time / 1_000) : null;
   }
-  if (typeof value === "number" && Number.isFinite(value)) return Math.floor(value);
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const seconds = Math.abs(value) >= 100_000_000_000 ? value / 1_000 : value;
+    const normalized = Math.floor(seconds);
+    return Number.isSafeInteger(normalized) ? normalized : null;
+  }
   return null;
 };
 

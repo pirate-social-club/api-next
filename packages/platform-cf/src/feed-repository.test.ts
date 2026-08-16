@@ -156,6 +156,20 @@ describe("home feed Postgres repository", () => {
     expect(calls[0]?.text).not.toContain("usr_author");
   });
 
+  test("normalizes numeric epoch milliseconds from alternate drivers", async () => {
+    const repository = makeControlPlaneFeedRepository();
+    const output = await Effect.runPromise(
+      repository.listHome({ query: {} }).pipe(
+        Effect.provideService(
+          ControlPlaneDb,
+          fakeDb(() => [feedRow(0, { created_at: 1_760_000_000_000 })], []),
+        ),
+      ),
+    );
+
+    expect(output.items[0]?.post.post.created).toBe(1_760_000_000);
+  });
+
   test("emits a query-bound keyset cursor and rejects reuse under another sort", async () => {
     const firstCalls: ControlPlaneStatement[] = [];
     const repository = makeControlPlaneFeedRepository({ now: () => 1_760_000_000_000 });
