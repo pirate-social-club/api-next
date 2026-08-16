@@ -32,7 +32,7 @@
         {
           "binding": "CONTROL_PLANE",
           // REFERENCE ONLY. Replace with the user-provisioned staging ID.
-          "id": "00000000-0000-0000-0000-000000000000",
+          "id": "8cb7658a0f7143359c1becfec6a15c23",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],

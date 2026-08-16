@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   formatMigrationPlan,
   loadPostgresMigrations,
+  normalizePostgresConnectionString,
   runPostgresMigrations,
 } from "./postgres-migrations";
 
@@ -32,6 +33,14 @@ describe("Postgres migration runner", () => {
     expect(output).toMatchObject({ dryRun: true });
     if (!output.dryRun) throw new Error("expected a dry-run result");
     expect(output.plan).toHaveLength(2);
+  });
+
+  test("normalizes psql's system sslrootcert value for node pg", () => {
+    expect(
+      normalizePostgresConnectionString(
+        "postgresql://postgres:password@example.test/postgres?sslmode=verify-full&sslrootcert=system",
+      ),
+    ).toBe("postgresql://postgres:password@example.test/postgres?sslmode=verify-full");
   });
 
   test("fails closed when a migration checksum is tampered", async () => {

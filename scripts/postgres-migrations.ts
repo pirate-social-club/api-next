@@ -25,6 +25,15 @@ export type MigrationRunResult =
   | { readonly dryRun: true; readonly plan: readonly MigrationPlan[] }
   | { readonly dryRun: false; readonly result: MigrationApplyResult };
 
+/** Node pg treats sslrootcert as a filesystem path, unlike psql's system value. */
+export function normalizePostgresConnectionString(connectionString: string): string {
+  const url = new URL(connectionString);
+  if (url.searchParams.get("sslrootcert") === "system") {
+    url.searchParams.delete("sslrootcert");
+  }
+  return url.toString();
+}
+
 const migrationDirectory = new URL("../db/postgres/migrations/", import.meta.url);
 
 async function readManifest(directory: URL): Promise<ChecksumsManifest> {
@@ -103,7 +112,11 @@ export async function runPostgresMigrations(
       Effect.gen(function* () {
         yield* ControlPlaneDb;
         return yield* applyPostgresMigrations(migrations);
-      }).pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connectionString))),
+      }).pipe(
+        Effect.provide(
+          makeDirectPostgresControlPlaneLayer(normalizePostgresConnectionString(connectionString)),
+        ),
+      ),
     ),
   );
   return { dryRun: false, result };
