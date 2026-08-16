@@ -24,17 +24,19 @@ describe("Postgres migration runner", () => {
       "0001_v1_product_slice.sql",
       "0002_identity.sql",
       "0003_m2_community_content.sql",
+      "0004_post_comment_lock.sql",
     ]);
     expect(formatMigrationPlan(migrations)).toContain("0001_v1_product_slice.sql");
     expect(formatMigrationPlan(migrations)).toContain("0002_identity.sql");
     expect(formatMigrationPlan(migrations)).toContain("0003_m2_community_content.sql");
+    expect(formatMigrationPlan(migrations)).toContain("0004_post_comment_lock.sql");
   });
 
   test("dry-run does not require an administrative URL or open a connection", async () => {
     const output = await runPostgresMigrations({ dryRun: true });
     expect(output).toMatchObject({ dryRun: true });
     if (!output.dryRun) throw new Error("expected a dry-run result");
-    expect(output.plan).toHaveLength(3);
+    expect(output.plan).toHaveLength(4);
   });
 
   test("normalizes psql's system sslrootcert value for node pg", () => {
@@ -57,6 +59,8 @@ describe("Postgres migration runner", () => {
     await Bun.write(join(directory, "0002_identity.sql"), identity);
     const m2 = await Bun.file(new URL("0003_m2_community_content.sql", source)).text();
     await Bun.write(join(directory, "0003_m2_community_content.sql"), m2);
+    const commentLock = await Bun.file(new URL("0004_post_comment_lock.sql", source)).text();
+    await Bun.write(join(directory, "0004_post_comment_lock.sql"), commentLock);
 
     await expect(loadPostgresMigrations(new URL(`file://${directory}/`))).rejects.toThrow(
       "checksum mismatch: 0001_v1_product_slice.sql",

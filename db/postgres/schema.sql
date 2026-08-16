@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS posts (
   updated_at TIMESTAMPTZ NOT NULL,
   idempotency_key TEXT NOT NULL DEFAULT '',
   idempotency_body_hash TEXT,
+  comments_locked BOOLEAN NOT NULL DEFAULT FALSE,
   PRIMARY KEY (community_id, post_id),
   CONSTRAINT posts_community_fk
     FOREIGN KEY (community_id) REFERENCES communities (community_id)
