@@ -3,7 +3,7 @@
 import { env as testEnv } from "cloudflare:test";
 import { type Alert, ControlPlaneDb } from "@pirate/application";
 import type { AlertDigest } from "@pirate/platform-cf";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schedule } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -57,6 +57,40 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     expect(ran).toBe(2);
   });
 
+  it("runs multiple jobs in one lane sequentially under one lease", async () => {
+    const order: string[] = [];
+    const makeJob = (name: string): JobDefinition => ({
+      name,
+      lane: "sequential-lane",
+      schedule: "*/5 * * * *",
+      timeout: 5_000,
+      retry: defaultRetrySchedule,
+      expectedFailures: [],
+      severity: {
+        expectedFailure: {},
+        timeout: "medium",
+        transactionOutcomeUnknown: "high",
+        defect: "high",
+      },
+      reads: [],
+      writes: [],
+      run: Effect.gen(function* () {
+        order.push(`${name}:start`);
+        yield* Effect.sleep(30);
+        order.push(`${name}:end`);
+      }),
+    });
+
+    const result = await handleScheduled(env, "sequential-lane", [
+      makeJob("first"),
+      makeJob("second"),
+    ]);
+
+    expect(result.ranJobs).toEqual(["first", "second"]);
+    expect(order).toEqual(["first:start", "first:end", "second:start", "second:end"]);
+    expect(result.leaseAfterRun).toBeNull();
+  });
+
   it("runs the real routing audit, renews its lease, and aggregates alerts", async () => {
     const statements: Array<{ readonly readonly: boolean; readonly text: string }> = [];
     const emails: AlertDigest[] = [];
@@ -101,5 +135,108 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     expect(webhooks).toHaveLength(1);
     expect(webhooks[0]?.every((alert) => alert.severity === "high")).toBe(true);
     expect(webhooks[0]?.every((alert) => !alert.body.includes("$1"))).toBe(true);
+  });
+
+  it("routes expected failures, defects, and runner timeouts through declared severity", async () => {
+    const emails: AlertDigest[] = [];
+    const digests: AlertDigest[] = [];
+    const sink = {
+      email: (digest: AlertDigest) => Effect.sync(() => emails.push(digest)),
+      digest: (digest: AlertDigest) => Effect.sync(() => digests.push(digest)),
+      webhook: () => Effect.void,
+    };
+    const severity = {
+      expectedFailure: {
+        ControlPlaneOperationTimedOut: "medium" as const,
+        ControlPlaneStatementFailed: "high" as const,
+        LowExpectedFailure: "low" as const,
+      },
+      timeout: "medium" as const,
+      transactionOutcomeUnknown: "high" as const,
+      defect: "high" as const,
+    };
+    const expectedFailure: JobDefinition = {
+      name: "severity.expected-failure",
+      lane: "severity-expected-failure",
+      schedule: "*/5 * * * *",
+      timeout: 5_000,
+      retry: Schedule.recurs(0),
+      expectedFailures: ["ControlPlaneOperationTimedOut"],
+      severity,
+      reads: [],
+      writes: [],
+      alertSink: sink,
+      run: Effect.fail({ _tag: "ControlPlaneOperationTimedOut" }),
+    };
+    await expect(handleScheduled(env, expectedFailure.lane, expectedFailure)).rejects.toBeDefined();
+    expect(emails).toHaveLength(1);
+    expect(emails[0]?.groups).toHaveLength(1);
+    expect(emails[0]?.groups[0]?.severity).toBe("medium");
+
+    emails.length = 0;
+    const expectedHigh: JobDefinition = {
+      ...expectedFailure,
+      name: "severity.expected-high",
+      lane: "severity-expected-high",
+      expectedFailures: ["ControlPlaneStatementFailed"],
+      run: Effect.fail({ _tag: "ControlPlaneStatementFailed" }),
+    };
+    await expect(handleScheduled(env, expectedHigh.lane, expectedHigh)).rejects.toBeDefined();
+    expect(emails).toHaveLength(1);
+    expect(emails[0]?.groups).toHaveLength(1);
+    expect(emails[0]?.groups[0]?.severity).toBe("high");
+
+    emails.length = 0;
+    const expectedLow: JobDefinition = {
+      ...expectedFailure,
+      name: "severity.expected-low",
+      lane: "severity-expected-low",
+      expectedFailures: ["LowExpectedFailure"],
+      run: Effect.fail({ _tag: "LowExpectedFailure" }),
+    };
+    await expect(handleScheduled(env, expectedLow.lane, expectedLow)).rejects.toBeDefined();
+    expect(emails).toHaveLength(0);
+    expect(digests).toHaveLength(1);
+    expect(digests[0]?.groups).toHaveLength(1);
+    expect(digests[0]?.groups[0]?.severity).toBe("low");
+
+    digests.length = 0;
+    const defect: JobDefinition = {
+      name: "severity.defect",
+      lane: "severity-defect",
+      schedule: "*/5 * * * *",
+      timeout: 5_000,
+      retry: Schedule.recurs(0),
+      expectedFailures: [],
+      severity,
+      reads: [],
+      writes: [],
+      alertSink: sink,
+      run: Effect.die("test defect"),
+    };
+    await expect(handleScheduled(env, defect.lane, defect)).rejects.toBeDefined();
+    expect(emails).toHaveLength(1);
+    expect(emails[0]?.groups).toHaveLength(1);
+    expect(emails[0]?.groups[0]?.severity).toBe("high");
+
+    emails.length = 0;
+    const timeout: JobDefinition = {
+      name: "severity.runner-timeout",
+      lane: "severity-runner-timeout",
+      schedule: "*/5 * * * *",
+      timeout: 25,
+      retry: Schedule.recurs(0),
+      expectedFailures: [],
+      severity,
+      reads: [],
+      writes: [],
+      alertSink: sink,
+      run: Effect.forever(Effect.sleep(10)),
+    };
+    const timeoutResult = await handleScheduled(env, timeout.lane, timeout);
+    expect(timeoutResult.timedOut).toBe(true);
+    expect(emails).toHaveLength(1);
+    expect(emails[0]?.groups).toHaveLength(1);
+    expect(emails[0]?.groups[0]?.severity).toBe("medium");
   });
 });

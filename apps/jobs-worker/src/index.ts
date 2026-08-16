@@ -1,7 +1,13 @@
 /// <reference types="@cloudflare/workers-types" />
 
-import type { ControlPlaneDb, ControlPlaneError } from "@pirate/application";
 import {
+  type Alert,
+  AlertCollector,
+  type ControlPlaneDb,
+  type ControlPlaneError,
+} from "@pirate/application";
+import {
+  type AlertSink,
   type AlertSinkBindings,
   alertTick,
   CRON_LOCK_NAME,
@@ -13,24 +19,23 @@ import {
   makeHyperdriveControlPlaneLayer,
   type ScheduledCronLockDO,
 } from "@pirate/platform-cf";
-import { Effect, type Layer } from "effect";
+import { Cause, Effect, Exit, type Layer, Option } from "effect";
 
-import { buildJobRegistry, JobContext, type JobDeclaration } from "./registry";
-import {
-  COMMUNITY_ROUTING_INTEGRITY_LANE,
-  makeCommunityRoutingIntegrityJob,
-} from "./routing-integrity";
+import { buildJobRegistry, JobContext, type JobDeclaration, selectDueJobs } from "./registry";
+import { makeCommunityRoutingIntegrityJob } from "./routing-integrity";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
 export {
   buildJobRegistry,
   defaultRetrySchedule,
+  isScheduleDue,
   JobContext,
   type JobDeclaration,
   type JobRegistry,
   type JobRuntimeContext,
   RegistryConfigurationError,
   type SeverityMapping,
+  selectDueJobs,
   type TableKey,
 } from "./registry";
 export {
@@ -61,6 +66,7 @@ export interface LaneRunResult {
   readonly acquired: boolean;
   /** null when the lease was not acquired; false when no job ran. */
   readonly ranJob: string | null;
+  readonly ranJobs: readonly string[];
   readonly timedOut: boolean;
   readonly leaseRenewals: number;
   readonly leaseAfterRun: LeaseRecord | null;
@@ -76,36 +82,89 @@ export interface LaneRunOptions {
 
 const LANE_LEASE_TTL_MS = 30_000;
 
+function tagOf(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("_tag" in error)) return undefined;
+  return typeof error._tag === "string" ? error._tag : undefined;
+}
+
+function typedErrorOf(cause: Cause.Cause<unknown>): unknown | undefined {
+  const result = Cause.findErrorOption(cause);
+  return Option.isSome(result) ? result.value : undefined;
+}
+
+function isRunnerTimeout(cause: Cause.Cause<unknown>): boolean {
+  return tagOf(typedErrorOf(cause)) === "TimeoutError";
+}
+
+function runnerAlert<Failure, Requirements>(
+  job: JobDefinition<Failure, Requirements>,
+  cause: Cause.Cause<unknown>,
+): Alert {
+  const error = typedErrorOf(cause);
+  const tag = tagOf(error);
+  if (tag === "TimeoutError") {
+    return {
+      key: "jobs:runner-timeout",
+      severity: job.severity.timeout,
+      body: "api-next job runner timeout.",
+      entity: `job:${job.name}`,
+    };
+  }
+  if (tag === "ControlPlaneTransactionOutcomeUnknown") {
+    return {
+      key: "jobs:transaction-outcome-unknown",
+      severity: job.severity.transactionOutcomeUnknown,
+      body: "api-next job transaction outcome is unknown.",
+      entity: `job:${job.name}`,
+    };
+  }
+  if (tag !== undefined && job.expectedFailures.includes(tag)) {
+    return {
+      key: "jobs:expected-failure",
+      severity: job.severity.expectedFailure[tag] ?? job.severity.defect,
+      body: "api-next job expected failure.",
+      entity: `job:${job.name}`,
+    };
+  }
+  return {
+    key: "jobs:defect",
+    severity: job.severity.defect,
+    body: Cause.hasDies(cause) ? "api-next job defect." : "api-next job failed.",
+    entity: `job:${job.name}`,
+  };
+}
+
 /**
- * One scheduled lane tick: acquire the lane's DO lease, run the lane's single
- * job under `Effect.timeout` (real interruption), then release owner-fenced.
+ * One scheduled lane tick: acquire the lane's DO lease, run due jobs
+ * sequentially under their own `Effect.timeout`, then release owner-fenced.
  * A tick that loses the lease runs nothing — the one-writing-scheduler rule
  * (000 §13) starts here.
  */
 export async function handleScheduled<Failure = unknown, Requirements = never>(
   env: JobsWorkerEnv,
   lane: string,
-  job: JobDefinition<Failure, Requirements>,
+  jobsInput: JobDefinition<Failure, Requirements> | readonly JobDefinition<Failure, Requirements>[],
   now: number = Date.now(),
   options: LaneRunOptions = {},
 ): Promise<LaneRunResult> {
+  const jobs = Array.isArray(jobsInput) ? jobsInput : [jobsInput];
   const stub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:${lane}`);
   const owner = crypto.randomUUID();
   const leaseTtlMs = options.leaseTtlMs ?? LANE_LEASE_TTL_MS;
-  const renewIntervalMs = options.renewIntervalMs ?? Math.floor(leaseTtlMs / 3);
+  const renewIntervalMs = Math.max(1, options.renewIntervalMs ?? Math.floor(leaseTtlMs / 3));
   const grant = await stub.tryAcquireWithFence(leaseTtlMs, owner, now);
   if (grant === null) {
     return {
       lane,
       acquired: false,
       ranJob: null,
+      ranJobs: [],
       timedOut: false,
       leaseRenewals: 0,
       leaseAfterRun: null,
     };
   }
   let currentLease: FencedLeaseRecord = grant;
-  const adapterSafety = { proven: false };
   let leaseRenewals = 0;
   let renewalInFlight = Promise.resolve();
   const renewalTimer = setInterval(() => {
@@ -121,69 +180,108 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
   }, renewIntervalMs);
   let timedOut = false;
   let releaseSafe = true;
-  try {
-    const runContext = {
-      owner,
-      attemptId: owner,
-      lease: () => currentLease,
-      adapterSafety: {
-        markAbortedOrFenced: () => {
-          adapterSafety.proven = true;
+  let firstFailure: Cause.Cause<unknown> | undefined;
+  const ranJobs: string[] = [];
+
+  const runJob = async (job: JobDefinition<Failure, Requirements>) => {
+    const adapterSafety = { proven: false };
+    try {
+      const runContext = {
+        owner,
+        attemptId: `${owner}:${job.name}`,
+        lease: () => currentLease,
+        adapterSafety: {
+          markAbortedOrFenced: () => {
+            adapterSafety.proven = true;
+          },
+          isProven: () => adapterSafety.proven,
         },
-        isProven: () => adapterSafety.proven,
-      },
-    };
-    const withContext = Effect.provideService(job.run, JobContext, runContext);
-    const retried = Effect.retry(withContext, {
-      schedule: job.retry,
-      while: (error: unknown) => {
-        const tag =
-          typeof error === "object" && error !== null && "_tag" in error ? error._tag : undefined;
-        return typeof tag === "string" && job.expectedFailures.includes(tag);
-      },
-    });
-    const collected = job.alertSink === undefined ? retried : alertTick(job.alertSink, retried);
-    const withRuntime: Effect.Effect<void, unknown, never> =
-      options.runtime === undefined
-        ? (collected as Effect.Effect<void, unknown, never>)
-        : Effect.scoped(
-            Effect.provide(options.runtime)(
-              collected as Effect.Effect<void, unknown, ControlPlaneDb>,
-            ),
-          );
-    await Effect.runPromise(
-      Effect.timeout(withRuntime, job.timeout).pipe(
-        Effect.catchIf(
-          (error: unknown): boolean =>
-            typeof error === "object" &&
-            error !== null &&
-            (error as { _tag?: string })._tag === "TimeoutError",
-          () =>
-            Effect.sync(() => {
-              timedOut = true;
-              if (job.requiresAdapterSafety && !adapterSafety.proven) {
-                releaseSafe = false;
-              }
-            }),
-        ),
-      ) as Effect.Effect<void, unknown, never>,
-    );
+      };
+      const withContext = Effect.provideService(job.run, JobContext, runContext);
+      const retried = Effect.retry(withContext, {
+        schedule: job.retry,
+        while: (error: unknown) => {
+          const tag = tagOf(error);
+          return tag !== undefined && job.expectedFailures.includes(tag);
+        },
+      });
+      const withRuntime: Effect.Effect<void, unknown, never> =
+        options.runtime === undefined
+          ? (retried as Effect.Effect<void, unknown, never>)
+          : Effect.scoped(
+              Effect.provide(options.runtime)(
+                retried as Effect.Effect<void, unknown, ControlPlaneDb>,
+              ),
+            );
+      const timed = Effect.timeout(withRuntime, job.timeout);
+      const observed =
+        job.alertSink === undefined
+          ? timed
+          : alertTick(
+              job.alertSink,
+              Effect.gen(function* () {
+                const collector = yield* AlertCollector;
+                const result = yield* Effect.exit(timed);
+                if (Exit.isFailure(result)) {
+                  yield* collector.emit(runnerAlert(job, result.cause));
+                  return yield* Effect.failCause(result.cause);
+                }
+                return result.value;
+              }),
+            );
+      return {
+        exit: await Effect.runPromise(Effect.exit(observed as Effect.Effect<void, unknown, never>)),
+        adapterSafety,
+      };
+    } catch (error) {
+      return {
+        exit: Exit.die(error),
+        adapterSafety,
+      };
+    }
+  };
+
+  try {
+    for (const job of jobs) {
+      const result = await runJob(job);
+      ranJobs.push(job.name);
+      if (Exit.isSuccess(result.exit)) continue;
+      if (isRunnerTimeout(result.exit.cause)) {
+        timedOut = true;
+        if (job.requiresAdapterSafety && !result.adapterSafety.proven) {
+          releaseSafe = false;
+          break;
+        }
+        continue;
+      }
+      firstFailure ??= result.exit.cause;
+    }
   } finally {
     clearInterval(renewalTimer);
     await renewalInFlight;
     if (releaseSafe) await stub.releaseWithFence(owner, currentLease.generation);
   }
-  if (timedOut && job.requiresAdapterSafety && !adapterSafety.proven) {
+  if (!releaseSafe) {
     throw new Error("job timeout had no adapter abort or fence evidence");
+  }
+  if (firstFailure !== undefined) {
+    await Effect.runPromise(Effect.failCause(firstFailure));
   }
   return {
     lane,
     acquired: true,
-    ranJob: job.name,
+    ranJob: ranJobs[0] ?? null,
+    ranJobs,
     timedOut,
     leaseRenewals,
     leaseAfterRun: await stub.currentLease(),
   };
+}
+
+export function makeJobsWorkerDeclarations(
+  sink: AlertSink,
+): readonly JobDefinition<ControlPlaneError, ControlPlaneDb | AlertCollector>[] {
+  return [makeCommunityRoutingIntegrityJob(sink)];
 }
 
 export default {
@@ -193,12 +291,26 @@ export default {
     }
     const deliveryStub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alerts`);
     const sink = makeConfiguredAlertSink(env, makeAlertDeliveryLedger(deliveryStub));
-    const job = makeCommunityRoutingIntegrityJob(sink);
-    await Effect.runPromise(buildJobRegistry([job], ["control-plane:community_database_routing"]));
+    const declarations = makeJobsWorkerDeclarations(sink);
+    const registry = await Effect.runPromise(
+      buildJobRegistry(declarations, ["control-plane:community_database_routing"]),
+    );
+    const dueByLane = new Map<
+      string,
+      JobDefinition<ControlPlaneError, ControlPlaneDb | AlertCollector>[]
+    >();
+    for (const job of selectDueJobs(registry, event.scheduledTime)) {
+      const laneJobs = dueByLane.get(job.lane) ?? [];
+      laneJobs.push(job);
+      dueByLane.set(job.lane, laneJobs);
+    }
+    const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
     await ctx.waitUntil(
-      handleScheduled(env, COMMUNITY_ROUTING_INTEGRITY_LANE, job, event.scheduledTime, {
-        runtime: makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE),
-      }),
+      Promise.all(
+        Array.from(dueByLane, ([lane, laneJobs]) =>
+          handleScheduled(env, lane, laneJobs, event.scheduledTime, { runtime }),
+        ),
+      ),
     );
   },
 };

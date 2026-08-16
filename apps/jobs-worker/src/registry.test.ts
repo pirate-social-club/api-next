@@ -4,8 +4,10 @@ import { Effect } from "effect";
 import {
   buildJobRegistry,
   defaultRetrySchedule,
+  isScheduleDue,
   type JobDeclaration,
   RegistryConfigurationError,
+  selectDueJobs,
   type TableKey,
 } from "./registry";
 
@@ -90,5 +92,27 @@ describe("jobs-kernel declaration registry", () => {
       },
     ]);
     expect(error).toMatchObject({ reason: "duplicate-table-read" });
+  });
+
+  test("allows sequential jobs in one lane and selects only due schedules", async () => {
+    const secondJob: JobDeclaration = {
+      ...baseJob,
+      name: "control-plane.hourly",
+      schedule: "0 * * * *",
+      reads: ["control-plane:communities"],
+      writes: [],
+    };
+    const registry = await Effect.runPromise(buildJobRegistry([baseJob, secondJob]));
+    const atFivePast = Date.UTC(2026, 7, 16, 0, 5);
+
+    expect(registry.declarations).toHaveLength(2);
+    expect(isScheduleDue(baseJob.schedule, atFivePast)).toBe(true);
+    expect(isScheduleDue(secondJob.schedule, atFivePast)).toBe(false);
+    expect(selectDueJobs(registry, atFivePast).map((job) => job.name)).toEqual([baseJob.name]);
+  });
+
+  test("rejects malformed cron declarations", async () => {
+    const error = await errorOf([{ ...baseJob, schedule: "not-a-cron" }]);
+    expect(error).toMatchObject({ reason: "invalid-schedule" });
   });
 });

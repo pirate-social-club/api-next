@@ -102,20 +102,6 @@ function positiveCount(value: unknown): number | null {
   return null;
 }
 
-function failureTag(error: unknown): string {
-  if (typeof error === "object" && error !== null && "_tag" in error) {
-    const tag = error._tag;
-    if (
-      tag === "ControlPlaneAcquireFailed" ||
-      tag === "ControlPlaneOperationTimedOut" ||
-      tag === "ControlPlaneStatementFailed" ||
-      tag === "ControlPlaneTransactionOutcomeUnknown"
-    )
-      return tag;
-  }
-  return "unexpected";
-}
-
 export interface CommunityRoutingIntegrityJobOptions {
   readonly now?: () => number;
   readonly timeout?: Duration.Input;
@@ -156,20 +142,7 @@ export function makeCommunityRoutingIntegrityJob(
         entity: `routing:${violation}`,
       });
     }
-  }).pipe(
-    Effect.catch((error) =>
-      Effect.gen(function* () {
-        const collector = yield* AlertCollector;
-        yield* collector.emit({
-          key: "community-routing:audit-failure",
-          severity: "high",
-          body: "Community routing integrity audit could not complete.",
-          entity: `failure:${failureTag(error)}`,
-        });
-        return yield* Effect.fail(error);
-      }),
-    ),
-  );
+  });
 
   return {
     name: COMMUNITY_ROUTING_INTEGRITY_JOB,
