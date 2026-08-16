@@ -7,3 +7,4 @@
  */
 export const testing = "api-next/testing: lane B (001 §4)" as const;
 export * from "./community-schema.ts";
+export * from "./session-bridge.ts";
