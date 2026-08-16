@@ -260,6 +260,7 @@ export type ContentRepositoryOperation =
   | "clear-vote";
 
 export type M2RepositoryReason =
+  | "not-found"
   | "membership-required"
   | "comments-locked"
   | "idempotency-conflict"
