@@ -1,0 +1,10 @@
+-- Operational example only. Apply through the provider's role-management
+-- workflow, never as an application migration and never with a checked-in
+-- password.
+
+CREATE ROLE api_next_app LOGIN;
+REVOKE ALL ON SCHEMA public FROM api_next_app;
+GRANT USAGE ON SCHEMA public TO api_next_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO api_next_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO api_next_app;

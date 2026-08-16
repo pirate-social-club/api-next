@@ -71,6 +71,8 @@ jobs:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
           CONTROL_PLANE_POSTGRES_TEST_REQUIRED: "1"
           CONTROL_PLANE_POSTGRES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-suite-complete
-        run: timeout 120s bun test packages/platform-cf/src/postgres.pg.test.ts
+        run: >-
+          timeout 120s bun test packages/platform-cf/src/postgres.pg.test.ts
+          packages/platform-cf/src/postgres-foundation.pg.test.ts
       - name: Verify Postgres 17 completion sentinel
         run: test "$(cat /tmp/api-next-control-plane-postgres-suite-complete)" = "api-next-control-plane-postgres-suite-complete"

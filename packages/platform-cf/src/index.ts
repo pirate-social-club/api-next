@@ -60,6 +60,13 @@ export {
   type PostgresStreamLike,
 } from "./postgres";
 export {
+  applyPostgresMigrations,
+  type MigrationApplyResult,
+  MigrationDefinitionInvalid,
+  MigrationLedgerMismatch,
+  type PostgresMigration,
+} from "./postgres-migrations";
+export {
   QUEUE_RETRY_BASE_SECONDS,
   QUEUE_RETRY_CAP_SECONDS,
   queueRetryBackoffSeconds,

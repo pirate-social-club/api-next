@@ -11,7 +11,7 @@ import {
   handleScheduled,
   type JobDefinition,
   type JobsWorkerEnv,
-  makeCommunityRoutingIntegrityJob,
+  makeCommunityCatalogIntegrityJob,
   runScheduled,
 } from "../../apps/jobs-worker/src/index";
 
@@ -97,8 +97,8 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     const emails: AlertDigest[] = [];
     const webhooks: Array<readonly Alert[]> = [];
     const rows = [
-      { violation: "stuck_provisioning", violation_count: 2 },
-      { violation: "ready_missing_binding", violation_count: 1 },
+      { violation: "blank_display_name", violation_count: 2 },
+      { violation: "updated_before_created", violation_count: 1 },
     ];
     const db = {
       execute: (statement: { readonly readonly: boolean; readonly text: string }) => {
@@ -114,8 +114,7 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       email: (digest: AlertDigest) => Effect.sync(() => emails.push(digest)),
       webhook: (alerts: readonly Alert[]) => Effect.sync(() => void webhooks.push([...alerts])),
     };
-    const job = makeCommunityRoutingIntegrityJob(sink, {
-      now: () => 1_000_000,
+    const job = makeCommunityCatalogIntegrityJob(sink, {
       timeout: 5_000,
     });
 
@@ -130,8 +129,9 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     expect(result.leaseRenewals).toBeGreaterThan(0);
     expect(result.leaseAfterRun).toBeNull();
     expect(statements[0]?.readonly).toBe(true);
-    expect(statements[0]?.text).toContain("community_database_routing");
-    expect(statements[0]?.text).toContain("backend = 'd1'");
+    expect(statements[0]?.text).toContain("FROM communities");
+    expect(statements[0]?.text).not.toContain("community_database_routing");
+    expect(statements[0]?.text).not.toContain("backend = 'd1'");
     expect(emails).toHaveLength(1);
     expect(webhooks).toHaveLength(1);
     expect(webhooks[0]?.every((alert) => alert.severity === "high")).toBe(true);

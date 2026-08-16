@@ -1,0 +1,6 @@
+{
+  "algorithm": "sha256",
+  "migrations": {
+    "0001_v1_product_slice.sql": "6592c575801a7964dc5f051a611ec823a44db966759622d82a12ef964df71e93"
+  }
+}
