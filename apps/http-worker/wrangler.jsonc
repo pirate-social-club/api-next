@@ -62,7 +62,7 @@
       ],
       "vars": {
         "API_NEXT_ENV": "production",
-        "CORS_ORIGIN": "https://pirate.sc",
+        "CORS_ORIGIN": "https://pirate.app,https://pirate.sc",
         "PRIVY_API_URL": "https://auth.privy.io"
       },
       "secrets": {

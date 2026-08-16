@@ -315,4 +315,47 @@ describe("contracts-generated HTTP worker", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("x-request-id")).toBeTruthy();
   });
+
+  it("allows each trimmed origin in a comma-separated CORS configuration", async () => {
+    const worker = protectedWorker(
+      "CastPostVote",
+      () => vote,
+      "https://pirate.app, https://pirate.sc",
+    );
+
+    for (const origin of ["https://pirate.app", "https://pirate.sc"]) {
+      const response = await worker.request("http://worker.test/posts/post_1/vote", {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test",
+          "content-type": "application/json",
+          origin,
+        },
+        body: JSON.stringify({ value: 1 }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(response.headers.get("vary")).toContain("Origin");
+    }
+  });
+
+  it("does not allow an origin absent from the CORS configuration", async () => {
+    const response = await protectedWorker(
+      "CastPostVote",
+      () => vote,
+      "https://pirate.app, https://pirate.sc",
+    ).request("http://worker.test/posts/post_1/vote", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test",
+        "content-type": "application/json",
+        origin: "https://staging.pirate.sc",
+      },
+      body: JSON.stringify({ value: 1 }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+  });
 });

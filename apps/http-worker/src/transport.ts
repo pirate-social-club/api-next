@@ -62,7 +62,7 @@ export interface AuthorizationArgs {
 }
 
 export interface HttpWorkerConfig {
-  /** Exact allowed origin, or `*`, supplied by Worker configuration. */
+  /** Comma-separated exact allowed origins, or `*`, supplied by Worker configuration. */
   readonly corsOrigin: string;
 }
 
@@ -248,7 +248,11 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       origin: (origin, context) => {
         const configured = corsOrigin(context, options.config);
         if (configured === "*") return "*";
-        return configured !== undefined && configured === origin ? configured : undefined;
+        const allowedOrigins = configured
+          ?.split(",")
+          .map((value) => value.trim())
+          .filter((value) => value !== "");
+        return allowedOrigins?.includes(origin) === true ? origin : undefined;
       },
       allowHeaders: ["Authorization", "Content-Type", "X-Request-Id"],
       exposeHeaders: ["X-Request-Id"],
