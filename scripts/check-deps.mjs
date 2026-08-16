@@ -26,7 +26,9 @@ const INTERNAL = {
 
 const ALLOWED = {
   "@pirate/contracts": [],
-  "@pirate/api-client": ["@pirate/contracts"],
+  // The published client is deliberately standalone. Its generated source
+  // embeds all public types and runtime validation metadata.
+  "@pirate/api-client": [],
   "@pirate/domain": [],
   "@pirate/application": ["@pirate/contracts", "@pirate/domain"],
   "@pirate/platform-cf": ["@pirate/application", "@pirate/contracts", "@pirate/domain"],

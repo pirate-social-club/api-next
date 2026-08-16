@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 1,
+  "package": "@pirate/api-client",
+  "version": "0.1.0",
+  "sourceIdentifier": "api-next-contracts@5184c70f4cbf24f69daa3e057e924a615f26e473c978db02ad962fc28e203b13",
+  "openapiSha256": "5184c70f4cbf24f69daa3e057e924a615f26e473c978db02ad962fc28e203b13",
+  "clientSha256": "ab0612b83375efd8d8fc23cd9b7a11223a1a0051e1d83cc9a7bdfde079c3439b"
+}

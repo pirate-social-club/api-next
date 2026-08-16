@@ -184,6 +184,7 @@ export interface ClientErrorDefinition {
   readonly status: number;
   readonly code: string;
   readonly name: string;
+  readonly retryable: boolean;
 }
 
 function clientErrorDefinitions(
@@ -191,15 +192,156 @@ function clientErrorDefinitions(
 ): readonly ClientErrorDefinition[] {
   return (errors ?? []).map((Ctor) => {
     const instance = new Ctor({} as never) as ApiError;
-    return { status: instance.status, code: instance.code, name: Ctor.name };
+    return {
+      status: instance.status,
+      code: instance.code,
+      name: Ctor.name,
+      retryable: instance.retryable,
+    };
   });
 }
 
-/** Generate a typed, runtime-validating client without a runtime Effect import. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const typeLiteral = (value: unknown): string => {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (value === null) return "null";
+  return "unknown";
+};
+
+/**
+ * Convert the JSON Schema emitted by Effect to a declaration suitable for the
+ * standalone client. This intentionally consumes the same frozen schema
+ * document used by OpenAPI and response validation; it is not a second,
+ * hand-maintained model of an endpoint.
+ */
+function jsonSchemaToType(
+  value: JsonSchema,
+  root: JsonSchema = value,
+  depth = 0,
+  resolving: ReadonlySet<string> = new Set(),
+): string {
+  if (depth > 32) return "unknown";
+
+  if (typeof value.$ref === "string") {
+    const name = value.$ref.startsWith("#/$defs/") ? value.$ref.slice("#/$defs/".length) : "";
+    const definitions = isRecord(root.$defs) ? root.$defs : undefined;
+    const target = name === "" || definitions === undefined ? undefined : definitions[name];
+    if (!isRecord(target) || resolving.has(name)) return "unknown";
+    return jsonSchemaToType(target, root, depth + 1, new Set([...resolving, name]));
+  }
+  if (value.const !== undefined) return typeLiteral(value.const);
+  if (Array.isArray(value.enum)) return value.enum.map(typeLiteral).join(" | ") || "never";
+
+  const union = Array.isArray(value.anyOf)
+    ? value.anyOf.filter(isRecord).map((part) => jsonSchemaToType(part, root, depth + 1, resolving))
+    : Array.isArray(value.oneOf)
+      ? value.oneOf
+          .filter(isRecord)
+          .map((part) => jsonSchemaToType(part, root, depth + 1, resolving))
+      : undefined;
+  if (union !== undefined) {
+    const unique = [...new Set(union)];
+    return unique.length === 0 ? "unknown" : unique.join(" | ");
+  }
+  if (Array.isArray(value.allOf)) {
+    const intersection = value.allOf
+      .filter(isRecord)
+      .map((part) => jsonSchemaToType(part, root, depth + 1, resolving));
+    return intersection.length === 0 ? "unknown" : intersection.join(" & ");
+  }
+
+  const type = value.type;
+  if (Array.isArray(type)) {
+    return type
+      .map((member) => jsonSchemaToType({ type: member }, root, depth + 1, resolving))
+      .join(" | ");
+  }
+  if (type === "null") return "null";
+  if (type === "boolean") return "boolean";
+  if (type === "integer" || type === "number") return "number";
+  if (type === "string") return "string";
+  if (type === "array") {
+    return `ReadonlyArray<${isRecord(value.items) ? jsonSchemaToType(value.items, root, depth + 1, resolving) : "unknown"}>`;
+  }
+  if (type === "object" || isRecord(value.properties)) {
+    const properties = isRecord(value.properties) ? value.properties : {};
+    const required = new Set(
+      Array.isArray(value.required)
+        ? value.required.filter((entry): entry is string => typeof entry === "string")
+        : [],
+    );
+    const fields = Object.entries(properties).map(([name, property]) => {
+      const key = /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : JSON.stringify(name);
+      const optional = required.has(name) ? "" : "?";
+      const type = isRecord(property)
+        ? jsonSchemaToType(property, root, depth + 1, resolving)
+        : "unknown";
+      return `readonly ${key}${optional}: ${type}`;
+    });
+    const additional = value.additionalProperties;
+    if (additional === true || isRecord(additional)) {
+      const additionalType = isRecord(additional)
+        ? jsonSchemaToType(additional, root, depth + 1, resolving)
+        : "unknown";
+      fields.push(`readonly [key: string]: ${additionalType}`);
+    }
+    return fields.length === 0 ? "Readonly<Record<string, unknown>>" : `{ ${fields.join("; ")} }`;
+  }
+  return "unknown";
+}
+
+const pascalCase = (value: string): string =>
+  value
+    .split(/[^A-Za-z0-9]+/)
+    .filter((part) => part.length > 0)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join("") || "Operation";
+
+function clientInputType(endpoint: EndpointDefinition): string {
+  const request = requestSchemas(endpoint);
+  if (request === undefined) return "undefined";
+  const fields: string[] = [];
+  if (request.body !== undefined) {
+    const schema = schemaToOpenApi(request.body);
+    fields.push(
+      `readonly body${request.bodyRequired === false ? "?" : ""}: ${jsonSchemaToType(schema)}`,
+    );
+  }
+  if (request.path !== undefined) {
+    fields.push(`readonly path: ${jsonSchemaToType(schemaToOpenApi(request.path))}`);
+  }
+  if (request.query !== undefined) {
+    fields.push(`readonly query?: ${jsonSchemaToType(schemaToOpenApi(request.query))}`);
+  }
+  return fields.length === 0 ? "undefined" : `{ ${fields.join("; ")} }`;
+}
+
+function clientErrorType(
+  operationTypeName: string,
+  errors: readonly ClientErrorDefinition[],
+): string {
+  if (errors.length === 0) return "never";
+  const members = errors.map(
+    (error) =>
+      `(ApiClientError & { readonly status: ${error.status}; readonly code: ${JSON.stringify(error.code)}; readonly declaredName: ${JSON.stringify(error.name)}; readonly retryable: boolean | undefined })`,
+  );
+  return members.join(" | ").replace(/^/, `/* ${operationTypeName} declared errors */ `);
+}
+
+/** Generate a typed, runtime-validating client without package/runtime imports. */
 export function generateClient(registry: Record<string, EndpointDefinition>): string {
   const methods = Object.entries(registry).map(([key, endpoint], index) => ({
     ref: key,
     operationId: operationId(endpoint, index),
+    operationTypeName: pascalCase(operationId(endpoint, index)),
+    registryTypeName: pascalCase(key),
+    inputType: clientInputType(endpoint),
+    responseType: jsonSchemaToType(schemaToOpenApi(endpoint.response)),
     method: endpoint.method,
     path: endpoint.path,
     responseSchema: schemaToOpenApi(endpoint.response),
@@ -211,11 +353,10 @@ export function generateClient(registry: Record<string, EndpointDefinition>): st
           : [endpoint.successStatus],
     errors: clientErrorDefinitions(endpoint.errors),
   }));
-  const imports = methods.map(({ ref }) => `  ${ref},`).join("\n");
   const signatures = methods
     .map(
-      ({ operationId, ref }) =>
-        `  ${operationId}: (input: ClientInput<typeof ${ref}>, options?: PirateApiRequestOptions) => Promise<ClientOutput<typeof ${ref}>>;`,
+      ({ operationId, operationTypeName }) =>
+        `  ${operationId}: (input: ${operationTypeName}Input, options?: PirateApiRequestOptions) => Promise<${operationTypeName}Response>;`,
     )
     .join("\n");
   const bodies = methods
@@ -241,24 +382,27 @@ export function generateClient(registry: Record<string, EndpointDefinition>): st
       ({ operationId, errors }) => `  ${JSON.stringify(operationId)}: ${JSON.stringify(errors)},`,
     )
     .join("\n");
+  const operationTypes = methods
+    .map(({ operationTypeName, inputType, responseType, errors }) => {
+      const errorType = clientErrorType(operationTypeName, errors);
+      return `export type ${operationTypeName}Input = ${inputType};
+export type ${operationTypeName}Response = ${responseType};
+export type ${operationTypeName}Error = ${errorType};`;
+    })
+    .join("\n\n");
+  const registryAliases = methods
+    .filter(({ registryTypeName, operationTypeName }) => registryTypeName !== operationTypeName)
+    .map(
+      ({ registryTypeName, operationTypeName }) =>
+        `export type ${registryTypeName}Input = ${operationTypeName}Input;
+export type ${registryTypeName}Response = ${operationTypeName}Response;
+export type ${registryTypeName}Error = ${operationTypeName}Error;`,
+    )
+    .join("\n\n");
   return `// GENERATED FILE. DO NOT EDIT. Regenerate with bun run generate:contracts.
-import type { Schema } from "effect";
-import type { EndpointRequest } from "@pirate/contracts";
-import type {
-${imports}
-} from "@pirate/contracts";
+${operationTypes}
 
-type Part<Name extends string, S, Optional extends boolean = false> = S extends Schema.Schema<infer I>
-  ? Optional extends true ? { [K in Name]?: I } : { [K in Name]: I }
-  : {};
-type ClientInput<E> = E extends { readonly request: infer R }
-  ? R extends EndpointRequest
-    ? Part<"body", R["body"], R["bodyRequired"] extends false ? true : false>
-      & Part<"path", R["path"]>
-      & Part<"query", R["query"], true>
-    : R extends Schema.Schema<infer I> ? { body: I } : undefined
-  : undefined;
-type ClientOutput<E> = E extends { readonly response: Schema.Schema<infer A> } ? A : never;
+${registryAliases}
 
 export interface PirateApiRequestOptions {
   readonly headers?: Headers | readonly [string, string][] | Readonly<Record<string, string>>;
@@ -268,13 +412,19 @@ export interface PirateApiClientOptions extends PirateApiRequestOptions {
   readonly fetchImpl?: typeof fetch;
 }
 type JsonSchema = Record<string, unknown>;
-type WireErrorBody = {
+export interface ApiClientErrorBody {
   readonly code: string;
   readonly message: string;
   readonly retryable?: boolean;
   readonly details?: Record<string, unknown> | null;
   readonly request_id?: string;
-};
+}
+export interface ApiClientErrorDefinition {
+  readonly status: number;
+  readonly code: string;
+  readonly name: string;
+  readonly retryable: boolean;
+}
 
 export class ApiClientProtocolError extends Error {
   readonly _tag = "ApiClientProtocolError" as const;
@@ -306,7 +456,7 @@ export class ApiClientError extends Error {
   readonly retryable: boolean | undefined;
   readonly details: Record<string, unknown> | null | undefined;
   readonly requestId: string | undefined;
-  constructor(definition: { status: number; code: string; name: string }, body: WireErrorBody) {
+  constructor(definition: ApiClientErrorDefinition, body: ApiClientErrorBody) {
     super(body.message);
     this.name = definition.name;
     this.status = definition.status;
@@ -321,11 +471,17 @@ export class ApiClientUnexpectedError extends Error {
   readonly _tag = "ApiClientUnexpectedError" as const;
   readonly status: number;
   readonly code: string;
-  constructor(status: number, body: WireErrorBody) {
+  readonly retryable: boolean | undefined;
+  readonly details: Record<string, unknown> | null | undefined;
+  readonly requestId: string | undefined;
+  constructor(status: number, body: ApiClientErrorBody) {
     super("Unexpected declared API error: " + body.code);
     this.name = "ApiClientUnexpectedError";
     this.status = status;
     this.code = body.code;
+    this.retryable = body.retryable;
+    this.details = body.details;
+    this.requestId = body.request_id;
   }
 }
 
@@ -335,7 +491,7 @@ ${responseSchemas}
 const SUCCESS_STATUSES: Record<string, readonly number[]> = {
 ${successStatuses}
 };
-const ERROR_DEFINITIONS: Record<string, readonly { status: number; code: string; name: string }[]> = {
+const ERROR_DEFINITIONS: Record<string, readonly ApiClientErrorDefinition[]> = {
 ${errorDefinitions}
 };
 const WIRE_ERROR_SCHEMA: JsonSchema = {
@@ -402,11 +558,11 @@ function schemaError(value: unknown, schema: JsonSchema, path: string, root: Jso
   if (typeof schema.pattern === "string" && typeof value === "string" && !new RegExp(schema.pattern).test(value)) return "string pattern mismatch";
   return undefined;
 }
-function parseWireError(value: unknown, status: number): WireErrorBody {
+function parseWireError(value: unknown, status: number): ApiClientErrorBody {
   if (schemaError(value, WIRE_ERROR_SCHEMA, "$", WIRE_ERROR_SCHEMA) !== undefined || !record(value) || typeof value.code !== "string" || typeof value.message !== "string") {
     throw new ApiClientProtocolError("API error response was not a valid wire envelope", status);
   }
-  return value as WireErrorBody;
+  return value as unknown as ApiClientErrorBody;
 }
 
 export interface PirateApiClient {

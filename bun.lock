@@ -33,11 +33,7 @@
     },
     "packages/api-client": {
       "name": "@pirate/api-client",
-      "version": "0.0.0",
-      "dependencies": {
-        "@pirate/contracts": "workspace:*",
-        "effect": "4.0.0-rc.109",
-      },
+      "version": "0.1.0",
     },
     "packages/application": {
       "name": "@pirate/application",

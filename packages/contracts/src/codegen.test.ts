@@ -29,7 +29,8 @@ describe("codegen pipeline", () => {
       expect(table.some((b) => b.method === endpoint.method && b.path === endpoint.path)).toBe(
         true,
       );
-      expect(client).toContain(`from "@pirate/contracts"`);
+      expect(client).not.toContain(`from "@pirate/contracts"`);
+      expect(client).not.toContain(`from "effect"`);
     }
   });
 
@@ -59,9 +60,14 @@ describe("codegen pipeline", () => {
 
   test("generated client is type-checkable source with typed methods", () => {
     const client = generateClient(registry);
-    expect(client).toContain("ClientInput<typeof Health>");
-    expect(client).toContain("ClientOutput<typeof Health>");
-    expect(client).toContain("import type {");
+    expect(client).toContain("export type GetHealthInput");
+    expect(client).toContain("export type GetHealthResponse");
+    expect(client).toContain("export type HealthResponse = GetHealthResponse");
+    expect(client).toContain("export type GetPostsPostIdError");
+    expect(client).not.toContain("ClientInput");
+    expect(client).not.toContain("ClientOutput");
+    expect(client).not.toContain("@pirate/contracts");
+    expect(client).not.toContain('"effect"');
     expect(client).toContain("ApiClientResponseValidationError");
     expect(client).toContain("AbortSignal");
     expect(client).toContain("ERROR_DEFINITIONS");

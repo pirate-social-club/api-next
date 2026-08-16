@@ -1,14 +1,18 @@
 import { readFile } from "node:fs/promises";
 import { generateClient, generateOpenApi, registry } from "@pirate/contracts";
+import { serializeApiClientProvenance } from "./api-client-provenance.ts";
 
 const serverGenerated = new URL("../apps/http-worker/src/generated/", import.meta.url);
 const clientGenerated = new URL("../packages/api-client/src/generated/", import.meta.url);
+const openapiText = `${JSON.stringify(generateOpenApi(registry), null, 2)}\n`;
+const clientText = generateClient(registry);
 const expected = [
+  [new URL("openapi.json", serverGenerated), openapiText],
+  [new URL("client.ts", clientGenerated), clientText],
   [
-    new URL("openapi.json", serverGenerated),
-    `${JSON.stringify(generateOpenApi(registry), null, 2)}\n`,
+    new URL("provenance.json", clientGenerated),
+    serializeApiClientProvenance(openapiText, clientText),
   ],
-  [new URL("client.ts", clientGenerated), generateClient(registry)],
   [
     new URL("route-table.ts", serverGenerated),
     `// GENERATED FILE. DO NOT EDIT. Regenerate with bun run generate:contracts.

@@ -8,13 +8,14 @@
     "apps/*"
   ],
   "scripts": {
-    "check": "bun run check:effect && bun run check:effect-diagnostics && biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.workers.json && bun run lint:deps && bun run lint:http-boundary",
+    "check": "bun run check:effect && bun run check:effect-diagnostics && biome check . && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.workers.json && bun run lint:deps && bun run lint:http-boundary && bun run check:fresh && bun run verify:api-client",
     "check:effect": "node scripts/check-effect-version.mjs",
     "check:effect-diagnostics": "bun scripts/ensure-tsgo-executable.mjs && bunx effect-tsgo diagnostics --project tsconfig.json --format text --strict --severity error && bunx effect-tsgo diagnostics --project tsconfig.workers.json --format text --strict --severity error",
     "lint:deps": "node scripts/check-deps.mjs",
     "lint:http-boundary": "bun scripts/check-http-worker-import-boundary.mjs",
     "generate:contracts": "bun scripts/generate-contracts.ts",
     "check:fresh": "bun scripts/check-contract-fresh.ts",
+    "verify:api-client": "bun scripts/verify-api-client-package.ts",
     "knip": "knip",
     "test": "bun test packages apps scripts && bun run test:workerd",
     "test:unit": "bun test packages apps scripts",
