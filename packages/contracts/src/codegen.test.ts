@@ -61,6 +61,12 @@ describe("codegen pipeline", () => {
     const client = generateClient(registry);
     expect(client).toContain("ClientInput<typeof Health>");
     expect(client).toContain("ClientOutput<typeof Health>");
+    expect(client).toContain("import type {");
+    expect(client).toContain("ApiClientResponseValidationError");
+    expect(client).toContain("AbortSignal");
+    expect(client).toContain("ERROR_DEFINITIONS");
+    expect(client).not.toContain("throw await response.json()");
+    expect(client).not.toContain("import {\n");
     expect(client).not.toContain("Promise<unknown>");
   });
 });
