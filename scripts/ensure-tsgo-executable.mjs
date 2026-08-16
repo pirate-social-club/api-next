@@ -3,9 +3,7 @@
 // bun store already carries the bit). Restore it before diagnostics run.
 import { chmodSync, globSync, statSync } from "node:fs";
 
-const candidates = globSync(
-  "node_modules/.bun/@effect+tsgo-*/node_modules/@effect/tsgo-*/lib/tsc",
-);
+const candidates = globSync("node_modules/.bun/@effect+tsgo-*/node_modules/@effect/tsgo-*/lib/tsc");
 for (const path of candidates) {
   const mode = statSync(path).mode;
   if ((mode & 0o111) === 0) chmodSync(path, mode | 0o755);
