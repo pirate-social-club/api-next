@@ -20,7 +20,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 4;
+const foundationTestCount = 5;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -32,6 +32,9 @@ const baselineSql = await Bun.file(
 const migrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0001_v1_product_slice.sql", import.meta.url),
 ).text();
+const identityMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0002_identity.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -41,7 +44,12 @@ const migration: PostgresMigration = {
   checksum: checksumManifest.migrations["0001_v1_product_slice.sql"] ?? "",
   sql: migrationSql,
 };
-const migrations: readonly PostgresMigration[] = [migration];
+const identityMigration: PostgresMigration = {
+  version: "0002_identity.sql",
+  checksum: checksumManifest.migrations["0002_identity.sql"] ?? "",
+  sql: identityMigrationSql,
+};
+const migrations: readonly PostgresMigration[] = [migration, identityMigration];
 
 function checksum(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -166,6 +174,7 @@ suite("Postgres 17 v1 foundation", () => {
   test("applies all migrations and matches the cumulative schema source", async () => {
     await withSchema(async (admin, scopedConnectionString, schema) => {
       expect(checksum(migrationSql)).toBe(migration.checksum);
+      expect(checksum(identityMigrationSql)).toBe(identityMigration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -190,12 +199,18 @@ suite("Postgres 17 v1 foundation", () => {
         "communities",
         "community_feed_projection",
         "community_memberships",
+        "global_handles",
         "home_feed_projection",
+        "linked_handles",
         "moderation_actions",
         "moderation_reports",
         "post_votes",
         "posts",
+        "profiles",
         "schema_migrations",
+        "user_account_aliases",
+        "users",
+        "wallet_attachments",
       ]);
 
       const columns = await admin.query<{
@@ -253,21 +268,106 @@ suite("Postgres 17 v1 foundation", () => {
       expect(mismatch).toBeInstanceOf(MigrationLedgerMismatch);
       expect(mismatch).toMatchObject({ version: migration.version });
 
-      const secondMigration = { ...migration, version: "0002_v1_follow-up.sql" };
+      const followUpMigration = { ...migration, version: "0002_v1_follow-up.sql" };
       await withSchema(async (_admin, secondScopedConnectionString) => {
-        await applyMigrations(secondScopedConnectionString, [secondMigration]);
+        await applyMigrations(secondScopedConnectionString, [followUpMigration]);
         const gap = await applyMigrations(secondScopedConnectionString, [
           migration,
-          secondMigration,
+          followUpMigration,
         ]).catch((error) => error);
         expect(gap).toBeInstanceOf(MigrationLedgerMismatch);
         expect(gap).toMatchObject({
           reason: "not-prefix",
           version: migration.version,
           expectedVersion: migration.version,
-          actualVersion: secondMigration.version,
+          actualVersion: followUpMigration.version,
         });
       });
+    });
+    completedTestCount += 1;
+  });
+
+  test("supports the session bridge identity read shape", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      await applyMigrations(scopedConnectionString, migrations);
+      const now = new Date();
+      await admin.query({
+        text: "INSERT INTO users (user_id, primary_wallet_attachment_id, verification_state, verification_capabilities_json, created_at, updated_at) VALUES ($1, $2, 'verified', $3, $4, $4), ($5, NULL, 'unverified', '{}'::jsonb, $4, $4)",
+        values: [
+          "user-canonical",
+          "wallet-canonical",
+          JSON.stringify({ unique_human: { state: "verified" } }),
+          now,
+          "user-source",
+        ],
+      });
+      await admin.query({
+        text: "INSERT INTO wallet_attachments (wallet_attachment_id, user_id, chain_namespace, wallet_address_normalized, wallet_address_display, is_primary, status, attached_at, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, 1, 'active', $6, $6, $6)",
+        values: ["wallet-canonical", "user-canonical", "eip155", "0xabc", "0xAbC", now],
+      });
+      await admin.query({
+        text: "INSERT INTO global_handles (global_handle_id, user_id, label_normalized, label_display, issued_at, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $5, $5)",
+        values: ["handle-canonical", "user-canonical", "captain", "captain", now],
+      });
+      await admin.query({
+        text: "INSERT INTO linked_handles (linked_handle_id, user_id, wallet_attachment_id, kind, label_normalized, label_display, verification_state, metadata_json, created_at, updated_at) VALUES ($1, $2, $3, 'ens', $4, $5, 'verified', $6, $7, $7)",
+        values: [
+          "linked-canonical",
+          "user-canonical",
+          "wallet-canonical",
+          "captain.eth",
+          "captain.eth",
+          "{}",
+          now,
+        ],
+      });
+      await admin.query({
+        text: "INSERT INTO profiles (user_id, display_name, global_handle_id, primary_linked_handle_id, xmtp_inbox_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $6)",
+        values: [
+          "user-canonical",
+          "Captain",
+          "handle-canonical",
+          "linked-canonical",
+          "inbox-canonical",
+          now,
+        ],
+      });
+      await admin.query({
+        text: "INSERT INTO user_account_aliases (source_user_id, canonical_user_id, status, activated_at, created_at, updated_at) VALUES ($1, $2, 'active', $3, $3, $3)",
+        values: ["user-source", "user-canonical", now],
+      });
+
+      const user = await admin.query(
+        "SELECT user_id, primary_wallet_attachment_id, verification_state, capability_provider, verification_capabilities_json, verified_at, created_at FROM users WHERE user_id = $1 LIMIT 1",
+        ["user-canonical"],
+      );
+      const alias = await admin.query(
+        "SELECT canonical_user_id FROM user_account_aliases WHERE source_user_id = $1 AND status = 'active' LIMIT 1",
+        ["user-source"],
+      );
+      const profile = await admin.query(
+        "SELECT user_id, display_name, bio, bio_source, avatar_ref, avatar_source, cover_ref, cover_source, preferred_locale, xmtp_inbox_id, created_at FROM profiles WHERE user_id = $1 LIMIT 1",
+        ["user-canonical"],
+      );
+      const handle = await admin.query(
+        "SELECT global_handle_id, label_display, tier, status, issuance_source, redirect_target_global_handle_id, price_paid_usd, free_rename_consumed, issued_at, replaced_at FROM global_handles WHERE user_id = $1 AND status = 'active' ORDER BY issued_at DESC LIMIT 1",
+        ["user-canonical"],
+      );
+      const wallets = await admin.query(
+        "SELECT wallet_attachment_id, chain_namespace, wallet_address_display, is_primary FROM wallet_attachments WHERE user_id = $1 AND status = 'active' ORDER BY is_primary DESC, attached_at ASC",
+        ["user-canonical"],
+      );
+      const linkedHandles = await admin.query(
+        "SELECT linked_handle_id, label_display, kind, verification_state, metadata_json FROM linked_handles WHERE user_id = $1 ORDER BY label_display ASC",
+        ["user-canonical"],
+      );
+
+      expect(user.rows[0]?.user_id).toBe("user-canonical");
+      expect(alias.rows).toEqual([{ canonical_user_id: "user-canonical" }]);
+      expect(profile.rows[0]?.xmtp_inbox_id).toBe("inbox-canonical");
+      expect(handle.rows[0]?.global_handle_id).toBe("handle-canonical");
+      expect(wallets.rows[0]?.wallet_address_display).toBe("0xAbC");
+      expect(linkedHandles.rows[0]?.linked_handle_id).toBe("linked-canonical");
     });
     completedTestCount += 1;
   });

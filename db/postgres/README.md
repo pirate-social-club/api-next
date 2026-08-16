@@ -19,3 +19,8 @@ Workers connect with the least-privilege application role described in
 application credential. Application-scoped repository predicates are the
 primary tenant boundary. RLS is intentionally deferred as optional
 defense-in-depth until pooling and policy metrics justify it.
+
+The scheduled-job lease and alert-delivery ledgers are owned by
+`ScheduledCronLockDO` in Durable Object SQLite (`lease`, `lease_fence`,
+`alert_delivery`, and `alert_suppression`). They are initialized by the
+Durable Object and are intentionally not Postgres migrations.
