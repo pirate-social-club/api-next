@@ -9,6 +9,16 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EXPECTED_VERSION = "4.0.0-rc.109";
+const EXPECTED_TOOLING_VERSIONS = new Map([
+  ["@effect/tsgo", "0.21.0"],
+  ["@effect/tsgo-darwin-arm64", "0.21.0"],
+  ["@effect/tsgo-darwin-x64", "0.21.0"],
+  ["@effect/tsgo-linux-arm", "0.21.0"],
+  ["@effect/tsgo-linux-arm64", "0.21.0"],
+  ["@effect/tsgo-linux-x64", "0.21.0"],
+  ["@effect/tsgo-win32-arm64", "0.21.0"],
+  ["@effect/tsgo-win32-x64", "0.21.0"],
+]);
 const root = fileURLToPath(new URL("..", import.meta.url));
 const rootManifestPath = join(root, "package.json");
 const rootManifest = readJson(rootManifestPath);
@@ -27,6 +37,10 @@ function readJson(path) {
 
 function isEffectPackage(name) {
   return name === "effect" || name.startsWith("@effect/");
+}
+
+function expectedVersionFor(name) {
+  return EXPECTED_TOOLING_VERSIONS.get(name) ?? EXPECTED_VERSION;
 }
 
 function addViolation(message) {
@@ -69,9 +83,10 @@ for (const path of packageManifestPaths()) {
     if (!isEffectPackage(name)) continue;
     effectPackages.add(name);
     if (path === rootManifestPath) rootEffectDependencies.add(name);
-    if (range !== EXPECTED_VERSION) {
+    const expected = expectedVersionFor(name);
+    if (range !== expected) {
       addViolation(
-        `${relative(root, path)} ${section}.${name} declares ${range}; expected ${EXPECTED_VERSION}`,
+        `${relative(root, path)} ${section}.${name} declares ${range}; expected ${expected}`,
       );
     }
   }
@@ -89,8 +104,9 @@ for (const match of lockfile.matchAll(lockEntryPattern)) {
   const [, name, version] = resolution;
   lockEntryCount += 1;
   effectPackages.add(name);
-  if (version !== EXPECTED_VERSION) {
-    addViolation(`bun.lock resolves ${name} to ${version}; expected ${EXPECTED_VERSION}`);
+  const expected = expectedVersionFor(name);
+  if (version !== expected) {
+    addViolation(`bun.lock resolves ${name} to ${version}; expected ${expected}`);
   }
 }
 
@@ -152,7 +168,8 @@ scanNodeModules(join(root, "node_modules"), installedPackages);
 
 for (const installed of installedPackages) {
   effectPackages.add(installed.name);
-  if (installed.version !== EXPECTED_VERSION) {
+  const expected = expectedVersionFor(installed.name);
+  if (installed.version !== expected) {
     addViolation(
       relative(root, installed.path) +
         " resolves " +
@@ -160,7 +177,7 @@ for (const installed of installedPackages) {
         " to " +
         installed.version +
         "; expected " +
-        EXPECTED_VERSION,
+        expected,
     );
   }
 }

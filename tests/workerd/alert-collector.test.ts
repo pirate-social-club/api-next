@@ -109,7 +109,7 @@ describe("AlertCollector tick-finalizer aggregation (workerd)", () => {
     const { emails, webhooks, sink } = recordingSink();
     const interrupted = Effect.gen(function* () {
       yield* emit({ key: "job:stuck", severity: "high", body: "halfway" });
-      yield* Effect.forever(Effect.sleep(10));
+      return yield* Effect.forever(Effect.sleep(10));
     });
     const exit: Exit.Exit<unknown, unknown> = await Effect.runPromiseExit(
       Effect.timeout(alertTick(sink, interrupted), 100),

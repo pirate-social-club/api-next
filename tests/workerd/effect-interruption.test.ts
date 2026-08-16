@@ -34,7 +34,7 @@ describe("Effect.timeout real interruption (workerd)", () => {
           probe.finalized = true;
         }),
       );
-      yield* Effect.forever(
+      return yield* Effect.forever(
         Effect.gen(function* () {
           yield* Effect.sleep(10);
           probe.ticks += 1;
@@ -77,7 +77,7 @@ describe("Effect.timeout real interruption (workerd)", () => {
       writes: [],
       run: Effect.gen(function* () {
         started = true;
-        yield* Effect.forever(Effect.sleep(10));
+        return yield* Effect.forever(Effect.sleep(10));
       }),
     };
     const result = await handleScheduled(env, "spike-timeout", job);
