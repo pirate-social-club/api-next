@@ -3,7 +3,7 @@
 import { env as testEnv } from "cloudflare:test";
 import { type Alert, ControlPlaneDb } from "@pirate/application";
 import type { AlertDigest } from "@pirate/platform-cf";
-import { Effect, Layer, Schedule } from "effect";
+import { Cause, Effect, Exit, Layer, Option, Schedule } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -12,6 +12,7 @@ import {
   type JobDefinition,
   type JobsWorkerEnv,
   makeCommunityRoutingIntegrityJob,
+  runScheduled,
 } from "../../apps/jobs-worker/src/index";
 
 const env = testEnv as unknown as JobsWorkerEnv;
@@ -177,12 +178,21 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       ),
     };
 
-    await expect(
-      handleScheduled(leaseEnv, job.lane, job, Date.now(), {
-        leaseTtlMs: 100,
-        renewIntervalMs: 10,
-      }),
-    ).rejects.toThrow("lane lease renewal failed or ownership was lost");
+    const exit = await Effect.runPromise(
+      Effect.exit(
+        runScheduled(leaseEnv, job.lane, job, Date.now(), {
+          leaseTtlMs: 100,
+          renewIntervalMs: 10,
+        }),
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    if (Exit.isFailure(exit)) {
+      const error = Cause.findErrorOption(exit.cause);
+      expect(Option.isSome(error) ? error.value : undefined).toMatchObject({
+        _tag: "LaneLeaseLost",
+      });
+    }
     expect(interrupted).toBe(true);
     expect(released).toBe(false);
   });
