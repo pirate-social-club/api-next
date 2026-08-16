@@ -1,0 +1,16 @@
+{
+  "name": "@pirate/api-client",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src/index.ts",
+    "src/generated/client.ts"
+  ],
+  "dependencies": {
+    "@pirate/contracts": "workspace:*",
+    "effect": "4.0.0-rc.109"
+  }
+}

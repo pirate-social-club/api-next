@@ -31,6 +31,14 @@
       "name": "@pirate/jobs-worker",
       "version": "0.0.0",
     },
+    "packages/api-client": {
+      "name": "@pirate/api-client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pirate/contracts": "workspace:*",
+        "effect": "4.0.0-rc.109",
+      },
+    },
     "packages/application": {
       "name": "@pirate/application",
       "version": "0.0.0",
@@ -322,6 +330,8 @@
     "@oxc-resolver/binding-win32-arm64-msvc": ["@oxc-resolver/binding-win32-arm64-msvc@11.24.2", "", { "os": "win32", "cpu": "arm64" }, "sha512-uokJqro2iBqkFvJdKQLP7d8/BUmFwESQFVmIJUQKj1Xn1a/LysJoe1vmeECLF5b3jsV8CAL5sEMJXX6SdK9Nhg=="],
 
     "@oxc-resolver/binding-win32-x64-msvc": ["@oxc-resolver/binding-win32-x64-msvc@11.24.2", "", { "os": "win32", "cpu": "x64" }, "sha512-UqGPmo56KDfLlfXFAFIrNflHT8tFxWGEivWg3Zeyp4Uy2NlKN1FGPr6/BxcLGG3+kZ6Wp14g5Uj+n71boqZfiw=="],
+
+    "@pirate/api-client": ["@pirate/api-client@workspace:packages/api-client"],
 
     "@pirate/application": ["@pirate/application@workspace:packages/application"],
 

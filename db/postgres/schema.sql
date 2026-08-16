@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS community_memberships (
   banned_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL,
+  request_note TEXT,
   PRIMARY KEY (community_id, membership_id),
   CONSTRAINT community_memberships_user_unique
     UNIQUE (community_id, user_id),
@@ -83,7 +84,12 @@ CREATE TABLE IF NOT EXISTS community_follows (
   CONSTRAINT community_follows_community_fk
     FOREIGN KEY (community_id) REFERENCES communities (community_id),
   CONSTRAINT community_follows_user_unique
-    UNIQUE (community_id, user_id)
+    UNIQUE (community_id, user_id),
+  CONSTRAINT community_follows_status_timestamp_check
+    CHECK (
+      (status = 'active' AND unfollowed_at IS NULL)
+      OR (status = 'inactive' AND unfollowed_at IS NOT NULL)
+    )
 );
 
 CREATE INDEX IF NOT EXISTS community_follows_user_status_idx
@@ -105,6 +111,7 @@ CREATE TABLE IF NOT EXISTS posts (
   updated_at TIMESTAMPTZ NOT NULL,
   idempotency_key TEXT NOT NULL DEFAULT '',
   idempotency_body_hash TEXT,
+  comments_locked BOOLEAN NOT NULL DEFAULT FALSE,
   PRIMARY KEY (community_id, post_id),
   CONSTRAINT posts_community_fk
     FOREIGN KEY (community_id) REFERENCES communities (community_id)
@@ -136,6 +143,7 @@ CREATE TABLE IF NOT EXISTS comments (
   updated_at TIMESTAMPTZ NOT NULL,
   idempotency_key TEXT NOT NULL DEFAULT '',
   idempotency_body_hash TEXT,
+  depth INTEGER NOT NULL DEFAULT 0 CHECK (depth >= 0),
   PRIMARY KEY (community_id, comment_id),
   CONSTRAINT comments_community_fk
     FOREIGN KEY (community_id) REFERENCES communities (community_id),

@@ -38,6 +38,12 @@ const identityMigrationSql = await Bun.file(
 const m2MigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0003_m2_community_content.sql", import.meta.url),
 ).text();
+const commentLockMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0004_post_comment_lock.sql", import.meta.url),
+).text();
+const m2BehaviorMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0005_m2_behavior_invariants.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -57,7 +63,23 @@ const m2Migration: PostgresMigration = {
   checksum: checksumManifest.migrations["0003_m2_community_content.sql"] ?? "",
   sql: m2MigrationSql,
 };
-const migrations: readonly PostgresMigration[] = [migration, identityMigration, m2Migration];
+const commentLockMigration: PostgresMigration = {
+  version: "0004_post_comment_lock.sql",
+  checksum: checksumManifest.migrations["0004_post_comment_lock.sql"] ?? "",
+  sql: commentLockMigrationSql,
+};
+const m2BehaviorMigration: PostgresMigration = {
+  version: "0005_m2_behavior_invariants.sql",
+  checksum: checksumManifest.migrations["0005_m2_behavior_invariants.sql"] ?? "",
+  sql: m2BehaviorMigrationSql,
+};
+const migrations: readonly PostgresMigration[] = [
+  migration,
+  identityMigration,
+  m2Migration,
+  commentLockMigration,
+  m2BehaviorMigration,
+];
 
 function checksum(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -228,8 +250,9 @@ suite("Postgres 17 v1 foundation", () => {
          FROM information_schema.columns
          WHERE table_schema = current_schema()
            AND ((table_name = 'communities' AND column_name IN ('membership_mode', 'human_verification_lane'))
-             OR (table_name = 'posts' AND column_name IN ('author_user_id', 'body', 'post_type', 'visibility', 'idempotency_key', 'idempotency_body_hash'))
-             OR (table_name = 'comments' AND column_name IN ('author_user_id', 'body', 'idempotency_key', 'idempotency_body_hash')))`,
+             OR (table_name = 'community_memberships' AND column_name = 'request_note')
+             OR (table_name = 'posts' AND column_name IN ('author_user_id', 'body', 'post_type', 'visibility', 'idempotency_key', 'idempotency_body_hash', 'comments_locked'))
+             OR (table_name = 'comments' AND column_name IN ('author_user_id', 'body', 'idempotency_key', 'idempotency_body_hash', 'depth')))`,
       );
       expect(columns.rows).toEqual(
         expect.arrayContaining([
@@ -239,10 +262,17 @@ suite("Postgres 17 v1 foundation", () => {
           { table_name: "posts", column_name: "visibility", is_nullable: "NO" },
           { table_name: "posts", column_name: "idempotency_key", is_nullable: "NO" },
           { table_name: "posts", column_name: "idempotency_body_hash", is_nullable: "YES" },
+          { table_name: "posts", column_name: "comments_locked", is_nullable: "NO" },
           { table_name: "comments", column_name: "author_user_id", is_nullable: "YES" },
           { table_name: "comments", column_name: "body", is_nullable: "YES" },
           { table_name: "comments", column_name: "idempotency_key", is_nullable: "NO" },
           { table_name: "comments", column_name: "idempotency_body_hash", is_nullable: "YES" },
+          { table_name: "comments", column_name: "depth", is_nullable: "NO" },
+          {
+            table_name: "community_memberships",
+            column_name: "request_note",
+            is_nullable: "YES",
+          },
           { table_name: "communities", column_name: "membership_mode", is_nullable: "NO" },
           {
             table_name: "communities",
