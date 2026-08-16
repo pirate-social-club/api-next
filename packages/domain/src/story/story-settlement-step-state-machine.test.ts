@@ -3,8 +3,10 @@ import {
   canTransitionStorySettlementStep,
   type Hex,
   isTerminalStorySettlementStepState,
+  STORY_SETTLEMENT_STEP_ALLOWED_TRANSITIONS,
   type StorySettlementStepSnapshot,
   type StorySettlementStepState,
+  storySettlementStepMachine,
   transitionStorySettlementStep,
 } from "./story-settlement-step-state-machine";
 
@@ -57,6 +59,13 @@ describe("Story settlement step state machine", () => {
       "reverted",
       "replaced",
     ]);
+    expect(storySettlementStepMachine.allowedTransitions).toEqual(
+      STORY_SETTLEMENT_STEP_ALLOWED_TRANSITIONS,
+    );
+    expect(storySettlementStepMachine.stateOf(planned)).toBe("planned");
+    expect(() => storySettlementStepMachine.assertInvariants({ ...planned, version: 0 })).toThrow(
+      "step_version_must_be_incrementable_positive_integer",
+    );
   });
 
   test("fences versions and requires durable signed evidence before broadcast states", () => {

@@ -1,0 +1,1 @@
+ALTER TABLE community_handles ADD COLUMN protocol_owner_wallet_attachment_id TEXT;

@@ -6,3 +6,4 @@
  * never imports it (000 §4 dependency matrix).
  */
 export const testing = "api-next/testing: lane B (001 §4)" as const;
+export * from "./community-schema.ts";
