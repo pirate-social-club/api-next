@@ -49,6 +49,7 @@ export {
   type IdentityUser,
   MAX_CANONICAL_ALIAS_HOPS,
   makeControlPlaneIdentityRepository,
+  makeControlPlaneIdentityStore,
 } from "./identity-repository";
 export {
   CONTROL_PLANE_CONNECT_TIMEOUT_MS,

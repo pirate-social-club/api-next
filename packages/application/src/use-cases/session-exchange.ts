@@ -6,6 +6,8 @@ import {
   SessionExchange,
 } from "@pirate/contracts";
 import { Data, Effect, Schema } from "effect";
+import { IdentityResolutionError, type IdentityStore } from "../ports.ts";
+import { loadIdentityAccount } from "./identity-account.ts";
 
 const DEFAULT_SESSION_SCOPE = "pirate_app_session";
 
@@ -71,23 +73,25 @@ export interface SessionExchangeServices {
   readonly tokenMinter: SessionTokenMinter;
 }
 
-/**
- * Lane A's composition placeholder. The integration checkpoint replaces these
- * typed ports with Lane C's bounded proof, identity, and token adapters.
- */
-export function makeNotImplementedSessionExchangeServices(): SessionExchangeServices {
+export function makeSessionIdentityStore(
+  identityStore: IdentityStore["Service"],
+): SessionIdentityStore {
   return {
-    proofVerifier: {
-      verifyPrivy: () => Effect.fail(new SessionProofRejected()),
-      verifyJwt: () => Effect.fail(new SessionProofRejected()),
-    },
-    identityStore: {
-      resolve: () => Effect.fail(new SessionIdentityRejected({ reason: "invalid" })),
-    },
-    tokenMinter: {
-      mint: () =>
-        Effect.fail(new InternalError({ message: "Session exchange is not implemented" })),
-    },
+    resolve: ({ sourceUserId }) =>
+      Effect.gen(function* () {
+        const canonical = yield* identityStore.resolveCanonical({ sourceUserId });
+        const account = yield* loadIdentityAccount(canonical.canonicalUserId, { identityStore });
+        if (account === null) {
+          return yield* new SessionIdentityRejected({ reason: "missing" });
+        }
+        return { canonicalUserId: canonical.canonicalUserId, ...account };
+      }).pipe(
+        Effect.mapError((error) =>
+          error instanceof IdentityResolutionError
+            ? new SessionIdentityRejected({ reason: error.reason })
+            : error,
+        ),
+      ),
   };
 }
 

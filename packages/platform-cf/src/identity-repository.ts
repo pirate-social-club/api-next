@@ -1,5 +1,10 @@
-import { ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
-import { Data, Effect } from "effect";
+import {
+  ControlPlaneDb,
+  type ControlPlaneError,
+  IdentityResolutionError,
+  type IdentityStore,
+} from "@pirate/application";
+import { Data, Effect, type Layer } from "effect";
 
 export const MAX_CANONICAL_ALIAS_HOPS = 8;
 
@@ -129,4 +134,26 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
     });
 
   return { findUser, resolveCanonical };
+}
+
+/** Bind the SQL repository to one request-scoped ControlPlaneDb layer. */
+export function makeControlPlaneIdentityStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): IdentityStore["Service"] {
+  const repository = makeControlPlaneIdentityRepository();
+  const provide = <A, E>(
+    effect: Effect.Effect<A, E, ControlPlaneDb>,
+  ): Effect.Effect<A, E | ControlPlaneError> => Effect.provide(runtime)(effect);
+
+  return {
+    findUser: (userId) => provide(repository.findUser(userId)),
+    resolveCanonical: (input) =>
+      provide(repository.resolveCanonical(input)).pipe(
+        Effect.mapError((error) =>
+          error instanceof IdentityRepositoryError
+            ? new IdentityResolutionError({ reason: error.reason })
+            : error,
+        ),
+      ),
+  };
 }

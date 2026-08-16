@@ -24,30 +24,32 @@ describe("real HTTP worker transport", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe("https://solid.test");
   });
 
-  it("installs the profile route through the generated table", async () => {
-    const response = await SELF.fetch("https://worker.test/profiles/me", {
-      headers: { authorization: "Bearer workerd-test" },
-    });
-
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      id: "workerd-test-user",
-      object: "profile",
-    });
-  });
-
-  it("installs session exchange through the generated table", async () => {
-    const response = await SELF.fetch("https://worker.test/auth/session/exchange", {
+  it("exchanges a seeded identity and uses its minted token for profile", async () => {
+    const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ proof: { type: "jwt_based_auth", jwt: "workerd-proof" } }),
     });
 
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      access_token: "workerd-session-token",
-      user: { id: "workerd-test-user" },
-      profile: { id: "workerd-test-user" },
+    expect(exchange.status).toBe(200);
+    const exchanged = (await exchange.json()) as {
+      readonly access_token: string;
+      readonly user: { readonly id: string };
+      readonly profile: { readonly id: string };
+    };
+    expect(exchanged).toMatchObject({
+      user: { id: "usr_workerd_test" },
+      profile: { id: "usr_workerd_test" },
+    });
+
+    const profile = await SELF.fetch("https://worker.test/profiles/me", {
+      headers: { authorization: `Bearer ${exchanged.access_token}` },
+    });
+    expect(profile.status).toBe(200);
+    expect(await profile.json()).toMatchObject({
+      id: "usr_workerd_test",
+      object: "profile",
+      primary_wallet_address: "0xworkerd",
     });
   });
 
@@ -56,5 +58,18 @@ describe("real HTTP worker transport", () => {
 
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ code: "not_found" });
+  });
+
+  it("serves only the public RS256 verification key", async () => {
+    const response = await SELF.fetch("https://worker.test/.well-known/jwks.json");
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      readonly keys: readonly Record<string, unknown>[];
+    };
+    expect(body.keys).toHaveLength(1);
+    expect(body.keys[0]).toMatchObject({ alg: "RS256", use: "sig", key_ops: ["verify"] });
+    expect(body.keys[0]).not.toHaveProperty("d");
+    expect(body.keys[0]).not.toHaveProperty("p");
+    expect(body.keys[0]).not.toHaveProperty("q");
   });
 });

@@ -1,12 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { ControlPlaneDb } from "@pirate/application";
+import { IdentityResolutionError, type IdentityStore } from "@pirate/application";
 import {
   materializeSessionCorpus,
   PIRATE_SESSION_CONTRACT,
   SESSION_CONFORMANCE_CORPUS,
 } from "@pirate/testing";
 import { Cause, Effect, Exit, Result } from "effect";
-import { type IdentityRepository, IdentityRepositoryError } from "./identity-repository";
 import { makeSessionBridge } from "./session-bridge";
 import { makeRs256SessionTokenVerifier, SessionTokenVerificationError } from "./session-tokens";
 
@@ -70,7 +69,7 @@ describe("RS256 session layers against Lane B conformance", () => {
     for (const vector of corpus.vectors) {
       const bridge = bridges.get(vector.id === "reject-wrong-public-key" ? "wrong" : "valid");
       if (bridge === undefined) throw new Error("session bridge fixture missing");
-      const identityRepository: Pick<IdentityRepository, "resolveCanonical"> = {
+      const identityRepository: Pick<IdentityStore["Service"], "resolveCanonical"> = {
         resolveCanonical: () => {
           if (vector.expectedPrincipal !== undefined) {
             return Effect.succeed({
@@ -81,7 +80,7 @@ describe("RS256 session layers against Lane B conformance", () => {
             });
           }
           return Effect.fail(
-            new IdentityRepositoryError({
+            new IdentityResolutionError({
               reason:
                 vector.expectation.contractFailure === "canonical_alias_invalid"
                   ? "cyclic"
@@ -92,15 +91,13 @@ describe("RS256 session layers against Lane B conformance", () => {
       };
       const verifier = makeRs256SessionTokenVerifier(bridge, identityRepository);
       const result = await Effect.runPromiseExit(
-        verifier
-          .verify({
-            token: vector.token,
-            ...(vector.requiredScope === undefined ? {} : { requiredScope: vector.requiredScope }),
-            ...(vector.requiredClassification === undefined
-              ? {}
-              : { requiredClassification: vector.requiredClassification }),
-          })
-          .pipe(Effect.provideService(ControlPlaneDb, {} as ControlPlaneDb["Service"])),
+        verifier.verify({
+          token: vector.token,
+          ...(vector.requiredScope === undefined ? {} : { requiredScope: vector.requiredScope }),
+          ...(vector.requiredClassification === undefined
+            ? {}
+            : { requiredClassification: vector.requiredClassification }),
+        }),
       );
 
       if (vector.expectation.contract === "accept") {

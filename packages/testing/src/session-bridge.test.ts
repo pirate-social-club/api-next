@@ -25,11 +25,11 @@ async function keyPairPems(
   return {
     privateKeyPem: toPem(
       "PRIVATE KEY",
-      await crypto.subtle.exportKey("pkcs8", keyPair.privateKey as CryptoKey),
+      (await crypto.subtle.exportKey("pkcs8", keyPair.privateKey as CryptoKey)) as ArrayBuffer,
     ),
     publicKeyPem: toPem(
       "PUBLIC KEY",
-      await crypto.subtle.exportKey("spki", keyPair.publicKey as CryptoKey),
+      (await crypto.subtle.exportKey("spki", keyPair.publicKey as CryptoKey)) as ArrayBuffer,
     ),
   };
 }

@@ -15,10 +15,24 @@ const RSA_VERIFY_ALGORITHM = {
 } as const;
 
 type JsonObject = Record<string, unknown>;
-type ValidJwk = JsonWebKey & {
+type ValidJwk = {
+  readonly kty: "RSA";
+  readonly alg: "RS256";
+  readonly use: "sig";
+  readonly key_ops?: readonly string[];
   readonly kid: string;
   readonly n: string;
   readonly e: string;
+};
+
+type RsaJwkImporter = {
+  readonly importKey: (
+    format: "jwk",
+    keyData: ValidJwk,
+    algorithm: typeof RSA_VERIFY_ALGORITHM,
+    extractable: false,
+    usages: readonly ["verify"],
+  ) => Promise<CryptoKey>;
 };
 
 export interface SessionProofProviderConfig {
@@ -236,7 +250,13 @@ export function makeJwksSessionProofVerifier(
       jwk = keys.find((key) => key.kid === header.kid);
     }
     if (jwk === undefined) throw new Error("unknown key");
-    const key = await crypto.subtle.importKey("jwk", jwk, RSA_VERIFY_ALGORITHM, false, ["verify"]);
+    const key = await (crypto.subtle as unknown as RsaJwkImporter).importKey(
+      "jwk",
+      jwk,
+      RSA_VERIFY_ALGORITHM,
+      false,
+      ["verify"],
+    );
     const valid = await crypto.subtle.verify(
       RSA_VERIFY_ALGORITHM,
       key,

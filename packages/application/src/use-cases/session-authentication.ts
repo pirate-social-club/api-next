@@ -1,4 +1,4 @@
-import { NotImplemented } from "@pirate/contracts";
+import { AuthError } from "@pirate/contracts";
 import { Effect } from "effect";
 
 export type AuthenticateSessionInput = Readonly<{
@@ -12,19 +12,61 @@ export type AuthenticatedSession = Readonly<{
 }>;
 
 export type AuthorizeSessionInput = Readonly<{
-  readonly subject: string;
+  readonly session: AuthenticatedSession;
+  readonly allowedKinds: readonly AuthenticatedSession["kind"][];
 }>;
 
-/** Lane C supplies bounded token verification and canonical identity checks. */
-export function authenticateSession(
-  _input: AuthenticateSessionInput,
-): Effect.Effect<AuthenticatedSession, NotImplemented> {
-  return Effect.fail(new NotImplemented({ message: "Session authentication is not implemented" }));
+export interface BearerSessionVerifier {
+  readonly verify: (input: {
+    readonly token: string;
+    readonly requiredClassification: "user";
+  }) => Effect.Effect<
+    {
+      readonly userId: string;
+      readonly classification: "user" | "device";
+      readonly scope: { readonly tokens: readonly string[] };
+    },
+    unknown
+  >;
 }
 
-/** Lane C supplies endpoint authorization over the verified session principal. */
-export function authorizeSession(
-  _input: AuthorizeSessionInput,
-): Effect.Effect<void, NotImplemented> {
-  return Effect.fail(new NotImplemented({ message: "Session authorization is not implemented" }));
+export interface SessionAuthenticationServices {
+  readonly verifier: BearerSessionVerifier;
 }
+
+const bearerToken = (authorization: string): string | null => {
+  const match = /^Bearer ([^\s]+)$/u.exec(authorization);
+  return match?.[1] ?? null;
+};
+
+export const authenticateSession = Effect.fn("authenticateSession")(function* (
+  input: AuthenticateSessionInput,
+  services: SessionAuthenticationServices,
+): Effect.fn.Return<AuthenticatedSession, AuthError> {
+  const token = bearerToken(input.authorization);
+  if (token === null) return yield* new AuthError({ message: "Authentication failed" });
+
+  const verified = yield* services.verifier
+    .verify({ token, requiredClassification: "user" })
+    .pipe(Effect.mapError(() => new AuthError({ message: "Authentication failed" })));
+  if (verified.classification !== "user") {
+    return yield* new AuthError({ message: "Authentication failed" });
+  }
+  return {
+    subject: verified.userId,
+    kind: "user",
+    scopes: verified.scope.tokens,
+  };
+});
+
+export const authorizeSession = Effect.fn("authorizeSession")(function* (
+  input: AuthorizeSessionInput,
+): Effect.fn.Return<void, AuthError> {
+  if (
+    input.session.subject.length === 0 ||
+    input.session.subject.trim() !== input.session.subject ||
+    !input.allowedKinds.includes(input.session.kind)
+  ) {
+    return yield* new AuthError({ message: "Authorization failed" });
+  }
+});
