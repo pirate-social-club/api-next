@@ -73,59 +73,59 @@ export type OldSourceEvidence = {
 
 export const OLD_SOURCE_EVIDENCE = {
   sessionToken: {
-    path: "api/services/api/src/lib/auth/pirate-session-token.ts",
-    sha256: "47b1afb039a6568062cb2c3822fc4dab7aa6b71d4c85a5c3b292846d287ecc27",
+    path: "services/api/src/lib/auth/pirate-session-token.ts",
+    sha256: "5f5f31e895b4891978fb10b275b29c8c2420d18d018f3b19af92aa4553a07ea8",
   },
   middleware: {
-    path: "api/services/api/src/lib/auth-middleware.ts",
-    sha256: "7425826f08bb4ddcea88796c43567e5397d04de0ebd6c6821e2b427a5fa4e57b",
+    path: "services/api/src/lib/auth-middleware.ts",
+    sha256: "18c1554b01a2c8445e680c8705998d47c2908341794eb5aba839a5e3b5fb22b7",
   },
   authRoute: {
-    path: "api/services/api/src/routes/auth.ts",
+    path: "services/api/src/routes/auth.ts",
     sha256: "dd7cdf247b8d7c873306c2f02ef660e5917e13a91ef818e91886012df6b86923",
   },
   discoveryRoute: {
-    path: "api/services/api/src/routes/discovery.ts",
+    path: "services/api/src/routes/discovery.ts",
     sha256: "5e06952039898692b37b553ceb8188f5eddd8568a6489c928c3f41db54812221",
   },
   userQueries: {
-    path: "api/services/api/src/lib/auth/auth-db-user-queries.ts",
+    path: "services/api/src/lib/auth/auth-db-user-queries.ts",
     sha256: "6ed12f9e117b36ccdb51ded8a41e3bbe2927595b5ec4ad834c6fafd97b2a65e9",
   },
   aliasService: {
-    path: "api/services/api/src/lib/auth/account-alias-service.ts",
+    path: "services/api/src/lib/auth/account-alias-service.ts",
     sha256: "aa9762c57806418f926ca9ad55cfd11baa5814f262b7073f3fbe685675b5dfc0",
   },
   identityRepository: {
-    path: "api/services/api/src/lib/auth/db-identity-repository.ts",
+    path: "services/api/src/lib/auth/db-identity-repository.ts",
     sha256: "9e5836dc0f6766a24c5432a43f96ef445f0f4f666863ab63fd82853177db02e0",
   },
   oauthDevice: {
-    path: "api/services/api/src/lib/oauth/device-authorization-service.ts",
+    path: "services/api/src/lib/oauth/device-authorization-service.ts",
     sha256: "6512e62b56db49b6f1dbee3415de7ce96442ff5c7006b26172d35d99b01140e8",
   },
   telegramOnboarding: {
-    path: "api/services/api/src/lib/telegram/onboarding-service.ts",
+    path: "services/api/src/lib/telegram/onboarding-service.ts",
     sha256: "dc9b4533995e4ffe09e576c28f6a466861cdc919291e07047a839078662459c1",
   },
   telegramRoute: {
-    path: "api/services/api/src/routes/telegram.ts",
+    path: "services/api/src/routes/telegram.ts",
     sha256: "75ded3a6d7683bc23af6ed52afaf8dee693cf3f058a504693978cc61e25cd11e",
   },
   botRoute: {
-    path: "api/services/api/src/routes/bot-users.ts",
+    path: "services/api/src/routes/bot-users.ts",
     sha256: "7c8ef1fb615e583f6a80030ea4252c30b8c18bd0492b94be44c1f1999488ba21",
   },
   middlewareTest: {
-    path: "api/services/api/src/lib/auth-middleware.test.ts",
-    sha256: "dc09d978b7b85f017c1309205aef742a09addec72fc759f3bebcee0bafee6e0a",
+    path: "services/api/src/lib/auth-middleware.test.ts",
+    sha256: "cf7a268094740e7194378df4882356a9585c377cab9d572173e78ce3a2b0c27a",
   },
   authRouteTest: {
-    path: "api/services/api/tests/routes/auth/auth-routes.test.ts",
+    path: "services/api/tests/routes/auth/auth-routes.test.ts",
     sha256: "bea8fdb389075826039a849cf91cccd58d3b4452da4236de2e427983adc21ba2",
   },
   discoveryRouteTest: {
-    path: "api/services/api/tests/routes/discovery-routes.test.ts",
+    path: "services/api/tests/routes/discovery-routes.test.ts",
     sha256: "bc0d7ac021e016c31c374081ac542395e4ade9ce1953983892caf4f00e4803a9",
   },
 } as const satisfies Record<string, OldSourceEvidence>;
@@ -319,10 +319,10 @@ function audienceMatches(value: unknown, expected: string): boolean {
 }
 
 /**
- * Minimal source-pinned old-reference verifier. It mirrors the old source's
- * direct-key jwtVerify call and middleware ordering without importing api/.
- * In particular, it records the old verifier's permissive missing iat/exp and
- * typ behavior; the contract expectation for those vectors remains pending.
+ * Documentation-only characterization of the pre-hardening reference. The
+ * executable conformance proof uses the byte-pinned verifier fixture instead.
+ * This preserves the historical divergences without presenting them as the
+ * current old API behavior.
  */
 export async function verifyOldReferenceBearerSession(input: {
   readonly token: string;
