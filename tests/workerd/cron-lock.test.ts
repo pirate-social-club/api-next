@@ -1,7 +1,11 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
 import { env as testEnv } from "cloudflare:test";
 
-import { CRON_LOCK_NAME, type ScheduledCronLockDO } from "@pirate/platform-cf";
+import {
+  type AlertSuppressionState,
+  CRON_LOCK_NAME,
+  type ScheduledCronLockDO,
+} from "@pirate/platform-cf";
 import { describe, expect, it } from "vitest";
 
 const env = testEnv as unknown as { CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO> };
@@ -55,5 +59,20 @@ describe("ScheduledCronLockDO lease semantics (workerd)", () => {
     const next = await s.tryAcquireWithFence(5_000, "owner-b", 22_000);
     expect(next).toMatchObject({ owner: "owner-b", generation: 3 });
     await s.releaseWithFence("owner-b", next?.generation ?? -1);
+  });
+
+  it("persists alert suppression state in the same DO ledger", async () => {
+    const s = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alert-suppression`);
+    const state: AlertSuppressionState = {
+      conditionKey: "routing:integrity|route:stuck",
+      severity: "medium",
+      firstSeenAt: 30_000,
+      lastSeenAt: 60_000,
+      lastDeliveredAt: 30_000,
+      reminderIndex: 0,
+    };
+
+    await s.saveAlertSuppression(state);
+    expect(await s.getAlertSuppression(state.conditionKey)).toEqual(state);
   });
 });

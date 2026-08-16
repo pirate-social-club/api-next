@@ -38,6 +38,8 @@ jobs:
       - run: bun run check:breaking
         env:
           OPENAPI_BASE_SHA: ${{ steps.openapi-baseline.outputs.sha }}
+      - name: Wrangler dry run (jobs worker)
+        run: bunx wrangler deploy --dry-run --env "" --config apps/jobs-worker/wrangler.jsonc
 
   postgres17:
     runs-on: ubuntu-latest

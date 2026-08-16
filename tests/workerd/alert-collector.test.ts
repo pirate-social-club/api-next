@@ -13,14 +13,20 @@ import { describe, expect, it } from "vitest";
 
 function recordingSink() {
   const emails: AlertDigest[] = [];
+  const digests: AlertDigest[] = [];
   const webhooks: (readonly Alert[])[] = [];
   return {
     emails,
+    digests,
     webhooks,
     sink: {
       email: (digest: AlertDigest) =>
         Effect.sync(() => {
           emails.push(digest);
+        }),
+      digest: (digest: AlertDigest) =>
+        Effect.sync(() => {
+          digests.push(digest);
         }),
       webhook: (alerts: readonly Alert[]) =>
         Effect.sync(() => {
@@ -85,7 +91,7 @@ describe("AlertCollector tick-finalizer aggregation (workerd)", () => {
   });
 
   it("low-only ticks digest without paging", async () => {
-    const { emails, webhooks, sink } = recordingSink();
+    const { emails, digests, webhooks, sink } = recordingSink();
     await Effect.runPromise(
       alertTick(
         sink,
@@ -94,7 +100,8 @@ describe("AlertCollector tick-finalizer aggregation (workerd)", () => {
         }),
       ),
     );
-    requireDigest(emails);
+    expect(emails.length).toBe(0);
+    expect(digests.length).toBe(1);
     expect(webhooks.length).toBe(0);
   });
 

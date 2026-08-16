@@ -4,8 +4,11 @@ import { Effect } from "effect";
 import {
   buildJobRegistry,
   defaultRetrySchedule,
+  groupDueJobsByLane,
+  isScheduleDue,
   type JobDeclaration,
   RegistryConfigurationError,
+  selectDueJobs,
   type TableKey,
 } from "./registry";
 
@@ -22,6 +25,7 @@ const baseJob: JobDeclaration = {
     transactionOutcomeUnknown: "high",
     defect: "high",
   },
+  reads: ["control-plane:communities"],
   writes: ["control-plane:job_attempts"],
   run: Effect.void,
 };
@@ -76,5 +80,47 @@ describe("jobs-kernel declaration registry", () => {
       },
     ]);
     expect(missingSeverity).toMatchObject({ reason: "missing-severity-mapping" });
+  });
+
+  test("rejects duplicate table declarations in the read inventory", async () => {
+    const error = await errorOf([
+      {
+        ...baseJob,
+        name: "control-plane.read-duplicate",
+        lane: "control-plane-read-duplicate",
+        reads: ["control-plane:communities", "control-plane:communities"],
+        writes: [],
+      },
+    ]);
+    expect(error).toMatchObject({ reason: "duplicate-table-read" });
+  });
+
+  test("allows sequential jobs in one lane and selects only due schedules", async () => {
+    const secondJob: JobDeclaration = {
+      ...baseJob,
+      name: "control-plane.hourly",
+      schedule: "0 * * * *",
+      reads: ["control-plane:communities"],
+      writes: [],
+    };
+    const registry = await Effect.runPromise(buildJobRegistry([baseJob, secondJob]));
+    const atFivePast = Date.UTC(2026, 7, 16, 0, 5);
+
+    expect(registry.declarations).toHaveLength(2);
+    expect(isScheduleDue(baseJob.schedule, atFivePast)).toBe(true);
+    expect(isScheduleDue(secondJob.schedule, atFivePast)).toBe(false);
+    expect(selectDueJobs(registry, atFivePast).map((job) => job.name)).toEqual([baseJob.name]);
+
+    const atTheHour = Date.UTC(2026, 7, 16, 1, 0);
+    expect(
+      groupDueJobsByLane(registry, atTheHour)
+        .get(baseJob.lane)
+        ?.map((job) => job.name),
+    ).toEqual([baseJob.name, secondJob.name]);
+  });
+
+  test("rejects malformed cron declarations", async () => {
+    const error = await errorOf([{ ...baseJob, schedule: "not-a-cron" }]);
+    expect(error).toMatchObject({ reason: "invalid-schedule" });
   });
 });
