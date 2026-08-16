@@ -6,6 +6,7 @@
  * Effect service dependencies; `effect/Schema` and data types only.
  */
 export const domain = "api-next/domain: lane B (001 §4)" as const;
+export * from "./auth/session-policy.ts";
 export * from "./bookings/attendance.ts";
 export * from "./bookings/settlement.ts";
 export * from "./gates/country-codes.ts";
