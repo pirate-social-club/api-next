@@ -1,3 +1,4 @@
+import type { Schema } from "effect";
 import type { AuthPolicyApplication } from "./auth.ts";
 import type { ApiError } from "./errors.ts";
 
@@ -15,14 +16,34 @@ export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 /** Constructors from the wire-error catalog a handler may fail with. */
 export type ApiErrorCtor = new (args: never) => ApiError;
 
+/**
+ * The three independently decoded request locations. A request schema is
+ * deliberately not a single body-shaped value: path and query data are part
+ * of the contract and are decoded before a handler can see them.
+ */
+export interface EndpointRequest {
+  readonly body?: Schema.Schema<unknown>;
+  readonly bodyRequired?: boolean;
+  readonly path?: Schema.Schema<unknown>;
+  readonly query?: Schema.Schema<unknown>;
+}
+
+/** A successful response may have more than one status when the old wire
+ * contract chooses the status from a typed result (for example 201/202 post
+ * creation). */
+export type SuccessStatus = number | readonly number[];
+
 export interface EndpointDefinition {
   readonly method: HttpMethod;
   /** Path with `:param` placeholders; path params are schema-decoded. */
   readonly path: string;
   readonly auth: AuthPolicyApplication;
-  /** Effect Schema for body + params + query; lane A types the composition. */
-  readonly request?: unknown;
-  readonly response: unknown;
+  /** Effect Schemas for body, path params, and query params. */
+  readonly request?: EndpointRequest | Schema.Schema<unknown>;
+  /** Effect Schema for the exact success response envelope. */
+  readonly response: Schema.Schema<unknown>;
+  /** HTTP status emitted for a successful handler result; defaults to 200. */
+  readonly successStatus?: SuccessStatus;
   /** Closed error union, drawn from the frozen catalog. */
   readonly errors?: readonly ApiErrorCtor[];
 }
