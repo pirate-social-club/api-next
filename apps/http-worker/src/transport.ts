@@ -284,7 +284,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         if (!isPublic(binding.endpoint) && hasAuthorizationHeader && !hasCredentials) {
           throw new AuthError({ message: "Authentication required" });
         }
-        if (hasCredentials && options.authenticate !== undefined) {
+        if (!isPublic(binding.endpoint) && hasCredentials && options.authenticate !== undefined) {
           principal = await options.authenticate({
             endpoint: binding.endpoint,
             credentials: { authorization },

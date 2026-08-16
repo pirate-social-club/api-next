@@ -213,6 +213,25 @@ describe("contracts-generated HTTP worker", () => {
     expect(JSON.stringify(await response.json())).not.toContain("must-not-cross-boundary");
   });
 
+  it("ignores credentials on public routes while disabling shared caching", async () => {
+    let authenticated = false;
+    const app = createHttpWorker({
+      handlers: { GetPublicHomeFeed: () => feed },
+      authenticate: () => {
+        authenticated = true;
+        throw new Error("public credentials must not be verified");
+      },
+    });
+
+    const response = await app.request("http://worker.test/feed/home/public", {
+      headers: { authorization: "Bearer invalid" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(authenticated).toBe(false);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
   it("skips authorization only for a signed-out optional-user request", async () => {
     const principals: Array<string | null> = [];
     const authorizedSubjects: string[] = [];
