@@ -9,6 +9,7 @@ import {
   type UnfollowCommunityInput,
   unfollowCommunity,
 } from "@pirate/application/use-cases/community/unfollow-community";
+import { getPost } from "@pirate/application/use-cases/content/get-post";
 import { getHomeFeed, getPublicHomeFeed } from "@pirate/application/use-cases/feed/home-feed";
 import { AuthError, type JoinCommunity } from "@pirate/contracts";
 import { Effect, type Schema } from "effect";
@@ -18,11 +19,14 @@ type CommunityServices = Parameters<typeof getCommunityPreview>[1];
 type FeedServices = Parameters<typeof getHomeFeed>[1];
 type CommunityStoreService = CommunityServices["communityStore"];
 type FeedStoreService = FeedServices["feedStore"];
+type ContentServices = Parameters<typeof getPost>[1];
+type ContentStoreService = ContentServices["contentStore"];
 type CommunityActor = Parameters<typeof joinCommunity>[0]["actor"];
 type HomeFeedQuery = Parameters<typeof getHomeFeed>[0]["query"];
 
 export interface ProductHandlerServices {
   readonly communityStore: CommunityStoreService;
+  readonly contentStore: ContentStoreService;
   readonly feedStore: FeedStoreService;
 }
 
@@ -32,15 +36,19 @@ export type ProductHandlers = Readonly<{
   readonly JoinCommunity: EndpointHandler;
   readonly FollowCommunity: EndpointHandler;
   readonly UnfollowCommunity: EndpointHandler;
+  readonly GetPost: EndpointHandler;
   readonly GetPublicHomeFeed: EndpointHandler;
   readonly GetHomeFeed: EndpointHandler;
 }>;
 
 type CommunityPath = Readonly<{ readonly communityId: string }>;
+type PostPath = Readonly<{ readonly postId: string }>;
 type LocaleQuery = Readonly<{ readonly locale?: string }>;
 type JoinBody = Schema.Schema.Type<(typeof JoinCommunity.request)["body"]>;
 
 const communityPath = (request: DecodedRequest): CommunityPath => request.params as CommunityPath;
+
+const postPath = (request: DecodedRequest): PostPath => request.params as PostPath;
 
 const localeQuery = (request: DecodedRequest): LocaleQuery => (request.query ?? {}) as LocaleQuery;
 
@@ -135,6 +143,22 @@ const unfollow = async (request: DecodedRequest, services: ProductHandlerService
   );
 };
 
+const post = async (request: DecodedRequest, services: ProductHandlerServices) => {
+  const { postId } = postPath(request);
+  const { locale } = localeQuery(request);
+  const viewer = communityActor(request.principal);
+  return Effect.runPromise(
+    getPost(
+      {
+        postId,
+        viewer,
+        ...(locale === undefined ? {} : { locale }),
+      },
+      { contentStore: services.contentStore },
+    ),
+  );
+};
+
 const publicHomeFeed = async (request: DecodedRequest, services: ProductHandlerServices) =>
   Effect.runPromise(getPublicHomeFeed(feedQuery(request), { feedStore: services.feedStore }));
 
@@ -154,6 +178,7 @@ export const makeProductHandlers = (services: ProductHandlerServices): ProductHa
   JoinCommunity: (request) => join(request, services),
   FollowCommunity: (request) => follow(request, services),
   UnfollowCommunity: (request) => unfollow(request, services),
+  GetPost: (request) => post(request, services),
   GetPublicHomeFeed: (request) => publicHomeFeed(request, services),
   GetHomeFeed: (request) => homeFeed(request, services),
 });

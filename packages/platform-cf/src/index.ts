@@ -37,6 +37,11 @@ export {
   makeControlPlaneCommunityStore,
 } from "./community-repository";
 export {
+  type ContentRepository,
+  makeControlPlaneContentRepository,
+  makeControlPlaneContentStore,
+} from "./content-repository";
+export {
   CRON_LOCK_NAME,
   evaluateFencedLease,
   evaluateLease,

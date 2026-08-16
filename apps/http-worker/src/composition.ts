@@ -11,6 +11,7 @@ import {
   type HttpWorkerConfigValue,
   loadConfigFrom,
 } from "@pirate/platform-cf/config";
+import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeControlPlaneIdentityStore } from "@pirate/platform-cf/identity-repository";
 import {
@@ -108,8 +109,9 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
+  const contentStore = makeControlPlaneContentStore(controlPlane);
   const feedStore = makeControlPlaneFeedStore(controlPlane);
-  const productHandlers = makeProductHandlers({ communityStore, feedStore });
+  const productHandlers = makeProductHandlers({ communityStore, contentStore, feedStore });
   const bridge = await makeSessionBridge({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
     publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),

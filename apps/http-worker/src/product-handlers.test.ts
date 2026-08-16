@@ -9,6 +9,7 @@ import {
 import type { DecodedRequest } from "./transport.ts";
 
 type CommunityStore = ProductHandlerServices["communityStore"];
+type ContentStore = ProductHandlerServices["contentStore"];
 type FeedStore = ProductHandlerServices["feedStore"];
 
 const feed = { items: [], top_communities: [], next_cursor: null };
@@ -47,10 +48,12 @@ const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
 function stores(
   overrides: {
     readonly community?: Partial<CommunityStore>;
+    readonly content?: Partial<ContentStore>;
     readonly feed?: Partial<FeedStore>;
   } = {},
 ): {
   readonly communityStore: CommunityStore;
+  readonly contentStore: ContentStore;
   readonly feedStore: FeedStore;
 } {
   return {
@@ -66,6 +69,16 @@ function stores(
         Effect.succeed({ community: communityId, following: false, follower_count: 0 }),
       ...overrides.community,
     },
+    contentStore: {
+      resolvePost: () => Effect.succeed(null),
+      resolveComment: () => Effect.succeed(null),
+      createPost: () => Effect.succeed(null),
+      getPost: () => Effect.succeed(null),
+      createCommentReply: () => Effect.succeed(null),
+      castPostVote: () => Effect.succeed(null),
+      clearPostVote: () => Effect.succeed(null),
+      ...overrides.content,
+    } as unknown as ContentStore,
     feedStore: {
       listHome: () => Effect.succeed(feed),
       ...overrides.feed,
@@ -198,6 +211,47 @@ describe("HTTP product handlers", () => {
     ]);
   });
 
+  test("maps the post path, locale, and required human viewer", async () => {
+    const observed: unknown[] = [];
+    const document = { id: "post-a", object: "post" };
+    const handlers = makeProductHandlers(
+      stores({
+        content: {
+          resolvePost: (input) => {
+            observed.push({ resolvePost: input });
+            return Effect.succeed({ communityId: "community-a", postId: input.postId });
+          },
+          getPost: (input) => {
+            observed.push({ getPost: input });
+            return Effect.succeed(document as never);
+          },
+        },
+      }),
+    );
+    const principal = {
+      kind: "admin" as const,
+      subject: "admin-a",
+      scopes: ["content:read"],
+    };
+
+    await expect(
+      handlers.GetPost(
+        request({ params: { postId: "post-a" }, query: { locale: "ka" }, principal }),
+      ),
+    ).resolves.toEqual(document);
+    expect(observed).toEqual([
+      { resolvePost: { postId: "post-a" } },
+      {
+        getPost: {
+          communityId: "community-a",
+          postId: "post-a",
+          viewerUserId: "admin-a",
+          locale: "ka",
+        },
+      },
+    ]);
+  });
+
   test("rejects device and agent principals for every community operation", async () => {
     const handlers = makeProductHandlers(stores());
     const requests = [
@@ -206,6 +260,7 @@ describe("HTTP product handlers", () => {
       handlers.JoinCommunity,
       handlers.FollowCommunity,
       handlers.UnfollowCommunity,
+      handlers.GetPost,
     ];
 
     for (const kind of ["device", "agent"] as const) {
@@ -218,6 +273,9 @@ describe("HTTP product handlers", () => {
         handlers.GetHomeFeed(request({ principal: { kind, subject: `${kind}-a` } })),
       ).rejects.toMatchObject({ code: "auth_error" });
     }
+    await expect(handlers.GetPost(request({ principal: null }))).rejects.toMatchObject({
+      code: "auth_error",
+    });
   });
 
   test("propagates application failures after the use case maps storage errors", async () => {
@@ -229,6 +287,10 @@ describe("HTTP product handlers", () => {
         community: {
           getPreview: () => Effect.fail(new Error("community storage failed") as never),
         },
+        content: {
+          resolvePost: () => Effect.succeed({ communityId: "community-a", postId: "post-a" }),
+          getPost: () => Effect.fail(new Error("content storage failed") as never),
+        },
       }),
     );
 
@@ -238,5 +300,10 @@ describe("HTTP product handlers", () => {
     await expect(handlers.GetCommunityPreview(request({ principal: null }))).rejects.toMatchObject({
       code: "internal_error",
     });
+    await expect(
+      handlers.GetPost(
+        request({ params: { postId: "post-a" }, principal: { kind: "user", subject: "user-a" } }),
+      ),
+    ).rejects.toMatchObject({ code: "internal_error" });
   });
 });
