@@ -91,4 +91,36 @@ describe("HTTP production composition", () => {
       "HTTP worker configuration is incomplete or invalid",
     );
   });
+
+  test("enables Self only with an explicit public HTTPS origin", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker({
+      ...configured,
+      SELF_PASS_ENABLED: "true",
+      SELF_PASS_MOCK_PASSPORT: "false",
+      PIRATE_API_PUBLIC_ORIGIN: "https://api.pirate.test",
+    });
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        SELF_PASS_ENABLED: "true",
+        PIRATE_API_PUBLIC_ORIGIN: "https://api.pirate.test/callback",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
+
+  test("forbids Self mock documents in production", async () => {
+    const configured = await bindings();
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        API_NEXT_ENV: "production",
+        SELF_PASS_ENABLED: "true",
+        SELF_PASS_MOCK_PASSPORT: "true",
+        PIRATE_API_PUBLIC_ORIGIN: "https://api.pirate.test",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
 });

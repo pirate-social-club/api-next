@@ -47,6 +47,19 @@ export const ProofSession = Schema.Struct({
 });
 export type ProofSession = Schema.Schema.Type<typeof ProofSession>;
 
+/** Bounded provider-neutral audit metadata; never a raw provider response. */
+export const EvidenceReceiptMetadata = Schema.Record(Schema.String, Schema.Json).check(
+  Schema.makeFilter((metadata) => {
+    const entries = Object.entries(metadata);
+    return entries.length <= 128 &&
+      entries.every(([key]) => key.length > 0 && key.length <= 128) &&
+      JSON.stringify(metadata).length <= 65_536
+      ? undefined
+      : "Expected bounded receipt metadata no larger than 64 KiB";
+  }),
+);
+export type EvidenceReceiptMetadata = Schema.Schema.Type<typeof EvidenceReceiptMetadata>;
+
 /**
  * Receipts are append-only evidence references. The response itself stays out
  * of the domain object; its issuer, explicit scope, hash, protocol metadata,
@@ -66,6 +79,7 @@ export const EvidenceReceipt = Schema.Struct({
   provenance_kind: Schema.Literal("proof_session"),
   evidence_kind: Schema.NonEmptyString,
   evidence_hash: Sha256Hex,
+  metadata: Schema.optional(EvidenceReceiptMetadata),
   observed_at: CanonicalIsoInstant,
   expires_at: Schema.optional(CanonicalIsoInstant),
   subject_key_id: Schema.optional(Schema.NonEmptyString),

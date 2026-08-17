@@ -179,9 +179,13 @@ suite("Postgres 17 verification session start repository", () => {
         Effect.scoped(store.reserve({ start: start.session, ttl_ms: 60_000 })),
       );
       const mismatch = startFor("different-session", "user-a", "intent-conflict");
+      const mismatchedSession = {
+        ...mismatch.session,
+        request_hash: "2".repeat(64),
+      };
       expect(
         await Effect.runPromise(
-          Effect.scoped(store.reserve({ start: mismatch.session, ttl_ms: 60_000 })),
+          Effect.scoped(store.reserve({ start: mismatchedSession, ttl_ms: 60_000 })),
         ),
       ).toEqual({
         kind: "conflict",

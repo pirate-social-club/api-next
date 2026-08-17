@@ -88,6 +88,7 @@ const VERIFICATION_EXPORTS = {
       "BindingGroup",
       "EvidenceBundle",
       "EvidenceReceipt",
+      "EvidenceReceiptMetadata",
       "ProofSession",
       "ProofSessionStatus",
       "SameReceiptBindingGroup",

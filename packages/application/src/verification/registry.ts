@@ -597,10 +597,8 @@ function validateBundle(
       const receiptIds = new Set(bundle.receipts.map((receipt) => receipt.id));
       const receiptsById = new Map(bundle.receipts.map((receipt) => [receipt.id, receipt]));
       const subjectIds = new Set(bundle.subject_keys.map((subjectKey) => subjectKey.id));
-      const bindingIds = new Set(bundle.binding_groups.map((group) => group.id));
       const bindingsById = new Map(bundle.binding_groups.map((group) => [group.id, group]));
       const requested = new Set(input.session.requested_claim_ids);
-      const declared = new Set(manifest.claim_ids);
       const declaredAssurances = new Set(manifest.assurance_levels);
       const subjectReferencesRequired =
         manifest.subject_key_scope_semantics !== "none" || requiresNamedScope([...requested]);
@@ -657,13 +655,10 @@ function validateBundle(
               : false;
         return (
           requested.has(assertion.claim_id) &&
-          declared.has(assertion.claim_id) &&
           assertionMatchesRequirement(assertion, input.session.requested_requirements) &&
           declaredAssurances.has(assertion.assurance) &&
           assuranceSupportsClaim(assertion.claim_id, assertion.assurance) &&
-          receiptIds.has(assertion.evidence_receipt_id) &&
           (assertion.subject_key_id === undefined || subjectIds.has(assertion.subject_key_id)) &&
-          bindingIds.has(assertion.binding_group_id) &&
           subjectMatchesReceipt &&
           bindingMatchesAssertion
         );

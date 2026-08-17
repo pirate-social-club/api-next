@@ -87,6 +87,14 @@ describe("verification claim catalog", () => {
     const manifest = Schema.decodeUnknownSync(ProofProviderManifest)({
       provider_id: "future-provider",
       manifest_version: "1",
+      operation_deadlines: {
+        plan_ms: 1_000,
+        start_ms: 1_000,
+        complete_ms: 1_000,
+        callback_ms: 1_000,
+      },
+      callback_mode: "none",
+      callback_header_allowlist: [],
       protocol_versions: ["proof-v1"],
       environments: ["production"],
       supported_methods: ["document"],

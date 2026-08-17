@@ -441,8 +441,8 @@ export function makeControlPlaneVerificationCompletionRepository() {
                            subject_key_id, subject_binding_event_id, subject_binding_epoch
                          ) VALUES (
                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                           $14, $15, $16, '{}'::jsonb, $17, $18, 'proof_session',
-                           $19, $20, $21
+                           $14, $15, $16, $17::jsonb, $18, $19, 'proof_session',
+                           $20, $21, $22
                          )`,
                   values: [
                     receiptId,
@@ -461,6 +461,7 @@ export function makeControlPlaneVerificationCompletionRepository() {
                     receipt.environment,
                     receipt.evidence_kind,
                     receipt.evidence_hash,
+                    JSON.stringify(receipt.metadata ?? {}),
                     receipt.observed_at,
                     receipt.expires_at ?? null,
                     subject?.subjectKeyId ?? null,

@@ -31,6 +31,7 @@ import {
   makeControlPlaneVerificationCompletionStore,
   makeSha256VerificationCompletionHasher,
 } from "@pirate/platform-cf/verification-completion-repository";
+import { makeStaticVerificationIntentResolver } from "@pirate/platform-cf/verification-intent-resolver";
 import { makePlatformVerificationProviderRegistry } from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
 import { Effect, Redacted, Schema } from "effect";
@@ -42,6 +43,11 @@ export interface HttpWorkerBindings {
   readonly CONTROL_PLANE?: unknown;
   readonly API_NEXT_ENV?: string;
   readonly CORS_ORIGIN?: string;
+  readonly PIRATE_API_PUBLIC_ORIGIN?: string;
+  readonly SELF_PASS_ENABLED?: string;
+  readonly SELF_PASS_APP_NAME?: string;
+  readonly SELF_PASS_MOCK_PASSPORT?: string;
+  readonly VERIFICATION_CALLBACK_CREDENTIAL_HEADERS?: string;
   readonly PIRATE_APP_JWT_PRIVATE_KEY?: string;
   readonly PIRATE_APP_JWT_PUBLIC_KEY?: string;
   readonly PIRATE_APP_JWT_ISSUER?: string;
@@ -64,6 +70,11 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
   return {
     API_NEXT_ENV: bindings.API_NEXT_ENV,
     CORS_ORIGIN: bindings.CORS_ORIGIN,
+    PIRATE_API_PUBLIC_ORIGIN: bindings.PIRATE_API_PUBLIC_ORIGIN,
+    SELF_PASS_ENABLED: bindings.SELF_PASS_ENABLED,
+    SELF_PASS_APP_NAME: bindings.SELF_PASS_APP_NAME,
+    SELF_PASS_MOCK_PASSPORT: bindings.SELF_PASS_MOCK_PASSPORT,
+    VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: bindings.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
     PIRATE_APP_JWT_PRIVATE_KEY: bindings.PIRATE_APP_JWT_PRIVATE_KEY,
     PIRATE_APP_JWT_PUBLIC_KEY: bindings.PIRATE_APP_JWT_PUBLIC_KEY,
     PIRATE_APP_JWT_ISSUER: bindings.PIRATE_APP_JWT_ISSUER,
@@ -114,6 +125,28 @@ function principal(session: AuthenticatedSession): Principal {
   };
 }
 
+function publicHttpsOrigin(value: string): string | undefined {
+  if (value === "") return undefined;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" &&
+      parsed.pathname === "/" &&
+      parsed.search === "" &&
+      parsed.hash === ""
+      ? parsed.origin
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function callbackCredentialHeaders(value: string): readonly string[] {
+  return value
+    .split(",")
+    .map((header) => header.trim().toLowerCase())
+    .filter((header) => header !== "");
+}
+
 export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const config = loadWorkerConfig(bindings);
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
@@ -122,14 +155,38 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const feedStore = makeControlPlaneFeedStore(controlPlane);
-  const verificationRegistry = await Effect.runPromise(makePlatformVerificationProviderRegistry());
+  const selfPassOrigin = publicHttpsOrigin(config.PIRATE_API_PUBLIC_ORIGIN);
+  if (
+    config.SELF_PASS_ENABLED &&
+    (selfPassOrigin === undefined ||
+      config.SELF_PASS_APP_NAME.trim() !== config.SELF_PASS_APP_NAME ||
+      config.SELF_PASS_APP_NAME === "" ||
+      config.SELF_PASS_APP_NAME.length > 128 ||
+      (config.API_NEXT_ENV === "production" && config.SELF_PASS_MOCK_PASSPORT))
+  ) {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  }
+  const verificationRegistry = await Effect.runPromise(
+    makePlatformVerificationProviderRegistry({
+      ...(config.SELF_PASS_ENABLED && selfPassOrigin !== undefined
+        ? {
+            self_pass: {
+              callback_origin: selfPassOrigin,
+              app_name: config.SELF_PASS_APP_NAME,
+              mock_passport: config.SELF_PASS_MOCK_PASSPORT,
+            },
+          }
+        : {}),
+      callback_credential_headers: callbackCredentialHeaders(
+        config.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
+      ),
+    }),
+  );
   const verificationCompletionStore = makeControlPlaneVerificationCompletionStore(controlPlane);
-  const verificationIntents: VerificationIntentResolver = {
-    // Intent creation belongs to the policy/evaluator slice. Keeping this
-    // resolver closed means the generic routes can land before a real provider
-    // without accepting client-authored requirements.
-    resolve: () => Effect.succeed(null),
-  };
+  const verificationIntents: VerificationIntentResolver = makeStaticVerificationIntentResolver(
+    verificationRegistry.list(),
+    config.API_NEXT_ENV,
+  );
   const verificationHandlers = makeVerificationHandlers({
     start: {
       intents: verificationIntents,

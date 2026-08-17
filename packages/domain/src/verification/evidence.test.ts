@@ -42,6 +42,7 @@ const receipt = {
   provenance_kind: "proof_session",
   evidence_kind: "document",
   evidence_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  metadata: { credential_type: "passport", source_attestation_id: "1" },
   observed_at: "2026-08-17T00:00:00.000Z",
   expires_at: "2026-08-18T00:00:00.000Z",
   subject_key_id: "subject-1",
@@ -77,6 +78,7 @@ describe("verification evidence ledger shapes", () => {
       provenance_kind: "proof_session",
       evidence_kind: "document",
       evidence_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      metadata: { credential_type: "passport", source_attestation_id: "1" },
     });
     expect(() =>
       Schema.decodeUnknownSync(EvidenceReceipt)({
@@ -88,6 +90,12 @@ describe("verification evidence ledger shapes", () => {
       Schema.decodeUnknownSync(EvidenceReceipt)({
         ...receipt,
         evidence_hash: "sha256:not-canonical",
+      }),
+    ).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(EvidenceReceipt)({
+        ...receipt,
+        metadata: { invalid: Number.POSITIVE_INFINITY },
       }),
     ).toThrow();
   });

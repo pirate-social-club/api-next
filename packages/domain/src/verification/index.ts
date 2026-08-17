@@ -34,6 +34,7 @@ export {
   BindingGroup,
   EvidenceBundle,
   EvidenceReceipt,
+  EvidenceReceiptMetadata,
   ProofSession,
   ProofSessionStatus,
   SameReceiptBindingGroup,

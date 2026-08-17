@@ -38,6 +38,12 @@ presentation append-only for idempotent session-start replay. Because no
 provider route existed before 0010, it fails closed on a non-empty gates-v2
 evidence ledger instead of fabricating configuration provenance.
 
+`0011_verification_start_reservations.sql` adds the fenced, lease-bound
+reservation used to make provider session start idempotent without holding a
+database transaction across the provider call. Reservation finalization checks
+the active generation inside the transaction before it can persist the proof
+session and presentation.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every

@@ -101,6 +101,7 @@ function resultFor(session: ProofSession, overrides: Record<string, unknown> = {
       nullifier: "self-nullifier-1",
       nationality: "GEO",
       gender: "F",
+      expiryDate: "991231",
       minimumAge: "21",
     },
     userData: {
@@ -258,13 +259,19 @@ describe("Self Pass provider-local adapter", () => {
         provider_configuration: selfPassConfigurationFor("https://api.example", false),
       }),
     );
+    if (realStaging.presentation.kind !== "embedded_sdk") {
+      throw new Error("expected embedded Self presentation");
+    }
     expect(realStaging.presentation.payload).toMatchObject({
-      endpoint_type: "staging_https",
+      endpoint_type: "https",
       dev_mode: false,
     });
     const mockedStaging = await Effect.runPromise(
       provider({ mock_passport: true }).start({ ...START_INPUT, environment: "staging" }),
     );
+    if (mockedStaging.presentation.kind !== "embedded_sdk") {
+      throw new Error("expected embedded Self presentation");
+    }
     expect(mockedStaging.presentation.payload).toMatchObject({ dev_mode: true });
     await expect(
       Effect.runPromise(
@@ -337,7 +344,7 @@ describe("Self Pass provider-local adapter", () => {
       headers: {},
     };
     const resolution = await Effect.runPromise(
-      provider().verifyCallback?.(callback) ?? Effect.die("missing callback"),
+      provider().resolveCallback?.(callback) ?? Effect.die("missing callback"),
     );
     expect(resolution.proof_session_id).toBe(session.session.id);
     expect(resolution.idempotency_key).toBe(DIGEST);
@@ -358,7 +365,7 @@ describe("Self Pass provider-local adapter", () => {
       headers: {},
     };
     await expect(
-      failureTag(provider().verifyCallback?.(callback) ?? Effect.die("missing callback")),
+      failureTag(provider().resolveCallback?.(callback) ?? Effect.die("missing callback")),
     ).resolves.toBe("VerificationProviderRejected");
   });
 
@@ -396,6 +403,10 @@ describe("Self Pass provider-local adapter", () => {
     ]);
     expect((constructorArgs[4] as FakeConfigStore).config).toEqual({ minimumAge: 18 });
     expect(bundle.receipts[0]?.evidence_kind).toBe("self.pass.attestation.1");
+    expect(bundle.receipts[0]?.metadata).toEqual({
+      credential_type: "passport",
+      source_attestation_id: "1",
+    });
     expect(bundle.receipts[0]?.provider_configuration).toEqual(CONFIGURATION);
     expect(bundle.receipts[0]?.scope).toEqual(SCOPE);
     expect(bundle.assertions.map((assertion) => assertion.claim_id)).toEqual([...CLAIM_IDS]);
@@ -408,6 +419,53 @@ describe("Self Pass provider-local adapter", () => {
     expect(
       bundle.assertions.some((assertion) => assertion.claim_id === "document.holder_bound"),
     ).toBe(false);
+  });
+
+  test("requires a current document expiry and accepts Aadhaar's explicit no-expiry form", async () => {
+    const adapter = provider();
+    const start = await Effect.runPromise(
+      adapter.start({
+        ...START_INPUT,
+        requested_requirements: [
+          { claim_id: "credential.subject_unique" },
+          { claim_id: "document.valid" },
+        ],
+        requested_claim_ids: ["credential.subject_unique", "document.valid"],
+      }),
+    );
+    const passportPayload = {
+      kind: "self-proof",
+      session_id: start.session.id,
+      attestation_id: 1,
+      proof: PROOF,
+      public_signals: ["1"],
+      user_context_data: contextFor(start.session),
+    };
+    FakeVerifier.result = resultFor(start.session, {
+      discloseOutput: {
+        ...resultFor(start.session).discloseOutput,
+        expiryDate: "980101",
+      },
+    });
+    await expect(
+      failureTag(adapter.complete(completionInput(start.session, passportPayload))),
+    ).resolves.toBe("VerificationProviderRejected");
+
+    FakeVerifier.result = resultFor(start.session, {
+      attestationId: 3,
+      discloseOutput: {
+        ...resultFor(start.session).discloseOutput,
+        nationality: "IND",
+        expiryDate: "UNAVAILABLE",
+      },
+    });
+    const aadhaar = await Effect.runPromise(
+      adapter.complete(completionInput(start.session, { ...passportPayload, attestation_id: 3 })),
+    );
+    expect(aadhaar.receipts[0]?.metadata).toEqual({
+      credential_type: "aadhaar",
+      source_attestation_id: "3",
+    });
   });
 
   test("rejects a cryptographically invalid result and cross-session context", async () => {

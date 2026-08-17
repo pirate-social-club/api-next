@@ -15,6 +15,9 @@
   "vars": {
     "API_NEXT_ENV": "development",
     "CORS_ORIGIN": "http://localhost:5173",
+    "SELF_PASS_ENABLED": "false",
+    "SELF_PASS_APP_NAME": "Pirate",
+    "SELF_PASS_MOCK_PASSPORT": "false",
     "PRIVY_API_URL": "https://auth.privy.io"
   },
   "secrets": {
@@ -39,6 +42,9 @@
       "vars": {
         "API_NEXT_ENV": "staging",
         "CORS_ORIGIN": "https://staging.pirate.sc",
+        "SELF_PASS_ENABLED": "false",
+        "SELF_PASS_APP_NAME": "Pirate",
+        "SELF_PASS_MOCK_PASSPORT": "false",
         "PRIVY_API_URL": "https://auth.privy.io"
       },
       "secrets": {
@@ -63,6 +69,9 @@
       "vars": {
         "API_NEXT_ENV": "production",
         "CORS_ORIGIN": "https://pirate.app,https://pirate.sc",
+        "SELF_PASS_ENABLED": "false",
+        "SELF_PASS_APP_NAME": "Pirate",
+        "SELF_PASS_MOCK_PASSPORT": "false",
         "PRIVY_API_URL": "https://auth.privy.io"
       },
       "secrets": {

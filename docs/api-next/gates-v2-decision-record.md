@@ -26,14 +26,13 @@ Postgres. api-next has one runtime relational database per environment; posts,
 comments, votes, evidence, and action-grant consumption are not split across a
 control plane and community shards.
 
-The foundation includes domain schemas, the stable application adapter
-boundary and registry, the completion use case and transactional Postgres
-repository, adversarial and provider-transport conformance fixtures, dependency
-guards, and the Postgres ledger. The next provider-neutral slice adds
-transactional session start, exact configuration provenance, generic launch
-presentations, authenticated client completion, and raw signed-callback HTTP
-transport. The evaluator and real provider implementations remain separate
-slices.
+The implemented foundation includes domain schemas, the stable application
+adapter boundary and registry, transactional start and completion use cases,
+exact configuration provenance, generic launch presentations, callback trust
+modes, adversarial and provider-transport conformance fixtures, dependency
+guards, and the Postgres ledger. Self Pass is the first real adapter. The pure
+evaluator, ZKPassport, inventory resolvers, and protected-action application
+wiring remain separate slices.
 
 ## Claims, assurance, and scope
 
@@ -41,7 +40,8 @@ The canonical catalog distinguishes:
 
 - `human.live`: holder liveness;
 - `human.personhood`: personhood without implied liveness;
-- `human.unique`: issuer-scoped uniqueness;
+- `human.unique`: issuer-scoped person-level deduplication from a method whose
+  contract actually provides it;
 - `credential.subject_unique`: a stable credential subject without implied
   liveness;
 - `document.valid`, `document.holder_bound`, `age.minimum`,
@@ -58,13 +58,29 @@ was the document subject. It does not mean that the document is bound to a
 Pirate account; account ownership is represented only by a subject-key binding
 epoch.
 
+Self and ZKPassport both emit credential-derived
+`credential.subject_unique`, not `human.unique`. A person may hold multiple
+documents, and document attributes may change, so a document nullifier is not
+silently upgraded into person-level uniqueness. `human.unique` is reserved for
+methods whose contract provides person-level deduplication, such as a reviewed
+biometric-class method. Provider name alone is never sufficient: the manifest
+must name the contractual method and assurance supporting the claim.
+
 ZKPassport can emit `document.valid`, `nationality.allowed`, other disclosed
 document predicates, and `credential.subject_unique` with `document_zk`
 assurance. Nationality allowlists may be proven without disclosing the country;
 optional disclosure is represented separately in the typed assertion value.
-The subject key is scoped to its issuer and relying party. Very liveness
-remains a separate claim; a policy needing both claims must require a shared
-binding witness.
+Self Pass emits the same canonical claim class and currently uses
+`document_zk`; a stronger Self-specific assurance must not be introduced until
+the live method contract justifies it. The subject key is scoped to its issuer
+and relying party. Very liveness remains a separate claim; a policy needing
+both claims must require a shared binding witness.
+
+`document.valid` means that the provider accepted the cryptographic
+attestation and, for an expiring document, that its authenticated expiry date
+has not passed at the evidence observation time. Self Pass enforces the
+passport/ID expiry locally. Aadhaar's vendor output explicitly reports no
+expiry, so that credential is accepted without inventing one.
 
 Every uniqueness key contains its full namespace: `issuer`, `method`,
 `rp_scope`, and `subject_digest`, with an optional action scope when the method
@@ -97,12 +113,21 @@ completion rejection, while provider/config lookup failures remain unknown or
 indeterminate rather than becoming policy failures.
 
 Self and ZKPassport are parallel implementations of the same requirements.
-Self Enterprise maps exact matches to reviewed immutable dashboard flows;
-ZKPassport compiles dynamic community requirements into self-served queries.
+Self Pass compiles dynamic age, nationality, and gender requirements and runs
+the pinned `@selfxyz/core@1.2.0-beta.1` `SelfBackendVerifier` inside the
+Cloudflare Worker, as the previous production Worker did. Nationality and
+gender are disclosed by Self and checked against the immutable canonical
+requirements after cryptographic verification. ZKPassport compiles dynamic
+community requirements into self-served queries and uses its separate Node
+verifier service; the ZKPassport serverless constraint does not apply to Self.
+Self Enterprise remains an optional later method, not the launch path.
+
 The product may offer every provider whose plan is supported, and a user whose
 document is not covered by one provider can start a fresh ceremony with
 another. A nationality is never considered unsupported merely because one
-provider cannot verify that user's document.
+provider cannot verify that user's document. The initial static intent resolver
+contains only platform age-18 and age-21 intents; it is a trusted bootstrap
+bridge, not the community policy-authoring surface.
 
 For privacy-preserving membership proofs, `nationality.allowed` may assert only
 `{ allowed: true }`, with disclosure of the actual country optional. That
@@ -113,6 +138,31 @@ platform RP scope. Dashboard policy-version scopes are reserved for
 disclosure-only/template use because rotating them would fragment stable
 subject identity. Additional providers use the same manifest, plan, start,
 completion, and evidence seams without entering the policy language.
+
+Every Self Pass ceremony uses the pinned `pirate-social` RP scope. The
+per-intent scope and `unique_human` minting from the previous implementation
+are intentionally not carried over. Attestation type is receipt metadata under
+one `self.pass` method rather than a separate method namespace per document.
+The exact beta SDK pin is deliberate production parity; prerelease churn and
+the newer package's deprecation signal are accepted compatibility risks to be
+reviewed through an explicit upgrade, never a floating dependency range.
+
+## Session start and replay
+
+Session start is a reservation state machine keyed by actor and intent and
+bound to the canonical request hash. Acquisition commits before calling a
+provider, the provider call runs without a database lock, and finalization uses
+a monotonically increasing fencing token checked inside the transaction. The
+lease is derived from the manifest's enforced start deadline plus a margin.
+A matching finalized reservation replays the stored presentation; a matching
+active lease returns a typed retryable response with `Retry-After`; request
+drift is a terminal conflict. Provider failure releases the reservation, lease
+expiry permits a fresh fenced acquisition, and a stale finalizer cannot attach
+rows after a later generation acquires the intent.
+
+Completed starts return a distinct already-completed response without minting
+a new ceremony. Failed or expired terminal sessions require a new intent rather
+than silently replacing their history.
 
 ## Reward uniqueness
 
@@ -140,7 +190,8 @@ The evidence ledger records:
   `none`);
 - append-only receipts with explicit scope, evidence hash, observation time,
   the same trigger-checked provider-configuration provenance, protocol
-  metadata, source session, and optional subject-key linkage;
+  metadata, source session, bounded provider receipt metadata, and optional
+  subject-key linkage;
 - immutable issuer-scoped subject identities, append-only account-binding
   epochs, and a trigger-maintained active-binding projection; and
 - assertions with canonical claim ID, assurance, receipt, subject key, and a
@@ -156,12 +207,22 @@ and methods are data, not closed unions in the engine or contract.
 
 Assertion values are claim-specific runtime schemas rather than arbitrary
 JSON. Completion accepts an explicit `client_result`, `provider_callback`, or
-`poll_result` channel whose payload remains provider-local. Signed callbacks
-receive the exact raw body plus a bounded lowercase header map; callback
-authentication runs before local session lookup, and actor/provider identity is
-then derived from the stored session. The application returns an existing
-terminal result only for the same idempotency key and delegates one transaction
-that persists the winning evidence bundle and terminal session event together.
+`poll_result` channel whose payload remains provider-local. Callback adapters
+declare either `cryptographically_authenticated` or `session_bound_proof`
+trust. The former authenticates the raw callback before local session lookup.
+The latter may parse only an opaque high-entropy session identifier before
+lookup; cryptographic verification remains in completion against the stored
+session. Self Pass uses the session-bound mode: the generic callback route
+extracts the UUID, completion reconstructs `DefaultConfigStore` and
+`SelfBackendVerifier` from immutable session requirements and configuration,
+and the verified user-defined data must bind both proof-session ID and request
+hash. Platform authorization, cookies, Cloudflare Access credentials, and
+configured internal-auth headers are stripped before any adapter callback
+seam, even if a manifest requests them.
+
+The application returns an existing terminal result only for the same
+idempotency key and delegates one transaction that persists the winning
+evidence bundle and terminal session event together.
 The database clock is authoritative for the final expiry check and terminal
 timestamp; a slow provider cannot commit after expiry using a time captured
 before the upstream call. Concurrent callbacks may verify upstream more than
@@ -232,7 +293,9 @@ is still a later slice.
 forward-only PlanetScale Postgres ledger contains
 `0009_gates_v2_foundation.sql`, followed by
 `0010_proof_session_provenance.sql` for exact provider configuration and
-append-only client presentations. The earlier review-only two-delta foundation
+append-only client presentations, and
+`0011_verification_start_reservations.sql` for fenced start idempotency. The
+earlier review-only two-delta foundation
 sequence was never applied to a durable environment and was explicitly reset
 before the first deployment so the greenfield ledger contains no transitional
 subject-binding shape. This reset is documented in `db/postgres/README.md`;
@@ -251,3 +314,17 @@ transport harness with its injected upstream fake. If adding Self, ZKPassport,
 Very, World ID, Humanity, or another provider requires an engine, evidence
 schema, route, or contract-enum edit, the abstraction has failed and must be
 reviewed rather than expanded with another provider case.
+
+## Self Pass runtime evidence
+
+The Worker uses `nodejs_compat`, an exact SDK version, a literal lazy import,
+and the same verifier construction pattern proven in the previous production
+Worker. No Self VPS and no `CompiledWasm` Wrangler rule are required; the old
+repository's WASM rule belonged to unrelated code. The hermetic workerd suite
+constructs the pinned verifier and invokes its real verification path with a
+malformed proof to prove bundling and runtime compatibility. A successful
+cryptographic proof cannot be honestly fabricated as a timeless repository
+fixture, so positive-path acceptance requires a fresh external Self ceremony in
+staging after deployment is separately authorized. Self remains disabled in
+all checked-in Wrangler environments until that infrastructure and ceremony
+are explicitly authorized.

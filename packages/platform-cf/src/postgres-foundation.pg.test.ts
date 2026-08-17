@@ -62,6 +62,12 @@ const gatesV2MigrationSql = await Bun.file(
 const proofSessionProvenanceMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0010_proof_session_provenance.sql", import.meta.url),
 ).text();
+const verificationStartReservationsMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0011_verification_start_reservations.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -116,6 +122,11 @@ const proofSessionProvenanceMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0010_proof_session_provenance.sql"] ?? "",
   sql: proofSessionProvenanceMigrationSql,
 };
+const verificationStartReservationsMigration: PostgresMigration = {
+  version: "0011_verification_start_reservations.sql",
+  checksum: checksumManifest.migrations["0011_verification_start_reservations.sql"] ?? "",
+  sql: verificationStartReservationsMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -127,6 +138,7 @@ const migrations: readonly PostgresMigration[] = [
   communityRouteSlugMigration,
   gatesV2Migration,
   proofSessionProvenanceMigration,
+  verificationStartReservationsMigration,
 ];
 
 function checksum(value: string): string {
@@ -277,6 +289,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(proofSessionProvenanceMigrationSql)).toBe(
         proofSessionProvenanceMigration.checksum,
       );
+      expect(checksum(verificationStartReservationsMigrationSql)).toBe(
+        verificationStartReservationsMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -331,6 +346,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "subject_keys",
         "used_action_grants",
         "users",
+        "verification_start_reservations",
       ]);
 
       const gateTriggers = await admin.query<{ trigger_name: string }>(
@@ -503,7 +519,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
 
   test("refuses to invent provider configuration for an unexpected existing session", async () => {
     await withSchema(async (admin, scopedConnectionString) => {
-      await applyMigrations(scopedConnectionString, migrations.slice(0, -1));
+      await applyMigrations(
+        scopedConnectionString,
+        migrations.slice(0, migrations.indexOf(proofSessionProvenanceMigration)),
+      );
       await admin.query("INSERT INTO users (user_id) VALUES ('unexpected-user')");
       await admin.query(`INSERT INTO proof_sessions (
         proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,

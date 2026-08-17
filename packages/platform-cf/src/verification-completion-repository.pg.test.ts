@@ -193,6 +193,7 @@ function evidenceBundle(session: ProofSession, evidenceHash: string): EvidenceBu
         provenance_kind: "proof_session",
         evidence_kind: "document",
         evidence_hash: evidenceHash,
+        metadata: { credential_type: "test_document", source_attestation_id: "test-1" },
         observed_at: "2026-08-17T00:20:00.000Z",
         subject_key_id: "provider-subject",
       },
@@ -270,6 +271,14 @@ suite("Postgres 17 verification completion repository", () => {
       }
       const assertions = await admin.query<{ count: string }>("SELECT count(*) FROM assertions");
       expect(assertions.rows[0]?.count).toBe("2");
+      const receiptMetadata = await admin.query<{ receipt_metadata: unknown }>(
+        "SELECT receipt_metadata FROM evidence_receipts WHERE proof_session_id = $1",
+        [session.id],
+      );
+      expect(receiptMetadata.rows[0]?.receipt_metadata).toEqual({
+        credential_type: "test_document",
+        source_attestation_id: "test-1",
+      });
       const loaded = await Effect.runPromise(
         Effect.scoped(store.load({ proof_session_id: session.id })),
       );

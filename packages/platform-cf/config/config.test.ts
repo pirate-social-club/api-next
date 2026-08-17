@@ -43,4 +43,27 @@ describe("config system (000 §9)", () => {
       }),
     ).toThrow();
   });
+
+  test("Self stays disabled unless explicitly configured", () => {
+    const configured = loadConfigFrom(HttpWorkerConfig, {
+      API_NEXT_ENV: "development",
+      CORS_ORIGIN: "https://pirate.app",
+      PIRATE_APP_JWT_PRIVATE_KEY: "private",
+      PIRATE_APP_JWT_PUBLIC_KEY: "public",
+      PRIVY_APP_ID: "privy",
+      PRIVY_APP_SECRET: "secret",
+      PRIVY_JWKS_URL: "https://privy.test/jwks",
+      PRIVY_JWT_ISSUER: "privy",
+      PRIVY_JWT_AUDIENCE: "pirate",
+      AUTH_UPSTREAM_JWT_JWKS_URL: "https://issuer.test/jwks",
+      AUTH_UPSTREAM_JWT_ISSUER: "issuer",
+      AUTH_UPSTREAM_JWT_AUDIENCE: "pirate",
+    });
+    expect(configured).toMatchObject({
+      SELF_PASS_ENABLED: false,
+      SELF_PASS_MOCK_PASSPORT: false,
+      SELF_PASS_APP_NAME: "Pirate",
+      PIRATE_API_PUBLIC_ORIGIN: "",
+    });
+  });
 });

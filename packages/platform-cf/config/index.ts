@@ -66,6 +66,15 @@ export const secret = (name: string): Config.Config<RedactedType<string>> =>
 export const HttpWorkerConfig = Config.all({
   API_NEXT_ENV: AppEnv,
   CORS_ORIGIN: Config.nonEmptyString("CORS_ORIGIN"),
+  PIRATE_API_PUBLIC_ORIGIN: Config.string("PIRATE_API_PUBLIC_ORIGIN").pipe(Config.withDefault("")),
+  SELF_PASS_ENABLED: Config.boolean("SELF_PASS_ENABLED").pipe(Config.withDefault(false)),
+  SELF_PASS_APP_NAME: Config.string("SELF_PASS_APP_NAME").pipe(Config.withDefault("Pirate")),
+  SELF_PASS_MOCK_PASSPORT: Config.boolean("SELF_PASS_MOCK_PASSPORT").pipe(
+    Config.withDefault(false),
+  ),
+  VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: Config.string(
+    "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS",
+  ).pipe(Config.withDefault("")),
   PIRATE_APP_JWT_PRIVATE_KEY: secret("PIRATE_APP_JWT_PRIVATE_KEY"),
   PIRATE_APP_JWT_PUBLIC_KEY: secret("PIRATE_APP_JWT_PUBLIC_KEY"),
   PIRATE_APP_JWT_ISSUER: Config.string("PIRATE_APP_JWT_ISSUER").pipe(

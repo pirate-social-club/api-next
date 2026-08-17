@@ -63,6 +63,14 @@ const SELF_PASS_CLAIMS = [
 export const SELF_PASS_MANIFEST: Schema.Schema.Type<typeof ProofProviderManifest> = {
   provider_id: SELF_PASS_PROVIDER_ID,
   manifest_version: "1",
+  operation_deadlines: {
+    plan_ms: 1_000,
+    start_ms: 1_000,
+    complete_ms: 120_000,
+    callback_ms: 1_000,
+  },
+  callback_mode: "session_bound_proof",
+  callback_header_allowlist: [],
   protocol_versions: [SELF_PASS_PROTOCOL_VERSION],
   environments: ["test", "development", "staging", "production"],
   supported_methods: ["document"],
@@ -128,7 +136,7 @@ export type SelfPassAdapterOptions = Readonly<{
 }>;
 
 const AttestationIdSchema = Schema.Literals([1, 2, 3, 4]);
-const SelfBigNumberish = Schema.Union(Schema.String, Schema.Number);
+const SelfBigNumberish = Schema.Union([Schema.String, Schema.Number]);
 const SelfProof = Schema.Struct({
   a: Schema.Tuple([SelfBigNumberish, SelfBigNumberish]),
   b: Schema.Tuple([
@@ -168,7 +176,11 @@ type CanonicalSelfSubmission = Readonly<{
 
 const SelfUserDefinedData = Schema.Struct({
   proof_session_id: Schema.String.check(
-    Schema.makeFilter((value) => value.length >= 16 && !/\s/u.test(value)),
+    Schema.makeFilter((value) =>
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)
+        ? undefined
+        : "Expected a canonical UUID proof-session identifier",
+    ),
   ),
   request_hash: SelfPassRequestHash,
 });
@@ -185,6 +197,7 @@ const SelfResult = Schema.Struct({
     nullifier: Schema.String,
     nationality: Schema.String,
     gender: Schema.String,
+    expiryDate: Schema.String,
     minimumAge: Schema.optional(Schema.String),
     minimum_age: Schema.optional(Schema.String),
     olderThan: Schema.optional(Schema.String),
@@ -294,9 +307,9 @@ function fixedScope(input: Pick<VerificationProviderStartInput, "scope">): boole
 
 function compileDisclosures(requirements: readonly VerificationRequirement[]) {
   const disclosures: {
-    readonly minimum_age?: number;
-    readonly nationality?: true;
-    readonly gender?: true;
+    minimum_age?: number;
+    nationality?: true;
+    gender?: true;
   } = {};
   for (const requirement of requirements) {
     if (requirement.claim_id === "age.minimum")
@@ -333,8 +346,8 @@ function validAppName(appName: string): boolean {
   return appName.length > 0 && appName.length <= 128 && appName.trim() === appName;
 }
 
-function endpointType(environment: string): "https" | "staging_https" {
-  return environment === "production" ? "https" : "staging_https";
+function endpointType(mockPassport: boolean): "https" | "staging_https" {
+  return mockPassport ? "staging_https" : "https";
 }
 
 function mockPassportAllowed(environment: string, mockPassport: boolean): boolean {
@@ -374,12 +387,20 @@ function decodeHexUtf8(value: string): string | undefined {
   }
 }
 
+function decodeUserDefinedJson(value: string): Option.Option<SelfUserDefinedData> {
+  try {
+    return Schema.decodeUnknownOption(SelfUserDefinedData)(JSON.parse(value) as unknown);
+  } catch {
+    return Option.none();
+  }
+}
+
 function decodeSelfUserDefinedData(value: string): Option.Option<SelfUserDefinedData> {
-  const decoded = Schema.decodeUnknownOption(SelfUserDefinedData)(value);
+  const decoded = decodeUserDefinedJson(value);
   if (Option.isSome(decoded)) return decoded;
   const hex = decodeHexUtf8(value);
   if (hex === undefined) return Option.none();
-  return Schema.decodeUnknownOption(SelfUserDefinedData)(hex);
+  return decodeUserDefinedJson(hex);
 }
 
 function decodeCallbackContext(value: string): Option.Option<SelfUserDefinedData> {
@@ -387,7 +408,7 @@ function decodeCallbackContext(value: string): Option.Option<SelfUserDefinedData
   // Self reserves the first 128 hex characters for user identifier/context.
   if (normalized.length <= 128) return Option.none();
   return Option.fromNullishOr(decodeHexUtf8(normalized.slice(128))).pipe(
-    Option.flatMap((tail) => Schema.decodeUnknownOption(SelfUserDefinedData)(tail)),
+    Option.flatMap(decodeUserDefinedJson),
   );
 }
 
@@ -415,6 +436,57 @@ function minimumAge(result: DecodedSelfResult): string | undefined {
   return value;
 }
 
+function canonicalDocumentExpiry(
+  attestationId: AttestationId,
+  value: string,
+  observedAt: CanonicalIsoInstant,
+): string | undefined {
+  if (attestationId === 3) return value === "UNAVAILABLE" ? "UNAVAILABLE" : undefined;
+  const expectedLength = attestationId === 4 ? 8 : 6;
+  if (value.length !== expectedLength || !/^[0-9]+$/u.test(value)) return undefined;
+
+  const observedYear = new Date(observedAt).getUTCFullYear();
+  let year: number;
+  let monthOffset: number;
+  if (expectedLength === 8) {
+    year = Number(value.slice(0, 4));
+    monthOffset = 4;
+  } else {
+    year = Math.floor(observedYear / 100) * 100 + Number(value.slice(0, 2));
+    // MRZ expiry dates carry two-digit years. Resolve only the bounded window
+    // relevant to a live credential; ambiguous far-future values fail closed
+    // into the prior century instead of granting decades of extra validity.
+    if (year < observedYear - 80) year += 100;
+    if (year > observedYear + 20) year -= 100;
+    monthOffset = 2;
+  }
+  const month = Number(value.slice(monthOffset, monthOffset + 2));
+  const day = Number(value.slice(monthOffset + 2, monthOffset + 4));
+  const expiry = new Date(Date.UTC(year, month - 1, day));
+  if (
+    expiry.getUTCFullYear() !== year ||
+    expiry.getUTCMonth() !== month - 1 ||
+    expiry.getUTCDate() !== day
+  ) {
+    return undefined;
+  }
+  const canonical = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  return canonical >= observedAt.slice(0, 10) ? canonical : undefined;
+}
+
+function credentialType(attestationId: AttestationId): string {
+  switch (attestationId) {
+    case 1:
+      return "passport";
+    case 2:
+      return "biometric_id_card";
+    case 3:
+      return "aadhaar";
+    case 4:
+      return "selfrica_id_card";
+  }
+}
+
 function decodeSubmission(
   value: unknown,
 ): Effect.Effect<CanonicalSelfSubmission, VerificationProviderRejected> {
@@ -425,7 +497,7 @@ function decodeSubmission(
       ...(camel.value.session_id === undefined ? {} : { session_id: camel.value.session_id }),
       attestation_id: camel.value.attestationId,
       proof: camel.value.proof as SelfPassProof,
-      public_signals: camel.value.publicSignals as SelfPassPublicSignals,
+      public_signals: [...camel.value.publicSignals] as SelfPassPublicSignals,
       user_context_data: camel.value.userContextData,
     });
   }
@@ -436,7 +508,7 @@ function decodeSubmission(
       ...(snake.value.session_id === undefined ? {} : { session_id: snake.value.session_id }),
       attestation_id: snake.value.attestation_id,
       proof: snake.value.proof as SelfPassProof,
-      public_signals: snake.value.public_signals as SelfPassPublicSignals,
+      public_signals: [...snake.value.public_signals] as SelfPassPublicSignals,
       user_context_data: snake.value.user_context_data,
     });
   }
@@ -474,7 +546,12 @@ function decodeCallbackDigest(
   return Option.isSome(decoded) ? Effect.succeed(decoded.value) : Effect.fail(rejected("callback"));
 }
 
-function flowScope(session: ProofSession): SubjectScope | undefined {
+type NamedSelfPassScope = Extract<
+  SubjectScope,
+  { readonly kind: "named"; readonly scope_semantics: "issuer_rp_scope" }
+>;
+
+function flowScope(session: ProofSession): NamedSelfPassScope | undefined {
   return session.scope.kind === "named" && session.scope.scope_semantics === "issuer_rp_scope"
     ? session.scope
     : undefined;
@@ -522,11 +599,13 @@ function assertionFor(
 function validateClaims(
   session: ProofSession,
   result: DecodedSelfResult,
+  observedAt: CanonicalIsoInstant,
 ): Effect.Effect<
   Readonly<{
     nationality?: Iso3166Alpha2;
     gender?: "female" | "male" | "unspecified";
     minimum_age?: string;
+    document_expiry?: string;
   }>,
   VerificationProviderRejected
 > {
@@ -549,10 +628,17 @@ function validateClaims(
   const age = minimumAge(result);
   const nationality = normalizeSelfCountry(result.discloseOutput.nationality);
   const gender = normalizeGender(result.discloseOutput.gender);
+  const documentExpiry = canonicalDocumentExpiry(
+    result.attestationId,
+    result.discloseOutput.expiryDate,
+    observedAt,
+  );
   for (const requirement of session.requested_requirements) {
     switch (requirement.claim_id) {
       case "credential.subject_unique":
+        break;
       case "document.valid":
+        if (documentExpiry === undefined) return Effect.fail(rejected("complete"));
         break;
       case "age.minimum":
         if (age === undefined || BigInt(age) < BigInt(requirement.minimum_age)) {
@@ -577,6 +663,7 @@ function validateClaims(
     ...(age === undefined ? {} : { minimum_age: age }),
     ...(nationality === undefined ? {} : { nationality }),
     ...(gender === undefined ? {} : { gender }),
+    ...(documentExpiry === undefined ? {} : { document_expiry: documentExpiry }),
   });
 }
 
@@ -588,12 +675,13 @@ function evidenceBundle(
     nationality?: Iso3166Alpha2;
     gender?: "female" | "male" | "unspecified";
     minimum_age?: string;
+    document_expiry?: string;
   }>,
-  runtime: Pick<SelfPassAdapterOptions, "clock" | "identifiers" | "digest">,
+  observed_at: CanonicalIsoInstant,
+  runtime: Pick<SelfPassAdapterOptions, "identifiers" | "digest">,
 ): Effect.Effect<EvidenceBundle, VerificationProviderFailure> {
   const scope = flowScope(session);
   if (scope === undefined) return Effect.fail(rejected("complete"));
-  const observed_at = runtime.clock.now();
   const receipt_id = runtime.identifiers.next("receipt");
   const subject_key_id = runtime.identifiers.next("subject");
   const binding_group_id = runtime.identifiers.next("binding");
@@ -603,6 +691,7 @@ function evidenceBundle(
     minimum_age: normalized.minimum_age,
     nationality: normalized.nationality,
     gender: normalized.gender,
+    document_expiry: normalized.document_expiry,
   };
   const evidence_hash_input = JSON.stringify({
     proof_session_id: session.id,
@@ -648,6 +737,10 @@ function evidenceBundle(
           provenance_kind: "proof_session" as const,
           evidence_kind: `self.pass.attestation.${submission.attestation_id}`,
           evidence_hash,
+          metadata: {
+            credential_type: credentialType(submission.attestation_id),
+            source_attestation_id: String(submission.attestation_id),
+          },
           observed_at,
           subject_key_id,
         },
@@ -777,7 +870,7 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
       const launch: SelfPassLaunch = {
         app_name: options.app_name,
         endpoint: callbackEndpoint(options.callback_origin),
-        endpoint_type: endpointType(input.environment),
+        endpoint_type: endpointType(options.mock_passport),
         scope: SELF_PASS_RP_SCOPE,
         session_id,
         user_id,
@@ -864,21 +957,22 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
                     ),
                   ),
                 ),
-                Effect.flatMap((result) =>
-                  validateClaims(input.session, result).pipe(
-                    Effect.map((normalized) => ({ submission, result, normalized })),
-                  ),
-                ),
+                Effect.flatMap((result) => {
+                  const observed_at = options.clock.now();
+                  return validateClaims(input.session, result, observed_at).pipe(
+                    Effect.map((normalized) => ({ submission, result, normalized, observed_at })),
+                  );
+                }),
               );
             }),
           );
         }),
-        Effect.flatMap(({ submission, result, normalized }) =>
-          evidenceBundle(input.session, submission, result, normalized, options),
+        Effect.flatMap(({ submission, result, normalized, observed_at }) =>
+          evidenceBundle(input.session, submission, result, normalized, observed_at, options),
         ),
       );
     },
-    verifyCallback: (input: VerificationProviderCallbackInput) => {
+    resolveCallback: (input: VerificationProviderCallbackInput) => {
       const parsed = (() => {
         try {
           return JSON.parse(input.raw_body) as unknown;
