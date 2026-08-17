@@ -20,7 +20,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 4;
+const foundationTestCount = 5;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -55,6 +55,12 @@ const publicProfileInvariantMigrationSql = await Bun.file(
 ).text();
 const communityRouteSlugMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0008_community_route_slug.sql", import.meta.url),
+).text();
+const gatesV2MigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0009_gates_v2_evidence_and_action_grants.sql",
+    import.meta.url,
+  ),
 ).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
@@ -100,6 +106,11 @@ const communityRouteSlugMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0008_community_route_slug.sql"] ?? "",
   sql: communityRouteSlugMigrationSql,
 };
+const gatesV2Migration: PostgresMigration = {
+  version: "0009_gates_v2_evidence_and_action_grants.sql",
+  checksum: checksumManifest.migrations["0009_gates_v2_evidence_and_action_grants.sql"] ?? "",
+  sql: gatesV2MigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -109,6 +120,7 @@ const migrations: readonly PostgresMigration[] = [
   publicProfileMigration,
   publicProfileInvariantMigration,
   communityRouteSlugMigration,
+  gatesV2Migration,
 ];
 
 function checksum(value: string): string {
@@ -230,7 +242,21 @@ async function expectForeignKeyFailure(
   }
 }
 
-suite("Postgres 17 v1 foundation", () => {
+async function expectPostgresFailure(
+  admin: Client,
+  code: string,
+  text: string,
+  values: readonly unknown[],
+): Promise<void> {
+  try {
+    await admin.query({ text, values: [...values] });
+    throw new Error(`expected PostgreSQL error ${code}`);
+  } catch (error) {
+    expect(error).toMatchObject({ code });
+  }
+}
+
+suite("Postgres 17 product and gates v2 foundation", () => {
   test("applies all migrations and matches the cumulative schema source", async () => {
     await withSchema(async (admin, scopedConnectionString, schema) => {
       expect(checksum(migrationSql)).toBe(migration.checksum);
@@ -241,6 +267,7 @@ suite("Postgres 17 v1 foundation", () => {
         publicProfileInvariantMigration.checksum,
       );
       expect(checksum(communityRouteSlugMigrationSql)).toBe(communityRouteSlugMigration.checksum);
+      expect(checksum(gatesV2MigrationSql)).toBe(gatesV2Migration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -262,19 +289,59 @@ suite("Postgres 17 v1 foundation", () => {
       );
       expect(tables.rows.map((row) => row.table_name).sort()).toEqual([
         "account_aliases",
+        "action_challenges",
+        "action_grants",
+        "action_intents",
+        "assertion_bindings",
+        "assertion_revalidation_events",
+        "assertions",
         "comments",
         "communities",
         "community_feed_projection",
         "community_follows",
         "community_memberships",
+        "community_policy_current",
+        "decision_records",
+        "evidence_receipts",
         "home_feed_projection",
         "moderation_actions",
         "moderation_reports",
+        "observations",
+        "policy_versions",
         "post_votes",
         "posts",
+        "proof_sessions",
         "public_handle_index",
         "schema_migrations",
+        "subject_keys",
+        "used_action_grants",
         "users",
+      ]);
+
+      const gateTriggers = await admin.query<{ trigger_name: string }>(
+        `SELECT trigger.tgname AS trigger_name
+         FROM pg_trigger AS trigger
+         JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+         JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+         WHERE namespace.nspname = current_schema()
+           AND NOT trigger.tgisinternal
+           AND (trigger.tgname LIKE '%_append_only'
+             OR trigger.tgname IN ('evidence_receipts_validate_metadata', 'assertions_validate_binding'))
+         ORDER BY trigger.tgname`,
+      );
+      expect(gateTriggers.rows.map((row) => row.trigger_name)).toEqual([
+        "action_grants_append_only",
+        "assertion_bindings_append_only",
+        "assertion_revalidation_events_append_only",
+        "assertions_append_only",
+        "assertions_validate_binding",
+        "decision_records_append_only",
+        "evidence_receipts_append_only",
+        "evidence_receipts_validate_metadata",
+        "observations_append_only",
+        "policy_versions_append_only",
+        "subject_keys_append_only",
+        "used_action_grants_append_only",
       ]);
 
       const columns = await admin.query<{
@@ -361,6 +428,367 @@ suite("Postgres 17 v1 foundation", () => {
     completedTestCount += 1;
   });
 
+  test("enforces gates v2 scope, co-reference, policy, and action-grant invariants", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      await applyMigrations(scopedConnectionString, migrations);
+      const now = new Date("2026-08-17T00:00:00.000Z");
+      const later = new Date("2026-08-18T00:00:00.000Z");
+      const requestHash = "1".repeat(64);
+      const evidenceHash = "2".repeat(64);
+      const subjectDigest = "3".repeat(64);
+
+      await admin.query({
+        text: "INSERT INTO users (user_id) VALUES ($1), ($2)",
+        values: ["user-a", "user-b"],
+      });
+      await admin.query({
+        text: "INSERT INTO communities (community_id, display_name, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $4)",
+        values: ["community-a", "Community A", "user-a", now],
+      });
+      await admin.query({
+        text: `INSERT INTO proof_sessions (
+          proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+          scope_kind, issuer_rp_scope, protocol_version, environment, status,
+          requested_claim_ids, started_at, expires_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'issuer_rp_scope', $8, $9, $10,
+          'completed', $11::jsonb, $12, $13)`,
+        values: [
+          "session-a",
+          "user-a",
+          "intent-a",
+          requestHash,
+          "test.fake",
+          "document",
+          "test.fake",
+          "pirate.example",
+          "fake-v2",
+          "test",
+          JSON.stringify(["document.valid", "credential.subject_unique"]),
+          now,
+          later,
+        ],
+      });
+      await admin.query({
+        text: `INSERT INTO subject_keys (
+          subject_key_id, user_id, issuer, method, scope_kind, issuer_rp_scope,
+          subject_digest, digest_algorithm, created_at
+        ) VALUES ($1, $2, $3, $4, 'issuer_rp_scope', $5, $6, 'sha256', $7)`,
+        values: [
+          "subject-a",
+          "user-a",
+          "test.fake",
+          "document",
+          "pirate.example",
+          subjectDigest,
+          now,
+        ],
+      });
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO subject_keys (
+          subject_key_id, user_id, issuer, method, scope_kind, issuer_rp_scope,
+          subject_digest, digest_algorithm, created_at
+        ) VALUES ($1, $2, $3, $4, 'issuer_rp_scope', $5, $6, 'sha256', $7)`,
+        [
+          "subject-duplicate",
+          "user-b",
+          "test.fake",
+          "document",
+          "pirate.example",
+          subjectDigest,
+          now,
+        ],
+      );
+      await admin.query({
+        text: `INSERT INTO subject_keys (
+          subject_key_id, user_id, issuer, method, scope_kind, issuer_rp_scope,
+          subject_digest, digest_algorithm, created_at
+        ) VALUES ($1, $2, $3, $4, 'issuer_rp_scope', $5, $6, 'sha256', $7)`,
+        values: [
+          "subject-other-scope",
+          "user-b",
+          "test.fake",
+          "document",
+          "other.example",
+          subjectDigest,
+          now,
+        ],
+      });
+      await admin.query({
+        text: `INSERT INTO subject_keys (
+          subject_key_id, user_id, issuer, method, scope_kind, issuer_rp_scope,
+          subject_digest, digest_algorithm, created_at
+        ) VALUES ($1, $2, $3, $4, 'issuer_rp_scope', $5, $6, 'sha256', $7)`,
+        values: [
+          "subject-b",
+          "user-a",
+          "test.fake",
+          "document",
+          "pirate.example",
+          "4".repeat(64),
+          now,
+        ],
+      });
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO evidence_receipts (
+          evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method,
+          scope_kind, issuer_rp_scope, protocol_version, environment, evidence_kind,
+          evidence_hash, receipt_metadata, observed_at, provenance_kind, subject_key_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'issuer_rp_scope', $7, $8, $9, $10, $11,
+          '{}'::jsonb, $12, 'proof_session', $13)`,
+        [
+          "receipt-wrong-provider",
+          "session-a",
+          "user-a",
+          "other.fake",
+          "test.fake",
+          "document",
+          "pirate.example",
+          "fake-v2",
+          "test",
+          "document",
+          "a".repeat(64),
+          now,
+          "subject-a",
+        ],
+      );
+      await admin.query({
+        text: `INSERT INTO evidence_receipts (
+          evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method,
+          scope_kind, issuer_rp_scope, protocol_version, environment, evidence_kind,
+          evidence_hash, receipt_metadata, observed_at, provenance_kind, subject_key_id
+        ) VALUES ($1, $2, $3, $4, $5, $6, 'issuer_rp_scope', $7, $8, $9, $10, $11,
+          '{}'::jsonb, $12, 'proof_session', $13)`,
+        values: [
+          "receipt-a",
+          "session-a",
+          "user-a",
+          "test.fake",
+          "test.fake",
+          "document",
+          "pirate.example",
+          "fake-v2",
+          "test",
+          "document",
+          evidenceHash,
+          now,
+          "subject-a",
+        ],
+      });
+      await admin.query({
+        text: `INSERT INTO assertion_bindings (
+          binding_group_id, user_id, binding_mode, subject_key_id
+        ) VALUES ($1, $2, 'same_subject', $3), ($4, $2, 'same_subject', $5)`,
+        values: ["binding-a", "user-a", "subject-a", "binding-b", "subject-b"],
+      });
+      await admin.query({
+        text: `INSERT INTO assertions (
+          assertion_id, binding_group_id, evidence_receipt_id, subject_key_id, user_id,
+          claim_id, assertion_value, assurance, observed_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)`,
+        values: [
+          "assertion-a",
+          "binding-a",
+          "receipt-a",
+          "subject-a",
+          "user-a",
+          "credential.subject_unique",
+          JSON.stringify({ subject_unique: true }),
+          "document_zk",
+          now,
+        ],
+      });
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO assertions (
+          assertion_id, binding_group_id, evidence_receipt_id, subject_key_id, user_id,
+          claim_id, assertion_value, assurance, observed_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, '{}'::jsonb, $7, $8)`,
+        [
+          "assertion-wrong-anchor",
+          "binding-b",
+          "receipt-a",
+          "subject-a",
+          "user-a",
+          "document.valid",
+          "document_zk",
+          now,
+        ],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "UPDATE assertions SET assurance = $1 WHERE assertion_id = $2",
+        ["provider_attested", "assertion-a"],
+      );
+
+      const inventoryResponseHash = "b".repeat(64);
+      for (const tokenId of ["1", "2"]) {
+        const assetId = `eip155:137/erc721:0x0000000000000000000000000000000000000001/${tokenId}`;
+        await admin.query({
+          text: `INSERT INTO observations (
+            observation_id, user_id, resolver_id, source_id, claim_id, observation_kind,
+            subject_ref, observation_value, chain_id, account_caip10, asset_caip19,
+            aggregation_mode, trust_mode, completeness, snapshot_ref, source_response_hash,
+            descriptor_version, observed_at
+          ) VALUES ($1, 'user-a', 'courtyard', 'inventory-response-1', 'asset.ownership',
+            'asset_inventory', 'wallet-a', $3::jsonb, 'eip155:137',
+            'eip155:137:0x000000000000000000000000000000000000000a', $2, 'any_wallet',
+            'provider_asserted', 'complete',
+            '{"kind":"provider_snapshot","reference":"inventory-response-1"}'::jsonb,
+            $4, '1', $5)`,
+          values: [
+            `observation-${tokenId}`,
+            assetId,
+            JSON.stringify({
+              kind: "asset_inventory",
+              chain_id: "eip155:137",
+              account_id: "eip155:137:0x000000000000000000000000000000000000000a",
+              asset_id: assetId,
+              quantity: "1",
+              descriptor: {
+                schema_version: "1",
+                chain_id: "eip155:137",
+                asset_id: assetId,
+                contract_address: "0x0000000000000000000000000000000000000001",
+                token_id: tokenId,
+                normalized_match: `courtyard-token-${tokenId}`,
+                match_semantics: "exact",
+              },
+            }),
+            inventoryResponseHash,
+            now,
+          ],
+        });
+      }
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO observations (
+          observation_id, user_id, resolver_id, source_id, claim_id, observation_kind,
+          subject_ref, observation_value, chain_id, aggregation_mode, trust_mode, completeness,
+          snapshot_ref, source_response_hash, descriptor_version, observed_at
+        ) VALUES ('observation-invalid', 'user-a', 'predicate', 'response-2',
+          'disclosed.predicate', 'disclosed_predicate', 'user-a', $1::jsonb, 'eip155:137',
+          'single_wallet', 'provider_asserted', 'complete', $2::jsonb, $3, '1', $4)`,
+        [
+          JSON.stringify({ kind: "disclosed_predicate", predicate: "eligible", value: true }),
+          JSON.stringify({ kind: "provider_snapshot", reference: "response-2" }),
+          "c".repeat(64),
+          now,
+        ],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "UPDATE observations SET completeness = 'partial' WHERE observation_id = $1",
+        ["observation-1"],
+      );
+
+      const policyRows = [
+        ["policy-access-v2", "access", "5".repeat(64)],
+        ["policy-reward-v2", "reward", "6".repeat(64)],
+      ] as const;
+      for (const [policyVersionId, policyKey, policyHash] of policyRows) {
+        await admin.query({
+          text: `INSERT INTO policy_versions (
+            policy_version_id, community_id, policy_key, revision, policy_hash, policy,
+            compiled_plan, compiler_version, uniqueness_model, created_by_user_id, published_at
+          ) VALUES ($1, 'community-a', $2, 1, $3, '{}'::jsonb, '{}'::jsonb, 'v2',
+            '{}'::jsonb, 'user-a', $4)`,
+          values: [policyVersionId, policyKey, policyHash, now],
+        });
+        await admin.query({
+          text: `INSERT INTO community_policy_current (
+            community_id, policy_key, policy_version_id, activated_at
+          ) VALUES ('community-a', $1, $2, $3)`,
+          values: [policyKey, policyVersionId, now],
+        });
+      }
+      expect(
+        (
+          await admin.query<{ count: string }>(
+            "SELECT count(*) FROM community_policy_current WHERE community_id = 'community-a'",
+          )
+        ).rows[0]?.count,
+      ).toBe("2");
+      await expectPostgresFailure(
+        admin,
+        "23503",
+        `INSERT INTO decision_records (
+          decision_record_id, community_id, user_id, policy_version_id, policy_hash,
+          evaluation_mode, outcome, winning_witness
+        ) VALUES ($1, 'community-a', 'user-a', $2, $3, 'enforce', 'pass', '["open"]'::jsonb)`,
+        ["decision-wrong-hash", "policy-access-v2", "6".repeat(64)],
+      );
+
+      for (const [intentId, payloadHash] of [
+        ["action-intent-a", "7".repeat(64)],
+        ["action-intent-b", "8".repeat(64)],
+      ] as const) {
+        await admin.query({
+          text: `INSERT INTO action_intents (
+            action_intent_id, user_id, community_id, action_kind, action_scope,
+            action_payload_hash, intent_binding_hash, idempotency_key, status, expires_at
+          ) VALUES ($1, 'user-a', 'community-a', 'create_post', 'community-a', $2, $3,
+            $1, 'open', $4)`,
+          values: [intentId, payloadHash, "9".repeat(64), later],
+        });
+      }
+      await admin.query({
+        text: `INSERT INTO action_challenges (
+          action_challenge_id, action_intent_id, provider_id, challenge_hash, status,
+          issued_at, expires_at
+        ) VALUES ('challenge-a', 'action-intent-a', 'altcha', $1, 'verified', $2, $3),
+          ('challenge-b', 'action-intent-b', 'altcha', $4, 'verified', $2, $3)`,
+        values: ["a".repeat(64), now, later, "b".repeat(64)],
+      });
+      await expectPostgresFailure(
+        admin,
+        "23503",
+        `INSERT INTO action_grants (
+          action_grant_id, action_intent_id, action_challenge_id, user_id, provider_id,
+          action_kind, action_scope, action_payload_hash, grant_nonce, signed_grant,
+          signer_key_id, issued_at, expires_at
+        ) VALUES ('grant-wrong', 'action-intent-a', 'challenge-b', 'user-a', 'altcha',
+          'create_post', 'community-a', $1, 'nonce-wrong', 'signed', 'key-1', $2, $3)`,
+        ["7".repeat(64), now, later],
+      );
+      await admin.query({
+        text: `INSERT INTO action_grants (
+          action_grant_id, action_intent_id, action_challenge_id, user_id, provider_id,
+          action_kind, action_scope, action_payload_hash, grant_nonce, signed_grant,
+          signer_key_id, issued_at, expires_at
+        ) VALUES ('grant-a', 'action-intent-a', 'challenge-a', 'user-a', 'altcha',
+          'create_post', 'community-a', $1, 'nonce-a', 'signed', 'key-1', $2, $3)`,
+        values: ["7".repeat(64), now, later],
+      });
+      await expectPostgresFailure(
+        admin,
+        "23503",
+        `INSERT INTO used_action_grants (
+          grant_nonce, action_grant_id, action_intent_id, action_kind, action_scope,
+          action_payload_hash, action_result_ref
+        ) VALUES ('nonce-a', 'grant-a', 'action-intent-a', 'create_post', 'other-community',
+          $1, 'post-a')`,
+        ["7".repeat(64)],
+      );
+      await admin.query({
+        text: `INSERT INTO used_action_grants (
+          grant_nonce, action_grant_id, action_intent_id, action_kind, action_scope,
+          action_payload_hash, action_result_ref
+        ) VALUES ('nonce-a', 'grant-a', 'action-intent-a', 'create_post', 'community-a',
+          $1, 'post-a')`,
+        values: ["7".repeat(64)],
+      });
+    });
+    completedTestCount += 1;
+  });
+
   test("rejects duplicate, out-of-order, and checksum-mismatched migrations", async () => {
     await withSchema(async (_admin, scopedConnectionString) => {
       const duplicate = await applyMigrations(scopedConnectionString, [migration, migration]).catch(
@@ -383,7 +811,7 @@ suite("Postgres 17 v1 foundation", () => {
       expect(mismatch).toBeInstanceOf(MigrationLedgerMismatch);
       expect(mismatch).toMatchObject({ version: migration.version });
 
-      const secondMigration = { ...migration, version: "0002_v1_follow-up.sql" };
+      const secondMigration = { ...migration, version: "0002_follow-up.sql" };
       await withSchema(async (_admin, secondScopedConnectionString) => {
         await applyMigrations(secondScopedConnectionString, [secondMigration]);
         const gap = await applyMigrations(secondScopedConnectionString, [

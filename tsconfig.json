@@ -25,6 +25,7 @@
       "@pirate/contracts": ["./packages/contracts/src/index.ts"],
       "@pirate/api-client": ["./packages/api-client/src/index.ts"],
       "@pirate/domain": ["./packages/domain/src/index.ts"],
+      "@pirate/domain/verification": ["./packages/domain/src/verification/index.ts"],
       "@pirate/application": ["./packages/application/src/index.ts"],
       "@pirate/application/*": ["./packages/application/src/*"],
       "@pirate/platform-cf": ["./packages/platform-cf/src/index.ts"],

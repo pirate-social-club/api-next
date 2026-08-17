@@ -12,6 +12,7 @@
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { providerBoundaryViolation } from "./check-provider-boundary.mjs";
 
 const INTERNAL = {
   "packages/contracts": "@pirate/contracts",
@@ -77,8 +78,13 @@ for (const [dir, pkg] of Object.entries(INTERNAL)) {
     const text = readFileSync(file, "utf8");
     for (const match of text.matchAll(IMPORT_RE)) {
       const spec = match[1];
-      if (!spec.startsWith("@pirate/")) continue;
       const rel = relative(root, file);
+      const providerViolation = providerBoundaryViolation(rel, spec);
+      if (providerViolation !== undefined) {
+        violations.push(providerViolation);
+        continue;
+      }
+      if (!spec.startsWith("@pirate/")) continue;
       if (spec === pkg) continue; // self-imports are intra-package
       if (spec === "@pirate/http-worker" || spec === "@pirate/jobs-worker") {
         violations.push(`${rel}: nothing imports apps (found ${spec})`);

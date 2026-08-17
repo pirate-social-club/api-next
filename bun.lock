@@ -60,6 +60,10 @@
     "packages/testing": {
       "name": "@pirate/testing",
       "version": "0.0.0",
+      "dependencies": {
+        "@pirate/application": "workspace:*",
+        "@pirate/domain": "workspace:*",
+      },
     },
   },
   "packages": {

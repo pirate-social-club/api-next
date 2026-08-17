@@ -152,14 +152,6 @@ export class ChainClient extends Context.Service<
   }
 >()("ChainClient") {}
 
-/** Verification providers (zkPassport &c.) as per-provider Layers. */
-export class VerificationProvider extends Context.Service<
-  VerificationProvider,
-  {
-    readonly verify: (input: unknown) => Effect.Effect<unknown>;
-  }
->()("VerificationProvider") {}
-
 export class TelegramBot extends Context.Service<
   TelegramBot,
   {

@@ -29,6 +29,7 @@ describe("Postgres migration runner", () => {
       "0006_public_profile_handle_index.sql",
       "0007_public_profile_handle_invariants.sql",
       "0008_community_route_slug.sql",
+      "0009_gates_v2_evidence_and_action_grants.sql",
     ]);
     expect(formatMigrationPlan(migrations)).toContain("0001_v1_product_slice.sql");
     expect(formatMigrationPlan(migrations)).toContain("0002_identity.sql");
@@ -38,13 +39,17 @@ describe("Postgres migration runner", () => {
     expect(formatMigrationPlan(migrations)).toContain("0006_public_profile_handle_index.sql");
     expect(formatMigrationPlan(migrations)).toContain("0007_public_profile_handle_invariants.sql");
     expect(formatMigrationPlan(migrations)).toContain("0008_community_route_slug.sql");
+    expect(formatMigrationPlan(migrations)).toContain("0008_community_route_slug.sql");
+    expect(formatMigrationPlan(migrations)).toContain(
+      "0009_gates_v2_evidence_and_action_grants.sql",
+    );
   });
 
   test("dry-run does not require an administrative URL or open a connection", async () => {
     const output = await runPostgresMigrations({ dryRun: true });
     expect(output).toMatchObject({ dryRun: true });
     if (!output.dryRun) throw new Error("expected a dry-run result");
-    expect(output.plan).toHaveLength(8);
+    expect(output.plan).toHaveLength(9);
   });
 
   test("normalizes psql's system sslrootcert value for node pg", () => {
@@ -86,6 +91,10 @@ describe("Postgres migration runner", () => {
       new URL("0008_community_route_slug.sql", source),
     ).text();
     await Bun.write(join(directory, "0008_community_route_slug.sql"), communityRouteSlug);
+    const gatesV2 = await Bun.file(
+      new URL("0009_gates_v2_evidence_and_action_grants.sql", source),
+    ).text();
+    await Bun.write(join(directory, "0009_gates_v2_evidence_and_action_grants.sql"), gatesV2);
 
     await expect(loadPostgresMigrations(new URL(`file://${directory}/`))).rejects.toThrow(
       "checksum mismatch: 0001_v1_product_slice.sql",
