@@ -217,18 +217,28 @@ extracts the UUID, completion reconstructs `DefaultConfigStore` and
 `SelfBackendVerifier` from immutable session requirements and configuration,
 and the verified user-defined data must bind both proof-session ID and request
 hash. Platform authorization, cookies, Cloudflare Access credentials, and
-configured internal-auth headers are stripped before any adapter callback
-seam, even if a manifest requests them.
+configured internal-auth headers are stripped at the HTTP transport boundary
+before application callback handling, even if a manifest requests them. The
+guarded registry repeats the filter before the adapter as defense in depth.
+The checked-in development, staging, and production Wrangler environments
+explicitly record that no additional internal credential-header names are
+currently deployed; adding one requires updating that reviewed inventory.
 
 The application returns an existing terminal result only for the same
 idempotency key and delegates one transaction that persists the winning
 evidence bundle and terminal session event together.
 The database clock is authoritative for the final expiry check and terminal
 timestamp; a slow provider cannot commit after expiry using a time captured
-before the upstream call. Concurrent callbacks may verify upstream more than
-once, but only one database transaction can commit evidence. A deferred
-constraint prevents any terminal proof-session row from committing without its
-matching append-only completion event.
+before the upstream call. Before expensive provider completion, a short
+transaction reserves a fenced attempt keyed by proof session and idempotency
+key. At most three consumed or actively leased attempts are admitted per
+session; same-key concurrency is deduplicated, expired leases free capacity,
+and stale finalizers cannot write evidence. Positively identified provider
+unavailability and internal hashing failures release the attempt for retry;
+provider rejection or invalid output consumes it. Only one database
+transaction can commit evidence. A deferred constraint prevents any terminal
+proof-session row from committing without its matching append-only completion
+event.
 
 Subject identity and account ownership are separate. A normal `establish`
 ceremony may create a first binding or reuse the evaluating user's active
@@ -294,9 +304,10 @@ forward-only PlanetScale Postgres ledger contains
 `0009_gates_v2_foundation.sql`, followed by
 `0010_proof_session_provenance.sql` for exact provider configuration and
 append-only client presentations, and
-`0011_verification_start_reservations.sql` for fenced start idempotency. The
-earlier review-only two-delta foundation
-sequence was never applied to a durable environment and was explicitly reset
+`0011_verification_start_reservations.sql` for fenced start idempotency, then
+`0012_verification_completion_attempts.sql` for bounded, fenced completion
+attempts. The earlier review-only two-delta foundation sequence was never
+applied to a durable environment and was explicitly reset
 before the first deployment so the greenfield ledger contains no transitional
 subject-binding shape. This reset is documented in `db/postgres/README.md`;
 0010 also refuses a non-empty evidence ledger rather than deriving or inventing
@@ -327,4 +338,8 @@ cryptographic proof cannot be honestly fabricated as a timeless repository
 fixture, so positive-path acceptance requires a fresh external Self ceremony in
 staging after deployment is separately authorized. Self remains disabled in
 all checked-in Wrangler environments until that infrastructure and ceremony
-are explicitly authorized.
+are explicitly authorized. The Self adapter also runs its provider-shaped
+translations and hostile cases through the shared transport harness. The SDK's
+named registry and verifier contract errors map to provider unavailability;
+unknown throws remain proof rejection rather than being silently upgraded to
+an outage.
