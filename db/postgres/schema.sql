@@ -786,9 +786,6 @@ CREATE TABLE verification_completion_attempts (
     lease_expires_at timestamp with time zone NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT verification_completion_attempts_pkey PRIMARY KEY (attempt_id),
-    CONSTRAINT verification_completion_attempts_idempotency_unique UNIQUE (proof_session_id, idempotency_key),
-    CONSTRAINT verification_completion_attempts_session_fk FOREIGN KEY (proof_session_id) REFERENCES proof_sessions(proof_session_id),
     CONSTRAINT verification_completion_attempts_idempotency_not_blank CHECK ((btrim(idempotency_key) <> ''::text)),
     CONSTRAINT verification_completion_attempts_state_check CHECK ((state = ANY (ARRAY['leased'::text, 'released'::text, 'consumed'::text]))),
     CONSTRAINT verification_completion_attempts_fence_check CHECK ((fence_token > 0))
@@ -1201,6 +1198,22 @@ ALTER TABLE ONLY proof_sessions
 
 ALTER TABLE ONLY proof_sessions
     ADD CONSTRAINT proof_sessions_pkey PRIMARY KEY (proof_session_id);
+
+
+--
+-- Name: verification_completion_attempts verification_completion_attempts_idempotency_unique; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY verification_completion_attempts
+    ADD CONSTRAINT verification_completion_attempts_idempotency_unique UNIQUE (proof_session_id, idempotency_key);
+
+
+--
+-- Name: verification_completion_attempts verification_completion_attempts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY verification_completion_attempts
+    ADD CONSTRAINT verification_completion_attempts_pkey PRIMARY KEY (attempt_id);
 
 
 --
@@ -2378,6 +2391,14 @@ ALTER TABLE ONLY proof_session_presentations
 
 ALTER TABLE ONLY proof_sessions
     ADD CONSTRAINT proof_sessions_actor_fk FOREIGN KEY (actor_id) REFERENCES users(user_id);
+
+
+--
+-- Name: verification_completion_attempts verification_completion_attempts_session_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY verification_completion_attempts
+    ADD CONSTRAINT verification_completion_attempts_session_fk FOREIGN KEY (proof_session_id) REFERENCES proof_sessions(proof_session_id);
 
 
 --

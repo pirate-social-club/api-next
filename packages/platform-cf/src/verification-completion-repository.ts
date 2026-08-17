@@ -25,6 +25,7 @@ type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
 
 class SubjectBindingConflict extends Data.TaggedError("SubjectBindingConflict") {}
+class VerificationCompletionExpired extends Data.TaggedError("VerificationCompletionExpired") {}
 
 function storageFailure(): VerificationCompletionStorageFailed {
   return new VerificationCompletionStorageFailed();
@@ -784,8 +785,7 @@ export function makeControlPlaneVerificationCompletionRepository() {
                 readonly: false,
               });
               if (updated.rowCount === 0) {
-                yield* settleAttemptInTransaction(transaction, input.attempt, "consumed");
-                return { kind: "rejected", reason: "expired" } as const;
+                return yield* Effect.fail(new VerificationCompletionExpired());
               }
               if (updated.rowCount !== 1) {
                 return yield* Effect.fail(storageFailure());
@@ -814,6 +814,9 @@ export function makeControlPlaneVerificationCompletionRepository() {
           .pipe(
             Effect.catchTag("SubjectBindingConflict", () =>
               Effect.succeed({ kind: "rejected", reason: "binding_conflict" } as const),
+            ),
+            Effect.catchTag("VerificationCompletionExpired", () =>
+              Effect.succeed({ kind: "rejected", reason: "expired" } as const),
             ),
           );
       }),
