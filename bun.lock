@@ -33,7 +33,7 @@
     },
     "packages/api-client": {
       "name": "@pirate/api-client",
-      "version": "0.1.0",
+      "version": "0.3.0",
     },
     "packages/application": {
       "name": "@pirate/application",
