@@ -616,8 +616,8 @@ describe("contracts-generated HTTP worker", () => {
     expect(JSON.stringify(body)).not.toContain("same-key");
   });
 
-  it("carries the retryable verification start contract and Retry-After header", async () => {
-    const response = await createHttpWorker({
+  it("distinguishes retryable verification starts from terminal 409 conflicts on the wire", async () => {
+    const inProgressResponse = await createHttpWorker({
       handlers: {
         StartVerificationSession: () => {
           throw new VerificationStartInProgress({
@@ -633,11 +633,31 @@ describe("contracts-generated HTTP worker", () => {
       headers: { authorization: "Bearer test", "content-type": "application/json" },
       body: JSON.stringify({ intent_id: "intent-1", provider_id: "provider-1" }),
     });
-    expect(response.status).toBe(409);
-    expect(response.headers.get("retry-after")).toBe("4");
-    expect(await response.json()).toMatchObject({
+    expect(inProgressResponse.status).toBe(409);
+    expect(inProgressResponse.headers.get("retry-after")).toBe("4");
+    expect(await inProgressResponse.json()).toMatchObject({
       code: "verification_start_in_progress",
       retryable: true,
+    });
+
+    const conflictResponse = await createHttpWorker({
+      handlers: {
+        StartVerificationSession: () => {
+          throw new Conflict({ message: "verification request drifted" });
+        },
+      },
+      authenticate: () => ({ kind: "user", subject: "user_1" }),
+      authorize: () => undefined,
+    }).request("http://worker.test/verification/sessions", {
+      method: "POST",
+      headers: { authorization: "Bearer test", "content-type": "application/json" },
+      body: JSON.stringify({ intent_id: "intent-1", provider_id: "provider-1" }),
+    });
+    expect(conflictResponse.status).toBe(409);
+    expect(conflictResponse.headers.get("retry-after")).toBeNull();
+    expect(await conflictResponse.json()).toMatchObject({
+      code: "conflict",
+      retryable: false,
     });
   });
 
