@@ -14,6 +14,20 @@ revision, applying all migrations to a fresh database must produce the same
 catalog as applying `schema.sql` to a fresh database. They are not expected to
 be byte-identical.
 
+### Gates v2 pre-deployment baseline reset
+
+`0009_gates_v2_foundation.sql` is the single clean gates-v2 baseline, following
+canonical `0008_community_route_slug.sql`. It replaced the review-only
+gates evidence/action-grant and subject-binding/lifecycle deltas before either was
+applied to a durable environment. The reset removed their transitional
+create-then-alter sequence and deliberately regenerated the checksum manifest.
+
+This is not a compatibility path or a precedent for rewriting applied
+migrations. A disposable local database whose ledger contains either retired
+filename must be recreated. Once `0009_gates_v2_foundation.sql` is applied to
+the first durable environment, its filename, SQL, and checksum are immutable;
+all subsequent schema changes are new forward-only migrations.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every

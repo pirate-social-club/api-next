@@ -174,10 +174,15 @@ is still a later slice.
 
 `db/postgres/schema.sql` is the fresh-database cumulative baseline. Because
 this repository uses a reviewed forward-only schema ledger for PlanetScale
-Postgres, the same additions also exist as numbered deltas `0008` and `0009`;
-those deltas are deployment bookkeeping for api-next, not data-transfer or
-compatibility paths. Fresh databases produced by the cumulative baseline and
-by ordered deltas must have identical catalogs.
+Postgres, the same final catalog exists as the single numbered delta
+`0009_gates_v2_foundation.sql`, following canonical community-route migration
+`0008`. The earlier review-only two-delta gates sequence was never applied to a
+durable environment and was explicitly reset before the first deployment so
+the greenfield ledger contains no transitional subject-binding shape. This
+reset is documented in `db/postgres/README.md`;
+after first durable application, the normal immutable forward-only rule
+applies. Fresh databases produced by the cumulative baseline and by ordered
+deltas must have identical catalogs.
 
 Provider additions must be adapter-local. The repository walker enforces the
 provider location, rejects forbidden and computed imports, and freezes the

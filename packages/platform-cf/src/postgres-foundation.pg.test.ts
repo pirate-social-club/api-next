@@ -57,16 +57,7 @@ const communityRouteSlugMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0008_community_route_slug.sql", import.meta.url),
 ).text();
 const gatesV2MigrationSql = await Bun.file(
-  new URL(
-    "../../../db/postgres/migrations/0009_gates_v2_evidence_and_action_grants.sql",
-    import.meta.url,
-  ),
-).text();
-const gatesV2LifecycleMigrationSql = await Bun.file(
-  new URL(
-    "../../../db/postgres/migrations/0010_subject_binding_and_completion_lifecycle.sql",
-    import.meta.url,
-  ),
+  new URL("../../../db/postgres/migrations/0009_gates_v2_foundation.sql", import.meta.url),
 ).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
@@ -113,14 +104,9 @@ const communityRouteSlugMigration: PostgresMigration = {
   sql: communityRouteSlugMigrationSql,
 };
 const gatesV2Migration: PostgresMigration = {
-  version: "0009_gates_v2_evidence_and_action_grants.sql",
-  checksum: checksumManifest.migrations["0009_gates_v2_evidence_and_action_grants.sql"] ?? "",
+  version: "0009_gates_v2_foundation.sql",
+  checksum: checksumManifest.migrations["0009_gates_v2_foundation.sql"] ?? "",
   sql: gatesV2MigrationSql,
-};
-const gatesV2LifecycleMigration: PostgresMigration = {
-  version: "0010_subject_binding_and_completion_lifecycle.sql",
-  checksum: checksumManifest.migrations["0010_subject_binding_and_completion_lifecycle.sql"] ?? "",
-  sql: gatesV2LifecycleMigrationSql,
 };
 const migrations: readonly PostgresMigration[] = [
   migration,
@@ -132,7 +118,6 @@ const migrations: readonly PostgresMigration[] = [
   publicProfileInvariantMigration,
   communityRouteSlugMigration,
   gatesV2Migration,
-  gatesV2LifecycleMigration,
 ];
 
 function checksum(value: string): string {
@@ -280,7 +265,6 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(communityRouteSlugMigrationSql)).toBe(communityRouteSlugMigration.checksum);
       expect(checksum(gatesV2MigrationSql)).toBe(gatesV2Migration.checksum);
-      expect(checksum(gatesV2LifecycleMigrationSql)).toBe(gatesV2LifecycleMigration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 

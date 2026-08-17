@@ -35,8 +35,8 @@ const migrationFiles = [
   "0005_m2_behavior_invariants.sql",
   "0006_public_profile_handle_index.sql",
   "0007_public_profile_handle_invariants.sql",
-  "0008_gates_v2_evidence_and_action_grants.sql",
-  "0009_subject_binding_and_completion_lifecycle.sql",
+  "0008_community_route_slug.sql",
+  "0009_gates_v2_foundation.sql",
 ] as const;
 const migrations: readonly PostgresMigration[] = await Promise.all(
   migrationFiles.map(async (version) => {
