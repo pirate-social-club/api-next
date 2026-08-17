@@ -6,6 +6,14 @@ This is the durable handoff for enabling the self-hosted Self Pass adapter in
 staging. It records observed external state, not assumptions. Production must
 remain untouched throughout this tranche.
 
+## Current incident gate
+
+The interrupted staging attempt is recorded in
+[self-staging-evidence.md](self-staging-evidence.md), which is authoritative
+for the current published state, credential impact, containment, and restart
+gates. The inventory and continuation sequence below are historical until
+that record's credential-rotation gates pass; do not resume them directly.
+
 ## Published code state
 
 - `origin/main` is `aba34d07c19c60bb7cb57b73f599328027da5964` before this
