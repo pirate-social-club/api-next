@@ -7,7 +7,7 @@ import { sha256 } from "./api-client-provenance.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../", import.meta.url)));
 const packageRoot = join(repositoryRoot, "packages", "api-client");
-const packageName = "pirate-api-client-0.2.0.tgz";
+const packageName = "pirate-api-client-0.3.0.tgz";
 
 function run(command: string, args: readonly string[], cwd: string): void {
   const result = spawnSync(command, [...args], { cwd, encoding: "utf8" });
@@ -57,8 +57,8 @@ async function main(): Promise<void> {
       readonly peerDependencies?: unknown;
       readonly exports?: Record<string, unknown>;
     };
-    if (packedPackage.name !== "@pirate/api-client" || packedPackage.version !== "0.2.0") {
-      throw new Error("Packed package identity/version is not @pirate/api-client@0.2.0");
+    if (packedPackage.name !== "@pirate/api-client" || packedPackage.version !== "0.3.0") {
+      throw new Error("Packed package identity/version is not @pirate/api-client@0.3.0");
     }
     for (const field of ["dependencies", "devDependencies", "peerDependencies"] as const) {
       if (packedPackage[field] !== undefined) {
@@ -144,18 +144,54 @@ async function main(): Promise<void> {
     );
     const consumerSource = [
       'import { ApiClientError, createPirateApiClient } from "@pirate/api-client";',
-      'import type { GetHealthInput, GetHealthResponse, GetPostsPostIdError } from "@pirate/api-client";',
+      "import type {",
+      "  GetHealthInput,",
+      "  GetHealthResponse,",
+      "  GetPostsPostIdError,",
+      "  GetPublicCommunityThreadsInput,",
+      "  GetPublicCommunityThreadsResponse,",
+      "  GetPublicCommunityThreadsError,",
+      '} from "@pirate/api-client";',
       "",
       "const healthInput: GetHealthInput = undefined;",
       'const healthResponse: GetHealthResponse = { status: "ok" };',
       "const errorTypeCheck: GetPostsPostIdError | undefined = undefined;",
       "void errorTypeCheck;",
+      "const communityInput: GetPublicCommunityThreadsInput = {",
+      '  path: { communityRef: "crew" },',
+      '  query: { surface: "threads", sort: "new", locale: "en" },',
+      "};",
+      "const communityResponseTypeCheck: GetPublicCommunityThreadsResponse | undefined = undefined;",
+      "const communityErrorTypeCheck: GetPublicCommunityThreadsError | undefined = undefined;",
+      "void communityResponseTypeCheck;",
+      "void communityErrorTypeCheck;",
       "",
       'const successClient = createPirateApiClient("https://api.example", async () =>',
       "  new Response(JSON.stringify(healthResponse), { status: 200 }),",
       ");",
       "const response = await successClient.get_health(healthInput);",
       'if (response.status !== "ok") throw new Error("successful fake fetch did not decode");',
+      "",
+      'const communityClient = createPirateApiClient("https://api.example", async (input) => {',
+      "  const url = String(input);",
+      '  if (!url.includes("/public-communities/crew/feed?surface=threads&sort=new&locale=en")) {',
+      '    throw new Error("unexpected public-community URL: " + url);',
+      "  }",
+      "  return new Response(JSON.stringify({",
+      '    code: "not_found",',
+      '    message: "missing community",',
+      "    retryable: false,",
+      '    request_id: "community-clean-consumer-request",',
+      "  }), { status: 404 });",
+      "});",
+      "try {",
+      "  await communityClient.get_publicCommunitiesCommunityRefFeed(communityInput);",
+      '  throw new Error("declared public-community error was not thrown");',
+      "} catch (error) {",
+      "  if (!(error instanceof ApiClientError)) throw error;",
+      '  if (error.status !== 404 || error.code !== "not_found") throw error;',
+      '  if (error.requestId !== "community-clean-consumer-request") throw error;',
+      "}",
       "",
       'const errorClient = createPirateApiClient("https://api.example", async () =>',
       "  new Response(JSON.stringify({",
