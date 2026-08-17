@@ -199,6 +199,12 @@ const CONFORMANCE_SESSION = {
   request_hash: "d6cd232dfaf20d04130e0271924bf9ac231e382f63365d2a7f37c3f42ad3a40a",
 } as ProofSession;
 
+const FOREIGN_CONFORMANCE_SESSION = {
+  ...CONFORMANCE_SESSION,
+  id: "11234567-89ab-4cde-8012-3456789abcde",
+  request_hash: "e6cd232dfaf20d04130e0271924bf9ac231e382f63365d2a7f37c3f42ad3a40a",
+} as ProofSession;
+
 const CONFORMANCE_START_INPUT = {
   ...START_INPUT,
   request_hash: CONFORMANCE_SESSION.request_hash,
@@ -345,6 +351,27 @@ describe("Self Pass provider-local adapter", () => {
         },
       },
       {
+        name: "Self Pass cross-session proof substitution is rejected after verification",
+        makeTransport: () => selfPassHarnessTransport(() => resultFor(FOREIGN_CONFORMANCE_SESSION)),
+        makeAdapter: (transport) => provider({ sdk: transport.sdk }),
+        startInput: CONFORMANCE_START_INPUT,
+        submission: {
+          channel: "client_result",
+          payload: {
+            ...CONFORMANCE_PROOF,
+            user_context_data: contextFor(FOREIGN_CONFORMANCE_SESSION),
+          },
+        },
+        operation: "complete",
+        expected: "VerificationProviderUnboundRejected",
+        assertTransport: (transport) => {
+          expect(transport.verifyCalls).toHaveLength(1);
+          expect(transport.verifyCalls[0]?.user_context_data).toBe(
+            contextFor(FOREIGN_CONFORMANCE_SESSION),
+          );
+        },
+      },
+      {
         name: "Self Pass registry outage is unavailable",
         makeTransport: () =>
           selfPassHarnessTransport(() => {
@@ -362,6 +389,20 @@ describe("Self Pass provider-local adapter", () => {
         makeTransport: () =>
           selfPassHarnessTransport(() => {
             throw new FakeVerifierContractError("verifier unavailable");
+          }),
+        makeAdapter: (transport) => provider({ sdk: transport.sdk }),
+        startInput: CONFORMANCE_START_INPUT,
+        submission: { channel: "client_result", payload: CONFORMANCE_PROOF },
+        operation: "complete",
+        expected: "VerificationProviderUnavailable",
+        assertTransport: (transport) => expect(transport.verifyCalls).toHaveLength(1),
+      },
+      {
+        name: "Self Pass cross-realm registry outage is unavailable",
+        makeTransport: () =>
+          selfPassHarnessTransport(() => {
+            const CrossRealmRegistryContractError = class RegistryContractError extends Error {};
+            throw new CrossRealmRegistryContractError("registry unavailable across realm");
           }),
         makeAdapter: (transport) => provider({ sdk: transport.sdk }),
         startInput: CONFORMANCE_START_INPUT,
