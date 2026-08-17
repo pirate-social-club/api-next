@@ -93,6 +93,21 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
   }
 }
 
+async function expectDeferredFailure(
+  admin: Client,
+  text: string,
+  values: readonly unknown[],
+  code: string,
+): Promise<void> {
+  await admin.query("BEGIN");
+  try {
+    await admin.query({ text, values: [...values] });
+    await expect(admin.query("COMMIT")).rejects.toMatchObject({ code });
+  } finally {
+    await admin.query("ROLLBACK").catch(() => undefined);
+  }
+}
+
 suite("Postgres 17 public profile by handle", () => {
   test("maintains current and redirect labels, returns creators, and uses the handle index", async () => {
     await withSchema(async (connection, admin) => {
@@ -148,6 +163,23 @@ suite("Postgres 17 public profile by handle", () => {
       expect(redirected.profile).toEqual(current.profile);
       expect(redirected.resolved_handle_label).toBe("captainpublic.pirate");
 
+      await Effect.runPromise(
+        identityStore.upsertAccount?.({
+          userId: "usr_public",
+          account: account("usr_public", "handle_latest", "latestcaptain.pirate"),
+        }) ?? Effect.die("identity upsert is not installed"),
+      );
+      for (const requestedHandle of ["oldcaptain", "captainpublic"]) {
+        const historical = await Effect.runPromise(
+          getPublicProfileByHandle({ handle: requestedHandle }, { publicProfileStore }),
+        );
+        expect(historical.is_canonical).toBe(false);
+        expect(historical.resolved_handle_label).toBe("latestcaptain.pirate");
+        expect(historical.profile.id).toBe(current.profile.id);
+        expect(historical.profile.global_handle.id).toBe("gh_handle_latest");
+        expect(historical.profile.global_handle.label).toBe("latestcaptain.pirate");
+      }
+
       const upsertAccount = identityStore.upsertAccount;
       if (upsertAccount === undefined) throw new Error("identity upsert is not installed");
       await expect(
@@ -171,6 +203,15 @@ suite("Postgres 17 public profile by handle", () => {
           LIMIT 1`,
       );
       expect(JSON.stringify(explain.rows)).toContain("public_handle_index_label_normalized_uidx");
+      const communityExplain = await admin.query<{ readonly plan: unknown }>(
+        `EXPLAIN (FORMAT JSON)
+         SELECT community_id FROM communities
+          WHERE created_by_user_id = 'usr_public' AND status = 'active'
+          ORDER BY created_at DESC, community_id DESC`,
+      );
+      expect(JSON.stringify(communityExplain.rows)).toContain(
+        "communities_creator_status_created_idx",
+      );
     });
     completedTestCount += 1;
   });
@@ -209,8 +250,129 @@ suite("Postgres 17 public profile by handle", () => {
     completedTestCount += 1;
   });
 
+  test("enforces active ownership and direct same-owner redirect history at commit", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const identityStore = makeControlPlaneIdentityStore(runtime);
+      const upsertAccount = identityStore.upsertAccount;
+      if (upsertAccount === undefined) throw new Error("identity upsert is not installed");
+
+      await Effect.runPromise(
+        upsertAccount({
+          userId: "usr_owner",
+          account: account("usr_owner", "handle_owned", "ownedcaptain.pirate"),
+        }),
+      );
+      await Effect.runPromise(
+        upsertAccount({
+          userId: "usr_owner",
+          account: account("usr_owner", "handle_owned", "ownedcaptain.pirate"),
+        }),
+      );
+      await expect(
+        Effect.runPromise(
+          upsertAccount({
+            userId: "usr_other",
+            account: account("usr_other", "handle_owned", "intrudercaptain.pirate"),
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "IdentityResolutionError", reason: "invalid" });
+      const unchanged = await admin.query<{
+        readonly owner_user_id: string;
+        readonly label_normalized: string;
+        readonly status: string;
+      }>(
+        `SELECT owner_user_id, label_normalized, status
+           FROM public_handle_index WHERE handle_id = 'handle_owned'`,
+      );
+      expect(unchanged.rows).toEqual([
+        { owner_user_id: "usr_owner", label_normalized: "ownedcaptain", status: "active" },
+      ]);
+      expect(
+        (await admin.query("SELECT user_id FROM users WHERE user_id = 'usr_other'")).rows,
+      ).toEqual([]);
+
+      await admin.query(
+        `INSERT INTO users (user_id, account) VALUES
+          ('usr_foreign', '{}'::jsonb), ('usr_cycle', '{}'::jsonb)`,
+      );
+      await admin.query(
+        `INSERT INTO public_handle_index
+          (handle_id, label_normalized, label_display, status, owner_user_id)
+         VALUES ('handle_foreign', 'foreigncaptain', 'foreigncaptain.pirate', 'active', 'usr_foreign'),
+                ('handle_retired', 'retiredcaptain', 'retiredcaptain.pirate', 'retired', 'usr_owner')`,
+      );
+
+      await expectDeferredFailure(
+        admin,
+        `INSERT INTO public_handle_index
+          (handle_id, label_normalized, label_display, status, owner_user_id, redirect_target_handle_id)
+         VALUES ($1, $2, $3, 'redirect', $4, $5)`,
+        [
+          "handle_missing_source",
+          "missingcaptain",
+          "missingcaptain.pirate",
+          "usr_owner",
+          "handle_missing_target",
+        ],
+        "23503",
+      );
+      await expectDeferredFailure(
+        admin,
+        `INSERT INTO public_handle_index
+          (handle_id, label_normalized, label_display, status, owner_user_id, redirect_target_handle_id)
+         VALUES ($1, $2, $3, 'redirect', $4, $5)`,
+        [
+          "handle_retired_source",
+          "retiredsource",
+          "retiredsource.pirate",
+          "usr_owner",
+          "handle_retired",
+        ],
+        "23514",
+      );
+      await expectDeferredFailure(
+        admin,
+        `INSERT INTO public_handle_index
+          (handle_id, label_normalized, label_display, status, owner_user_id, redirect_target_handle_id)
+         VALUES ($1, $2, $3, 'redirect', $4, $5)`,
+        [
+          "handle_foreign_source",
+          "foreignsource",
+          "foreignsource.pirate",
+          "usr_owner",
+          "handle_foreign",
+        ],
+        "23514",
+      );
+      await expectDeferredFailure(
+        admin,
+        `INSERT INTO public_handle_index
+          (handle_id, label_normalized, label_display, status, owner_user_id, redirect_target_handle_id)
+         VALUES
+          ('handle_cycle2_a', 'cycle2a', 'cycle2a.pirate', 'redirect', 'usr_cycle', 'handle_cycle2_b'),
+          ('handle_cycle2_b', 'cycle2b', 'cycle2b.pirate', 'redirect', 'usr_cycle', 'handle_cycle2_a')`,
+        [],
+        "23514",
+      );
+      await expectDeferredFailure(
+        admin,
+        `INSERT INTO public_handle_index
+          (handle_id, label_normalized, label_display, status, owner_user_id, redirect_target_handle_id)
+         VALUES
+          ('handle_cycle3_a', 'cycle3a', 'cycle3a.pirate', 'redirect', 'usr_cycle', 'handle_cycle3_b'),
+          ('handle_cycle3_b', 'cycle3b', 'cycle3b.pirate', 'redirect', 'usr_cycle', 'handle_cycle3_c'),
+          ('handle_cycle3_c', 'cycle3c', 'cycle3c.pirate', 'redirect', 'usr_cycle', 'handle_cycle3_a')`,
+        [],
+        "23514",
+      );
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 2) {
+    if (connectionString !== undefined && completedTestCount === 3) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });
