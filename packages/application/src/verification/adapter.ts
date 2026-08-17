@@ -190,6 +190,18 @@ export class VerificationProviderRejected extends Data.TaggedError("Verification
   readonly operation: VerificationProviderOperation;
 }> {}
 
+/**
+ * A submission was rejected before cryptographic proof-to-session binding was
+ * established. Completion keeps its short admission lease but must not burn a
+ * durable user-attempt slot.
+ */
+export class VerificationProviderUnboundRejected extends Data.TaggedError(
+  "VerificationProviderUnboundRejected",
+)<{
+  readonly provider_id: string;
+  readonly operation: "complete";
+}> {}
+
 export class VerificationProviderInvalidResponse extends Data.TaggedError(
   "VerificationProviderInvalidResponse",
 )<{
@@ -207,6 +219,7 @@ export class VerificationProviderMisconfigured extends Data.TaggedError(
 export type VerificationProviderFailure =
   | VerificationProviderUnavailable
   | VerificationProviderRejected
+  | VerificationProviderUnboundRejected
   | VerificationProviderInvalidResponse
   | VerificationProviderMisconfigured;
 

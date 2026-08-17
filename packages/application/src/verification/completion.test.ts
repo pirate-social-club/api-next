@@ -5,8 +5,12 @@ import type {
   ProofSession,
 } from "@pirate/domain/verification";
 import { Effect } from "effect";
-import type { VerificationProviderAdapter } from "./adapter.ts";
-import { VerificationProviderUnavailable } from "./adapter.ts";
+import type { VerificationProviderAdapter, VerificationProviderFailure } from "./adapter.ts";
+import {
+  VerificationProviderRejected,
+  VerificationProviderUnavailable,
+  VerificationProviderUnboundRejected,
+} from "./adapter.ts";
 import {
   completeVerification,
   type StoredVerificationCompletion,
@@ -135,7 +139,7 @@ function bundle(proofSession: ProofSession): EvidenceBundle {
 function adapterFor(
   proofSession: ProofSession,
   calls: { complete: number },
-  complete: () => Effect.Effect<EvidenceBundle, VerificationProviderUnavailable> = () =>
+  complete: () => Effect.Effect<EvidenceBundle, VerificationProviderFailure> = () =>
     Effect.succeed(bundle(proofSession)),
 ): VerificationProviderAdapter {
   return {
@@ -224,6 +228,70 @@ describe("verification completion use case", () => {
     expect(result.replayed).toBe(false);
     expect(calls.complete).toBe(2);
     expect(released).toBe(1);
+  });
+
+  test("quarantines an unbound rejection without burning the durable attempt budget", async () => {
+    const stored = { session: session(), terminal: null } satisfies StoredVerificationCompletion;
+    const calls = { complete: 0, released: 0, consumed: 0 };
+    const store: VerificationCompletionStore = {
+      ...attemptMethods(),
+      load: () => Effect.succeed(stored),
+      releaseAttempt: () => Effect.sync(() => void calls.released++),
+      consumeAttempt: () => Effect.sync(() => void calls.consumed++),
+      commit: () => Effect.die("unbound proof must not commit"),
+    };
+    const services = {
+      registry: registryFor(
+        adapterFor(stored.session, calls, () =>
+          Effect.fail(
+            new VerificationProviderUnboundRejected({
+              provider_id: manifest.provider_id,
+              operation: "complete",
+            }),
+          ),
+        ),
+      ),
+      store,
+      hasher: { hash: () => Effect.succeed(RESULT_HASH) },
+      now: () => NOW,
+    } satisfies VerificationCompletionServices;
+
+    await expect(Effect.runPromise(completeVerification(input(), services))).rejects.toBeInstanceOf(
+      VerificationProviderUnboundRejected,
+    );
+    expect(calls).toEqual({ complete: 1, released: 0, consumed: 0 });
+  });
+
+  test("consumes a cryptographically bound policy rejection", async () => {
+    const stored = { session: session(), terminal: null } satisfies StoredVerificationCompletion;
+    const calls = { complete: 0, released: 0, consumed: 0 };
+    const store: VerificationCompletionStore = {
+      ...attemptMethods(),
+      load: () => Effect.succeed(stored),
+      releaseAttempt: () => Effect.sync(() => void calls.released++),
+      consumeAttempt: () => Effect.sync(() => void calls.consumed++),
+      commit: () => Effect.die("rejected policy must not commit"),
+    };
+    const services = {
+      registry: registryFor(
+        adapterFor(stored.session, calls, () =>
+          Effect.fail(
+            new VerificationProviderRejected({
+              provider_id: manifest.provider_id,
+              operation: "complete",
+            }),
+          ),
+        ),
+      ),
+      store,
+      hasher: { hash: () => Effect.succeed(RESULT_HASH) },
+      now: () => NOW,
+    } satisfies VerificationCompletionServices;
+
+    await expect(Effect.runPromise(completeVerification(input(), services))).rejects.toBeInstanceOf(
+      VerificationProviderRejected,
+    );
+    expect(calls).toEqual({ complete: 1, released: 0, consumed: 1 });
   });
 
   test("authenticates the session and delegates one atomic evidence commit", async () => {

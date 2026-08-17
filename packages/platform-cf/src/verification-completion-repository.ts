@@ -269,22 +269,40 @@ function reserveAttemptInTransaction(
     }
 
     const consumedResult = yield* transaction.execute<Row>({
-      label: "verification.completion-attempts.count-active-spent",
-      text: `SELECT count(*)::integer AS consumed_count
+      label: "verification.completion-attempts.count-admission-and-spent",
+      text: `SELECT
+               count(*) FILTER (WHERE state = 'consumed')::integer AS consumed_count,
+               count(*) FILTER (
+                 WHERE state = 'leased' AND lease_expires_at > $2::timestamptz
+               )::integer AS active_count,
+               min(lease_expires_at) FILTER (
+                 WHERE state = 'leased' AND lease_expires_at > $2::timestamptz
+               ) AS next_lease_expires_at
                FROM verification_completion_attempts
-              WHERE proof_session_id = $1
-                AND (
-                  state = 'consumed'
-                  OR (state = 'leased' AND lease_expires_at > $2::timestamptz)
-                )`,
+              WHERE proof_session_id = $1`,
       values: [input.proof_session_id, attemptNow],
       readonly: true,
     });
     const consumedRow = yield* oneRow(consumedResult.rows);
-    const consumedCount = consumedRow === null ? null : integerField(consumedRow, "consumed_count");
-    if (consumedCount === null) return yield* Effect.fail(storageFailure());
+    if (consumedRow === null) return yield* Effect.fail(storageFailure());
+    const consumedCount = integerField(consumedRow, "consumed_count");
+    const activeCount = integerField(consumedRow, "active_count");
+    if (consumedCount === null || activeCount === null) {
+      return yield* Effect.fail(storageFailure());
+    }
     if (consumedCount >= input.max_consumed_attempts) {
       return { kind: "budget_exhausted" } as const;
+    }
+    if (consumedCount + activeCount >= input.max_consumed_attempts) {
+      const nextLeaseExpiresAt = dateField(consumedRow, "next_lease_expires_at");
+      if (nextLeaseExpiresAt === null) return yield* Effect.fail(storageFailure());
+      const retryAfter = Math.ceil(
+        (Date.parse(nextLeaseExpiresAt) - Date.parse(attemptNow)) / 1_000,
+      );
+      return {
+        kind: "in_flight",
+        retry_after_seconds: Math.max(1, retryAfter),
+      } as const;
     }
 
     if (existing !== null) {

@@ -27,6 +27,7 @@ import {
   VerificationProviderRejected,
   VerificationProviderStartInput,
   VerificationProviderUnavailable,
+  VerificationProviderUnboundRejected,
 } from "./adapter.ts";
 import { computeVerificationRequestHash } from "./request-hash.ts";
 
@@ -396,6 +397,9 @@ function safeAdapterFailure(
   }
   if (error instanceof VerificationProviderRejected) {
     return new VerificationProviderRejected({ provider_id, operation });
+  }
+  if (error instanceof VerificationProviderUnboundRejected && operation === "complete") {
+    return new VerificationProviderUnboundRejected({ provider_id, operation });
   }
   if (error instanceof VerificationProviderInvalidResponse) {
     return new VerificationProviderInvalidResponse({ provider_id, operation });

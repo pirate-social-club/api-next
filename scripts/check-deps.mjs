@@ -143,6 +143,7 @@ const VERIFICATION_EXPORTS = {
       "VerificationProviderRejected",
       "VerificationProviderStartInput",
       "VerificationProviderUnavailable",
+      "VerificationProviderUnboundRejected",
       "VerificationSubmission",
     ],
     "./callback.ts": [

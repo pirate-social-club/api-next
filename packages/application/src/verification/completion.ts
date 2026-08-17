@@ -5,7 +5,11 @@ import {
   type Sha256Hex as Sha256HexValue,
 } from "@pirate/domain/verification";
 import { Data, Effect, Option, Schema } from "effect";
-import { type VerificationProviderFailure, VerificationSubmission } from "./adapter.ts";
+import {
+  type VerificationProviderFailure,
+  VerificationProviderUnboundRejected,
+  VerificationSubmission,
+} from "./adapter.ts";
 import type {
   VerificationProviderRegistryService,
   VerificationProviderUnknown,
@@ -81,7 +85,7 @@ export interface VerificationCompletionStore {
   readonly releaseAttempt: (
     reservation: VerificationCompletionAttemptReservation,
   ) => Effect.Effect<void, VerificationCompletionStorageFailed>;
-  /** Consume only this reservation generation after a rejection or invalid result. */
+  /** Consume only this reservation generation after a cryptographically bound rejection. */
   readonly consumeAttempt: (
     reservation: VerificationCompletionAttemptReservation,
   ) => Effect.Effect<void, VerificationCompletionStorageFailed>;
@@ -268,10 +272,15 @@ export const completeVerification = Effect.fn("completeVerification")(function* 
   const releaseOrConsume = (
     error: VerificationProviderFailure,
   ): Effect.Effect<never, VerificationCompletionFailure> => {
+    if (error instanceof VerificationProviderUnboundRejected) {
+      // Keep the short lease as a temporary public-compute admission slot.
+      // It expires automatically and never counts as a durable user failure.
+      return Effect.fail(error);
+    }
     const settle =
-      error._tag === "VerificationProviderUnavailable"
-        ? services.store.releaseAttempt(attempt.reservation)
-        : services.store.consumeAttempt(attempt.reservation);
+      error._tag === "VerificationProviderRejected"
+        ? services.store.consumeAttempt(attempt.reservation)
+        : services.store.releaseAttempt(attempt.reservation);
     return settle.pipe(
       Effect.mapError(() => new VerificationCompletionStorageFailed()),
       Effect.flatMap(() => Effect.fail(error)),

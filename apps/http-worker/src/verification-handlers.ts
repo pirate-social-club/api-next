@@ -66,6 +66,7 @@ function wireFailure(error: unknown): Error {
     case "VerificationProviderInvalidResponse":
       return new ProviderMisconfigured({ message: "Verification provider is misconfigured" });
     case "VerificationProviderRejected":
+    case "VerificationProviderUnboundRejected":
       return new BadRequest({ message: "Verification submission was rejected" });
     case "VerificationStartRejected":
       if (tagged.reason === "intent_unavailable") {

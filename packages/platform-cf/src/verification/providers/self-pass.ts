@@ -10,6 +10,7 @@ import {
   VerificationProviderRejected,
   type VerificationProviderStartInput,
   VerificationProviderUnavailable,
+  VerificationProviderUnboundRejected,
 } from "@pirate/application/verification";
 import {
   type Assertion,
@@ -235,6 +236,13 @@ function rejected(operation: "start" | "complete" | "callback") {
   return new VerificationProviderRejected({
     provider_id: SELF_PASS_PROVIDER_ID,
     operation,
+  });
+}
+
+function unboundRejected() {
+  return new VerificationProviderUnboundRejected({
+    provider_id: SELF_PASS_PROVIDER_ID,
+    operation: "complete",
   });
 }
 
@@ -518,7 +526,7 @@ function credentialType(attestationId: AttestationId): string {
 
 function decodeSubmission(
   value: unknown,
-): Effect.Effect<CanonicalSelfSubmission, VerificationProviderRejected> {
+): Effect.Effect<CanonicalSelfSubmission, VerificationProviderUnboundRejected> {
   const camel = Schema.decodeUnknownOption(SelfCamelSubmission)(value);
   if (Option.isSome(camel)) {
     return Effect.succeed({
@@ -541,7 +549,7 @@ function decodeSubmission(
       user_context_data: snake.value.user_context_data,
     });
   }
-  return Effect.fail(rejected("complete"));
+  return Effect.fail(unboundRejected());
 }
 
 function decodeResult(
@@ -636,20 +644,20 @@ function validateClaims(
     minimum_age?: string;
     document_expiry?: string;
   }>,
-  VerificationProviderRejected
+  VerificationProviderRejected | VerificationProviderUnboundRejected
 > {
-  if (result.isValidDetails.isValid !== true) return Effect.fail(rejected("complete"));
+  if (result.isValidDetails.isValid !== true) return Effect.fail(unboundRejected());
+  if (result.userData.userIdentifier !== selfUserIdForRequest(session.request_hash)) {
+    return Effect.fail(unboundRejected());
+  }
+  const expected = expectedUserDefinedData(session);
+  if (!userDefinedDataMatches(expected, result.userData.userDefinedData)) {
+    return Effect.fail(unboundRejected());
+  }
   const requiresMinimumAge = session.requested_requirements.some(
     (requirement) => requirement.claim_id === "age.minimum",
   );
   if (requiresMinimumAge && result.isValidDetails.isMinimumAgeValid !== true) {
-    return Effect.fail(rejected("complete"));
-  }
-  if (result.userData.userIdentifier !== selfUserIdForRequest(session.request_hash)) {
-    return Effect.fail(rejected("complete"));
-  }
-  const expected = expectedUserDefinedData(session);
-  if (!userDefinedDataMatches(expected, result.userData.userDefinedData)) {
     return Effect.fail(rejected("complete"));
   }
   if (result.discloseOutput.nullifier.trim() === "") return Effect.fail(rejected("complete"));
@@ -931,19 +939,19 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
         input.session.subject_binding_intent === "none" ||
         !mockPassportAllowed(input.session.environment, verifierSettings.mock_passport)
       ) {
-        return Effect.fail(rejected("complete"));
+        return Effect.fail(unboundRejected());
       }
       if (
         input.submission.channel !== "client_result" &&
         input.submission.channel !== "provider_callback"
       ) {
-        return Effect.fail(rejected("complete"));
+        return Effect.fail(unboundRejected());
       }
       return decodeSubmission(input.submission.payload).pipe(
         Effect.filterOrFail(
           (submission) =>
             submission.session_id === undefined || submission.session_id === input.session.id,
-          () => rejected("complete"),
+          () => unboundRejected(),
         ),
         Effect.flatMap((submission) => {
           const sdkEffect =
@@ -979,13 +987,13 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
                 catch: (error) =>
                   selfSdkInfrastructureError(error, sdk)
                     ? unavailable("complete")
-                    : rejected("complete"),
+                    : unboundRejected(),
               }).pipe(
                 Effect.flatMap((result) =>
                   decodeResult(result).pipe(
                     Effect.filterOrFail(
                       (decoded) => decoded.attestationId === submission.attestation_id,
-                      () => rejected("complete"),
+                      () => unboundRejected(),
                     ),
                   ),
                 ),

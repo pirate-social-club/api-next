@@ -327,7 +327,7 @@ describe("Self Pass provider-local adapter", () => {
           ...session,
           id: "01234567-89ab-4cde-8012-3456789abcdf",
         }),
-        expected: "VerificationProviderRejected",
+        expected: "VerificationProviderUnboundRejected",
         assertTransport: (transport) => expect(transport.verifyCalls).toHaveLength(0),
       },
       {
@@ -338,7 +338,7 @@ describe("Self Pass provider-local adapter", () => {
         startInput: CONFORMANCE_START_INPUT,
         submission: { channel: "client_result", payload: CONFORMANCE_PROOF },
         operation: "complete",
-        expected: "VerificationProviderRejected",
+        expected: "VerificationProviderUnboundRejected",
         assertTransport: (transport) => {
           expect(transport.verifyCalls).toHaveLength(1);
           expect(transport.verifyCalls[0]?.attestation_id).toBe(1);
@@ -380,7 +380,7 @@ describe("Self Pass provider-local adapter", () => {
         startInput: CONFORMANCE_START_INPUT,
         submission: { channel: "client_result", payload: CONFORMANCE_PROOF },
         operation: "complete",
-        expected: "VerificationProviderRejected",
+        expected: "VerificationProviderUnboundRejected",
         assertTransport: (transport) => expect(transport.verifyCalls).toHaveLength(1),
       },
     ]);
@@ -685,7 +685,7 @@ describe("Self Pass provider-local adapter", () => {
     };
     await expect(
       failureTag(adapter.complete(completionInput(session.session, payload))),
-    ).resolves.toBe("VerificationProviderRejected");
+    ).resolves.toBe("VerificationProviderUnboundRejected");
     FakeVerifier.result = resultFor(session.session, {
       discloseOutput: {
         ...resultFor(session.session).discloseOutput,
@@ -712,6 +712,6 @@ describe("Self Pass provider-local adapter", () => {
     });
     await expect(
       failureTag(adapter.complete(completionInput(session.session, payload))),
-    ).resolves.toBe("VerificationProviderRejected");
+    ).resolves.toBe("VerificationProviderUnboundRejected");
   });
 });

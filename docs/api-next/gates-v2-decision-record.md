@@ -217,7 +217,7 @@ extracts the UUID, completion reconstructs `DefaultConfigStore` and
 `SelfBackendVerifier` from immutable session requirements and configuration,
 and the verified user-defined data must bind both proof-session ID and request
 hash. Platform authorization, cookies, Cloudflare Access credentials, and
-configured internal-auth headers are stripped at the HTTP transport boundary
+configured internal-auth headers are stripped at the HTTP handler boundary
 before application callback handling, even if a manifest requests them. The
 guarded registry repeats the filter before the adapter as defense in depth.
 The checked-in development, staging, and production Wrangler environments
@@ -236,14 +236,27 @@ If a terminal completion wins between the application's initial read and
 attempt reservation, the loser reloads and returns the same-key persisted
 replay. Before expensive provider completion, a short
 transaction reserves a fenced attempt keyed by proof session and idempotency
-key. At most three consumed or actively leased attempts are admitted per
-session; same-key concurrency is deduplicated, expired leases free capacity,
-and stale finalizers cannot write evidence. Positively identified provider
-unavailability and internal hashing failures release the attempt for retry;
-provider rejection or invalid output consumes it. Only one database
-transaction can commit evidence. A deferred constraint prevents any terminal
-proof-session row from committing without its matching append-only completion
-event.
+key. The rows enforce two distinct limits. Cryptographically bound policy
+rejections consume the durable user-attempt budget. A submission rejected
+before proof-to-session binding is established consumes no durable slot but
+keeps its short lease until expiry, which temporarily throttles anonymous
+verifier work. If active leases fill the remaining capacity, admission is
+retryable; only durable bound rejections can permanently exhaust the session.
+Same-key concurrency is deduplicated, expired leases free capacity, and stale
+finalizers cannot write evidence. Positively identified provider unavailability,
+provider defects, and internal hashing failures release the attempt for retry.
+Only one database transaction can commit evidence. A deferred constraint
+prevents any terminal proof-session row from committing without its matching
+append-only completion event.
+
+Session-bound public callbacks retain a deliberate residual availability
+tradeoff: a party holding a victim's launch payload can occupy all three short
+admission leases and delay the genuine callback until the earliest lease
+expires. They cannot permanently spend the victim's bound-attempt budget. The
+response is retryable, and a fresh intent remains the recovery path if the
+provider client does not retry. Authenticated callback envelopes should be
+preferred whenever a provider offers them; session-bound proof mode exists for
+providers such as Self Pass whose proof is the first cryptographic trust point.
 
 Subject identity and account ownership are separate. A normal `establish`
 ceremony may create a first binding or reuse the evaluating user's active

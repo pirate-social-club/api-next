@@ -323,7 +323,7 @@ suite("Postgres 17 verification completion repository", () => {
     completedTestCount += 1;
   });
 
-  test("caps active plus consumed attempts and excludes released leases", async () => {
+  test("temporarily throttles active leases and permanently caps consumed attempts", async () => {
     await withSchema(async (connection, admin) => {
       const session = proofSession("attempt-budget", "user-a", "2".repeat(64), "none");
       await insertSession(admin, session);
@@ -338,7 +338,7 @@ suite("Postgres 17 verification completion repository", () => {
         ),
       );
       expect(concurrent.filter((result) => result.kind === "acquired")).toHaveLength(3);
-      expect(concurrent.filter((result) => result.kind === "budget_exhausted")).toHaveLength(2);
+      expect(concurrent.filter((result) => result.kind === "in_flight")).toHaveLength(2);
       const first = concurrent.find((result) => result.kind === "acquired");
       if (first?.kind !== "acquired") throw new Error("expected an acquired reservation");
       await Effect.runPromise(Effect.scoped(store.releaseAttempt(first.reservation)));
@@ -349,7 +349,7 @@ suite("Postgres 17 verification completion repository", () => {
       const releasedKey = released.rows[0]?.idempotency_key;
       if (releasedKey === undefined) throw new Error("expected the released idempotency key");
       expect((await reserveAttempt(store, session.id, "budget-refill")).kind).toBe("acquired");
-      expect((await reserveAttempt(store, session.id, releasedKey)).kind).toBe("budget_exhausted");
+      expect((await reserveAttempt(store, session.id, releasedKey)).kind).toBe("in_flight");
       const active = await admin.query<{ attempt_id: string }>(
         `SELECT attempt_id
            FROM verification_completion_attempts
@@ -368,6 +368,15 @@ suite("Postgres 17 verification completion repository", () => {
       );
       expect((await reserveAttempt(store, session.id, "budget-after-expiry")).kind).toBe(
         "acquired",
+      );
+      await admin.query(
+        `UPDATE verification_completion_attempts
+            SET state = 'consumed', updated_at = clock_timestamp()
+          WHERE proof_session_id = $1 AND state = 'leased'`,
+        [session.id],
+      );
+      expect((await reserveAttempt(store, session.id, "budget-permanently-spent")).kind).toBe(
+        "budget_exhausted",
       );
     });
     completedTestCount += 1;
