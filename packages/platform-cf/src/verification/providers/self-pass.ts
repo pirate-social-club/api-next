@@ -9,6 +9,7 @@ import {
   VerificationProviderMisconfigured,
   VerificationProviderRejected,
   type VerificationProviderStartInput,
+  VerificationProviderUnavailable,
 } from "@pirate/application/verification";
 import {
   type Assertion,
@@ -98,7 +99,9 @@ export type SelfPassVerificationResult = Awaited<ReturnType<SelfVerifier["verify
 export type SelfPassSdk = Readonly<{
   readonly AllIds: SelfCoreModule["AllIds"];
   readonly DefaultConfigStore: SelfCoreModule["DefaultConfigStore"];
+  readonly RegistryContractError: SelfCoreModule["RegistryContractError"];
   readonly SelfBackendVerifier: SelfCoreModule["SelfBackendVerifier"];
+  readonly VerifierContractError: SelfCoreModule["VerifierContractError"];
 }>;
 
 export type SelfPassClock = Readonly<{
@@ -233,6 +236,32 @@ function rejected(operation: "start" | "complete" | "callback") {
     provider_id: SELF_PASS_PROVIDER_ID,
     operation,
   });
+}
+
+function unavailable(operation: "complete") {
+  return new VerificationProviderUnavailable({
+    provider_id: SELF_PASS_PROVIDER_ID,
+    operation,
+  });
+}
+
+function selfSdkInfrastructureError(
+  error: unknown,
+  sdk: Pick<SelfPassSdk, "RegistryContractError" | "VerifierContractError">,
+): boolean {
+  if (error instanceof sdk.RegistryContractError || error instanceof sdk.VerifierContractError) {
+    return true;
+  }
+  // A lazy import may cross a module boundary, so retain a narrow constructor
+  // name fallback for the SDK's exported error classes. Unknown errors remain
+  // rejections; only these two positively identified SDK failures are outages.
+  if (typeof error !== "object" || error === null) return false;
+  const errorConstructor = (error as { readonly constructor?: unknown }).constructor;
+  const constructorName =
+    typeof errorConstructor === "function" && "name" in errorConstructor
+      ? (errorConstructor as { readonly name?: unknown }).name
+      : undefined;
+  return constructorName === "RegistryContractError" || constructorName === "VerifierContractError";
 }
 
 function sameConfiguration(left: ProviderConfigurationRef, right: ProviderConfigurationRef) {
@@ -947,7 +976,10 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
                     submission.public_signals,
                     submission.user_context_data,
                   ),
-                catch: () => rejected("complete"),
+                catch: (error) =>
+                  selfSdkInfrastructureError(error, sdk)
+                    ? unavailable("complete")
+                    : rejected("complete"),
               }).pipe(
                 Effect.flatMap((result) =>
                   decodeResult(result).pipe(
