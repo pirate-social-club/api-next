@@ -91,6 +91,12 @@ export {
   type PostgresMigration,
 } from "./postgres-migrations";
 export {
+  makeControlPlanePublicCommunityThreadsRepository,
+  makeControlPlanePublicCommunityThreadsStore,
+  type PublicCommunityThreadsRepository,
+  type PublicCommunityThreadsRepositoryOptions,
+} from "./public-community-threads-repository";
+export {
   makeControlPlanePublicProfileRepository,
   makeControlPlanePublicProfileStore,
 } from "./public-profile-repository";

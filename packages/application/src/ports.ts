@@ -7,6 +7,7 @@ import type {
   GetCommunityPreview,
   GetJoinEligibility,
   GetPost,
+  GetPublicCommunityThreads,
   GetPublicHomeFeed,
   GetPublicProfileByHandle,
   JoinCommunity,
@@ -284,6 +285,12 @@ export type VoteDocument = Schema.Schema.Type<typeof CastPostVote.response>;
 export type ClearVoteDocument = Schema.Schema.Type<typeof ClearPostVote.response>;
 export type HomeFeedQuery = Schema.Schema.Type<(typeof GetPublicHomeFeed.request)["query"]>;
 export type HomeFeedDocument = Schema.Schema.Type<typeof GetPublicHomeFeed.response>;
+export type PublicCommunityThreadsQuery = Schema.Schema.Type<
+  (typeof GetPublicCommunityThreads.request)["query"]
+>;
+export type PublicCommunityThreadsDocument = Schema.Schema.Type<
+  typeof GetPublicCommunityThreads.response
+>;
 
 export type CommunityRepositoryOperation =
   | "membership"
@@ -442,3 +449,33 @@ export interface FeedStoreService {
 }
 
 export class FeedStore extends Context.Service<FeedStore, FeedStoreService>()("FeedStore") {}
+
+export type PublicCommunityThreadsRepositoryOperation = "list-public-community-threads";
+
+export class PublicCommunityThreadsRepositoryError extends Data.TaggedError(
+  "PublicCommunityThreadsRepositoryError",
+)<{
+  readonly operation: PublicCommunityThreadsRepositoryOperation;
+  readonly reason: "invalid-community-ref" | "invalid-cursor" | "invalid-row";
+}> {}
+
+export type PublicCommunityThreadsRepositoryFailure =
+  | PublicCommunityThreadsRepositoryError
+  | ControlPlaneError;
+
+export interface PublicCommunityThreadsStoreService {
+  readonly listPublicCommunityThreads: (input: {
+    readonly communityRef: string;
+    /** Exactly one decoded/NFKC/lowercase candidate, produced by the use case. */
+    readonly slugCandidate: string;
+    readonly query: PublicCommunityThreadsQuery;
+  }) => Effect.Effect<
+    PublicCommunityThreadsDocument | null,
+    PublicCommunityThreadsRepositoryFailure
+  >;
+}
+
+export class PublicCommunityThreadsStore extends Context.Service<
+  PublicCommunityThreadsStore,
+  PublicCommunityThreadsStoreService
+>()("PublicCommunityThreadsStore") {}

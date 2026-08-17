@@ -9,6 +9,7 @@
     "./community-repository": "./src/community-repository.ts",
     "./content-repository": "./src/content-repository.ts",
     "./feed-repository": "./src/feed-repository.ts",
+    "./public-community-threads-repository": "./src/public-community-threads-repository.ts",
     "./identity-repository": "./src/identity-repository.ts",
     "./public-profile-repository": "./src/public-profile-repository.ts",
     "./postgres": "./src/postgres.ts",
