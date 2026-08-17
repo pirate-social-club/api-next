@@ -25,15 +25,48 @@ export interface VerificationIntentResolver {
   ) => Effect.Effect<unknown, VerificationStartStorageFailed>;
 }
 
-export type VerificationSessionStartCommitOutcome =
+export type VerificationSessionStartReservation = Readonly<{
+  readonly reservation_id: string;
+  readonly fence_token: number;
+  readonly lease_expires_at: string;
+}>;
+
+export type VerificationSessionStartReservationOutcome =
+  | { readonly kind: "acquired"; readonly reservation: VerificationSessionStartReservation }
+  | { readonly kind: "replay"; readonly start: ProviderSessionStart }
+  | { readonly kind: "in_flight"; readonly retry_after_seconds: number }
+  | { readonly kind: "conflict" }
+  | {
+      readonly kind: "terminal";
+      readonly status: "completed" | "failed" | "expired";
+      readonly start: ProviderSessionStart;
+    };
+
+export type VerificationSessionStartFinalizeOutcome =
   | { readonly kind: "created" | "replay"; readonly start: ProviderSessionStart }
-  | { readonly kind: "conflict" };
+  | { readonly kind: "conflict" }
+  | { readonly kind: "stale" };
+
+export type VerificationSessionStartReservationInput = Readonly<{
+  readonly start: VerificationProviderStartInput;
+  /** Lease is start deadline plus a small finalization margin. */
+  readonly ttl_ms: number;
+}>;
 
 export interface VerificationSessionStartStore {
-  /** Persist the validated pending session and its presentation in one local transaction. */
-  readonly commit: (
+  /** Reserve one actor/intent before any provider side effect. */
+  readonly reserve: (
+    input: VerificationSessionStartReservationInput,
+  ) => Effect.Effect<VerificationSessionStartReservationOutcome, VerificationStartStorageFailed>;
+  /** Persist the provider result with a lease and monotonic fence check. */
+  readonly finalize: (
+    reservation: VerificationSessionStartReservation,
     start: ProviderSessionStart,
-  ) => Effect.Effect<VerificationSessionStartCommitOutcome, VerificationStartStorageFailed>;
+  ) => Effect.Effect<VerificationSessionStartFinalizeOutcome, VerificationStartStorageFailed>;
+  /** Release a failed provider attempt without releasing another owner. */
+  readonly release: (
+    reservation: VerificationSessionStartReservation,
+  ) => Effect.Effect<void, VerificationStartStorageFailed>;
 }
 
 export interface StartVerificationServices {
@@ -42,16 +75,31 @@ export interface StartVerificationServices {
   readonly store: VerificationSessionStartStore;
 }
 
-export interface StartVerificationResult {
-  readonly proof_session_id: string;
-  readonly provider_id: string;
-  readonly presentation: ProviderPresentation;
-  readonly expires_at: string;
-  readonly replayed: boolean;
-}
+export type StartVerificationResult =
+  | {
+      readonly proof_session_id: string;
+      readonly provider_id: string;
+      readonly presentation: ProviderPresentation;
+      readonly expires_at: string;
+      readonly replayed: boolean;
+    }
+  | {
+      readonly proof_session_id: string;
+      readonly provider_id: string;
+      readonly status: "completed";
+      readonly replayed: true;
+    };
 
 export class VerificationStartRejected extends Data.TaggedError("VerificationStartRejected")<{
-  readonly reason: "invalid" | "intent_unavailable" | "unsupported" | "indeterminate" | "conflict";
+  readonly reason:
+    | "invalid"
+    | "intent_unavailable"
+    | "unsupported"
+    | "indeterminate"
+    | "conflict"
+    | "in_flight"
+    | "terminal";
+  readonly retry_after_seconds?: number;
 }> {}
 
 export class VerificationStartStorageFailed extends Data.TaggedError(
@@ -63,6 +111,8 @@ export type StartVerificationFailure =
   | VerificationStartStorageFailed
   | VerificationProviderFailure
   | VerificationProviderUnknown;
+
+const START_RESERVATION_MARGIN_MS = 1_000;
 
 function decodeInput(
   input: unknown,
@@ -116,10 +166,52 @@ export const startVerification = Effect.fn("startVerification")(function* (
     try: () => computeVerificationRequestHash(input.provider_id, hashInput),
     catch: () => new VerificationStartRejected({ reason: "invalid" }),
   });
-  const started = yield* provider.start({ ...hashInput, request_hash });
-  const committed = yield* services.store.commit(started);
-  if (committed.kind === "conflict") {
+  const startInput = { ...hashInput, request_hash } satisfies VerificationProviderStartInput;
+  const reservationOutcome = yield* services.store.reserve({
+    start: startInput,
+    ttl_ms: provider.manifest.operation_deadlines.start_ms + START_RESERVATION_MARGIN_MS,
+  });
+  if (reservationOutcome.kind === "replay") {
+    return {
+      proof_session_id: reservationOutcome.start.session.id,
+      provider_id: reservationOutcome.start.session.provider_id,
+      presentation: reservationOutcome.start.presentation,
+      expires_at: reservationOutcome.start.session.expires_at,
+      replayed: true,
+    };
+  }
+  if (reservationOutcome.kind === "in_flight") {
+    return yield* new VerificationStartRejected({
+      reason: "in_flight",
+      retry_after_seconds: reservationOutcome.retry_after_seconds,
+    });
+  }
+  if (reservationOutcome.kind === "terminal") {
+    if (reservationOutcome.status === "completed") {
+      return {
+        proof_session_id: reservationOutcome.start.session.id,
+        provider_id: reservationOutcome.start.session.provider_id,
+        status: "completed",
+        replayed: true,
+      };
+    }
+    return yield* new VerificationStartRejected({ reason: "terminal" });
+  }
+  if (reservationOutcome.kind === "conflict") {
     return yield* new VerificationStartRejected({ reason: "conflict" });
+  }
+
+  const reservation = reservationOutcome.reservation;
+  const started = yield* provider
+    .start(startInput)
+    .pipe(
+      Effect.tapError(() =>
+        services.store.release(reservation).pipe(Effect.catch(() => Effect.succeed(undefined))),
+      ),
+    );
+  const committed = yield* services.store.finalize(reservation, started);
+  if (committed.kind === "conflict" || committed.kind === "stale") {
+    return yield* new VerificationStartRejected({ reason: "in_flight", retry_after_seconds: 1 });
   }
   return {
     proof_session_id: committed.start.session.id,

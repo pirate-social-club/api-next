@@ -3,7 +3,7 @@ export type {
   StartVerificationResult,
   StartVerificationServices,
   VerificationIntentResolver,
-  VerificationSessionStartCommitOutcome,
+  VerificationSessionStartFinalizeOutcome,
   VerificationSessionStartStore,
 } from "../verification/start.ts";
 export {

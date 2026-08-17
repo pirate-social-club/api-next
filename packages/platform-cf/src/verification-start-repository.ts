@@ -6,6 +6,9 @@ import {
 import {
   ProviderPresentation,
   ProviderSessionStart,
+  VerificationProviderStartInput,
+  type VerificationSessionStartReservation,
+  type VerificationSessionStartReservationInput,
   type VerificationSessionStartStore,
   VerificationStartStorageFailed,
 } from "@pirate/application/verification";
@@ -182,6 +185,12 @@ function decodeStart(sessionRow: Row, presentationRow: Row): ProviderSessionStar
   return Option.isSome(decoded) ? decoded.value : null;
 }
 
+type ExistingStart = Readonly<{
+  readonly start: ProviderSessionStart;
+  /** Evaluated by PostgreSQL's clock while the session row is locked. */
+  readonly active: boolean;
+}>;
+
 function identityMatches(actual: ProviderSessionStart, expected: ProviderSessionStart): boolean {
   return (
     sameValue(actual.session, expected.session) &&
@@ -194,15 +203,41 @@ function invalidStart(input: unknown): ProviderSessionStart | null {
   return Option.isSome(decoded) ? decoded.value : null;
 }
 
+function reservationFromRow(row: Row): VerificationSessionStartReservation | null {
+  const reservation_id = requiredString(row, "reservation_id");
+  const lease_expires_at = timestamp(row, "lease_expires_at");
+  const token = row.fence_token;
+  const fence_token =
+    typeof token === "number"
+      ? token
+      : typeof token === "string" && /^[0-9]+$/u.test(token)
+        ? Number(token)
+        : NaN;
+  if (
+    reservation_id === null ||
+    lease_expires_at === null ||
+    !Number.isSafeInteger(fence_token) ||
+    fence_token <= 0
+  ) {
+    return null;
+  }
+  return { reservation_id, fence_token, lease_expires_at };
+}
+
+function reservationInput(input: unknown): VerificationProviderStartInput | null {
+  const decoded = Schema.decodeUnknownOption(VerificationProviderStartInput)(input);
+  return Option.isSome(decoded) ? decoded.value : null;
+}
+
 function loadExisting(
   transaction: Transaction,
   actorId: string,
   intentId: string,
-): Effect.Effect<ProviderSessionStart | null, VerificationStartStorageFailed | ControlPlaneError> {
+): Effect.Effect<ExistingStart | null, VerificationStartStorageFailed | ControlPlaneError> {
   return Effect.gen(function* () {
     const sessionResult = yield* transaction.execute<Row>({
       label: "verification.start.lock-session-by-intent",
-      text: `SELECT ${sessionColumns()}
+      text: `SELECT ${sessionColumns()}, (expires_at > CURRENT_TIMESTAMP) AS session_active
                FROM proof_sessions
               WHERE actor_id = $1 AND intent_id = $2
               FOR UPDATE`,
@@ -224,7 +259,9 @@ function loadExisting(
     const presentationRow = yield* oneRow(presentationResult.rows);
     if (presentationRow === null) return yield* Effect.fail(storageFailure());
     const decoded = decodeStart(sessionRow, presentationRow);
-    return decoded === null ? yield* Effect.fail(storageFailure()) : decoded;
+    return decoded === null || typeof sessionRow.session_active !== "boolean"
+      ? yield* Effect.fail(storageFailure())
+      : { start: decoded, active: sessionRow.session_active };
   });
 }
 
@@ -332,7 +369,120 @@ function insertPresentation(
 
 export function makeControlPlaneVerificationSessionStartRepository() {
   return {
-    commit: (input: ProviderSessionStart) =>
+    reserve: (input: VerificationSessionStartReservationInput) =>
+      Effect.gen(function* () {
+        const start = reservationInput(input.start);
+        if (start === null || !Number.isSafeInteger(input.ttl_ms) || input.ttl_ms <= 0) {
+          return yield* Effect.fail(storageFailure());
+        }
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            yield* lockActor(transaction, start.actor_id);
+            const existing = yield* loadExisting(transaction, start.actor_id, start.intent_id);
+            if (existing !== null) {
+              if (existing.start.session.request_hash !== start.request_hash) {
+                return { kind: "conflict" } as const;
+              }
+              if (existing.start.session.status === "pending" && existing.active) {
+                return { kind: "replay", start: existing.start } as const;
+              }
+              return {
+                kind: "terminal",
+                status:
+                  existing.start.session.status === "pending"
+                    ? "expired"
+                    : existing.start.session.status,
+                start: existing.start,
+              } as const;
+            }
+
+            const reservationId = start.request_hash;
+            const result = yield* transaction.execute<Row>({
+              label: "verification.start.lock-reservation",
+              text: `SELECT reservation_id, request_hash, state, fence_token,
+                             lease_expires_at,
+                             (lease_expires_at > CURRENT_TIMESTAMP) AS lease_active,
+                             GREATEST(
+                               1,
+                               CEIL(EXTRACT(EPOCH FROM (lease_expires_at - CURRENT_TIMESTAMP)))
+                             )::integer AS retry_after_seconds
+                        FROM verification_start_reservations
+                       WHERE actor_id = $1 AND intent_id = $2
+                       FOR UPDATE`,
+              values: [start.actor_id, start.intent_id],
+              readonly: false,
+            });
+            const row = yield* oneRow(result.rows);
+            if (row !== null) {
+              const requestHash = requiredString(row, "request_hash");
+              if (requestHash !== start.request_hash) {
+                return { kind: "conflict" } as const;
+              }
+              const state = requiredString(row, "state");
+              const lease = timestamp(row, "lease_expires_at");
+              if (state === null || lease === null || typeof row.lease_active !== "boolean") {
+                return yield* Effect.fail(storageFailure());
+              }
+              if (state === "acquired" && row.lease_active) {
+                const retryAfter = row.retry_after_seconds;
+                if (
+                  typeof retryAfter !== "number" ||
+                  !Number.isSafeInteger(retryAfter) ||
+                  retryAfter < 1
+                ) {
+                  return yield* Effect.fail(storageFailure());
+                }
+                return { kind: "in_flight", retry_after_seconds: retryAfter } as const;
+              }
+              if (state === "finalized") return yield* Effect.fail(storageFailure());
+              const renewed = yield* transaction.execute<Row>({
+                label: "verification.start.renew-reservation",
+                text: `UPDATE verification_start_reservations
+                          SET state = 'acquired',
+                              fence_token = fence_token + 1,
+                              request = $3::jsonb,
+                              lease_expires_at = CURRENT_TIMESTAMP + ($4 * INTERVAL '1 millisecond'),
+                              updated_at = CURRENT_TIMESTAMP
+                        WHERE actor_id = $1 AND intent_id = $2
+                        RETURNING reservation_id, fence_token, lease_expires_at`,
+                values: [start.actor_id, start.intent_id, JSON.stringify(start), input.ttl_ms],
+                readonly: false,
+              });
+              const renewedRow = yield* oneRow(renewed.rows);
+              const reservation = renewedRow === null ? null : reservationFromRow(renewedRow);
+              return reservation === null
+                ? yield* Effect.fail(storageFailure())
+                : ({ kind: "acquired", reservation } as const);
+            }
+
+            const inserted = yield* transaction.execute<Row>({
+              label: "verification.start.insert-reservation",
+              text: `INSERT INTO verification_start_reservations (
+                       reservation_id, actor_id, intent_id, request_hash, request,
+                       state, fence_token, lease_expires_at
+                     ) VALUES ($1, $2, $3, $4, $5::jsonb, 'acquired', 1,
+                               CURRENT_TIMESTAMP + ($6 * INTERVAL '1 millisecond'))
+                     RETURNING reservation_id, fence_token, lease_expires_at`,
+              values: [
+                reservationId,
+                start.actor_id,
+                start.intent_id,
+                start.request_hash,
+                JSON.stringify(start),
+                input.ttl_ms,
+              ],
+              readonly: false,
+            });
+            const insertedRow = yield* oneRow(inserted.rows);
+            const reservation = insertedRow === null ? null : reservationFromRow(insertedRow);
+            return reservation === null
+              ? yield* Effect.fail(storageFailure())
+              : ({ kind: "acquired", reservation } as const);
+          }),
+        );
+      }),
+    finalize: (reservation: VerificationSessionStartReservation, input: ProviderSessionStart) =>
       Effect.gen(function* () {
         const start = invalidStart(input);
         if (start === null || start.session.status !== "pending") {
@@ -341,28 +491,76 @@ export function makeControlPlaneVerificationSessionStartRepository() {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            // Serializing starts for one authenticated account closes the
-            // session-visible/presentation-not-yet-visible race between two
-            // transactions using the same actor and intent.
+            const lock = yield* transaction.execute<Row>({
+              label: "verification.start.lock-finalizer",
+              text: `SELECT reservation_id, request_hash, state, fence_token,
+                             lease_expires_at,
+                             (lease_expires_at > CURRENT_TIMESTAMP) AS lease_active
+                        FROM verification_start_reservations
+                       WHERE reservation_id = $1
+                       FOR UPDATE`,
+              values: [reservation.reservation_id],
+              readonly: false,
+            });
+            const row = yield* oneRow(lock.rows);
+            const current = row === null ? null : reservationFromRow(row);
+            if (
+              current === null ||
+              current.fence_token !== reservation.fence_token ||
+              requiredString(row ?? {}, "state") !== "acquired"
+            ) {
+              return { kind: "stale" } as const;
+            }
+            if (requiredString(row ?? {}, "request_hash") !== start.session.request_hash) {
+              return { kind: "conflict" } as const;
+            }
+            const fenced = yield* transaction.execute<Row>({
+              label: "verification.start.finalize-reservation",
+              text: `UPDATE verification_start_reservations
+                         SET state = 'finalized', updated_at = CURRENT_TIMESTAMP
+                       WHERE reservation_id = $1
+                         AND fence_token = $2
+                         AND state = 'acquired'
+                         AND lease_expires_at > CURRENT_TIMESTAMP`,
+              values: [reservation.reservation_id, reservation.fence_token],
+              readonly: false,
+            });
+            if (fenced.rowCount !== 1) return { kind: "stale" } as const;
             yield* lockActor(transaction, start.session.actor_id);
             const insertedSession = yield* insertSession(transaction, start);
-            if (insertedSession !== null) {
-              const insertedPresentation = yield* insertPresentation(transaction, start);
-              const persisted = decodeStart(insertedSession, insertedPresentation);
-              if (persisted === null || !identityMatches(persisted, start)) {
-                return yield* Effect.fail(storageFailure());
-              }
-              return { kind: "created", start: persisted } as const;
+            if (insertedSession === null) {
+              const existing = yield* loadExisting(
+                transaction,
+                start.session.actor_id,
+                start.session.intent_id,
+              );
+              if (existing === null) return yield* Effect.fail(storageFailure());
+              return sameValue(existing.start, start)
+                ? ({ kind: "replay", start: existing.start } as const)
+                : ({ kind: "conflict" } as const);
             }
-            const existing = yield* loadExisting(
-              transaction,
-              start.session.actor_id,
-              start.session.intent_id,
-            );
-            if (existing === null) return yield* Effect.fail(storageFailure());
-            return identityMatches(existing, start)
-              ? ({ kind: "replay", start: existing } as const)
-              : ({ kind: "conflict" } as const);
+            const insertedPresentation = yield* insertPresentation(transaction, start);
+            const persisted = decodeStart(insertedSession, insertedPresentation);
+            if (persisted === null || !identityMatches(persisted, start)) {
+              return yield* Effect.fail(storageFailure());
+            }
+            return { kind: "created", start: persisted } as const;
+          }),
+        );
+      }),
+    release: (reservation: VerificationSessionStartReservation) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        yield* db.withTransaction((transaction) =>
+          transaction.execute({
+            label: "verification.start.release-reservation",
+            text: `UPDATE verification_start_reservations
+                       SET state = 'released', updated_at = CURRENT_TIMESTAMP
+                     WHERE reservation_id = $1
+                       AND fence_token = $2
+                       AND state = 'acquired'`,
+            values: [reservation.reservation_id, reservation.fence_token],
+            readonly: false,
           }),
         );
       }),
@@ -376,6 +574,8 @@ export function makeControlPlaneVerificationSessionStartStore(
   const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
     Effect.provide(runtime)(effect).pipe(Effect.mapError(() => storageFailure()));
   return {
-    commit: (input) => provide(repository.commit(input)),
+    reserve: (input) => provide(repository.reserve(input)),
+    finalize: (reservation, input) => provide(repository.finalize(reservation, input)),
+    release: (reservation) => provide(repository.release(reservation)),
   };
 }

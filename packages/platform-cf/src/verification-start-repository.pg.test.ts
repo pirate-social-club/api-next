@@ -18,7 +18,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_VERIFICATION_START_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-verification-start-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-verification-start-suite-complete\n";
-const expectedTestCount = 5;
+const expectedTestCount = 9;
 let completedTestCount = 0;
 
 const migrationFiles = [
@@ -32,6 +32,7 @@ const migrationFiles = [
   "0008_community_route_slug.sql",
   "0009_gates_v2_foundation.sql",
   "0010_proof_session_provenance.sql",
+  "0011_verification_start_reservations.sql",
 ] as const;
 const migrations: readonly PostgresMigration[] = await Promise.all(
   migrationFiles.map(async (version) => {
@@ -122,13 +123,26 @@ function storeFor(connection: string) {
   );
 }
 
+async function reserve(store: ReturnType<typeof storeFor>, start: ProviderSessionStart) {
+  return Effect.runPromise(Effect.scoped(store.reserve({ start: start.session, ttl_ms: 60_000 })));
+}
+
+async function finalize(store: ReturnType<typeof storeFor>, start: ProviderSessionStart) {
+  const reservation = await reserve(store, start);
+  if (reservation.kind !== "acquired")
+    throw new Error(`expected reservation, got ${reservation.kind}`);
+  return Effect.runPromise(Effect.scoped(store.finalize(reservation.reservation, start)));
+}
+
 suite("Postgres 17 verification session start repository", () => {
   test("creates and replays the exact pending session and presentation", async () => {
     await withSchema(async (connection, admin) => {
       const start = startFor("start-created");
       const store = storeFor(connection);
-      const created = await Effect.runPromise(Effect.scoped(store.commit(start)));
-      const replay = await Effect.runPromise(Effect.scoped(store.commit(start)));
+      const created = await finalize(store, start);
+      const replay = await Effect.runPromise(
+        Effect.scoped(store.reserve({ start: start.session, ttl_ms: 60_000 })),
+      );
       expect(created.kind).toBe("created");
       expect(replay).toEqual({ kind: "replay", start });
       expect((await admin.query("SELECT count(*) FROM proof_sessions")).rows[0]?.count).toBe("1");
@@ -144,15 +158,15 @@ suite("Postgres 17 verification session start repository", () => {
       const start = startFor("start-concurrent", "user-a", "intent-concurrent");
       const store = storeFor(connection);
       const settled = await Promise.allSettled([
-        Effect.runPromise(Effect.scoped(store.commit(start))),
-        Effect.runPromise(Effect.scoped(store.commit(start))),
+        Effect.runPromise(Effect.scoped(store.reserve({ start: start.session, ttl_ms: 60_000 }))),
+        Effect.runPromise(Effect.scoped(store.reserve({ start: start.session, ttl_ms: 60_000 }))),
       ]);
       const outcomes = settled.map((result) => {
         if (result.status === "rejected") throw result.reason;
         return result.value.kind;
       });
-      expect(outcomes.sort()).toEqual(["created", "replay"]);
-      expect((await admin.query("SELECT count(*) FROM proof_sessions")).rows[0]?.count).toBe("1");
+      expect(outcomes.sort()).toEqual(["acquired", "in_flight"]);
+      expect((await admin.query("SELECT count(*) FROM proof_sessions")).rows[0]?.count).toBe("0");
     });
     completedTestCount += 1;
   });
@@ -161,11 +175,74 @@ suite("Postgres 17 verification session start repository", () => {
     await withSchema(async (connection) => {
       const start = startFor("start-conflict", "user-a", "intent-conflict");
       const store = storeFor(connection);
-      await Effect.runPromise(Effect.scoped(store.commit(start)));
+      await Effect.runPromise(
+        Effect.scoped(store.reserve({ start: start.session, ttl_ms: 60_000 })),
+      );
       const mismatch = startFor("different-session", "user-a", "intent-conflict");
-      expect(await Effect.runPromise(Effect.scoped(store.commit(mismatch)))).toEqual({
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(store.reserve({ start: mismatch.session, ttl_ms: 60_000 })),
+        ),
+      ).toEqual({
         kind: "conflict",
       });
+    });
+    completedTestCount += 1;
+  });
+
+  test("compares the persisted session request hash before replay", async () => {
+    await withSchema(async (connection) => {
+      const start = startFor("start-session-hash", "user-a", "intent-session-hash");
+      const store = storeFor(connection);
+      await finalize(store, start);
+      const mismatch = {
+        ...startFor("different-session", "user-a", "intent-session-hash"),
+        session: { ...start.session, id: "different-session", request_hash: "2".repeat(64) },
+      };
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(store.reserve({ start: mismatch.session, ttl_ms: 60_000 })),
+        ),
+      ).toEqual({ kind: "conflict" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("does not replay an expired pending session", async () => {
+    await withSchema(async (connection) => {
+      const start = startFor("start-expired", "user-a", "intent-expired");
+      const expired = {
+        ...start,
+        session: { ...start.session, expires_at: "2020-01-01T00:00:00.000Z" },
+      };
+      const store = storeFor(connection);
+      await finalize(store, expired);
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(store.reserve({ start: expired.session, ttl_ms: 60_000 })),
+        ),
+      ).toMatchObject({ kind: "terminal", status: "expired", start: expired });
+    });
+    completedTestCount += 1;
+  });
+
+  test("uses the database clock for lease expiry and reacquisition", async () => {
+    await withSchema(async (connection, admin) => {
+      const start = startFor("start-lease-expiry", "user-a", "intent-lease-expiry");
+      const store = storeFor(connection);
+      const first = await reserve(store, start);
+      if (first.kind !== "acquired") throw new Error("expected initial reservation");
+      await admin.query(
+        `UPDATE verification_start_reservations
+            SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second'
+          WHERE reservation_id = $1`,
+        [first.reservation.reservation_id],
+      );
+      const second = await reserve(store, start);
+      expect(second.kind).toBe("acquired");
+      if (second.kind === "acquired") {
+        expect(second.reservation.fence_token).toBe(first.reservation.fence_token + 1);
+      }
     });
     completedTestCount += 1;
   });
@@ -174,7 +251,7 @@ suite("Postgres 17 verification session start repository", () => {
     await withSchema(async (connection, admin) => {
       const start = startFor("start-roundtrip");
       const store = storeFor(connection);
-      await Effect.runPromise(Effect.scoped(store.commit(start)));
+      await finalize(store, start);
       const row = await admin.query(
         `SELECT provider_configuration_kind, provider_configuration_ref,
                 provider_configuration_version, upstream_session_ref,
@@ -221,11 +298,49 @@ suite("Postgres 17 verification session start repository", () => {
       `);
       const start = startFor("start-rollback");
       const store = storeFor(connection);
-      await expect(Effect.runPromise(Effect.scoped(store.commit(start)))).rejects.toBeDefined();
+      const reservation = await reserve(store, start);
+      if (reservation.kind !== "acquired") throw new Error("expected reservation");
+      await expect(
+        Effect.runPromise(Effect.scoped(store.finalize(reservation.reservation, start))),
+      ).rejects.toBeDefined();
       expect((await admin.query("SELECT count(*) FROM proof_sessions")).rows[0]?.count).toBe("0");
       expect(
         (await admin.query("SELECT count(*) FROM proof_session_presentations")).rows[0]?.count,
       ).toBe("0");
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects a stale finalizer before inserting session rows", async () => {
+    await withSchema(async (connection, admin) => {
+      const start = startFor("start-stale-finalizer");
+      const store = storeFor(connection);
+      const reservation = await reserve(store, start);
+      if (reservation.kind !== "acquired") throw new Error("expected reservation");
+      await admin.query(
+        `UPDATE verification_start_reservations
+            SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second'
+          WHERE reservation_id = $1`,
+        [reservation.reservation.reservation_id],
+      );
+      const reacquired = await reserve(store, start);
+      if (reacquired.kind !== "acquired") throw new Error("expected reacquisition");
+      expect(reacquired.reservation.fence_token).toBe(reservation.reservation.fence_token + 1);
+      expect(
+        await Effect.runPromise(Effect.scoped(store.finalize(reservation.reservation, start))),
+      ).toEqual({ kind: "stale" });
+      expect((await admin.query("SELECT count(*) FROM proof_sessions")).rows[0]?.count).toBe("0");
+      expect(
+        (await admin.query("SELECT count(*) FROM proof_session_presentations")).rows[0]?.count,
+      ).toBe("0");
+      expect(
+        (
+          await admin.query(
+            "SELECT state, fence_token FROM verification_start_reservations WHERE reservation_id = $1",
+            [reacquired.reservation.reservation_id],
+          )
+        ).rows[0],
+      ).toEqual({ state: "acquired", fence_token: "2" });
     });
     completedTestCount += 1;
   });

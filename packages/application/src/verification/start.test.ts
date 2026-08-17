@@ -6,16 +6,21 @@ import type {
   VerificationProviderAdapter,
   VerificationProviderPlanResult,
 } from "./adapter.ts";
+import { VerificationProviderUnavailable } from "./adapter.ts";
 import { makeVerificationProviderRegistry } from "./registry.ts";
 import {
   startVerification,
-  type VerificationSessionStartCommitOutcome,
+  type VerificationSessionStartFinalizeOutcome,
+  type VerificationSessionStartReservationOutcome,
   VerificationStartRejected,
 } from "./start.ts";
 
 const MANIFEST: ProofProviderManifest = {
   provider_id: "test.provider",
   manifest_version: "1",
+  operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 5000, callback_ms: 5000 },
+  callback_mode: "none",
+  callback_header_allowlist: [],
   protocol_versions: ["test-v1"],
   environments: ["test"],
   supported_methods: ["document"],
@@ -48,11 +53,20 @@ function adapter(
     request_mode: "dynamic",
     provider_configuration: { kind: "dynamic", reference: "test-query", version: "1" },
   },
+  startFailure?: "unavailable",
 ): VerificationProviderAdapter {
   return {
     manifest: MANIFEST,
     plan: () => Effect.succeed(plan),
     start: (input) => {
+      if (startFailure === "unavailable") {
+        return Effect.fail(
+          new VerificationProviderUnavailable({
+            provider_id: MANIFEST.provider_id,
+            operation: "start",
+          }),
+        );
+      }
       const session: ProofSession = {
         id: "proof-session-1",
         actor_id: input.actor_id,
@@ -89,25 +103,51 @@ function adapter(
 async function services(input: {
   readonly plan?: VerificationProviderPlanResult;
   readonly intent?: unknown;
-  readonly commit?: VerificationSessionStartCommitOutcome["kind"];
+  readonly commit?: Exclude<VerificationSessionStartFinalizeOutcome["kind"], "created" | "stale">;
+  readonly reservation?: VerificationSessionStartReservationOutcome;
+  readonly startFailure?: "unavailable";
 }) {
-  const registry = await Effect.runPromise(makeVerificationProviderRegistry([adapter(input.plan)]));
+  const registry = await Effect.runPromise(
+    makeVerificationProviderRegistry([adapter(input.plan, input.startFailure)]),
+  );
   const commits: ProviderSessionStart[] = [];
+  let releases = 0;
   return {
     commits,
+    get releases() {
+      return releases;
+    },
     value: {
       registry,
       intents: {
         resolve: () => Effect.succeed(Object.hasOwn(input, "intent") ? input.intent : PLAN_INPUT),
       },
       store: {
-        commit: (start: ProviderSessionStart) => {
-          commits.push(start);
+        reserve: () => {
+          if (input.reservation !== undefined) return Effect.succeed(input.reservation);
           return Effect.succeed(
             input.commit === "conflict"
               ? ({ kind: "conflict" } as const)
-              : ({ kind: input.commit ?? "created", start } as const),
+              : ({
+                  kind: "acquired",
+                  reservation: {
+                    reservation_id: "reservation-1",
+                    fence_token: 1,
+                    lease_expires_at: "2099-08-17T00:00:00.000Z",
+                  },
+                } as const),
           );
+        },
+        finalize: (_reservation: unknown, start: ProviderSessionStart) => {
+          commits.push(start);
+          return Effect.succeed({
+            kind: input.commit === "replay" ? "replay" : "created",
+            start,
+          } as const);
+        },
+        release: () => {
+          releases += 1;
+          return Effect.succeed(undefined);
         },
       },
     },
@@ -154,6 +194,40 @@ describe("verification start use case", () => {
     expect(result).not.toHaveProperty("provider_configuration");
   });
 
+  test("returns a redacted completed terminal response without a presentation", async () => {
+    const existing = adapter().start({
+      actor_id: "user-1",
+      intent_id: "intent-1",
+      request_hash: "a".repeat(64),
+      method: "document",
+      scope: { kind: "none", issuer: MANIFEST.provider_id },
+      requested_requirements: [{ claim_id: "document.valid" }] as const,
+      requested_claim_ids: ["document.valid"] as const,
+      subject_binding_intent: "none",
+      protocol_version: "test-v1",
+      environment: "test",
+      request_mode: "dynamic",
+      provider_configuration: { kind: "dynamic", reference: "test-query", version: "1" },
+    });
+    const start = await Effect.runPromise(existing);
+    const harness = await services({
+      reservation: { kind: "terminal", status: "completed", start },
+    });
+    const result = await Effect.runPromise(
+      startVerification(
+        { actor_id: "user-1", intent_id: "intent-1", provider_id: MANIFEST.provider_id },
+        harness.value,
+      ),
+    );
+    expect(result).toEqual({
+      proof_session_id: start.session.id,
+      provider_id: MANIFEST.provider_id,
+      status: "completed",
+      replayed: true,
+    });
+    expect(result).not.toHaveProperty("presentation");
+  });
+
   test("fails closed for unavailable intents, unsupported plans, and local conflicts", async () => {
     const cases = [
       await services({ intent: null }),
@@ -185,5 +259,89 @@ describe("verification start use case", () => {
     );
     expect(failureOf(exit)).toEqual(new VerificationStartRejected({ reason: "invalid" }));
     expect(harness.commits).toEqual([]);
+  });
+
+  test("releases on provider failure and exposes in-flight reservations", async () => {
+    const failed = await services({ startFailure: "unavailable" });
+    const failedExit = await Effect.runPromiseExit(
+      startVerification(
+        { actor_id: "user-1", intent_id: "intent-1", provider_id: MANIFEST.provider_id },
+        failed.value,
+      ),
+    );
+    expect(failureOf(failedExit)).toBeInstanceOf(VerificationProviderUnavailable);
+    expect(failed.releases).toBe(1);
+
+    const inFlight = await services({
+      reservation: { kind: "in_flight", retry_after_seconds: 3 },
+    });
+    const inFlightExit = await Effect.runPromiseExit(
+      startVerification(
+        { actor_id: "user-1", intent_id: "intent-1", provider_id: MANIFEST.provider_id },
+        inFlight.value,
+      ),
+    );
+    expect(failureOf(inFlightExit)).toEqual(
+      new VerificationStartRejected({ reason: "in_flight", retry_after_seconds: 3 }),
+    );
+  });
+
+  test("allows a released provider failure to retry and persist the next success", async () => {
+    let attempts = 0;
+    let releases = 0;
+    const base = adapter();
+    const registry = await Effect.runPromise(
+      makeVerificationProviderRegistry([
+        {
+          ...base,
+          start: (input) => {
+            attempts += 1;
+            if (attempts === 1) {
+              return Effect.fail(
+                new VerificationProviderUnavailable({
+                  provider_id: MANIFEST.provider_id,
+                  operation: "start",
+                }),
+              );
+            }
+            return base.start(input);
+          },
+        },
+      ]),
+    );
+    const store = {
+      reserve: () =>
+        Effect.succeed({
+          kind: "acquired" as const,
+          reservation: {
+            reservation_id: "reservation-retry",
+            fence_token: attempts + 1,
+            lease_expires_at: "2099-08-17T00:00:00.000Z",
+          },
+        }),
+      finalize: (_reservation: unknown, start: ProviderSessionStart) =>
+        Effect.succeed({ kind: "created" as const, start }),
+      release: () => {
+        releases += 1;
+        return Effect.succeed(undefined);
+      },
+    };
+    const services = {
+      registry,
+      intents: { resolve: () => Effect.succeed(PLAN_INPUT) },
+      store,
+    };
+    const input = {
+      actor_id: "user-1",
+      intent_id: "retry-intent",
+      provider_id: MANIFEST.provider_id,
+    };
+    await expect(Effect.runPromise(startVerification(input, services))).rejects.toBeInstanceOf(
+      VerificationProviderUnavailable,
+    );
+    const result = await Effect.runPromise(startVerification(input, services));
+    expect(result.replayed).toBe(false);
+    expect(attempts).toBe(2);
+    expect(releases).toBe(1);
   });
 });
