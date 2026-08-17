@@ -44,6 +44,7 @@ const JsonValue = Schema.Json;
 const JsonObject = Schema.Record(Schema.String, Schema.Json);
 
 const PathCommunity = Schema.Struct({ communityId: Schema.String });
+const PathPublicCommunity = Schema.Struct({ communityRef: Schema.String });
 const PathPost = Schema.Struct({ postId: Schema.String });
 const PathComment = Schema.Struct({ commentId: Schema.String });
 
@@ -60,6 +61,16 @@ const FeedQuery = Schema.Struct({
   locale: Schema.optional(Schema.String),
   sort: Schema.optional(Schema.Literals(["best", "top", "new"])),
   time_range: Schema.optional(Schema.Literals(["hour", "day", "week", "month", "year", "all"])),
+});
+
+// Public community threads deliberately has a closed phase-1 query surface.
+// In particular, callers must opt into the only supported surface and sort;
+// the home-feed's best/top/time-range vocabulary is not accepted here.
+const PublicCommunityThreadsQuery = Schema.Struct({
+  surface: Schema.Literal("threads"),
+  sort: Schema.Literal("new"),
+  cursor: Schema.optional(Schema.String),
+  locale: Schema.optional(Schema.String),
 });
 
 const AgentActionProof = Schema.Struct({
@@ -678,6 +689,12 @@ const HomeFeedResponse = Schema.Struct({
   next_cursor: Schema.optional(Schema.NullOr(Schema.String)),
 });
 
+const PublicCommunityThreadsResponse = Schema.Struct({
+  community: CommunityPreview,
+  items: Schema.Array(LocalizedPost),
+  next_cursor: Schema.NullOr(Schema.String),
+});
+
 const CreatePostCommon = {
   idempotency_key: Schema.String,
   authorship_mode: Schema.optional(Schema.Literals(["human_direct", "user_agent"])),
@@ -1118,6 +1135,16 @@ export const GetPublicHomeFeed = endpoint({
   response: HomeFeedResponse,
   successStatus: 200,
   errors: [BadRequest, RateLimited],
+});
+
+export const GetPublicCommunityThreads = endpoint({
+  method: "GET",
+  path: "/public-communities/:communityRef/feed",
+  auth: Auth.public(),
+  request: { path: PathPublicCommunity, query: PublicCommunityThreadsQuery },
+  response: PublicCommunityThreadsResponse,
+  successStatus: 200,
+  errors: [BadRequest, InternalError, NotFound],
 });
 
 export const GetHomeFeed = endpoint({

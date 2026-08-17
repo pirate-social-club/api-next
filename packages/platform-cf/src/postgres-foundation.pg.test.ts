@@ -53,6 +53,9 @@ const publicProfileInvariantMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const communityRouteSlugMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0008_community_route_slug.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -92,6 +95,11 @@ const publicProfileInvariantMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0007_public_profile_handle_invariants.sql"] ?? "",
   sql: publicProfileInvariantMigrationSql,
 };
+const communityRouteSlugMigration: PostgresMigration = {
+  version: "0008_community_route_slug.sql",
+  checksum: checksumManifest.migrations["0008_community_route_slug.sql"] ?? "",
+  sql: communityRouteSlugMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -100,6 +108,7 @@ const migrations: readonly PostgresMigration[] = [
   m2BehaviorMigration,
   publicProfileMigration,
   publicProfileInvariantMigration,
+  communityRouteSlugMigration,
 ];
 
 function checksum(value: string): string {
@@ -231,6 +240,7 @@ suite("Postgres 17 v1 foundation", () => {
       expect(checksum(publicProfileInvariantMigrationSql)).toBe(
         publicProfileInvariantMigration.checksum,
       );
+      expect(checksum(communityRouteSlugMigrationSql)).toBe(communityRouteSlugMigration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -275,7 +285,7 @@ suite("Postgres 17 v1 foundation", () => {
         `SELECT table_name, column_name, is_nullable
          FROM information_schema.columns
          WHERE table_schema = current_schema()
-           AND ((table_name = 'communities' AND column_name IN ('membership_mode', 'human_verification_lane'))
+           AND ((table_name = 'communities' AND column_name IN ('membership_mode', 'human_verification_lane', 'route_slug'))
              OR (table_name = 'community_memberships' AND column_name = 'request_note')
              OR (table_name = 'posts' AND column_name IN ('author_user_id', 'body', 'post_type', 'visibility', 'idempotency_key', 'idempotency_body_hash', 'comments_locked'))
              OR (table_name = 'comments' AND column_name IN ('author_user_id', 'body', 'idempotency_key', 'idempotency_body_hash', 'depth')))`,
@@ -305,6 +315,7 @@ suite("Postgres 17 v1 foundation", () => {
             column_name: "human_verification_lane",
             is_nullable: "YES",
           },
+          { table_name: "communities", column_name: "route_slug", is_nullable: "YES" },
         ]),
       );
 
@@ -315,6 +326,37 @@ suite("Postgres 17 v1 foundation", () => {
       );
       expect(postStatus.rows[0]?.definition).toContain("processing");
       expect(postStatus.rows[0]?.definition).toContain("removed");
+
+      const routeSlugIndex = await admin.query<{ indexdef: string }>(
+        `SELECT indexdef
+           FROM pg_indexes
+          WHERE schemaname = current_schema()
+            AND indexname = 'communities_route_slug_uidx'`,
+      );
+      expect(routeSlugIndex.rows).toHaveLength(1);
+      expect(routeSlugIndex.rows[0]?.indexdef).toContain("WHERE (route_slug IS NOT NULL)");
+
+      const communityOrdinals = await admin.query<{
+        readonly column_name: string;
+        readonly ordinal_position: number;
+      }>(
+        `SELECT column_name, ordinal_position
+           FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'communities'
+          ORDER BY ordinal_position`,
+      );
+      expect(communityOrdinals.rows).toEqual([
+        { column_name: "community_id", ordinal_position: 1 },
+        { column_name: "display_name", ordinal_position: 2 },
+        { column_name: "status", ordinal_position: 3 },
+        { column_name: "created_by_user_id", ordinal_position: 4 },
+        { column_name: "created_at", ordinal_position: 5 },
+        { column_name: "updated_at", ordinal_position: 6 },
+        { column_name: "membership_mode", ordinal_position: 7 },
+        { column_name: "human_verification_lane", ordinal_position: 8 },
+        { column_name: "route_slug", ordinal_position: 9 },
+      ]);
     });
     completedTestCount += 1;
   });

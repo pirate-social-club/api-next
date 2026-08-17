@@ -157,8 +157,17 @@ CREATE TABLE IF NOT EXISTS communities (
       human_verification_lane IS NULL
       OR human_verification_lane IN ('very', 'self')
     ),
-  CONSTRAINT communities_id_not_blank CHECK (btrim(community_id) <> '')
+  route_slug TEXT,
+  CONSTRAINT communities_id_not_blank CHECK (btrim(community_id) <> ''),
+  CONSTRAINT communities_route_slug_format_check CHECK (
+    route_slug IS NULL
+    OR route_slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+  )
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS communities_route_slug_uidx
+  ON communities (route_slug)
+  WHERE route_slug IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS communities_creator_status_created_idx
   ON communities (created_by_user_id, status, created_at DESC, community_id);
