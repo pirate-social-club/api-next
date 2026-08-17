@@ -210,7 +210,10 @@ export const startVerification = Effect.fn("startVerification")(function* (
       ),
     );
   const committed = yield* services.store.finalize(reservation, started);
-  if (committed.kind === "conflict" || committed.kind === "stale") {
+  if (committed.kind === "conflict") {
+    return yield* new VerificationStartRejected({ reason: "conflict" });
+  }
+  if (committed.kind === "stale") {
     return yield* new VerificationStartRejected({ reason: "in_flight", retry_after_seconds: 1 });
   }
   return {
