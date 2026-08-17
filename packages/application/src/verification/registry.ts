@@ -15,6 +15,8 @@ import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import {
   ProviderSessionStart,
   type VerificationProviderAdapter,
+  VerificationProviderCallbackInput,
+  VerificationProviderCallbackResolution,
   VerificationProviderCompleteInput,
   type VerificationProviderFailure,
   VerificationProviderInvalidResponse,
@@ -247,6 +249,16 @@ function requestModeSupported(
   );
 }
 
+function configurationMatchesRequestMode(
+  configuration: { readonly kind: "managed" | "dynamic" },
+  requestMode: "curated" | "dynamic",
+): boolean {
+  return (
+    (requestMode === "curated" && configuration.kind === "managed") ||
+    (requestMode === "dynamic" && configuration.kind === "dynamic")
+  );
+}
+
 function bindingIntentMatchesManifest(
   manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
   intent: "establish" | "recover" | "none",
@@ -316,6 +328,7 @@ function compatibleSession(
     session.requested_claim_ids.length > 0 &&
     uniqueStrings(session.requested_claim_ids) &&
     requestModeSupported(manifest, session.requested_claim_ids, session.request_mode) &&
+    configurationMatchesRequestMode(session.provider_configuration, session.request_mode) &&
     requirementsMatchClaims(session.requested_requirements, session.requested_claim_ids) &&
     session.requested_claim_ids.every((claim) => manifest.claim_ids.includes(claim)) &&
     bindingIntentMatchesManifest(manifest, session.subject_binding_intent) &&
@@ -326,7 +339,7 @@ function compatibleSession(
 
 function safeAdapterFailure(
   provider_id: string,
-  operation: "plan" | "start" | "complete",
+  operation: "plan" | "start" | "complete" | "callback",
   error: unknown,
 ): VerificationProviderFailure {
   if (error instanceof VerificationProviderUnavailable) {
@@ -346,7 +359,7 @@ function safeAdapterFailure(
 
 function invalidResponse(
   provider_id: string,
-  operation: "plan" | "start" | "complete",
+  operation: "plan" | "start" | "complete" | "callback",
 ): VerificationProviderInvalidResponse {
   return new VerificationProviderInvalidResponse({ provider_id, operation });
 }
@@ -355,6 +368,11 @@ function requestSupportedByManifest(
   manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
   input: Schema.Schema.Type<typeof VerificationProviderPlanInput> & {
     readonly request_mode?: "curated" | "dynamic";
+    readonly provider_configuration?: {
+      readonly kind: "managed" | "dynamic";
+      readonly reference: string;
+      readonly version: string;
+    };
   },
 ): boolean {
   const requestedClaimsDeclared = input.requested_claim_ids.every((claim) =>
@@ -366,7 +384,9 @@ function requestSupportedByManifest(
     requirementsMatchClaims(input.requested_requirements, input.requested_claim_ids) &&
     requestedClaimsDeclared &&
     (input.request_mode === undefined ||
-      requestModeSupported(manifest, input.requested_claim_ids, input.request_mode)) &&
+      (input.provider_configuration !== undefined &&
+        requestModeSupported(manifest, input.requested_claim_ids, input.request_mode) &&
+        configurationMatchesRequestMode(input.provider_configuration, input.request_mode))) &&
     manifest.protocol_versions.includes(input.protocol_version) &&
     manifest.environments.includes(input.environment) &&
     manifest.supported_methods.includes(input.method) &&
@@ -402,6 +422,9 @@ function validateStartOutput(
         session.method !== input.method ||
         !sameScope(session.scope, input.scope) ||
         session.request_mode !== input.request_mode ||
+        session.provider_configuration.kind !== input.provider_configuration.kind ||
+        session.provider_configuration.reference !== input.provider_configuration.reference ||
+        session.provider_configuration.version !== input.provider_configuration.version ||
         !sameVerificationRequirements(
           session.requested_requirements,
           input.requested_requirements,
@@ -459,6 +482,11 @@ function validateBundle(
             receipt.provider_id === manifest.provider_id &&
             receipt.issuer === input.session.scope.issuer &&
             receipt.method === input.session.method &&
+            receipt.provider_configuration.kind === input.session.provider_configuration.kind &&
+            receipt.provider_configuration.reference ===
+              input.session.provider_configuration.reference &&
+            receipt.provider_configuration.version ===
+              input.session.provider_configuration.version &&
             receipt.protocol_version === input.session.protocol_version &&
             receipt.environment === input.session.environment &&
             sameScope(receipt.scope, input.session.scope),
@@ -525,7 +553,7 @@ function guardAdapter(
   manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
   now: () => number,
 ): VerificationProviderAdapter {
-  return {
+  const guarded: VerificationProviderAdapter = {
     manifest,
     plan: (untrustedInput) => {
       const decodedInput = Schema.decodeUnknownOption(VerificationProviderPlanInput)(
@@ -553,11 +581,12 @@ function guardAdapter(
         ),
         Effect.flatMap((result) =>
           result.status !== "supported" ||
-          requestModeSupported(
+          (requestModeSupported(
             manifest,
             decodedInput.value.requested_claim_ids,
             result.request_mode,
-          )
+          ) &&
+            configurationMatchesRequestMode(result.provider_configuration, result.request_mode))
             ? Effect.succeed(result)
             : Effect.fail(invalidResponse(manifest.provider_id, "plan")),
         ),
@@ -626,6 +655,40 @@ function guardAdapter(
         Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "complete", error)),
         Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "complete"))),
         Effect.flatMap((result) => validateBundle(manifest, input, result)),
+      );
+    },
+  };
+  const verifyCallback = adapter.verifyCallback;
+  if (verifyCallback === undefined) return guarded;
+  return {
+    ...guarded,
+    verifyCallback: (untrustedInput) => {
+      const decodedInput = Schema.decodeUnknownOption(VerificationProviderCallbackInput)(
+        untrustedInput,
+      );
+      if (Option.isNone(decodedInput)) {
+        return Effect.fail(
+          new VerificationProviderRejected({
+            provider_id: manifest.provider_id,
+            operation: "callback",
+          }),
+        );
+      }
+      return Effect.suspend(() => verifyCallback(decodedInput.value)).pipe(
+        Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "callback", error)),
+        Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "callback"))),
+        Effect.flatMap((result) =>
+          Effect.try({
+            try: () => Schema.decodeUnknownSync(VerificationProviderCallbackResolution)(result),
+            catch: () => invalidResponse(manifest.provider_id, "callback"),
+          }),
+        ),
+        Effect.filterOrFail(
+          (result) =>
+            result.proof_session_id.trim() === result.proof_session_id &&
+            result.idempotency_key.trim() === result.idempotency_key,
+          () => invalidResponse(manifest.provider_id, "callback"),
+        ),
       );
     },
   };

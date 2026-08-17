@@ -64,6 +64,24 @@ describe("HTTP production composition", () => {
     const currentUser = await worker.request("https://worker.test/users/me");
     expect(currentUser.status).toBe(401);
     expect(await currentUser.json()).toMatchObject({ code: "auth_error" });
+
+    const startVerification = await worker.request("https://worker.test/verification/sessions", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ intent_id: "intent-1", provider_id: "future.provider" }),
+    });
+    expect(startVerification.status).toBe(401);
+
+    const callback = await worker.request(
+      "https://worker.test/verification/callbacks/future.provider",
+      {
+        method: "POST",
+        headers: { "content-type": "text/plain" },
+        body: '{\n  "signed": true\n}',
+      },
+    );
+    expect(callback.status).toBe(404);
+    expect(await callback.json()).toMatchObject({ code: "not_found" });
   });
 
   test("fails closed before route construction when a provider setting is absent", async () => {

@@ -14,17 +14,24 @@ import type { ApiError } from "./errors.ts";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
+/** Wire representation used when an endpoint carries a request body. */
+export type EndpointBodyEncoding = "json" | "raw-text";
+
 /** Constructors from the wire-error catalog a handler may fail with. */
 export type ApiErrorCtor = new (args: never) => ApiError;
 
 /**
- * The three independently decoded request locations. A request schema is
+ * The independently decoded request locations. A request schema is
  * deliberately not a single body-shaped value: path and query data are part
  * of the contract and are decoded before a handler can see them.
  */
 export interface EndpointRequest {
   readonly body?: Schema.Schema<unknown>;
   readonly bodyRequired?: boolean;
+  /** Defaults to JSON; raw-text bodies are passed to handlers byte-for-byte. */
+  readonly bodyEncoding?: EndpointBodyEncoding;
+  /** Schema for the subset of incoming headers exposed to the handler. */
+  readonly headers?: Schema.Schema<unknown>;
   readonly path?: Schema.Schema<unknown>;
   readonly query?: Schema.Schema<unknown>;
 }

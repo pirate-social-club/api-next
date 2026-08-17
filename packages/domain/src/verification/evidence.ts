@@ -5,6 +5,7 @@ import {
   CanonicalClaimIdentifier,
   NamedIssuerActionScope,
   NamedIssuerScope,
+  ProviderConfigurationRef,
   SubjectBindingIntent,
   SubjectScope,
   VerificationRequestMode,
@@ -30,6 +31,7 @@ export const ProofSession = Schema.Struct({
   provider_id: Schema.NonEmptyString,
   /** Opaque provider-side correlation key; never exposed as a client authority. */
   upstream_session_ref: Schema.optional(Schema.NonEmptyString),
+  provider_configuration: ProviderConfigurationRef,
   method: Schema.NonEmptyString,
   scope: SubjectScope,
   request_mode: VerificationRequestMode,
@@ -58,6 +60,7 @@ export const EvidenceReceipt = Schema.Struct({
   issuer: Schema.NonEmptyString,
   method: Schema.NonEmptyString,
   scope: SubjectScope,
+  provider_configuration: ProviderConfigurationRef,
   protocol_version: Schema.NonEmptyString,
   environment: Schema.NonEmptyString,
   provenance_kind: Schema.Literal("proof_session"),

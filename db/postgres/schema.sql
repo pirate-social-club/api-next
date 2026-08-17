@@ -585,6 +585,9 @@ CREATE TABLE evidence_receipts (
     subject_key_id text,
     subject_binding_event_id text,
     subject_binding_epoch bigint,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_ref text NOT NULL,
+    provider_configuration_version text NOT NULL,
     CONSTRAINT evidence_receipts_evidence_hash_check CHECK ((evidence_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT evidence_receipts_identifiers_not_blank CHECK (((btrim(provider_id) <> ''::text) AND (btrim(issuer) <> ''::text) AND (btrim(method) <> ''::text) AND (btrim(protocol_version) <> ''::text) AND (btrim(environment) <> ''::text) AND (btrim(evidence_kind) <> ''::text))),
     CONSTRAINT evidence_receipts_payload_object_check CHECK ((jsonb_typeof(receipt_metadata) = 'object'::text)),
@@ -592,6 +595,8 @@ CREATE TABLE evidence_receipts (
     CONSTRAINT evidence_receipts_scope_kind_check CHECK ((scope_kind = ANY (ARRAY['issuer_rp_scope'::text, 'issuer_rp_action_scope'::text, 'none'::text]))),
     CONSTRAINT evidence_receipts_scope_shape_check CHECK ((((scope_kind = 'issuer_rp_scope'::text) AND (issuer_rp_scope IS NOT NULL) AND (issuer_rp_action_scope IS NULL)) OR ((scope_kind = 'issuer_rp_action_scope'::text) AND (issuer_rp_scope IS NOT NULL) AND (issuer_rp_action_scope IS NOT NULL)) OR ((scope_kind = 'none'::text) AND (issuer_rp_scope IS NULL) AND (issuer_rp_action_scope IS NULL)))),
     CONSTRAINT evidence_receipts_scope_values_not_blank CHECK ((((issuer_rp_scope IS NULL) OR (btrim(issuer_rp_scope) <> ''::text)) AND ((issuer_rp_action_scope IS NULL) OR (btrim(issuer_rp_action_scope) <> ''::text)))),
+    CONSTRAINT evidence_receipts_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT evidence_receipts_provider_configuration_values_not_blank CHECK ((btrim(provider_configuration_ref) <> ''::text AND provider_configuration_ref = btrim(provider_configuration_ref) AND btrim(provider_configuration_version) <> ''::text AND provider_configuration_version = btrim(provider_configuration_version))),
     CONSTRAINT evidence_receipts_subject_binding_shape_check CHECK ((((subject_key_id IS NULL) AND (subject_binding_event_id IS NULL) AND (subject_binding_epoch IS NULL)) OR ((subject_key_id IS NOT NULL) AND (subject_binding_event_id IS NOT NULL) AND (subject_binding_epoch IS NOT NULL))))
 );
 
@@ -681,6 +686,20 @@ CREATE TABLE proof_session_completion_events (
 
 
 --
+-- Name: proof_session_presentations; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE proof_session_presentations (
+    proof_session_id text NOT NULL,
+    presentation_kind text NOT NULL,
+    payload jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT proof_session_presentations_kind_check CHECK ((presentation_kind = ANY (ARRAY['redirect'::text, 'deeplink'::text, 'embedded_sdk'::text, 'poll'::text, 'none'::text]))),
+    CONSTRAINT proof_session_presentations_payload_object_check CHECK ((jsonb_typeof(payload) = 'object'::text))
+);
+
+
+--
 -- Name: proof_sessions; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -711,6 +730,9 @@ CREATE TABLE proof_sessions (
     completion_idempotency_key text,
     completion_result_hash text,
     terminal_at timestamp with time zone,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_ref text NOT NULL,
+    provider_configuration_version text NOT NULL,
     CONSTRAINT proof_sessions_identifiers_not_blank CHECK (((btrim(intent_id) <> ''::text) AND (btrim(request_hash) <> ''::text) AND (btrim(provider_id) <> ''::text) AND (btrim(method) <> ''::text) AND (btrim(issuer) <> ''::text) AND (btrim(protocol_version) <> ''::text) AND (btrim(environment) <> ''::text))),
     CONSTRAINT proof_sessions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT proof_sessions_requested_requirements_check CHECK (((jsonb_typeof(requested_requirements) = 'array'::text) AND (jsonb_array_length(requested_requirements) > 0))),
@@ -721,7 +743,10 @@ CREATE TABLE proof_sessions (
     CONSTRAINT proof_sessions_scope_values_not_blank CHECK ((((issuer_rp_scope IS NULL) OR (btrim(issuer_rp_scope) <> ''::text)) AND ((issuer_rp_action_scope IS NULL) OR (btrim(issuer_rp_action_scope) <> ''::text)))),
     CONSTRAINT proof_sessions_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'completed'::text, 'failed'::text, 'expired'::text]))),
     CONSTRAINT proof_sessions_subject_binding_intent_check CHECK ((subject_binding_intent = ANY (ARRAY['establish'::text, 'recover'::text, 'none'::text]))),
-    CONSTRAINT proof_sessions_terminal_shape_check CHECK ((((status = 'pending'::text) AND (completion_idempotency_key IS NULL) AND (completion_result_hash IS NULL) AND (terminal_at IS NULL) AND (completed_at IS NULL)) OR ((status = 'completed'::text) AND (completion_idempotency_key IS NOT NULL) AND (btrim(completion_idempotency_key) <> ''::text) AND (completion_result_hash ~ '^[0-9a-f]{64}$'::text) AND (terminal_at IS NOT NULL) AND (completed_at = terminal_at)) OR ((status = ANY (ARRAY['failed'::text, 'expired'::text])) AND (completion_idempotency_key IS NOT NULL) AND (btrim(completion_idempotency_key) <> ''::text) AND (completion_result_hash ~ '^[0-9a-f]{64}$'::text) AND (terminal_at IS NOT NULL) AND (completed_at IS NULL))))
+    CONSTRAINT proof_sessions_terminal_shape_check CHECK ((((status = 'pending'::text) AND (completion_idempotency_key IS NULL) AND (completion_result_hash IS NULL) AND (terminal_at IS NULL) AND (completed_at IS NULL)) OR ((status = 'completed'::text) AND (completion_idempotency_key IS NOT NULL) AND (btrim(completion_idempotency_key) <> ''::text) AND (completion_result_hash ~ '^[0-9a-f]{64}$'::text) AND (terminal_at IS NOT NULL) AND (completed_at = terminal_at)) OR ((status = ANY (ARRAY['failed'::text, 'expired'::text])) AND (completion_idempotency_key IS NOT NULL) AND (btrim(completion_idempotency_key) <> ''::text) AND (completion_result_hash ~ '^[0-9a-f]{64}$'::text) AND (terminal_at IS NOT NULL) AND (completed_at IS NULL)))),
+    CONSTRAINT proof_sessions_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT proof_sessions_provider_configuration_values_not_blank CHECK ((btrim(provider_configuration_ref) <> ''::text AND provider_configuration_ref = btrim(provider_configuration_ref) AND btrim(provider_configuration_version) <> ''::text AND provider_configuration_version = btrim(provider_configuration_version))),
+    CONSTRAINT proof_sessions_provider_configuration_mode_check CHECK (((request_mode = 'curated'::text AND provider_configuration_kind = 'managed'::text) OR (request_mode = 'dynamic'::text AND provider_configuration_kind = 'dynamic'::text)))
 );
 
 
@@ -1093,6 +1118,14 @@ ALTER TABLE ONLY proof_session_completion_events
 
 ALTER TABLE ONLY proof_session_completion_events
     ADD CONSTRAINT proof_session_completion_events_session_unique UNIQUE (proof_session_id);
+
+
+--
+-- Name: proof_session_presentations proof_session_presentations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY proof_session_presentations
+    ADD CONSTRAINT proof_session_presentations_pkey PRIMARY KEY (proof_session_id);
 
 
 --
@@ -1578,6 +1611,9 @@ BEGIN
   END IF;
 
   IF NEW.provider_id IS DISTINCT FROM session_record.provider_id
+    OR NEW.provider_configuration_kind IS DISTINCT FROM session_record.provider_configuration_kind
+    OR NEW.provider_configuration_ref IS DISTINCT FROM session_record.provider_configuration_ref
+    OR NEW.provider_configuration_version IS DISTINCT FROM session_record.provider_configuration_version
     OR NEW.issuer IS DISTINCT FROM session_record.issuer
     OR NEW.method IS DISTINCT FROM session_record.method
     OR NEW.scope_kind IS DISTINCT FROM session_record.scope_kind
@@ -1703,6 +1739,9 @@ BEGIN
     OR NEW.intent_id IS DISTINCT FROM OLD.intent_id
     OR NEW.request_hash IS DISTINCT FROM OLD.request_hash
     OR NEW.provider_id IS DISTINCT FROM OLD.provider_id
+    OR NEW.provider_configuration_kind IS DISTINCT FROM OLD.provider_configuration_kind
+    OR NEW.provider_configuration_ref IS DISTINCT FROM OLD.provider_configuration_ref
+    OR NEW.provider_configuration_version IS DISTINCT FROM OLD.provider_configuration_version
     OR NEW.method IS DISTINCT FROM OLD.method
     OR NEW.issuer IS DISTINCT FROM OLD.issuer
     OR NEW.scope_kind IS DISTINCT FROM OLD.scope_kind
@@ -1923,6 +1962,13 @@ CREATE TRIGGER proof_session_completion_events_append_only BEFORE DELETE OR UPDA
 --
 
 CREATE TRIGGER proof_session_completion_events_validate BEFORE INSERT ON proof_session_completion_events FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_proof_session_completion_event();
+
+
+--
+-- Name: proof_session_presentations proof_session_presentations_append_only; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER proof_session_presentations_append_only BEFORE DELETE OR UPDATE ON proof_session_presentations FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 
 --
@@ -2265,6 +2311,14 @@ ALTER TABLE ONLY policy_versions
 
 ALTER TABLE ONLY proof_session_completion_events
     ADD CONSTRAINT proof_session_completion_events_session_actor_fk FOREIGN KEY (proof_session_id, actor_id) REFERENCES proof_sessions(proof_session_id, actor_id);
+
+
+--
+-- Name: proof_session_presentations proof_session_presentations_session_fk; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY proof_session_presentations
+    ADD CONSTRAINT proof_session_presentations_session_fk FOREIGN KEY (proof_session_id) REFERENCES proof_sessions(proof_session_id);
 
 
 --

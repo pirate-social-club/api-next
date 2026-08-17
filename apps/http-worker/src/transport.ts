@@ -26,6 +26,8 @@ export interface Principal {
 /** The only request value a handler or policy authorizer can observe. */
 export interface DecodedRequest {
   readonly body: unknown;
+  /** Present only when the endpoint declares a headers schema. */
+  readonly headers?: unknown;
   readonly params: unknown;
   readonly query: unknown;
   readonly principal: Principal | null;
@@ -87,7 +89,12 @@ type HttpContext = Context<HttpWorkerEnv>;
 const isRequestShape = (request: EndpointDefinition["request"]): request is EndpointRequest =>
   typeof request === "object" &&
   request !== null &&
-  ("body" in request || "bodyRequired" in request || "path" in request || "query" in request);
+  ("body" in request ||
+    "bodyRequired" in request ||
+    "bodyEncoding" in request ||
+    "headers" in request ||
+    "path" in request ||
+    "query" in request);
 
 const requestShape = (endpoint: EndpointDefinition): EndpointRequest | undefined => {
   if (endpoint.request === undefined) return undefined;
@@ -107,23 +114,78 @@ const decode = (
   }
 };
 
+const MAX_REQUEST_BODY_BYTES = 1_048_576;
+
+const invalidBody = (): BadRequest =>
+  new BadRequest({ message: "Invalid body request", details: { location: "body" } });
+
+const readBoundedBodyText = async (context: HttpContext): Promise<string> => {
+  const declaredLength = context.req.header("content-length");
+  if (
+    declaredLength !== undefined &&
+    (!/^(?:0|[1-9][0-9]*)$/u.test(declaredLength) ||
+      Number(declaredLength) > MAX_REQUEST_BODY_BYTES)
+  ) {
+    throw invalidBody();
+  }
+
+  const body = context.req.raw.body;
+  if (body === null) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.byteLength;
+      if (length > MAX_REQUEST_BODY_BYTES) {
+        await reader.cancel();
+        throw invalidBody();
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw invalidBody();
+  }
+};
+
 const decodeBody = async (context: HttpContext, request: EndpointRequest): Promise<unknown> => {
   if (request.body === undefined) return undefined;
-  const text = await context.req.text();
-  if (text.trim() === "") {
+  const text = await readBoundedBodyText(context);
+  const empty = request.bodyEncoding === "raw-text" ? text === "" : text.trim() === "";
+  if (empty) {
     if (request.bodyRequired === false) return undefined;
     throw new BadRequest({ message: "Invalid body request", details: { location: "body" } });
   }
+  if (request.bodyEncoding === "raw-text") return decode(request.body, text, "body");
   let value: unknown;
   try {
     value = JSON.parse(text);
   } catch {
-    throw new BadRequest({ message: "Invalid body request", details: { location: "body" } });
+    throw invalidBody();
   }
   return decode(request.body, value, "body");
 };
 
-const decodeInput = async (
+const decodeHeaders = (context: HttpContext, request: EndpointRequest): unknown => {
+  if (request.headers === undefined) return undefined;
+  return decode(request.headers, Object.fromEntries(context.req.raw.headers), "headers");
+};
+
+export const decodeInput = async (
   endpoint: EndpointDefinition,
   context: HttpContext,
   principal: Principal | null,
@@ -131,6 +193,7 @@ const decodeInput = async (
   const request = requestShape(endpoint);
   return {
     body: request?.body === undefined ? undefined : await decodeBody(context, request),
+    ...(request?.headers === undefined ? {} : { headers: decodeHeaders(context, request) }),
     params:
       request?.path === undefined ? undefined : decode(request.path, context.req.param(), "path"),
     query:

@@ -19,8 +19,9 @@ import {
 /**
  * v1 product-slice endpoint contracts (api-next 000 §13): session exchange
  * and auth -> profile -> community discovery and membership -> posts,
- * comments, votes -> home feed. Payments, rewards, bookings, verification,
- * Telegram, karaoke/dance, and HNS/EFP stay on the old API.
+ * comments, votes -> home feed. Payments, rewards, bookings, Telegram,
+ * karaoke/dance, and HNS/EFP stay on the old API. Gates-v2 verification uses
+ * its provider-neutral contracts in `verification.ts`.
  *
  * The old serializers are the wire source of truth. Fields that are already
  * described by the old OpenAPI document are represented below. A few nested

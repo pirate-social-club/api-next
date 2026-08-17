@@ -26,6 +26,9 @@
       "dependencies": {
         "hono": "4.12.25",
       },
+      "devDependencies": {
+        "@pirate/testing": "workspace:*",
+      },
     },
     "apps/jobs-worker": {
       "name": "@pirate/jobs-worker",

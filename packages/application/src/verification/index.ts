@@ -7,6 +7,10 @@ export type {
 export {
   ProviderPresentation,
   ProviderSessionStart,
+  VerificationCallbackHeaders,
+  VerificationCallbackRawBody,
+  VerificationProviderCallbackInput,
+  VerificationProviderCallbackResolution,
   VerificationProviderCompleteInput,
   VerificationProviderInvalidResponse,
   VerificationProviderMisconfigured,
@@ -15,7 +19,14 @@ export {
   VerificationProviderRejected,
   VerificationProviderStartInput,
   VerificationProviderUnavailable,
+  VerificationSubmission,
 } from "./adapter.ts";
+export type { VerificationCallbackFailure, VerificationCallbackServices } from "./callback.ts";
+export {
+  HandleVerificationCallbackInput,
+  handleVerificationCallback,
+  VerificationCallbackRejected,
+} from "./callback.ts";
 export type {
   CompleteVerificationResult,
   StoredVerificationCompletion,
@@ -54,3 +65,17 @@ export {
 } from "./registry.ts";
 export type { VerificationRequestHashInput } from "./request-hash.ts";
 export { computeVerificationRequestHash } from "./request-hash.ts";
+export type {
+  StartVerificationFailure,
+  StartVerificationResult,
+  StartVerificationServices,
+  VerificationIntentResolver,
+  VerificationSessionStartCommitOutcome,
+  VerificationSessionStartStore,
+} from "./start.ts";
+export {
+  StartVerificationInput,
+  startVerification,
+  VerificationStartRejected,
+  VerificationStartStorageFailed,
+} from "./start.ts";

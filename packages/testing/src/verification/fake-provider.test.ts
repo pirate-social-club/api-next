@@ -24,7 +24,7 @@ import { runProviderConformance, runProviderTransportConformance } from "./provi
 const FAKE_START_INPUT: VerificationProviderStartInput = {
   actor_id: "user-1",
   intent_id: "intent-1",
-  request_hash: "1029e84626c1879aedec7f8c4c604f8265206ecc2f40c08f177591d3e8c14252",
+  request_hash: "603dc3eea223df5c0ea49806b5fd111838bab1b29a27ea00a2c3d4b8aca30dc9",
   method: "document",
   scope: {
     kind: "named",
@@ -33,6 +33,7 @@ const FAKE_START_INPUT: VerificationProviderStartInput = {
     scope_semantics: "issuer_rp_scope",
   },
   request_mode: "dynamic",
+  provider_configuration: { kind: "dynamic", reference: "fake-query", version: "1" },
   requested_requirements: [
     { claim_id: "credential.subject_unique" },
     { claim_id: "document.valid" },
@@ -48,6 +49,14 @@ function failureOf<A, E>(exit: Exit.Exit<A, E>): E | undefined {
   const failure = Cause.findError(exit.cause);
   return Result.isSuccess(failure) ? failure.success : undefined;
 }
+
+const clientSubmission = (payload: unknown) => ({
+  channel: "client_result" as const,
+  payload,
+});
+
+const fakeSubmission = (request_hash: string) =>
+  clientSubmission({ kind: "fake-submission", request_hash });
 
 async function registered(mode?: FakeProviderMode) {
   return Effect.runPromise(
@@ -92,7 +101,7 @@ describe("verification provider adapter boundary", () => {
     const result = await runProviderConformance({
       adapter: makeFakeVerificationProvider(),
       startInput: FAKE_START_INPUT,
-      submission: { kind: "fake-submission", request_hash: FAKE_START_INPUT.request_hash },
+      submission: fakeSubmission(FAKE_START_INPUT.request_hash),
     });
     expect(result.provider.manifest).toEqual(FAKE_PROVIDER_MANIFEST);
     expect(result.sessionId).toBe("fake-session-1");
@@ -100,10 +109,7 @@ describe("verification provider adapter boundary", () => {
   });
 
   test("drives provider-transport scenarios through the shared harness", async () => {
-    const submission = {
-      kind: "fake-submission",
-      request_hash: FAKE_START_INPUT.request_hash,
-    };
+    const submission = fakeSubmission(FAKE_START_INPUT.request_hash);
     await runProviderTransportConformance([
       {
         name: "valid transport",
@@ -248,7 +254,7 @@ describe("verification provider adapter boundary", () => {
     const incompatible = await Effect.runPromiseExit(
       provider.complete({
         session: { ...started.session, protocol_version: "other-v2" },
-        submission: { kind: "fake-submission", request_hash: FAKE_START_INPUT.request_hash },
+        submission: fakeSubmission(FAKE_START_INPUT.request_hash),
       }),
     );
     expect(failureOf(incompatible)).toBeInstanceOf(VerificationProviderRejected);
@@ -262,7 +268,7 @@ describe("verification provider adapter boundary", () => {
       const inactive = await Effect.runPromiseExit(
         provider.complete({
           session,
-          submission: { kind: "fake-submission", request_hash: FAKE_START_INPUT.request_hash },
+          submission: fakeSubmission(FAKE_START_INPUT.request_hash),
         }),
       );
       expect(failureOf(inactive)).toBeInstanceOf(VerificationProviderRejected);
@@ -286,7 +292,7 @@ describe("verification provider adapter boundary", () => {
       const invalid = await Effect.runPromiseExit(
         provider.complete({
           session: started.session,
-          submission: { kind: "fake-submission", request_hash: FAKE_START_INPUT.request_hash },
+          submission: fakeSubmission(FAKE_START_INPUT.request_hash),
         }),
       );
       expect(failureOf(invalid)).toBeInstanceOf(VerificationProviderInvalidResponse);
@@ -309,7 +315,7 @@ describe("verification provider adapter boundary", () => {
     const provider = await Effect.runPromise(registry.resolve(FAKE_PROVIDER_MANIFEST.provider_id));
     const humanLiveInput: VerificationProviderStartInput = {
       ...FAKE_START_INPUT,
-      request_hash: "5c2d14a3004136348139e14b8dc89e83a1cf9221c70ea8e0b403a99717de77de",
+      request_hash: "feaf0964cb452387628c891a2708884252a2603c504ad65142e184c72f9cbeb1",
       requested_requirements: [{ claim_id: "human.live" }],
       requested_claim_ids: ["human.live"],
     };
@@ -317,7 +323,7 @@ describe("verification provider adapter boundary", () => {
     const invalid = await Effect.runPromiseExit(
       provider.complete({
         session: started.session,
-        submission: { kind: "fake-submission", request_hash: humanLiveInput.request_hash },
+        submission: fakeSubmission(humanLiveInput.request_hash),
       }),
     );
     expect(failureOf(invalid)).toBeInstanceOf(VerificationProviderInvalidResponse);
@@ -339,7 +345,7 @@ describe("verification provider adapter boundary", () => {
       const invalid = await Effect.runPromiseExit(
         provider.complete({
           session: started.session,
-          submission: { kind: "fake-submission", request_hash: FAKE_START_INPUT.request_hash },
+          submission: fakeSubmission(FAKE_START_INPUT.request_hash),
         }),
       );
       expect(failureOf(invalid)).toBeInstanceOf(VerificationProviderInvalidResponse);
@@ -362,7 +368,7 @@ describe("verification provider adapter boundary", () => {
     const completeFailure = await Effect.runPromiseExit(
       unavailableProvider.complete({
         session: started.session,
-        submission: { kind: "fake-submission", request_hash: FAKE_START_INPUT.request_hash },
+        submission: fakeSubmission(FAKE_START_INPUT.request_hash),
       }),
     );
     expect(failureOf(completeFailure)).toBeInstanceOf(VerificationProviderUnavailable);
@@ -380,7 +386,7 @@ describe("verification provider adapter boundary", () => {
       },
     ]) {
       const rejected = await Effect.runPromiseExit(
-        provider.complete({ session: started.session, submission }),
+        provider.complete({ session: started.session, submission: clientSubmission(submission) }),
       );
       expect(failureOf(rejected)).toBeInstanceOf(VerificationProviderRejected);
     }
@@ -395,7 +401,7 @@ describe("verification provider adapter boundary", () => {
     );
     const noSubjectInput: VerificationProviderStartInput = {
       ...FAKE_START_INPUT,
-      request_hash: "34bf7581f529b1c1261bcb93da90fea75e8eb8827f87fb838b0b52306d1f5937",
+      request_hash: "5d5c256c3876a520abf02ec8d911b7076bf24de5192daa00be4f4e5be217bac2",
       scope: { kind: "none", issuer: NO_SUBJECT_FAKE_PROVIDER_MANIFEST.provider_id },
       requested_requirements: [{ claim_id: "document.valid" }],
       requested_claim_ids: ["document.valid"],
@@ -405,7 +411,7 @@ describe("verification provider adapter boundary", () => {
     const bundle = await Effect.runPromise(
       provider.complete({
         session: started.session,
-        submission: { kind: "fake-submission", request_hash: noSubjectInput.request_hash },
+        submission: fakeSubmission(noSubjectInput.request_hash),
       }),
     );
     expect(bundle.subject_keys).toEqual([]);
@@ -450,7 +456,7 @@ describe("verification provider adapter boundary", () => {
     const defect = await Effect.runPromiseExit(
       defectProvider.complete({
         session: started.session,
-        submission: { kind: "fake-submission", request_hash: FAKE_START_INPUT.request_hash },
+        submission: fakeSubmission(FAKE_START_INPUT.request_hash),
       }),
     );
     expect(failureOf(defect)).toBeInstanceOf(VerificationProviderInvalidResponse);

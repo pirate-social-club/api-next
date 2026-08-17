@@ -26,11 +26,14 @@ Postgres. api-next has one runtime relational database per environment; posts,
 comments, votes, evidence, and action-grant consumption are not split across a
 control plane and community shards.
 
-This foundation slice includes domain schemas, the stable application adapter
+The foundation includes domain schemas, the stable application adapter
 boundary and registry, the completion use case and transactional Postgres
 repository, adversarial and provider-transport conformance fixtures, dependency
-guards, and the Postgres ledger. The evaluator, routes, client presentations,
-and real provider implementations are separate slices.
+guards, and the Postgres ledger. The next provider-neutral slice adds
+transactional session start, exact configuration provenance, generic launch
+presentations, authenticated client completion, and raw signed-callback HTTP
+transport. The evaluator and real provider implementations remain separate
+slices.
 
 ## Claims, assurance, and scope
 
@@ -55,10 +58,13 @@ was the document subject. It does not mean that the document is bound to a
 Pirate account; account ownership is represented only by a subject-key binding
 epoch.
 
-ZKPassport can emit `document.valid`, disclosed document predicates, and
-`credential.subject_unique` with `document_zk` assurance. The subject key is
-scoped to its issuer and relying party. Very liveness remains a separate claim;
-a policy needing both claims must require a shared binding witness.
+ZKPassport can emit `document.valid`, `nationality.allowed`, other disclosed
+document predicates, and `credential.subject_unique` with `document_zk`
+assurance. Nationality allowlists may be proven without disclosing the country;
+optional disclosure is represented separately in the typed assertion value.
+The subject key is scoped to its issuer and relying party. Very liveness
+remains a separate claim; a policy needing both claims must require a shared
+binding witness.
 
 Every uniqueness key contains its full namespace: `issuer`, `method`,
 `rp_scope`, and `subject_digest`, with an optional action scope when the method
@@ -70,19 +76,23 @@ A proof request is an immutable canonical requirement set, not a bag of claim
 names. `age.minimum` carries its threshold; `nationality.allowed` carries the
 sorted country allowlist; other parameterized claims carry their typed values.
 The adapter boundary recomputes a versioned SHA-256 request hash over the actor,
-intent, provider, method, scope, request mode, canonical requirements,
+intent, provider, method, scope, request mode, canonical requirements, the
+exact managed-flow or dynamic-generator reference and version,
 subject-binding intent, protocol, and environment before any provider starts.
 Claim IDs are excluded because they are an exact checked projection of the
-requirements. Future routes must use the same helper rather than accepting a
-client-selected hash. Proof sessions persist both the requirements and their
-checked claim-ID projection, and neither can change after session creation.
+requirements. HTTP routes use the same helper and never accept a
+client-selected hash or client-authored requirement set. Proof sessions persist
+both the requirements and their checked claim-ID projection, and neither can
+change after session creation.
 
 Provider manifests declare whether claims are available through a `curated`
 configuration or a `dynamic` runtime request. The adapter's planning operation
 returns `supported`, `unsupported`, or `unknown`; a supported result also names
-the request mode used by the session. Planning answers only whether the current
-provider configuration can express the request. It does not promise that the
-user's passport or national ID is covered. Unsupported documents are a typed
+the request mode and exact provider configuration used by the session. Managed
+references cover immutable hosted flows or policies; dynamic references name a
+versioned query generator. Planning answers only whether the current provider
+configuration can express the request. It does not promise that the user's
+passport or national ID is covered. Unsupported documents are a typed
 completion rejection, while provider/config lookup failures remain unknown or
 indeterminate rather than becoming policy failures.
 
@@ -124,11 +134,13 @@ another platform.
 The evidence ledger records:
 
 - proof sessions with actor, intent, canonical requirements, request mode,
-  request hash, issuer scope, protocol, environment, an optional opaque
-  provider-session correlation reference, and explicit subject-binding intent
-  (`establish`, `recover`, or `none`);
+  exact provider-configuration reference and version, request hash, issuer
+  scope, protocol, environment, an optional opaque provider-session correlation
+  reference, and explicit subject-binding intent (`establish`, `recover`, or
+  `none`);
 - append-only receipts with explicit scope, evidence hash, observation time,
-  protocol metadata, source session, and optional subject-key linkage;
+  the same trigger-checked provider-configuration provenance, protocol
+  metadata, source session, and optional subject-key linkage;
 - immutable issuer-scoped subject identities, append-only account-binding
   epochs, and a trigger-maintained active-binding projection; and
 - assertions with canonical claim ID, assurance, receipt, subject key, and a
@@ -143,16 +155,19 @@ presentation kinds, and subject-key scope semantics. Provider IDs, protocols,
 and methods are data, not closed unions in the engine or contract.
 
 Assertion values are claim-specific runtime schemas rather than arbitrary
-JSON. Completion accepts a transport-neutral `submission`; callback parsing and
-authentication remain provider-local. The application loads and authorizes the
-session, returns an existing terminal result only for the same idempotency key,
-and delegates one transaction that persists the winning evidence bundle and
-terminal session event together. The database clock is authoritative for the
-final expiry check and terminal timestamp; a slow provider cannot commit after
-expiry using a time captured before the upstream call. Concurrent callbacks
-may verify upstream more than once, but only one database transaction can
-commit evidence. A deferred constraint prevents any terminal proof-session row
-from committing without its matching append-only completion event.
+JSON. Completion accepts an explicit `client_result`, `provider_callback`, or
+`poll_result` channel whose payload remains provider-local. Signed callbacks
+receive the exact raw body plus a bounded lowercase header map; callback
+authentication runs before local session lookup, and actor/provider identity is
+then derived from the stored session. The application returns an existing
+terminal result only for the same idempotency key and delegates one transaction
+that persists the winning evidence bundle and terminal session event together.
+The database clock is authoritative for the final expiry check and terminal
+timestamp; a slow provider cannot commit after expiry using a time captured
+before the upstream call. Concurrent callbacks may verify upstream more than
+once, but only one database transaction can commit evidence. A deferred
+constraint prevents any terminal proof-session row from committing without its
+matching append-only completion event.
 
 Subject identity and account ownership are separate. A normal `establish`
 ceremony may create a first binding or reuse the evaluating user's active
@@ -213,17 +228,18 @@ is still a later slice.
 
 ## Schema and extension guardrails
 
-`db/postgres/schema.sql` is the fresh-database cumulative baseline. Because
-this repository uses a reviewed forward-only schema ledger for PlanetScale
-Postgres, the same final catalog exists as the single numbered delta
-`0009_gates_v2_foundation.sql`, following canonical community-route migration
-`0008`. The earlier review-only two-delta gates sequence was never applied to a
-durable environment and was explicitly reset before the first deployment so
-the greenfield ledger contains no transitional subject-binding shape. This
-reset is documented in `db/postgres/README.md`;
-after first durable application, the normal immutable forward-only rule
-applies. Fresh databases produced by the cumulative baseline and by ordered
-deltas must have identical catalogs.
+`db/postgres/schema.sql` is the fresh-database cumulative baseline. The reviewed
+forward-only PlanetScale Postgres ledger contains
+`0009_gates_v2_foundation.sql`, followed by
+`0010_proof_session_provenance.sql` for exact provider configuration and
+append-only client presentations. The earlier review-only two-delta foundation
+sequence was never applied to a durable environment and was explicitly reset
+before the first deployment so the greenfield ledger contains no transitional
+subject-binding shape. This reset is documented in `db/postgres/README.md`;
+0010 also refuses a non-empty evidence ledger rather than deriving or inventing
+configuration provenance. After first durable application, the normal immutable
+forward-only rule applies. Fresh databases produced by the cumulative baseline
+and by ordered deltas must have identical catalogs.
 
 Provider additions must be adapter-local. The repository walker cross-checks
 workspace packages against its dependency matrix, enforces the provider

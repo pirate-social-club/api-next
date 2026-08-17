@@ -35,7 +35,7 @@ const MANIFEST: ProofProviderManifest = {
 const START_INPUT: VerificationProviderStartInput = {
   actor_id: "user-1",
   intent_id: "intent-1",
-  request_hash: "d30bcbe842ef8e7046be5cf21531d99fe95f2cb7e92d3efe1f46e094b4fa833b",
+  request_hash: "8894e655b50bebf543a857a265449d0eac5c9908b156dce4a5c4707a4e740f22",
   method: "document",
   scope: {
     kind: "named",
@@ -44,6 +44,7 @@ const START_INPUT: VerificationProviderStartInput = {
     rp_scope: "pirate.test",
   },
   request_mode: "dynamic",
+  provider_configuration: { kind: "dynamic", reference: "test-query", version: "1" },
   requested_requirements: [
     { claim_id: "credential.subject_unique" },
     { claim_id: "document.valid" },
@@ -53,6 +54,11 @@ const START_INPUT: VerificationProviderStartInput = {
   protocol_version: "test-v1",
   environment: "test",
 };
+
+const clientSubmission = (payload: unknown = {}) => ({
+  channel: "client_result" as const,
+  payload,
+});
 
 function sessionFor(input: VerificationProviderStartInput = START_INPUT): ProofSession {
   return {
@@ -65,6 +71,7 @@ function sessionFor(input: VerificationProviderStartInput = START_INPUT): ProofS
     method: input.method,
     scope: input.scope,
     request_mode: input.request_mode,
+    provider_configuration: input.provider_configuration,
     requested_requirements: input.requested_requirements,
     requested_claim_ids: input.requested_claim_ids,
     subject_binding_intent: input.subject_binding_intent,
@@ -93,6 +100,7 @@ function bundleFor(session: ProofSession = sessionFor()): EvidenceBundle {
         issuer: session.scope.issuer,
         method: session.method,
         scope: session.scope,
+        provider_configuration: session.provider_configuration,
         protocol_version: session.protocol_version,
         environment: session.environment,
         provenance_kind: "proof_session",
@@ -166,7 +174,19 @@ function adapterFor(
   return {
     manifest,
     plan: () =>
-      Effect.succeed(unsafe(outputs.plan ?? { status: "supported", request_mode: "dynamic" })),
+      Effect.succeed(
+        unsafe(
+          outputs.plan ?? {
+            status: "supported",
+            request_mode: "dynamic",
+            provider_configuration: {
+              kind: "dynamic",
+              reference: "test-query",
+              version: "1",
+            },
+          },
+        ),
+      ),
     start: () => {
       calls.start += 1;
       if (outputs.startFailure === "defect") return Effect.die("upstream secret");
@@ -222,7 +242,17 @@ describe("verification registry adversarial corpus", () => {
     };
     for (const status of ["supported", "unsupported", "unknown"] as const) {
       const expected =
-        status === "supported" ? { status, request_mode: "dynamic" as const } : { status };
+        status === "supported"
+          ? {
+              status,
+              request_mode: "dynamic" as const,
+              provider_configuration: {
+                kind: "dynamic" as const,
+                reference: "test-query",
+                version: "1",
+              },
+            }
+          : { status };
       const provider = await providerFor(adapterFor({ plan: expected }));
       expect(await Effect.runPromise(provider.plan(planInput))).toEqual(expected);
     }
@@ -232,7 +262,13 @@ describe("verification registry adversarial corpus", () => {
     expect(failureOf(malformedExit)).toBeInstanceOf(VerificationProviderInvalidResponse);
 
     const modeEscape = await providerFor(
-      adapterFor({ plan: { status: "supported", request_mode: "curated" } }),
+      adapterFor({
+        plan: {
+          status: "supported",
+          request_mode: "curated",
+          provider_configuration: { kind: "managed", reference: "flow-1", version: "1" },
+        },
+      }),
     );
     const modeEscapeExit = await Effect.runPromiseExit(modeEscape.plan(planInput));
     expect(failureOf(modeEscapeExit)).toBeInstanceOf(VerificationProviderInvalidResponse);
@@ -247,7 +283,13 @@ describe("verification registry adversarial corpus", () => {
     };
     const future = await providerFor(
       adapterFor(
-        { plan: { status: "supported", request_mode: "curated" } },
+        {
+          plan: {
+            status: "supported",
+            request_mode: "curated",
+            provider_configuration: { kind: "managed", reference: "flow-1", version: "1" },
+          },
+        },
         { start: 0, complete: 0 },
         futureManifest,
       ),
@@ -255,6 +297,7 @@ describe("verification registry adversarial corpus", () => {
     expect(await Effect.runPromise(future.plan(planInput))).toEqual({
       status: "supported",
       request_mode: "curated",
+      provider_configuration: { kind: "managed", reference: "flow-1", version: "1" },
     });
   });
 
@@ -290,7 +333,7 @@ describe("verification registry adversarial corpus", () => {
     };
     const nationalityInput: VerificationProviderStartInput = {
       ...START_INPUT,
-      request_hash: "45ab9cad760f1156977edbad6b4487517c2a5c4537ef4037e9170c24aef0fadd",
+      request_hash: "92b43bd9c5d8ba8fb11e1ca0e40028076da30d865661dbfb830dbefdc196e9db",
       requested_requirements: [{ claim_id: "nationality.allowed", allowed_countries: ["GE"] }],
       requested_claim_ids: ["nationality.allowed"],
     };
@@ -318,7 +361,7 @@ describe("verification registry adversarial corpus", () => {
     );
     const started = await Effect.runPromise(provider.start(nationalityInput));
     const accepted = await Effect.runPromise(
-      provider.complete({ session: started.session, submission: { callback: "signed" } }),
+      provider.complete({ session: started.session, submission: clientSubmission() }),
     );
     expect(accepted).toMatchObject({ id: "bundle-1" });
 
@@ -343,7 +386,7 @@ describe("verification registry adversarial corpus", () => {
     const invalid = await Effect.runPromiseExit(
       disclosedOutsideAllowlist.complete({
         session: nationalitySession,
-        submission: { callback: "signed" },
+        submission: clientSubmission(),
       }),
     );
     expect(failureOf(invalid)).toBeInstanceOf(VerificationProviderInvalidResponse);
@@ -361,6 +404,16 @@ describe("verification registry adversarial corpus", () => {
       { ...base, session: { ...base.session, request_hash: "4".repeat(64) } },
       { ...base, session: { ...base.session, method: "other" } },
       { ...base, session: { ...base.session, request_mode: "curated" } },
+      {
+        ...base,
+        session: {
+          ...base.session,
+          provider_configuration: {
+            ...base.session.provider_configuration,
+            version: "2",
+          },
+        },
+      },
       {
         ...base,
         session: {
@@ -422,7 +475,7 @@ describe("verification registry adversarial corpus", () => {
       { ...sessionFor(), expires_at: "2026-08-17T00:00:00.000Z" },
     ]) {
       const exit = await Effect.runPromiseExit(
-        provider.complete({ session: unsafe(session), submission: {} }),
+        provider.complete({ session: unsafe(session), submission: clientSubmission() }),
       );
       expect(failureOf(exit)).toBeInstanceOf(VerificationProviderRejected);
     }
@@ -462,10 +515,43 @@ describe("verification registry adversarial corpus", () => {
             action_scope: "campaign-b",
           },
         },
-        submission: {},
+        submission: clientSubmission(),
       }),
     );
     expect(failureOf(drift)).toBeInstanceOf(VerificationProviderInvalidResponse);
+  });
+
+  test("guards optional signed-callback translation independently of completion", async () => {
+    let callbackCalls = 0;
+    const provider = await providerFor({
+      ...adapterFor(),
+      verifyCallback: ({ raw_body }) => {
+        callbackCalls += 1;
+        return Effect.succeed(
+          unsafe({
+            proof_session_id: raw_body === "valid" ? "session-1" : "",
+            idempotency_key: "webhook-1",
+            submission: { channel: "provider_callback", payload: { authenticated: true } },
+          }),
+        );
+      },
+    });
+    const verifyCallback = provider.verifyCallback;
+    if (verifyCallback === undefined) throw new Error("callback guard was not preserved");
+    await expect(
+      Effect.runPromise(verifyCallback({ raw_body: "valid", headers: {} })),
+    ).resolves.toMatchObject({ proof_session_id: "session-1", idempotency_key: "webhook-1" });
+
+    const malformedInput = await Effect.runPromiseExit(
+      verifyCallback(unsafe({ raw_body: "valid", headers: { signature: 1 } })),
+    );
+    expect(failureOf(malformedInput)).toBeInstanceOf(VerificationProviderRejected);
+    expect(callbackCalls).toBe(1);
+
+    const malformedOutput = await Effect.runPromiseExit(
+      verifyCallback({ raw_body: "invalid", headers: {} }),
+    );
+    expect(failureOf(malformedOutput)).toBeInstanceOf(VerificationProviderInvalidResponse);
   });
 
   test("rejects partial fulfillment, every duplicate record set, and untyped claim values", async () => {
@@ -478,6 +564,13 @@ describe("verification registry adversarial corpus", () => {
       { ...base, assertions: [...base.assertions, base.assertions[0]] },
       {
         ...base,
+        receipts: base.receipts.map((receipt) => ({
+          ...receipt,
+          provider_configuration: { ...receipt.provider_configuration, version: "2" },
+        })),
+      },
+      {
+        ...base,
         assertions: base.assertions.map((assertion, index) =>
           index === 0 ? { ...assertion, value: { meaningless: true } } : assertion,
         ),
@@ -487,7 +580,7 @@ describe("verification registry adversarial corpus", () => {
     for (const complete of hostile) {
       const provider = await providerFor(adapterFor({ complete }));
       const exit = await Effect.runPromiseExit(
-        provider.complete({ session: sessionFor(), submission: {} }),
+        provider.complete({ session: sessionFor(), submission: clientSubmission() }),
       );
       expect(failureOf(exit)).toBeInstanceOf(VerificationProviderInvalidResponse);
     }
@@ -506,7 +599,7 @@ describe("verification registry adversarial corpus", () => {
         operation === "start"
           ? await Effect.runPromiseExit(unavailable.start(START_INPUT))
           : await Effect.runPromiseExit(
-              unavailable.complete({ session: sessionFor(), submission: {} }),
+              unavailable.complete({ session: sessionFor(), submission: clientSubmission() }),
             );
       expect(failureOf(unavailableExit)).toBeInstanceOf(VerificationProviderUnavailable);
 
@@ -519,7 +612,7 @@ describe("verification registry adversarial corpus", () => {
         operation === "start"
           ? await Effect.runPromiseExit(defective.start(START_INPUT))
           : await Effect.runPromiseExit(
-              defective.complete({ session: sessionFor(), submission: {} }),
+              defective.complete({ session: sessionFor(), submission: clientSubmission() }),
             );
       expect(failureOf(defectExit)).toBeInstanceOf(VerificationProviderInvalidResponse);
     }

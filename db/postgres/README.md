@@ -31,6 +31,13 @@ filename must be recreated. Once `0009_gates_v2_foundation.sql` is applied to
 the first durable environment, its filename, SQL, and checksum are immutable;
 all subsequent schema changes are new forward-only migrations.
 
+`0010_proof_session_provenance.sql` is the first such forward delta. It binds
+the exact managed flow/policy or dynamic query-generator reference and version
+to proof sessions and evidence receipts, and persists the generic client
+presentation append-only for idempotent session-start replay. Because no
+provider route existed before 0010, it fails closed on a non-empty gates-v2
+evidence ledger instead of fabricating configuration provenance.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every

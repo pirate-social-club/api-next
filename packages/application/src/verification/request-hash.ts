@@ -34,6 +34,7 @@ export async function computeVerificationRequestHash(
     method: input.method,
     scope: input.scope,
     request_mode: input.request_mode,
+    provider_configuration: input.provider_configuration,
     requested_requirements: input.requested_requirements,
     subject_binding_intent: input.subject_binding_intent,
     protocol_version: input.protocol_version,
