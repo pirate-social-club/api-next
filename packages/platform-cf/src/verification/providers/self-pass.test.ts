@@ -306,6 +306,8 @@ describe("Self Pass provider-local adapter", () => {
     ]);
     expect((constructorArgs[4] as FakeConfigStore).config).toEqual({ minimumAge: 18 });
     expect(bundle.receipts[0]?.evidence_kind).toBe("self.pass.attestation.1");
+    expect(bundle.receipts[0]?.provider_configuration).toEqual(SELF_PASS_CONFIGURATION);
+    expect(bundle.receipts[0]?.scope).toEqual(SCOPE);
     expect(bundle.assertions.map((assertion) => assertion.claim_id)).toEqual([...CLAIM_IDS]);
     expect(bundle.assertions.some((assertion) => assertion.claim_id === "human.unique")).toBe(
       false,
