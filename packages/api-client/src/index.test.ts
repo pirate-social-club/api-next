@@ -42,6 +42,29 @@ describe("generated api client", () => {
     await expect(client.get_health(undefined)).rejects.toBeInstanceOf(ApiClientUnexpectedError);
   });
 
+  test("exposes the generated verification start retry metadata", async () => {
+    const fetchImpl = Object.assign(
+      async () =>
+        new Response(
+          JSON.stringify({
+            code: "verification_start_in_progress",
+            message: "busy",
+            retryable: true,
+          }),
+          { status: 409, headers: { "Retry-After": "5" } },
+        ),
+      { preconnect: fetch.preconnect },
+    );
+    const client = createPirateApiClient("https://api.example", fetchImpl);
+    await expect(
+      client.post_verificationSessions({ body: { intent_id: "intent-1", provider_id: "test" } }),
+    ).rejects.toMatchObject({
+      code: "verification_start_in_progress",
+      declaredName: "VerificationStartInProgress",
+      retryAfterSeconds: 5,
+    });
+  });
+
   test("forwards default and per-call authentication headers and cancellation", async () => {
     const calls: Array<{ headers: Headers; signal: AbortSignal | null | undefined }> = [];
     const fetchImpl = Object.assign(

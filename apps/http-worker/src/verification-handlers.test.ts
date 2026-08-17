@@ -88,7 +88,19 @@ async function handlers() {
     start: {
       registry,
       intents: { resolve: () => Effect.succeed(planInput) },
-      store: { commit: (start) => Effect.succeed({ kind: "created", start }) },
+      store: {
+        reserve: () =>
+          Effect.succeed({
+            kind: "acquired" as const,
+            reservation: {
+              reservation_id: "reservation-1",
+              fence_token: 1,
+              lease_expires_at: "2099-08-17T00:00:00.000Z",
+            },
+          }),
+        finalize: (_reservation, start) => Effect.succeed({ kind: "created" as const, start }),
+        release: () => Effect.succeed(undefined),
+      },
     },
     completion,
   });
@@ -150,6 +162,19 @@ describe("verification HTTP handlers", () => {
         principal: { kind: "user", subject: "user-authenticated" },
         body: { intent_id: "intent-1", provider_id: "future.provider" },
         params: undefined,
+        query: undefined,
+      }),
+    ).rejects.toBeInstanceOf(NotFound);
+  });
+
+  test("returns a redacted not-found for an unknown callback provider", async () => {
+    const configured = await handlers();
+    await expect(
+      configured.CompleteVerificationCallback({
+        principal: null,
+        body: "{}",
+        headers: {},
+        params: { providerId: "future.provider" },
         query: undefined,
       }),
     ).rejects.toBeInstanceOf(NotFound);

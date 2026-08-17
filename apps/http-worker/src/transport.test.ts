@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import type { SessionExchangeServices } from "@pirate/application/use-cases/session-exchange";
-import { Auth, BadRequest, Conflict, endpoint } from "@pirate/contracts";
+import {
+  Auth,
+  BadRequest,
+  Conflict,
+  endpoint,
+  VerificationStartInProgress,
+} from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import { Hono } from "hono";
 import {
@@ -608,6 +614,31 @@ describe("contracts-generated HTTP worker", () => {
     const body = await response.json();
     expect(body).toMatchObject({ code: "conflict" });
     expect(JSON.stringify(body)).not.toContain("same-key");
+  });
+
+  it("carries the retryable verification start contract and Retry-After header", async () => {
+    const response = await createHttpWorker({
+      handlers: {
+        StartVerificationSession: () => {
+          throw new VerificationStartInProgress({
+            message: "start is already in progress",
+            retry_after_seconds: 4,
+          });
+        },
+      },
+      authenticate: () => ({ kind: "user", subject: "user_1" }),
+      authorize: () => undefined,
+    }).request("http://worker.test/verification/sessions", {
+      method: "POST",
+      headers: { authorization: "Bearer test", "content-type": "application/json" },
+      body: JSON.stringify({ intent_id: "intent-1", provider_id: "provider-1" }),
+    });
+    expect(response.status).toBe(409);
+    expect(response.headers.get("retry-after")).toBe("4");
+    expect(await response.json()).toMatchObject({
+      code: "verification_start_in_progress",
+      retryable: true,
+    });
   });
 
   it("adds configured CORS and no-store to credential-bearing success responses", async () => {

@@ -25681,215 +25681,259 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "proof_session_id": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
-                        }
-                      ]
-                    },
-                    "provider_id": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
-                        }
-                      ]
-                    },
-                    "presentation": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "redirect"
-                              ]
-                            },
-                            "session_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            },
-                            "url": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "proof_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "session_id",
-                            "url"
-                          ],
-                          "additionalProperties": false
+                          ]
                         },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "deeplink"
-                              ]
-                            },
-                            "session_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            },
-                            "uri": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
+                        "provider_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "session_id",
-                            "uri"
-                          ],
-                          "additionalProperties": false
+                          ]
                         },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "embedded_sdk"
-                              ]
-                            },
-                            "session_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
+                        "presentation": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "redirect"
+                                  ]
+                                },
+                                "session_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "url": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
-                              ]
+                              },
+                              "required": [
+                                "kind",
+                                "session_id",
+                                "url"
+                              ],
+                              "additionalProperties": false
                             },
-                            "protocol": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "deeplink"
+                                  ]
+                                },
+                                "session_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "uri": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
-                              ]
+                              },
+                              "required": [
+                                "kind",
+                                "session_id",
+                                "uri"
+                              ],
+                              "additionalProperties": false
                             },
-                            "version": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "embedded_sdk"
+                                  ]
+                                },
+                                "session_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "protocol": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "version": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "payload": {}
+                              },
+                              "required": [
+                                "kind",
+                                "session_id",
+                                "protocol",
+                                "version",
+                                "payload"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "poll"
+                                  ]
+                                },
+                                "session_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "poll_url": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
-                              ]
+                              },
+                              "required": [
+                                "kind",
+                                "session_id",
+                                "poll_url"
+                              ],
+                              "additionalProperties": false
                             },
-                            "payload": {}
-                          },
-                          "required": [
-                            "kind",
-                            "session_id",
-                            "protocol",
-                            "version",
-                            "payload"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "poll"
-                              ]
-                            },
-                            "session_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "none"
+                                  ]
+                                },
+                                "session_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
-                              ]
-                            },
-                            "poll_url": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
+                              },
+                              "required": [
+                                "kind",
+                                "session_id"
+                              ],
+                              "additionalProperties": false
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "session_id",
-                            "poll_url"
-                          ],
-                          "additionalProperties": false
+                          ]
                         },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "none"
-                              ]
-                            },
-                            "session_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
+                        "expires_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "session_id"
-                          ],
-                          "additionalProperties": false
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
                         }
-                      ]
+                      },
+                      "required": [
+                        "proof_session_id",
+                        "provider_id",
+                        "presentation",
+                        "expires_at",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
                     },
-                    "expires_at": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
+                    {
+                      "type": "object",
+                      "properties": {
+                        "proof_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "provider_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "completed"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
                         }
-                      ]
-                    },
-                    "replayed": {
-                      "type": "boolean"
+                      },
+                      "required": [
+                        "proof_session_id",
+                        "provider_id",
+                        "status",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "proof_session_id",
-                    "provider_id",
-                    "presentation",
-                    "expires_at",
-                    "replayed"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               }
             }
@@ -25899,215 +25943,259 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "proof_session_id": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
-                        }
-                      ]
-                    },
-                    "provider_id": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
-                        }
-                      ]
-                    },
-                    "presentation": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "redirect"
-                              ]
-                            },
-                            "session_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            },
-                            "url": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "proof_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "session_id",
-                            "url"
-                          ],
-                          "additionalProperties": false
+                          ]
                         },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "deeplink"
-                              ]
-                            },
-                            "session_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
-                            },
-                            "uri": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
+                        "provider_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "session_id",
-                            "uri"
-                          ],
-                          "additionalProperties": false
+                          ]
                         },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "embedded_sdk"
-                              ]
-                            },
-                            "session_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
+                        "presentation": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "redirect"
+                                  ]
+                                },
+                                "session_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "url": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
-                              ]
+                              },
+                              "required": [
+                                "kind",
+                                "session_id",
+                                "url"
+                              ],
+                              "additionalProperties": false
                             },
-                            "protocol": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "deeplink"
+                                  ]
+                                },
+                                "session_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "uri": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
-                              ]
+                              },
+                              "required": [
+                                "kind",
+                                "session_id",
+                                "uri"
+                              ],
+                              "additionalProperties": false
                             },
-                            "version": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "embedded_sdk"
+                                  ]
+                                },
+                                "session_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "protocol": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "version": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "payload": {}
+                              },
+                              "required": [
+                                "kind",
+                                "session_id",
+                                "protocol",
+                                "version",
+                                "payload"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "poll"
+                                  ]
+                                },
+                                "session_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "poll_url": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
-                              ]
+                              },
+                              "required": [
+                                "kind",
+                                "session_id",
+                                "poll_url"
+                              ],
+                              "additionalProperties": false
                             },
-                            "payload": {}
-                          },
-                          "required": [
-                            "kind",
-                            "session_id",
-                            "protocol",
-                            "version",
-                            "payload"
-                          ],
-                          "additionalProperties": false
-                        },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "poll"
-                              ]
-                            },
-                            "session_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "none"
+                                  ]
+                                },
+                                "session_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
                                 }
-                              ]
-                            },
-                            "poll_url": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
+                              },
+                              "required": [
+                                "kind",
+                                "session_id"
+                              ],
+                              "additionalProperties": false
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "session_id",
-                            "poll_url"
-                          ],
-                          "additionalProperties": false
+                          ]
                         },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "none"
-                              ]
-                            },
-                            "session_id": {
-                              "type": "string",
-                              "allOf": [
-                                {
-                                  "minLength": 1
-                                }
-                              ]
+                        "expires_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "session_id"
-                          ],
-                          "additionalProperties": false
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
                         }
-                      ]
+                      },
+                      "required": [
+                        "proof_session_id",
+                        "provider_id",
+                        "presentation",
+                        "expires_at",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
                     },
-                    "expires_at": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
+                    {
+                      "type": "object",
+                      "properties": {
+                        "proof_session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "provider_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "completed"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
                         }
-                      ]
-                    },
-                    "replayed": {
-                      "type": "boolean"
+                      },
+                      "required": [
+                        "proof_session_id",
+                        "provider_id",
+                        "status",
+                        "replayed"
+                      ],
+                      "additionalProperties": false
                     }
-                  },
-                  "required": [
-                    "proof_session_id",
-                    "provider_id",
-                    "presentation",
-                    "expires_at",
-                    "replayed"
-                  ],
-                  "additionalProperties": false
+                  ]
                 }
               }
             }
@@ -26249,8 +26337,19 @@
               }
             },
             "x-error-codes": [
-              "conflict"
-            ]
+              "conflict",
+              "verification_start_in_progress",
+              "verification_new_intent_required"
+            ],
+            "headers": {
+              "Retry-After": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[1-9][0-9]*$"
+                }
+              }
+            }
           },
           "500": {
             "description": "Error envelope (old wire format)",
@@ -26333,6 +26432,8 @@
           "AuthError",
           "BadRequest",
           "Conflict",
+          "VerificationStartInProgress",
+          "VerificationStartNewIntentRequired",
           "NotFound",
           "ProviderUnavailable",
           "ProviderMisconfigured",

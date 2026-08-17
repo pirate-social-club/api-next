@@ -12,6 +12,8 @@ import {
   RateLimited,
   RetryableConflict,
   toErrorBody,
+  VerificationStartInProgress,
+  VerificationStartNewIntentRequired,
 } from "./index.ts";
 
 // Phase-0 acceptance: the frozen catalogs behave as the old wire surface did.
@@ -50,6 +52,24 @@ describe("wire-error catalog", () => {
     expect(toErrorBody(new NotFound({ message: "x", details: { id: 7 } })).body.details).toEqual({
       id: 7,
     });
+  });
+
+  it("serializes only the canonical retry header for an in-progress start", () => {
+    const serialized = toErrorBody(
+      new VerificationStartInProgress({ message: "busy", retry_after_seconds: 7 }),
+    );
+    expect(serialized.headers).toEqual({ "Retry-After": "7" });
+    expect(serialized.body).toMatchObject({
+      code: "verification_start_in_progress",
+      retryable: true,
+    });
+    expect(
+      toErrorBody(new VerificationStartInProgress({ message: "bad", retry_after_seconds: 0 }))
+        .headers,
+    ).toBeUndefined();
+    expect(
+      toErrorBody(new VerificationStartNewIntentRequired({ message: "new intent" })).headers,
+    ).toBeUndefined();
   });
 
   it("requires structured details for gate failures", () => {

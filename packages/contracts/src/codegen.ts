@@ -70,11 +70,23 @@ function errorResponses(errors: readonly ApiErrorCtor[] | undefined): Record<str
   for (const Ctor of errors ?? []) {
     const instance = new Ctor({} as never) as ApiError;
     const status = String(instance.status);
-    const existing = (responses[status]?.["x-error-codes"] as string[] | undefined) ?? [];
+    const previous = responses[status];
+    const existing = (previous?.["x-error-codes"] as string[] | undefined) ?? [];
     responses[status] = {
       description: "Error envelope (old wire format)",
       content: { "application/json": { schema: wireErrorBodySchema } },
       "x-error-codes": [...existing, instance.code],
+      ...(previous?.headers === undefined ? {} : { headers: previous.headers }),
+      ...(instance.code === "verification_start_in_progress"
+        ? {
+            headers: {
+              "Retry-After": {
+                required: true,
+                schema: { type: "string", pattern: "^[1-9][0-9]*$" },
+              },
+            },
+          }
+        : {}),
     };
   }
   return responses;
@@ -350,7 +362,7 @@ function clientErrorType(
   if (errors.length === 0) return "never";
   const members = errors.map(
     (error) =>
-      `(ApiClientError & { readonly status: ${error.status}; readonly code: ${JSON.stringify(error.code)}; readonly declaredName: ${JSON.stringify(error.name)}; readonly retryable: boolean | undefined })`,
+      `(ApiClientError & { readonly status: ${error.status}; readonly code: ${JSON.stringify(error.code)}; readonly declaredName: ${JSON.stringify(error.name)}; readonly retryable: boolean | undefined${error.code === "verification_start_in_progress" ? "; readonly retryAfterSeconds: number | undefined" : ""} })`,
   );
   return members.join(" | ").replace(/^/, `/* ${operationTypeName} declared errors */ `);
 }
@@ -479,7 +491,8 @@ export class ApiClientError extends Error {
   readonly retryable: boolean | undefined;
   readonly details: Record<string, unknown> | null | undefined;
   readonly requestId: string | undefined;
-  constructor(definition: ApiClientErrorDefinition, body: ApiClientErrorBody) {
+  readonly retryAfterSeconds: number | undefined;
+  constructor(definition: ApiClientErrorDefinition, body: ApiClientErrorBody, responseHeaders?: Headers) {
     super(body.message);
     this.name = definition.name;
     this.status = definition.status;
@@ -488,6 +501,12 @@ export class ApiClientError extends Error {
     this.retryable = body.retryable;
     this.details = body.details;
     this.requestId = body.request_id;
+    const retryAfter = responseHeaders?.get("retry-after");
+    const parsedRetryAfter = retryAfter === null || retryAfter === undefined ? NaN : Number(retryAfter);
+    this.retryAfterSeconds =
+      Number.isSafeInteger(parsedRetryAfter) && parsedRetryAfter >= 1 && parsedRetryAfter <= 86400
+        ? parsedRetryAfter
+        : undefined;
   }
 }
 export class ApiClientUnexpectedError extends Error {
@@ -627,7 +646,7 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
       const body = parseWireError(payload, response.status);
       const definition = ERROR_DEFINITIONS[operation]?.find((candidate) => candidate.status === response.status && candidate.code === body.code);
       if (definition === undefined) throw new ApiClientUnexpectedError(response.status, body);
-      throw new ApiClientError(definition, body);
+      throw new ApiClientError(definition, body, response.headers);
     }
     if (!(SUCCESS_STATUSES[operation] ?? []).includes(response.status)) throw new ApiClientProtocolError("API returned an undeclared success status", response.status);
     const error = schemaError(payload, RESPONSE_SCHEMAS[operation] ?? {}, "$", RESPONSE_SCHEMAS[operation] ?? {});

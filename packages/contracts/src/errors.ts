@@ -107,6 +107,24 @@ export class RetryableConflict extends Data.TaggedError("RetryableConflict")<Wir
   readonly retryable = true as const;
 }
 
+/** A start lease is held by another request; clients may retry this request. */
+export class VerificationStartInProgress extends Data.TaggedError("VerificationStartInProgress")<
+  WireArgs & { readonly retry_after_seconds: number }
+> {
+  readonly status = 409 as const;
+  readonly code = "verification_start_in_progress" as const;
+  readonly retryable = true as const;
+}
+
+/** The intent already has a terminal session; callers must create a new intent. */
+export class VerificationStartNewIntentRequired extends Data.TaggedError(
+  "VerificationStartNewIntentRequired",
+)<WireArgs> {
+  readonly status = 409 as const;
+  readonly code = "verification_new_intent_required" as const;
+  readonly retryable = false as const;
+}
+
 /**
  * Open coded-conflict channel (old `codedConflictError`): a 409 a client can
  * act on programmatically — "quote expired, start over" must be
@@ -232,6 +250,8 @@ export type ApiError =
   | RateLimited
   | Conflict
   | RetryableConflict
+  | VerificationStartInProgress
+  | VerificationStartNewIntentRequired
   | CodedConflict
   | TelegramStudyUnavailable
   | SongContentHashMismatch
@@ -263,7 +283,11 @@ const hasWireShape = (u: unknown): u is ApiError =>
 export function toErrorBody(
   error: unknown,
   requestId?: string,
-): { readonly status: number; readonly body: ErrorBody } {
+): {
+  readonly status: number;
+  readonly body: ErrorBody;
+  readonly headers?: Readonly<Record<string, string>>;
+} {
   const requestIdField = requestId === undefined ? {} : { request_id: requestId };
   if (hasWireShape(error)) {
     return {
@@ -275,6 +299,22 @@ export function toErrorBody(
         ...(error.details ? { details: error.details } : {}),
         ...requestIdField,
       },
+      ...(error.code === "verification_start_in_progress" &&
+      typeof (error as { readonly retry_after_seconds?: unknown }).retry_after_seconds ===
+        "number" &&
+      Number.isSafeInteger(
+        (error as { readonly retry_after_seconds: number }).retry_after_seconds,
+      ) &&
+      (error as { readonly retry_after_seconds: number }).retry_after_seconds >= 1 &&
+      (error as { readonly retry_after_seconds: number }).retry_after_seconds <= 86_400
+        ? {
+            headers: {
+              "Retry-After": String(
+                (error as { readonly retry_after_seconds: number }).retry_after_seconds,
+              ),
+            },
+          }
+        : {}),
     };
   }
   return {

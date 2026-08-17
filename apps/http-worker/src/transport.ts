@@ -257,11 +257,18 @@ const requestId = (context: HttpContext): string => {
 // by unbounded intermediary caching. Well under any sane rotation interval.
 const PUBLIC_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
 
-const json = (context: HttpContext, body: unknown, status: number, noStore: boolean): Response => {
+const json = (
+  context: HttpContext,
+  body: unknown,
+  status: number,
+  noStore: boolean,
+  responseHeaders?: Readonly<Record<string, string>>,
+): Response => {
   const headers = new Headers({
     "content-type": "application/json; charset=UTF-8",
     "x-request-id": requestId(context),
   });
+  for (const [name, value] of Object.entries(responseHeaders ?? {})) headers.set(name, value);
   headers.set("cache-control", noStore ? "no-store" : PUBLIC_CACHE_CONTROL);
   return new Response(JSON.stringify(body), { status, headers });
 };
@@ -382,7 +389,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
 
   app.onError((error, context) => {
     const serialized = toErrorBody(error, requestId(context));
-    return json(context, serialized.body, serialized.status, true);
+    return json(context, serialized.body, serialized.status, true, serialized.headers);
   });
 
   return app;

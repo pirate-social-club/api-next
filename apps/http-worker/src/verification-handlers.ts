@@ -18,6 +18,8 @@ import {
   NotFound,
   ProviderMisconfigured,
   ProviderUnavailable,
+  VerificationStartInProgress,
+  VerificationStartNewIntentRequired,
 } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
@@ -47,7 +49,11 @@ function actorId(principal: Principal | null): string {
 }
 
 function wireFailure(error: unknown): Error {
-  const tagged = error as { readonly _tag?: string; readonly reason?: string };
+  const tagged = error as {
+    readonly _tag?: string;
+    readonly reason?: string;
+    readonly retry_after_seconds?: number;
+  };
   switch (tagged._tag) {
     case "VerificationProviderUnknown":
       return new NotFound({ message: "Verification provider not found" });
@@ -67,6 +73,24 @@ function wireFailure(error: unknown): Error {
       }
       if (tagged.reason === "conflict") {
         return new Conflict({ message: "Verification session conflicts with this intent" });
+      }
+      if (tagged.reason === "in_flight") {
+        const retryAfter =
+          typeof tagged.retry_after_seconds === "number" &&
+          Number.isSafeInteger(tagged.retry_after_seconds) &&
+          tagged.retry_after_seconds > 0
+            ? Math.min(tagged.retry_after_seconds, 86_400)
+            : 1;
+        return new VerificationStartInProgress({
+          message: "Verification session start is already in progress",
+          retry_after_seconds: retryAfter,
+        });
+      }
+      if (tagged.reason === "terminal") {
+        return new VerificationStartNewIntentRequired({
+          message: "Verification session requires a new intent",
+          details: { reason: "new_intent_required" },
+        });
       }
       return new BadRequest({ message: "Verification request is unsupported" });
     case "VerificationCompletionRejected":

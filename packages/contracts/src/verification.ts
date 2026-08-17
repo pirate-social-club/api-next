@@ -9,6 +9,8 @@ import {
   NotFound,
   ProviderMisconfigured,
   ProviderUnavailable,
+  VerificationStartInProgress,
+  VerificationStartNewIntentRequired,
 } from "./errors.ts";
 
 const ProviderPresentation = Schema.Union([
@@ -42,6 +44,22 @@ const VerificationCompletionResponse = Schema.Struct({
   status: Schema.Literal("completed"),
   replayed: Schema.Boolean,
 });
+
+const VerificationStartResponse = Schema.Union([
+  Schema.Struct({
+    proof_session_id: Schema.NonEmptyString,
+    provider_id: Schema.NonEmptyString,
+    presentation: ProviderPresentation,
+    expires_at: Schema.NonEmptyString,
+    replayed: Schema.Boolean,
+  }),
+  Schema.Struct({
+    proof_session_id: Schema.NonEmptyString,
+    provider_id: Schema.NonEmptyString,
+    status: Schema.Literal("completed"),
+    replayed: Schema.Literal(true),
+  }),
+]);
 
 const CallbackRawBody = Schema.String.check(
   Schema.makeFilter((value) =>
@@ -78,18 +96,14 @@ export const StartVerificationSession = endpoint({
       provider_id: Schema.NonEmptyString,
     }),
   },
-  response: Schema.Struct({
-    proof_session_id: Schema.NonEmptyString,
-    provider_id: Schema.NonEmptyString,
-    presentation: ProviderPresentation,
-    expires_at: Schema.NonEmptyString,
-    replayed: Schema.Boolean,
-  }),
+  response: VerificationStartResponse,
   successStatus: [200, 201],
   errors: [
     AuthError,
     BadRequest,
     Conflict,
+    VerificationStartInProgress,
+    VerificationStartNewIntentRequired,
     NotFound,
     ProviderUnavailable,
     ProviderMisconfigured,
@@ -122,9 +136,13 @@ export const CompleteVerificationSession = endpoint({
 });
 
 /**
- * Public provider callbacks are authenticated by the selected adapter. The
- * transport preserves exact body text and passes a bounded lowercase header
- * map; neither actor nor session authority is accepted from an app client.
+ * Public provider callbacks use manifest-declared trust. Signed envelopes are
+ * authenticated before lookup; session-bound proofs carry only an opaque ID
+ * until completion verifies them against stored requirements. The transport
+ * preserves exact body text and passes a bounded lowercase header map; neither
+ * actor nor session authority is accepted from an app client.
+ * `providerId` remains intentionally open-coded: unknown providers receive a
+ * redacted 404 rather than being enumerated by a fixed contract enum.
  */
 export const CompleteVerificationCallback = endpoint({
   method: "POST",
