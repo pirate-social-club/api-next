@@ -47,6 +47,12 @@ const m2BehaviorMigrationSql = await Bun.file(
 const publicProfileMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0006_public_profile_handle_index.sql", import.meta.url),
 ).text();
+const publicProfileInvariantMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0007_public_profile_handle_invariants.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -81,6 +87,11 @@ const publicProfileMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0006_public_profile_handle_index.sql"] ?? "",
   sql: publicProfileMigrationSql,
 };
+const publicProfileInvariantMigration: PostgresMigration = {
+  version: "0007_public_profile_handle_invariants.sql",
+  checksum: checksumManifest.migrations["0007_public_profile_handle_invariants.sql"] ?? "",
+  sql: publicProfileInvariantMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -88,6 +99,7 @@ const migrations: readonly PostgresMigration[] = [
   commentLockMigration,
   m2BehaviorMigration,
   publicProfileMigration,
+  publicProfileInvariantMigration,
 ];
 
 function checksum(value: string): string {
@@ -216,6 +228,9 @@ suite("Postgres 17 v1 foundation", () => {
       expect(checksum(identityMigrationSql)).toBe(identityMigration.checksum);
       expect(checksum(m2MigrationSql)).toBe(m2Migration.checksum);
       expect(checksum(publicProfileMigrationSql)).toBe(publicProfileMigration.checksum);
+      expect(checksum(publicProfileInvariantMigrationSql)).toBe(
+        publicProfileInvariantMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -245,9 +260,9 @@ suite("Postgres 17 v1 foundation", () => {
         "home_feed_projection",
         "moderation_actions",
         "moderation_reports",
-        "public_handle_index",
         "post_votes",
         "posts",
+        "public_handle_index",
         "schema_migrations",
         "users",
       ]);
