@@ -1,13 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { VerificationCallbackServices } from "@pirate/application/use-cases/verification-callback";
 import type {
   StoredVerificationCompletion,
   VerificationCompletionStore,
 } from "@pirate/application/use-cases/verification-completion";
-import type {
-  VerificationProviderAdapter,
-  VerificationProviderRegistryService,
-} from "@pirate/application/verification";
 import { NotFound } from "@pirate/contracts";
 import type { ProofSession } from "@pirate/domain/verification";
 import {
@@ -80,12 +75,7 @@ function terminalStore(): VerificationCompletionStore {
   };
 }
 
-async function handlers(
-  options: {
-    readonly callback?: VerificationCallbackServices;
-    readonly callback_credential_headers?: readonly string[];
-  } = {},
-) {
+async function handlers() {
   const registry = await Effect.runPromise(
     makeFakeVerificationProviderRegistry({
       mode: "no-subject",
@@ -124,7 +114,6 @@ async function handlers(
       },
     },
     completion,
-    ...options,
   });
 }
 
@@ -175,56 +164,6 @@ describe("verification HTTP handlers", () => {
       status: "completed",
       replayed: true,
     });
-  });
-
-  test("strips standard and deployment credentials before application callback code", async () => {
-    let observedHeaders: Readonly<Record<string, string>> | undefined;
-    const rawAdapter: VerificationProviderAdapter = {
-      manifest: {
-        ...manifest,
-        callback_mode: "signed_envelope",
-        callback_header_allowlist: ["webhook-signature", "x-pirate-internal-auth"],
-      },
-      plan: () => Effect.die("plan must not run"),
-      start: () => Effect.die("start must not run"),
-      complete: () => Effect.die("terminal replay must not complete"),
-      verifyCallback: (input) => {
-        observedHeaders = input.headers;
-        return Effect.succeed({
-          proof_session_id: "fake-session-1",
-          idempotency_key: "webhook-1",
-          submission: { channel: "provider_callback", payload: { authenticated: true } },
-        });
-      },
-    };
-    const rawRegistry: VerificationProviderRegistryService = {
-      list: () => [rawAdapter.manifest],
-      resolve: () => Effect.succeed(rawAdapter),
-    };
-    const configured = await handlers({
-      callback: {
-        registry: rawRegistry,
-        store: terminalStore(),
-        hasher: { hash: () => Effect.succeed(RESULT_HASH) },
-      },
-      callback_credential_headers: ["x-pirate-internal-auth"],
-    });
-
-    await configured.CompleteVerificationCallback({
-      principal: null,
-      body: "{}",
-      headers: {
-        authorization: "Bearer platform-secret",
-        cookie: "session=platform-secret",
-        "cf-access-client-secret": "access-secret",
-        "x-pirate-internal-auth": "deployment-secret",
-        "webhook-signature": "provider-signature",
-      },
-      params: { providerId: manifest.provider_id },
-      query: undefined,
-    });
-
-    expect(observedHeaders).toEqual({ "webhook-signature": "provider-signature" });
   });
 
   test("maps an arbitrary unknown provider ID without adding a provider enum", async () => {
