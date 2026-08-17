@@ -35,10 +35,17 @@ The manifest also requires two explicit, one-to-one mapping tables:
 - `owner_mappings`: `legacy_user_id` → `api_next_user_id`, with the reviewed
   legacy state (`active`, `merged`, or `tombstoned`). Merged/tombstoned rows
   require `reviewed: true`, and every mapped api-next owner must exist and be
-  active. There is no implicit identity match and no many-to-one merge.
+  active. Active legacy owners remain injective; reviewed merged/tombstoned
+  owners may converge on that active canonical api-next owner. There is no
+  implicit identity match, and unreviewed convergence is rejected.
 - `handle_mappings`: `legacy_handle_id` → `api_next_handle_id`. Target IDs
   are strict ASCII IDs and are the only IDs written to `public_handle_index`;
   redirects resolve through this table to the mapped canonical target ID.
+
+This convergence matches api-next `account_aliases` resolution, which follows
+active aliases and finalizing/completed merges to one canonical user. The
+legacy owner state and mapping remain explicit reviewed export data; the
+importer never infers an alias or merge from raw IDs.
 
 These mappings are part of the manifest digest. Account aliases, merges, and
 tombstones cannot enter the import without an explicit reviewed mapping. Each

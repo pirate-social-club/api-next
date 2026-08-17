@@ -205,15 +205,20 @@ export function parsePublicProfileBackfillManifest(value: unknown): PublicProfil
   )
     throw new Error("manifest-mappings-not-canonical");
   const sourceOwnerIds = new Set(rows.map((row) => row.user_id));
-  const mappedOwnerIds = new Set<string>();
+  // A reviewed merged/tombstoned legacy owner may converge on its active
+  // canonical api-next owner. Two active legacy owners may not converge.
+  const activeMappedOwnerIds = new Set<string>();
   for (const mapping of ownerMappings) {
     if (!sourceOwnerIds.has(mapping.legacy_user_id))
       throw new Error("manifest-owner-mapping-extra");
-    if (mappedOwnerIds.has(mapping.api_next_user_id))
+    if (
+      mapping.legacy_owner_state === "active" &&
+      activeMappedOwnerIds.has(mapping.api_next_user_id)
+    )
       throw new Error("manifest-owner-mapping-not-one-to-one");
-    mappedOwnerIds.add(mapping.api_next_user_id);
+    if (mapping.legacy_owner_state === "active") activeMappedOwnerIds.add(mapping.api_next_user_id);
   }
-  if (ownerMappings.length !== sourceOwnerIds.size || mappedOwnerIds.size !== sourceOwnerIds.size)
+  if (ownerMappings.length !== sourceOwnerIds.size)
     throw new Error("manifest-owner-mapping-incomplete");
   const sourceHandleIds = new Set(rows.map((row) => row.global_handle_id));
   const mappedHandleIds = new Set<string>();

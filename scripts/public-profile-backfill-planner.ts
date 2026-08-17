@@ -252,7 +252,8 @@ export function planPublicProfileBackfill(
   );
   const sourceRowsById = new Map<string, LegacyGlobalHandleRow>();
   const sourceLabels = new Map<string, LegacyGlobalHandleRow>();
-  const activeOwners = new Map<string, LegacyGlobalHandleRow>();
+  const activeOwners = new Map<string, LegacyGlobalHandleRow[]>();
+  const activeOwnerCollisionIds = new Set<string>();
   for (const row of manifest.rows) {
     if (sourceRowsById.has(row.global_handle_id))
       issues.push({ code: "duplicate-source-handle", row });
@@ -261,8 +262,17 @@ export function planPublicProfileBackfill(
       issues.push({ code: "source-label-collision", row });
     sourceLabels.set(row.label_normalized, row);
     if (row.status === "active") {
-      if (activeOwners.has(row.user_id)) issues.push({ code: "active-owner-collision", row });
-      activeOwners.set(row.user_id, row);
+      const mappedOwner = ownerMappings.get(row.user_id) ?? row.user_id;
+      const rowsForOwner = activeOwners.get(mappedOwner) ?? [];
+      rowsForOwner.push(row);
+      activeOwners.set(mappedOwner, rowsForOwner);
+    }
+  }
+  for (const rowsForOwner of activeOwners.values()) {
+    if (rowsForOwner.length < 2) continue;
+    for (const row of rowsForOwner) {
+      issues.push({ code: "active-owner-collision", row });
+      activeOwnerCollisionIds.add(row.global_handle_id);
     }
   }
   const targetUsers = new Map(target.users.map((user) => [user.user_id, user]));
@@ -290,7 +300,7 @@ export function planPublicProfileBackfill(
       cycles,
     );
     for (const code of rowErrors) issues.push({ code, row });
-    if (rowErrors.length > 0) continue;
+    if (rowErrors.length > 0 || activeOwnerCollisionIds.has(row.global_handle_id)) continue;
     const apiNextHandleId = handleMappings.get(row.global_handle_id);
     const apiNextOwnerUserId = ownerMappings.get(row.user_id);
     const apiNextRedirectTargetHandleId =
