@@ -1,10 +1,12 @@
 import {
   type Assurance,
-  type CanonicalClaimIdentifier,
+  CanonicalClaimIdentifier,
   type EvidenceBundle,
   type ProofProviderManifest,
   ProofSession,
-  type SubjectScope,
+  Sha256Hex,
+  SubjectBindingIntent,
+  SubjectScope,
 } from "@pirate/domain/verification";
 import { Data, type Effect, Schema } from "effect";
 
@@ -48,48 +50,57 @@ export const ProviderSessionStart = Schema.Struct({
 });
 export type ProviderSessionStart = Schema.Schema.Type<typeof ProviderSessionStart>;
 
-export type VerificationProviderStartInput = Readonly<{
-  readonly actor_id: string;
-  readonly intent_id: string;
-  readonly request_hash: string;
-  readonly method: string;
-  readonly scope: SubjectScope;
-  readonly requested_claim_ids: readonly [CanonicalClaimIdentifier, ...CanonicalClaimIdentifier[]];
-  readonly protocol_version: string;
-  readonly environment: string;
-}>;
+export const VerificationProviderStartInput = Schema.Struct({
+  actor_id: Schema.NonEmptyString,
+  intent_id: Schema.NonEmptyString,
+  request_hash: Sha256Hex,
+  method: Schema.NonEmptyString,
+  scope: SubjectScope,
+  requested_claim_ids: Schema.NonEmptyArray(CanonicalClaimIdentifier),
+  subject_binding_intent: SubjectBindingIntent,
+  protocol_version: Schema.NonEmptyString,
+  environment: Schema.NonEmptyString,
+});
+export type VerificationProviderStartInput = Schema.Schema.Type<
+  typeof VerificationProviderStartInput
+>;
 
-export type VerificationProviderVerifyInput = Readonly<{
-  readonly session: Schema.Schema.Type<typeof ProofSession>;
+export const VerificationProviderCompleteInput = Schema.Struct({
+  session: ProofSession,
   /** Provider-specific callback/token/credential; never the launch presentation. */
-  readonly submission: unknown;
-}>;
+  submission: Schema.Unknown,
+});
+export type VerificationProviderCompleteInput = Schema.Schema.Type<
+  typeof VerificationProviderCompleteInput
+>;
+
+export type VerificationProviderOperation = "start" | "complete";
 
 /** Adapter failures are deliberately closed and contain no upstream payload. */
 export class VerificationProviderUnavailable extends Data.TaggedError(
   "VerificationProviderUnavailable",
 )<{
   readonly provider_id: string;
-  readonly operation: "start" | "verify";
+  readonly operation: VerificationProviderOperation;
 }> {}
 
 export class VerificationProviderRejected extends Data.TaggedError("VerificationProviderRejected")<{
   readonly provider_id: string;
-  readonly operation: "start" | "verify";
+  readonly operation: VerificationProviderOperation;
 }> {}
 
 export class VerificationProviderInvalidResponse extends Data.TaggedError(
   "VerificationProviderInvalidResponse",
 )<{
   readonly provider_id: string;
-  readonly operation: "start" | "verify";
+  readonly operation: VerificationProviderOperation;
 }> {}
 
 export class VerificationProviderMisconfigured extends Data.TaggedError(
   "VerificationProviderMisconfigured",
 )<{
   readonly provider_id: string;
-  readonly operation: "start" | "verify";
+  readonly operation: VerificationProviderOperation;
 }> {}
 
 export type VerificationProviderFailure =
@@ -107,8 +118,8 @@ export interface VerificationProviderAdapter {
   readonly start: (
     input: VerificationProviderStartInput,
   ) => Effect.Effect<ProviderSessionStart, VerificationProviderFailure>;
-  readonly verify: (
-    input: VerificationProviderVerifyInput,
+  readonly complete: (
+    input: VerificationProviderCompleteInput,
   ) => Effect.Effect<EvidenceBundle, VerificationProviderFailure>;
 }
 

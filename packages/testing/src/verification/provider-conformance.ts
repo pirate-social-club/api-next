@@ -1,49 +1,56 @@
 import type {
   VerificationProviderAdapter,
+  VerificationProviderFailure,
   VerificationProviderStartInput,
 } from "@pirate/application/verification";
-import {
-  makeVerificationProviderRegistry,
-  VerificationProviderDuplicate,
-  VerificationProviderUnknown,
-} from "@pirate/application/verification";
+import { makeVerificationProviderRegistry } from "@pirate/application/verification";
+import type { SubjectScope } from "@pirate/domain/verification";
 import { Cause, Effect, Exit, Result } from "effect";
 
-const FAKE_RP_SCOPE = "test-rp";
+export interface ProviderConformanceHarness {
+  readonly adapter: VerificationProviderAdapter;
+  readonly startInput: VerificationProviderStartInput;
+  readonly submission: unknown;
+}
 
-export const FAKE_START_INPUT: VerificationProviderStartInput = {
-  actor_id: "user-1",
-  intent_id: "intent-1",
-  request_hash: "1111111111111111111111111111111111111111111111111111111111111111",
-  method: "document",
-  scope: {
-    kind: "named",
-    issuer: "test.fake",
-    rp_scope: FAKE_RP_SCOPE,
-    scope_semantics: "issuer_rp_scope",
-  },
-  requested_claim_ids: ["document.valid", "credential.subject_unique"],
-  protocol_version: "fake-v2",
-  environment: "test",
-};
+export interface ProviderTransportConformanceCase<Transport> {
+  readonly name: string;
+  readonly makeTransport: () => Transport;
+  readonly makeAdapter: (transport: Transport) => VerificationProviderAdapter;
+  readonly startInput: VerificationProviderStartInput;
+  readonly submission: unknown;
+  readonly expected: "success" | VerificationProviderFailure["_tag"];
+  readonly assertTransport: (transport: Transport) => void;
+}
 
-function failureOf<A, E>(exit: Exit.Exit<A, E>): E | undefined {
+function failureOf(exit: Exit.Exit<unknown, unknown>): unknown {
   if (!Exit.isFailure(exit)) return undefined;
   const failure = Cause.findError(exit.cause);
   return Result.isSuccess(failure) ? failure.success : undefined;
 }
 
+function sameScope(left: SubjectScope, right: SubjectScope): boolean {
+  if (left.kind !== right.kind || left.issuer !== right.issuer) return false;
+  if (left.kind === "none" && right.kind === "none") return true;
+  if (left.kind !== "named" || right.kind !== "named") return false;
+  if (left.scope_semantics !== right.scope_semantics || left.rp_scope !== right.rp_scope) {
+    return false;
+  }
+  return left.scope_semantics === "issuer_rp_action_scope"
+    ? right.scope_semantics === "issuer_rp_action_scope" && left.action_scope === right.action_scope
+    : true;
+}
+
 /**
- * A provider conformance fixture deliberately goes through the public registry
- * boundary. It proves that registration, presentation, evidence metadata, and
- * cross-record references work without importing contracts, routes, or an
- * engine implementation.
+ * Provider-neutral happy ceremony. A real adapter supplies its own injected
+ * fake transport, canonical request, and provider-shaped submission.
  */
-export async function runProviderConformance(adapter: VerificationProviderAdapter): Promise<{
+export async function runProviderConformance(harness: ProviderConformanceHarness): Promise<{
   readonly provider: VerificationProviderAdapter;
   readonly sessionId: string;
   readonly evidenceBundleId: string;
 }> {
+  const { adapter, startInput, submission } = harness;
   const registry = await Effect.runPromise(makeVerificationProviderRegistry([adapter]));
   const manifests = registry.list();
   if (manifests.length !== 1 || manifests[0]?.provider_id !== adapter.manifest.provider_id) {
@@ -51,46 +58,44 @@ export async function runProviderConformance(adapter: VerificationProviderAdapte
   }
 
   const provider = await Effect.runPromise(registry.resolve(adapter.manifest.provider_id));
-  const started = await Effect.runPromise(provider.start(FAKE_START_INPUT));
-  const startedScope = started.session.scope;
+  const started = await Effect.runPromise(provider.start(startInput));
   if (
     started.session.provider_id !== adapter.manifest.provider_id ||
-    started.session.intent_id !== FAKE_START_INPUT.intent_id ||
-    started.session.request_hash !== FAKE_START_INPUT.request_hash ||
-    started.session.protocol_version !== FAKE_START_INPUT.protocol_version ||
-    started.session.environment !== FAKE_START_INPUT.environment ||
-    startedScope.kind !== "named" ||
-    startedScope.scope_semantics !== "issuer_rp_scope" ||
-    startedScope.rp_scope !== FAKE_RP_SCOPE ||
+    started.session.actor_id !== startInput.actor_id ||
+    started.session.intent_id !== startInput.intent_id ||
+    started.session.request_hash !== startInput.request_hash ||
+    started.session.method !== startInput.method ||
+    !sameScope(started.session.scope, startInput.scope) ||
+    JSON.stringify([...started.session.requested_claim_ids].sort()) !==
+      JSON.stringify([...startInput.requested_claim_ids].sort()) ||
+    started.session.protocol_version !== startInput.protocol_version ||
+    started.session.environment !== startInput.environment ||
     started.presentation.session_id !== started.session.id
   ) {
     throw new Error("provider session metadata was not preserved");
   }
 
   const bundle = await Effect.runPromise(
-    provider.verify({
-      session: started.session,
-      submission: { kind: "fake-submission", request_hash: FAKE_START_INPUT.request_hash },
-    }),
+    provider.complete({ session: started.session, submission }),
   );
   const receiptIds = new Set(bundle.receipts.map((receipt) => receipt.id));
   const receiptsById = new Map(bundle.receipts.map((receipt) => [receipt.id, receipt]));
   const subjectIds = new Set(bundle.subject_keys.map((subjectKey) => subjectKey.id));
   const bindingIds = new Set(bundle.binding_groups.map((group) => group.id));
   const bindingsById = new Map(bundle.binding_groups.map((group) => [group.id, group]));
+  const assertionClaims = new Set(bundle.assertions.map((assertion) => assertion.claim_id));
   if (
     bundle.proof_session_id !== started.session.id ||
+    startInput.requested_claim_ids.some((claim) => !assertionClaims.has(claim)) ||
     bundle.receipts.some(
       (receipt) => receipt.subject_key_id !== undefined && !subjectIds.has(receipt.subject_key_id),
     ) ||
     bundle.receipts.some(
       (receipt) =>
         receipt.provider_id !== adapter.manifest.provider_id ||
-        receipt.protocol_version !== FAKE_START_INPUT.protocol_version ||
-        receipt.environment !== FAKE_START_INPUT.environment ||
-        receipt.scope.kind !== "named" ||
-        receipt.scope.scope_semantics !== "issuer_rp_scope" ||
-        receipt.scope.rp_scope !== FAKE_RP_SCOPE,
+        receipt.protocol_version !== startInput.protocol_version ||
+        receipt.environment !== startInput.environment ||
+        !sameScope(receipt.scope, startInput.scope),
     ) ||
     bundle.binding_groups.some((group) =>
       group.kind === "same_subject"
@@ -116,23 +121,44 @@ export async function runProviderConformance(adapter: VerificationProviderAdapte
     throw new Error("provider evidence references or metadata were not preserved");
   }
 
-  const unknown = await Effect.runPromiseExit(registry.resolve("missing.provider"));
-  const unknownFailure = failureOf(unknown);
-  if (!(unknownFailure instanceof VerificationProviderUnknown)) {
-    throw new Error("unknown providers must fail with a typed registry error");
-  }
-
-  const duplicate = await Effect.runPromiseExit(
-    makeVerificationProviderRegistry([adapter, adapter]),
-  );
-  const duplicateFailure = failureOf(duplicate);
-  if (!(duplicateFailure instanceof VerificationProviderDuplicate)) {
-    throw new Error("duplicate provider IDs must fail with a typed registry error");
-  }
-
   return {
     provider,
     sessionId: started.session.id,
     evidenceBundleId: bundle.id,
   };
+}
+
+/**
+ * Shared driver for real-adapter suites. Each case must construct the real
+ * adapter over an injected deterministic upstream transport.
+ */
+export async function runProviderTransportConformance<Transport>(
+  cases: readonly ProviderTransportConformanceCase<Transport>[],
+): Promise<void> {
+  for (const scenario of cases) {
+    const transport = scenario.makeTransport();
+    const adapter = scenario.makeAdapter(transport);
+    const registry = await Effect.runPromise(makeVerificationProviderRegistry([adapter]));
+    const provider = await Effect.runPromise(registry.resolve(adapter.manifest.provider_id));
+    const completed = await Effect.runPromiseExit(
+      provider
+        .start(scenario.startInput)
+        .pipe(
+          Effect.flatMap((started) =>
+            provider.complete({ session: started.session, submission: scenario.submission }),
+          ),
+        ),
+    );
+    scenario.assertTransport(transport);
+    if (scenario.expected === "success") {
+      if (!Exit.isSuccess(completed)) {
+        throw new Error(`${scenario.name}: expected provider translation success`);
+      }
+      continue;
+    }
+    const failure = failureOf(completed) as { readonly _tag?: string } | undefined;
+    if (failure?._tag !== scenario.expected) {
+      throw new Error(`${scenario.name}: expected ${scenario.expected}`);
+    }
+  }
 }

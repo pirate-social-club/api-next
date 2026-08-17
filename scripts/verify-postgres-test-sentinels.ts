@@ -70,6 +70,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-public-community-threads-suite-complete",
     contents: "api-next-control-plane-postgres-public-community-threads-suite-complete\n",
   },
+  {
+    name: "postgres verification completion repository",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_VERIFICATION_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-verification-suite-complete",
+    contents: "api-next-control-plane-postgres-verification-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

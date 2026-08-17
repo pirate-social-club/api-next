@@ -30,6 +30,8 @@ async function sentinelSet(): Promise<{
     "feed",
     "content",
     "public-profile",
+    "public-community-threads",
+    "verification",
   ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),

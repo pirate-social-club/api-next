@@ -1,13 +1,15 @@
 import {
   type ProviderSessionStart,
   type VerificationProviderAdapter,
+  type VerificationProviderCompleteInput,
   VerificationProviderMisconfigured,
   VerificationProviderRejected,
   type VerificationProviderStartInput,
   VerificationProviderUnavailable,
-  type VerificationProviderVerifyInput,
 } from "@pirate/application/verification";
 import type {
+  Assertion,
+  Assurance,
   CanonicalClaimIdentifier,
   EvidenceBundle,
   NamedIssuerScope,
@@ -46,7 +48,7 @@ export type FakeProviderMode =
   | "unavailable"
   | "misconfigured"
   | "throw-start"
-  | "defect-verify"
+  | "defect-complete"
   | "no-subject"
   | "undeclared-output"
   | "undeclared-assurance"
@@ -63,22 +65,28 @@ export type FakeProviderMode =
 export type FakeProviderOptions = Readonly<{
   readonly mode?: FakeProviderMode;
   readonly manifest?: ProofProviderManifest;
+  readonly transport?: FakeProviderTransport;
 }>;
+
+export interface FakeProviderTransport {
+  readonly start: VerificationProviderAdapter["start"];
+  readonly complete: VerificationProviderAdapter["complete"];
+}
 
 const FakeSubmission = Schema.Struct({
   kind: Schema.Literal("fake-submission"),
   request_hash: Schema.NonEmptyString,
 });
 
-function validateSubmission(input: VerificationProviderVerifyInput, provider_id: string) {
+function validateSubmission(input: VerificationProviderCompleteInput, provider_id: string) {
   return Effect.try({
     try: () => Schema.decodeUnknownSync(FakeSubmission)(input.submission),
-    catch: () => new VerificationProviderRejected({ provider_id, operation: "verify" }),
+    catch: () => new VerificationProviderRejected({ provider_id, operation: "complete" }),
   }).pipe(
     Effect.flatMap((submission) =>
       submission.request_hash === input.session.request_hash
         ? Effect.succeed(submission)
-        : Effect.fail(new VerificationProviderRejected({ provider_id, operation: "verify" })),
+        : Effect.fail(new VerificationProviderRejected({ provider_id, operation: "complete" })),
     ),
   );
 }
@@ -96,6 +104,7 @@ function startResult(
     method: input.method,
     scope: input.scope,
     requested_claim_ids: input.requested_claim_ids,
+    subject_binding_intent: input.subject_binding_intent,
     protocol_version: input.protocol_version,
     environment: input.environment,
     status: "pending",
@@ -108,7 +117,78 @@ function startResult(
   };
 }
 
-function bundleFor(input: VerificationProviderVerifyInput, mode: FakeProviderMode): EvidenceBundle {
+function assertionFor(input: {
+  readonly claim: CanonicalClaimIdentifier;
+  readonly index: number;
+  readonly mode: FakeProviderMode;
+  readonly noSubject: boolean;
+  readonly subjectKeyId: string;
+  readonly receiptId: string;
+  readonly bindingGroupId: string;
+}): Assertion {
+  const assurance: Assurance =
+    input.mode === "undeclared-assurance" ? "holder_live" : "document_zk";
+  const common = {
+    id:
+      input.mode === "duplicate-assertion-id"
+        ? "fake-assertion-1"
+        : `fake-assertion-${input.index + 1}`,
+    ...(input.noSubject ? {} : { subject_key_id: input.subjectKeyId }),
+    evidence_receipt_id: input.receiptId,
+    assurance,
+    binding_group_id: input.bindingGroupId,
+    observed_at: "2026-08-17T00:00:00.000Z",
+  } as const;
+  switch (input.claim) {
+    case "human.live":
+      return { ...common, claim_id: input.claim, value: { live: true } };
+    case "human.personhood":
+      return { ...common, claim_id: input.claim, value: { personhood: true } };
+    case "human.unique":
+      return { ...common, claim_id: input.claim, value: { unique: true } };
+    case "credential.subject_unique":
+      return { ...common, claim_id: input.claim, value: { subject_unique: true } };
+    case "document.valid":
+      return { ...common, claim_id: input.claim, value: { valid: true } };
+    case "document.holder_bound":
+      return { ...common, claim_id: input.claim, value: { holder_bound: true } };
+    case "age.minimum":
+      return { ...common, claim_id: input.claim, value: { minimum_age: "18" } };
+    case "nationality.allowed":
+      return { ...common, claim_id: input.claim, value: { nationality: "US" } };
+    case "gender.marker":
+      return { ...common, claim_id: input.claim, value: { gender: "unspecified" } };
+    case "asset.ownership":
+      return {
+        ...common,
+        claim_id: input.claim,
+        value: {
+          owned: true,
+          quantity: "1",
+          descriptor: {
+            kind: "collection",
+            schema_version: "1",
+            chain_id: "eip155:137",
+            asset_id: "eip155:137/erc721:0x0000000000000000000000000000000000000001",
+            contract_address: "0x0000000000000000000000000000000000000001",
+            normalized_match: "test-collection",
+            match_semantics: "exact",
+          },
+        },
+      };
+    case "disclosed.predicate":
+      return {
+        ...common,
+        claim_id: input.claim,
+        value: { predicate: "test.predicate", value: true },
+      };
+  }
+}
+
+function bundleFor(
+  input: VerificationProviderCompleteInput,
+  mode: FakeProviderMode,
+): EvidenceBundle {
   const session = input.session;
   const noSubject = mode === "no-subject";
   const receiptId = "fake-receipt-1";
@@ -143,21 +223,17 @@ function bundleFor(input: VerificationProviderVerifyInput, mode: FakeProviderMod
   const requested = [...session.requested_claim_ids];
   const claims: readonly CanonicalClaimIdentifier[] =
     mode === "undeclared-output" ? [...requested, "age.minimum"] : requested;
-  const assertions: EvidenceBundle["assertions"] = claims.map((claim, index) => ({
-    id: mode === "duplicate-assertion-id" ? "fake-assertion-1" : `fake-assertion-${index + 1}`,
-    ...(noSubject ? {} : { subject_key_id: subjectKeyId }),
-    evidence_receipt_id: receiptId,
-    claim_id: claim,
-    assurance: mode === "undeclared-assurance" ? "holder_live" : "document_zk",
-    binding_group_id: bindingGroupId,
-    value:
-      claim === "age.minimum"
-        ? { minimum_age: 18 }
-        : claim === "document.valid"
-          ? { valid: true }
-          : { subject_unique: true },
-    observed_at: "2026-08-17T00:00:00.000Z",
-  }));
+  const assertions: EvidenceBundle["assertions"] = claims.map((claim, index) =>
+    assertionFor({
+      claim,
+      index,
+      mode,
+      noSubject,
+      subjectKeyId,
+      receiptId,
+      bindingGroupId,
+    }),
+  );
   const bundle: EvidenceBundle = {
     id: "fake-bundle-1",
     proof_session_id: session.id,
@@ -172,6 +248,7 @@ function bundleFor(input: VerificationProviderVerifyInput, mode: FakeProviderMod
         protocol_version: protocolVersion,
         environment,
         provenance_kind: "proof_session",
+        evidence_kind: session.method,
         evidence_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
         observed_at: "2026-08-17T00:00:00.000Z",
         ...(noSubject
@@ -240,8 +317,22 @@ export function makeFakeVerificationProvider(
   const manifest =
     options.manifest ??
     (mode === "no-subject" ? NO_SUBJECT_FAKE_PROVIDER_MANIFEST : FAKE_PROVIDER_MANIFEST);
+  const transport = options.transport ?? makeFakeVerificationTransport({ manifest, mode });
   return {
     manifest,
+    start: (input) => transport.start(input),
+    complete: (input) => transport.complete(input),
+  };
+}
+
+export function makeFakeVerificationTransport(
+  options: Pick<FakeProviderOptions, "manifest" | "mode"> = {},
+): FakeProviderTransport {
+  const mode = options.mode ?? "valid";
+  const manifest =
+    options.manifest ??
+    (mode === "no-subject" ? NO_SUBJECT_FAKE_PROVIDER_MANIFEST : FAKE_PROVIDER_MANIFEST);
+  return {
     start: (input) => {
       if (mode === "throw-start") {
         throw new Error("fake provider start secret");
@@ -272,15 +363,15 @@ export function makeFakeVerificationProvider(
       }
       return Effect.succeed(startResult(input, manifest.provider_id));
     },
-    verify: (input) => {
-      if (mode === "defect-verify") {
+    complete: (input) => {
+      if (mode === "defect-complete") {
         return Effect.die(new Error("fake provider verify secret"));
       }
       if (mode === "unavailable") {
         return Effect.fail(
           new VerificationProviderUnavailable({
             provider_id: manifest.provider_id,
-            operation: "verify",
+            operation: "complete",
           }),
         );
       }
@@ -288,7 +379,7 @@ export function makeFakeVerificationProvider(
         return Effect.fail(
           new VerificationProviderMisconfigured({
             provider_id: manifest.provider_id,
-            operation: "verify",
+            operation: "complete",
           }),
         );
       }

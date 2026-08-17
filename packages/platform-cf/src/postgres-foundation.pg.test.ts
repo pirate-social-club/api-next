@@ -62,6 +62,12 @@ const gatesV2MigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const gatesV2LifecycleMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0010_subject_binding_and_completion_lifecycle.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -111,6 +117,11 @@ const gatesV2Migration: PostgresMigration = {
   checksum: checksumManifest.migrations["0009_gates_v2_evidence_and_action_grants.sql"] ?? "",
   sql: gatesV2MigrationSql,
 };
+const gatesV2LifecycleMigration: PostgresMigration = {
+  version: "0010_subject_binding_and_completion_lifecycle.sql",
+  checksum: checksumManifest.migrations["0010_subject_binding_and_completion_lifecycle.sql"] ?? "",
+  sql: gatesV2LifecycleMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -121,6 +132,7 @@ const migrations: readonly PostgresMigration[] = [
   publicProfileInvariantMigration,
   communityRouteSlugMigration,
   gatesV2Migration,
+  gatesV2LifecycleMigration,
 ];
 
 function checksum(value: string): string {
@@ -268,6 +280,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(communityRouteSlugMigrationSql)).toBe(communityRouteSlugMigration.checksum);
       expect(checksum(gatesV2MigrationSql)).toBe(gatesV2Migration.checksum);
+      expect(checksum(gatesV2LifecycleMigrationSql)).toBe(gatesV2LifecycleMigration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -292,6 +305,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "action_challenges",
         "action_grants",
         "action_intents",
+        "active_subject_key_bindings",
         "assertion_bindings",
         "assertion_revalidation_events",
         "assertions",
@@ -310,9 +324,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "policy_versions",
         "post_votes",
         "posts",
+        "proof_session_completion_events",
         "proof_sessions",
         "public_handle_index",
+        "reward_subject_consumptions",
+        "reward_uniqueness_authorities",
         "schema_migrations",
+        "subject_key_binding_events",
         "subject_keys",
         "used_action_grants",
         "users",
@@ -340,6 +358,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "evidence_receipts_validate_metadata",
         "observations_append_only",
         "policy_versions_append_only",
+        "proof_session_completion_events_append_only",
+        "reward_subject_consumptions_append_only",
+        "reward_uniqueness_authorities_append_only",
+        "subject_key_binding_events_append_only",
         "subject_keys_append_only",
         "used_action_grants_append_only",
       ]);
@@ -441,6 +463,18 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         text: "INSERT INTO users (user_id) VALUES ($1), ($2)",
         values: ["user-a", "user-b"],
       });
+      await expectPostgresFailure(
+        admin,
+        "23502",
+        `INSERT INTO proof_sessions (
+          proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+          scope_kind, issuer_rp_scope, protocol_version, environment, status,
+          requested_claim_ids, started_at, expires_at
+        ) VALUES ('session-implicit-binding', 'user-a', 'intent-implicit-binding', $1,
+          'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example',
+          'fake-v2', 'test', 'pending', '["document.valid"]'::jsonb, $2, $3)`,
+        ["0".repeat(64), now, later],
+      );
       await admin.query({
         text: "INSERT INTO communities (community_id, display_name, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $4)",
         values: ["community-a", "Community A", "user-a", now],
@@ -449,9 +483,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         text: `INSERT INTO proof_sessions (
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
           scope_kind, issuer_rp_scope, protocol_version, environment, status,
-          requested_claim_ids, started_at, expires_at
+          upstream_session_ref, requested_claim_ids, subject_binding_intent, started_at, expires_at
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'issuer_rp_scope', $8, $9, $10,
-          'completed', $11::jsonb, $12, $13)`,
+          'pending', 'upstream-a', $11::jsonb, 'establish', $12, $13)`,
         values: [
           "session-a",
           "user-a",
@@ -468,65 +502,70 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           later,
         ],
       });
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO proof_sessions (
+          proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+          scope_kind, issuer_rp_scope, protocol_version, environment, status,
+          upstream_session_ref, requested_claim_ids, subject_binding_intent, started_at, expires_at
+        ) VALUES ('session-provider-replay', 'user-b', 'intent-provider-replay', $1,
+          'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example',
+          'fake-v2', 'test', 'pending', 'upstream-a', '["document.valid"]'::jsonb,
+          'establish', $2, $3)`,
+        ["f".repeat(64), now, later],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "UPDATE proof_sessions SET upstream_session_ref = 'upstream-rebound' WHERE proof_session_id = 'session-a'",
+        [],
+      );
       await admin.query({
         text: `INSERT INTO subject_keys (
-          subject_key_id, user_id, issuer, method, scope_kind, issuer_rp_scope,
+          subject_key_id, issuer, method, scope_kind, issuer_rp_scope,
           subject_digest, digest_algorithm, created_at
-        ) VALUES ($1, $2, $3, $4, 'issuer_rp_scope', $5, $6, 'sha256', $7)`,
-        values: [
-          "subject-a",
-          "user-a",
-          "test.fake",
-          "document",
-          "pirate.example",
-          subjectDigest,
-          now,
-        ],
+        ) VALUES ($1, $2, $3, 'issuer_rp_scope', $4, $5, 'sha256', $6)`,
+        values: ["subject-a", "test.fake", "document", "pirate.example", subjectDigest, now],
+      });
+      await admin.query({
+        text: `INSERT INTO subject_keys (
+          subject_key_id, issuer, method, scope_kind, issuer_rp_scope,
+          subject_digest, digest_algorithm, created_at
+        ) VALUES ($1, $2, $3, 'issuer_rp_scope', $4, $5, 'sha256', $6)`,
+        values: ["subject-b", "test.fake", "document", "pirate.example", "4".repeat(64), now],
+      });
+      await admin.query({
+        text: `INSERT INTO subject_key_binding_events (
+          binding_event_id, subject_key_id, binding_epoch, user_id, proof_session_id,
+          binding_kind, previous_binding_event_id, idempotency_key, bound_at
+        ) VALUES
+          ('binding-event-a', 'subject-a', 1, 'user-a', 'session-a', 'initial', NULL,
+            'bind-subject-a', $1),
+          ('binding-event-b', 'subject-b', 1, 'user-a', 'session-a', 'initial', NULL,
+            'bind-subject-b', $1)`,
+        values: [now],
       });
       await expectPostgresFailure(
         admin,
         "23505",
         `INSERT INTO subject_keys (
-          subject_key_id, user_id, issuer, method, scope_kind, issuer_rp_scope,
+          subject_key_id, issuer, method, scope_kind, issuer_rp_scope,
           subject_digest, digest_algorithm, created_at
-        ) VALUES ($1, $2, $3, $4, 'issuer_rp_scope', $5, $6, 'sha256', $7)`,
-        [
-          "subject-duplicate",
-          "user-b",
-          "test.fake",
-          "document",
-          "pirate.example",
-          subjectDigest,
-          now,
-        ],
+        ) VALUES ($1, $2, $3, 'issuer_rp_scope', $4, $5, 'sha256', $6)`,
+        ["subject-duplicate", "test.fake", "document", "pirate.example", subjectDigest, now],
       );
       await admin.query({
         text: `INSERT INTO subject_keys (
-          subject_key_id, user_id, issuer, method, scope_kind, issuer_rp_scope,
+          subject_key_id, issuer, method, scope_kind, issuer_rp_scope,
           subject_digest, digest_algorithm, created_at
-        ) VALUES ($1, $2, $3, $4, 'issuer_rp_scope', $5, $6, 'sha256', $7)`,
+        ) VALUES ($1, $2, $3, 'issuer_rp_scope', $4, $5, 'sha256', $6)`,
         values: [
           "subject-other-scope",
-          "user-b",
           "test.fake",
           "document",
           "other.example",
           subjectDigest,
-          now,
-        ],
-      });
-      await admin.query({
-        text: `INSERT INTO subject_keys (
-          subject_key_id, user_id, issuer, method, scope_kind, issuer_rp_scope,
-          subject_digest, digest_algorithm, created_at
-        ) VALUES ($1, $2, $3, $4, 'issuer_rp_scope', $5, $6, 'sha256', $7)`,
-        values: [
-          "subject-b",
-          "user-a",
-          "test.fake",
-          "document",
-          "pirate.example",
-          "4".repeat(64),
           now,
         ],
       });
@@ -536,9 +575,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         `INSERT INTO evidence_receipts (
           evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method,
           scope_kind, issuer_rp_scope, protocol_version, environment, evidence_kind,
-          evidence_hash, receipt_metadata, observed_at, provenance_kind, subject_key_id
+          evidence_hash, receipt_metadata, observed_at, provenance_kind, subject_key_id,
+          subject_binding_event_id, subject_binding_epoch
         ) VALUES ($1, $2, $3, $4, $5, $6, 'issuer_rp_scope', $7, $8, $9, $10, $11,
-          '{}'::jsonb, $12, 'proof_session', $13)`,
+          '{}'::jsonb, $12, 'proof_session', $13, $14, 1)`,
         [
           "receipt-wrong-provider",
           "session-a",
@@ -553,15 +593,17 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           "a".repeat(64),
           now,
           "subject-a",
+          "binding-event-a",
         ],
       );
       await admin.query({
         text: `INSERT INTO evidence_receipts (
           evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method,
           scope_kind, issuer_rp_scope, protocol_version, environment, evidence_kind,
-          evidence_hash, receipt_metadata, observed_at, provenance_kind, subject_key_id
+          evidence_hash, receipt_metadata, observed_at, provenance_kind, subject_key_id,
+          subject_binding_event_id, subject_binding_epoch
         ) VALUES ($1, $2, $3, $4, $5, $6, 'issuer_rp_scope', $7, $8, $9, $10, $11,
-          '{}'::jsonb, $12, 'proof_session', $13)`,
+          '{}'::jsonb, $12, 'proof_session', $13, $14, 1)`,
         values: [
           "receipt-a",
           "session-a",
@@ -576,13 +618,25 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           evidenceHash,
           now,
           "subject-a",
+          "binding-event-a",
         ],
       });
       await admin.query({
         text: `INSERT INTO assertion_bindings (
-          binding_group_id, user_id, binding_mode, subject_key_id
-        ) VALUES ($1, $2, 'same_subject', $3), ($4, $2, 'same_subject', $5)`,
-        values: ["binding-a", "user-a", "subject-a", "binding-b", "subject-b"],
+          binding_group_id, user_id, binding_mode, subject_key_id,
+          subject_binding_event_id, subject_binding_epoch
+        ) VALUES
+          ($1, $2, 'same_subject', $3, $4, 1),
+          ($5, $2, 'same_subject', $6, $7, 1)`,
+        values: [
+          "binding-a",
+          "user-a",
+          "subject-a",
+          "binding-event-a",
+          "binding-b",
+          "subject-b",
+          "binding-event-b",
+        ],
       });
       await admin.query({
         text: `INSERT INTO assertions (
@@ -626,6 +680,146 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         ["provider_attested", "assertion-a"],
       );
 
+      const completionHash = "d".repeat(64);
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `UPDATE proof_sessions
+          SET status = 'completed', completion_idempotency_key = $1,
+              completion_result_hash = $2, terminal_at = $3, completed_at = $3,
+              updated_at = $3
+          WHERE proof_session_id = 'session-a'`,
+        ["complete-session-a", completionHash, now],
+      );
+      await admin.query("BEGIN");
+      await admin.query({
+        text: `UPDATE proof_sessions
+          SET status = 'completed', completion_idempotency_key = $1,
+              completion_result_hash = $2, terminal_at = $3, completed_at = $3,
+              updated_at = $3
+          WHERE proof_session_id = 'session-a'`,
+        values: ["complete-session-a", completionHash, now],
+      });
+      await admin.query({
+        text: `INSERT INTO proof_session_completion_events (
+          completion_event_id, proof_session_id, actor_id, idempotency_key,
+          terminal_status, result_hash, terminal_at
+        ) VALUES ('completion-a', 'session-a', 'user-a', $1, 'completed', $2, $3)`,
+        values: ["complete-session-a", completionHash, now],
+      });
+      await admin.query("COMMIT");
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO proof_session_completion_events (
+          completion_event_id, proof_session_id, actor_id, idempotency_key,
+          terminal_status, result_hash, terminal_at
+        ) VALUES ('completion-replay', 'session-a', 'user-a', $1, 'completed', $2, $3)`,
+        ["complete-session-a", completionHash, now],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "UPDATE proof_sessions SET status = 'failed' WHERE proof_session_id = 'session-a'",
+        [],
+      );
+
+      await admin.query({
+        text: `INSERT INTO reward_uniqueness_authorities (
+          campaign_id, issuer, method, scope_kind, issuer_rp_scope
+        ) VALUES ('campaign-a', 'test.fake', 'document', 'issuer_rp_scope', 'pirate.example'),
+          ('campaign-b', 'test.fake', 'document', 'issuer_rp_scope', 'pirate.example')`,
+      });
+      await admin.query({
+        text: `INSERT INTO reward_subject_consumptions (
+          reward_subject_consumption_id, campaign_id, subject_key_id, user_id,
+          binding_event_id, binding_epoch, evidence_receipt_id
+        ) VALUES ('reward-a', 'campaign-a', 'subject-a', 'user-a',
+          'binding-event-a', 1, 'receipt-a')`,
+      });
+      await admin.query({
+        text: `INSERT INTO proof_sessions (
+          proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+          scope_kind, issuer_rp_scope, protocol_version, environment, status,
+          requested_claim_ids, subject_binding_intent, started_at, expires_at
+        ) VALUES ('session-ordinary', 'user-b', 'intent-ordinary', $1, 'test.fake',
+          'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'fake-v2', 'test',
+          'pending', '["document.valid"]'::jsonb, 'establish', $2, $3)`,
+        values: ["c".repeat(64), now, later],
+      });
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO subject_key_binding_events (
+          binding_event_id, subject_key_id, binding_epoch, user_id, proof_session_id,
+          binding_kind, previous_binding_event_id, idempotency_key, bound_at
+        ) VALUES ('binding-event-unauthorized', 'subject-a', 2, 'user-b', 'session-ordinary',
+          'recovery', 'binding-event-a', 'unauthorized-recovery', $1)`,
+        [now],
+      );
+      await admin.query({
+        text: `INSERT INTO proof_sessions (
+          proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+          scope_kind, issuer_rp_scope, protocol_version, environment, status,
+          requested_claim_ids, subject_binding_intent, started_at, expires_at
+        ) VALUES ('session-recovery', 'user-b', 'intent-recovery', $1, 'test.fake',
+          'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'fake-v2', 'test',
+          'pending', '["document.valid"]'::jsonb, 'recover', $2, $3)`,
+        values: ["e".repeat(64), now, later],
+      });
+      await admin.query({
+        text: `INSERT INTO subject_key_binding_events (
+          binding_event_id, subject_key_id, binding_epoch, user_id, proof_session_id,
+          binding_kind, previous_binding_event_id, idempotency_key, bound_at
+        ) VALUES ('binding-event-recovery', 'subject-a', 2, 'user-b', 'session-recovery',
+          'recovery', 'binding-event-a', 'recover-subject-a', $1)`,
+        values: [now],
+      });
+      expect(
+        (
+          await admin.query<{ user_id: string; binding_epoch: string }>(
+            "SELECT user_id, binding_epoch::text FROM active_subject_key_bindings WHERE subject_key_id = 'subject-a'",
+          )
+        ).rows[0],
+      ).toEqual({ user_id: "user-b", binding_epoch: "2" });
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "UPDATE active_subject_key_bindings SET user_id = 'user-a' WHERE subject_key_id = 'subject-a'",
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO evidence_receipts (
+          evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method,
+          scope_kind, issuer_rp_scope, protocol_version, environment, evidence_kind,
+          evidence_hash, receipt_metadata, observed_at, provenance_kind, subject_key_id,
+          subject_binding_event_id, subject_binding_epoch
+        ) VALUES ('receipt-provider-replay', 'session-recovery', 'user-b', 'test.fake',
+          'test.fake', 'document', 'issuer_rp_scope', 'pirate.example', 'fake-v2', 'test',
+          'document', $1, '{}'::jsonb, $2, 'proof_session', 'subject-a',
+          'binding-event-recovery', 2)`,
+        [evidenceHash, now],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO reward_subject_consumptions (
+          reward_subject_consumption_id, campaign_id, subject_key_id, user_id,
+          binding_event_id, binding_epoch
+        ) VALUES ('reward-rebound', 'campaign-a', 'subject-a', 'user-b',
+          'binding-event-recovery', 2)`,
+        [],
+      );
+      await admin.query({
+        text: `INSERT INTO reward_subject_consumptions (
+          reward_subject_consumption_id, campaign_id, subject_key_id, user_id,
+          binding_event_id, binding_epoch
+        ) VALUES ('reward-other-campaign', 'campaign-b', 'subject-a', 'user-b',
+          'binding-event-recovery', 2)`,
+      });
+
       const inventoryResponseHash = "b".repeat(64);
       for (const tokenId of ["1", "2"]) {
         const assetId = `eip155:137/erc721:0x0000000000000000000000000000000000000001/${tokenId}`;
@@ -651,6 +845,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
               asset_id: assetId,
               quantity: "1",
               descriptor: {
+                kind: "token",
                 schema_version: "1",
                 chain_id: "eip155:137",
                 asset_id: assetId,
@@ -689,18 +884,68 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         ["observation-1"],
       );
 
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO policy_versions (
+          policy_version_id, community_id, policy_key, revision, policy_hash, policy,
+          compiled_plan, compiler_version, uniqueness_model, policy_purpose,
+          created_by_user_id, published_at
+        ) VALUES ('policy-reward-unlinked', 'community-a', 'reward-unlinked', 1, $1,
+          '{}'::jsonb, '{}'::jsonb, 'v2', '{}'::jsonb, 'reward', 'user-a', $2)`,
+        ["0".repeat(64), now],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23503",
+        `INSERT INTO policy_versions (
+          policy_version_id, community_id, policy_key, revision, policy_hash, policy,
+          compiled_plan, compiler_version, uniqueness_model, policy_purpose,
+          uniqueness_authority_id, created_by_user_id, published_at
+        ) VALUES ('policy-reward-missing-authority', 'community-a', 'reward-missing', 1, $1,
+          '{}'::jsonb, '{}'::jsonb, 'v2', $2::jsonb, 'reward', 'campaign-missing',
+          'user-a', $3)`,
+        [
+          "1".repeat(64),
+          JSON.stringify({ kind: "single_authority", authority_id: "campaign-missing" }),
+          now,
+        ],
+      );
       const policyRows = [
-        ["policy-access-v2", "access", "5".repeat(64)],
-        ["policy-reward-v2", "reward", "6".repeat(64)],
+        ["policy-access-v2", "access", "5".repeat(64), "access", { kind: "none" }, null],
+        [
+          "policy-reward-v2",
+          "reward",
+          "6".repeat(64),
+          "reward",
+          { kind: "single_authority", authority_id: "campaign-a" },
+          "campaign-a",
+        ],
       ] as const;
-      for (const [policyVersionId, policyKey, policyHash] of policyRows) {
+      for (const [
+        policyVersionId,
+        policyKey,
+        policyHash,
+        policyPurpose,
+        uniquenessModel,
+        authorityId,
+      ] of policyRows) {
         await admin.query({
           text: `INSERT INTO policy_versions (
             policy_version_id, community_id, policy_key, revision, policy_hash, policy,
-            compiled_plan, compiler_version, uniqueness_model, created_by_user_id, published_at
+            compiled_plan, compiler_version, uniqueness_model, policy_purpose,
+            uniqueness_authority_id, created_by_user_id, published_at
           ) VALUES ($1, 'community-a', $2, 1, $3, '{}'::jsonb, '{}'::jsonb, 'v2',
-            '{}'::jsonb, 'user-a', $4)`,
-          values: [policyVersionId, policyKey, policyHash, now],
+            $4::jsonb, $5, $6, 'user-a', $7)`,
+          values: [
+            policyVersionId,
+            policyKey,
+            policyHash,
+            JSON.stringify(uniquenessModel),
+            policyPurpose,
+            authorityId,
+            now,
+          ],
         });
         await admin.query({
           text: `INSERT INTO community_policy_current (
@@ -725,6 +970,24 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         ) VALUES ($1, 'community-a', 'user-a', $2, $3, 'enforce', 'pass', '["open"]'::jsonb)`,
         ["decision-wrong-hash", "policy-access-v2", "6".repeat(64)],
       );
+      await admin.query({
+        text: `INSERT INTO decision_records (
+          decision_record_id, community_id, user_id, policy_version_id, policy_hash,
+          evaluation_mode, outcome, winning_witness, request_id
+        ) VALUES ('decision-a', 'community-a', 'user-a', 'policy-access-v2', $1,
+          'enforce', 'pass', '["assertion-a"]'::jsonb, 'decision-request-a')`,
+        values: ["5".repeat(64)],
+      });
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO decision_records (
+          decision_record_id, community_id, user_id, policy_version_id, policy_hash,
+          evaluation_mode, outcome, winning_witness, request_id
+        ) VALUES ('decision-replay', 'community-a', 'user-a', 'policy-access-v2', $1,
+          'enforce', 'pass', '["assertion-a"]'::jsonb, 'decision-request-a')`,
+        ["5".repeat(64)],
+      );
 
       for (const [intentId, payloadHash] of [
         ["action-intent-a", "7".repeat(64)],
@@ -739,6 +1002,16 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           values: [intentId, payloadHash, "9".repeat(64), later],
         });
       }
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO action_intents (
+          action_intent_id, user_id, community_id, action_kind, action_scope,
+          action_payload_hash, intent_binding_hash, idempotency_key, status, expires_at
+        ) VALUES ('action-intent-replay', 'user-a', 'community-a', 'create_post',
+          'community-a', $1, $2, 'action-intent-a', 'open', $3)`,
+        ["7".repeat(64), "9".repeat(64), later],
+      );
       await admin.query({
         text: `INSERT INTO action_challenges (
           action_challenge_id, action_intent_id, provider_id, challenge_hash, status,
@@ -769,6 +1042,17 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       });
       await expectPostgresFailure(
         admin,
+        "23505",
+        `INSERT INTO action_grants (
+          action_grant_id, action_intent_id, action_challenge_id, user_id, provider_id,
+          action_kind, action_scope, action_payload_hash, grant_nonce, signed_grant,
+          signer_key_id, issued_at, expires_at
+        ) VALUES ('grant-duplicate-nonce', 'action-intent-b', 'challenge-b', 'user-a',
+          'altcha', 'create_post', 'community-a', $1, 'nonce-a', 'signed', 'key-1', $2, $3)`,
+        ["8".repeat(64), now, later],
+      );
+      await expectPostgresFailure(
+        admin,
         "23503",
         `INSERT INTO used_action_grants (
           grant_nonce, action_grant_id, action_intent_id, action_kind, action_scope,
@@ -778,6 +1062,49 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         ["7".repeat(64)],
       );
       await admin.query({
+        text: `INSERT INTO action_grants (
+          action_grant_id, action_intent_id, action_challenge_id, user_id, provider_id,
+          action_kind, action_scope, action_payload_hash, grant_nonce, signed_grant,
+          signer_key_id, issued_at, expires_at
+        ) VALUES ('grant-b', 'action-intent-b', 'challenge-b', 'user-a', 'altcha',
+          'create_post', 'community-a', $1, 'nonce-b', 'signed', 'key-1', $2, $3)`,
+        values: ["8".repeat(64), now, later],
+      });
+      await admin.query({
+        text: `INSERT INTO posts (
+          community_id, post_id, author_user_id, body, created_at, updated_at
+        ) VALUES ('community-a', 'post-existing', 'user-a', 'existing', $1, $1)`,
+        values: [now],
+      });
+      await admin.query("BEGIN");
+      try {
+        await admin.query({
+          text: `INSERT INTO used_action_grants (
+            grant_nonce, action_grant_id, action_intent_id, action_kind, action_scope,
+            action_payload_hash, action_result_ref
+          ) VALUES ('nonce-b', 'grant-b', 'action-intent-b', 'create_post', 'community-a',
+            $1, 'post-existing')`,
+          values: ["8".repeat(64)],
+        });
+        await admin.query({
+          text: `INSERT INTO posts (
+            community_id, post_id, author_user_id, body, created_at, updated_at
+          ) VALUES ('community-a', 'post-existing', 'user-a', 'duplicate', $1, $1)`,
+          values: [now],
+        });
+        throw new Error("expected protected action write to fail");
+      } catch (error) {
+        expect(error).toMatchObject({ code: "23505" });
+        await admin.query("ROLLBACK");
+      }
+      expect(
+        (
+          await admin.query<{ count: string }>(
+            "SELECT count(*) FROM used_action_grants WHERE grant_nonce = 'nonce-b'",
+          )
+        ).rows[0]?.count,
+      ).toBe("0");
+      await admin.query({
         text: `INSERT INTO used_action_grants (
           grant_nonce, action_grant_id, action_intent_id, action_kind, action_scope,
           action_payload_hash, action_result_ref
@@ -785,6 +1112,16 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           $1, 'post-a')`,
         values: ["7".repeat(64)],
       });
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO used_action_grants (
+          grant_nonce, action_grant_id, action_intent_id, action_kind, action_scope,
+          action_payload_hash, action_result_ref
+        ) VALUES ('nonce-a', 'grant-a', 'action-intent-a', 'create_post', 'community-a',
+          $1, 'post-replay')`,
+        ["7".repeat(64)],
+      );
     });
     completedTestCount += 1;
   });

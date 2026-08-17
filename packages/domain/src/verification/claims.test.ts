@@ -20,10 +20,18 @@ describe("verification claim catalog", () => {
       (entry) => entry.id === "credential.subject_unique",
     );
     const live = CANONICAL_CLAIM_CATALOG.find((entry) => entry.id === "human.live");
+    const holderBound = CANONICAL_CLAIM_CATALOG.find(
+      (entry) => entry.id === "document.holder_bound",
+    );
 
     expect(unique?.id).not.toBe(credential?.id);
     expect(credential?.holder_liveness).toBe("not_implied");
     expect(live?.holder_liveness).toBe("required");
+    expect(holderBound).toMatchObject({
+      category: "document",
+      holder_liveness: "not_implied",
+    });
+    expect(holderBound?.id).not.toBe(live?.id);
     expect(credential?.scope_requirement).toBe("named_issuer_scope");
   });
 

@@ -1,8 +1,13 @@
-const PROVIDER_IMPLEMENTATION_PREFIX = "packages/platform-cf/src/verification/providers/";
+export const PROVIDER_IMPLEMENTATION_PREFIX = "packages/platform-cf/src/verification/providers/";
+export const PROVIDER_REGISTRY_ASSEMBLY_FILE =
+  "packages/platform-cf/src/verification/provider-registry.ts";
+export const PROVIDER_TESTING_PREFIX = "packages/testing/src/verification/";
+
 const PROVIDER_BOUNDARY_IMPORTS = [
   "@pirate/application/verification",
   "@pirate/domain/verification",
 ];
+const PROVIDER_TEST_IMPORTS = [...PROVIDER_BOUNDARY_IMPORTS, "@pirate/testing/verification"];
 
 /**
  * Keep provider implementation imports on the stable verification seams.
@@ -10,13 +15,24 @@ const PROVIDER_BOUNDARY_IMPORTS = [
  * are rejected so a provider cannot escape into routes or platform internals.
  */
 export function providerBoundaryViolation(relativeFile, spec) {
-  if (!relativeFile.startsWith(PROVIDER_IMPLEMENTATION_PREFIX)) return undefined;
+  const providerFile = relativeFile.startsWith(PROVIDER_IMPLEMENTATION_PREFIX);
+  const registryAssembly = relativeFile === PROVIDER_REGISTRY_ASSEMBLY_FILE;
+  if (!providerFile && !registryAssembly) return undefined;
   if (spec.split("/").includes("..")) {
-    return `${relativeFile}: provider adapters may not use parent-relative imports (found ${spec})`;
+    return `${relativeFile}: provider boundary files may not use parent-relative imports (found ${spec})`;
   }
-  if (!spec.startsWith("@pirate/")) return undefined;
-  if (PROVIDER_BOUNDARY_IMPORTS.includes(spec)) {
+  if (registryAssembly && spec.startsWith("./providers/")) return undefined;
+  if (!spec.startsWith("@pirate/")) {
+    if (registryAssembly && spec.startsWith(".")) {
+      return `${relativeFile}: provider registry may import only provider implementations and stable verification seams (found ${spec})`;
+    }
     return undefined;
   }
-  return `${relativeFile}: provider adapters may import only @pirate/application/verification or @pirate/domain/verification (found ${spec})`;
+  const allowed = relativeFile.endsWith(".test.ts")
+    ? PROVIDER_TEST_IMPORTS
+    : PROVIDER_BOUNDARY_IMPORTS;
+  if (allowed.includes(spec)) {
+    return undefined;
+  }
+  return `${relativeFile}: provider boundary files may import only @pirate/application/verification or @pirate/domain/verification (found ${spec})`;
 }

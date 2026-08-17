@@ -12,7 +12,7 @@ import {
   selectActiveRewardIdentity,
   selectActiveSupportedRewardIdentity,
   type VerificationCapabilities,
-} from "./eligibility";
+} from "./verification-eligibility";
 
 const NOW = Date.parse("2026-08-16T00:00:00.000Z");
 

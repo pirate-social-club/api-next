@@ -9,6 +9,7 @@
     "0006_public_profile_handle_index.sql": "200ca6edac5a8ba9a2a20c709a04652f90547baacae867743e0a15cef71fa522",
     "0007_public_profile_handle_invariants.sql": "bd7f740d0003f3897cf8b508138fcdf470a8d0f102032af484244ac32466aeb1",
     "0008_community_route_slug.sql": "58b5e111b59eb094d976498646ff1269f6e8e5393774055c82872de8fa51bbf8",
-    "0009_gates_v2_evidence_and_action_grants.sql": "506ec6924be004a75142cbdff4a16f1ca5b96eac54178502aa9d920b9c74f988"
+    "0009_gates_v2_evidence_and_action_grants.sql": "506ec6924be004a75142cbdff4a16f1ca5b96eac54178502aa9d920b9c74f988",
+    "0010_subject_binding_and_completion_lifecycle.sql": "e126c145655d46e043ff8d1f364730c5a4bba30fdf7f1b8206fd2e1db7316846"
   }
 }

@@ -11,6 +11,7 @@ export const CanonicalClaimIdentifier = Schema.Literals([
   "human.unique",
   "credential.subject_unique",
   "document.valid",
+  "document.holder_bound",
   "age.minimum",
   "nationality.allowed",
   "gender.marker",
@@ -100,6 +101,14 @@ export const SubjectKeyScopeSemantics = Schema.Literals([
 ]);
 export type SubjectKeyScopeSemantics = Schema.Schema.Type<typeof SubjectKeyScopeSemantics>;
 
+/**
+ * Account binding is selected by the Pirate ceremony, never inferred from a
+ * provider response. Subject-bearing manifests require `establish` or
+ * `recover`; `none` is reserved for manifests that produce no subject key.
+ */
+export const SubjectBindingIntent = Schema.Literals(["establish", "recover", "none"]);
+export type SubjectBindingIntent = Schema.Schema.Type<typeof SubjectBindingIntent>;
+
 export const ClaimCatalogEntry = Schema.Struct({
   id: CanonicalClaimIdentifier,
   category: ClaimCategory,
@@ -141,6 +150,12 @@ export const CANONICAL_CLAIM_CATALOG: readonly ClaimCatalogEntry[] = [
   },
   {
     id: "document.valid",
+    category: "document",
+    scope_requirement: "not_applicable",
+    holder_liveness: "not_implied",
+  },
+  {
+    id: "document.holder_bound",
     category: "document",
     scope_requirement: "not_applicable",
     holder_liveness: "not_implied",

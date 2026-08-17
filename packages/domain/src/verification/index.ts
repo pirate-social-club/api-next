@@ -1,3 +1,57 @@
-export * from "./claims.ts";
-export * from "./evidence.ts";
-export * from "./observations.ts";
+export {
+  AssetCollectionDescriptor,
+  AssetDescriptor,
+  AssetTokenDescriptor,
+  CaipAccountId,
+  CaipAssetId,
+  CaipChainId,
+  MatchSemantics,
+} from "./assets.ts";
+export {
+  Assurance,
+  CANONICAL_CLAIM_CATALOG,
+  CanonicalClaimIdentifier,
+  ClaimCatalogEntry,
+  ClaimCategory,
+  HolderLivenessRequirement,
+  NamedIssuerActionScope,
+  NamedIssuerScope,
+  NoSubjectScope,
+  PresentationKind,
+  ProofProviderManifest,
+  ScopeRequirement,
+  SubjectBindingIntent,
+  SubjectKeyScopeSemantics,
+  SubjectScope,
+} from "./claims.ts";
+export {
+  Assertion,
+  BindingGroup,
+  EvidenceBundle,
+  EvidenceReceipt,
+  ProofSession,
+  ProofSessionStatus,
+  SameReceiptBindingGroup,
+  SameSubjectBindingGroup,
+  SubjectKey,
+} from "./evidence.ts";
+export {
+  AggregationMode,
+  AssetInventoryObservationValue,
+  Completeness,
+  DisclosedPredicateObservationValue,
+  InventoryResolverManifest,
+  Observation,
+  ObservationKind,
+  ObservationValue,
+  SnapshotReference,
+  TrustMode,
+  WalletBalanceObservationValue,
+} from "./observations.ts";
+export {
+  CanonicalIsoInstant,
+  DocumentGenderMarker,
+  Iso3166Alpha2,
+  NonNegativeIntegerString,
+  Sha256Hex,
+} from "./scalars.ts";

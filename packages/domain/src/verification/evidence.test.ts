@@ -39,6 +39,7 @@ const receipt = {
   protocol_version: "zkpassport-v2",
   environment: "production",
   provenance_kind: "proof_session",
+  evidence_kind: "document",
   evidence_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
   observed_at: "2026-08-17T00:00:00.000Z",
   expires_at: "2026-08-18T00:00:00.000Z",
@@ -72,6 +73,7 @@ describe("verification evidence ledger shapes", () => {
       environment: "production",
       issuer: "zkpassport",
       provenance_kind: "proof_session",
+      evidence_kind: "document",
       evidence_hash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     });
     expect(() =>
@@ -125,7 +127,7 @@ describe("verification evidence ledger shapes", () => {
         claim_id: "age.minimum",
         assurance: "document_zk",
         binding_group_id: "binding-1",
-        value: { minimum_age: 18 },
+        value: { minimum_age: "18" },
         observed_at: "2026-08-17T00:00:00.000Z",
       }),
     ];
@@ -133,6 +135,48 @@ describe("verification evidence ledger shapes", () => {
       "binding-1",
       "binding-1",
     ]);
+  });
+
+  test("binds each canonical claim discriminator to its value schema", () => {
+    const common = {
+      id: "assertion-holder",
+      subject_key_id: "subject-1",
+      evidence_receipt_id: "receipt-1",
+      assurance: "document_zk",
+      binding_group_id: "binding-1",
+      observed_at: "2026-08-17T00:00:00.000Z",
+    } as const;
+
+    expect(
+      Schema.decodeUnknownSync(Assertion)({
+        ...common,
+        claim_id: "document.holder_bound",
+        value: { holder_bound: true },
+      }).claim_id,
+    ).toBe("document.holder_bound");
+    expect(() =>
+      Schema.decodeUnknownSync(Assertion)({
+        ...common,
+        claim_id: "document.holder_bound",
+        value: { live: true },
+      }),
+    ).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(Assertion)({
+        ...common,
+        claim_id: "age.minimum",
+        value: { minimum_age: "151" },
+      }),
+    ).toThrow();
+    for (const minimum_age of [18, "01", "-1", "1.5"]) {
+      expect(() =>
+        Schema.decodeUnknownSync(Assertion)({
+          ...common,
+          claim_id: "age.minimum",
+          value: { minimum_age },
+        }),
+      ).toThrow();
+    }
   });
 
   test("aggregates an adapter verification result without enforcing relationships", () => {
@@ -182,6 +226,7 @@ describe("verification evidence ledger shapes", () => {
         rp_scope: "pirate.example",
       },
       requested_claim_ids: ["document.valid", "credential.subject_unique"],
+      subject_binding_intent: "establish",
       protocol_version: "zkpassport-v2",
       environment: "production",
       status: "completed",
@@ -224,6 +269,7 @@ describe("verification evidence ledger shapes", () => {
           rp_scope: "pirate.example",
         },
         requested_claim_ids: [],
+        subject_binding_intent: "establish",
         protocol_version: "fake-v2",
         environment: "test",
         status: "pending",

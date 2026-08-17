@@ -11,13 +11,13 @@ import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import {
   ProviderSessionStart,
   type VerificationProviderAdapter,
+  VerificationProviderCompleteInput,
   type VerificationProviderFailure,
   VerificationProviderInvalidResponse,
   VerificationProviderMisconfigured,
   VerificationProviderRejected,
-  type VerificationProviderStartInput,
+  VerificationProviderStartInput,
   VerificationProviderUnavailable,
-  type VerificationProviderVerifyInput,
 } from "./adapter.ts";
 
 export type VerificationProviderManifestField =
@@ -199,6 +199,13 @@ function requiresNamedScope(claims: readonly string[]): boolean {
   );
 }
 
+function bindingIntentMatchesManifest(
+  manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
+  intent: "establish" | "recover" | "none",
+): boolean {
+  return manifest.subject_key_scope_semantics === "none" ? intent === "none" : intent !== "none";
+}
+
 function assuranceSupportsClaim(claim: CanonicalClaimIdentifier, assurance: string): boolean {
   const entry = canonicalClaimCatalog.get(claim);
   return entry?.holder_liveness !== "required" || assurance === "holder_live";
@@ -221,6 +228,7 @@ function compatibleSession(
     session.requested_claim_ids.length > 0 &&
     uniqueStrings(session.requested_claim_ids) &&
     session.requested_claim_ids.every((claim) => manifest.claim_ids.includes(claim)) &&
+    bindingIntentMatchesManifest(manifest, session.subject_binding_intent) &&
     scopeSemantics(session.scope) === manifest.subject_key_scope_semantics &&
     (!requiresNamedScope(session.requested_claim_ids) || scopeSemantics(session.scope) !== "none")
   );
@@ -228,7 +236,7 @@ function compatibleSession(
 
 function safeAdapterFailure(
   provider_id: string,
-  operation: "start" | "verify",
+  operation: "start" | "complete",
   error: unknown,
 ): VerificationProviderFailure {
   if (error instanceof VerificationProviderUnavailable) {
@@ -248,7 +256,7 @@ function safeAdapterFailure(
 
 function invalidResponse(
   provider_id: string,
-  operation: "start" | "verify",
+  operation: "start" | "complete",
 ): VerificationProviderInvalidResponse {
   return new VerificationProviderInvalidResponse({ provider_id, operation });
 }
@@ -279,6 +287,7 @@ function validateStartOutput(
         session.method !== input.method ||
         !sameScope(session.scope, input.scope) ||
         !sameClaimSet(session.requested_claim_ids, input.requested_claim_ids) ||
+        session.subject_binding_intent !== input.subject_binding_intent ||
         session.protocol_version !== input.protocol_version ||
         session.environment !== input.environment ||
         scopeSemantics(session.scope) !== manifest.subject_key_scope_semantics ||
@@ -294,12 +303,12 @@ function validateStartOutput(
 
 function validateBundle(
   manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
-  input: VerificationProviderVerifyInput,
+  input: VerificationProviderCompleteInput,
   output: unknown,
 ): Effect.Effect<EvidenceBundle, VerificationProviderInvalidResponse> {
   return Effect.try({
     try: () => Schema.decodeUnknownSync(EvidenceBundle)(output),
-    catch: () => invalidResponse(manifest.provider_id, "verify"),
+    catch: () => invalidResponse(manifest.provider_id, "complete"),
   }).pipe(
     Effect.flatMap((bundle) => {
       const receiptIds = new Set(bundle.receipts.map((receipt) => receipt.id));
@@ -383,7 +392,7 @@ function validateBundle(
         !assertionsValid ||
         !requestedClaimsPresent
       ) {
-        return Effect.fail(invalidResponse(manifest.provider_id, "verify"));
+        return Effect.fail(invalidResponse(manifest.provider_id, "complete"));
       }
       return Effect.succeed(bundle);
     }),
@@ -397,7 +406,19 @@ function guardAdapter(
 ): VerificationProviderAdapter {
   return {
     manifest,
-    start: (input) => {
+    start: (untrustedInput) => {
+      const decodedInput = Schema.decodeUnknownOption(VerificationProviderStartInput)(
+        untrustedInput,
+      );
+      if (Option.isNone(decodedInput)) {
+        return Effect.fail(
+          new VerificationProviderRejected({
+            provider_id: manifest.provider_id,
+            operation: "start",
+          }),
+        );
+      }
+      const input = decodedInput.value;
       const requestedClaimsDeclared = input.requested_claim_ids.every((claim) =>
         manifest.claim_ids.includes(claim),
       );
@@ -408,6 +429,7 @@ function guardAdapter(
         !manifest.protocol_versions.includes(input.protocol_version) ||
         !manifest.environments.includes(input.environment) ||
         !manifest.supported_methods.includes(input.method) ||
+        !bindingIntentMatchesManifest(manifest, input.subject_binding_intent) ||
         scopeSemantics(input.scope) !== manifest.subject_key_scope_semantics ||
         (requiresNamedScope(input.requested_claim_ids) && scopeSemantics(input.scope) === "none")
       ) {
@@ -424,18 +446,25 @@ function guardAdapter(
         Effect.flatMap((result) => validateStartOutput(manifest, input, result, now())),
       );
     },
-    verify: (input) => {
-      if (!compatibleSession(manifest, input.session, now())) {
+    complete: (untrustedInput) => {
+      const decodedInput = Schema.decodeUnknownOption(VerificationProviderCompleteInput)(
+        untrustedInput,
+      );
+      if (
+        Option.isNone(decodedInput) ||
+        !compatibleSession(manifest, decodedInput.value.session, now())
+      ) {
         return Effect.fail(
           new VerificationProviderRejected({
             provider_id: manifest.provider_id,
-            operation: "verify",
+            operation: "complete",
           }),
         );
       }
-      return Effect.suspend(() => adapter.verify(input)).pipe(
-        Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "verify", error)),
-        Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "verify"))),
+      const input = decodedInput.value;
+      return Effect.suspend(() => adapter.complete(input)).pipe(
+        Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "complete", error)),
+        Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "complete"))),
         Effect.flatMap((result) => validateBundle(manifest, input, result)),
       );
     },

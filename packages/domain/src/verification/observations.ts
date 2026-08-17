@@ -1,6 +1,7 @@
 import { Schema } from "effect";
+import { AssetDescriptor, CaipAccountId, CaipAssetId, CaipChainId } from "./assets.ts";
 import { CanonicalClaimIdentifier } from "./claims";
-import { Sha256Hex } from "./evidence";
+import { CanonicalIsoInstant, NonNegativeIntegerString, Sha256Hex } from "./scalars.ts";
 
 export const ObservationKind = Schema.Literals([
   "asset_inventory",
@@ -22,19 +23,6 @@ export type AggregationMode = Schema.Schema.Type<typeof AggregationMode>;
 
 export const Completeness = Schema.Literals(["complete", "partial", "unknown"]);
 export type Completeness = Schema.Schema.Type<typeof Completeness>;
-
-export const MatchSemantics = Schema.Literals(["exact", "normalized"]);
-export type MatchSemantics = Schema.Schema.Type<typeof MatchSemantics>;
-
-/** CAIP identifiers remain opaque non-empty strings at this domain boundary. */
-export const CaipChainId = Schema.NonEmptyString;
-export type CaipChainId = Schema.Schema.Type<typeof CaipChainId>;
-
-export const CaipAssetId = Schema.NonEmptyString;
-export type CaipAssetId = Schema.Schema.Type<typeof CaipAssetId>;
-
-export const CaipAccountId = Schema.NonEmptyString;
-export type CaipAccountId = Schema.Schema.Type<typeof CaipAccountId>;
 
 export const SnapshotReference = Schema.Struct({
   kind: Schema.Literals(["block", "provider_snapshot", "receipt"]),
@@ -59,23 +47,12 @@ export type InventoryResolverManifest = Schema.Schema.Type<typeof InventoryResol
  * Descriptor data is normalized and versioned at authoring time. Raw mutable
  * provider strings are intentionally not a policy input.
  */
-export const AssetDescriptor = Schema.Struct({
-  schema_version: Schema.NonEmptyString,
-  chain_id: CaipChainId,
-  asset_id: CaipAssetId,
-  contract_address: Schema.NonEmptyString,
-  token_id: Schema.NonEmptyString,
-  normalized_match: Schema.NonEmptyString,
-  match_semantics: MatchSemantics,
-});
-export type AssetDescriptor = Schema.Schema.Type<typeof AssetDescriptor>;
-
 export const AssetInventoryObservationValue = Schema.Struct({
   kind: Schema.Literal("asset_inventory"),
   chain_id: CaipChainId,
   account_id: CaipAccountId,
   asset_id: CaipAssetId,
-  quantity: Schema.NonEmptyString,
+  quantity: NonNegativeIntegerString,
   descriptor: AssetDescriptor,
 });
 export type AssetInventoryObservationValue = Schema.Schema.Type<
@@ -87,8 +64,12 @@ export const WalletBalanceObservationValue = Schema.Struct({
   chain_id: CaipChainId,
   account_id: CaipAccountId,
   asset_id: CaipAssetId,
-  amount_atomic: Schema.NonEmptyString,
-  asset_decimals: Schema.Number,
+  amount_atomic: NonNegativeIntegerString,
+  asset_decimals: NonNegativeIntegerString.check(
+    Schema.makeFilter((value) =>
+      BigInt(value) <= 255n ? undefined : "Expected decimal precision no greater than 255",
+    ),
+  ),
 });
 export type WalletBalanceObservationValue = Schema.Schema.Type<
   typeof WalletBalanceObservationValue
@@ -110,7 +91,7 @@ export const ObservationValue = Schema.Union([
 ]);
 export type ObservationValue = Schema.Schema.Type<typeof ObservationValue>;
 
-export const Observation = Schema.Struct({
+const ObservationFields = Schema.Struct({
   id: Schema.NonEmptyString,
   resolver_id: Schema.NonEmptyString,
   source_id: Schema.NonEmptyString,
@@ -123,7 +104,17 @@ export const Observation = Schema.Struct({
   snapshot_ref: SnapshotReference,
   source_response_hash: Sha256Hex,
   descriptor_version: Schema.NonEmptyString,
-  observed_at: Schema.NonEmptyString,
-  expires_at: Schema.optional(Schema.NonEmptyString),
+  observed_at: CanonicalIsoInstant,
+  expires_at: Schema.optional(CanonicalIsoInstant),
 });
+export const Observation = ObservationFields.check(
+  Schema.makeFilter((observation) => {
+    if (observation.value.kind !== "asset_inventory") return undefined;
+    return observation.value.chain_id === observation.value.descriptor.chain_id &&
+      observation.value.asset_id === observation.value.descriptor.asset_id &&
+      observation.descriptor_version === observation.value.descriptor.schema_version
+      ? undefined
+      : "Expected the observation and frozen asset descriptor identities to match";
+  }),
+);
 export type Observation = Schema.Schema.Type<typeof Observation>;
