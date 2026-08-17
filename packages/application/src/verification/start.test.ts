@@ -54,11 +54,13 @@ function adapter(
     provider_configuration: { kind: "dynamic", reference: "test-query", version: "1" },
   },
   startFailure?: "unavailable",
+  startCalls?: { value: number },
 ): VerificationProviderAdapter {
   return {
     manifest: MANIFEST,
     plan: () => Effect.succeed(plan),
     start: (input) => {
+      if (startCalls !== undefined) startCalls.value += 1;
       if (startFailure === "unavailable") {
         return Effect.fail(
           new VerificationProviderUnavailable({
@@ -104,11 +106,16 @@ async function services(input: {
   readonly plan?: VerificationProviderPlanResult;
   readonly intent?: unknown;
   readonly commit?: Exclude<VerificationSessionStartFinalizeOutcome["kind"], "created" | "stale">;
+  readonly finalize?: Exclude<
+    VerificationSessionStartFinalizeOutcome["kind"],
+    "created" | "replay"
+  >;
   readonly reservation?: VerificationSessionStartReservationOutcome;
   readonly startFailure?: "unavailable";
+  readonly startCalls?: { value: number };
 }) {
   const registry = await Effect.runPromise(
-    makeVerificationProviderRegistry([adapter(input.plan, input.startFailure)]),
+    makeVerificationProviderRegistry([adapter(input.plan, input.startFailure, input.startCalls)]),
   );
   const commits: ProviderSessionStart[] = [];
   let releases = 0;
@@ -140,6 +147,8 @@ async function services(input: {
         },
         finalize: (_reservation: unknown, start: ProviderSessionStart) => {
           commits.push(start);
+          if (input.finalize !== undefined)
+            return Effect.succeed({ kind: input.finalize } as const);
           return Effect.succeed({
             kind: input.commit === "replay" ? "replay" : "created",
             start,
@@ -343,5 +352,68 @@ describe("verification start use case", () => {
     expect(result.replayed).toBe(false);
     expect(attempts).toBe(2);
     expect(releases).toBe(1);
+  });
+
+  test("keeps finalize conflicts terminal while stale finalizers remain retryable", async () => {
+    const conflict = await services({ finalize: "conflict" });
+    const conflictExit = await Effect.runPromiseExit(
+      startVerification(
+        { actor_id: "user-1", intent_id: "intent-1", provider_id: MANIFEST.provider_id },
+        conflict.value,
+      ),
+    );
+    expect(failureOf(conflictExit)).toEqual(new VerificationStartRejected({ reason: "conflict" }));
+
+    const stale = await services({ finalize: "stale" });
+    const staleExit = await Effect.runPromiseExit(
+      startVerification(
+        { actor_id: "user-1", intent_id: "intent-1", provider_id: MANIFEST.provider_id },
+        stale.value,
+      ),
+    );
+    expect(failureOf(staleExit)).toEqual(
+      new VerificationStartRejected({ reason: "in_flight", retry_after_seconds: 1 }),
+    );
+  });
+
+  test("invokes the provider once when concurrent same-intent starts race for one reservation", async () => {
+    const startCalls = { value: 0 };
+    const harness = await services({ startCalls });
+    let reservations = 0;
+    const concurrentServices = {
+      ...harness.value,
+      store: {
+        ...harness.value.store,
+        reserve: () => {
+          reservations += 1;
+          return Effect.succeed(
+            reservations === 1
+              ? {
+                  kind: "acquired" as const,
+                  reservation: {
+                    reservation_id: "reservation-concurrent",
+                    fence_token: 1,
+                    lease_expires_at: "2099-08-17T00:00:00.000Z",
+                  },
+                }
+              : ({ kind: "in_flight", retry_after_seconds: 1 } as const),
+          );
+        },
+      },
+    };
+    const input = {
+      actor_id: "user-1",
+      intent_id: "intent-concurrent",
+      provider_id: MANIFEST.provider_id,
+    };
+
+    const outcomes = await Promise.allSettled([
+      Effect.runPromise(startVerification(input, concurrentServices)),
+      Effect.runPromise(startVerification(input, concurrentServices)),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+    expect(startCalls.value).toBe(1);
   });
 });
