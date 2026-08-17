@@ -53,6 +53,36 @@ describe("real HTTP worker transport", () => {
     });
   });
 
+  it("serves an installed content mutation and leaves an uninstalled write at 404", async () => {
+    const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ proof: { type: "jwt_based_auth", jwt: "workerd-proof" } }),
+    });
+    const { access_token: accessToken } = (await exchange.json()) as {
+      readonly access_token: string;
+    };
+
+    const clear = await SELF.fetch("https://worker.test/posts/post_1/clear_vote", {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    expect(clear.status).toBe(200);
+    expect(await clear.json()).toEqual({ post: "post_1", value: null });
+    expect(clear.headers.get("cache-control")).toBe("no-store");
+
+    const uninstalled = await SELF.fetch("https://worker.test/communities/community_1/posts", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${accessToken}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ post_type: "text", idempotency_key: "workerd-key", body: "hello" }),
+    });
+    expect(uninstalled.status).toBe(404);
+    expect(await uninstalled.json()).toMatchObject({ code: "not_found" });
+  });
+
   it("keeps an advertised but uninstalled route at its documented 404", async () => {
     const response = await SELF.fetch("https://worker.test/users/me");
 

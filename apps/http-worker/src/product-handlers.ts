@@ -9,6 +9,22 @@ import {
   type UnfollowCommunityInput,
   unfollowCommunity,
 } from "@pirate/application/use-cases/community/unfollow-community";
+import {
+  type CastPostVoteInput,
+  castPostVote,
+} from "@pirate/application/use-cases/content/cast-post-vote";
+import {
+  type ClearPostVoteInput,
+  clearPostVote,
+} from "@pirate/application/use-cases/content/clear-post-vote";
+import {
+  type CreateCommentReplyInput,
+  createCommentReply,
+} from "@pirate/application/use-cases/content/create-comment-reply";
+import {
+  type CreatePostInput,
+  createPost,
+} from "@pirate/application/use-cases/content/create-post";
 import { getPost } from "@pirate/application/use-cases/content/get-post";
 import { getHomeFeed, getPublicHomeFeed } from "@pirate/application/use-cases/feed/home-feed";
 import { AuthError, type JoinCommunity } from "@pirate/contracts";
@@ -36,19 +52,26 @@ export type ProductHandlers = Readonly<{
   readonly JoinCommunity: EndpointHandler;
   readonly FollowCommunity: EndpointHandler;
   readonly UnfollowCommunity: EndpointHandler;
+  readonly CreatePost: EndpointHandler;
   readonly GetPost: EndpointHandler;
+  readonly CreateCommentReply: EndpointHandler;
+  readonly CastPostVote: EndpointHandler;
+  readonly ClearPostVote: EndpointHandler;
   readonly GetPublicHomeFeed: EndpointHandler;
   readonly GetHomeFeed: EndpointHandler;
 }>;
 
 type CommunityPath = Readonly<{ readonly communityId: string }>;
 type PostPath = Readonly<{ readonly postId: string }>;
+type CommentPath = Readonly<{ readonly commentId: string }>;
 type LocaleQuery = Readonly<{ readonly locale?: string }>;
 type JoinBody = Schema.Schema.Type<(typeof JoinCommunity.request)["body"]>;
 
 const communityPath = (request: DecodedRequest): CommunityPath => request.params as CommunityPath;
 
 const postPath = (request: DecodedRequest): PostPath => request.params as PostPath;
+
+const commentPath = (request: DecodedRequest): CommentPath => request.params as CommentPath;
 
 const localeQuery = (request: DecodedRequest): LocaleQuery => (request.query ?? {}) as LocaleQuery;
 
@@ -89,6 +112,42 @@ export const unfollowCommunityInputFrom = (request: DecodedRequest): UnfollowCom
   const actor = communityActor(request.principal);
   const body = request.body as UnfollowCommunityInput["body"];
   return body === undefined ? { communityId, actor } : { communityId, actor, body };
+};
+
+export const createPostInputFrom = (request: DecodedRequest): CreatePostInput => {
+  const { communityId } = communityPath(request);
+  return {
+    communityId,
+    actor: communityActor(request.principal),
+    body: request.body,
+  };
+};
+
+export const createCommentReplyInputFrom = (request: DecodedRequest): CreateCommentReplyInput => {
+  const { commentId } = commentPath(request);
+  return {
+    parentCommentId: commentId,
+    actor: communityActor(request.principal),
+    body: request.body,
+  };
+};
+
+export const castPostVoteInputFrom = (request: DecodedRequest): CastPostVoteInput => {
+  const { postId } = postPath(request);
+  return {
+    postId,
+    actor: communityActor(request.principal),
+    body: request.body,
+  };
+};
+
+export const clearPostVoteInputFrom = (request: DecodedRequest): ClearPostVoteInput => {
+  const { postId } = postPath(request);
+  return {
+    postId,
+    actor: communityActor(request.principal),
+    body: request.body,
+  };
 };
 
 const communityPreview = async (request: DecodedRequest, services: ProductHandlerServices) => {
@@ -159,6 +218,31 @@ const post = async (request: DecodedRequest, services: ProductHandlerServices) =
   );
 };
 
+const createPostHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
+  Effect.runPromise(
+    createPost(createPostInputFrom(request), { contentStore: services.contentStore }),
+  );
+
+const createCommentReplyHandler = async (
+  request: DecodedRequest,
+  services: ProductHandlerServices,
+) =>
+  Effect.runPromise(
+    createCommentReply(createCommentReplyInputFrom(request), {
+      contentStore: services.contentStore,
+    }),
+  );
+
+const castPostVoteHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
+  Effect.runPromise(
+    castPostVote(castPostVoteInputFrom(request), { contentStore: services.contentStore }),
+  );
+
+const clearPostVoteHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
+  Effect.runPromise(
+    clearPostVote(clearPostVoteInputFrom(request), { contentStore: services.contentStore }),
+  );
+
 const publicHomeFeed = async (request: DecodedRequest, services: ProductHandlerServices) =>
   Effect.runPromise(getPublicHomeFeed(feedQuery(request), { feedStore: services.feedStore }));
 
@@ -178,7 +262,11 @@ export const makeProductHandlers = (services: ProductHandlerServices): ProductHa
   JoinCommunity: (request) => join(request, services),
   FollowCommunity: (request) => follow(request, services),
   UnfollowCommunity: (request) => unfollow(request, services),
+  CreatePost: (request) => createPostHandler(request, services),
   GetPost: (request) => post(request, services),
+  CreateCommentReply: (request) => createCommentReplyHandler(request, services),
+  CastPostVote: (request) => castPostVoteHandler(request, services),
+  ClearPostVote: (request) => clearPostVoteHandler(request, services),
   GetPublicHomeFeed: (request) => publicHomeFeed(request, services),
   GetHomeFeed: (request) => homeFeed(request, services),
 });
