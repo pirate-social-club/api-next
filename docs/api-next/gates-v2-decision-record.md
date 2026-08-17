@@ -229,7 +229,12 @@ idempotency key and delegates one transaction that persists the winning
 evidence bundle and terminal session event together.
 The database clock is authoritative for the final expiry check and terminal
 timestamp; a slow provider cannot commit after expiry using a time captured
-before the upstream call. Before expensive provider completion, a short
+before the upstream call. Reservation admission reads `clock_timestamp()`
+after acquiring its row locks rather than using PostgreSQL's transaction-start
+timestamp, so lock waits cannot make expired sessions or leases appear active.
+If a terminal completion wins between the application's initial read and
+attempt reservation, the loser reloads and returns the same-key persisted
+replay. Before expensive provider completion, a short
 transaction reserves a fenced attempt keyed by proof session and idempotency
 key. At most three consumed or actively leased attempts are admitted per
 session; same-key concurrency is deduplicated, expired leases free capacity,

@@ -274,6 +274,27 @@ describe("verification completion use case", () => {
     expect(calls).toEqual({ complete: 0, commit: 0 });
   });
 
+  test("recovers a same-key terminal replay that wins after the initial load", async () => {
+    const pending = { session: session(), terminal: null } satisfies StoredVerificationCompletion;
+    const completed = {
+      session: session({ status: "completed", completed_at: "2026-08-17T00:25:00.000Z" }),
+      terminal: { status: "completed", idempotency_key: "callback-1", result_hash: RESULT_HASH },
+    } satisfies StoredVerificationCompletion;
+    const calls = { complete: 0, load: 0 };
+    const store: VerificationCompletionStore = {
+      ...attemptMethods(),
+      load: () => Effect.succeed(calls.load++ === 0 ? pending : completed),
+      reserveAttempt: () => Effect.succeed({ kind: "unavailable" as const }),
+      commit: () => Effect.die("raced terminal replay must not commit"),
+    };
+
+    const result = await Effect.runPromise(
+      completeVerification(input(), servicesFor(pending, store, calls)),
+    );
+    expect(result).toMatchObject({ replayed: true, result_hash: RESULT_HASH });
+    expect(calls).toEqual({ complete: 0, load: 2 });
+  });
+
   test("rejects a terminal replay carrying a different idempotency key", async () => {
     const stored = {
       session: session({ status: "completed", completed_at: "2026-08-17T00:25:00.000Z" }),

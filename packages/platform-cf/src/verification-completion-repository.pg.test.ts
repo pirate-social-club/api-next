@@ -25,7 +25,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-verification-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-verification-suite-complete\n";
 let completedTestCount = 0;
-const foundationTestCount = 7;
+const foundationTestCount = 8;
 
 const migrationFiles = [
   "0001_v1_product_slice.sql",
@@ -292,6 +292,33 @@ suite("Postgres 17 verification completion repository", () => {
       expect(
         (await admin.query("SELECT count(*) FROM verification_completion_attempts")).rows[0]?.count,
       ).toBe("1");
+    });
+    completedTestCount += 1;
+  });
+
+  test("uses wall-clock expiry after waiting on the session lock", async () => {
+    await withSchema(async (connection, admin) => {
+      const databaseClock = await admin.query<{ database_now: Date }>(
+        "SELECT clock_timestamp() AS database_now",
+      );
+      const databaseNow = databaseClock.rows[0]?.database_now;
+      if (!(databaseNow instanceof Date)) throw new Error("expected the Postgres clock");
+      const expiring: ProofSession = {
+        ...proofSession("attempt-lock-expiry", "user-a", "f".repeat(64), "none"),
+        started_at: new Date(databaseNow.getTime() - 60_000).toISOString(),
+        expires_at: new Date(databaseNow.getTime() + 500).toISOString(),
+      };
+      await insertSession(admin, expiring);
+      const store = storeFor(connection);
+      await admin.query("BEGIN");
+      await admin.query(
+        "SELECT proof_session_id FROM proof_sessions WHERE proof_session_id = $1 FOR UPDATE",
+        [expiring.id],
+      );
+      const waiting = reserveAttempt(store, expiring.id, "lock-expiry");
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      await admin.query("COMMIT");
+      expect((await waiting).kind).toBe("expired");
     });
     completedTestCount += 1;
   });

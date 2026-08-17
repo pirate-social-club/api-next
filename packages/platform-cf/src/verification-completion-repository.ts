@@ -202,8 +202,7 @@ function reserveAttemptInTransaction(
   return Effect.gen(function* () {
     const sessionResult = yield* transaction.execute<Row>({
       label: "verification.completion-attempts.lock-session",
-      text: `SELECT proof_session_id, status, expires_at,
-                    (expires_at > CURRENT_TIMESTAMP) AS session_active
+      text: `SELECT proof_session_id, status, expires_at
                FROM proof_sessions
               WHERE proof_session_id = $1
               FOR UPDATE`,
@@ -222,14 +221,20 @@ function reserveAttemptInTransaction(
     if (status !== "pending" || expiresAt === null) {
       return { kind: "unavailable" } as const;
     }
-    if (sessionRow.session_active !== true) return { kind: "expired" } as const;
+    const sessionClockResult = yield* transaction.execute<Row>({
+      label: "verification.completion-attempts.session-clock",
+      text: "SELECT clock_timestamp() AS database_now",
+      values: [],
+      readonly: false,
+    });
+    const sessionClockRow = yield* oneRow(sessionClockResult.rows);
+    const sessionNow = sessionClockRow === null ? null : dateField(sessionClockRow, "database_now");
+    if (sessionNow === null) return yield* Effect.fail(storageFailure());
+    if (Date.parse(expiresAt) <= Date.parse(sessionNow)) return { kind: "expired" } as const;
 
     const existingResult = yield* transaction.execute<Row>({
       label: "verification.completion-attempts.lock-idempotency",
-      text: `SELECT attempt_id, state, fence_token, lease_expires_at,
-                    (lease_expires_at > CURRENT_TIMESTAMP) AS lease_active,
-                    CEIL(EXTRACT(EPOCH FROM (lease_expires_at - CURRENT_TIMESTAMP)))::integer
-                      AS retry_after_seconds
+      text: `SELECT attempt_id, state, fence_token, lease_expires_at
                FROM verification_completion_attempts
               WHERE proof_session_id = $1 AND idempotency_key = $2
               FOR UPDATE`,
@@ -237,15 +242,28 @@ function reserveAttemptInTransaction(
       readonly: false,
     });
     const existing = yield* oneRow(existingResult.rows);
+    const attemptClockResult = yield* transaction.execute<Row>({
+      label: "verification.completion-attempts.attempt-clock",
+      text: "SELECT clock_timestamp() AS database_now",
+      values: [],
+      readonly: false,
+    });
+    const attemptClockRow = yield* oneRow(attemptClockResult.rows);
+    const attemptNow = attemptClockRow === null ? null : dateField(attemptClockRow, "database_now");
+    if (attemptNow === null) return yield* Effect.fail(storageFailure());
     if (existing !== null) {
       const state = stringField(existing, "state");
       if (state === "consumed") return { kind: "consumed" } as const;
       const leaseExpiresAt = dateField(existing, "lease_expires_at");
-      if (state === "leased" && existing.lease_active === true && leaseExpiresAt !== null) {
-        const retryAfter = integerField(existing, "retry_after_seconds");
+      if (
+        state === "leased" &&
+        leaseExpiresAt !== null &&
+        Date.parse(leaseExpiresAt) > Date.parse(attemptNow)
+      ) {
+        const retryAfter = Math.ceil((Date.parse(leaseExpiresAt) - Date.parse(attemptNow)) / 1_000);
         return {
           kind: "in_flight",
-          retry_after_seconds: retryAfter === null ? 1 : Math.max(1, retryAfter),
+          retry_after_seconds: Math.max(1, retryAfter),
         } as const;
       }
     }
@@ -257,9 +275,9 @@ function reserveAttemptInTransaction(
               WHERE proof_session_id = $1
                 AND (
                   state = 'consumed'
-                  OR (state = 'leased' AND lease_expires_at > CURRENT_TIMESTAMP)
+                  OR (state = 'leased' AND lease_expires_at > $2::timestamptz)
                 )`,
-      values: [input.proof_session_id],
+      values: [input.proof_session_id, attemptNow],
       readonly: true,
     });
     const consumedRow = yield* oneRow(consumedResult.rows);
@@ -274,8 +292,8 @@ function reserveAttemptInTransaction(
         label: "verification.completion-attempts.reacquire",
         text: `UPDATE verification_completion_attempts
                   SET state = 'leased', fence_token = fence_token + 1,
-                      lease_expires_at = CURRENT_TIMESTAMP + ($2::double precision * INTERVAL '1 millisecond'),
-                      updated_at = CURRENT_TIMESTAMP
+                      lease_expires_at = clock_timestamp() + ($2::double precision * INTERVAL '1 millisecond'),
+                      updated_at = clock_timestamp()
                 WHERE attempt_id = $1
                 RETURNING attempt_id, fence_token, lease_expires_at`,
         values: [existing.attempt_id, input.lease_ms],
@@ -295,7 +313,7 @@ function reserveAttemptInTransaction(
                fence_token, lease_expires_at
              ) VALUES (
                $1, $2, $3, 'leased', 1,
-               CURRENT_TIMESTAMP + ($4::double precision * INTERVAL '1 millisecond')
+               clock_timestamp() + ($4::double precision * INTERVAL '1 millisecond')
              )
              RETURNING attempt_id, fence_token, lease_expires_at`,
       values: [crypto.randomUUID(), input.proof_session_id, input.idempotency_key, input.lease_ms],
@@ -318,7 +336,7 @@ function settleAttemptInTransaction(
     const result = yield* transaction.execute({
       label: `verification.completion-attempts.${state}`,
       text: `UPDATE verification_completion_attempts
-                SET state = $1, updated_at = CURRENT_TIMESTAMP
+                SET state = $1, updated_at = clock_timestamp()
               WHERE attempt_id = $2 AND fence_token = $3 AND state = 'leased'`,
       values: [state, reservation.attempt_id, reservation.fence_token],
       readonly: false,

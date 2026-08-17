@@ -185,6 +185,27 @@ function completedResult(
   });
 }
 
+function terminalReplay(
+  input: CompleteVerificationInput,
+  stored: StoredVerificationCompletion | null,
+): Effect.Effect<CompleteVerificationResult | null, VerificationCompletionRejected> {
+  if (stored === null || stored.session.actor_id !== input.actor_id) {
+    return Effect.fail(new VerificationCompletionRejected({ reason: "unavailable" }));
+  }
+  if (stored.terminal === null) return Effect.succeed(null);
+  if (stored.terminal.status !== "completed") {
+    return Effect.fail(
+      new VerificationCompletionRejected({
+        reason: stored.terminal.status === "expired" ? "expired" : "terminal",
+      }),
+    );
+  }
+  if (stored.terminal.idempotency_key !== input.idempotency_key) {
+    return Effect.fail(new VerificationCompletionRejected({ reason: "terminal" }));
+  }
+  return completedResult(stored.session.id, stored.terminal.result_hash, true);
+}
+
 /**
  * Provider completion is deliberately transport-neutral. HTTP callbacks,
  * polled credentials, and SDK tokens arrive in the explicit `submission`
@@ -199,21 +220,9 @@ export const completeVerification = Effect.fn("completeVerification")(function* 
 ): Effect.fn.Return<CompleteVerificationResult, VerificationCompletionFailure> {
   const input = yield* decodeInput(untrustedInput);
   const stored = yield* services.store.load({ proof_session_id: input.proof_session_id });
-  if (stored === null || stored.session.actor_id !== input.actor_id) {
-    return yield* new VerificationCompletionRejected({ reason: "unavailable" });
-  }
-
-  if (stored.terminal !== null) {
-    if (stored.terminal.status !== "completed") {
-      return yield* new VerificationCompletionRejected({
-        reason: stored.terminal.status === "expired" ? "expired" : "terminal",
-      });
-    }
-    if (stored.terminal.idempotency_key !== input.idempotency_key) {
-      return yield* new VerificationCompletionRejected({ reason: "terminal" });
-    }
-    return yield* completedResult(stored.session.id, stored.terminal.result_hash, true);
-  }
+  const initialReplay = yield* terminalReplay(input, stored);
+  if (initialReplay !== null) return initialReplay;
+  if (stored === null) return yield* new VerificationCompletionRejected({ reason: "unavailable" });
 
   const startedAt = services.now?.() ?? Date.now();
   const expiresAt = Date.parse(stored.session.expires_at);
@@ -247,6 +256,9 @@ export const completeVerification = Effect.fn("completeVerification")(function* 
     return yield* new VerificationCompletionRejected({ reason: "attempt_budget_exhausted" });
   }
   if (attempt.kind === "unavailable") {
+    const raced = yield* services.store.load({ proof_session_id: input.proof_session_id });
+    const replay = yield* terminalReplay(input, raced);
+    if (replay !== null) return replay;
     return yield* new VerificationCompletionRejected({ reason: "unavailable" });
   }
   if (attempt.kind === "expired") {

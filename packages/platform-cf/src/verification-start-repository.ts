@@ -237,7 +237,7 @@ function loadExisting(
   return Effect.gen(function* () {
     const sessionResult = yield* transaction.execute<Row>({
       label: "verification.start.lock-session-by-intent",
-      text: `SELECT ${sessionColumns()}, (expires_at > CURRENT_TIMESTAMP) AS session_active
+      text: `SELECT ${sessionColumns()}
                FROM proof_sessions
               WHERE actor_id = $1 AND intent_id = $2
               FOR UPDATE`,
@@ -259,9 +259,20 @@ function loadExisting(
     const presentationRow = yield* oneRow(presentationResult.rows);
     if (presentationRow === null) return yield* Effect.fail(storageFailure());
     const decoded = decodeStart(sessionRow, presentationRow);
-    return decoded === null || typeof sessionRow.session_active !== "boolean"
-      ? yield* Effect.fail(storageFailure())
-      : { start: decoded, active: sessionRow.session_active };
+    if (decoded === null) return yield* Effect.fail(storageFailure());
+    const clockResult = yield* transaction.execute<Row>({
+      label: "verification.start.session-clock",
+      text: "SELECT clock_timestamp() AS database_now",
+      values: [],
+      readonly: false,
+    });
+    const clockRow = yield* oneRow(clockResult.rows);
+    const databaseNow = clockRow === null ? null : timestamp(clockRow, "database_now");
+    if (databaseNow === null) return yield* Effect.fail(storageFailure());
+    return {
+      start: decoded,
+      active: Date.parse(decoded.session.expires_at) > Date.parse(databaseNow),
+    };
   });
 }
 
@@ -401,12 +412,7 @@ export function makeControlPlaneVerificationSessionStartRepository() {
             const result = yield* transaction.execute<Row>({
               label: "verification.start.lock-reservation",
               text: `SELECT reservation_id, request_hash, state, fence_token,
-                             lease_expires_at,
-                             (lease_expires_at > CURRENT_TIMESTAMP) AS lease_active,
-                             GREATEST(
-                               1,
-                               CEIL(EXTRACT(EPOCH FROM (lease_expires_at - CURRENT_TIMESTAMP)))
-                             )::integer AS retry_after_seconds
+                             lease_expires_at
                         FROM verification_start_reservations
                        WHERE actor_id = $1 AND intent_id = $2
                        FOR UPDATE`,
@@ -421,18 +427,23 @@ export function makeControlPlaneVerificationSessionStartRepository() {
               }
               const state = requiredString(row, "state");
               const lease = timestamp(row, "lease_expires_at");
-              if (state === null || lease === null || typeof row.lease_active !== "boolean") {
+              if (state === null || lease === null) {
                 return yield* Effect.fail(storageFailure());
               }
-              if (state === "acquired" && row.lease_active) {
-                const retryAfter = row.retry_after_seconds;
-                if (
-                  typeof retryAfter !== "number" ||
-                  !Number.isSafeInteger(retryAfter) ||
-                  retryAfter < 1
-                ) {
-                  return yield* Effect.fail(storageFailure());
-                }
+              const clockResult = yield* transaction.execute<Row>({
+                label: "verification.start.reservation-clock",
+                text: "SELECT clock_timestamp() AS database_now",
+                values: [],
+                readonly: false,
+              });
+              const clockRow = yield* oneRow(clockResult.rows);
+              const databaseNow = clockRow === null ? null : timestamp(clockRow, "database_now");
+              if (databaseNow === null) return yield* Effect.fail(storageFailure());
+              if (state === "acquired" && Date.parse(lease) > Date.parse(databaseNow)) {
+                const retryAfter = Math.max(
+                  1,
+                  Math.ceil((Date.parse(lease) - Date.parse(databaseNow)) / 1_000),
+                );
                 return { kind: "in_flight", retry_after_seconds: retryAfter } as const;
               }
               if (state === "finalized") return yield* Effect.fail(storageFailure());
@@ -442,8 +453,8 @@ export function makeControlPlaneVerificationSessionStartRepository() {
                           SET state = 'acquired',
                               fence_token = fence_token + 1,
                               request = $3::jsonb,
-                              lease_expires_at = CURRENT_TIMESTAMP + ($4 * INTERVAL '1 millisecond'),
-                              updated_at = CURRENT_TIMESTAMP
+                              lease_expires_at = clock_timestamp() + ($4 * INTERVAL '1 millisecond'),
+                              updated_at = clock_timestamp()
                         WHERE actor_id = $1 AND intent_id = $2
                         RETURNING reservation_id, fence_token, lease_expires_at`,
                 values: [start.actor_id, start.intent_id, JSON.stringify(start), input.ttl_ms],
@@ -462,7 +473,7 @@ export function makeControlPlaneVerificationSessionStartRepository() {
                        reservation_id, actor_id, intent_id, request_hash, request,
                        state, fence_token, lease_expires_at
                      ) VALUES ($1, $2, $3, $4, $5::jsonb, 'acquired', 1,
-                               CURRENT_TIMESTAMP + ($6 * INTERVAL '1 millisecond'))
+                               clock_timestamp() + ($6 * INTERVAL '1 millisecond'))
                      RETURNING reservation_id, fence_token, lease_expires_at`,
               values: [
                 reservationId,
@@ -494,8 +505,7 @@ export function makeControlPlaneVerificationSessionStartRepository() {
             const lock = yield* transaction.execute<Row>({
               label: "verification.start.lock-finalizer",
               text: `SELECT reservation_id, request_hash, state, fence_token,
-                             lease_expires_at,
-                             (lease_expires_at > CURRENT_TIMESTAMP) AS lease_active
+                             lease_expires_at
                         FROM verification_start_reservations
                        WHERE reservation_id = $1
                        FOR UPDATE`,
@@ -517,11 +527,11 @@ export function makeControlPlaneVerificationSessionStartRepository() {
             const fenced = yield* transaction.execute<Row>({
               label: "verification.start.finalize-reservation",
               text: `UPDATE verification_start_reservations
-                         SET state = 'finalized', updated_at = CURRENT_TIMESTAMP
+                         SET state = 'finalized', updated_at = clock_timestamp()
                        WHERE reservation_id = $1
                          AND fence_token = $2
                          AND state = 'acquired'
-                         AND lease_expires_at > CURRENT_TIMESTAMP`,
+                         AND lease_expires_at > clock_timestamp()`,
               values: [reservation.reservation_id, reservation.fence_token],
               readonly: false,
             });
@@ -555,7 +565,7 @@ export function makeControlPlaneVerificationSessionStartRepository() {
           transaction.execute({
             label: "verification.start.release-reservation",
             text: `UPDATE verification_start_reservations
-                       SET state = 'released', updated_at = CURRENT_TIMESTAMP
+                       SET state = 'released', updated_at = clock_timestamp()
                      WHERE reservation_id = $1
                        AND fence_token = $2
                        AND state = 'acquired'`,

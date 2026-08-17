@@ -18,7 +18,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_VERIFICATION_START_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-verification-start-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-verification-start-suite-complete\n";
-const expectedTestCount = 9;
+const expectedTestCount = 10;
 let completedTestCount = 0;
 
 const migrationFiles = [
@@ -227,6 +227,37 @@ suite("Postgres 17 verification session start repository", () => {
           Effect.scoped(store.reserve({ start: expired.session, ttl_ms: 60_000 })),
         ),
       ).toMatchObject({ kind: "terminal", status: "expired", start: expired });
+    });
+    completedTestCount += 1;
+  });
+
+  test("uses wall-clock expiry after waiting on the session lock", async () => {
+    await withSchema(async (connection, admin) => {
+      const databaseClock = await admin.query<{ database_now: Date }>(
+        "SELECT clock_timestamp() AS database_now",
+      );
+      const databaseNow = databaseClock.rows[0]?.database_now;
+      if (!(databaseNow instanceof Date)) throw new Error("expected the Postgres clock");
+      const start = startFor("start-lock-expiry", "user-a", "intent-lock-expiry");
+      const expiring = {
+        ...start,
+        session: {
+          ...start.session,
+          started_at: new Date(databaseNow.getTime() - 60_000).toISOString(),
+          expires_at: new Date(databaseNow.getTime() + 500).toISOString(),
+        },
+      };
+      const store = storeFor(connection);
+      await finalize(store, expiring);
+      await admin.query("BEGIN");
+      await admin.query(
+        "SELECT proof_session_id FROM proof_sessions WHERE proof_session_id = $1 FOR UPDATE",
+        [expiring.session.id],
+      );
+      const waiting = reserve(store, expiring);
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      await admin.query("COMMIT");
+      expect(await waiting).toMatchObject({ kind: "terminal", status: "expired" });
     });
     completedTestCount += 1;
   });
