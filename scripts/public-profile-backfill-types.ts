@@ -13,6 +13,8 @@ export const sourceColumns = [
   "tier",
   "issuance_source",
   "redirect_target_global_handle_id",
+  "price_paid_cents",
+  "free_rename_consumed",
   "issued_at",
   "replaced_at",
   "created_at",
@@ -33,6 +35,8 @@ export type LegacyGlobalHandleRow = Readonly<{
     | "paid_upgrade"
     | "admin_grant";
   readonly redirect_target_global_handle_id: string | null;
+  readonly price_paid_cents: number | null;
+  readonly free_rename_consumed: 0 | 1;
   readonly issued_at: string;
   readonly replaced_at: string | null;
   readonly created_at: string;
@@ -64,6 +68,8 @@ export type PublicProfileBackfillManifest = Readonly<{
   readonly rows: readonly LegacyGlobalHandleRow[];
   readonly owner_mappings: readonly LegacyOwnerMapping[];
   readonly handle_mappings: readonly LegacyHandleMapping[];
+  readonly owner_mappings_sha256: string;
+  readonly handle_mappings_sha256: string;
   readonly manifest_sha256: string;
 }>;
 
@@ -121,6 +127,8 @@ export type BackfillOperation = Readonly<{
 export type PublicProfileBackfillReport = Readonly<{
   readonly report_version: typeof PUBLIC_PROFILE_BACKFILL_REPORT_VERSION;
   readonly manifest_sha256: string;
+  readonly owner_mappings_sha256: string;
+  readonly handle_mappings_sha256: string;
   readonly source_sha256: string;
   readonly target_snapshot_sha256: string;
   readonly plan_sha256: string;
@@ -146,6 +154,8 @@ export type PublicProfileBackfillReport = Readonly<{
   readonly omitted_source_fields: readonly [
     "tier",
     "issuance_source",
+    "price_paid_cents",
+    "free_rename_consumed",
     "issued_at",
     "replaced_at",
     "created_at",

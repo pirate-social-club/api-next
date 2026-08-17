@@ -11,6 +11,7 @@ history in `global_handles`:
 ```sql
 SELECT global_handle_id, user_id, label_normalized, label_display, status,
        tier, issuance_source, redirect_target_global_handle_id,
+       price_paid_cents, free_rename_consumed,
        issued_at, replaced_at, created_at, updated_at
   FROM global_handles
  ORDER BY global_handle_id;
@@ -24,6 +25,11 @@ The manifest records the exact selected columns, row count, snapshot time,
 source SHA-256, and a top-level manifest SHA-256. Rows must be canonicalized
 by `global_handle_id`.
 
+The final legacy schema uses integer `price_paid_cents`; older exports may
+have the historical `price_paid_usd` column. This importer accepts only the
+final cents field. Any historical USD-to-cents conversion must be performed
+and reviewed in the external export process, never guessed here.
+
 The manifest also requires two explicit, one-to-one mapping tables:
 
 - `owner_mappings`: `legacy_user_id` → `api_next_user_id`, with the reviewed
@@ -35,7 +41,10 @@ The manifest also requires two explicit, one-to-one mapping tables:
   redirects resolve through this table to the mapped canonical target ID.
 
 These mappings are part of the manifest digest. Account aliases, merges, and
-tombstones cannot enter the import without an explicit reviewed mapping.
+tombstones cannot enter the import without an explicit reviewed mapping. Each
+mapping table also carries its own SHA-256 over its canonical ordered JSON;
+the parser validates both mapping digests before validating the top-level
+manifest digest.
 
 The target is likewise supplied as a reviewed snapshot for dry-run. It must
 contain the current api-next `users` and `public_handle_index` rows and its
@@ -69,10 +78,11 @@ transaction instead of trusting a stale snapshot.
   fingerprints. They do not print labels, user IDs, account JSON, or source
   payloads.
 
-The target table has no columns for legacy `tier`, `issuance_source`, or
-source timestamps. The report explicitly lists those fields as omitted: the
-import preserves only the public-handle lifecycle projection (mapped ID,
-label, status, owner, and redirect target) plus manifest provenance checksums.
+The target table has no columns for legacy `tier`, `issuance_source`,
+`price_paid_cents`, `free_rename_consumed`, or source timestamps. The report
+explicitly lists those fields as omitted: the import preserves only the
+public-handle lifecycle projection (mapped ID, label, status, owner, and
+redirect target) plus manifest provenance checksums.
 
 ## Dry-run procedure
 
@@ -95,11 +105,13 @@ label, status, owner, and redirect target) plus manifest provenance checksums.
    a hard stop and exits nonzero.
 
 The module exports `runPublicProfileBackfill({ mode: "apply", ... })` for a
-separately reviewed operator adapter. That adapter must implement
-`withTransaction`, query the target snapshot in the transaction, and retain
-the report and transaction evidence. There is intentionally no CLI apply
-flag in this lane, and no migration, remote database, or deployment action is
-performed by this change.
+separately reviewed operator adapter. The repository-local
+`createPublicProfileBackfillPgAdapter` resolves `pg` from the
+`@pirate/platform-cf` package's dependency and provides the transactional
+adapter used by the focused PG17 suite. An operator adapter must query the
+target snapshot in the transaction and retain the report and transaction
+evidence. There is intentionally no CLI apply flag in this lane, and no
+migration, remote database, or deployment action is performed by this change.
 
 ## Current external blocker
 

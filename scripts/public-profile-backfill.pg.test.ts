@@ -3,10 +3,13 @@ import {
   type LegacyGlobalHandleRow,
   makePublicProfileBackfillManifest,
   makePublicProfileTargetSnapshot,
-  type PublicProfileBackfillDatabase,
-  type PublicProfileBackfillTransaction,
   runPublicProfileBackfill,
 } from "./public-profile-backfill.ts";
+import {
+  createPublicProfileBackfillPgAdapter,
+  loadPublicProfileBackfillPgDriver,
+  type PublicProfileBackfillPgClient,
+} from "./public-profile-backfill-pg.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_BACKFILL_TEST_REQUIRED === "1";
@@ -15,26 +18,24 @@ if (required && connectionString === undefined) {
     "CONTROL_PLANE_POSTGRES_TEST_URL is required for the public-profile backfill suite",
   );
 }
-type PgClient = Readonly<{
-  readonly query: <Row extends Record<string, unknown> = Record<string, unknown>>(
-    text: string,
-    values?: readonly unknown[],
-  ) => Promise<{ readonly rows: readonly Row[] }>;
-  readonly connect: () => Promise<void>;
-  readonly end: () => Promise<void>;
-}>;
-
 const pgModule =
-  connectionString === undefined ? undefined : await import("pg").catch(() => undefined);
+  connectionString === undefined
+    ? undefined
+    : await loadPublicProfileBackfillPgDriver().catch((error: unknown) => {
+        if (required) {
+          throw new Error(
+            `package-local pg driver is required for the focused suite: ${
+              error instanceof Error ? error.message : "driver resolution failed"
+            }`,
+          );
+        }
+        return undefined;
+      });
 const migrationModule =
   connectionString === undefined
     ? undefined
     : await import("./postgres-migrations.ts").catch(() => undefined);
-const PgClientConstructor = pgModule?.Client as unknown as
-  | (new (input: {
-      readonly connectionString: string;
-    }) => PgClient)
-  | undefined;
+const PgClientConstructor = pgModule?.Client;
 const runPostgresMigrations = migrationModule?.runPostgresMigrations;
 const suite =
   connectionString === undefined ||
@@ -43,6 +44,10 @@ const suite =
     ? describe.skip
     : describe;
 
+if (required && runPostgresMigrations === undefined) {
+  throw new Error("postgres migration runner is required for the focused suite");
+}
+
 const schemaIdentifier = (): string =>
   `api_next_backfill_${crypto.randomUUID().replaceAll("-", "")}`;
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
@@ -50,6 +55,11 @@ const connectionForSchema = (raw: string, schema: string): string => {
   const separator = raw.includes("?") ? "&" : "?";
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 };
+
+test("resolves the package-local pg driver used by the apply adapter", async () => {
+  const driver = await loadPublicProfileBackfillPgDriver();
+  expect(typeof driver.Client).toBe("function");
+});
 
 const dates = {
   issued_at: "2026-08-16T00:00:00.000Z",
@@ -72,6 +82,8 @@ function row(
     tier: "standard",
     issuance_source: "generated_signup",
     redirect_target_global_handle_id: null,
+    price_paid_cents: null,
+    free_rename_consumed: 0,
     ...dates,
     ...overrides,
   };
@@ -95,8 +107,8 @@ function manifest(rows: readonly LegacyGlobalHandleRow[]) {
   });
 }
 
-function makeClient(connection: string): PgClient {
-  if (PgClientConstructor === undefined) throw new Error("pg is not installed");
+function makeClient(connection: string): PublicProfileBackfillPgClient {
+  if (PgClientConstructor === undefined) throw new Error("package-local pg driver is unavailable");
   return new PgClientConstructor({ connectionString: connection });
 }
 
@@ -106,36 +118,9 @@ async function migrate(connection: string): Promise<void> {
   await runPostgresMigrations({ connectionString: connection });
 }
 
-function database(client: PgClient): PublicProfileBackfillDatabase {
-  return {
-    withTransaction: async <A>(
-      run: (transaction: PublicProfileBackfillTransaction) => Promise<A>,
-    ): Promise<A> => {
-      await client.query("BEGIN");
-      try {
-        const result = await run({
-          query: async <Row extends Record<string, unknown> = Record<string, unknown>>(
-            text: string,
-            values: readonly unknown[] | undefined,
-          ): Promise<{ readonly rows: readonly Row[] }> => {
-            const response = await client.query<Record<string, unknown>>(
-              text,
-              values === undefined ? undefined : [...values],
-            );
-            return { rows: response.rows as readonly Row[] };
-          },
-        });
-        await client.query("COMMIT");
-        return result;
-      } catch (error) {
-        await client.query("ROLLBACK").catch(() => undefined);
-        throw error;
-      }
-    },
-  };
-}
-
-async function withSchema<A>(use: (connection: string, admin: PgClient) => Promise<A>): Promise<A> {
+async function withSchema<A>(
+  use: (connection: string, admin: PublicProfileBackfillPgClient) => Promise<A>,
+): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   const schema = schemaIdentifier();
   const admin = makeClient(connectionString);
@@ -187,13 +172,13 @@ suite("public-profile historical backfill against Postgres 17 migrations", () =>
           ?.count,
       ).toBe(0);
 
-      const client = makeClient(connection);
-      await client.connect();
+      const adapter = await createPublicProfileBackfillPgAdapter(connection);
+      await adapter.client.connect();
       try {
         const first = await runPublicProfileBackfill({
           mode: "apply",
           manifest: sourceManifest,
-          database: database(client),
+          database: adapter.database,
         });
         expect(first.applied).toBe(2);
         const rows = await admin.query<{
@@ -222,12 +207,12 @@ suite("public-profile historical backfill against Postgres 17 migrations", () =>
         const rerun = await runPublicProfileBackfill({
           mode: "apply",
           manifest: sourceManifest,
-          database: database(client),
+          database: adapter.database,
         });
         expect(rerun.applied).toBe(0);
         expect(rerun.report.counts.skips).toBe(2);
       } finally {
-        await client.end();
+        await adapter.client.end();
       }
     });
   });
@@ -246,9 +231,9 @@ suite("public-profile historical backfill against Postgres 17 migrations", () =>
       });
       const sourceManifest = manifest([current]);
       const blocking = makeClient(connection);
-      const applying = makeClient(connection);
+      const applying = await createPublicProfileBackfillPgAdapter(connection);
       await blocking.connect();
-      await applying.connect();
+      await applying.client.connect();
       try {
         await blocking.query("BEGIN");
         await blocking.query(
@@ -257,12 +242,18 @@ suite("public-profile historical backfill against Postgres 17 migrations", () =>
         const applyPromise = runPublicProfileBackfill({
           mode: "apply",
           manifest: sourceManifest,
-          database: database(applying),
+          database: applying.database,
         });
         setTimeout(() => {
           void blocking.query("COMMIT");
         }, 100);
-        await expect(applyPromise).rejects.toThrow("public-profile-backfill-plan-has-errors");
+        let raceError: unknown;
+        try {
+          await applyPromise;
+        } catch (error) {
+          raceError = error;
+        }
+        expect(raceError).toMatchObject({ code: "40001" });
         expect(
           (await admin.query("SELECT count(*)::int AS count FROM public_handle_index")).rows[0]
             ?.count,
@@ -270,7 +261,7 @@ suite("public-profile historical backfill against Postgres 17 migrations", () =>
       } finally {
         await blocking.query("ROLLBACK").catch(() => undefined);
         await blocking.end();
-        await applying.end();
+        await applying.client.end();
       }
     });
   });
@@ -295,14 +286,14 @@ suite("public-profile historical backfill against Postgres 17 migrations", () =>
         user_id: "legacy_collision_owner",
         label_normalized: "collision-captain",
       });
-      const client = makeClient(connection);
-      await client.connect();
+      const adapter = await createPublicProfileBackfillPgAdapter(connection);
+      await adapter.client.connect();
       try {
         await expect(
           runPublicProfileBackfill({
             mode: "apply",
             manifest: manifest([collision]),
-            database: database(client),
+            database: adapter.database,
           }),
         ).rejects.toThrow("public-profile-backfill-plan-has-errors");
         expect(
@@ -330,7 +321,7 @@ suite("public-profile historical backfill against Postgres 17 migrations", () =>
           runPublicProfileBackfill({
             mode: "apply",
             manifest: manifest([failing]),
-            database: database(client),
+            database: adapter.database,
           }),
         ).rejects.toThrow("backfill rollback");
         expect(
@@ -338,7 +329,7 @@ suite("public-profile historical backfill against Postgres 17 migrations", () =>
             ?.count,
         ).toBe(1);
       } finally {
-        await client.end();
+        await adapter.client.end();
       }
     });
   });

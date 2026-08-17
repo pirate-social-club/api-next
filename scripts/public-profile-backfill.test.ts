@@ -31,6 +31,8 @@ function row(
     tier: "standard",
     issuance_source: "generated_signup",
     redirect_target_global_handle_id: null,
+    price_paid_cents: null,
+    free_rename_consumed: 0,
     ...dates,
     ...overrides,
   };
@@ -165,6 +167,75 @@ describe("public-profile historical backfill planner", () => {
     });
     expect(() => planPublicProfileBackfill(unreviewed, snapshot([user("api_user_9")]))).toThrow(
       "manifest-unreviewed-legacy-owner-state",
+    );
+  });
+
+  test("declares and validates separate owner and handle mapping digests", () => {
+    const first = row({
+      global_handle_id: "gh_digest_first",
+      user_id: "usr_digest_first",
+      label_normalized: "digest-first",
+    });
+    const second = row({
+      global_handle_id: "gh_digest_second",
+      user_id: "usr_digest_second",
+      label_normalized: "digest-second",
+    });
+    const source = manifest([first, second]);
+    expect(source.owner_mappings_sha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(source.handle_mappings_sha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(source.owner_mappings_sha256).not.toBe(source.handle_mappings_sha256);
+    expect(
+      planPublicProfileBackfill(
+        source,
+        snapshot([user("usr_digest_first"), user("usr_digest_second")]),
+      ).report.owner_mappings_sha256,
+    ).toBe(source.owner_mappings_sha256);
+
+    const tamperedMapping = JSON.parse(JSON.stringify(source)) as Record<string, unknown>;
+    (tamperedMapping.owner_mappings as Array<Record<string, unknown>>)[0].api_next_user_id =
+      "usr_digest_other";
+    expect(() => planPublicProfileBackfill(tamperedMapping, snapshot([]))).toThrow(
+      "manifest-mapping-digest-mismatch",
+    );
+
+    const reordered = JSON.parse(JSON.stringify(source)) as Record<string, unknown>;
+    reordered.owner_mappings = [...(reordered.owner_mappings as unknown[])].reverse();
+    expect(() => planPublicProfileBackfill(reordered, snapshot([]))).toThrow(
+      "manifest-mappings-not-canonical",
+    );
+
+    const tamperedDigest = JSON.parse(JSON.stringify(source)) as Record<string, unknown>;
+    tamperedDigest.handle_mappings_sha256 = "0".repeat(64);
+    expect(() => planPublicProfileBackfill(tamperedDigest, snapshot([]))).toThrow(
+      "manifest-mapping-digest-mismatch",
+    );
+  });
+
+  test("validates legacy metadata without persisting it", () => {
+    const paid = row({
+      global_handle_id: "gh_paid",
+      user_id: "usr_paid",
+      label_normalized: "paid-captain",
+      price_paid_cents: 12_500,
+      free_rename_consumed: 1,
+    });
+    const plan = planPublicProfileBackfill(manifest([paid]), snapshot([user("usr_paid")]));
+    expect(plan.report.omitted_source_fields).toEqual([
+      "tier",
+      "issuance_source",
+      "price_paid_cents",
+      "free_rename_consumed",
+      "issued_at",
+      "replaced_at",
+      "created_at",
+      "updated_at",
+    ]);
+
+    const invalidPrice = JSON.parse(JSON.stringify(manifest([paid]))) as Record<string, unknown>;
+    (invalidPrice.rows as Array<Record<string, unknown>>)[0].price_paid_cents = -1;
+    expect(() => planPublicProfileBackfill(invalidPrice, snapshot([user("usr_paid")]))).toThrow(
+      "manifest-invalid-row-value",
     );
   });
 

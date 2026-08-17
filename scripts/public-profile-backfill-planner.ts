@@ -196,6 +196,8 @@ const makeReport = (input: {
   return {
     report_version: 1,
     manifest_sha256: input.manifest.manifest_sha256,
+    owner_mappings_sha256: input.manifest.owner_mappings_sha256,
+    handle_mappings_sha256: input.manifest.handle_mappings_sha256,
     source_sha256: input.manifest.source.source_sha256,
     target_snapshot_sha256: input.target.snapshot_sha256,
     plan_sha256: planDigest(input.operations),
@@ -221,6 +223,8 @@ const makeReport = (input: {
     omitted_source_fields: [
       "tier",
       "issuance_source",
+      "price_paid_cents",
+      "free_rename_consumed",
       "issued_at",
       "replaced_at",
       "created_at",

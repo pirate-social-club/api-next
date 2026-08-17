@@ -67,6 +67,9 @@ const parseLegacyRow = (value: unknown): LegacyGlobalHandleRow => {
     !validTimestamp(row.issued_at) ||
     !validTimestamp(row.created_at) ||
     !validTimestamp(row.updated_at) ||
+    (row.price_paid_cents !== null &&
+      (!Number.isSafeInteger(row.price_paid_cents) || row.price_paid_cents < 0)) ||
+    (row.free_rename_consumed !== 0 && row.free_rename_consumed !== 1) ||
     (row.replaced_at !== null && !validTimestamp(row.replaced_at)) ||
     (row.redirect_target_global_handle_id !== null &&
       !validId(row.redirect_target_global_handle_id))
@@ -82,6 +85,12 @@ export function makePublicProfileBackfillManifest(input: {
   readonly handle_mappings: readonly LegacyHandleMapping[];
 }): PublicProfileBackfillManifest {
   const rows = sortedRows(input.rows);
+  const owner_mappings = [...input.owner_mappings].sort((a, b) =>
+    a.legacy_user_id.localeCompare(b.legacy_user_id),
+  );
+  const handle_mappings = [...input.handle_mappings].sort((a, b) =>
+    a.legacy_handle_id.localeCompare(b.legacy_handle_id),
+  );
   const withoutDigest = {
     manifest_version: PUBLIC_PROFILE_BACKFILL_MANIFEST_VERSION,
     source: {
@@ -93,12 +102,10 @@ export function makePublicProfileBackfillManifest(input: {
       source_sha256: sha256(canonicalJson(rows)),
     },
     rows,
-    owner_mappings: [...input.owner_mappings].sort((a, b) =>
-      a.legacy_user_id.localeCompare(b.legacy_user_id),
-    ),
-    handle_mappings: [...input.handle_mappings].sort((a, b) =>
-      a.legacy_handle_id.localeCompare(b.legacy_handle_id),
-    ),
+    owner_mappings,
+    handle_mappings,
+    owner_mappings_sha256: sha256(canonicalJson(owner_mappings)),
+    handle_mappings_sha256: sha256(canonicalJson(handle_mappings)),
   } satisfies Omit<PublicProfileBackfillManifest, "manifest_sha256">;
   return { ...withoutDigest, manifest_sha256: manifestDigest(withoutDigest) };
 }
@@ -112,6 +119,8 @@ export function parsePublicProfileBackfillManifest(value: unknown): PublicProfil
       "rows",
       "owner_mappings",
       "handle_mappings",
+      "owner_mappings_sha256",
+      "handle_mappings_sha256",
       "manifest_sha256",
     ]) ||
     value.manifest_version !== PUBLIC_PROFILE_BACKFILL_MANIFEST_VERSION ||
@@ -220,12 +229,21 @@ export function parsePublicProfileBackfillManifest(value: unknown): PublicProfil
     mappedHandleIds.size !== sourceHandleIds.size
   )
     throw new Error("manifest-handle-mapping-incomplete");
+  if (
+    !validDigest(value.owner_mappings_sha256) ||
+    !validDigest(value.handle_mappings_sha256) ||
+    value.owner_mappings_sha256 !== sha256(canonicalJson(ownerMappings)) ||
+    value.handle_mappings_sha256 !== sha256(canonicalJson(handleMappings))
+  )
+    throw new Error("manifest-mapping-digest-mismatch");
   const withoutDigest = {
     manifest_version: PUBLIC_PROFILE_BACKFILL_MANIFEST_VERSION,
     source: source as PublicProfileBackfillManifest["source"],
     rows,
     owner_mappings: ownerMappings,
     handle_mappings: handleMappings,
+    owner_mappings_sha256: value.owner_mappings_sha256,
+    handle_mappings_sha256: value.handle_mappings_sha256,
   } satisfies Omit<PublicProfileBackfillManifest, "manifest_sha256">;
   if (value.manifest_sha256 !== manifestDigest(withoutDigest))
     throw new Error("manifest-digest-mismatch");
