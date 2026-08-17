@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import {
+  type LegacyGlobalHandleRow,
   makePublicProfileBackfillManifest,
   makePublicProfileTargetSnapshot,
-  planPublicProfileBackfill,
-  runPublicProfileBackfill,
-  type LegacyGlobalHandleRow,
+  type PublicProfileBackfillTransaction,
   type PublicProfileTargetHandle,
   type PublicProfileTargetUser,
-  type PublicProfileBackfillTransaction,
+  planPublicProfileBackfill,
+  runPublicProfileBackfill,
 } from "./public-profile-backfill.ts";
 
 const dates = {
@@ -17,18 +17,22 @@ const dates = {
   updated_at: "2026-08-16T00:00:00.000Z",
 } as const;
 
-function row(input: Partial<LegacyGlobalHandleRow> & Pick<LegacyGlobalHandleRow, "global_handle_id" | "user_id" | "label_normalized">): LegacyGlobalHandleRow {
+function row(
+  input: Partial<LegacyGlobalHandleRow> &
+    Pick<LegacyGlobalHandleRow, "global_handle_id" | "user_id" | "label_normalized">,
+): LegacyGlobalHandleRow {
+  const { global_handle_id, user_id, label_normalized, ...overrides } = input;
   return {
-    global_handle_id: input.global_handle_id,
-    user_id: input.user_id,
-    label_normalized: input.label_normalized,
-    label_display: `${input.label_normalized}.pirate`,
+    global_handle_id,
+    user_id,
+    label_normalized,
+    label_display: `${label_normalized}.pirate`,
     status: "active",
     tier: "standard",
     issuance_source: "generated_signup",
     redirect_target_global_handle_id: null,
     ...dates,
-    ...input,
+    ...overrides,
   };
 }
 
@@ -36,26 +40,48 @@ function user(user_id: string, status: "active" | "deleted" = "active"): PublicP
   return { user_id, status };
 }
 
-function targetHandle(input: Partial<PublicProfileTargetHandle> & Pick<PublicProfileTargetHandle, "handle_id" | "owner_user_id" | "label_normalized">): PublicProfileTargetHandle {
+function targetHandle(
+  input: Partial<PublicProfileTargetHandle> &
+    Pick<PublicProfileTargetHandle, "handle_id" | "owner_user_id" | "label_normalized">,
+): PublicProfileTargetHandle {
+  const { handle_id, owner_user_id, label_normalized, ...overrides } = input;
   return {
-    handle_id: input.handle_id,
-    owner_user_id: input.owner_user_id,
-    label_normalized: input.label_normalized,
-    label_display: `${input.label_normalized}.pirate`,
+    handle_id,
+    owner_user_id,
+    label_normalized,
+    label_display: `${label_normalized}.pirate`,
     status: "active",
     redirect_target_handle_id: null,
-    ...input,
+    ...overrides,
   };
 }
 
 function manifest(rows: readonly LegacyGlobalHandleRow[]) {
+  const ownerIds = [...new Set(rows.map((value) => value.user_id))].sort();
   return makePublicProfileBackfillManifest({
     snapshot_at: "2026-08-16T01:00:00.000Z",
     rows,
+    owner_mappings: ownerIds.map((legacy_user_id) => ({
+      legacy_user_id,
+      api_next_user_id: legacy_user_id,
+      legacy_owner_state: "active",
+      reviewed: false,
+    })),
+    handle_mappings: rows.map((value) => ({
+      legacy_handle_id: value.global_handle_id,
+      api_next_handle_id: `target_${value.global_handle_id}`,
+    })),
   });
 }
 
-function snapshot(users: readonly PublicProfileTargetUser[], handles: readonly PublicProfileTargetHandle[] = []) {
+function mappedHandle(handleId: string): string {
+  return `target_${handleId}`;
+}
+
+function snapshot(
+  users: readonly PublicProfileTargetUser[],
+  handles: readonly PublicProfileTargetHandle[] = [],
+) {
   return makePublicProfileTargetSnapshot({
     captured_at: "2026-08-16T02:00:00.000Z",
     users,
@@ -65,7 +91,11 @@ function snapshot(users: readonly PublicProfileTargetUser[], handles: readonly P
 
 describe("public-profile historical backfill planner", () => {
   test("seeds a current label and its historical redirect target", () => {
-    const current = row({ global_handle_id: "gh_current", user_id: "usr_one", label_normalized: "captain" });
+    const current = row({
+      global_handle_id: "gh_current",
+      user_id: "usr_one",
+      label_normalized: "captain",
+    });
     const historical = row({
       global_handle_id: "gh_old",
       user_id: "usr_one",
@@ -73,12 +103,69 @@ describe("public-profile historical backfill planner", () => {
       status: "redirect",
       redirect_target_global_handle_id: "gh_current",
     });
-    const plan = planPublicProfileBackfill(manifest([historical, current]), snapshot([user("usr_one")]));
-    expect(plan.report.counts).toEqual({ inserts: 1, renames: 0, redirects: 1, skips: 0, errors: 0 });
+    const plan = planPublicProfileBackfill(
+      manifest([historical, current]),
+      snapshot([user("usr_one")]),
+    );
+    expect(plan.report.counts).toEqual({
+      inserts: 1,
+      renames: 0,
+      redirects: 1,
+      skips: 0,
+      errors: 0,
+    });
     expect(plan.operations.map(({ kind, row: value }) => [kind, value.global_handle_id])).toEqual([
       ["insert", "gh_current"],
       ["redirect", "gh_old"],
     ]);
+  });
+
+  test("uses explicit non-identity owner and handle mappings", () => {
+    const legacy = row({
+      global_handle_id: "legacy_handle_1",
+      user_id: "legacy_user_1",
+      label_normalized: "mapped-captain",
+    });
+    const mappedManifest = makePublicProfileBackfillManifest({
+      snapshot_at: "2026-08-16T01:00:00.000Z",
+      rows: [legacy],
+      owner_mappings: [
+        {
+          legacy_user_id: "legacy_user_1",
+          api_next_user_id: "api_user_9",
+          legacy_owner_state: "active",
+          reviewed: false,
+        },
+      ],
+      handle_mappings: [
+        { legacy_handle_id: "legacy_handle_1", api_next_handle_id: "api_handle_9" },
+      ],
+    });
+    const plan = planPublicProfileBackfill(mappedManifest, snapshot([user("api_user_9")]));
+    expect(plan.report.counts.errors).toBe(0);
+    expect(plan.operations[0]).toMatchObject({
+      api_next_handle_id: "api_handle_9",
+      api_next_owner_user_id: "api_user_9",
+    });
+
+    const unreviewed = makePublicProfileBackfillManifest({
+      snapshot_at: "2026-08-16T01:00:00.000Z",
+      rows: [legacy],
+      owner_mappings: [
+        {
+          legacy_user_id: "legacy_user_1",
+          api_next_user_id: "api_user_9",
+          legacy_owner_state: "merged",
+          reviewed: false,
+        },
+      ],
+      handle_mappings: [
+        { legacy_handle_id: "legacy_handle_1", api_next_handle_id: "api_handle_9" },
+      ],
+    });
+    expect(() => planPublicProfileBackfill(unreviewed, snapshot([user("api_user_9")]))).toThrow(
+      "manifest-unreviewed-legacy-owner-state",
+    );
   });
 
   test("rejects invalid labels and does not normalize or invent them", () => {
@@ -95,9 +182,21 @@ describe("public-profile historical backfill planner", () => {
   });
 
   test("rejects missing, deleted, and foreign owners", () => {
-    const missing = row({ global_handle_id: "gh_missing", user_id: "usr_missing", label_normalized: "missing" });
-    const deleted = row({ global_handle_id: "gh_deleted", user_id: "usr_deleted", label_normalized: "deleted" });
-    const foreignCurrent = row({ global_handle_id: "gh_foreign", user_id: "usr_two", label_normalized: "foreign" });
+    const missing = row({
+      global_handle_id: "gh_missing",
+      user_id: "usr_missing",
+      label_normalized: "missing",
+    });
+    const deleted = row({
+      global_handle_id: "gh_deleted",
+      user_id: "usr_deleted",
+      label_normalized: "deleted",
+    });
+    const foreignCurrent = row({
+      global_handle_id: "gh_foreign",
+      user_id: "usr_two",
+      label_normalized: "foreign",
+    });
     const foreignRedirect = row({
       global_handle_id: "gh_foreign_redirect",
       user_id: "usr_one",
@@ -116,17 +215,41 @@ describe("public-profile historical backfill planner", () => {
   });
 
   test("rejects active owner and target label/ownership collisions", () => {
-    const first = row({ global_handle_id: "gh_first", user_id: "usr_one", label_normalized: "first" });
-    const second = row({ global_handle_id: "gh_second", user_id: "usr_one", label_normalized: "second" });
-    const existingLabel = row({ global_handle_id: "gh_label", user_id: "usr_two", label_normalized: "label" });
-    const transfer = row({ global_handle_id: "gh_transfer", user_id: "usr_one", label_normalized: "transfer" });
+    const first = row({
+      global_handle_id: "gh_first",
+      user_id: "usr_one",
+      label_normalized: "first",
+    });
+    const second = row({
+      global_handle_id: "gh_second",
+      user_id: "usr_one",
+      label_normalized: "second",
+    });
+    const existingLabel = row({
+      global_handle_id: "gh_label",
+      user_id: "usr_two",
+      label_normalized: "label",
+    });
+    const transfer = row({
+      global_handle_id: "gh_transfer",
+      user_id: "usr_one",
+      label_normalized: "transfer",
+    });
     const plan = planPublicProfileBackfill(
       manifest([first, second, existingLabel, transfer]),
       snapshot(
         [user("usr_one"), user("usr_two")],
         [
-          targetHandle({ handle_id: "gh_existing", owner_user_id: "usr_two", label_normalized: "label" }),
-          targetHandle({ handle_id: "gh_transfer", owner_user_id: "usr_two", label_normalized: "transfer" }),
+          targetHandle({
+            handle_id: mappedHandle("gh_existing"),
+            owner_user_id: "usr_two",
+            label_normalized: "label",
+          }),
+          targetHandle({
+            handle_id: mappedHandle("gh_transfer"),
+            owner_user_id: "usr_two",
+            label_normalized: "transfer",
+          }),
         ],
       ),
     );
@@ -165,11 +288,24 @@ describe("public-profile historical backfill planner", () => {
       status: "redirect",
       redirect_target_global_handle_id: "gh_retired",
     });
+    const retired = row({
+      global_handle_id: "gh_retired",
+      user_id: "usr_one",
+      label_normalized: "retired",
+      status: "retired",
+    });
     const plan = planPublicProfileBackfill(
-      manifest([cycleA, cycleB, missing, retiredTarget]),
+      manifest([cycleA, cycleB, missing, retiredTarget, retired]),
       snapshot(
         [user("usr_one")],
-        [targetHandle({ handle_id: "gh_retired", owner_user_id: "usr_one", label_normalized: "retired", status: "retired" })],
+        [
+          targetHandle({
+            handle_id: mappedHandle("gh_retired"),
+            owner_user_id: "usr_one",
+            label_normalized: "retired",
+            status: "retired",
+          }),
+        ],
       ),
     );
     expect(plan.report.issue_counts["redirect-cycle"]).toBe(2);
@@ -179,7 +315,11 @@ describe("public-profile historical backfill planner", () => {
   });
 
   test("is idempotent for an exact current/redirect seed and reports skips", () => {
-    const current = row({ global_handle_id: "gh_current", user_id: "usr_one", label_normalized: "captain" });
+    const current = row({
+      global_handle_id: "gh_current",
+      user_id: "usr_one",
+      label_normalized: "captain",
+    });
     const historical = row({
       global_handle_id: "gh_old",
       user_id: "usr_one",
@@ -190,23 +330,39 @@ describe("public-profile historical backfill planner", () => {
     const target = snapshot(
       [user("usr_one")],
       [
-        targetHandle({ handle_id: current.global_handle_id, owner_user_id: current.user_id, label_normalized: current.label_normalized }),
         targetHandle({
-          handle_id: historical.global_handle_id,
+          handle_id: mappedHandle(current.global_handle_id),
+          owner_user_id: current.user_id,
+          label_normalized: current.label_normalized,
+        }),
+        targetHandle({
+          handle_id: mappedHandle(historical.global_handle_id),
           owner_user_id: historical.user_id,
           label_normalized: historical.label_normalized,
           status: "redirect",
-          redirect_target_handle_id: historical.redirect_target_global_handle_id,
+          redirect_target_handle_id: mappedHandle(
+            historical.redirect_target_global_handle_id ?? "",
+          ),
         }),
       ],
     );
     const plan = planPublicProfileBackfill(manifest([historical, current]), target);
     expect(plan.operations).toEqual([]);
-    expect(plan.report.counts).toEqual({ inserts: 0, renames: 0, redirects: 0, skips: 2, errors: 0 });
+    expect(plan.report.counts).toEqual({
+      inserts: 0,
+      renames: 0,
+      redirects: 0,
+      skips: 2,
+      errors: 0,
+    });
   });
 
   test("does not write during dry-run and rejects manifest tampering", async () => {
-    const current = row({ global_handle_id: "gh_current", user_id: "usr_one", label_normalized: "captain" });
+    const current = row({
+      global_handle_id: "gh_current",
+      user_id: "usr_one",
+      label_normalized: "captain",
+    });
     const source = manifest([current]);
     const tampered = JSON.parse(JSON.stringify(source)) as Record<string, unknown>;
     const tamperedRows = tampered.rows as Array<Record<string, unknown>>;
@@ -216,24 +372,46 @@ describe("public-profile historical backfill planner", () => {
       "manifest-source-digest-mismatch",
     );
 
-    let calls = 0;
-    const forbiddenDatabase = {
-      withTransaction: async () => {
-        calls += 1;
-        throw new Error("dry-run opened a database");
-      },
-    };
     const result = await runPublicProfileBackfill({
       mode: "dry-run",
       manifest: source,
       target: snapshot([user("usr_one")]),
     });
     expect(result.applied).toBe(0);
-    expect(calls).toBe(0);
+  });
+
+  test("CLI exits nonzero when a dry-run report contains validation errors", async () => {
+    const invalid = row({
+      global_handle_id: "gh_cli_invalid",
+      user_id: "usr_one",
+      label_normalized: "Invalid Label",
+      label_display: "Invalid Label.pirate",
+    });
+    const suffix = crypto.randomUUID();
+    const manifestPath = `/tmp/public-profile-backfill-manifest-${suffix}.json`;
+    const targetPath = `/tmp/public-profile-backfill-target-${suffix}.json`;
+    await Bun.write(manifestPath, JSON.stringify(manifest([invalid])));
+    await Bun.write(targetPath, JSON.stringify(snapshot([user("usr_one")])));
+    const child = Bun.spawn(
+      ["bun", "scripts/public-profile-backfill.ts", "--dry-run", "--manifest", manifestPath],
+      {
+        env: { ...process.env, PUBLIC_PROFILE_BACKFILL_TARGET_SNAPSHOT: targetPath },
+        stderr: "pipe",
+        stdout: "pipe",
+      },
+    );
+    const exitCode = await child.exited;
+    const stderr = await new Response(child.stderr).text();
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Dry-run rejected");
   });
 
   test("applies all inserts in one transaction and leaves rollback to the adapter", async () => {
-    const current = row({ global_handle_id: "gh_current", user_id: "usr_one", label_normalized: "captain" });
+    const current = row({
+      global_handle_id: "gh_current",
+      user_id: "usr_one",
+      label_normalized: "captain",
+    });
     const historical = row({
       global_handle_id: "gh_old",
       user_id: "usr_one",
@@ -244,16 +422,23 @@ describe("public-profile historical backfill planner", () => {
     let writes = 0;
     let rolledBack = false;
     const transaction: PublicProfileBackfillTransaction = {
-      query: async (text) => {
-        if (text.startsWith("SELECT user_id")) return { rows: [user("usr_one")] };
-        if (text.startsWith("SELECT handle_id")) return { rows: [] };
-        writes += 1;
+      query: async <Row extends Record<string, unknown> = Record<string, unknown>>(
+        text: string,
+        _values?: readonly unknown[],
+      ): Promise<{ readonly rows: readonly Row[] }> => {
+        if (text.startsWith("SELECT user_id")) {
+          return { rows: [user("usr_one")] as unknown as readonly Row[] };
+        }
+        if (text.startsWith("SELECT handle_id")) return { rows: [] as readonly Row[] };
+        if (text.startsWith("INSERT")) writes += 1;
         if (writes === 2) throw new Error("simulated insert failure");
-        return { rows: [] };
+        return { rows: [] as readonly Row[] };
       },
     };
     const database = {
-      withTransaction: async <A>(run: (tx: PublicProfileBackfillTransaction) => Promise<A>): Promise<A> => {
+      withTransaction: async <A>(
+        run: (tx: PublicProfileBackfillTransaction) => Promise<A>,
+      ): Promise<A> => {
         try {
           return await run(transaction);
         } catch (error) {
@@ -263,14 +448,22 @@ describe("public-profile historical backfill planner", () => {
       },
     };
     await expect(
-      runPublicProfileBackfill({ mode: "apply", manifest: manifest([historical, current]), database }),
+      runPublicProfileBackfill({
+        mode: "apply",
+        manifest: manifest([historical, current]),
+        database,
+      }),
     ).rejects.toThrow("simulated insert failure");
     expect(writes).toBe(2);
     expect(rolledBack).toBe(true);
   });
 
   test("keeps reports deterministic for equivalent manifests", () => {
-    const current = row({ global_handle_id: "gh_current", user_id: "usr_one", label_normalized: "captain" });
+    const current = row({
+      global_handle_id: "gh_current",
+      user_id: "usr_one",
+      label_normalized: "captain",
+    });
     const historical = row({
       global_handle_id: "gh_old",
       user_id: "usr_one",
