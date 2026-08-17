@@ -45,13 +45,33 @@ async function keyMaterial() {
   return { privateKey: pair.privateKey, jwk };
 }
 
+async function ecKeyMaterial() {
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
+    "sign",
+    "verify",
+  ]);
+  const exported = await crypto.subtle.exportKey("jwk", pair.publicKey);
+  const jwk = {
+    kty: "EC" as const,
+    crv: "P-256" as const,
+    x: exported.x as string,
+    y: exported.y as string,
+    alg: "ES256" as const,
+    use: "sig" as const,
+    key_ops: ["verify"] as const,
+    kid: "ec-provider-key",
+  };
+  return { privateKey: pair.privateKey, jwk };
+}
+
 async function signToken(
   privateKey: CryptoKey,
   kid: string,
   claims: Record<string, unknown> = {},
   header: Record<string, unknown> = {},
+  signingAlgorithm: "RS256" | "ES256" = "RS256",
 ): Promise<string> {
-  const encodedHeader = encode({ alg: "RS256", typ: "JWT", kid, ...header });
+  const encodedHeader = encode({ alg: signingAlgorithm, typ: "JWT", kid, ...header });
   const encodedClaims = encode({
     iss: "https://provider.test",
     aud: "pirate-api-next",
@@ -61,7 +81,9 @@ async function signToken(
     ...claims,
   });
   const signature = await crypto.subtle.sign(
-    { name: "RSASSA-PKCS1-v1_5" },
+    signingAlgorithm === "RS256"
+      ? { name: "RSASSA-PKCS1-v1_5" }
+      : { name: "ECDSA", hash: "SHA-256" },
     privateKey,
     new TextEncoder().encode(`${encodedHeader}.${encodedClaims}`),
   );
@@ -126,6 +148,50 @@ describe("workerd JWKS session-proof adapters", () => {
         }),
       ),
     ).toEqual({ sourceUserId: "usr_provider", classification: "user" });
+  });
+
+  it("verifies ES256 P-256 proofs with the same claim and cache protections", async () => {
+    const material = await ecKeyMaterial();
+    let fetchCount = 0;
+    const fetcher: SessionProofFetcher = async () => {
+      fetchCount += 1;
+      return new Response(JSON.stringify({ keys: [material.jwk] }), { status: 200 });
+    };
+    const adapter = adapterFor(fetcher);
+    const token = await signToken(
+      material.privateKey,
+      material.jwk.kid,
+      { wallet_address: "0xabc" },
+      {},
+      "ES256",
+    );
+
+    expect(await Effect.runPromise(adapter.verifyJwt({ jwt: token }))).toEqual({
+      sourceUserId: "usr_provider",
+      classification: "user",
+    });
+    expect(
+      await Effect.runPromise(
+        adapter.verifyPrivy({ accessToken: token, identityToken: null, walletAddress: "0xabc" }),
+      ),
+    ).toEqual({ sourceUserId: "usr_provider", classification: "user" });
+    expect(fetchCount).toBe(1);
+  });
+
+  it("rejects EC keys with an invalid curve, algorithm, or private material", async () => {
+    const material = await ecKeyMaterial();
+    const token = await signToken(material.privateKey, material.jwk.kid, {}, {}, "ES256");
+    const expectRejected = async (jwk: unknown) => {
+      const adapter = adapterFor(
+        async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }),
+      );
+      const exit = await Effect.runPromiseExit(adapter.verifyJwt({ jwt: token }));
+      expect(Exit.isFailure(exit)).toBe(true);
+    };
+
+    await expectRejected({ ...material.jwk, crv: "P-384" });
+    await expectRejected({ ...material.jwk, alg: "RS256" });
+    await expectRejected({ ...material.jwk, d: "private-key-material" });
   });
 
   it("fails closed for malformed claims, headers, signatures, and proof binding", async () => {

@@ -13,23 +13,52 @@ const RSA_VERIFY_ALGORITHM = {
   name: "RSASSA-PKCS1-v1_5",
   hash: "SHA-256",
 } as const;
+const RSA_IMPORT_ALGORITHM = RSA_VERIFY_ALGORITHM;
+const EC_VERIFY_ALGORITHM = {
+  name: "ECDSA",
+  hash: "SHA-256",
+} as const;
+const EC_IMPORT_ALGORITHM = {
+  name: "ECDSA",
+  namedCurve: "P-256",
+} as const;
 
 type JsonObject = Record<string, unknown>;
-type ValidJwk = {
+type ValidJwkBase = {
+  readonly use: "sig";
+  readonly kid: string;
+  readonly key_ops?: readonly ["verify"];
+};
+type ValidRsaJwk = ValidJwkBase & {
   readonly kty: "RSA";
   readonly alg: "RS256";
-  readonly use: "sig";
-  readonly key_ops?: readonly string[];
-  readonly kid: string;
   readonly n: string;
   readonly e: string;
 };
+type ValidEcJwk = ValidJwkBase & {
+  readonly kty: "EC";
+  readonly alg: "ES256";
+  readonly crv: "P-256";
+  readonly x: string;
+  readonly y: string;
+};
+type ValidJwk = ValidRsaJwk | ValidEcJwk;
 
 type RsaJwkImporter = {
   readonly importKey: (
     format: "jwk",
-    keyData: ValidJwk,
+    keyData: ValidRsaJwk,
     algorithm: typeof RSA_VERIFY_ALGORITHM,
+    extractable: false,
+    usages: readonly ["verify"],
+  ) => Promise<CryptoKey>;
+};
+
+type EcJwkImporter = {
+  readonly importKey: (
+    format: "jwk",
+    keyData: ValidEcJwk,
+    algorithm: typeof EC_IMPORT_ALGORITHM,
     extractable: false,
     usages: readonly ["verify"],
   ) => Promise<CryptoKey>;
@@ -104,23 +133,52 @@ function configuredString(value: string): string {
   return value;
 }
 
+function base64UrlMember(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_-]+$/u.test(value);
+}
+
+function exactP256Coordinate(value: unknown): value is string {
+  if (!base64UrlMember(value)) return false;
+  try {
+    return base64UrlDecode(value).byteLength === 32;
+  } catch {
+    return false;
+  }
+}
+
+function commonJwkIsValid(key: JsonObject): boolean {
+  return (
+    key.use === "sig" &&
+    typeof key.kid === "string" &&
+    /^[A-Za-z0-9._-]{1,256}$/u.test(key.kid) &&
+    (key.key_ops === undefined ||
+      (Array.isArray(key.key_ops) && key.key_ops.length === 1 && key.key_ops[0] === "verify"))
+  );
+}
+
 function validateJwk(value: unknown): ValidJwk {
   const key = object(value);
+  if (!commonJwkIsValid(key)) throw new Error("invalid JWKS key");
   if (
-    key.kty !== "RSA" ||
-    key.alg !== "RS256" ||
-    key.use !== "sig" ||
-    typeof key.kid !== "string" ||
-    !/^[A-Za-z0-9._-]{1,256}$/u.test(key.kid) ||
-    typeof key.n !== "string" ||
-    typeof key.e !== "string" ||
-    (key.key_ops !== undefined &&
-      (!Array.isArray(key.key_ops) || !key.key_ops.includes("verify"))) ||
-    ["d", "dp", "dq", "p", "q", "qi", "oth"].some((member) => member in key)
+    key.kty === "RSA" &&
+    key.alg === "RS256" &&
+    base64UrlMember(key.n) &&
+    base64UrlMember(key.e) &&
+    !["d", "dp", "dq", "p", "q", "qi", "oth"].some((member) => member in key)
   ) {
-    throw new Error("invalid JWKS key");
+    return key as unknown as ValidRsaJwk;
   }
-  return key as unknown as ValidJwk;
+  if (
+    key.kty === "EC" &&
+    key.alg === "ES256" &&
+    key.crv === "P-256" &&
+    exactP256Coordinate(key.x) &&
+    exactP256Coordinate(key.y) &&
+    !("d" in key)
+  ) {
+    return key as unknown as ValidEcJwk;
+  }
+  throw new Error("invalid JWKS key");
 }
 
 function validateJwks(value: unknown): readonly ValidJwk[] {
@@ -239,7 +297,12 @@ export function makeJwksSessionProofVerifier(
       throw new Error("invalid token");
     const header = decodeJson(parts[0] as string);
     const claims = decodeJson(parts[1] as string);
-    if (header.alg !== "RS256" || header.typ !== "JWT" || typeof header.kid !== "string") {
+    if (
+      (header.alg !== "RS256" && header.alg !== "ES256") ||
+      header.typ !== "JWT" ||
+      typeof header.kid !== "string" ||
+      !/^[A-Za-z0-9._-]{1,256}$/u.test(header.kid)
+    ) {
       throw new Error("invalid header");
     }
 
@@ -250,24 +313,33 @@ export function makeJwksSessionProofVerifier(
       jwk = keys.find((key) => key.kid === header.kid);
     }
     if (jwk === undefined) throw new Error("unknown key");
-    const key = await (crypto.subtle as unknown as RsaJwkImporter).importKey(
-      "jwk",
-      jwk,
-      RSA_VERIFY_ALGORITHM,
-      false,
-      ["verify"],
-    );
-    const valid = await crypto.subtle.verify(
-      RSA_VERIFY_ALGORITHM,
-      key,
-      (() => {
-        const signature = base64UrlDecode(parts[2] as string);
-        const owned = new Uint8Array(new ArrayBuffer(signature.byteLength));
-        owned.set(signature);
-        return owned;
-      })(),
-      new TextEncoder().encode(`${parts[0]}.${parts[1]}`),
-    );
+    const signature = base64UrlDecode(parts[2] as string);
+    const signingInput = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
+    let valid: boolean;
+    if (header.alg === "RS256") {
+      if (jwk.kty !== "RSA" || jwk.alg !== "RS256") throw new Error("algorithm mismatch");
+      const key = await (crypto.subtle as unknown as RsaJwkImporter).importKey(
+        "jwk",
+        jwk,
+        RSA_IMPORT_ALGORITHM,
+        false,
+        ["verify"],
+      );
+      valid = await crypto.subtle.verify(RSA_VERIFY_ALGORITHM, key, signature, signingInput);
+    } else {
+      if (jwk.kty !== "EC" || jwk.alg !== "ES256" || jwk.crv !== "P-256") {
+        throw new Error("algorithm mismatch");
+      }
+      if (signature.byteLength !== 64) throw new Error("invalid ECDSA signature");
+      const key = await (crypto.subtle as unknown as EcJwkImporter).importKey(
+        "jwk",
+        jwk,
+        EC_IMPORT_ALGORITHM,
+        false,
+        ["verify"],
+      );
+      valid = await crypto.subtle.verify(EC_VERIFY_ALGORITHM, key, signature, signingInput);
+    }
     if (!valid) throw new Error("invalid signature");
 
     if (claims.iss !== provider.issuer) throw new Error("invalid issuer");
