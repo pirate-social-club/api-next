@@ -6,6 +6,7 @@ import type {
 import { NotFound } from "@pirate/contracts";
 import type { ProofSession } from "@pirate/domain/verification";
 import {
+  makeFakeVerificationProvider,
   makeFakeVerificationProviderRegistry,
   NO_SUBJECT_FAKE_PROVIDER_MANIFEST,
 } from "@pirate/testing/verification";
@@ -75,7 +76,15 @@ function terminalStore(): VerificationCompletionStore {
   };
 }
 
-async function handlers() {
+async function handlers(
+  options: {
+    readonly callback_registry?: {
+      readonly list: () => readonly [typeof manifest];
+      readonly resolve: () => Effect.Effect<ReturnType<typeof makeFakeVerificationProvider>>;
+    };
+    readonly callback_credential_headers?: readonly string[];
+  } = {},
+) {
   const registry = await Effect.runPromise(
     makeFakeVerificationProviderRegistry({
       mode: "no-subject",
@@ -114,6 +123,12 @@ async function handlers() {
       },
     },
     completion,
+    ...(options.callback_registry === undefined
+      ? {}
+      : { callback: { ...completion, registry: options.callback_registry } }),
+    ...(options.callback_credential_headers === undefined
+      ? {}
+      : { callback_credential_headers: options.callback_credential_headers }),
   });
 }
 
@@ -164,6 +179,48 @@ describe("verification HTTP handlers", () => {
       status: "completed",
       replayed: true,
     });
+  });
+
+  test("strips standard and deployment credentials before application callback code", async () => {
+    let observedHeaders: Readonly<Record<string, string>> | undefined;
+    const adapter = makeFakeVerificationProvider({
+      mode: "no-subject",
+      verifyCallback: (input) => {
+        observedHeaders = input.headers;
+        return Effect.succeed({
+          proof_session_id: "fake-session-1",
+          idempotency_key: "webhook-1",
+          submission: { channel: "provider_callback", payload: { authenticated: true } },
+        });
+      },
+    });
+    // Intentionally bypass the registry guard here so this test isolates the
+    // earlier handler boundary. The provider double itself remains in testing.
+    const callbackRegistry = {
+      list: () => [adapter.manifest] as const,
+      resolve: () => Effect.succeed(adapter),
+    };
+    const configured = await handlers({
+      callback_registry: callbackRegistry,
+      callback_credential_headers: ["x-pirate-internal-auth"],
+    });
+
+    await configured.CompleteVerificationCallback({
+      principal: null,
+      body: "{}",
+      headers: {
+        authorization: "Bearer platform-secret",
+        cookie: "session=platform-secret",
+        "cf-access-client-secret": "access-secret",
+        "x-pirate-internal-auth": "deployment-secret",
+        "webhook-signature": "sig",
+        "x-trace": "trace",
+      },
+      params: { providerId: manifest.provider_id },
+      query: undefined,
+    });
+
+    expect(observedHeaders).toEqual({ "webhook-signature": "sig", "x-trace": "trace" });
   });
 
   test("maps an arbitrary unknown provider ID without adding a provider enum", async () => {
