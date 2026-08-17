@@ -10,6 +10,8 @@ export {
   VerificationProviderCompleteInput,
   VerificationProviderInvalidResponse,
   VerificationProviderMisconfigured,
+  VerificationProviderPlanInput,
+  VerificationProviderPlanResult,
   VerificationProviderRejected,
   VerificationProviderStartInput,
   VerificationProviderUnavailable,
@@ -31,6 +33,11 @@ export {
   VerificationCompletionStorageFailed,
 } from "./completion.ts";
 export type {
+  PlannedVerificationProvider,
+  VerificationProviderPlanningCandidate,
+} from "./planning.ts";
+export { planVerificationProviderCandidates } from "./planning.ts";
+export type {
   VerificationProviderManifestField,
   VerificationProviderRegistryError,
   VerificationProviderRegistryOptions,
@@ -45,3 +52,5 @@ export {
   VerificationProviderUnknown,
   validateProofProviderManifest,
 } from "./registry.ts";
+export type { VerificationRequestHashInput } from "./request-hash.ts";
+export { computeVerificationRequestHash } from "./request-hash.ts";

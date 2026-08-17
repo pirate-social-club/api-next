@@ -29,6 +29,7 @@ const manifest: ProofProviderManifest = {
   environments: ["test"],
   supported_methods: ["document"],
   claim_ids: ["document.valid"],
+  claim_capabilities: [{ claim_id: "document.valid", request_modes: ["dynamic"] }],
   presentation_kinds: ["none"],
   assurance_levels: ["document_zk"],
   subject_key_scope_semantics: "issuer_rp_scope",
@@ -48,6 +49,8 @@ function session(overrides: Partial<ProofSession> = {}): ProofSession {
       issuer: "test.complete",
       rp_scope: "pirate.example",
     },
+    request_mode: "dynamic",
+    requested_requirements: [{ claim_id: "document.valid" }],
     requested_claim_ids: ["document.valid"],
     subject_binding_intent: "establish",
     protocol_version: "complete-v1",
@@ -116,6 +119,7 @@ function adapterFor(
 ): VerificationProviderAdapter {
   return {
     manifest,
+    plan: () => Effect.die("plan is outside this use case"),
     start: () => Effect.die("start is outside this use case"),
     complete: () => {
       calls.complete += 1;

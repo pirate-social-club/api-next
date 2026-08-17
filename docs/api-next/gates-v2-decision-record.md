@@ -64,6 +64,46 @@ Every uniqueness key contains its full namespace: `issuer`, `method`,
 `rp_scope`, and `subject_digest`, with an optional action scope when the method
 defines action-level uniqueness. There is no global or missing-scope form.
 
+### Provider-neutral requests and document coverage
+
+A proof request is an immutable canonical requirement set, not a bag of claim
+names. `age.minimum` carries its threshold; `nationality.allowed` carries the
+sorted country allowlist; other parameterized claims carry their typed values.
+The adapter boundary recomputes a versioned SHA-256 request hash over the actor,
+intent, provider, method, scope, request mode, canonical requirements,
+subject-binding intent, protocol, and environment before any provider starts.
+Claim IDs are excluded because they are an exact checked projection of the
+requirements. Future routes must use the same helper rather than accepting a
+client-selected hash. Proof sessions persist both the requirements and their
+checked claim-ID projection, and neither can change after session creation.
+
+Provider manifests declare whether claims are available through a `curated`
+configuration or a `dynamic` runtime request. The adapter's planning operation
+returns `supported`, `unsupported`, or `unknown`; a supported result also names
+the request mode used by the session. Planning answers only whether the current
+provider configuration can express the request. It does not promise that the
+user's passport or national ID is covered. Unsupported documents are a typed
+completion rejection, while provider/config lookup failures remain unknown or
+indeterminate rather than becoming policy failures.
+
+Self and ZKPassport are parallel implementations of the same requirements.
+Self Enterprise maps exact matches to reviewed immutable dashboard flows;
+ZKPassport compiles dynamic community requirements into self-served queries.
+The product may offer every provider whose plan is supported, and a user whose
+document is not covered by one provider can start a fresh ceremony with
+another. A nationality is never considered unsupported merely because one
+provider cannot verify that user's document.
+
+For privacy-preserving membership proofs, `nationality.allowed` may assert only
+`{ allowed: true }`, with disclosure of the actual country optional. That
+assertion is meaningful only with the same session's canonical country set; it
+is not a reusable global nationality fact. Every ZKPassport ceremony that
+produces `credential.subject_unique`, including rewards, uses the single pinned
+platform RP scope. Dashboard policy-version scopes are reserved for
+disclosure-only/template use because rotating them would fragment stable
+subject identity. Additional providers use the same manifest, plan, start,
+completion, and evidence seams without entering the policy language.
+
 ## Reward uniqueness
 
 A reward campaign chooses one uniqueness authority and one named issuer scope,
@@ -83,9 +123,10 @@ another platform.
 
 The evidence ledger records:
 
-- proof sessions with actor, intent, request hash, issuer scope, protocol,
-  environment, and explicit subject-binding intent (`establish`, `recover`, or
-  `none`);
+- proof sessions with actor, intent, canonical requirements, request mode,
+  request hash, issuer scope, protocol, environment, an optional opaque
+  provider-session correlation reference, and explicit subject-binding intent
+  (`establish`, `recover`, or `none`);
 - append-only receipts with explicit scope, evidence hash, observation time,
   protocol metadata, source session, and optional subject-key linkage;
 - immutable issuer-scoped subject identities, append-only account-binding
@@ -97,9 +138,9 @@ Binding groups are the co-reference boundary. A policy requiring personhood and
 age must select assertions sharing a subject or receipt binding group; unrelated
 provider responses cannot be combined merely because both predicates pass.
 
-Provider manifests declare claims, assurance levels, presentation kinds, and
-subject-key scope semantics. Provider IDs, protocols, and methods are data, not
-closed unions in the engine or contract.
+Provider manifests declare claims, request modes, assurance levels,
+presentation kinds, and subject-key scope semantics. Provider IDs, protocols,
+and methods are data, not closed unions in the engine or contract.
 
 Assertion values are claim-specific runtime schemas rather than arbitrary
 JSON. Completion accepts a transport-neutral `submission`; callback parsing and
@@ -184,11 +225,12 @@ after first durable application, the normal immutable forward-only rule
 applies. Fresh databases produced by the cumulative baseline and by ordered
 deltas must have identical catalogs.
 
-Provider additions must be adapter-local. The repository walker enforces the
-provider location, rejects forbidden and computed imports, and freezes the
-exact verification subpath exports. A compile-only provider fixture proves the
-real path is walked. The registry adversarial corpus tests malformed sessions
-and evidence once; each real adapter must additionally pass the shared
+Provider additions must be adapter-local. The repository walker cross-checks
+workspace packages against its dependency matrix, enforces the provider
+location, rejects forbidden imports and runtime module-loader escapes, and
+freezes the exact verification subpath exports. A compile-only provider fixture
+proves the real path is walked. The registry adversarial corpus tests malformed
+sessions and evidence once; each real adapter must additionally pass the shared
 transport harness with its injected upstream fake. If adding Self, ZKPassport,
 Very, World ID, Humanity, or another provider requires an engine, evidence
 schema, route, or contract-enum edit, the abstraction has failed and must be

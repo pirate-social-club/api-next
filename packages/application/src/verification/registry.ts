@@ -1,4 +1,5 @@
 import {
+  type Assertion,
   CANONICAL_CLAIM_CATALOG,
   type CanonicalClaimIdentifier,
   EvidenceBundle,
@@ -6,6 +7,9 @@ import {
   type ProofSession,
   type SubjectKeyScopeSemantics,
   type SubjectScope,
+  sameVerificationRequirements,
+  type VerificationRequirement,
+  verificationRequirementClaimIds,
 } from "@pirate/domain/verification";
 import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import {
@@ -15,10 +19,13 @@ import {
   type VerificationProviderFailure,
   VerificationProviderInvalidResponse,
   VerificationProviderMisconfigured,
+  VerificationProviderPlanInput,
+  VerificationProviderPlanResult,
   VerificationProviderRejected,
   VerificationProviderStartInput,
   VerificationProviderUnavailable,
 } from "./adapter.ts";
+import { computeVerificationRequestHash } from "./request-hash.ts";
 
 export type VerificationProviderManifestField =
   | "schema"
@@ -28,6 +35,7 @@ export type VerificationProviderManifestField =
   | "environments"
   | "supported_methods"
   | "claim_ids"
+  | "claim_capabilities"
   | "presentation_kinds"
   | "assurance_levels"
   | "subject_key_scope_semantics";
@@ -125,6 +133,20 @@ export function validateProofProviderManifest(
       ) {
         return Effect.fail(invalid(provider_id, "claim_ids"));
       }
+      if (
+        manifest.claim_capabilities.length === 0 ||
+        !uniqueStrings(manifest.claim_capabilities.map((capability) => capability.claim_id)) ||
+        manifest.claim_capabilities.some(
+          (capability) =>
+            capability.request_modes.length === 0 || !uniqueStrings(capability.request_modes),
+        ) ||
+        !sameClaimSet(
+          manifest.claim_capabilities.map((capability) => capability.claim_id),
+          manifest.claim_ids,
+        )
+      ) {
+        return Effect.fail(invalid(provider_id, "claim_capabilities"));
+      }
       if (manifest.presentation_kinds.length === 0 || !uniqueStrings(manifest.presentation_kinds)) {
         return Effect.fail(invalid(provider_id, "presentation_kinds"));
       }
@@ -191,11 +213,37 @@ function sameClaimSet(left: readonly string[], right: readonly string[]): boolea
   );
 }
 
+function sameOrderedStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function requirementsMatchClaims(
+  requirements: readonly VerificationRequirement[],
+  claims: readonly CanonicalClaimIdentifier[],
+): boolean {
+  const projected = verificationRequirementClaimIds(requirements);
+  return (
+    projected.length === claims.length && projected.every((claim, index) => claim === claims[index])
+  );
+}
+
 function requiresNamedScope(claims: readonly string[]): boolean {
   return claims.some(
     (claim) =>
       canonicalClaimCatalog.get(claim as CanonicalClaimIdentifier)?.scope_requirement ===
       "named_issuer_scope",
+  );
+}
+
+function requestModeSupported(
+  manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
+  claims: readonly CanonicalClaimIdentifier[],
+  requestMode: "curated" | "dynamic",
+): boolean {
+  return claims.every((claim) =>
+    manifest.claim_capabilities
+      .find((capability) => capability.claim_id === claim)
+      ?.request_modes.includes(requestMode),
   );
 }
 
@@ -209,6 +257,46 @@ function bindingIntentMatchesManifest(
 function assuranceSupportsClaim(claim: CanonicalClaimIdentifier, assurance: string): boolean {
   const entry = canonicalClaimCatalog.get(claim);
   return entry?.holder_liveness !== "required" || assurance === "holder_live";
+}
+
+function assertionMatchesRequirement(
+  assertion: Assertion,
+  requirements: readonly VerificationRequirement[],
+): boolean {
+  const requirement = requirements.find((candidate) => candidate.claim_id === assertion.claim_id);
+  if (requirement === undefined) return false;
+  switch (assertion.claim_id) {
+    case "age.minimum":
+      return (
+        requirement.claim_id === "age.minimum" &&
+        assertion.value.minimum_age === requirement.minimum_age
+      );
+    case "nationality.allowed":
+      return (
+        requirement.claim_id === "nationality.allowed" &&
+        (assertion.value.disclosed_nationality === undefined ||
+          requirement.allowed_countries.includes(assertion.value.disclosed_nationality))
+      );
+    case "gender.marker":
+      return (
+        requirement.claim_id === "gender.marker" &&
+        requirement.allowed_markers.includes(assertion.value.gender)
+      );
+    case "asset.ownership":
+      return (
+        requirement.claim_id === "asset.ownership" &&
+        JSON.stringify(assertion.value.descriptor) === JSON.stringify(requirement.descriptor) &&
+        BigInt(assertion.value.quantity) >= BigInt(requirement.minimum_quantity)
+      );
+    case "disclosed.predicate":
+      return (
+        requirement.claim_id === "disclosed.predicate" &&
+        assertion.value.predicate === requirement.predicate &&
+        JSON.stringify(assertion.value.value) === JSON.stringify(requirement.expected_value)
+      );
+    default:
+      return requirement.claim_id === assertion.claim_id;
+  }
 }
 
 function compatibleSession(
@@ -227,6 +315,8 @@ function compatibleSession(
     manifest.environments.includes(session.environment) &&
     session.requested_claim_ids.length > 0 &&
     uniqueStrings(session.requested_claim_ids) &&
+    requestModeSupported(manifest, session.requested_claim_ids, session.request_mode) &&
+    requirementsMatchClaims(session.requested_requirements, session.requested_claim_ids) &&
     session.requested_claim_ids.every((claim) => manifest.claim_ids.includes(claim)) &&
     bindingIntentMatchesManifest(manifest, session.subject_binding_intent) &&
     scopeSemantics(session.scope) === manifest.subject_key_scope_semantics &&
@@ -236,7 +326,7 @@ function compatibleSession(
 
 function safeAdapterFailure(
   provider_id: string,
-  operation: "start" | "complete",
+  operation: "plan" | "start" | "complete",
   error: unknown,
 ): VerificationProviderFailure {
   if (error instanceof VerificationProviderUnavailable) {
@@ -256,9 +346,34 @@ function safeAdapterFailure(
 
 function invalidResponse(
   provider_id: string,
-  operation: "start" | "complete",
+  operation: "plan" | "start" | "complete",
 ): VerificationProviderInvalidResponse {
   return new VerificationProviderInvalidResponse({ provider_id, operation });
+}
+
+function requestSupportedByManifest(
+  manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
+  input: Schema.Schema.Type<typeof VerificationProviderPlanInput> & {
+    readonly request_mode?: "curated" | "dynamic";
+  },
+): boolean {
+  const requestedClaimsDeclared = input.requested_claim_ids.every((claim) =>
+    manifest.claim_ids.includes(claim),
+  );
+  return (
+    input.requested_claim_ids.length > 0 &&
+    uniqueStrings(input.requested_claim_ids) &&
+    requirementsMatchClaims(input.requested_requirements, input.requested_claim_ids) &&
+    requestedClaimsDeclared &&
+    (input.request_mode === undefined ||
+      requestModeSupported(manifest, input.requested_claim_ids, input.request_mode)) &&
+    manifest.protocol_versions.includes(input.protocol_version) &&
+    manifest.environments.includes(input.environment) &&
+    manifest.supported_methods.includes(input.method) &&
+    bindingIntentMatchesManifest(manifest, input.subject_binding_intent) &&
+    scopeSemantics(input.scope) === manifest.subject_key_scope_semantics &&
+    (!requiresNamedScope(input.requested_claim_ids) || scopeSemantics(input.scope) !== "none")
+  );
 }
 
 function validateStartOutput(
@@ -286,7 +401,12 @@ function validateStartOutput(
         session.request_hash !== input.request_hash ||
         session.method !== input.method ||
         !sameScope(session.scope, input.scope) ||
-        !sameClaimSet(session.requested_claim_ids, input.requested_claim_ids) ||
+        session.request_mode !== input.request_mode ||
+        !sameVerificationRequirements(
+          session.requested_requirements,
+          input.requested_requirements,
+        ) ||
+        !sameOrderedStrings(session.requested_claim_ids, input.requested_claim_ids) ||
         session.subject_binding_intent !== input.subject_binding_intent ||
         session.protocol_version !== input.protocol_version ||
         session.environment !== input.environment ||
@@ -370,6 +490,7 @@ function validateBundle(
         return (
           requested.has(assertion.claim_id) &&
           declared.has(assertion.claim_id) &&
+          assertionMatchesRequirement(assertion, input.session.requested_requirements) &&
           declaredAssurances.has(assertion.assurance) &&
           assuranceSupportsClaim(assertion.claim_id, assertion.assurance) &&
           receiptIds.has(assertion.evidence_receipt_id) &&
@@ -406,6 +527,42 @@ function guardAdapter(
 ): VerificationProviderAdapter {
   return {
     manifest,
+    plan: (untrustedInput) => {
+      const decodedInput = Schema.decodeUnknownOption(VerificationProviderPlanInput)(
+        untrustedInput,
+      );
+      if (
+        Option.isNone(decodedInput) ||
+        !requestSupportedByManifest(manifest, decodedInput.value)
+      ) {
+        return Effect.fail(
+          new VerificationProviderRejected({
+            provider_id: manifest.provider_id,
+            operation: "plan",
+          }),
+        );
+      }
+      return Effect.suspend(() => adapter.plan(decodedInput.value)).pipe(
+        Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "plan", error)),
+        Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "plan"))),
+        Effect.flatMap((result) =>
+          Effect.try({
+            try: () => Schema.decodeUnknownSync(VerificationProviderPlanResult)(result),
+            catch: () => invalidResponse(manifest.provider_id, "plan"),
+          }),
+        ),
+        Effect.flatMap((result) =>
+          result.status !== "supported" ||
+          requestModeSupported(
+            manifest,
+            decodedInput.value.requested_claim_ids,
+            result.request_mode,
+          )
+            ? Effect.succeed(result)
+            : Effect.fail(invalidResponse(manifest.provider_id, "plan")),
+        ),
+      );
+    },
     start: (untrustedInput) => {
       const decodedInput = Schema.decodeUnknownOption(VerificationProviderStartInput)(
         untrustedInput,
@@ -419,20 +576,7 @@ function guardAdapter(
         );
       }
       const input = decodedInput.value;
-      const requestedClaimsDeclared = input.requested_claim_ids.every((claim) =>
-        manifest.claim_ids.includes(claim),
-      );
-      if (
-        input.requested_claim_ids.length === 0 ||
-        !uniqueStrings(input.requested_claim_ids) ||
-        !requestedClaimsDeclared ||
-        !manifest.protocol_versions.includes(input.protocol_version) ||
-        !manifest.environments.includes(input.environment) ||
-        !manifest.supported_methods.includes(input.method) ||
-        !bindingIntentMatchesManifest(manifest, input.subject_binding_intent) ||
-        scopeSemantics(input.scope) !== manifest.subject_key_scope_semantics ||
-        (requiresNamedScope(input.requested_claim_ids) && scopeSemantics(input.scope) === "none")
-      ) {
+      if (!requestSupportedByManifest(manifest, input)) {
         return Effect.fail(
           new VerificationProviderRejected({
             provider_id: manifest.provider_id,
@@ -440,7 +584,23 @@ function guardAdapter(
           }),
         );
       }
-      return Effect.suspend(() => adapter.start(input)).pipe(
+      return Effect.tryPromise({
+        try: () => computeVerificationRequestHash(manifest.provider_id, input),
+        catch: () =>
+          new VerificationProviderRejected({
+            provider_id: manifest.provider_id,
+            operation: "start",
+          }),
+      }).pipe(
+        Effect.filterOrFail(
+          (expectedHash) => expectedHash === input.request_hash,
+          () =>
+            new VerificationProviderRejected({
+              provider_id: manifest.provider_id,
+              operation: "start",
+            }),
+        ),
+        Effect.flatMap(() => Effect.suspend(() => adapter.start(input))),
         Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "start", error)),
         Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "start"))),
         Effect.flatMap((result) => validateStartOutput(manifest, input, result, now())),

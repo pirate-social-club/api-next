@@ -7,6 +7,8 @@ import {
   Sha256Hex,
   SubjectBindingIntent,
   SubjectScope,
+  VerificationRequestMode,
+  VerificationRequirements,
 } from "@pirate/domain/verification";
 import { Data, type Effect, Schema } from "effect";
 
@@ -56,6 +58,8 @@ export const VerificationProviderStartInput = Schema.Struct({
   request_hash: Sha256Hex,
   method: Schema.NonEmptyString,
   scope: SubjectScope,
+  request_mode: VerificationRequestMode,
+  requested_requirements: VerificationRequirements,
   requested_claim_ids: Schema.NonEmptyArray(CanonicalClaimIdentifier),
   subject_binding_intent: SubjectBindingIntent,
   protocol_version: Schema.NonEmptyString,
@@ -63,6 +67,31 @@ export const VerificationProviderStartInput = Schema.Struct({
 });
 export type VerificationProviderStartInput = Schema.Schema.Type<
   typeof VerificationProviderStartInput
+>;
+
+export const VerificationProviderPlanInput = Schema.Struct({
+  method: Schema.NonEmptyString,
+  scope: SubjectScope,
+  requested_requirements: VerificationRequirements,
+  requested_claim_ids: Schema.NonEmptyArray(CanonicalClaimIdentifier),
+  subject_binding_intent: SubjectBindingIntent,
+  protocol_version: Schema.NonEmptyString,
+  environment: Schema.NonEmptyString,
+});
+export type VerificationProviderPlanInput = Schema.Schema.Type<
+  typeof VerificationProviderPlanInput
+>;
+
+export const VerificationProviderPlanResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("supported"),
+    request_mode: VerificationRequestMode,
+  }),
+  Schema.Struct({ status: Schema.Literal("unsupported") }),
+  Schema.Struct({ status: Schema.Literal("unknown") }),
+]);
+export type VerificationProviderPlanResult = Schema.Schema.Type<
+  typeof VerificationProviderPlanResult
 >;
 
 export const VerificationProviderCompleteInput = Schema.Struct({
@@ -74,7 +103,7 @@ export type VerificationProviderCompleteInput = Schema.Schema.Type<
   typeof VerificationProviderCompleteInput
 >;
 
-export type VerificationProviderOperation = "start" | "complete";
+export type VerificationProviderOperation = "plan" | "start" | "complete";
 
 /** Adapter failures are deliberately closed and contain no upstream payload. */
 export class VerificationProviderUnavailable extends Data.TaggedError(
@@ -115,6 +144,10 @@ export type VerificationProviderFailure =
  */
 export interface VerificationProviderAdapter {
   readonly manifest: ProofProviderManifest;
+  /** Request support is configuration support, not a promise about the user's document. */
+  readonly plan: (
+    input: VerificationProviderPlanInput,
+  ) => Effect.Effect<VerificationProviderPlanResult, VerificationProviderFailure>;
   readonly start: (
     input: VerificationProviderStartInput,
   ) => Effect.Effect<ProviderSessionStart, VerificationProviderFailure>;

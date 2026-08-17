@@ -20,7 +20,10 @@ be byte-identical.
 canonical `0008_community_route_slug.sql`. It replaced the review-only
 gates evidence/action-grant and subject-binding/lifecycle deltas before either was
 applied to a durable environment. The reset removed their transitional
-create-then-alter sequence and deliberately regenerated the checksum manifest.
+create-then-alter sequence. Before coordinator merge, the same undeployed
+baseline was amended once to persist canonical verification requirements and
+their request mode; the checksum manifest was deliberately regenerated after
+that final catalog change.
 
 This is not a compatibility path or a precedent for rewriting applied
 migrations. A disposable local database whose ledger contains either retired

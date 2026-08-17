@@ -9,6 +9,6 @@
     "0006_public_profile_handle_index.sql": "200ca6edac5a8ba9a2a20c709a04652f90547baacae867743e0a15cef71fa522",
     "0007_public_profile_handle_invariants.sql": "bd7f740d0003f3897cf8b508138fcdf470a8d0f102032af484244ac32466aeb1",
     "0008_community_route_slug.sql": "58b5e111b59eb094d976498646ff1269f6e8e5393774055c82872de8fa51bbf8",
-    "0009_gates_v2_foundation.sql": "fe1a4527de531361ca893efd6f5a119a5fba6ac14406517a0e8fa6ac8647845a"
+    "0009_gates_v2_foundation.sql": "39a5312194ee479f92c31fdb4d0ddfcc6e4616b235203b45d43fa94afd29cbf0"
   }
 }

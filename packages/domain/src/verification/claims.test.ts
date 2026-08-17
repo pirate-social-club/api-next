@@ -91,12 +91,16 @@ describe("verification claim catalog", () => {
       environments: ["production"],
       supported_methods: ["document"],
       claim_ids: ["credential.subject_unique"],
+      claim_capabilities: [
+        { claim_id: "credential.subject_unique", request_modes: ["curated", "dynamic"] },
+      ],
       presentation_kinds: ["embedded_sdk", "none"],
       assurance_levels: ["document_zk"],
       subject_key_scope_semantics: "issuer_rp_scope",
     });
     expect(manifest.provider_id).toBe("future-provider");
     expect(manifest.presentation_kinds).toEqual(["embedded_sdk", "none"]);
+    expect(manifest.claim_capabilities[0]?.request_modes).toEqual(["curated", "dynamic"]);
     expect(manifest.subject_key_scope_semantics).toBe("issuer_rp_scope");
     expect(() =>
       Schema.decodeUnknownSync(ProofProviderManifest)({

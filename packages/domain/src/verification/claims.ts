@@ -90,6 +90,16 @@ export const PresentationKind = Schema.Literals([
 ]);
 export type PresentationKind = Schema.Schema.Type<typeof PresentationKind>;
 
+/** Whether a provider expresses a claim through configuration or a runtime query. */
+export const VerificationRequestMode = Schema.Literals(["curated", "dynamic"]);
+export type VerificationRequestMode = Schema.Schema.Type<typeof VerificationRequestMode>;
+
+export const ProviderClaimCapability = Schema.Struct({
+  claim_id: CanonicalClaimIdentifier,
+  request_modes: Schema.NonEmptyArray(VerificationRequestMode),
+});
+export type ProviderClaimCapability = Schema.Schema.Type<typeof ProviderClaimCapability>;
+
 /**
  * Providers must declare whether a subject key is scoped to an issuer and RP,
  * to an issuer/RP/action tuple, or is not produced at all.
@@ -200,6 +210,7 @@ export const ProofProviderManifest = Schema.Struct({
   environments: Schema.Array(Schema.NonEmptyString),
   supported_methods: Schema.Array(Schema.NonEmptyString),
   claim_ids: Schema.Array(CanonicalClaimIdentifier),
+  claim_capabilities: Schema.Array(ProviderClaimCapability),
   presentation_kinds: Schema.Array(PresentationKind),
   assurance_levels: Schema.Array(Assurance),
   subject_key_scope_semantics: SubjectKeyScopeSemantics,

@@ -72,11 +72,13 @@ const VERIFICATION_EXPORTS = {
       "NamedIssuerScope",
       "NoSubjectScope",
       "PresentationKind",
+      "ProviderClaimCapability",
       "ProofProviderManifest",
       "ScopeRequirement",
       "SubjectBindingIntent",
       "SubjectKeyScopeSemantics",
       "SubjectScope",
+      "VerificationRequestMode",
     ],
     "./evidence.ts": [
       "Assertion",
@@ -109,6 +111,13 @@ const VERIFICATION_EXPORTS = {
       "NonNegativeIntegerString",
       "Sha256Hex",
     ],
+    "./requirements.ts": [
+      "canonicalizeVerificationRequirements",
+      "sameVerificationRequirements",
+      "VerificationRequirement",
+      "VerificationRequirements",
+      "verificationRequirementClaimIds",
+    ],
   },
   "packages/application": {
     "./adapter.ts": [
@@ -121,6 +130,8 @@ const VERIFICATION_EXPORTS = {
       "VerificationProviderInvalidResponse",
       "VerificationProviderMisconfigured",
       "VerificationProviderOperation",
+      "VerificationProviderPlanInput",
+      "VerificationProviderPlanResult",
       "VerificationProviderRejected",
       "VerificationProviderStartInput",
       "VerificationProviderUnavailable",
@@ -152,6 +163,12 @@ const VERIFICATION_EXPORTS = {
       "VerificationProviderRegistryService",
       "VerificationProviderUnknown",
     ],
+    "./planning.ts": [
+      "PlannedVerificationProvider",
+      "planVerificationProviderCandidates",
+      "VerificationProviderPlanningCandidate",
+    ],
+    "./request-hash.ts": ["computeVerificationRequestHash", "VerificationRequestHashInput"],
   },
   "packages/testing": {
     "./fake-provider.ts": [
@@ -187,6 +204,94 @@ export function walkTypeScriptFiles(directory, files = []) {
     }
   }
   return files;
+}
+
+function containsCommonJsLoader(text) {
+  let state = "code";
+  const templateReturns = [];
+  const interpolationDepths = [];
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    const next = text[index + 1];
+    if (state === "line-comment") {
+      if (character === "\n") state = "code";
+      continue;
+    }
+    if (state === "block-comment") {
+      if (character === "*" && next === "/") {
+        state = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (state === "single-quote" || state === "double-quote") {
+      if (character === "\\") {
+        index += 1;
+      } else if (
+        (state === "single-quote" && character === "'") ||
+        (state === "double-quote" && character === '"')
+      ) {
+        state = "code";
+      }
+      continue;
+    }
+    if (state === "template") {
+      if (character === "\\") {
+        index += 1;
+      } else if (character === "`") {
+        state = templateReturns.pop() ?? "code";
+      } else if (character === "$" && next === "{") {
+        interpolationDepths.push(1);
+        state = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (character === "/" && next === "/") {
+      state = "line-comment";
+      index += 1;
+      continue;
+    }
+    if (character === "/" && next === "*") {
+      state = "block-comment";
+      index += 1;
+      continue;
+    }
+    if (character === "'") {
+      state = "single-quote";
+      continue;
+    }
+    if (character === '"') {
+      state = "double-quote";
+      continue;
+    }
+    if (character === "`") {
+      templateReturns.push("code");
+      state = "template";
+      continue;
+    }
+    if (interpolationDepths.length > 0 && character === "{") {
+      interpolationDepths[interpolationDepths.length - 1] += 1;
+      continue;
+    }
+    if (interpolationDepths.length > 0 && character === "}") {
+      const depthIndex = interpolationDepths.length - 1;
+      interpolationDepths[depthIndex] -= 1;
+      if (interpolationDepths[depthIndex] === 0) {
+        interpolationDepths.pop();
+        state = "template";
+      }
+      continue;
+    }
+    if (character !== undefined && /[A-Za-z_$]/u.test(character)) {
+      let end = index + 1;
+      while (end < text.length && /[A-Za-z0-9_$]/u.test(text[end])) end += 1;
+      const identifier = text.slice(index, end);
+      if (identifier === "require" || identifier === "createRequire") return true;
+      index = end - 1;
+    }
+  }
+  return false;
 }
 
 export function analyzeTypeScript(text, _fileName = "fixture.ts") {
@@ -244,9 +349,10 @@ export function analyzeTypeScript(text, _fileName = "fixture.ts") {
   }
   const withoutLiteralDynamicImports = text.replace(/\bimport\s*\(\s*["'][^"']+["']\s*\)/gu, "");
   const hasComputedDynamicImport = /\bimport\s*\(/u.test(withoutLiteralDynamicImports);
+  const hasCommonJsLoader = containsCommonJsLoader(text);
   const withoutReexports = text.replace(exportPattern, "").replace(starExportPattern, "");
   const hasLocalExport = /\bexport\b/u.test(withoutReexports);
-  return { imports, exported, hasComputedDynamicImport, hasLocalExport };
+  return { imports, exported, hasCommonJsLoader, hasComputedDynamicImport, hasLocalExport };
 }
 
 function isAllowedPackageDependency(pkg, spec) {
@@ -305,18 +411,7 @@ function checkVerificationExportSurface(root, violations, checkedFiles) {
   for (const [packageDirectory, expectedBySource] of Object.entries(VERIFICATION_EXPORTS)) {
     const packageJsonPath = join(root, packageDirectory, "package.json");
     const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
-    const verificationExports = Object.keys(packageJson.exports ?? {}).filter((key) =>
-      key.startsWith("./verification"),
-    );
-    if (
-      verificationExports.length !== 1 ||
-      verificationExports[0] !== "./verification" ||
-      packageJson.exports["./verification"] !== "./src/verification/index.ts"
-    ) {
-      violations.push(
-        `${packageDirectory}/package.json: verification package export must remain exactly ./verification`,
-      );
-    }
+    violations.push(...verificationPackageExportViolations(packageDirectory, packageJson.exports));
 
     const relativeIndex = `${packageDirectory}/src/verification/index.ts`;
     const indexPath = join(root, relativeIndex);
@@ -332,12 +427,79 @@ function checkVerificationExportSurface(root, violations, checkedFiles) {
   }
 }
 
+function exportTargetEntersVerification(target) {
+  if (typeof target === "string") {
+    return target === "./src/verification" || target.startsWith("./src/verification/");
+  }
+  if (target === null || typeof target !== "object") return false;
+  return Object.values(target).some(exportTargetEntersVerification);
+}
+
+export function verificationPackageExportViolations(packageDirectory, exportsMap) {
+  const violations = [];
+  const exports = exportsMap ?? {};
+  const verificationExports = Object.keys(exports).filter((key) =>
+    key.startsWith("./verification"),
+  );
+  for (const [key, target] of Object.entries(exports)) {
+    if (key !== "./verification" && exportTargetEntersVerification(target)) {
+      violations.push(
+        `${packageDirectory}/package.json: ${key} may not export verification internals`,
+      );
+    }
+  }
+  if (
+    verificationExports.length !== 1 ||
+    verificationExports[0] !== "./verification" ||
+    exports["./verification"] !== "./src/verification/index.ts"
+  ) {
+    violations.push(
+      `${packageDirectory}/package.json: verification package export must remain exactly ./verification`,
+    );
+  }
+  return violations;
+}
+
+function workspaceDirectories(root) {
+  const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  if (!Array.isArray(packageJson.workspaces)) return [];
+  const directories = [];
+  for (const workspace of packageJson.workspaces) {
+    if (typeof workspace !== "string" || !workspace.endsWith("/*")) continue;
+    const parent = workspace.slice(0, -2);
+    const absoluteParent = join(root, parent);
+    for (const entry of readdirSync(absoluteParent)) {
+      if (statSync(join(absoluteParent, entry)).isDirectory()) {
+        directories.push(`${parent}/${entry}`);
+      }
+    }
+  }
+  return directories.sort();
+}
+
+function checkWorkspaceCoverage(root, violations) {
+  const declared = Object.keys(INTERNAL).sort();
+  const discovered = workspaceDirectories(root);
+  for (const directory of discovered) {
+    if (!declared.includes(directory)) {
+      violations.push(`${directory}: workspace package is missing from the dependency matrix`);
+    }
+  }
+  for (const directory of declared) {
+    if (!discovered.includes(directory)) {
+      violations.push(`${directory}: dependency-matrix root is missing from workspace globs`);
+    }
+  }
+}
+
 export function lintDependencies(
   root = process.cwd(),
   options = { checkVerificationExportSurface: true },
 ) {
   const violations = [];
   const checkedFiles = [];
+
+  checkWorkspaceCoverage(root, violations);
 
   for (const [directory, pkg] of Object.entries(INTERNAL)) {
     const absoluteDirectory = join(root, directory);
@@ -350,6 +512,11 @@ export function lintDependencies(
       if (!isTestFile(relativeFile) && analysis.hasComputedDynamicImport) {
         violations.push(
           `${relativeFile}: computed dynamic imports are forbidden in production package code`,
+        );
+      }
+      if (!isTestFile(relativeFile) && analysis.hasCommonJsLoader) {
+        violations.push(
+          `${relativeFile}: require()/createRequire are forbidden in production package code`,
         );
       }
 
@@ -396,6 +563,7 @@ export function lintDependencies(
         }
         if (
           (imported.names.includes("makeVerificationProviderRegistry") ||
+            imported.names.includes("makeVerificationProviderRegistryLayer") ||
             (isApplicationVerificationRegistrySpec(relativeFile, spec) &&
               imported.names.includes("*"))) &&
           !registryPlacementAllowed(relativeFile)

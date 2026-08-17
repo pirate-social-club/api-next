@@ -177,6 +177,29 @@ describe("verification evidence ledger shapes", () => {
         }),
       ).toThrow();
     }
+    expect(
+      Schema.decodeUnknownSync(Assertion)({
+        ...common,
+        claim_id: "nationality.allowed",
+        value: { allowed: true },
+      }).value,
+    ).toEqual({ allowed: true });
+    expect(
+      Schema.decodeUnknownSync(Assertion)({
+        ...common,
+        claim_id: "nationality.allowed",
+        value: { allowed: true, disclosed_nationality: "GE" },
+      }).value,
+    ).toEqual({ allowed: true, disclosed_nationality: "GE" });
+    for (const value of [{ allowed: false }, { nationality: "GE" }]) {
+      expect(() =>
+        Schema.decodeUnknownSync(Assertion)({
+          ...common,
+          claim_id: "nationality.allowed",
+          value,
+        }),
+      ).toThrow();
+    }
   });
 
   test("aggregates an adapter verification result without enforcing relationships", () => {
@@ -218,6 +241,7 @@ describe("verification evidence ledger shapes", () => {
       intent_id: "intent-1",
       request_hash: "1111111111111111111111111111111111111111111111111111111111111111",
       provider_id: "zkpassport",
+      upstream_session_ref: "zk-request-1",
       method: "document-nullifier",
       scope: {
         kind: "named",
@@ -225,7 +249,12 @@ describe("verification evidence ledger shapes", () => {
         issuer: "zkpassport",
         rp_scope: "pirate.example",
       },
-      requested_claim_ids: ["document.valid", "credential.subject_unique"],
+      request_mode: "dynamic",
+      requested_requirements: [
+        { claim_id: "credential.subject_unique" },
+        { claim_id: "document.valid" },
+      ],
+      requested_claim_ids: ["credential.subject_unique", "document.valid"],
       subject_binding_intent: "establish",
       protocol_version: "zkpassport-v2",
       environment: "production",
@@ -234,7 +263,8 @@ describe("verification evidence ledger shapes", () => {
       expires_at: "2026-08-18T00:00:00.000Z",
     });
     expect(session.scope.kind).toBe("named");
-    expect(session.requested_claim_ids).toEqual(["document.valid", "credential.subject_unique"]);
+    expect(session.upstream_session_ref).toBe("zk-request-1");
+    expect(session.requested_claim_ids).toEqual(["credential.subject_unique", "document.valid"]);
     expect(session.expires_at).toBe("2026-08-18T00:00:00.000Z");
 
     const key = Schema.decodeUnknownSync(SubjectKey)(subjectKey);
@@ -268,6 +298,8 @@ describe("verification evidence ledger shapes", () => {
           issuer: "test.fake",
           rp_scope: "pirate.example",
         },
+        request_mode: "dynamic",
+        requested_requirements: [],
         requested_claim_ids: [],
         subject_binding_intent: "establish",
         protocol_version: "fake-v2",

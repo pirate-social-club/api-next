@@ -26,6 +26,11 @@ export const FAKE_PROVIDER_MANIFEST: ProofProviderManifest = {
   environments: ["test"],
   supported_methods: ["document"],
   claim_ids: ["document.valid", "credential.subject_unique", "age.minimum"],
+  claim_capabilities: [
+    { claim_id: "document.valid", request_modes: ["dynamic"] },
+    { claim_id: "credential.subject_unique", request_modes: ["dynamic"] },
+    { claim_id: "age.minimum", request_modes: ["dynamic"] },
+  ],
   presentation_kinds: ["none"],
   assurance_levels: ["document_zk"],
   subject_key_scope_semantics: "issuer_rp_scope",
@@ -38,6 +43,7 @@ export const NO_SUBJECT_FAKE_PROVIDER_MANIFEST: ProofProviderManifest = {
   environments: ["test"],
   supported_methods: ["document"],
   claim_ids: ["document.valid"],
+  claim_capabilities: [{ claim_id: "document.valid", request_modes: ["dynamic"] }],
   presentation_kinds: ["none"],
   assurance_levels: ["document_zk"],
   subject_key_scope_semantics: "none",
@@ -69,6 +75,7 @@ export type FakeProviderOptions = Readonly<{
 }>;
 
 export interface FakeProviderTransport {
+  readonly plan: VerificationProviderAdapter["plan"];
   readonly start: VerificationProviderAdapter["start"];
   readonly complete: VerificationProviderAdapter["complete"];
 }
@@ -101,8 +108,11 @@ function startResult(
     intent_id: input.intent_id,
     request_hash: input.request_hash,
     provider_id,
+    upstream_session_ref: "fake-upstream-session-1",
     method: input.method,
     scope: input.scope,
+    request_mode: input.request_mode,
+    requested_requirements: input.requested_requirements,
     requested_claim_ids: input.requested_claim_ids,
     subject_binding_intent: input.subject_binding_intent,
     protocol_version: input.protocol_version,
@@ -155,7 +165,7 @@ function assertionFor(input: {
     case "age.minimum":
       return { ...common, claim_id: input.claim, value: { minimum_age: "18" } };
     case "nationality.allowed":
-      return { ...common, claim_id: input.claim, value: { nationality: "US" } };
+      return { ...common, claim_id: input.claim, value: { allowed: true } };
     case "gender.marker":
       return { ...common, claim_id: input.claim, value: { gender: "unspecified" } };
     case "asset.ownership":
@@ -320,6 +330,7 @@ export function makeFakeVerificationProvider(
   const transport = options.transport ?? makeFakeVerificationTransport({ manifest, mode });
   return {
     manifest,
+    plan: (input) => transport.plan(input),
     start: (input) => transport.start(input),
     complete: (input) => transport.complete(input),
   };
@@ -333,6 +344,7 @@ export function makeFakeVerificationTransport(
     options.manifest ??
     (mode === "no-subject" ? NO_SUBJECT_FAKE_PROVIDER_MANIFEST : FAKE_PROVIDER_MANIFEST);
   return {
+    plan: () => Effect.succeed({ status: "supported" as const, request_mode: "dynamic" as const }),
     start: (input) => {
       if (mode === "throw-start") {
         throw new Error("fake provider start secret");

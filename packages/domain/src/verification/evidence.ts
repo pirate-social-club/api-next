@@ -7,7 +7,9 @@ import {
   NamedIssuerScope,
   SubjectBindingIntent,
   SubjectScope,
+  VerificationRequestMode,
 } from "./claims";
+import { VerificationRequirements } from "./requirements.ts";
 import {
   CanonicalIsoInstant,
   DocumentGenderMarker,
@@ -26,8 +28,12 @@ export const ProofSession = Schema.Struct({
   intent_id: Schema.NonEmptyString,
   request_hash: Sha256Hex,
   provider_id: Schema.NonEmptyString,
+  /** Opaque provider-side correlation key; never exposed as a client authority. */
+  upstream_session_ref: Schema.optional(Schema.NonEmptyString),
   method: Schema.NonEmptyString,
   scope: SubjectScope,
+  request_mode: VerificationRequestMode,
+  requested_requirements: VerificationRequirements,
   requested_claim_ids: Schema.NonEmptyArray(CanonicalClaimIdentifier),
   subject_binding_intent: SubjectBindingIntent,
   protocol_version: Schema.NonEmptyString,
@@ -133,7 +139,13 @@ export const Assertion = Schema.Union([
       ),
     }),
   ),
-  assertion("nationality.allowed", Schema.Struct({ nationality: Iso3166Alpha2 })),
+  assertion(
+    "nationality.allowed",
+    Schema.Struct({
+      allowed: Schema.Literal(true),
+      disclosed_nationality: Schema.optional(Iso3166Alpha2),
+    }),
+  ),
   assertion("gender.marker", Schema.Struct({ gender: DocumentGenderMarker })),
   assertion(
     "asset.ownership",

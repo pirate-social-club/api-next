@@ -87,8 +87,13 @@ function sessionFromRow(row: Row): StoredVerificationCompletion | null {
     intent_id: row.intent_id,
     request_hash: row.request_hash,
     provider_id: row.provider_id,
+    ...(row.upstream_session_ref === null
+      ? {}
+      : { upstream_session_ref: row.upstream_session_ref }),
     method: row.method,
     scope,
+    request_mode: row.request_mode,
+    requested_requirements: row.requested_requirements,
     requested_claim_ids: row.requested_claim_ids,
     subject_binding_intent: row.subject_binding_intent,
     protocol_version: row.protocol_version,
@@ -119,7 +124,8 @@ function sessionFromRow(row: Row): StoredVerificationCompletion | null {
 
 const sessionColumns = `
   proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
-  scope_kind, issuer_rp_scope, issuer_rp_action_scope, requested_claim_ids,
+  scope_kind, issuer_rp_scope, issuer_rp_action_scope, request_mode, requested_requirements,
+  requested_claim_ids, upstream_session_ref,
   subject_binding_intent, protocol_version, environment, status, started_at,
   expires_at, completed_at, completion_idempotency_key, completion_result_hash`;
 
@@ -310,11 +316,15 @@ function sessionIdentityMatches(
     actual.intent_id === expected.intent_id &&
     actual.request_hash === expected.request_hash &&
     actual.provider_id === expected.provider_id &&
+    actual.upstream_session_ref === expected.upstream_session_ref &&
     actual.method === expected.method &&
     actual.protocol_version === expected.protocol_version &&
     actual.environment === expected.environment &&
     actual.subject_binding_intent === expected.subject_binding_intent &&
+    actual.request_mode === expected.request_mode &&
     JSON.stringify(actual.scope) === JSON.stringify(expected.scope) &&
+    JSON.stringify(actual.requested_requirements) ===
+      JSON.stringify(expected.requested_requirements) &&
     JSON.stringify(actual.requested_claim_ids) === JSON.stringify(expected.requested_claim_ids)
   );
 }

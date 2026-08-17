@@ -695,10 +695,12 @@ CREATE TABLE proof_sessions (
     scope_kind text NOT NULL,
     issuer_rp_scope text,
     issuer_rp_action_scope text,
+    request_mode text NOT NULL,
     protocol_version text NOT NULL,
     environment text NOT NULL,
     status text NOT NULL,
     upstream_session_ref text,
+    requested_requirements jsonb NOT NULL,
     requested_claim_ids jsonb NOT NULL,
     started_at timestamp with time zone NOT NULL,
     completed_at timestamp with time zone,
@@ -711,7 +713,9 @@ CREATE TABLE proof_sessions (
     terminal_at timestamp with time zone,
     CONSTRAINT proof_sessions_identifiers_not_blank CHECK (((btrim(intent_id) <> ''::text) AND (btrim(request_hash) <> ''::text) AND (btrim(provider_id) <> ''::text) AND (btrim(method) <> ''::text) AND (btrim(issuer) <> ''::text) AND (btrim(protocol_version) <> ''::text) AND (btrim(environment) <> ''::text))),
     CONSTRAINT proof_sessions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT proof_sessions_requested_requirements_check CHECK (((jsonb_typeof(requested_requirements) = 'array'::text) AND (jsonb_array_length(requested_requirements) > 0))),
     CONSTRAINT proof_sessions_requested_claims_check CHECK (((jsonb_typeof(requested_claim_ids) = 'array'::text) AND (jsonb_array_length(requested_claim_ids) > 0))),
+    CONSTRAINT proof_sessions_request_mode_check CHECK ((request_mode = ANY (ARRAY['curated'::text, 'dynamic'::text]))),
     CONSTRAINT proof_sessions_scope_kind_check CHECK ((scope_kind = ANY (ARRAY['issuer_rp_scope'::text, 'issuer_rp_action_scope'::text, 'none'::text]))),
     CONSTRAINT proof_sessions_scope_shape_check CHECK ((((scope_kind = 'issuer_rp_scope'::text) AND (issuer_rp_scope IS NOT NULL) AND (issuer_rp_action_scope IS NULL)) OR ((scope_kind = 'issuer_rp_action_scope'::text) AND (issuer_rp_scope IS NOT NULL) AND (issuer_rp_action_scope IS NOT NULL)) OR ((scope_kind = 'none'::text) AND (issuer_rp_scope IS NULL) AND (issuer_rp_action_scope IS NULL)))),
     CONSTRAINT proof_sessions_scope_values_not_blank CHECK ((((issuer_rp_scope IS NULL) OR (btrim(issuer_rp_scope) <> ''::text)) AND ((issuer_rp_action_scope IS NULL) OR (btrim(issuer_rp_action_scope) <> ''::text)))),
@@ -1661,6 +1665,31 @@ BEGIN
       USING ERRCODE = '23514', CONSTRAINT = 'proof_sessions_lifecycle';
   END IF;
 
+  IF jsonb_typeof(NEW.requested_requirements) IS DISTINCT FROM 'array'
+    OR jsonb_array_length(NEW.requested_requirements) = 0
+    OR EXISTS (
+      SELECT 1
+        FROM jsonb_array_elements(NEW.requested_requirements) AS requirement(value)
+       WHERE jsonb_typeof(requirement.value) IS DISTINCT FROM 'object'
+          OR jsonb_typeof(requirement.value -> 'claim_id') IS DISTINCT FROM 'string'
+          OR btrim(requirement.value ->> 'claim_id') = ''
+    )
+    OR (
+      SELECT count(*)
+        FROM jsonb_array_elements(NEW.requested_requirements)
+    ) IS DISTINCT FROM (
+      SELECT count(DISTINCT requirement.value ->> 'claim_id')
+        FROM jsonb_array_elements(NEW.requested_requirements) AS requirement(value)
+    )
+    OR (
+      SELECT jsonb_agg(requirement.value -> 'claim_id' ORDER BY requirement.ordinality)
+        FROM jsonb_array_elements(NEW.requested_requirements)
+          WITH ORDINALITY AS requirement(value, ordinality)
+    ) IS DISTINCT FROM NEW.requested_claim_ids THEN
+    RAISE EXCEPTION 'proof-session requirements must project exactly to requested claims'
+      USING ERRCODE = '23514', CONSTRAINT = 'proof_sessions_requested_requirements_projection';
+  END IF;
+
   IF TG_OP = 'INSERT' THEN
     IF NEW.status <> 'pending' THEN
       RAISE EXCEPTION 'proof sessions must begin pending'
@@ -1679,9 +1708,11 @@ BEGIN
     OR NEW.scope_kind IS DISTINCT FROM OLD.scope_kind
     OR NEW.issuer_rp_scope IS DISTINCT FROM OLD.issuer_rp_scope
     OR NEW.issuer_rp_action_scope IS DISTINCT FROM OLD.issuer_rp_action_scope
+    OR NEW.request_mode IS DISTINCT FROM OLD.request_mode
     OR NEW.protocol_version IS DISTINCT FROM OLD.protocol_version
     OR NEW.environment IS DISTINCT FROM OLD.environment
     OR NEW.upstream_session_ref IS DISTINCT FROM OLD.upstream_session_ref
+    OR NEW.requested_requirements IS DISTINCT FROM OLD.requested_requirements
     OR NEW.requested_claim_ids IS DISTINCT FROM OLD.requested_claim_ids
     OR NEW.subject_binding_intent IS DISTINCT FROM OLD.subject_binding_intent
     OR NEW.started_at IS DISTINCT FROM OLD.started_at

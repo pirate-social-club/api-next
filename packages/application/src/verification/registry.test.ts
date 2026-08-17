@@ -23,6 +23,11 @@ const MANIFEST: ProofProviderManifest = {
   environments: ["test"],
   supported_methods: ["document"],
   claim_ids: ["document.valid", "credential.subject_unique", "age.minimum"],
+  claim_capabilities: [
+    { claim_id: "document.valid", request_modes: ["dynamic"] },
+    { claim_id: "credential.subject_unique", request_modes: ["dynamic"] },
+    { claim_id: "age.minimum", request_modes: ["dynamic"] },
+  ],
   presentation_kinds: ["none"],
   assurance_levels: ["document_zk"],
   subject_key_scope_semantics: "issuer_rp_scope",
@@ -30,7 +35,7 @@ const MANIFEST: ProofProviderManifest = {
 const START_INPUT: VerificationProviderStartInput = {
   actor_id: "user-1",
   intent_id: "intent-1",
-  request_hash: "1".repeat(64),
+  request_hash: "d30bcbe842ef8e7046be5cf21531d99fe95f2cb7e92d3efe1f46e094b4fa833b",
   method: "document",
   scope: {
     kind: "named",
@@ -38,7 +43,12 @@ const START_INPUT: VerificationProviderStartInput = {
     issuer: MANIFEST.provider_id,
     rp_scope: "pirate.test",
   },
-  requested_claim_ids: ["document.valid", "credential.subject_unique"],
+  request_mode: "dynamic",
+  requested_requirements: [
+    { claim_id: "credential.subject_unique" },
+    { claim_id: "document.valid" },
+  ],
+  requested_claim_ids: ["credential.subject_unique", "document.valid"],
   subject_binding_intent: "establish",
   protocol_version: "test-v1",
   environment: "test",
@@ -51,8 +61,11 @@ function sessionFor(input: VerificationProviderStartInput = START_INPUT): ProofS
     intent_id: input.intent_id,
     request_hash: input.request_hash,
     provider_id: MANIFEST.provider_id,
+    upstream_session_ref: "upstream-session-1",
     method: input.method,
     scope: input.scope,
+    request_mode: input.request_mode,
+    requested_requirements: input.requested_requirements,
     requested_claim_ids: input.requested_claim_ids,
     subject_binding_intent: input.subject_binding_intent,
     protocol_version: input.protocol_version,
@@ -134,6 +147,7 @@ function bundleFor(session: ProofSession = sessionFor()): EvidenceBundle {
 }
 
 type AdapterOutputs = Readonly<{
+  plan?: unknown;
   start?: unknown;
   complete?: unknown;
   startFailure?: "unavailable" | "defect";
@@ -151,6 +165,8 @@ function adapterFor(
 ): VerificationProviderAdapter {
   return {
     manifest,
+    plan: () =>
+      Effect.succeed(unsafe(outputs.plan ?? { status: "supported", request_mode: "dynamic" })),
     start: () => {
       calls.start += 1;
       if (outputs.startFailure === "defect") return Effect.die("upstream secret");
@@ -194,22 +210,143 @@ async function providerFor(adapter: VerificationProviderAdapter) {
 }
 
 describe("verification registry adversarial corpus", () => {
+  test("keeps request support distinct from runtime document coverage", async () => {
+    const planInput = {
+      method: START_INPUT.method,
+      scope: START_INPUT.scope,
+      requested_requirements: START_INPUT.requested_requirements,
+      requested_claim_ids: START_INPUT.requested_claim_ids,
+      subject_binding_intent: START_INPUT.subject_binding_intent,
+      protocol_version: START_INPUT.protocol_version,
+      environment: START_INPUT.environment,
+    };
+    for (const status of ["supported", "unsupported", "unknown"] as const) {
+      const expected =
+        status === "supported" ? { status, request_mode: "dynamic" as const } : { status };
+      const provider = await providerFor(adapterFor({ plan: expected }));
+      expect(await Effect.runPromise(provider.plan(planInput))).toEqual(expected);
+    }
+
+    const malformed = await providerFor(adapterFor({ plan: { status: "maybe" } }));
+    const malformedExit = await Effect.runPromiseExit(malformed.plan(planInput));
+    expect(failureOf(malformedExit)).toBeInstanceOf(VerificationProviderInvalidResponse);
+
+    const modeEscape = await providerFor(
+      adapterFor({ plan: { status: "supported", request_mode: "curated" } }),
+    );
+    const modeEscapeExit = await Effect.runPromiseExit(modeEscape.plan(planInput));
+    expect(failureOf(modeEscapeExit)).toBeInstanceOf(VerificationProviderInvalidResponse);
+
+    const futureManifest: ProofProviderManifest = {
+      ...MANIFEST,
+      provider_id: "future.arbitrary-provider",
+      claim_capabilities: MANIFEST.claim_capabilities.map((capability) => ({
+        ...capability,
+        request_modes: ["curated"],
+      })),
+    };
+    const future = await providerFor(
+      adapterFor(
+        { plan: { status: "supported", request_mode: "curated" } },
+        { start: 0, complete: 0 },
+        futureManifest,
+      ),
+    );
+    expect(await Effect.runPromise(future.plan(planInput))).toEqual({
+      status: "supported",
+      request_mode: "curated",
+    });
+  });
+
   test("runtime-decodes inputs and rejects invalid requests before transport", async () => {
     const calls = { start: 0, complete: 0 };
     const provider = await providerFor(adapterFor({}, calls));
     for (const input of [
       { ...START_INPUT, request_hash: "not-a-hash" },
+      { ...START_INPUT, request_hash: "f".repeat(64) },
       { ...START_INPUT, requested_claim_ids: [] },
       { ...START_INPUT, requested_claim_ids: ["document.valid", "document.valid"] },
+      {
+        ...START_INPUT,
+        requested_requirements: [{ claim_id: "document.valid" }],
+      },
       { ...START_INPUT, method: "other" },
       { ...START_INPUT, protocol_version: "other-v1" },
       { ...START_INPUT, environment: "production" },
+      { ...START_INPUT, request_mode: "curated" },
       { ...START_INPUT, subject_binding_intent: "none" },
     ]) {
       const exit = await Effect.runPromiseExit(provider.start(unsafe(input)));
       expect(failureOf(exit)).toBeInstanceOf(VerificationProviderRejected);
     }
     expect(calls.start).toBe(0);
+  });
+
+  test("binds a privacy-preserving nationality assertion to the session allowlist", async () => {
+    const nationalityManifest: ProofProviderManifest = {
+      ...MANIFEST,
+      claim_ids: ["nationality.allowed"],
+      claim_capabilities: [{ claim_id: "nationality.allowed", request_modes: ["dynamic"] }],
+    };
+    const nationalityInput: VerificationProviderStartInput = {
+      ...START_INPUT,
+      request_hash: "45ab9cad760f1156977edbad6b4487517c2a5c4537ef4037e9170c24aef0fadd",
+      requested_requirements: [{ claim_id: "nationality.allowed", allowed_countries: ["GE"] }],
+      requested_claim_ids: ["nationality.allowed"],
+    };
+    const nationalitySession = sessionFor(nationalityInput);
+    const commonAssertion = {
+      id: "assertion-nationality",
+      subject_key_id: "subject-1",
+      evidence_receipt_id: "receipt-1",
+      claim_id: "nationality.allowed" as const,
+      assurance: "document_zk" as const,
+      binding_group_id: "binding-1",
+      observed_at: "2026-08-17T00:00:00.000Z",
+    };
+    const baseBundle = bundleFor(nationalitySession);
+    const predicateOnly = {
+      ...baseBundle,
+      assertions: [{ ...commonAssertion, value: { allowed: true as const } }],
+    };
+    const provider = await providerFor(
+      adapterFor(
+        { start: startFor(nationalityInput), complete: predicateOnly },
+        { start: 0, complete: 0 },
+        nationalityManifest,
+      ),
+    );
+    const started = await Effect.runPromise(provider.start(nationalityInput));
+    const accepted = await Effect.runPromise(
+      provider.complete({ session: started.session, submission: { callback: "signed" } }),
+    );
+    expect(accepted).toMatchObject({ id: "bundle-1" });
+
+    const disclosedOutsideAllowlist = await providerFor(
+      adapterFor(
+        {
+          start: startFor(nationalityInput),
+          complete: {
+            ...baseBundle,
+            assertions: [
+              {
+                ...commonAssertion,
+                value: { allowed: true, disclosed_nationality: "US" },
+              },
+            ],
+          },
+        },
+        { start: 0, complete: 0 },
+        nationalityManifest,
+      ),
+    );
+    const invalid = await Effect.runPromiseExit(
+      disclosedOutsideAllowlist.complete({
+        session: nationalitySession,
+        submission: { callback: "signed" },
+      }),
+    );
+    expect(failureOf(invalid)).toBeInstanceOf(VerificationProviderInvalidResponse);
   });
 
   test("rejects every hostile start echo after transport", async () => {
@@ -223,6 +360,7 @@ describe("verification registry adversarial corpus", () => {
       { ...base, session: { ...base.session, intent_id: "other-intent" } },
       { ...base, session: { ...base.session, request_hash: "4".repeat(64) } },
       { ...base, session: { ...base.session, method: "other" } },
+      { ...base, session: { ...base.session, request_mode: "curated" } },
       {
         ...base,
         session: {
@@ -230,7 +368,24 @@ describe("verification registry adversarial corpus", () => {
           scope: { ...START_INPUT.scope, rp_scope: "other.test" },
         },
       },
+      {
+        ...base,
+        session: {
+          ...base.session,
+          requested_requirements: [
+            { claim_id: "age.minimum", minimum_age: "21" },
+            { claim_id: "credential.subject_unique" },
+          ],
+        },
+      },
       { ...base, session: { ...base.session, requested_claim_ids: ["document.valid"] } },
+      {
+        ...base,
+        session: {
+          ...base.session,
+          requested_claim_ids: ["document.valid", "credential.subject_unique"],
+        },
+      },
       {
         ...base,
         session: {

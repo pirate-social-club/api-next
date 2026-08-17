@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { analyzeTypeScript, lintDependencies } from "./check-deps.mjs";
+import {
+  analyzeTypeScript,
+  lintDependencies,
+  verificationPackageExportViolations,
+} from "./check-deps.mjs";
 import { providerBoundaryViolation } from "./check-provider-boundary.mjs";
 
 const providerFile = "packages/platform-cf/src/verification/providers/fake.ts";
@@ -28,6 +32,10 @@ afterEach(async () => {
 async function fixtureRoot(files: Readonly<Record<string, string>>): Promise<string> {
   const root = await mkdtemp("/tmp/api-next-dependency-fixture-");
   temporaryDirectories.push(root);
+  await writeFile(
+    join(root, "package.json"),
+    JSON.stringify({ workspaces: ["packages/*", "apps/*"] }),
+  );
   for (const directory of dependencyRoots) {
     await mkdir(join(root, directory), { recursive: true });
   }
@@ -131,6 +139,42 @@ describe("provider dependency boundary", () => {
     }
   });
 
+  test("rejects CommonJS loaders and alternate verification export keys", async () => {
+    for (const source of [
+      "export const load = (name: string) => require(name);",
+      "export const load = require;",
+      "export const load = (name: string) => `loaded $" + "{require(name)}`;",
+      'import { createRequire as create } from "node:module"; export const load = create(import.meta.url);',
+    ]) {
+      expect(analyzeTypeScript(source).hasCommonJsLoader).toBe(true);
+    }
+    expect(
+      analyzeTypeScript('export const message = "handlers require an adapter";').hasCommonJsLoader,
+    ).toBe(false);
+    const domainPackage = await Bun.file(
+      join(repositoryRoot, "packages/domain/package.json"),
+    ).json();
+    expect(
+      verificationPackageExportViolations("packages/domain", {
+        ...domainPackage.exports,
+        "./proofs": "./src/verification/internal.ts",
+      }),
+    ).toContain("packages/domain/package.json: ./proofs may not export verification internals");
+  });
+
+  test("rejects a workspace package omitted from the dependency matrix", async () => {
+    const root = await fixtureRoot({
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts":
+        'import type { VerificationProviderAdapter } from "@pirate/application/verification";\nexport type Fixture = VerificationProviderAdapter;\n',
+      "packages/rogue/src/provider.ts":
+        'import type { VerificationProviderAdapter } from "@pirate/application/verification";\nexport type Rogue = VerificationProviderAdapter;\n',
+    });
+    const result = lintDependencies(root, { checkVerificationExportSurface: false });
+    expect(result.violations).toContain(
+      "packages/rogue: workspace package is missing from the dependency matrix",
+    );
+  });
+
   test("the actual walker rejects forbidden, computed, misplaced, and registry imports", async () => {
     const root = await fixtureRoot({
       "packages/platform-cf/src/verification/providers/contract-fixture.ts":
@@ -151,10 +195,14 @@ describe("provider dependency boundary", () => {
         'import type { VerificationProviderAdapter } from "@pirate/application/verification/adapter";\nexport type Deep = VerificationProviderAdapter;\n',
       "packages/platform-cf/src/computed-outside.ts":
         "export const load = (moduleName: string) => import(moduleName);\n",
+      "packages/platform-cf/src/required-outside.ts":
+        "export const load = (moduleName: string) => require(moduleName);\n",
       "packages/platform-cf/src/verification/provider-registry.ts":
         'import { endpoint } from "@pirate/contracts";\nexport const value = endpoint;\n',
       "apps/http-worker/src/outside-registry.ts":
         'import { makeVerificationProviderRegistry as makeRegistry } from "@pirate/application/verification";\nexport const outside = makeRegistry;\n',
+      "apps/http-worker/src/outside-registry-layer.ts":
+        'import { makeVerificationProviderRegistryLayer as makeLayer } from "@pirate/application/verification";\nexport const outside = makeLayer;\n',
       "packages/application/src/verification/outside-registry.ts":
         'import { makeVerificationProviderRegistry } from "./registry.ts";\nexport const outside = makeVerificationProviderRegistry;\n',
       "packages/application/src/verification/outside-registry-namespace.ts":
@@ -169,6 +217,7 @@ describe("provider dependency boundary", () => {
       expect.arrayContaining([
         expect.stringContaining("provider boundary files may import only"),
         expect.stringContaining("computed dynamic imports are forbidden in production"),
+        expect.stringContaining("require()/createRequire are forbidden in production"),
         expect.stringContaining("provider adapter implementations belong under"),
         expect.stringContaining("production provider registration belongs in"),
         expect.stringContaining("deep verification imports are forbidden"),
@@ -181,6 +230,7 @@ describe("provider dependency boundary", () => {
       "packages/application/src/verification/outside-registry.ts",
       "packages/application/src/verification/outside-registry-namespace.ts",
       "packages/application/src/verification/outside-registry-star.ts",
+      "apps/http-worker/src/outside-registry-layer.ts",
     ]) {
       expect(result.violations.some((violation) => violation.startsWith(relativePath))).toBe(true);
     }

@@ -452,11 +452,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "23502",
         `INSERT INTO proof_sessions (
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
-          scope_kind, issuer_rp_scope, protocol_version, environment, status,
-          requested_claim_ids, started_at, expires_at
+          scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
+          requested_requirements, requested_claim_ids, started_at, expires_at
         ) VALUES ('session-implicit-binding', 'user-a', 'intent-implicit-binding', $1,
-          'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example',
-          'fake-v2', 'test', 'pending', '["document.valid"]'::jsonb, $2, $3)`,
+          'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic',
+          'fake-v2', 'test', 'pending', '[{"claim_id":"document.valid"}]'::jsonb,
+          '["document.valid"]'::jsonb, $2, $3)`,
         ["0".repeat(64), now, later],
       );
       await admin.query({
@@ -466,10 +467,11 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await admin.query({
         text: `INSERT INTO proof_sessions (
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
-          scope_kind, issuer_rp_scope, protocol_version, environment, status,
-          upstream_session_ref, requested_claim_ids, subject_binding_intent, started_at, expires_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'issuer_rp_scope', $8, $9, $10,
-          'pending', 'upstream-a', $11::jsonb, 'establish', $12, $13)`,
+          scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
+          upstream_session_ref, requested_requirements, requested_claim_ids,
+          subject_binding_intent, started_at, expires_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'issuer_rp_scope', $8, 'dynamic', $9, $10,
+          'pending', 'upstream-a', $11::jsonb, $12::jsonb, 'establish', $13, $14)`,
         values: [
           "session-a",
           "user-a",
@@ -481,21 +483,41 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           "pirate.example",
           "fake-v2",
           "test",
-          JSON.stringify(["document.valid", "credential.subject_unique"]),
+          JSON.stringify([
+            { claim_id: "credential.subject_unique" },
+            { claim_id: "document.valid" },
+          ]),
+          JSON.stringify(["credential.subject_unique", "document.valid"]),
           now,
           later,
         ],
       });
       await expectPostgresFailure(
         admin,
+        "23514",
+        `INSERT INTO proof_sessions (
+          proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+          scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
+          requested_requirements, requested_claim_ids, subject_binding_intent, started_at,
+          expires_at
+        ) VALUES ('session-requirement-drift', 'user-b', 'intent-requirement-drift', $1,
+          'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic',
+          'fake-v2', 'test', 'pending', '[{"claim_id":"age.minimum","minimum_age":"21"}]'::jsonb,
+          '["document.valid"]'::jsonb, 'establish', $2, $3)`,
+        ["9".repeat(64), now, later],
+      );
+      await expectPostgresFailure(
+        admin,
         "23505",
         `INSERT INTO proof_sessions (
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
-          scope_kind, issuer_rp_scope, protocol_version, environment, status,
-          upstream_session_ref, requested_claim_ids, subject_binding_intent, started_at, expires_at
+          scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
+          upstream_session_ref, requested_requirements, requested_claim_ids,
+          subject_binding_intent, started_at, expires_at
         ) VALUES ('session-provider-replay', 'user-b', 'intent-provider-replay', $1,
-          'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example',
-          'fake-v2', 'test', 'pending', 'upstream-a', '["document.valid"]'::jsonb,
+          'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic',
+          'fake-v2', 'test', 'pending', 'upstream-a',
+          '[{"claim_id":"document.valid"}]'::jsonb, '["document.valid"]'::jsonb,
           'establish', $2, $3)`,
         ["f".repeat(64), now, later],
       );
@@ -503,6 +525,16 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         admin,
         "23514",
         "UPDATE proof_sessions SET upstream_session_ref = 'upstream-rebound' WHERE proof_session_id = 'session-a'",
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `UPDATE proof_sessions
+            SET requested_requirements =
+              '[{"claim_id":"credential.subject_unique","variant":"changed"},
+                {"claim_id":"document.valid"}]'::jsonb
+          WHERE proof_session_id = 'session-a'`,
         [],
       );
       await admin.query({
@@ -724,11 +756,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await admin.query({
         text: `INSERT INTO proof_sessions (
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
-          scope_kind, issuer_rp_scope, protocol_version, environment, status,
-          requested_claim_ids, subject_binding_intent, started_at, expires_at
+          scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
+          requested_requirements, requested_claim_ids, subject_binding_intent, started_at,
+          expires_at
         ) VALUES ('session-ordinary', 'user-b', 'intent-ordinary', $1, 'test.fake',
-          'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'fake-v2', 'test',
-          'pending', '["document.valid"]'::jsonb, 'establish', $2, $3)`,
+          'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic', 'fake-v2', 'test',
+          'pending', '[{"claim_id":"document.valid"}]'::jsonb,
+          '["document.valid"]'::jsonb, 'establish', $2, $3)`,
         values: ["c".repeat(64), now, later],
       });
       await expectPostgresFailure(
@@ -744,11 +778,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await admin.query({
         text: `INSERT INTO proof_sessions (
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
-          scope_kind, issuer_rp_scope, protocol_version, environment, status,
-          requested_claim_ids, subject_binding_intent, started_at, expires_at
+          scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
+          requested_requirements, requested_claim_ids, subject_binding_intent, started_at,
+          expires_at
         ) VALUES ('session-recovery', 'user-b', 'intent-recovery', $1, 'test.fake',
-          'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'fake-v2', 'test',
-          'pending', '["document.valid"]'::jsonb, 'recover', $2, $3)`,
+          'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic', 'fake-v2', 'test',
+          'pending', '[{"claim_id":"document.valid"}]'::jsonb,
+          '["document.valid"]'::jsonb, 'recover', $2, $3)`,
         values: ["e".repeat(64), now, later],
       });
       await admin.query({

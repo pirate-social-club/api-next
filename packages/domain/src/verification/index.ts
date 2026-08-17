@@ -19,10 +19,12 @@ export {
   NoSubjectScope,
   PresentationKind,
   ProofProviderManifest,
+  ProviderClaimCapability,
   ScopeRequirement,
   SubjectBindingIntent,
   SubjectKeyScopeSemantics,
   SubjectScope,
+  VerificationRequestMode,
 } from "./claims.ts";
 export {
   Assertion,
@@ -48,6 +50,13 @@ export {
   TrustMode,
   WalletBalanceObservationValue,
 } from "./observations.ts";
+export {
+  canonicalizeVerificationRequirements,
+  sameVerificationRequirements,
+  VerificationRequirement,
+  VerificationRequirements,
+  verificationRequirementClaimIds,
+} from "./requirements.ts";
 export {
   CanonicalIsoInstant,
   DocumentGenderMarker,

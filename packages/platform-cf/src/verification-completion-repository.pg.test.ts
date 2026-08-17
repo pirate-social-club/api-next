@@ -96,6 +96,7 @@ function proofSession(
     intent_id: `intent-${id}`,
     request_hash: requestHash,
     provider_id: "test.complete",
+    upstream_session_ref: `upstream-${id}`,
     method: "document",
     scope: {
       kind: "named",
@@ -103,7 +104,12 @@ function proofSession(
       issuer: "test.complete",
       rp_scope: "pirate.example",
     },
-    requested_claim_ids: ["document.valid", "credential.subject_unique"],
+    request_mode: "dynamic",
+    requested_requirements: [
+      { claim_id: "credential.subject_unique" },
+      { claim_id: "document.valid" },
+    ],
+    requested_claim_ids: ["credential.subject_unique", "document.valid"],
     subject_binding_intent: bindingIntent,
     protocol_version: "complete-v1",
     environment: "test",
@@ -119,10 +125,11 @@ async function insertSession(admin: Client, session: ProofSession): Promise<void
   await admin.query({
     text: `INSERT INTO proof_sessions (
       proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
-      scope_kind, issuer_rp_scope, issuer_rp_action_scope, protocol_version, environment,
-      status, requested_claim_ids, subject_binding_intent, started_at, expires_at
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 'pending', $13::jsonb,
-      $14, $15, $16)`,
+      scope_kind, issuer_rp_scope, issuer_rp_action_scope, request_mode, protocol_version,
+      environment, status, requested_requirements, requested_claim_ids, subject_binding_intent,
+      started_at, expires_at, upstream_session_ref
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending',
+      $14::jsonb, $15::jsonb, $16, $17, $18, $19)`,
     values: [
       session.id,
       session.actor_id,
@@ -134,12 +141,15 @@ async function insertSession(admin: Client, session: ProofSession): Promise<void
       scope.scope_semantics,
       scope.rp_scope,
       scope.scope_semantics === "issuer_rp_action_scope" ? scope.action_scope : null,
+      session.request_mode,
       session.protocol_version,
       session.environment,
+      JSON.stringify(session.requested_requirements),
       JSON.stringify(session.requested_claim_ids),
       session.subject_binding_intent,
       session.started_at,
       session.expires_at,
+      session.upstream_session_ref ?? null,
     ],
   });
 }
