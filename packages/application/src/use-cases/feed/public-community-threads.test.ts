@@ -62,6 +62,33 @@ describe("public community threads use case", () => {
     });
   });
 
+  test("attempts an unrestricted exact ID before treating its slug candidate as unsafe", async () => {
+    let observed: unknown;
+    const store: PublicCommunityThreadsStoreService = {
+      listPublicCommunityThreads: (input) => {
+        observed = input;
+        return Effect.succeed(emptyDocument);
+      },
+    };
+
+    await expect(
+      Effect.runPromise(
+        getPublicCommunityThreads(
+          {
+            communityRef: "community_1",
+            query: { surface: "threads", sort: "new" },
+          },
+          { publicCommunityThreadsStore: store },
+        ),
+      ),
+    ).resolves.toEqual(emptyDocument);
+    expect(observed).toEqual({
+      communityRef: "community_1",
+      slugCandidate: null,
+      query: { surface: "threads", sort: "new" },
+    });
+  });
+
   test("rejects unsupported query members before storage", async () => {
     let called = false;
     const store: PublicCommunityThreadsStoreService = {

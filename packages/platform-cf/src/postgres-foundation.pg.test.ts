@@ -335,6 +335,28 @@ suite("Postgres 17 v1 foundation", () => {
       );
       expect(routeSlugIndex.rows).toHaveLength(1);
       expect(routeSlugIndex.rows[0]?.indexdef).toContain("WHERE (route_slug IS NOT NULL)");
+
+      const communityOrdinals = await admin.query<{
+        readonly column_name: string;
+        readonly ordinal_position: number;
+      }>(
+        `SELECT column_name, ordinal_position
+           FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'communities'
+          ORDER BY ordinal_position`,
+      );
+      expect(communityOrdinals.rows).toEqual([
+        { column_name: "community_id", ordinal_position: 1 },
+        { column_name: "display_name", ordinal_position: 2 },
+        { column_name: "status", ordinal_position: 3 },
+        { column_name: "created_by_user_id", ordinal_position: 4 },
+        { column_name: "created_at", ordinal_position: 5 },
+        { column_name: "updated_at", ordinal_position: 6 },
+        { column_name: "membership_mode", ordinal_position: 7 },
+        { column_name: "human_verification_lane", ordinal_position: 8 },
+        { column_name: "route_slug", ordinal_position: 9 },
+      ]);
     });
     completedTestCount += 1;
   });

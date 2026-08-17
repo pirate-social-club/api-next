@@ -79,8 +79,13 @@ const stringValue = (row: Row, key: string): string | null => {
 
 const nullableStringValue = (row: Row, key: string): string | null => {
   const value = row[key];
-  if (value === null || value === undefined) return null;
+  if (value === null) return null;
   return typeof value === "string" && value === value.trim() ? value : null;
+};
+
+const nullableStringFieldIsValid = (row: Row, key: string): boolean => {
+  const value = row[key];
+  return value === null || (typeof value === "string" && value === value.trim());
 };
 
 const countValue = (value: unknown): number | null => {
@@ -277,6 +282,7 @@ const communityPreviewFromRow = (
     displayName === null ||
     displayName.trim() !== displayName ||
     (routeSlug === null && row.route_slug !== null) ||
+    (routeSlug !== null && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(routeSlug)) ||
     (mode !== "open" && mode !== "request" && mode !== "gated") ||
     (verification !== null && verification !== "very" && verification !== "self") ||
     created === null ||
@@ -319,6 +325,9 @@ const localizedTextPostFromRow = (
     postId === null ||
     communityId === null ||
     communityId !== expectedCommunityId ||
+    !nullableStringFieldIsValid(row, "author_user_id") ||
+    !nullableStringFieldIsValid(row, "body") ||
+    !nullableStringFieldIsValid(row, "title") ||
     created === null ||
     upvoteCount === null ||
     downvoteCount === null ||
@@ -370,7 +379,10 @@ export function makeControlPlanePublicCommunityThreadsRepository(
   return {
     listPublicCommunityThreads: (input) =>
       Effect.gen(function* () {
-        if (!validId(input.communityRef) || !validId(input.slugCandidate)) {
+        if (
+          !validId(input.communityRef) ||
+          (input.slugCandidate !== null && !validId(input.slugCandidate))
+        ) {
           return yield* Effect.fail(invalidCommunityRef());
         }
         const db = yield* ControlPlaneDb;
@@ -383,6 +395,7 @@ export function makeControlPlanePublicCommunityThreadsRepository(
         let community = exactResult.rows[0];
         if (community !== undefined && community.status !== "active") return null;
         if (community === undefined) {
+          if (input.slugCandidate === null) return yield* Effect.fail(invalidCommunityRef());
           const slugResult = yield* db.execute<CommunityRow>({
             ...resolveCommunitySlug,
             values: [input.slugCandidate],

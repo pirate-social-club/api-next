@@ -85,6 +85,15 @@ const mapFailure = (error: unknown): BadRequest | InternalError =>
     ? new BadRequest({ message: "Invalid public community threads request" })
     : new InternalError({ message: "Public community threads lookup failed" });
 
+const safeSlugCandidate = (value: string): string | null => {
+  try {
+    return normalizePublicCommunityRef(value);
+  } catch (error) {
+    if (error instanceof BadRequest) return null;
+    throw error;
+  }
+};
+
 export const getPublicCommunityThreads = Effect.fn("getPublicCommunityThreads")(function* (
   input: PublicCommunityThreadsInput,
   services: PublicCommunityThreadsServices,
@@ -110,14 +119,7 @@ export const getPublicCommunityThreads = Effect.fn("getPublicCommunityThreads")(
     return yield* new BadRequest({ message: "Invalid public community threads request" });
   }
 
-  let slugCandidate: string;
-  try {
-    slugCandidate = normalizePublicCommunityRef(input.communityRef);
-  } catch (error) {
-    return yield* error instanceof BadRequest
-      ? error
-      : new BadRequest({ message: "Invalid community reference" });
-  }
+  const slugCandidate = safeSlugCandidate(input.communityRef);
 
   const result = yield* services.publicCommunityThreadsStore
     .listPublicCommunityThreads({

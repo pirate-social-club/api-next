@@ -145,7 +145,6 @@ EXECUTE FUNCTION public_handle_index_validate_redirects();
 CREATE TABLE IF NOT EXISTS communities (
   community_id TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
-  route_slug TEXT,
   status TEXT NOT NULL DEFAULT 'active'
     CHECK (status IN ('active', 'hidden', 'archived')),
   created_by_user_id TEXT NOT NULL,
@@ -158,6 +157,7 @@ CREATE TABLE IF NOT EXISTS communities (
       human_verification_lane IS NULL
       OR human_verification_lane IN ('very', 'self')
     ),
+  route_slug TEXT,
   CONSTRAINT communities_id_not_blank CHECK (btrim(community_id) <> ''),
   CONSTRAINT communities_route_slug_format_check CHECK (
     route_slug IS NULL

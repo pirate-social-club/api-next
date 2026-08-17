@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { Effect } from "effect";
+import { PublicCommunityThreadsRepositoryError } from "@pirate/application";
+import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations, type PostgresMigration } from "./postgres-migrations.ts";
@@ -75,7 +76,10 @@ async function apply(connection: string): Promise<void> {
 
 const request = (communityRef: string, query: Record<string, unknown> = {}) => ({
   communityRef,
-  slugCandidate: decodeURIComponent(communityRef).toLowerCase(),
+  slugCandidate: (() => {
+    const candidate = decodeURIComponent(communityRef).normalize("NFKC").toLowerCase();
+    return /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(candidate) ? candidate : null;
+  })(),
   query: { surface: "threads" as const, sort: "new" as const, ...query },
 });
 
@@ -96,6 +100,7 @@ suite("Postgres 17 public community threads repository", () => {
          VALUES
           ('collision', 'exact-community', 'Exact', 'active', 'usr_author', $1, $1),
           ('community-slug', 'collision', 'Slug', 'active', 'usr_author', $1, $1),
+          ('community_1', 'community-one', 'Underscore ID', 'active', 'usr_author', $1, $1),
           ('community-current', 'current-community', 'Current', 'active', 'usr_author', $1, $1),
           ('community-hidden', 'hidden-community', 'Hidden', 'hidden', 'usr_author', $1, $1),
           ('community-other', 'other-community', 'Other', 'active', 'usr_other', $1, $1)`,
@@ -140,6 +145,17 @@ suite("Postgres 17 public community threads repository", () => {
       expect(exact.items.some((item) => item.post.id === "post_members")).toBe(false);
       expect(exact.items.some((item) => item.post.id === "post_processing")).toBe(false);
       expect(exact.items[0]?.post.id).toBe("post_00");
+
+      const underscoreId = requireDocument(
+        await Effect.runPromise(
+          Effect.scoped(
+            repository
+              .listPublicCommunityThreads(request("community_1"))
+              .pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+          ),
+        ),
+      );
+      expect(underscoreId.community.id).toBe("community_1");
 
       const second = requireDocument(
         await Effect.runPromise(
@@ -261,8 +277,55 @@ suite("Postgres 17 public community threads repository", () => {
     completedTestCount += 1;
   });
 
+  test("fails closed on malformed non-null projected text scalars", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      const now = new Date("2026-08-17T12:00:00.000Z");
+      await admin.query("INSERT INTO users (user_id) VALUES ('usr_author')");
+      await admin.query(
+        `INSERT INTO communities
+          (community_id, route_slug, display_name, created_by_user_id, created_at, updated_at)
+         VALUES ('community-malformed-author', 'malformed-author', 'Malformed author', 'usr_author', $1, $1),
+                ('community-malformed-body', 'malformed-body', 'Malformed body', 'usr_author', $1, $1),
+                ('community-malformed-title', 'malformed-title', 'Malformed title', 'usr_author', $1, $1)`,
+        [now],
+      );
+      await admin.query(
+        `INSERT INTO posts
+          (community_id, post_id, author_user_id, post_type, status, visibility, body, title, created_at, updated_at)
+         VALUES ('community-malformed-author', 'post-malformed-author', $1, 'text', 'published', 'public', 'body', NULL, $2, $2),
+                ('community-malformed-body', 'post-malformed-body', 'usr_author', 'text', 'published', 'public', $3, NULL, $2, $2),
+                ('community-malformed-title', 'post-malformed-title', 'usr_author', 'text', 'published', 'public', 'body', $4, $2, $2)`,
+        [" usr_author ", now, " body ", " title "],
+      );
+      const repository = makeControlPlanePublicCommunityThreadsRepository({
+        now: () => now.getTime(),
+      });
+      for (const slug of ["malformed-author", "malformed-body", "malformed-title"]) {
+        const result = await Effect.runPromiseExit(
+          Effect.scoped(
+            repository
+              .listPublicCommunityThreads(request(slug))
+              .pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(connection))),
+          ),
+        );
+        expect(Exit.isFailure(result)).toBe(true);
+        if (Exit.isFailure(result)) {
+          const failure = Cause.findError(result.cause);
+          expect(Result.isSuccess(failure) ? failure.success : undefined).toEqual(
+            new PublicCommunityThreadsRepositoryError({
+              operation: "list-public-community-threads",
+              reason: "invalid-row",
+            }),
+          );
+        }
+      }
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 2) {
+    if (connectionString !== undefined && completedTestCount === 3) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

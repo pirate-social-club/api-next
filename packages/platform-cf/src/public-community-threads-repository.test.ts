@@ -60,7 +60,10 @@ const runWith = <A, E>(
 
 const input = (communityRef: string, query: Record<string, unknown> = {}) => ({
   communityRef,
-  slugCandidate: decodeURIComponent(communityRef).toLowerCase(),
+  slugCandidate: (() => {
+    const candidate = decodeURIComponent(communityRef).normalize("NFKC").toLowerCase();
+    return /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(candidate) ? candidate : null;
+  })(),
   query: { surface: "threads" as const, sort: "new" as const, ...query },
 });
 
@@ -71,6 +74,27 @@ const failureOf = <E>(exit: Exit.Exit<unknown, E>): E | undefined => {
 };
 
 describe("public community threads Postgres repository", () => {
+  test("resolves an underscore ID before rejecting its unsafe slug candidate", async () => {
+    const calls: ControlPlaneStatement[] = [];
+    const result = await runWith(
+      repositoryFor().listPublicCommunityThreads(input("community_1")),
+      fakeDb(
+        [
+          [community({ community_id: "community_1", route_slug: "community-one" })],
+          [post(0, { community_id: "community_1" })],
+        ],
+        calls,
+      ),
+    );
+    expect(Exit.isSuccess(result)).toBe(true);
+    if (Exit.isSuccess(result)) expect(result.value?.community.id).toBe("community_1");
+    expect(calls.map((call) => call.label)).toEqual([
+      "public-community-threads.communities.resolve-id",
+      "public-community-threads.posts.list-text",
+    ]);
+    expect(calls[0]?.values).toEqual(["community_1"]);
+  });
+
   test("resolves an exact community ID before a colliding slug", async () => {
     const calls: ControlPlaneStatement[] = [];
     const repository = makeControlPlanePublicCommunityThreadsRepository({
@@ -148,6 +172,27 @@ describe("public community threads Postgres repository", () => {
     expect(calls[1]?.text).toContain("p.visibility = 'public'");
     expect(calls[1]?.text).toContain("ORDER BY p.created_at DESC, p.post_id DESC");
     expect(calls[1]?.values[0]).toBe("community-a");
+  });
+
+  test("fails closed on malformed non-null projected post scalars", async () => {
+    for (const malformed of [
+      { author_user_id: " usr_author " },
+      { body: " body " },
+      { title: " title " },
+      { body: 7 },
+      { title: {} },
+    ]) {
+      const result = await runWith(
+        repositoryFor().listPublicCommunityThreads(input("alpha")),
+        fakeDb([[community()], [post(0, malformed)]], []),
+      );
+      expect(failureOf(result)).toEqual(
+        new PublicCommunityThreadsRepositoryError({
+          operation: "list-public-community-threads",
+          reason: "invalid-row",
+        }),
+      );
+    }
   });
 
   test("rejects malformed and cross-community cursors", async () => {
