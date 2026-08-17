@@ -91,6 +91,10 @@ export {
   type PostgresMigration,
 } from "./postgres-migrations";
 export {
+  makeControlPlanePublicProfileRepository,
+  makeControlPlanePublicProfileStore,
+} from "./public-profile-repository";
+export {
   QUEUE_RETRY_BASE_SECONDS,
   QUEUE_RETRY_CAP_SECONDS,
   queueRetryBackoffSeconds,

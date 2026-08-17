@@ -232,6 +232,46 @@ describe("contracts-generated HTTP worker", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("keeps public profile bodies viewer-invariant and disables bearer caching", async () => {
+    const publicProfile = {
+      profile: {
+        id: "usr_public",
+        object: "profile" as const,
+        display_name: "Public Captain",
+        avatar_ref: null,
+        avatar_source: "none" as const,
+        cover_ref: null,
+        cover_source: "none" as const,
+        bio: null,
+        bio_source: "none" as const,
+        preferred_locale: "en",
+        global_handle: {
+          id: "gh_public",
+          object: "global_handle" as const,
+          label: "captainpublic.pirate",
+          status: "active" as const,
+        },
+        created: 1_700_000_000,
+      },
+      requested_handle_label: "captainpublic.pirate",
+      resolved_handle_label: "captainpublic.pirate",
+      is_canonical: true,
+      created_communities: [],
+    };
+    const app = createHttpWorker({
+      handlers: { GetPublicProfileByHandle: () => publicProfile },
+    });
+    const anonymous = await app.request("http://worker.test/public-profiles/captainpublic");
+    const bearer = await app.request("http://worker.test/public-profiles/@CAPTAINPUBLIC.pirate", {
+      headers: { authorization: "Bearer ignored" },
+    });
+    expect(anonymous.status).toBe(200);
+    expect(bearer.status).toBe(200);
+    expect(await anonymous.json()).toEqual(await bearer.json());
+    expect(anonymous.headers.get("cache-control")).toBe("public, max-age=3600, must-revalidate");
+    expect(bearer.headers.get("cache-control")).toBe("no-store");
+  });
+
   it("skips authorization only for a signed-out optional-user request", async () => {
     const principals: Array<string | null> = [];
     const authorizedSubjects: string[] = [];

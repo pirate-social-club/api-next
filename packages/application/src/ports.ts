@@ -8,6 +8,7 @@ import type {
   GetJoinEligibility,
   GetPost,
   GetPublicHomeFeed,
+  GetPublicProfileByHandle,
   JoinCommunity,
   UnfollowCommunity,
 } from "@pirate/contracts";
@@ -211,8 +212,47 @@ export class IdentityStore extends Context.Service<
     readonly resolveCanonical: (input: {
       readonly sourceUserId: string;
     }) => Effect.Effect<CanonicalIdentity, ControlPlaneError | IdentityResolutionError>;
+    /** Coordinator-mediated identity writes maintain the public handle index
+     * in the same Postgres transaction as the account row. */
+    readonly upsertAccount?: (input: {
+      readonly userId: string;
+      readonly account: unknown;
+    }) => Effect.Effect<void, ControlPlaneError | IdentityResolutionError>;
   }
 >()("IdentityStore") {}
+
+export type PublicProfileDocument = Schema.Schema.Type<typeof GetPublicProfileByHandle.response>;
+
+export type PublicProfileCommunity = PublicProfileDocument["created_communities"][number];
+
+export type PublicProfileLookup = Readonly<{
+  readonly account: unknown;
+  readonly canonicalUserId: string;
+  readonly handleId: string;
+  readonly handleLabelNormalized: string;
+  readonly handleLabelDisplay: string;
+  readonly handleStatus: "active" | "redirect";
+  readonly createdCommunities: readonly PublicProfileCommunity[];
+}>;
+
+export type PublicProfileRepositoryReason = "invalid-account" | "invalid-alias";
+
+export class PublicProfileRepositoryError extends Data.TaggedError("PublicProfileRepositoryError")<{
+  readonly reason: PublicProfileRepositoryReason;
+}> {}
+
+export type PublicProfileRepositoryFailure = PublicProfileRepositoryError | ControlPlaneError;
+
+export interface PublicProfileStoreService {
+  readonly getByHandle: (input: {
+    readonly labelNormalized: string;
+  }) => Effect.Effect<PublicProfileLookup | null, PublicProfileRepositoryFailure>;
+}
+
+export class PublicProfileStore extends Context.Service<
+  PublicProfileStore,
+  PublicProfileStoreService
+>()("PublicProfileStore") {}
 
 // --- M2 community and content persistence (coordinator freeze 2026-08-16).
 // Runtime persistence is Postgres. Repositories return storage outcomes only;

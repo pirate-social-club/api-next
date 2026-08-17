@@ -32,6 +32,116 @@ CREATE TABLE IF NOT EXISTS account_aliases (
 CREATE INDEX IF NOT EXISTS account_aliases_canonical_idx
   ON account_aliases (canonical_user_id);
 
+CREATE TABLE IF NOT EXISTS public_handle_index (
+  handle_id TEXT PRIMARY KEY,
+  label_normalized TEXT NOT NULL,
+  label_display TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('active', 'redirect', 'retired')),
+  owner_user_id TEXT NOT NULL,
+  redirect_target_handle_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT public_handle_index_label_not_blank CHECK (btrim(label_normalized) <> ''),
+  CONSTRAINT public_handle_index_display_not_blank CHECK (btrim(label_display) <> ''),
+  CONSTRAINT public_handle_index_owner_fk
+    FOREIGN KEY (owner_user_id) REFERENCES users (user_id),
+  CONSTRAINT public_handle_index_redirect_fk
+    FOREIGN KEY (redirect_target_handle_id) REFERENCES public_handle_index (handle_id)
+    DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT public_handle_index_status_target_check CHECK (
+    (status = 'active' AND redirect_target_handle_id IS NULL)
+    OR (status = 'redirect' AND redirect_target_handle_id IS NOT NULL)
+    OR (status = 'retired' AND redirect_target_handle_id IS NULL)
+  ),
+  CONSTRAINT public_handle_index_not_self_redirect CHECK (
+    redirect_target_handle_id IS NULL OR redirect_target_handle_id <> handle_id
+  ),
+  CONSTRAINT public_handle_index_label_format_check CHECK (
+    label_normalized ~ '^[a-z0-9]+(-[a-z0-9]+)*$'
+    AND label_display = label_normalized || '.pirate'
+  )
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS public_handle_index_label_normalized_uidx
+  ON public_handle_index (label_normalized);
+
+CREATE UNIQUE INDEX IF NOT EXISTS public_handle_index_one_active_owner_uidx
+  ON public_handle_index (owner_user_id)
+  WHERE status = 'active';
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM public_handle_index AS source
+      LEFT JOIN public_handle_index AS target
+        ON target.handle_id = source.redirect_target_handle_id
+     WHERE source.status = 'redirect'
+       AND (
+         target.handle_id IS NULL
+         OR target.status <> 'active'
+         OR target.owner_user_id <> source.owner_user_id
+         OR target.handle_id = source.handle_id
+       )
+  ) THEN
+    RAISE EXCEPTION 'existing public handle redirect is not a direct active same-owner target';
+  END IF;
+END;
+$$;
+
+CREATE INDEX IF NOT EXISTS public_handle_index_owner_status_idx
+  ON public_handle_index (owner_user_id, status, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS public_handle_index_redirect_target_idx
+  ON public_handle_index (redirect_target_handle_id)
+  WHERE status = 'redirect';
+
+CREATE OR REPLACE FUNCTION public_handle_index_validate_redirects()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF NEW.status = 'redirect' AND NOT EXISTS (
+    SELECT 1
+      FROM public_handle_index AS target
+     WHERE target.handle_id = NEW.redirect_target_handle_id
+       AND target.status = 'active'
+       AND target.owner_user_id = NEW.owner_user_id
+       AND target.handle_id <> NEW.handle_id
+  ) THEN
+    RAISE EXCEPTION 'public handle redirect target is not an active handle owned by the same user'
+      USING ERRCODE = '23514', CONSTRAINT = 'public_handle_index_redirect_integrity';
+  END IF;
+
+  IF EXISTS (
+    SELECT 1
+      FROM public_handle_index AS source
+     WHERE source.status = 'redirect'
+       AND source.redirect_target_handle_id = NEW.handle_id
+       AND NOT EXISTS (
+         SELECT 1
+           FROM public_handle_index AS target
+          WHERE target.handle_id = source.redirect_target_handle_id
+            AND target.status = 'active'
+            AND target.owner_user_id = source.owner_user_id
+            AND target.handle_id <> source.handle_id
+       )
+  ) THEN
+    RAISE EXCEPTION 'public handle redirect source points at an invalid target'
+      USING ERRCODE = '23514', CONSTRAINT = 'public_handle_index_redirect_integrity';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER public_handle_index_redirect_integrity
+AFTER INSERT OR UPDATE OF status, owner_user_id, redirect_target_handle_id
+ON public_handle_index
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW
+EXECUTE FUNCTION public_handle_index_validate_redirects();
+
 CREATE TABLE IF NOT EXISTS communities (
   community_id TEXT PRIMARY KEY,
   display_name TEXT NOT NULL,
@@ -49,6 +159,9 @@ CREATE TABLE IF NOT EXISTS communities (
     ),
   CONSTRAINT communities_id_not_blank CHECK (btrim(community_id) <> '')
 );
+
+CREATE INDEX IF NOT EXISTS communities_creator_status_created_idx
+  ON communities (created_by_user_id, status, created_at DESC, community_id);
 
 CREATE TABLE IF NOT EXISTS community_memberships (
   community_id TEXT NOT NULL,

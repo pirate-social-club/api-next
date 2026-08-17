@@ -68,4 +68,55 @@ describe("generated api client", () => {
     expect(calls[0]?.headers.get("x-request")).toBe("request-value");
     expect(calls[0]?.signal).toBe(requestController.signal);
   });
+
+  test("validates the public-profile response and preserves its declared errors", async () => {
+    let response = new Response(
+      JSON.stringify({
+        profile: {
+          id: "usr_public",
+          object: "profile",
+          display_name: "Public Captain",
+          avatar_ref: null,
+          avatar_source: "none",
+          cover_ref: null,
+          cover_source: "none",
+          bio: null,
+          bio_source: "none",
+          preferred_locale: "en",
+          global_handle: {
+            id: "gh_public",
+            object: "global_handle",
+            label: "captainpublic.pirate",
+            status: "active",
+          },
+          created: 1_700_000_000,
+        },
+        requested_handle_label: "captainpublic.pirate",
+        resolved_handle_label: "captainpublic.pirate",
+        is_canonical: true,
+        created_communities: [],
+      }),
+      { status: 200 },
+    );
+    const fetchImpl = Object.assign(async () => response, { preconnect: fetch.preconnect });
+    const client = createPirateApiClient("https://api.example", fetchImpl);
+
+    await expect(
+      client.get_publicProfilesHandle({ path: { handle: "captainpublic" } }),
+    ).resolves.toMatchObject({ requested_handle_label: "captainpublic.pirate" });
+
+    response = new Response(
+      JSON.stringify({ code: "bad_request", message: "invalid handle", request_id: "req-2" }),
+      { status: 400 },
+    );
+    await expect(
+      client.get_publicProfilesHandle({ path: { handle: "captain.eth" } }),
+    ).rejects.toMatchObject({
+      _tag: "ApiClientError",
+      code: "bad_request",
+      status: 400,
+      declaredName: "BadRequest",
+      requestId: "req-2",
+    });
+  });
 });

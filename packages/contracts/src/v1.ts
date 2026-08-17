@@ -228,6 +228,47 @@ const Profile = Schema.Struct({
   created: Schema.Number,
 });
 
+// Public-by-handle deliberately has its own narrow response. It is not an
+// alias for Profile: wallet, XMTP, booking, trust, verification, activity,
+// follow, media, and count fields must not cross this public boundary.
+const PublicGlobalHandle = Schema.Struct({
+  id: Schema.String,
+  object: Schema.Literal("global_handle"),
+  label: Schema.String,
+  status: Schema.Literals(["active", "redirect", "retired"]),
+});
+
+const PublicProfileByHandle = Schema.Struct({
+  id: Schema.String,
+  object: Schema.Literal("profile"),
+  display_name: Schema.NullOr(Schema.String),
+  avatar_ref: Schema.NullOr(Schema.String),
+  avatar_source: Schema.NullOr(Schema.Literals(["ens", "upload", "none"])),
+  cover_ref: Schema.NullOr(Schema.String),
+  cover_source: Schema.NullOr(Schema.Literals(["ens", "upload", "none"])),
+  bio: Schema.NullOr(Schema.String),
+  bio_source: Schema.NullOr(Schema.Literals(["ens", "manual", "none"])),
+  preferred_locale: Schema.NullOr(Schema.String),
+  global_handle: PublicGlobalHandle,
+  created: Schema.Number,
+});
+
+const CreatedPublicCommunity = Schema.Struct({
+  community: Schema.String,
+  display_name: Schema.String,
+  created: Schema.Number,
+  // Route slugs are not persisted in api-next yet; do not manufacture one.
+  route_slug: Schema.NullOr(Schema.String),
+});
+
+const PublicProfileByHandleResponse = Schema.Struct({
+  profile: PublicProfileByHandle,
+  requested_handle_label: Schema.String,
+  resolved_handle_label: Schema.String,
+  is_canonical: Schema.Boolean,
+  created_communities: Schema.Array(CreatedPublicCommunity),
+});
+
 const WalletAttachment = Schema.Struct({
   wallet_attachment: Schema.String,
   chain_namespace: Schema.String,
@@ -804,6 +845,16 @@ export const GetMyProfile = endpoint({
   response: Profile,
   successStatus: 200,
   errors: [AuthError],
+});
+
+export const GetPublicProfileByHandle = endpoint({
+  method: "GET",
+  path: "/public-profiles/:handle",
+  auth: Auth.public(),
+  request: { path: Schema.Struct({ handle: Schema.String }) },
+  response: PublicProfileByHandleResponse,
+  successStatus: 200,
+  errors: [BadRequest, NotFound, InternalError],
 });
 
 // --- community discovery and membership ----------------------------------

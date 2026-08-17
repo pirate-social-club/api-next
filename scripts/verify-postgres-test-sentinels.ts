@@ -56,6 +56,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-content-suite-complete",
     contents: "api-next-control-plane-postgres-content-suite-complete\n",
   },
+  {
+    name: "postgres public profile",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_PUBLIC_PROFILE_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-public-profile-suite-complete",
+    contents: "api-next-control-plane-postgres-public-profile-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

@@ -44,6 +44,15 @@ const commentLockMigrationSql = await Bun.file(
 const m2BehaviorMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0005_m2_behavior_invariants.sql", import.meta.url),
 ).text();
+const publicProfileMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0006_public_profile_handle_index.sql", import.meta.url),
+).text();
+const publicProfileInvariantMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0007_public_profile_handle_invariants.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -73,12 +82,24 @@ const m2BehaviorMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0005_m2_behavior_invariants.sql"] ?? "",
   sql: m2BehaviorMigrationSql,
 };
+const publicProfileMigration: PostgresMigration = {
+  version: "0006_public_profile_handle_index.sql",
+  checksum: checksumManifest.migrations["0006_public_profile_handle_index.sql"] ?? "",
+  sql: publicProfileMigrationSql,
+};
+const publicProfileInvariantMigration: PostgresMigration = {
+  version: "0007_public_profile_handle_invariants.sql",
+  checksum: checksumManifest.migrations["0007_public_profile_handle_invariants.sql"] ?? "",
+  sql: publicProfileInvariantMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
   m2Migration,
   commentLockMigration,
   m2BehaviorMigration,
+  publicProfileMigration,
+  publicProfileInvariantMigration,
 ];
 
 function checksum(value: string): string {
@@ -206,6 +227,10 @@ suite("Postgres 17 v1 foundation", () => {
       expect(checksum(migrationSql)).toBe(migration.checksum);
       expect(checksum(identityMigrationSql)).toBe(identityMigration.checksum);
       expect(checksum(m2MigrationSql)).toBe(m2Migration.checksum);
+      expect(checksum(publicProfileMigrationSql)).toBe(publicProfileMigration.checksum);
+      expect(checksum(publicProfileInvariantMigrationSql)).toBe(
+        publicProfileInvariantMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -237,6 +262,7 @@ suite("Postgres 17 v1 foundation", () => {
         "moderation_reports",
         "post_votes",
         "posts",
+        "public_handle_index",
         "schema_migrations",
         "users",
       ]);

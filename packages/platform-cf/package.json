@@ -10,6 +10,7 @@
     "./content-repository": "./src/content-repository.ts",
     "./feed-repository": "./src/feed-repository.ts",
     "./identity-repository": "./src/identity-repository.ts",
+    "./public-profile-repository": "./src/public-profile-repository.ts",
     "./postgres": "./src/postgres.ts",
     "./session-bridge": "./src/session-bridge.ts",
     "./session-proof": "./src/session-proof.ts",

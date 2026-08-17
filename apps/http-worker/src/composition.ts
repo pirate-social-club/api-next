@@ -1,4 +1,5 @@
 import { getMyProfile } from "@pirate/application/use-cases/profile";
+import { makePublicProfileHandler } from "@pirate/application/use-cases/public-profile";
 import {
   type AuthenticatedSession,
   authenticateSession,
@@ -18,6 +19,7 @@ import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
+import { makeControlPlanePublicProfileStore } from "@pirate/platform-cf/public-profile-repository";
 import { makeSessionBridge } from "@pirate/platform-cf/session-bridge";
 import { makeJwksSessionProofVerifier } from "@pirate/platform-cf/session-proof";
 import {
@@ -108,6 +110,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const config = loadWorkerConfig(bindings);
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
+  const publicProfileStore = makeControlPlanePublicProfileStore(controlPlane, identityStore);
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const feedStore = makeControlPlaneFeedStore(controlPlane);
@@ -149,10 +152,15 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     );
   const profile: EndpointHandler = ({ principal: session }) =>
     Effect.runPromise(getMyProfile({ userId: session?.subject ?? "" }, { identityStore }));
+  const publicProfile = makePublicProfileHandler({ publicProfileStore });
 
   return createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
-    handlers: { ...productHandlers, GetJwks: () => bridge.jwks() },
+    handlers: {
+      ...productHandlers,
+      GetJwks: () => bridge.jwks(),
+      GetPublicProfileByHandle: publicProfile,
+    },
     sessionExchange,
     profile,
     authenticate,
