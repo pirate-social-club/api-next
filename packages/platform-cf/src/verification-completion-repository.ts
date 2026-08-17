@@ -5,6 +5,8 @@ import {
 } from "@pirate/application";
 import {
   type StoredVerificationCompletion,
+  type VerificationCompletionAttemptReservation,
+  type VerificationCompletionAttemptReservationOutcome,
   type VerificationCompletionHasher,
   VerificationCompletionHashFailed,
   VerificationCompletionStorageFailed,
@@ -23,7 +25,6 @@ type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
 
 class SubjectBindingConflict extends Data.TaggedError("SubjectBindingConflict") {}
-class VerificationCompletionExpired extends Data.TaggedError("VerificationCompletionExpired") {}
 
 function storageFailure(): VerificationCompletionStorageFailed {
   return new VerificationCompletionStorageFailed();
@@ -38,6 +39,26 @@ function oneRow(
 function stringField(row: Row, name: string): string | null {
   const value = row[name];
   return typeof value === "string" ? value : null;
+}
+
+function integerField(row: Row, name: string): number | null {
+  const value = row[name];
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && /^\d+$/u.test(value)
+        ? Number(value)
+        : Number.NaN;
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function attemptFromRow(row: Row): VerificationCompletionAttemptReservation | null {
+  const attempt_id = stringField(row, "attempt_id");
+  const lease_expires_at = dateField(row, "lease_expires_at");
+  const fence_token = integerField(row, "fence_token");
+  return attempt_id !== null && lease_expires_at !== null && fence_token !== null && fence_token > 0
+    ? { attempt_id, fence_token, lease_expires_at }
+    : null;
 }
 
 function dateField(row: Row, name: string): string | null {
@@ -167,6 +188,159 @@ function loadSession(
     if (row === null) return null;
     const parsed = sessionFromRow(row);
     return parsed === null ? yield* Effect.fail(storageFailure()) : parsed;
+  });
+}
+
+function reserveAttemptInTransaction(
+  transaction: Transaction,
+  input: Parameters<VerificationCompletionStore["reserveAttempt"]>[0],
+): Effect.Effect<
+  VerificationCompletionAttemptReservationOutcome,
+  VerificationCompletionStorageFailed | ControlPlaneError
+> {
+  return Effect.gen(function* () {
+    const sessionResult = yield* transaction.execute<Row>({
+      label: "verification.completion-attempts.lock-session",
+      text: `SELECT proof_session_id, status, expires_at,
+                    (expires_at > CURRENT_TIMESTAMP) AS session_active
+               FROM proof_sessions
+              WHERE proof_session_id = $1
+              FOR UPDATE`,
+      values: [input.proof_session_id],
+      readonly: false,
+    });
+    const sessionRow = yield* oneRow(sessionResult.rows);
+    if (
+      sessionRow === null ||
+      stringField(sessionRow, "proof_session_id") !== input.proof_session_id
+    ) {
+      return { kind: "unavailable" } as const;
+    }
+    const status = stringField(sessionRow, "status");
+    const expiresAt = dateField(sessionRow, "expires_at");
+    if (status !== "pending" || expiresAt === null) {
+      return { kind: "unavailable" } as const;
+    }
+    if (sessionRow.session_active !== true) return { kind: "expired" } as const;
+
+    const existingResult = yield* transaction.execute<Row>({
+      label: "verification.completion-attempts.lock-idempotency",
+      text: `SELECT attempt_id, state, fence_token, lease_expires_at,
+                    (lease_expires_at > CURRENT_TIMESTAMP) AS lease_active,
+                    CEIL(EXTRACT(EPOCH FROM (lease_expires_at - CURRENT_TIMESTAMP)))::integer
+                      AS retry_after_seconds
+               FROM verification_completion_attempts
+              WHERE proof_session_id = $1 AND idempotency_key = $2
+              FOR UPDATE`,
+      values: [input.proof_session_id, input.idempotency_key],
+      readonly: false,
+    });
+    const existing = yield* oneRow(existingResult.rows);
+    if (existing !== null) {
+      const state = stringField(existing, "state");
+      if (state === "consumed") return { kind: "consumed" } as const;
+      const leaseExpiresAt = dateField(existing, "lease_expires_at");
+      if (state === "leased" && existing.lease_active === true && leaseExpiresAt !== null) {
+        const retryAfter = integerField(existing, "retry_after_seconds");
+        return {
+          kind: "in_flight",
+          retry_after_seconds: retryAfter === null ? 1 : Math.max(1, retryAfter),
+        } as const;
+      }
+    }
+
+    const consumedResult = yield* transaction.execute<Row>({
+      label: "verification.completion-attempts.count-active-spent",
+      text: `SELECT count(*)::integer AS consumed_count
+               FROM verification_completion_attempts
+              WHERE proof_session_id = $1
+                AND (
+                  state = 'consumed'
+                  OR (state = 'leased' AND lease_expires_at > CURRENT_TIMESTAMP)
+                )`,
+      values: [input.proof_session_id],
+      readonly: true,
+    });
+    const consumedRow = yield* oneRow(consumedResult.rows);
+    const consumedCount = consumedRow === null ? null : integerField(consumedRow, "consumed_count");
+    if (consumedCount === null) return yield* Effect.fail(storageFailure());
+    if (consumedCount >= input.max_consumed_attempts) {
+      return { kind: "budget_exhausted" } as const;
+    }
+
+    if (existing !== null) {
+      const reacquired = yield* transaction.execute<Row>({
+        label: "verification.completion-attempts.reacquire",
+        text: `UPDATE verification_completion_attempts
+                  SET state = 'leased', fence_token = fence_token + 1,
+                      lease_expires_at = CURRENT_TIMESTAMP + ($2::double precision * INTERVAL '1 millisecond'),
+                      updated_at = CURRENT_TIMESTAMP
+                WHERE attempt_id = $1
+                RETURNING attempt_id, fence_token, lease_expires_at`,
+        values: [existing.attempt_id, input.lease_ms],
+        readonly: false,
+      });
+      const reacquiredRow = yield* oneRow(reacquired.rows);
+      const reservation = reacquiredRow === null ? null : attemptFromRow(reacquiredRow);
+      return reservation === null
+        ? yield* Effect.fail(storageFailure())
+        : ({ kind: "acquired", reservation } as const);
+    }
+
+    const inserted = yield* transaction.execute<Row>({
+      label: "verification.completion-attempts.insert",
+      text: `INSERT INTO verification_completion_attempts (
+               attempt_id, proof_session_id, idempotency_key, state,
+               fence_token, lease_expires_at
+             ) VALUES (
+               $1, $2, $3, 'leased', 1,
+               CURRENT_TIMESTAMP + ($4::double precision * INTERVAL '1 millisecond')
+             )
+             RETURNING attempt_id, fence_token, lease_expires_at`,
+      values: [crypto.randomUUID(), input.proof_session_id, input.idempotency_key, input.lease_ms],
+      readonly: false,
+    });
+    const insertedRow = yield* oneRow(inserted.rows);
+    const reservation = insertedRow === null ? null : attemptFromRow(insertedRow);
+    return reservation === null
+      ? yield* Effect.fail(storageFailure())
+      : ({ kind: "acquired", reservation } as const);
+  });
+}
+
+function settleAttemptInTransaction(
+  transaction: Transaction,
+  reservation: VerificationCompletionAttemptReservation,
+  state: "released" | "consumed",
+): Effect.Effect<void, VerificationCompletionStorageFailed | ControlPlaneError> {
+  return Effect.gen(function* () {
+    const result = yield* transaction.execute({
+      label: `verification.completion-attempts.${state}`,
+      text: `UPDATE verification_completion_attempts
+                SET state = $1, updated_at = CURRENT_TIMESTAMP
+              WHERE attempt_id = $2 AND fence_token = $3 AND state = 'leased'`,
+      values: [state, reservation.attempt_id, reservation.fence_token],
+      readonly: false,
+    });
+    if (result.rowCount !== 0 && result.rowCount !== 1) return yield* Effect.fail(storageFailure());
+  });
+}
+
+function lockAttempt(
+  transaction: Transaction,
+  reservation: VerificationCompletionAttemptReservation,
+): Effect.Effect<Row | null, VerificationCompletionStorageFailed | ControlPlaneError> {
+  return Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: "verification.completion-attempts.lock-reservation",
+      text: `SELECT attempt_id, state, fence_token, lease_expires_at
+               FROM verification_completion_attempts
+              WHERE attempt_id = $1
+              FOR UPDATE`,
+      values: [reservation.attempt_id],
+      readonly: false,
+    });
+    return yield* oneRow(result.rows);
   });
 }
 
@@ -356,6 +530,27 @@ export function makeControlPlaneVerificationCompletionRepository() {
         const db = yield* ControlPlaneDb;
         return yield* loadSession(db, proof_session_id, false);
       }),
+    reserveAttempt: (input: Parameters<VerificationCompletionStore["reserveAttempt"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          reserveAttemptInTransaction(transaction, input),
+        );
+      }),
+    releaseAttempt: (reservation: VerificationCompletionAttemptReservation) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        yield* db.withTransaction((transaction) =>
+          settleAttemptInTransaction(transaction, reservation, "released"),
+        );
+      }),
+    consumeAttempt: (reservation: VerificationCompletionAttemptReservation) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        yield* db.withTransaction((transaction) =>
+          settleAttemptInTransaction(transaction, reservation, "consumed"),
+        );
+      }),
     commit: (input: Parameters<VerificationCompletionStore["commit"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -367,6 +562,13 @@ export function makeControlPlaneVerificationCompletionRepository() {
                 return { kind: "rejected", reason: "unavailable" } as const;
               }
               if (stored.terminal !== null) {
+                const attemptRow = yield* lockAttempt(transaction, input.attempt);
+                const attemptFence =
+                  attemptRow === null ? null : integerField(attemptRow, "fence_token");
+                const attemptState = attemptRow === null ? null : stringField(attemptRow, "state");
+                if (attemptFence === input.attempt.fence_token && attemptState === "leased") {
+                  yield* settleAttemptInTransaction(transaction, input.attempt, "consumed");
+                }
                 return stored.terminal.status === "completed" &&
                   stored.terminal.idempotency_key === input.idempotency_key &&
                   stored.terminal.result_hash === input.result_hash
@@ -392,6 +594,23 @@ export function makeControlPlaneVerificationCompletionRepository() {
                 Date.parse(stored.session.expires_at) <= Date.parse(completedAt)
               ) {
                 return { kind: "rejected", reason: "expired" } as const;
+              }
+              const attemptRow = yield* lockAttempt(transaction, input.attempt);
+              const attemptFence =
+                attemptRow === null ? null : integerField(attemptRow, "fence_token");
+              const attemptState = attemptRow === null ? null : stringField(attemptRow, "state");
+              const attemptLease =
+                attemptRow === null ? null : dateField(attemptRow, "lease_expires_at");
+              if (
+                attemptRow === null ||
+                attemptFence !== input.attempt.fence_token ||
+                attemptState !== "leased" ||
+                attemptLease === null
+              ) {
+                return { kind: "rejected", reason: "unavailable" } as const;
+              }
+              if (Date.parse(attemptLease) <= Date.parse(completedAt)) {
+                return { kind: "rejected", reason: "unavailable" } as const;
               }
               if (
                 (stored.session.subject_binding_intent === "none") !==
@@ -565,11 +784,13 @@ export function makeControlPlaneVerificationCompletionRepository() {
                 readonly: false,
               });
               if (updated.rowCount === 0) {
-                return yield* Effect.fail(new VerificationCompletionExpired());
+                yield* settleAttemptInTransaction(transaction, input.attempt, "consumed");
+                return { kind: "rejected", reason: "expired" } as const;
               }
               if (updated.rowCount !== 1) {
                 return yield* Effect.fail(storageFailure());
               }
+              yield* settleAttemptInTransaction(transaction, input.attempt, "consumed");
               yield* transaction.execute({
                 label: "verification.proof-session-completions.insert",
                 text: `INSERT INTO proof_session_completion_events (
@@ -594,9 +815,6 @@ export function makeControlPlaneVerificationCompletionRepository() {
             Effect.catchTag("SubjectBindingConflict", () =>
               Effect.succeed({ kind: "rejected", reason: "binding_conflict" } as const),
             ),
-            Effect.catchTag("VerificationCompletionExpired", () =>
-              Effect.succeed({ kind: "rejected", reason: "expired" } as const),
-            ),
           );
       }),
   };
@@ -612,6 +830,9 @@ export function makeControlPlaneVerificationCompletionStore(
     Effect.provide(runtime)(effect).pipe(Effect.mapError(() => storageFailure()));
   return {
     load: (input) => provide(repository.load(input)),
+    reserveAttempt: (input) => provide(repository.reserveAttempt(input)),
+    releaseAttempt: (reservation) => provide(repository.releaseAttempt(reservation)),
+    consumeAttempt: (reservation) => provide(repository.consumeAttempt(reservation)),
     commit: (input) => provide(repository.commit(input)),
   };
 }

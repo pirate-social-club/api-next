@@ -38,10 +38,53 @@ export type VerificationCompletionCommitOutcome =
       readonly reason: "unavailable" | "expired" | "terminal" | "binding_conflict";
     };
 
+export const VERIFICATION_COMPLETION_MAX_ATTEMPTS = 3 as const;
+export const VERIFICATION_COMPLETION_ATTEMPT_LEASE_MARGIN_MS = 1_000 as const;
+
+export type VerificationCompletionAttemptReservation = Readonly<{
+  readonly attempt_id: string;
+  readonly fence_token: number;
+  readonly lease_expires_at: string;
+}>;
+
+export type VerificationCompletionAttemptReservationOutcome =
+  | {
+      readonly kind: "acquired";
+      readonly reservation: VerificationCompletionAttemptReservation;
+    }
+  | { readonly kind: "in_flight"; readonly retry_after_seconds: number }
+  | { readonly kind: "consumed" }
+  | { readonly kind: "budget_exhausted" }
+  | { readonly kind: "expired" }
+  | { readonly kind: "unavailable" };
+
 export interface VerificationCompletionStore {
   readonly load: (input: {
     readonly proof_session_id: string;
   }) => Effect.Effect<StoredVerificationCompletion | null, VerificationCompletionStorageFailed>;
+
+  /**
+   * Reserve one provider invocation in a short transaction. The reservation
+   * is idempotent by proof session and public idempotency key; implementations
+   * must not hold this transaction while provider work runs.
+   */
+  readonly reserveAttempt: (input: {
+    readonly proof_session_id: string;
+    readonly idempotency_key: string;
+    readonly lease_ms: number;
+    readonly max_consumed_attempts: number;
+  }) => Effect.Effect<
+    VerificationCompletionAttemptReservationOutcome,
+    VerificationCompletionStorageFailed
+  >;
+  /** Release only this reservation generation after a positively identified upstream outage. */
+  readonly releaseAttempt: (
+    reservation: VerificationCompletionAttemptReservation,
+  ) => Effect.Effect<void, VerificationCompletionStorageFailed>;
+  /** Consume only this reservation generation after a rejection or invalid result. */
+  readonly consumeAttempt: (
+    reservation: VerificationCompletionAttemptReservation,
+  ) => Effect.Effect<void, VerificationCompletionStorageFailed>;
 
   /**
    * Implementations must lock the proof session and perform every write in one
@@ -53,6 +96,7 @@ export interface VerificationCompletionStore {
   readonly commit: (input: {
     readonly actor_id: string;
     readonly idempotency_key: string;
+    readonly attempt: VerificationCompletionAttemptReservation;
     readonly expected_session: ProofSession;
     readonly result_hash: Sha256HexValue;
     readonly bundle: EvidenceBundle;
@@ -82,7 +126,16 @@ export interface CompleteVerificationResult {
 export class VerificationCompletionRejected extends Data.TaggedError(
   "VerificationCompletionRejected",
 )<{
-  readonly reason: "invalid" | "unavailable" | "expired" | "terminal" | "binding_conflict";
+  readonly reason:
+    | "invalid"
+    | "unavailable"
+    | "expired"
+    | "terminal"
+    | "binding_conflict"
+    | "attempt_in_flight"
+    | "attempt_consumed"
+    | "attempt_budget_exhausted";
+  readonly retry_after_seconds?: number;
 }> {}
 
 export class VerificationCompletionStorageFailed extends Data.TaggedError(
@@ -173,13 +226,70 @@ export const completeVerification = Effect.fn("completeVerification")(function* 
   }
 
   const adapter = yield* services.registry.resolve(stored.session.provider_id);
-  const bundle = yield* adapter.complete({ session: stored.session, submission: input.submission });
-  const resultHash = yield* services.hasher.hash(bundle);
+  const attempt = yield* services.store.reserveAttempt({
+    proof_session_id: stored.session.id,
+    idempotency_key: input.idempotency_key,
+    lease_ms:
+      adapter.manifest.operation_deadlines.complete_ms +
+      VERIFICATION_COMPLETION_ATTEMPT_LEASE_MARGIN_MS,
+    max_consumed_attempts: VERIFICATION_COMPLETION_MAX_ATTEMPTS,
+  });
+  if (attempt.kind === "in_flight") {
+    return yield* new VerificationCompletionRejected({
+      reason: "attempt_in_flight",
+      retry_after_seconds: attempt.retry_after_seconds,
+    });
+  }
+  if (attempt.kind === "consumed") {
+    return yield* new VerificationCompletionRejected({ reason: "attempt_consumed" });
+  }
+  if (attempt.kind === "budget_exhausted") {
+    return yield* new VerificationCompletionRejected({ reason: "attempt_budget_exhausted" });
+  }
+  if (attempt.kind === "unavailable") {
+    return yield* new VerificationCompletionRejected({ reason: "unavailable" });
+  }
+  if (attempt.kind === "expired") {
+    return yield* new VerificationCompletionRejected({ reason: "expired" });
+  }
+
+  const releaseOrConsume = (
+    error: VerificationProviderFailure,
+  ): Effect.Effect<never, VerificationCompletionFailure> => {
+    const settle =
+      error._tag === "VerificationProviderUnavailable"
+        ? services.store.releaseAttempt(attempt.reservation)
+        : services.store.consumeAttempt(attempt.reservation);
+    return settle.pipe(
+      Effect.mapError(() => new VerificationCompletionStorageFailed()),
+      Effect.flatMap(() => Effect.fail(error)),
+    );
+  };
+  const bundle = yield* adapter
+    .complete({ session: stored.session, submission: input.submission })
+    .pipe(
+      Effect.matchEffect({
+        onSuccess: Effect.succeed,
+        onFailure: releaseOrConsume,
+      }),
+    );
+  const resultHash = yield* services.hasher.hash(bundle).pipe(
+    Effect.matchEffect({
+      onSuccess: Effect.succeed,
+      onFailure: (error) =>
+        services.store.releaseAttempt(attempt.reservation).pipe(
+          Effect.mapError(() => new VerificationCompletionStorageFailed()),
+          Effect.flatMap(() => Effect.fail(error)),
+        ),
+    }),
+  );
   if (Option.isNone(Schema.decodeUnknownOption(Sha256Hex)(resultHash))) {
+    yield* services.store.releaseAttempt(attempt.reservation);
     return yield* new VerificationCompletionHashFailed();
   }
   const completedAt = services.now?.() ?? Date.now();
   if (expiresAt <= completedAt) {
+    yield* services.store.consumeAttempt(attempt.reservation);
     return yield* new VerificationCompletionRejected({ reason: "expired" });
   }
   const validResultHash = Schema.decodeUnknownSync(Sha256Hex)(resultHash);
@@ -187,11 +297,13 @@ export const completeVerification = Effect.fn("completeVerification")(function* 
   const outcome = yield* services.store.commit({
     actor_id: input.actor_id,
     idempotency_key: input.idempotency_key,
+    attempt: attempt.reservation,
     expected_session: stored.session,
     result_hash: validResultHash,
     bundle,
   });
   if (outcome.kind === "rejected") {
+    yield* services.store.consumeAttempt(attempt.reservation);
     return yield* new VerificationCompletionRejected({ reason: outcome.reason });
   }
   return yield* completedResult(stored.session.id, outcome.result_hash, outcome.kind === "replay");

@@ -33,6 +33,7 @@ const migrationFiles = [
   "0009_gates_v2_foundation.sql",
   "0010_proof_session_provenance.sql",
   "0011_verification_start_reservations.sql",
+  "0012_verification_completion_attempts.sql",
 ] as const;
 const migrations: readonly PostgresMigration[] = await Promise.all(
   migrationFiles.map(async (version) => {

@@ -25,7 +25,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-verification-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-verification-suite-complete\n";
 let completedTestCount = 0;
-const foundationTestCount = 3;
+const foundationTestCount = 7;
 
 const migrationFiles = [
   "0001_v1_product_slice.sql",
@@ -38,6 +38,8 @@ const migrationFiles = [
   "0008_community_route_slug.sql",
   "0009_gates_v2_foundation.sql",
   "0010_proof_session_provenance.sql",
+  "0011_verification_start_reservations.sql",
+  "0012_verification_completion_attempts.sql",
 ] as const;
 const migrations: readonly PostgresMigration[] = await Promise.all(
   migrationFiles.map(async (version) => {
@@ -159,6 +161,12 @@ async function insertSession(admin: Client, session: ProofSession): Promise<void
       session.upstream_session_ref ?? null,
     ],
   });
+  await admin.query(
+    `INSERT INTO verification_completion_attempts
+       (attempt_id, proof_session_id, idempotency_key, state, fence_token, lease_expires_at)
+     VALUES ($1, $2, $3, 'leased', 1, CURRENT_TIMESTAMP + INTERVAL '1 hour')`,
+    [`test-attempt-${session.id}`, session.id, `callback-${session.id}`],
+  );
 }
 
 function evidenceBundle(session: ProofSession, evidenceHash: string): EvidenceBundle {
@@ -236,13 +244,176 @@ function commitInput(session: ProofSession, evidenceHash: string, resultHash: st
   return {
     actor_id: session.actor_id,
     idempotency_key: `callback-${session.id}`,
+    attempt: {
+      attempt_id: `test-attempt-${session.id}`,
+      fence_token: 1,
+      lease_expires_at: "2099-08-17T00:00:00.000Z",
+    },
     expected_session: session,
     result_hash: resultHash,
     bundle: evidenceBundle(session, evidenceHash),
   } as const;
 }
 
+async function reserveAttempt(
+  store: ReturnType<typeof storeFor>,
+  proofSessionId: string,
+  idempotencyKey: string,
+  maxConsumedAttempts = 3,
+) {
+  const result = await Effect.runPromise(
+    Effect.scoped(
+      store.reserveAttempt({
+        proof_session_id: proofSessionId,
+        idempotency_key: idempotencyKey,
+        lease_ms: 60_000,
+        max_consumed_attempts: maxConsumedAttempts,
+      }),
+    ),
+  );
+  return result;
+}
+
 suite("Postgres 17 verification completion repository", () => {
+  test("atomically admits one duplicate idempotency key and fences the other", async () => {
+    await withSchema(async (connection, admin) => {
+      const session = proofSession("attempt-duplicate", "user-a", "1".repeat(64), "none");
+      await insertSession(admin, session);
+      await admin.query(
+        "DELETE FROM verification_completion_attempts WHERE proof_session_id = $1",
+        [session.id],
+      );
+      const store = storeFor(connection);
+      const results = await Promise.all([
+        reserveAttempt(store, session.id, "duplicate-key"),
+        reserveAttempt(store, session.id, "duplicate-key"),
+      ]);
+      expect(results.map((result) => result.kind).sort()).toEqual(["acquired", "in_flight"]);
+      expect(
+        (await admin.query("SELECT count(*) FROM verification_completion_attempts")).rows[0]?.count,
+      ).toBe("1");
+    });
+    completedTestCount += 1;
+  });
+
+  test("caps active plus consumed attempts and excludes released leases", async () => {
+    await withSchema(async (connection, admin) => {
+      const session = proofSession("attempt-budget", "user-a", "2".repeat(64), "none");
+      await insertSession(admin, session);
+      await admin.query(
+        "DELETE FROM verification_completion_attempts WHERE proof_session_id = $1",
+        [session.id],
+      );
+      const store = storeFor(connection);
+      const concurrent = await Promise.all(
+        ["budget-1", "budget-2", "budget-3", "budget-4", "budget-5"].map((key) =>
+          reserveAttempt(store, session.id, key),
+        ),
+      );
+      expect(concurrent.filter((result) => result.kind === "acquired")).toHaveLength(3);
+      expect(concurrent.filter((result) => result.kind === "budget_exhausted")).toHaveLength(2);
+      const first = concurrent.find((result) => result.kind === "acquired");
+      if (first?.kind !== "acquired") throw new Error("expected an acquired reservation");
+      await Effect.runPromise(Effect.scoped(store.releaseAttempt(first.reservation)));
+      const released = await admin.query<{ idempotency_key: string }>(
+        "SELECT idempotency_key FROM verification_completion_attempts WHERE attempt_id = $1",
+        [first.reservation.attempt_id],
+      );
+      const releasedKey = released.rows[0]?.idempotency_key;
+      if (releasedKey === undefined) throw new Error("expected the released idempotency key");
+      expect((await reserveAttempt(store, session.id, "budget-refill")).kind).toBe("acquired");
+      expect((await reserveAttempt(store, session.id, releasedKey)).kind).toBe("budget_exhausted");
+      const active = await admin.query<{ attempt_id: string }>(
+        `SELECT attempt_id
+           FROM verification_completion_attempts
+          WHERE proof_session_id = $1 AND state = 'leased'
+          ORDER BY attempt_id
+          LIMIT 1`,
+        [session.id],
+      );
+      const staleAttempt = active.rows[0]?.attempt_id;
+      if (staleAttempt === undefined) throw new Error("expected an active reservation");
+      await admin.query(
+        `UPDATE verification_completion_attempts
+            SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second'
+          WHERE attempt_id = $1`,
+        [staleAttempt],
+      );
+      expect((await reserveAttempt(store, session.id, "budget-after-expiry")).kind).toBe(
+        "acquired",
+      );
+    });
+    completedTestCount += 1;
+  });
+
+  test("releases a provider-unavailable generation for same-key retry", async () => {
+    await withSchema(async (connection, admin) => {
+      const session = proofSession("attempt-release", "user-a", "3".repeat(64), "none");
+      await insertSession(admin, session);
+      await admin.query(
+        "DELETE FROM verification_completion_attempts WHERE proof_session_id = $1",
+        [session.id],
+      );
+      const store = storeFor(connection);
+      const first = await reserveAttempt(store, session.id, "retry-key");
+      if (first.kind !== "acquired") throw new Error("expected first reservation");
+      await Effect.runPromise(Effect.scoped(store.releaseAttempt(first.reservation)));
+      const second = await reserveAttempt(store, session.id, "retry-key");
+      expect(second.kind).toBe("acquired");
+      if (second.kind === "acquired") {
+        expect(second.reservation.fence_token).toBe(first.reservation.fence_token + 1);
+      }
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects a stale finalizer without writing evidence", async () => {
+    await withSchema(async (connection, admin) => {
+      const session = proofSession("attempt-stale", "user-a", "4".repeat(64), "establish");
+      await insertSession(admin, session);
+      await admin.query(
+        "DELETE FROM verification_completion_attempts WHERE proof_session_id = $1",
+        [session.id],
+      );
+      const store = storeFor(connection);
+      const first = await reserveAttempt(store, session.id, "stale-key");
+      if (first.kind !== "acquired") throw new Error("expected first reservation");
+      await admin.query(
+        `UPDATE verification_completion_attempts
+            SET lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second'
+          WHERE attempt_id = $1`,
+        [first.reservation.attempt_id],
+      );
+      const second = await reserveAttempt(store, session.id, "stale-key");
+      if (second.kind !== "acquired") throw new Error("expected reacquisition");
+      const staleInput = {
+        ...commitInput(session, "5".repeat(64), "6".repeat(64)),
+        idempotency_key: "stale-key",
+        attempt: first.reservation,
+      };
+      expect(await Effect.runPromise(Effect.scoped(store.commit(staleInput)))).toEqual({
+        kind: "rejected",
+        reason: "unavailable",
+      });
+      expect(
+        (
+          await admin.query("SELECT count(*) FROM evidence_receipts WHERE proof_session_id = $1", [
+            session.id,
+          ])
+        ).rows[0]?.count,
+      ).toBe("0");
+      expect(
+        (
+          await admin.query(
+            "SELECT state, fence_token FROM verification_completion_attempts WHERE attempt_id = $1",
+            [second.kind === "acquired" ? second.reservation.attempt_id : "missing"],
+          )
+        ).rows[0],
+      ).toMatchObject({ state: "leased", fence_token: "2" });
+    });
+    completedTestCount += 1;
+  });
+
   test("commits one complete ledger and returns replay under concurrent callbacks", async () => {
     await withSchema(async (connection, admin) => {
       const session = proofSession("session-concurrent", "user-a", "1".repeat(64), "establish");

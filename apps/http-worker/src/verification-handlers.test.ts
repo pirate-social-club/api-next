@@ -59,6 +59,17 @@ function terminalStore(): VerificationCompletionStore {
     },
   };
   return {
+    reserveAttempt: () =>
+      Effect.succeed({
+        kind: "acquired" as const,
+        reservation: {
+          attempt_id: "attempt-terminal",
+          fence_token: 1,
+          lease_expires_at: "2099-08-17T00:00:00.000Z",
+        },
+      }),
+    releaseAttempt: () => Effect.void,
+    consumeAttempt: () => Effect.void,
     load: () => Effect.succeed(stored),
     commit: () => Effect.die("terminal replay must not commit"),
   };
