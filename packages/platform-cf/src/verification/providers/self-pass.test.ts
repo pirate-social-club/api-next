@@ -8,20 +8,22 @@ import type {
 } from "@pirate/application/verification";
 import type { ProofSession, VerificationRequirements } from "@pirate/domain/verification";
 import { Cause, Effect, Exit, Result } from "effect";
+import { normalizeSelfCountry } from "./self-country-codes.ts";
 import {
   makeSelfPassProvider,
-  SELF_PASS_CONFIGURATION,
   SELF_PASS_MANIFEST,
   SELF_PASS_PROTOCOL_VERSION,
   SELF_PASS_RP_SCOPE,
   type SelfPassAdapterOptions,
   type SelfPassSdk,
+  selfPassConfigurationFor,
 } from "./self-pass.ts";
 
 const NOW = "2099-08-17T12:00:00.000Z";
 const EXPIRES = "2099-08-17T13:00:00.000Z";
 const HASH = "2e10fcb51abd84e7edd0541f7f9da0e0f1c0773bc13920b538ca197db3840c42";
 const DIGEST = "b".repeat(64);
+const CONFIGURATION = selfPassConfigurationFor("https://api.example", true);
 const SCOPE = {
   kind: "named" as const,
   scope_semantics: "issuer_rp_scope" as const,
@@ -50,7 +52,7 @@ const START_INPUT: VerificationProviderStartInput = {
   method: "document",
   scope: SCOPE,
   request_mode: "dynamic",
-  provider_configuration: SELF_PASS_CONFIGURATION,
+  provider_configuration: CONFIGURATION,
   requested_requirements: REQUIREMENTS,
   requested_claim_ids: CLAIM_IDS,
   subject_binding_intent: "establish",
@@ -140,6 +142,7 @@ function options(overrides: Partial<SelfPassAdapterOptions> = {}): SelfPassAdapt
   return {
     callback_origin: "https://api.example",
     app_name: "Pirate",
+    mock_passport: true,
     clock: { now: () => NOW, expiresAt: () => EXPIRES },
     identifiers: identifiers(),
     digest: { digest: () => Effect.succeed(DIGEST) },
@@ -188,11 +191,25 @@ function completionInput(
 }
 
 describe("Self Pass provider-local adapter", () => {
+  test("normalizes the canonical Self country table and rejects unknown values", () => {
+    expect(normalizeSelfCountry("GEO")).toBe("GE");
+    expect(normalizeSelfCountry("USA")).toBe("US");
+    expect(normalizeSelfCountry("MEX")).toBe("MX");
+    expect(normalizeSelfCountry("ROU")).toBe("RO");
+    expect(normalizeSelfCountry("RUS")).toBe("RU");
+    expect(normalizeSelfCountry("RWA")).toBe("RW");
+    expect(normalizeSelfCountry("TKL")).toBe("TK");
+    expect(normalizeSelfCountry("TTO")).toBe("TT");
+    expect(normalizeSelfCountry("  geo ")).toBe("GE");
+    expect(normalizeSelfCountry("ZZZ")).toBeUndefined();
+    expect(normalizeSelfCountry("ZZ")).toBeUndefined();
+  });
+
   test("plans only canonical dynamic requests and rejects holder binding", async () => {
     await expect(Effect.runPromise(provider().plan(planInput()))).resolves.toEqual({
       status: "supported",
       request_mode: "dynamic",
-      provider_configuration: SELF_PASS_CONFIGURATION,
+      provider_configuration: CONFIGURATION,
     });
     await expect(
       Effect.runPromise(
@@ -231,6 +248,79 @@ describe("Self Pass provider-local adapter", () => {
     expect(JSON.stringify(startedSession.session.upstream_session_ref)).not.toContain("minimumAge");
     expect(startedSession.session.started_at).toBe(NOW);
     expect(startedSession.session.expires_at).toBe(EXPIRES);
+  });
+
+  test("uses explicit mock mode and never permits it for production", async () => {
+    const realStaging = await Effect.runPromise(
+      provider({ mock_passport: false }).start({
+        ...START_INPUT,
+        environment: "staging",
+        provider_configuration: selfPassConfigurationFor("https://api.example", false),
+      }),
+    );
+    expect(realStaging.presentation.payload).toMatchObject({
+      endpoint_type: "staging_https",
+      dev_mode: false,
+    });
+    const mockedStaging = await Effect.runPromise(
+      provider({ mock_passport: true }).start({ ...START_INPUT, environment: "staging" }),
+    );
+    expect(mockedStaging.presentation.payload).toMatchObject({ dev_mode: true });
+    await expect(
+      Effect.runPromise(
+        provider({ mock_passport: true }).plan(planInput({ environment: "production" })),
+      ),
+    ).resolves.toEqual({ status: "unsupported" });
+    await expect(
+      failureTag(
+        provider({ mock_passport: true }).start({ ...START_INPUT, environment: "production" }),
+      ),
+    ).resolves.toBe("VerificationProviderRejected");
+    await expect(
+      Effect.runPromise(
+        provider({ mock_passport: false }).plan(planInput({ environment: "production" })),
+      ),
+    ).resolves.toMatchObject({ status: "supported" });
+    await expect(Effect.runPromise(provider({ app_name: " " }).plan(planInput()))).resolves.toEqual(
+      { status: "unsupported" },
+    );
+    await expect(
+      Effect.runPromise(provider({ app_name: "x".repeat(129) }).plan(planInput())),
+    ).resolves.toEqual({ status: "unsupported" });
+  });
+
+  test("reconstructs endpoint and verifier mode from the immutable session ref", async () => {
+    FakeVerifier.constructors.length = 0;
+    const oldOrigin = "https://old-api.example";
+    const oldAdapter = provider({ callback_origin: oldOrigin, mock_passport: true });
+    const oldSession = await Effect.runPromise(
+      oldAdapter.start({
+        ...START_INPUT,
+        provider_configuration: selfPassConfigurationFor(oldOrigin, true),
+      }),
+    );
+    FakeVerifier.result = resultFor(oldSession.session);
+    const redeployedAdapter = provider({
+      callback_origin: "https://new-api.example",
+      mock_passport: false,
+    });
+    await Effect.runPromise(
+      redeployedAdapter.complete(
+        completionInput(oldSession.session, {
+          kind: "self-proof",
+          session_id: oldSession.session.id,
+          attestation_id: 1,
+          proof: PROOF,
+          public_signals: ["1"],
+          user_context_data: contextFor(oldSession.session),
+        }),
+      ),
+    );
+    expect(FakeVerifier.constructors[0]?.slice(0, 3)).toEqual([
+      SELF_PASS_RP_SCOPE,
+      `${oldOrigin}/verification/callbacks/self.pass`,
+      true,
+    ]);
   });
 
   test("resolves callback structure without claiming cryptographic authentication", async () => {
@@ -306,9 +396,12 @@ describe("Self Pass provider-local adapter", () => {
     ]);
     expect((constructorArgs[4] as FakeConfigStore).config).toEqual({ minimumAge: 18 });
     expect(bundle.receipts[0]?.evidence_kind).toBe("self.pass.attestation.1");
-    expect(bundle.receipts[0]?.provider_configuration).toEqual(SELF_PASS_CONFIGURATION);
+    expect(bundle.receipts[0]?.provider_configuration).toEqual(CONFIGURATION);
     expect(bundle.receipts[0]?.scope).toEqual(SCOPE);
     expect(bundle.assertions.map((assertion) => assertion.claim_id)).toEqual([...CLAIM_IDS]);
+    expect(
+      bundle.assertions.find((assertion) => assertion.claim_id === "nationality.allowed")?.value,
+    ).toEqual({ allowed: true });
     expect(bundle.assertions.some((assertion) => assertion.claim_id === "human.unique")).toBe(
       false,
     );
@@ -331,6 +424,21 @@ describe("Self Pass provider-local adapter", () => {
       public_signals: ["1"],
       user_context_data: contextFor(session.session),
     };
+    await expect(
+      failureTag(adapter.complete(completionInput(session.session, payload))),
+    ).resolves.toBe("VerificationProviderRejected");
+    FakeVerifier.result = resultFor(session.session, {
+      discloseOutput: {
+        ...resultFor(session.session).discloseOutput,
+        nationality: "RUS",
+      },
+    });
+    await expect(
+      failureTag(adapter.complete(completionInput(session.session, payload))),
+    ).resolves.toBe("VerificationProviderRejected");
+    FakeVerifier.result = resultFor(session.session, {
+      isValidDetails: { isValid: true, isMinimumAgeValid: false, isOfacValid: true },
+    });
     await expect(
       failureTag(adapter.complete(completionInput(session.session, payload))),
     ).resolves.toBe("VerificationProviderRejected");
