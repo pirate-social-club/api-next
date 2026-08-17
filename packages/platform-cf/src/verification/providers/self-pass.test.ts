@@ -544,6 +544,13 @@ describe("Self Pass provider-local adapter", () => {
     expect(resolution.idempotency_key).toBe(DIGEST);
     expect(resolution.submission.channel).toBe("provider_callback");
     expect(resolution.submission.payload).toEqual(payload);
+
+    const replay = await Effect.runPromise(
+      provider().resolveCallback?.(callback) ?? Effect.die("missing callback"),
+    );
+    expect(replay.proof_session_id).toBe(resolution.proof_session_id);
+    expect(replay.idempotency_key).toBe(resolution.idempotency_key);
+    expect(replay.submission).toEqual(resolution.submission);
   });
 
   test("rejects callback context without a high-entropy session binding", async () => {
