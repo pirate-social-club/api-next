@@ -1,3 +1,4 @@
+import { ProviderPresentation as ContractProviderPresentation } from "@pirate/contracts";
 import {
   type Assurance,
   CanonicalClaimIdentifier,
@@ -30,34 +31,7 @@ export const VERIFICATION_CALLBACK_CREDENTIAL_HEADERS = new Set([
  * A presentation is the only provider output exposed to a client. Provider
  * SDK response objects stay inside the adapter and never cross this boundary.
  */
-export const ProviderPresentation = Schema.Union([
-  Schema.Struct({
-    kind: Schema.Literal("redirect"),
-    session_id: Schema.NonEmptyString,
-    url: Schema.NonEmptyString,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("deeplink"),
-    session_id: Schema.NonEmptyString,
-    uri: Schema.NonEmptyString,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("embedded_sdk"),
-    session_id: Schema.NonEmptyString,
-    protocol: Schema.NonEmptyString,
-    version: Schema.NonEmptyString,
-    payload: Schema.Json,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("poll"),
-    session_id: Schema.NonEmptyString,
-    poll_url: Schema.NonEmptyString,
-  }),
-  Schema.Struct({
-    kind: Schema.Literal("none"),
-    session_id: Schema.NonEmptyString,
-  }),
-]);
+export const ProviderPresentation = ContractProviderPresentation;
 export type ProviderPresentation = Schema.Schema.Type<typeof ProviderPresentation>;
 
 export const ProviderSessionStart = Schema.Struct({

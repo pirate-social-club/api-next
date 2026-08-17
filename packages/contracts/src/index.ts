@@ -4,6 +4,7 @@ export * from "./endpoint.ts";
 export * from "./errors.ts";
 export * from "./money.ts";
 export * from "./openapi-diff.ts";
+export * from "./provider-presentation.ts";
 export * from "./registry.ts";
 export * from "./v1.ts";
 export * from "./verification.ts";
