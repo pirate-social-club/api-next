@@ -6,6 +6,10 @@ const alias = {
     "../../packages/application/src/use-cases/identity-account.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/use-cases/current-user": new URL(
+    "../../packages/application/src/use-cases/current-user.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/use-cases/profile": new URL(
     "../../packages/application/src/use-cases/profile.ts",
     import.meta.url,

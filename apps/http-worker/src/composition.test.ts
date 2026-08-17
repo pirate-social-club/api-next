@@ -60,6 +60,10 @@ describe("HTTP production composition", () => {
     expect((await jwks.json()) as unknown).toMatchObject({
       keys: [{ alg: "RS256", use: "sig", key_ops: ["verify"] }],
     });
+
+    const currentUser = await worker.request("https://worker.test/users/me");
+    expect(currentUser.status).toBe(401);
+    expect(await currentUser.json()).toMatchObject({ code: "auth_error" });
   });
 
   test("fails closed before route construction when a provider setting is absent", async () => {
