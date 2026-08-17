@@ -175,6 +175,56 @@ describe("provider dependency boundary", () => {
     );
   });
 
+  test("fails closed for unsupported workspace entries", async () => {
+    const root = await fixtureRoot({
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts":
+        'import type { VerificationProviderAdapter } from "@pirate/application/verification";\nexport type Fixture = VerificationProviderAdapter;\n',
+    });
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({ workspaces: ["packages/*", "apps", "../not-a-workspace"] }),
+    );
+    const result = lintDependencies(root, { checkVerificationExportSurface: false });
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        "package.json: unsupported workspace entry apps",
+        "package.json: unsupported workspace entry ../not-a-workspace",
+      ]),
+    );
+  });
+
+  test("the actual walker rejects a widened frozen verification export", async () => {
+    const root = await fixtureRoot({
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts":
+        'import type { VerificationProviderAdapter } from "@pirate/application/verification";\nexport type Fixture = VerificationProviderAdapter;\n',
+    });
+    for (const directory of [
+      "packages/domain",
+      "packages/application",
+      "packages/testing",
+    ] as const) {
+      await writeFile(
+        join(root, directory, "package.json"),
+        await Bun.file(join(repositoryRoot, directory, "package.json")).text(),
+      );
+      const relativeIndex = join(directory, "src/verification/index.ts");
+      await mkdir(dirname(join(root, relativeIndex)), { recursive: true });
+      await writeFile(
+        join(root, relativeIndex),
+        await Bun.file(join(repositoryRoot, relativeIndex)).text(),
+      );
+    }
+    const domainIndex = join(root, "packages/domain/src/verification/index.ts");
+    await writeFile(
+      domainIndex,
+      `${await Bun.file(domainIndex).text()}\nexport const widened = true;\n`,
+    );
+    const result = lintDependencies(root);
+    expect(result.violations).toContain(
+      "packages/domain/src/verification/index.ts: verification export surface differs from the frozen list",
+    );
+  });
+
   test("the actual walker rejects forbidden, computed, misplaced, and registry imports", async () => {
     const root = await fixtureRoot({
       "packages/platform-cf/src/verification/providers/contract-fixture.ts":

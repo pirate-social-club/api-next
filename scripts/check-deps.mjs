@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Dependency-matrix and verification-boundary lint (api-next 000 §4).
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -75,10 +75,12 @@ const VERIFICATION_EXPORTS = {
       "ProviderConfigurationRef",
       "ProviderClaimCapability",
       "ProofProviderManifest",
+      "ProviderOperationDeadlines",
       "ScopeRequirement",
       "SubjectBindingIntent",
       "SubjectKeyScopeSemantics",
       "SubjectScope",
+      "VerificationCallbackMode",
       "VerificationRequestMode",
     ],
     "./evidence.ts": [
@@ -189,7 +191,10 @@ const VERIFICATION_EXPORTS = {
       "StartVerificationServices",
       "startVerification",
       "VerificationIntentResolver",
-      "VerificationSessionStartCommitOutcome",
+      "VerificationSessionStartFinalizeOutcome",
+      "VerificationSessionStartReservation",
+      "VerificationSessionStartReservationInput",
+      "VerificationSessionStartReservationOutcome",
       "VerificationSessionStartStore",
       "VerificationStartRejected",
       "VerificationStartStorageFailed",
@@ -486,14 +491,24 @@ export function verificationPackageExportViolations(packageDirectory, exportsMap
   return violations;
 }
 
-function workspaceDirectories(root) {
+function workspaceDirectories(root, violations) {
   const packageJson = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  if (!Array.isArray(packageJson.workspaces)) return [];
+  if (!Array.isArray(packageJson.workspaces)) {
+    violations.push("package.json: workspaces must be an array of supported /* globs");
+    return [];
+  }
   const directories = [];
   for (const workspace of packageJson.workspaces) {
-    if (typeof workspace !== "string" || !workspace.endsWith("/*")) continue;
+    if (typeof workspace !== "string" || !workspace.endsWith("/*")) {
+      violations.push(`package.json: unsupported workspace entry ${String(workspace)}`);
+      continue;
+    }
     const parent = workspace.slice(0, -2);
     const absoluteParent = join(root, parent);
+    if (!existsSync(absoluteParent) || !statSync(absoluteParent).isDirectory()) {
+      violations.push(`package.json: workspace glob parent is missing: ${workspace}`);
+      continue;
+    }
     for (const entry of readdirSync(absoluteParent)) {
       if (statSync(join(absoluteParent, entry)).isDirectory()) {
         directories.push(`${parent}/${entry}`);
@@ -505,7 +520,7 @@ function workspaceDirectories(root) {
 
 function checkWorkspaceCoverage(root, violations) {
   const declared = Object.keys(INTERNAL).sort();
-  const discovered = workspaceDirectories(root);
+  const discovered = workspaceDirectories(root, violations);
   for (const directory of discovered) {
     if (!declared.includes(directory)) {
       violations.push(`${directory}: workspace package is missing from the dependency matrix`);
