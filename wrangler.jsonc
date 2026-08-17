@@ -4,6 +4,7 @@
 // money-path invariant test ratchets the two against each other.
 {
   "name": "api-next",
+  "account_id": "ff375d61cdc0c5dc946837f3e37725e0",
   "main": "apps/http-worker/src/index.ts",
   "compatibility_date": "2026-08-15",
   "env": {

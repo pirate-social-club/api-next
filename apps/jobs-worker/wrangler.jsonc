@@ -1,5 +1,6 @@
 {
   "name": "pirate-jobs-worker",
+  "account_id": "ff375d61cdc0c5dc946837f3e37725e0",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
