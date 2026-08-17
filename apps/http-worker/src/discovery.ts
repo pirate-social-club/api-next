@@ -37,9 +37,7 @@ export interface OAuthAuthorizationServerDocument {
   readonly authorization_endpoint: string;
   readonly token_endpoint: string;
   readonly jwks_uri: string;
-  readonly grant_types_supported: readonly [
-    "urn:pirate:params:oauth:grant-type:session-exchange",
-  ];
+  readonly grant_types_supported: readonly ["urn:pirate:params:oauth:grant-type:session-exchange"];
   readonly response_types_supported: readonly string[];
   readonly scopes_supported: readonly ["pirate_app_session"];
   readonly token_endpoint_auth_methods_supported: readonly ["none"];
@@ -114,9 +112,8 @@ const parseEnvironment = (value: unknown): DiscoveryEnvironment => {
 };
 
 const isLoopbackHostname = (hostname: string): boolean => {
-  const unbracketed = hostname.startsWith("[") && hostname.endsWith("]")
-    ? hostname.slice(1, -1)
-    : hostname;
+  const unbracketed =
+    hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   if (unbracketed === "localhost" || unbracketed === "::1") return true;
 
   const octets = unbracketed.split(".");
@@ -127,6 +124,12 @@ const isLoopbackHostname = (hostname: string): boolean => {
     return value >= 0 && value <= 255;
   });
 };
+
+const hasAsciiControl = (value: string): boolean =>
+  [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
 
 /**
  * Normalize one injected origin and reject anything that is not an origin.
@@ -143,6 +146,24 @@ export function normalizeDiscoveryOrigin(
   }
 
   const input = value.trim();
+  if (hasAsciiControl(value) || input.includes("\\") || /\s/u.test(input)) {
+    throw new Error(
+      `Discovery metadata ${field} contains invalid whitespace or control characters`,
+    );
+  }
+  if (!/^[A-Za-z][A-Za-z\d+.-]*:\/\//u.test(input)) {
+    throw new Error(`Discovery metadata ${field} must be an absolute URL`);
+  }
+
+  const authorityAndSuffix = input.slice(input.indexOf("://") + 3);
+  const suffixStart = authorityAndSuffix.search(/[/?#]/u);
+  const rawSuffix = suffixStart === -1 ? "" : authorityAndSuffix.slice(suffixStart);
+  if (rawSuffix !== "" && rawSuffix !== "/") {
+    throw new Error(
+      `Discovery metadata ${field} must be an origin without a path, query, or fragment`,
+    );
+  }
+
   let url: URL;
   try {
     url = new URL(input);
@@ -160,7 +181,9 @@ export function normalizeDiscoveryOrigin(
     throw new Error(`Discovery metadata ${field} must not contain credentials`);
   }
   if (url.pathname !== "/" || input.includes("?") || input.includes("#")) {
-    throw new Error(`Discovery metadata ${field} must be an origin without a path, query, or fragment`);
+    throw new Error(
+      `Discovery metadata ${field} must be an origin without a path, query, or fragment`,
+    );
   }
   if (
     url.protocol === "http:" &&
@@ -235,9 +258,7 @@ const makeDocuments = (origin: string): DiscoveryMetadataDocuments => {
  * Prepare the contracted discovery documents and pure handlers. Every handler
  * returns metadata derived only from the validated settings captured here.
  */
-export function makeDiscoveryMetadata(
-  settings: DiscoveryMetadataSettingsInput,
-): DiscoveryMetadata {
+export function makeDiscoveryMetadata(settings: DiscoveryMetadataSettingsInput): DiscoveryMetadata {
   const validated = validateDiscoveryMetadataSettings(settings);
   const documents = makeDocuments(validated.publicOrigin);
   const GetOAuthProtectedResource: DiscoveryHandler<OAuthProtectedResourceDocument> = () =>

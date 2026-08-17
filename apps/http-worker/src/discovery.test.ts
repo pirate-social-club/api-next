@@ -126,6 +126,21 @@ describe("discovery metadata preparation", () => {
     }
   });
 
+  test.each([
+    ["scheme without //", "https:api.example.test"],
+    ["scheme with one slash", "https:/api.example.test"],
+    ["dot path", "https://api.example.test/."],
+    ["parent path", "https://api.example.test/.."],
+    ["encoded dot path", "https://api.example.test/%2e"],
+    ["trailing backslash", "https://api.example.test\\"],
+    ["trailing newline", "https://api.example.test\n"],
+    ["trailing tab", "https://api.example.test\t"],
+    ["internal newline", "https://api.example.\ntest"],
+    ["internal tab", "https://api.example.\ttest"],
+  ] as const)("rejects URL parser normalization of %s", (_name: string, value: string) => {
+    expect(() => makeDiscoveryMetadata({ publicOrigin: value, issuer: publicOrigin })).toThrow();
+  });
+
   test("requires HTTPS outside local development and permits explicit loopback HTTP locally", () => {
     expect(
       makeDiscoveryMetadata({
