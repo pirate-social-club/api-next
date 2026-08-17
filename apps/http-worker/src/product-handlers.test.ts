@@ -498,6 +498,31 @@ describe("HTTP product handlers", () => {
     });
   });
 
+  test("fails closed for null, device, and delegated-agent current-user principals", async () => {
+    let lookups = 0;
+    const handlers = makeProductHandlers({
+      ...stores(),
+      identityStore: {
+        findUser: () => {
+          lookups += 1;
+          return Effect.succeed(null);
+        },
+        resolveCanonical: () => Effect.fail(new Error("not used") as never),
+      },
+    });
+
+    for (const principal of [
+      null,
+      { kind: "device" as const, subject: "device-a" },
+      { kind: "agent" as const, subject: "agent-a" },
+    ]) {
+      await expect(handlers.GetCurrentUser(request({ principal }))).rejects.toMatchObject({
+        code: "auth_error",
+      });
+    }
+    expect(lookups).toBe(0);
+  });
+
   test("propagates application failures after the use case maps storage errors", async () => {
     const handlers = makeProductHandlers(
       stores({

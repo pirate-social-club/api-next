@@ -114,7 +114,12 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const feedStore = makeControlPlaneFeedStore(controlPlane);
-  const productHandlers = makeProductHandlers({ communityStore, contentStore, feedStore });
+  const productHandlers = makeProductHandlers({
+    communityStore,
+    contentStore,
+    feedStore,
+    identityStore,
+  });
   const bridge = await makeSessionBridge({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
     publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),

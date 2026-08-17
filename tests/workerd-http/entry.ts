@@ -1,4 +1,5 @@
 import type { IdentityStore } from "@pirate/application";
+import { getCurrentUser } from "@pirate/application/use-cases/current-user";
 import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
 import {
@@ -131,6 +132,23 @@ const sessionExchange: SessionExchangeServices = {
 const app = createHttpWorker({
   sessionExchange,
   handlers: {
+    GetCurrentUser: ({ principal, query }) => {
+      if (principal === null || (principal.kind !== "user" && principal.kind !== "admin")) {
+        throw new AuthError({ message: "Authorization failed" });
+      }
+      const communityRef = (query ?? {}) as { readonly community_ref?: string };
+      return Effect.runPromise(
+        getCurrentUser(
+          {
+            userId: principal.subject,
+            ...(communityRef.community_ref === undefined
+              ? {}
+              : { communityRef: communityRef.community_ref }),
+          },
+          { identityStore },
+        ),
+      );
+    },
     CastPostVote: () => ({ post: "post_1", value: 1 }),
     ClearPostVote: () => ({ post: "post_1", value: null }),
     GetJwks: () => bridge.jwks(),

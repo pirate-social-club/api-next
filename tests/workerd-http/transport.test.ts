@@ -24,7 +24,7 @@ describe("real HTTP worker transport", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe("https://solid.test");
   });
 
-  it("exchanges a seeded identity and uses its minted token for profile", async () => {
+  it("exchanges a seeded identity and serves current-user and profile projections", async () => {
     const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -40,6 +40,17 @@ describe("real HTTP worker transport", () => {
     expect(exchanged).toMatchObject({
       user: { id: "usr_workerd_test" },
       profile: { id: "usr_workerd_test" },
+    });
+
+    const currentUser = await SELF.fetch(
+      "https://worker.test/users/me?community_ref=compatibility-ref",
+      { headers: { authorization: `Bearer ${exchanged.access_token}` } },
+    );
+    expect(currentUser.status).toBe(200);
+    expect(await currentUser.json()).toMatchObject({
+      id: "usr_workerd_test",
+      object: "user",
+      primary_wallet_attachment: "wallet_workerd",
     });
 
     const profile = await SELF.fetch("https://worker.test/profiles/me", {
@@ -83,11 +94,11 @@ describe("real HTTP worker transport", () => {
     expect(await uninstalled.json()).toMatchObject({ code: "not_found" });
   });
 
-  it("keeps an advertised but uninstalled route at its documented 404", async () => {
+  it("requires authentication on the installed current-user route", async () => {
     const response = await SELF.fetch("https://worker.test/users/me");
 
-    expect(response.status).toBe(404);
-    expect(await response.json()).toMatchObject({ code: "not_found" });
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({ code: "auth_error" });
   });
 
   it("serves only the public RS256 verification key", async () => {

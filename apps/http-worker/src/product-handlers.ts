@@ -26,6 +26,10 @@ import {
   createPost,
 } from "@pirate/application/use-cases/content/create-post";
 import { getPost } from "@pirate/application/use-cases/content/get-post";
+import {
+  type CurrentUserServices,
+  getCurrentUser,
+} from "@pirate/application/use-cases/current-user";
 import { getHomeFeed, getPublicHomeFeed } from "@pirate/application/use-cases/feed/home-feed";
 import { AuthError, type JoinCommunity } from "@pirate/contracts";
 import { Effect, type Schema } from "effect";
@@ -44,9 +48,11 @@ export interface ProductHandlerServices {
   readonly communityStore: CommunityStoreService;
   readonly contentStore: ContentStoreService;
   readonly feedStore: FeedStoreService;
+  readonly identityStore?: CurrentUserServices["identityStore"];
 }
 
 export type ProductHandlers = Readonly<{
+  readonly GetCurrentUser: EndpointHandler;
   readonly GetCommunityPreview: EndpointHandler;
   readonly GetJoinEligibility: EndpointHandler;
   readonly JoinCommunity: EndpointHandler;
@@ -79,6 +85,23 @@ const feedQuery = (request: DecodedRequest): HomeFeedQuery =>
   (request.query ?? {}) as HomeFeedQuery;
 
 const authorizationFailure = (): AuthError => new AuthError({ message: "Authorization failed" });
+
+const currentUser = async (request: DecodedRequest, services: ProductHandlerServices) => {
+  const actor = communityActor(request.principal);
+  if (services.identityStore === undefined) {
+    throw new Error("Current user identity store is not configured");
+  }
+  const query = (request.query ?? {}) as Readonly<{ readonly community_ref?: string }>;
+  return Effect.runPromise(
+    getCurrentUser(
+      {
+        userId: actor.userId,
+        ...(query.community_ref === undefined ? {} : { communityRef: query.community_ref }),
+      },
+      { identityStore: services.identityStore },
+    ),
+  );
+};
 
 /**
  * Community operations are always attributed to a human user. The transport
@@ -257,6 +280,7 @@ const homeFeed = async (request: DecodedRequest, services: ProductHandlerService
 };
 
 export const makeProductHandlers = (services: ProductHandlerServices): ProductHandlers => ({
+  GetCurrentUser: (request) => currentUser(request, services),
   GetCommunityPreview: (request) => communityPreview(request, services),
   GetJoinEligibility: (request) => eligibility(request, services),
   JoinCommunity: (request) => join(request, services),
