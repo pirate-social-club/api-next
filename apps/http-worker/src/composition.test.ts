@@ -81,7 +81,9 @@ describe("HTTP production composition", () => {
       },
     );
     expect(callback.status).toBe(404);
-    expect(await callback.json()).toMatchObject({ code: "not_found" });
+    const callbackBody = await callback.text();
+    expect(JSON.parse(callbackBody)).toMatchObject({ code: "not_found" });
+    expect(callbackBody).not.toContain("future.provider");
   });
 
   test("fails closed before route construction when a provider setting is absent", async () => {

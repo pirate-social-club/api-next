@@ -18,6 +18,9 @@
     "SELF_PASS_ENABLED": "false",
     "SELF_PASS_APP_NAME": "Pirate",
     "SELF_PASS_MOCK_PASSPORT": "false",
+    // Reviewed inventory: development currently has no additional internal
+    // credential headers beyond the platform denylist.
+    "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
     "PRIVY_API_URL": "https://auth.privy.io"
   },
   "secrets": {
@@ -45,6 +48,9 @@
         "SELF_PASS_ENABLED": "false",
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
+        // Reviewed inventory: staging currently has no additional internal
+        // credential headers beyond the platform denylist.
+        "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
         "PRIVY_API_URL": "https://auth.privy.io"
       },
       "secrets": {
@@ -72,6 +78,9 @@
         "SELF_PASS_ENABLED": "false",
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
+        // Reviewed inventory: production currently has no additional internal
+        // credential headers beyond the platform denylist.
+        "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
         "PRIVY_API_URL": "https://auth.privy.io"
       },
       "secrets": {

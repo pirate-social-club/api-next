@@ -147,6 +147,7 @@ const VERIFICATION_EXPORTS = {
     ],
     "./callback.ts": [
       "HandleVerificationCallbackInput",
+      "stripVerificationCallbackCredentialHeaders",
       "VerificationCallbackFailure",
       "VerificationCallbackRejected",
       "VerificationCallbackServices",

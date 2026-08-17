@@ -25,6 +25,7 @@ export type { VerificationCallbackFailure, VerificationCallbackServices } from "
 export {
   HandleVerificationCallbackInput,
   handleVerificationCallback,
+  stripVerificationCallbackCredentialHeaders,
   VerificationCallbackRejected,
 } from "./callback.ts";
 export type {

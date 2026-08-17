@@ -1,5 +1,6 @@
 import {
   handleVerificationCallback,
+  stripVerificationCallbackCredentialHeaders,
   type VerificationCallbackServices,
 } from "@pirate/application/use-cases/verification-callback";
 import {
@@ -33,6 +34,8 @@ export interface VerificationHandlerServices {
   readonly start: StartVerificationServices;
   readonly completion: VerificationCompletionServices;
   readonly callback?: VerificationCallbackServices;
+  /** Deployment-specific credential headers stripped in addition to platform defaults. */
+  readonly callback_credential_headers?: readonly string[];
 }
 
 export type VerificationHandlers = Readonly<{
@@ -171,7 +174,10 @@ function callbackHandler(request: DecodedRequest, services: VerificationHandlerS
       {
         provider_id: path.providerId,
         raw_body: request.body,
-        headers: request.headers,
+        headers: stripVerificationCallbackCredentialHeaders(
+          request.headers as Readonly<Record<string, string>>,
+          services.callback_credential_headers,
+        ),
       },
       callback,
     ).pipe(Effect.map(completionResponse), Effect.mapError(wireFailure)),

@@ -10,6 +10,7 @@ import type { VerificationProviderAdapter } from "./adapter.ts";
 import {
   HandleVerificationCallbackInput,
   handleVerificationCallback,
+  stripVerificationCallbackCredentialHeaders,
   VerificationCallbackRejected,
 } from "./callback.ts";
 import type { StoredVerificationCompletion, VerificationCompletionStore } from "./completion.ts";
@@ -138,6 +139,21 @@ function failureOf(exit: Exit.Exit<unknown, unknown>): unknown {
 }
 
 describe("verification provider callback", () => {
+  test("strips platform and deployment credentials before application handling", () => {
+    expect(
+      stripVerificationCallbackCredentialHeaders(
+        {
+          Authorization: "Bearer platform-secret",
+          Cookie: "session=platform-secret",
+          "CF-Access-Client-Secret": "access-secret",
+          "X-Pirate-Internal-Auth": "deployment-secret",
+          "Webhook-Signature": "provider-signature",
+        },
+        ["x-pirate-internal-auth"],
+      ),
+    ).toEqual({ "Webhook-Signature": "provider-signature" });
+  });
+
   test("keeps the HTTP callback envelope and application callback schema in parity", () => {
     const input = {
       provider_id: manifest.provider_id,

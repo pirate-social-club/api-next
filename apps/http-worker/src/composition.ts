@@ -155,6 +155,9 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const feedStore = makeControlPlaneFeedStore(controlPlane);
+  const callbackCredentialHeaderNames = callbackCredentialHeaders(
+    config.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
+  );
   const selfPassOrigin = publicHttpsOrigin(config.PIRATE_API_PUBLIC_ORIGIN);
   if (
     config.SELF_PASS_ENABLED &&
@@ -177,9 +180,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
             },
           }
         : {}),
-      callback_credential_headers: callbackCredentialHeaders(
-        config.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
-      ),
+      callback_credential_headers: callbackCredentialHeaderNames,
     }),
   );
   const verificationCompletionStore = makeControlPlaneVerificationCompletionStore(controlPlane);
@@ -198,6 +199,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
       store: verificationCompletionStore,
       hasher: makeSha256VerificationCompletionHasher(),
     },
+    callback_credential_headers: callbackCredentialHeaderNames,
   });
   const productHandlers = makeProductHandlers({
     communityStore,

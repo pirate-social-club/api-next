@@ -1,5 +1,6 @@
 import { Data, Effect, Option, Schema } from "effect";
 import {
+  VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
   VerificationCallbackHeaders,
   VerificationCallbackRawBody,
   type VerificationProviderFailure,
@@ -22,6 +23,22 @@ export type HandleVerificationCallbackInput = Schema.Schema.Type<
 >;
 
 export type VerificationCallbackServices = VerificationCompletionServices;
+
+/**
+ * Strip platform and deployment credentials before the HTTP handler hands a
+ * callback to application code. The guarded registry repeats this filtering
+ * before the provider adapter as defense in depth.
+ */
+export function stripVerificationCallbackCredentialHeaders(
+  headers: Readonly<Record<string, string>>,
+  additionalCredentialHeaders: readonly string[] = [],
+): Readonly<Record<string, string>> {
+  const denied = new Set(VERIFICATION_CALLBACK_CREDENTIAL_HEADERS);
+  for (const name of additionalCredentialHeaders) denied.add(name.toLowerCase());
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => !denied.has(name.toLowerCase())),
+  );
+}
 
 export class VerificationCallbackRejected extends Data.TaggedError("VerificationCallbackRejected")<{
   readonly reason: "invalid" | "unsupported" | "unavailable";
