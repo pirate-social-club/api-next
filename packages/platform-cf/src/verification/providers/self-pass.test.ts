@@ -7,6 +7,7 @@ import type {
   VerificationProviderStartInput,
 } from "@pirate/application/verification";
 import type { ProofSession, VerificationRequirements } from "@pirate/domain/verification";
+import { runProviderTransportConformance } from "@pirate/testing/verification";
 import { Cause, Effect, Exit, Result } from "effect";
 import { normalizeSelfCountry } from "./self-country-codes.ts";
 import {
@@ -122,6 +123,20 @@ class FakeConfigStore {
   }
 }
 
+class FakeRegistryContractError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RegistryContractError";
+  }
+}
+
+class FakeVerifierContractError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "VerifierContractError";
+  }
+}
+
 class FakeVerifier {
   static readonly constructors: unknown[][] = [];
   static result: unknown;
@@ -136,8 +151,78 @@ class FakeVerifier {
 const SDK = {
   AllIds: new Map(),
   DefaultConfigStore: FakeConfigStore,
+  RegistryContractError: FakeRegistryContractError,
   SelfBackendVerifier: FakeVerifier,
+  VerifierContractError: FakeVerifierContractError,
 } as unknown as SelfPassSdk;
+
+type SelfPassVerifyCall = Readonly<{
+  readonly attestation_id: unknown;
+  readonly proof: unknown;
+  readonly public_signals: unknown;
+  readonly user_context_data: string;
+}>;
+
+type SelfPassHarnessTransport = Readonly<{
+  readonly sdk: SelfPassSdk;
+  readonly verifyCalls: readonly SelfPassVerifyCall[];
+}>;
+
+function selfPassHarnessTransport(
+  verify: (call: SelfPassVerifyCall) => unknown,
+): SelfPassHarnessTransport {
+  const verifyCalls: SelfPassVerifyCall[] = [];
+  class HarnessVerifier {
+    verify(
+      attestation_id: unknown,
+      proof: unknown,
+      public_signals: unknown,
+      user_context_data: string,
+    ) {
+      const call = { attestation_id, proof, public_signals, user_context_data };
+      verifyCalls.push(call);
+      return Promise.resolve(verify(call));
+    }
+  }
+  const sdk = {
+    AllIds: new Map(),
+    DefaultConfigStore: FakeConfigStore,
+    RegistryContractError: FakeRegistryContractError,
+    SelfBackendVerifier: HarnessVerifier,
+    VerifierContractError: FakeVerifierContractError,
+  } as unknown as SelfPassSdk;
+  return { sdk, verifyCalls };
+}
+
+const CONFORMANCE_SESSION = {
+  id: "01234567-89ab-4cde-8012-3456789abcde",
+  request_hash: "d6cd232dfaf20d04130e0271924bf9ac231e382f63365d2a7f37c3f42ad3a40a",
+} as ProofSession;
+
+const CONFORMANCE_START_INPUT = {
+  ...START_INPUT,
+  request_hash: CONFORMANCE_SESSION.request_hash,
+};
+
+const CONFORMANCE_CONTEXT = contextFor(CONFORMANCE_SESSION);
+
+const CONFORMANCE_PROOF = {
+  kind: "self-proof" as const,
+  session_id: CONFORMANCE_SESSION.id,
+  attestation_id: 1,
+  proof: PROOF,
+  public_signals: ["1"],
+  user_context_data: CONFORMANCE_CONTEXT,
+};
+
+const CONFORMANCE_CAMEL_PROOF = {
+  kind: "self-proof" as const,
+  session_id: CONFORMANCE_SESSION.id,
+  attestationId: 1,
+  proof: PROOF,
+  publicSignals: ["1"],
+  userContextData: CONFORMANCE_CONTEXT,
+};
 
 function options(overrides: Partial<SelfPassAdapterOptions> = {}): SelfPassAdapterOptions {
   return {
@@ -192,6 +277,115 @@ function completionInput(
 }
 
 describe("Self Pass provider-local adapter", () => {
+  test("passes meaningful Self-specific cases through the shared transport harness", async () => {
+    await runProviderTransportConformance([
+      {
+        name: "Self Pass valid camel proof",
+        makeTransport: () => selfPassHarnessTransport(() => resultFor(CONFORMANCE_SESSION)),
+        makeAdapter: (transport) => provider({ sdk: transport.sdk }),
+        startInput: CONFORMANCE_START_INPUT,
+        submission: { channel: "client_result", payload: CONFORMANCE_CAMEL_PROOF },
+        operation: "complete",
+        expected: "success",
+        assertTransport: (transport) => {
+          expect(transport.verifyCalls).toHaveLength(1);
+          expect(transport.verifyCalls[0]?.attestation_id).toBe(1);
+          expect(transport.verifyCalls[0]?.user_context_data).toBe(CONFORMANCE_CONTEXT);
+        },
+      },
+      {
+        name: "Self Pass snake-case submission translation",
+        makeTransport: () => selfPassHarnessTransport(() => resultFor(CONFORMANCE_SESSION)),
+        makeAdapter: (transport) => provider({ sdk: transport.sdk }),
+        startInput: CONFORMANCE_START_INPUT,
+        submission: {
+          channel: "client_result",
+          payload: {
+            kind: "self-proof",
+            session_id: CONFORMANCE_SESSION.id,
+            attestation_id: 1,
+            proof: PROOF,
+            public_signals: ["1"],
+            user_context_data: CONFORMANCE_CONTEXT,
+          },
+        },
+        operation: "complete",
+        expected: "success",
+        assertTransport: (transport) => {
+          expect(transport.verifyCalls).toHaveLength(1);
+          expect(transport.verifyCalls[0]?.attestation_id).toBe(1);
+        },
+      },
+      {
+        name: "Self Pass tampered session is rejected before SDK verification",
+        makeTransport: () => selfPassHarnessTransport(() => resultFor(CONFORMANCE_SESSION)),
+        makeAdapter: (transport) => provider({ sdk: transport.sdk }),
+        startInput: CONFORMANCE_START_INPUT,
+        submission: { channel: "client_result", payload: CONFORMANCE_PROOF },
+        operation: "complete",
+        tamperSession: (session) => ({
+          ...session,
+          id: "01234567-89ab-4cde-8012-3456789abcdf",
+        }),
+        expected: "VerificationProviderRejected",
+        assertTransport: (transport) => expect(transport.verifyCalls).toHaveLength(0),
+      },
+      {
+        name: "Self Pass attestation ID substitution is rejected",
+        makeTransport: () =>
+          selfPassHarnessTransport(() => resultFor(CONFORMANCE_SESSION, { attestationId: 2 })),
+        makeAdapter: (transport) => provider({ sdk: transport.sdk }),
+        startInput: CONFORMANCE_START_INPUT,
+        submission: { channel: "client_result", payload: CONFORMANCE_PROOF },
+        operation: "complete",
+        expected: "VerificationProviderRejected",
+        assertTransport: (transport) => {
+          expect(transport.verifyCalls).toHaveLength(1);
+          expect(transport.verifyCalls[0]?.attestation_id).toBe(1);
+        },
+      },
+      {
+        name: "Self Pass registry outage is unavailable",
+        makeTransport: () =>
+          selfPassHarnessTransport(() => {
+            throw new FakeRegistryContractError("registry unavailable");
+          }),
+        makeAdapter: (transport) => provider({ sdk: transport.sdk }),
+        startInput: CONFORMANCE_START_INPUT,
+        submission: { channel: "client_result", payload: CONFORMANCE_PROOF },
+        operation: "complete",
+        expected: "VerificationProviderUnavailable",
+        assertTransport: (transport) => expect(transport.verifyCalls).toHaveLength(1),
+      },
+      {
+        name: "Self Pass verifier outage is unavailable",
+        makeTransport: () =>
+          selfPassHarnessTransport(() => {
+            throw new FakeVerifierContractError("verifier unavailable");
+          }),
+        makeAdapter: (transport) => provider({ sdk: transport.sdk }),
+        startInput: CONFORMANCE_START_INPUT,
+        submission: { channel: "client_result", payload: CONFORMANCE_PROOF },
+        operation: "complete",
+        expected: "VerificationProviderUnavailable",
+        assertTransport: (transport) => expect(transport.verifyCalls).toHaveLength(1),
+      },
+      {
+        name: "Self Pass unknown SDK error remains rejection",
+        makeTransport: () =>
+          selfPassHarnessTransport(() => {
+            throw new Error("malformed proof");
+          }),
+        makeAdapter: (transport) => provider({ sdk: transport.sdk }),
+        startInput: CONFORMANCE_START_INPUT,
+        submission: { channel: "client_result", payload: CONFORMANCE_PROOF },
+        operation: "complete",
+        expected: "VerificationProviderRejected",
+        assertTransport: (transport) => expect(transport.verifyCalls).toHaveLength(1),
+      },
+    ]);
+  });
+
   test("normalizes the canonical Self country table and rejects unknown values", () => {
     expect(normalizeSelfCountry("GEO")).toBe("GE");
     expect(normalizeSelfCountry("USA")).toBe("US");
