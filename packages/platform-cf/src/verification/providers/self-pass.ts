@@ -25,6 +25,7 @@ import {
 } from "@pirate/domain/verification";
 import type { AttestationId, VerificationConfig } from "@selfxyz/core";
 import { Effect, Option, Schema } from "effect";
+import { normalizeSelfCountry } from "./self-country-codes.ts";
 
 /**
  * Self Pass is deliberately separate from the exploratory Self Enterprise
@@ -36,11 +37,19 @@ export const SELF_PASS_PROTOCOL_VERSION = "self-pass-v1" as const;
 export const SELF_PASS_PRESENTATION_PROTOCOL = "self" as const;
 export const SELF_PASS_PRESENTATION_VERSION = "2" as const;
 export const SELF_PASS_RP_SCOPE = "pirate-social" as const;
-export const SELF_PASS_CONFIGURATION: ProviderConfigurationRef = {
-  kind: "dynamic",
-  reference: "self.pass.disclosure-compiler",
-  version: "1.2.0-beta.1",
-};
+export const SELF_PASS_CONFIGURATION_REFERENCE = "self.pass.disclosure-compiler" as const;
+export const SELF_PASS_CONFIGURATION_VERSION = "1.2.0-beta.1" as const;
+
+export function selfPassConfigurationFor(
+  callback_origin: string,
+  mock_passport: boolean,
+): ProviderConfigurationRef {
+  return {
+    kind: "dynamic",
+    reference: `${SELF_PASS_CONFIGURATION_REFERENCE};mode=${mock_passport ? "mock" : "live"};origin=${encodeURIComponent(callback_origin)}`,
+    version: SELF_PASS_CONFIGURATION_VERSION,
+  };
+}
 
 /** Self Pass cannot prove face match or liveness, so holder binding is not claimed. */
 const SELF_PASS_CLAIMS = [
@@ -109,6 +118,8 @@ export type SelfPassAdapterOptions = Readonly<{
   /** Public HTTPS origin of this Worker, without the callback path. */
   readonly callback_origin: string;
   readonly app_name: string;
+  /** Explicitly selects Self's testnet verifier; production must set false. */
+  readonly mock_passport: boolean;
   readonly clock: SelfPassClock;
   readonly identifiers: SelfPassIdentifiers;
   readonly digest: SelfPassDigest;
@@ -184,21 +195,11 @@ const SelfResult = Schema.Struct({
   }),
 });
 
+// beta.1's GenericDiscloseOutput always carries nationality and gender as
+// strings; an undisclosed packed field is represented as an empty string, not
+// an omitted property. Keep those fields required and validate them only when
+// their corresponding requirement was requested.
 type DecodedSelfResult = Schema.Schema.Type<typeof SelfResult>;
-
-const SELF_COUNTRY_CODES =
-  "AF:AFG,AL:ALB,DZ:DZA,AS:ASM,AD:AND,AO:AGO,AI:AIA,AQ:ATA,AG:ATG,AR:ARG,AM:ARM,AW:ABW,AU:AUS,AT:AUT,AZ:AZE,BS:BHS,BH:BHR,BD:BGD,BB:BRB,BY:BLR,BE:BEL,BZ:BLZ,BJ:BEN,BM:BMU,BT:BTN,BO:BOL,BA:BIH,BW:BWA,BV:BVT,BR:BRA,IO:IOT,BN:BRN,BG:BGR,BF:BFA,BI:BDI,KH:KHM,CM:CMR,CA:CAN,CV:CPV,KY:CYM,CF:CAF,TD:TCD,CL:CHL,CN:CHN,CX:CXR,CC:CCK,CO:COL,KM:COM,CG:COG,CD:COD,CK:COK,CR:CRI,CI:CIV,HR:HRV,CU:CUB,CY:CYP,CZ:CZE,DK:DNK,DJ:DJI,DM:DMA,DO:DOM,EC:ECU,EG:EGY,SV:SLV,GQ:GNQ,ER:ERI,EE:EST,ET:ETH,FK:FLK,FO:FRO,FJ:FJI,FI:FIN,FR:FRA,GF:GUF,PF:PYF,TF:ATF,GA:GAB,GM:GMB,GE:GEO,DE:DEU,GH:GHA,GI:GIB,GR:GRC,GL:GRL,GD:GRD,GP:GLP,GU:GUM,GT:GTM,GN:GIN,GW:GNB,GY:GUY,HT:HTI,HM:HMD,VA:VAT,HN:HND,HK:HKG,HU:HUN,IS:ISL,IN:IND,ID:IDN,IR:IRN,IQ:IRQ,IE:IRL,IL:ISR,IT:ITA,JM:JAM,JP:JPN,JO:JOR,KZ:KAZ,KE:KEN,KI:KIR,KP:PRK,KR:KOR,KW:KWT,KG:KGZ,LA:LAO,LV:LVA,LB:LBN,LS:LSO,LR:LBR,LY:LBY,LI:LIE,LT:LTU,LU:LUX,MO:MAC,MG:MDG,MW:MWI,MY:MYS,MV:MDV,ML:MLI,MT:MLT,MH:MHL,MQ:MTQ,MR:MRT,MU:MUS,YT:MYT,MX:MXC,FM:FSM,MD:MDA,MC:MCO,MN:MNG,MS:MSR,MA:MAR,MZ:MOZ,MM:MMR,NA:NAM,NR:NRU,NP:NPL,NL:NLD,NC:NCL,NZ:NZL,NI:NIC,NE:NER,NG:NGA,NU:NIU,NF:NFK,MP:MNP,MK:MKD,NO:NOR,OM:OMN,PK:PAK,PW:PLW,PS:PSE,PA:PAN,PG:PNG,PY:PRY,PE:PER,PH:PHL,PN:PCN,PL:POL,PT:PRT,PR:PRI,QA:QAT,RE:REU,RO:ROU,RW:ROU,RW:RWA,SH:SHN,KN:KNA,LC:LCA,PM:SPM,VC:VCT,WS:WSM,SM:SMR,ST:STP,SA:SAU,SN:SEN,SC:SYC,SL:SLE,SG:SGP,SK:SVK,SI:SVN,SB:SLB,SO:SOM,ZA:ZAF,GS:SGS,ES:ESP,LK:LKA,SD:SDN,SR:SUR,SJ:SJM,SZ:SWZ,SE:SWE,CH:CHE,SY:SYR,TW:TWN,TJ:TJK,TZ:TZA,TH:THA,TL:TLS,TG:TGO,TK:TKM,TO:TON,TT:TTT,TN:TUN,TR:TUR,TM:TKM,TC:TCA,TV:TUV,UG:UGA,UA:UKR,AE:ARE,GB:GBR,US:USA,UM:UMI,UY:URY,UZ:UZB,VU:VUT,VE:VEN,VN:VNM,VG:VGB,VI:VIR,WF:WLF,EH:ESH,YE:YEM,ZM:ZMB,ZW:ZWE,AX:ALA,BQ:BES,CW:CUW,GG:GGY,IM:IMN,JE:JEY,ME:MNE,BL:BLM,MF:MAF,RS:SRB,SX:SXM,SS:SSD,XK:XKK";
-
-const ISO2_BY_ISO3 = new Map(
-  SELF_COUNTRY_CODES.split(",").map((pair) => {
-    const [alpha2, alpha3] = pair.split(":") as [string, string];
-    return [alpha3, alpha2] as const;
-  }),
-);
-// Keep the provider-local normalizer aligned with the domain's ISO table for
-// the few aliases that would otherwise be obscured by the compact literal.
-ISO2_BY_ISO3.set("MEX", "MX");
-ISO2_BY_ISO3.set("TTO", "TT");
 
 let selfCoreModulePromise: Promise<SelfPassSdk> | undefined;
 
@@ -225,6 +226,38 @@ function sameConfiguration(left: ProviderConfigurationRef, right: ProviderConfig
   return (
     left.kind === right.kind && left.reference === right.reference && left.version === right.version
   );
+}
+
+type SelfPassVerifierSettings = Readonly<{
+  readonly callback_origin: string;
+  readonly mock_passport: boolean;
+}>;
+
+function verifierSettingsFromConfiguration(
+  configuration: ProviderConfigurationRef,
+): SelfPassVerifierSettings | undefined {
+  if (
+    configuration.kind !== "dynamic" ||
+    configuration.version !== SELF_PASS_CONFIGURATION_VERSION
+  ) {
+    return undefined;
+  }
+  const parts = configuration.reference.split(";");
+  if (parts.length !== 3 || parts[0] !== SELF_PASS_CONFIGURATION_REFERENCE) return undefined;
+  const mode = parts[1]?.startsWith("mode=") ? parts[1].slice("mode=".length) : undefined;
+  const encodedOrigin = parts[2]?.startsWith("origin=")
+    ? parts[2].slice("origin=".length)
+    : undefined;
+  if (mode === undefined || encodedOrigin === undefined) return undefined;
+  let callback_origin: string;
+  try {
+    callback_origin = decodeURIComponent(encodedOrigin);
+  } catch {
+    return undefined;
+  }
+  if (!validCallbackOrigin(callback_origin)) return undefined;
+  if (mode !== "mock" && mode !== "live") return undefined;
+  return { callback_origin, mock_passport: mode === "mock" };
 }
 
 function sameScope(left: SubjectScope, right: SubjectScope): boolean {
@@ -296,8 +329,16 @@ function validCallbackOrigin(origin: string): boolean {
   }
 }
 
+function validAppName(appName: string): boolean {
+  return appName.length > 0 && appName.length <= 128 && appName.trim() === appName;
+}
+
 function endpointType(environment: string): "https" | "staging_https" {
   return environment === "production" ? "https" : "staging_https";
+}
+
+function mockPassportAllowed(environment: string, mockPassport: boolean): boolean {
+  return environment !== "production" || !mockPassport;
 }
 
 function selfUserIdForRequest(requestHash: string): string {
@@ -348,15 +389,6 @@ function decodeCallbackContext(value: string): Option.Option<SelfUserDefinedData
   return Option.fromNullishOr(decodeHexUtf8(normalized.slice(128))).pipe(
     Option.flatMap((tail) => Schema.decodeUnknownOption(SelfUserDefinedData)(tail)),
   );
-}
-
-function normalizeCountry(value: string): Iso3166Alpha2 | undefined {
-  const normalized = value.trim().toUpperCase();
-  if (/^[A-Z]{2}$/u.test(normalized)) {
-    return normalized as Iso3166Alpha2;
-  }
-  const alpha2 = ISO2_BY_ISO3.get(normalized);
-  return alpha2 === undefined ? undefined : (alpha2 as Iso3166Alpha2);
 }
 
 function normalizeGender(value: string): "female" | "male" | "unspecified" | undefined {
@@ -450,7 +482,6 @@ function flowScope(session: ProofSession): SubjectScope | undefined {
 
 function assertionFor(
   requirement: VerificationRequirement,
-  normalizedNationality: Iso3166Alpha2 | undefined,
   normalizedGender: "female" | "male" | "unspecified" | undefined,
   ids: SelfPassIdentifiers,
   observedAt: CanonicalIsoInstant,
@@ -478,14 +509,7 @@ function assertionFor(
         value: { minimum_age: requirement.minimum_age },
       };
     case "nationality.allowed":
-      return {
-        ...common,
-        claim_id: requirement.claim_id,
-        value:
-          normalizedNationality === undefined
-            ? { allowed: true }
-            : { allowed: true, disclosed_nationality: normalizedNationality },
-      };
+      return { ...common, claim_id: requirement.claim_id, value: { allowed: true } };
     case "gender.marker":
       return normalizedGender === undefined
         ? undefined
@@ -507,6 +531,12 @@ function validateClaims(
   VerificationProviderRejected
 > {
   if (result.isValidDetails.isValid !== true) return Effect.fail(rejected("complete"));
+  const requiresMinimumAge = session.requested_requirements.some(
+    (requirement) => requirement.claim_id === "age.minimum",
+  );
+  if (requiresMinimumAge && result.isValidDetails.isMinimumAgeValid !== true) {
+    return Effect.fail(rejected("complete"));
+  }
   if (result.userData.userIdentifier !== selfUserIdForRequest(session.request_hash)) {
     return Effect.fail(rejected("complete"));
   }
@@ -517,7 +547,7 @@ function validateClaims(
   if (result.discloseOutput.nullifier.trim() === "") return Effect.fail(rejected("complete"));
 
   const age = minimumAge(result);
-  const nationality = normalizeCountry(result.discloseOutput.nationality);
+  const nationality = normalizeSelfCountry(result.discloseOutput.nationality);
   const gender = normalizeGender(result.discloseOutput.gender);
   for (const requirement of session.requested_requirements) {
     switch (requirement.claim_id) {
@@ -592,7 +622,6 @@ function evidenceBundle(
       .map((requirement) =>
         assertionFor(
           requirement,
-          normalized.nationality,
           normalized.gender,
           runtime.identifiers,
           observed_at,
@@ -702,6 +731,8 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
           JSON.stringify(input.requested_claim_ids) ||
         input.subject_binding_intent === "none" ||
         input.protocol_version !== SELF_PASS_PROTOCOL_VERSION ||
+        !mockPassportAllowed(input.environment, options.mock_passport) ||
+        !validAppName(options.app_name) ||
         !validCallbackOrigin(options.callback_origin) ||
         !SELF_PASS_MANIFEST.environments.includes(
           input.environment as (typeof SELF_PASS_MANIFEST.environments)[number],
@@ -712,13 +743,19 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
       return Effect.succeed({
         status: "supported" as const,
         request_mode: "dynamic" as const,
-        provider_configuration: SELF_PASS_CONFIGURATION,
+        provider_configuration: selfPassConfigurationFor(
+          options.callback_origin,
+          options.mock_passport,
+        ),
       });
     },
     start: (input: VerificationProviderStartInput) => {
       if (
         input.request_mode !== "dynamic" ||
-        !sameConfiguration(input.provider_configuration, SELF_PASS_CONFIGURATION) ||
+        !sameConfiguration(
+          input.provider_configuration,
+          selfPassConfigurationFor(options.callback_origin, options.mock_passport),
+        ) ||
         !fixedScope(input) ||
         !requirementsSupported(input.requested_requirements) ||
         JSON.stringify(claimIds(input.requested_requirements)) !==
@@ -726,6 +763,8 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
         input.method !== "document" ||
         input.protocol_version !== SELF_PASS_PROTOCOL_VERSION ||
         input.subject_binding_intent === "none" ||
+        !mockPassportAllowed(input.environment, options.mock_passport) ||
+        !validAppName(options.app_name) ||
         !validCallbackOrigin(options.callback_origin) ||
         !SELF_PASS_MANIFEST.environments.includes(
           input.environment as (typeof SELF_PASS_MANIFEST.environments)[number],
@@ -744,7 +783,7 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
         user_id,
         user_id_type: "uuid",
         disclosures: compileDisclosures(input.requested_requirements),
-        dev_mode: input.environment !== "production",
+        dev_mode: options.mock_passport,
         user_defined_data: encodeUserDefinedData({
           proof_session_id: session_id,
           request_hash: input.request_hash,
@@ -754,10 +793,13 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
       return Effect.succeed(makeSession(input, launch, options));
     },
     complete: (input: VerificationProviderCompleteInput) => {
+      const verifierSettings = verifierSettingsFromConfiguration(
+        input.session.provider_configuration,
+      );
       if (
         input.session.provider_id !== SELF_PASS_PROVIDER_ID ||
         input.session.request_mode !== "dynamic" ||
-        !sameConfiguration(input.session.provider_configuration, SELF_PASS_CONFIGURATION) ||
+        verifierSettings === undefined ||
         !fixedScope(input.session) ||
         input.session.method !== "document" ||
         input.session.protocol_version !== SELF_PASS_PROTOCOL_VERSION ||
@@ -765,7 +807,7 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
         JSON.stringify(claimIds(input.session.requested_requirements)) !==
           JSON.stringify(input.session.requested_claim_ids) ||
         input.session.subject_binding_intent === "none" ||
-        !validCallbackOrigin(options.callback_origin)
+        !mockPassportAllowed(input.session.environment, verifierSettings.mock_passport)
       ) {
         return Effect.fail(rejected("complete"));
       }
@@ -795,12 +837,11 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
               : Effect.succeed(options.sdk);
           return sdkEffect.pipe(
             Effect.flatMap((sdk) => {
-              const mockPassport = input.session.environment !== "production";
               const config = compileVerificationConfig(input.session.requested_requirements);
               const verifier = new sdk.SelfBackendVerifier(
                 SELF_PASS_RP_SCOPE,
-                callbackEndpoint(options.callback_origin),
-                mockPassport,
+                callbackEndpoint(verifierSettings.callback_origin),
+                verifierSettings.mock_passport,
                 sdk.AllIds,
                 new sdk.DefaultConfigStore(config),
                 "uuid",
