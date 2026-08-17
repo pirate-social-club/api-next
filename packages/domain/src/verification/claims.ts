@@ -94,6 +94,24 @@ export type PresentationKind = Schema.Schema.Type<typeof PresentationKind>;
 export const VerificationRequestMode = Schema.Literals(["curated", "dynamic"]);
 export type VerificationRequestMode = Schema.Schema.Type<typeof VerificationRequestMode>;
 
+const CanonicalProviderConfigurationValue = Schema.NonEmptyString.check(
+  Schema.makeFilter((value) =>
+    value.trim() === value ? undefined : "Expected a canonical provider configuration value",
+  ),
+);
+
+/**
+ * Opaque, provider-neutral provenance for the exact configuration selected by
+ * planning. Managed references cover hosted flows/policies; dynamic references
+ * identify the versioned query generator used for a self-served request.
+ */
+export const ProviderConfigurationRef = Schema.Struct({
+  kind: Schema.Literals(["managed", "dynamic"]),
+  reference: CanonicalProviderConfigurationValue,
+  version: CanonicalProviderConfigurationValue,
+});
+export type ProviderConfigurationRef = Schema.Schema.Type<typeof ProviderConfigurationRef>;
+
 export const ProviderClaimCapability = Schema.Struct({
   claim_id: CanonicalClaimIdentifier,
   request_modes: Schema.NonEmptyArray(VerificationRequestMode),

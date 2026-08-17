@@ -20,7 +20,12 @@ function requestSchemas(endpoint: EndpointDefinition): EndpointRequest | undefin
   if (
     typeof request === "object" &&
     request !== null &&
-    ("body" in request || "path" in request || "query" in request)
+    ("body" in request ||
+      "bodyRequired" in request ||
+      "bodyEncoding" in request ||
+      "headers" in request ||
+      "path" in request ||
+      "query" in request)
   ) {
     return request as EndpointRequest;
   }
@@ -105,11 +110,15 @@ export function generateOpenApi(
     const request = requestSchemas(endpoint);
     const pathSchema = request?.path ? schemaToOpenApi(request.path) : undefined;
     const querySchema = request?.query ? schemaToOpenApi(request.query) : undefined;
+    const headersSchema = request?.headers ? schemaToOpenApi(request.headers) : undefined;
     const pathProperties = (pathSchema?.properties as Record<string, JsonSchema> | undefined) ?? {};
     const queryProperties =
       (querySchema?.properties as Record<string, JsonSchema> | undefined) ?? {};
+    const headerProperties =
+      (headersSchema?.properties as Record<string, JsonSchema> | undefined) ?? {};
     const requiredPath = new Set((pathSchema?.required as string[] | undefined) ?? []);
     const requiredQuery = new Set((querySchema?.required as string[] | undefined) ?? []);
+    const requiredHeaders = new Set((headersSchema?.required as string[] | undefined) ?? []);
     const parameters = [
       ...pathParams(endpoint.path).map((name) => ({
         name,
@@ -121,6 +130,12 @@ export function generateOpenApi(
         name,
         in: "query",
         required: requiredQuery.has(name),
+        schema,
+      })),
+      ...Object.entries(headerProperties).map(([name, schema]) => ({
+        name,
+        in: "header",
+        required: requiredHeaders.has(name),
         schema,
       })),
     ];
@@ -146,7 +161,11 @@ export function generateOpenApi(
         ? {
             requestBody: {
               required: request.bodyRequired !== false,
-              content: { "application/json": { schema: schemaToOpenApi(request.body) } },
+              content: {
+                [request.bodyEncoding === "raw-text" ? "text/plain" : "application/json"]: {
+                  schema: schemaToOpenApi(request.body),
+                },
+              },
             },
           }
         : {}),
@@ -312,6 +331,9 @@ function clientInputType(endpoint: EndpointDefinition): string {
       `readonly body${request.bodyRequired === false ? "?" : ""}: ${jsonSchemaToType(schema)}`,
     );
   }
+  if (request.headers !== undefined) {
+    fields.push(`readonly headers: ${jsonSchemaToType(schemaToOpenApi(request.headers))}`);
+  }
   if (request.path !== undefined) {
     fields.push(`readonly path: ${jsonSchemaToType(schemaToOpenApi(request.path))}`);
   }
@@ -345,6 +367,7 @@ export function generateClient(registry: Record<string, EndpointDefinition>): st
     method: endpoint.method,
     path: endpoint.path,
     responseSchema: schemaToOpenApi(endpoint.response),
+    bodyEncoding: requestSchemas(endpoint)?.bodyEncoding ?? "json",
     successStatuses:
       endpoint.successStatus === undefined
         ? [200]
@@ -361,8 +384,8 @@ export function generateClient(registry: Record<string, EndpointDefinition>): st
     .join("\n");
   const bodies = methods
     .map(
-      ({ operationId, method, path }) =>
-        `  ${operationId}: (input, options) => request(${JSON.stringify(operationId)}, ${JSON.stringify(method)}, ${JSON.stringify(path)}, input, options),`,
+      ({ operationId, method, path, bodyEncoding }) =>
+        `  ${operationId}: (input, options) => request(${JSON.stringify(operationId)}, ${JSON.stringify(method)}, ${JSON.stringify(path)}, input, options${bodyEncoding === "json" ? "" : `, ${JSON.stringify(bodyEncoding)}`}),`,
     )
     .join("\n");
   const responseSchemas = methods
@@ -572,12 +595,17 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
   const config: PirateApiClientOptions =
     typeof optionsOrFetch === "function" ? { fetchImpl: optionsOrFetch } : optionsOrFetch;
   const fetchImpl = config.fetchImpl ?? fetch;
-  const request = async <T>(operation: string, method: string, path: string, input: unknown, options?: PirateApiRequestOptions): Promise<T> => {
-    const requestInput = (input ?? {}) as { body?: unknown; path?: Record<string, unknown>; query?: Record<string, unknown> };
+  const request = async <T>(operation: string, method: string, path: string, input: unknown, options?: PirateApiRequestOptions, bodyEncoding: "json" | "raw-text" = "json"): Promise<T> => {
+    const requestInput = (input ?? {}) as { body?: unknown; headers?: Record<string, unknown>; path?: Record<string, unknown>; query?: Record<string, unknown> };
     const pathValue = Object.entries(requestInput.path ?? {}).reduce((urlPath, [key, value]) => urlPath.split(":" + key).join(encodeURIComponent(String(value))), path);
     const url = new URL(pathValue, baseUrl);
     for (const [key, value] of Object.entries(requestInput.query ?? {})) if (value !== undefined && value !== null) url.searchParams.set(key, String(value));
     const headers = new Headers();
+    if (requestInput.headers !== undefined) {
+      for (const [key, value] of Object.entries(requestInput.headers)) {
+        if (value !== undefined && value !== null) headers.set(key, String(value));
+      }
+    }
     const addHeaders = (init: PirateApiRequestOptions["headers"] | undefined) => {
       if (init instanceof Headers) init.forEach((value, key) => headers.set(key, value));
       else if (Array.isArray(init)) for (const [key, value] of init) headers.set(key, value);
@@ -585,12 +613,12 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
     };
     addHeaders(config.headers);
     addHeaders(options?.headers);
-    if (requestInput.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
+    if (requestInput.body !== undefined && !headers.has("content-type")) headers.set("content-type", bodyEncoding === "raw-text" ? "text/plain" : "application/json");
     const signal = options?.signal ?? config.signal;
     const response = await fetchImpl(url, {
       method,
       headers,
-      ...(requestInput.body === undefined ? {} : { body: JSON.stringify(requestInput.body) }),
+      ...(requestInput.body === undefined ? {} : { body: bodyEncoding === "raw-text" ? requestInput.body as string : JSON.stringify(requestInput.body) }),
       ...(signal === undefined ? {} : { signal }),
     });
     let payload: unknown;

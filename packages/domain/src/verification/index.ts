@@ -20,6 +20,7 @@ export {
   PresentationKind,
   ProofProviderManifest,
   ProviderClaimCapability,
+  ProviderConfigurationRef,
   ScopeRequirement,
   SubjectBindingIntent,
   SubjectKeyScopeSemantics,

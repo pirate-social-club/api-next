@@ -43,7 +43,15 @@ function provider(
         ? Effect.fail(new VerificationProviderUnavailable({ provider_id, operation: "plan" }))
         : Effect.succeed(
             outcome === "supported"
-              ? { status: "supported" as const, request_mode: mode }
+              ? {
+                  status: "supported" as const,
+                  request_mode: mode,
+                  provider_configuration: {
+                    kind: mode === "curated" ? ("managed" as const) : ("dynamic" as const),
+                    reference: `${provider_id}-configuration`,
+                    version: "1",
+                  },
+                }
               : { status: "unsupported" as const },
           ),
     start: () => Effect.die("start is outside this planning test"),
@@ -70,8 +78,26 @@ describe("verification provider planning", () => {
     ).toEqual([
       { provider_id: "configured.only", status: "unsupported" },
       { provider_id: "future.provider", status: "unknown" },
-      { provider_id: "self.enterprise", status: "supported", request_mode: "curated" },
-      { provider_id: "zkpassport", status: "supported", request_mode: "dynamic" },
+      {
+        provider_id: "self.enterprise",
+        status: "supported",
+        request_mode: "curated",
+        provider_configuration: {
+          kind: "managed",
+          reference: "self.enterprise-configuration",
+          version: "1",
+        },
+      },
+      {
+        provider_id: "zkpassport",
+        status: "supported",
+        request_mode: "dynamic",
+        provider_configuration: {
+          kind: "dynamic",
+          reference: "zkpassport-configuration",
+          version: "1",
+        },
+      },
     ]);
   });
 });

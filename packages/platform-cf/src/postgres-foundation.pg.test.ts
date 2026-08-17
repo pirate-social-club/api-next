@@ -20,7 +20,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 5;
+const foundationTestCount = 7;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -58,6 +58,9 @@ const communityRouteSlugMigrationSql = await Bun.file(
 ).text();
 const gatesV2MigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0009_gates_v2_foundation.sql", import.meta.url),
+).text();
+const proofSessionProvenanceMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0010_proof_session_provenance.sql", import.meta.url),
 ).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
@@ -108,6 +111,11 @@ const gatesV2Migration: PostgresMigration = {
   checksum: checksumManifest.migrations["0009_gates_v2_foundation.sql"] ?? "",
   sql: gatesV2MigrationSql,
 };
+const proofSessionProvenanceMigration: PostgresMigration = {
+  version: "0010_proof_session_provenance.sql",
+  checksum: checksumManifest.migrations["0010_proof_session_provenance.sql"] ?? "",
+  sql: proofSessionProvenanceMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -118,6 +126,7 @@ const migrations: readonly PostgresMigration[] = [
   publicProfileInvariantMigration,
   communityRouteSlugMigration,
   gatesV2Migration,
+  proofSessionProvenanceMigration,
 ];
 
 function checksum(value: string): string {
@@ -265,6 +274,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(communityRouteSlugMigrationSql)).toBe(communityRouteSlugMigration.checksum);
       expect(checksum(gatesV2MigrationSql)).toBe(gatesV2Migration.checksum);
+      expect(checksum(proofSessionProvenanceMigrationSql)).toBe(
+        proofSessionProvenanceMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -309,6 +321,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "post_votes",
         "posts",
         "proof_session_completion_events",
+        "proof_session_presentations",
         "proof_sessions",
         "public_handle_index",
         "reward_subject_consumptions",
@@ -343,6 +356,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "observations_append_only",
         "policy_versions_append_only",
         "proof_session_completion_events_append_only",
+        "proof_session_presentations_append_only",
         "reward_subject_consumptions_append_only",
         "reward_uniqueness_authorities_append_only",
         "subject_key_binding_events_append_only",
@@ -361,7 +375,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
            AND ((table_name = 'communities' AND column_name IN ('membership_mode', 'human_verification_lane', 'route_slug'))
              OR (table_name = 'community_memberships' AND column_name = 'request_note')
              OR (table_name = 'posts' AND column_name IN ('author_user_id', 'body', 'post_type', 'visibility', 'idempotency_key', 'idempotency_body_hash', 'comments_locked'))
-             OR (table_name = 'comments' AND column_name IN ('author_user_id', 'body', 'idempotency_key', 'idempotency_body_hash', 'depth')))`,
+             OR (table_name = 'comments' AND column_name IN ('author_user_id', 'body', 'idempotency_key', 'idempotency_body_hash', 'depth'))
+             OR (table_name = 'evidence_receipts' AND column_name IN ('provider_configuration_kind', 'provider_configuration_ref', 'provider_configuration_version'))
+             OR (table_name = 'proof_sessions' AND column_name IN ('provider_configuration_kind', 'provider_configuration_ref', 'provider_configuration_version'))
+             OR (table_name = 'proof_session_presentations' AND column_name IN ('proof_session_id', 'presentation_kind', 'payload', 'created_at')) )`,
       );
       expect(columns.rows).toEqual(
         expect.arrayContaining([
@@ -389,6 +406,56 @@ suite("Postgres 17 product and gates v2 foundation", () => {
             is_nullable: "YES",
           },
           { table_name: "communities", column_name: "route_slug", is_nullable: "YES" },
+          {
+            table_name: "evidence_receipts",
+            column_name: "provider_configuration_kind",
+            is_nullable: "NO",
+          },
+          {
+            table_name: "evidence_receipts",
+            column_name: "provider_configuration_ref",
+            is_nullable: "NO",
+          },
+          {
+            table_name: "evidence_receipts",
+            column_name: "provider_configuration_version",
+            is_nullable: "NO",
+          },
+          {
+            table_name: "proof_sessions",
+            column_name: "provider_configuration_kind",
+            is_nullable: "NO",
+          },
+          {
+            table_name: "proof_sessions",
+            column_name: "provider_configuration_ref",
+            is_nullable: "NO",
+          },
+          {
+            table_name: "proof_sessions",
+            column_name: "provider_configuration_version",
+            is_nullable: "NO",
+          },
+          {
+            table_name: "proof_session_presentations",
+            column_name: "proof_session_id",
+            is_nullable: "NO",
+          },
+          {
+            table_name: "proof_session_presentations",
+            column_name: "presentation_kind",
+            is_nullable: "NO",
+          },
+          {
+            table_name: "proof_session_presentations",
+            column_name: "payload",
+            is_nullable: "NO",
+          },
+          {
+            table_name: "proof_session_presentations",
+            column_name: "created_at",
+            is_nullable: "NO",
+          },
         ]),
       );
 
@@ -434,6 +501,39 @@ suite("Postgres 17 product and gates v2 foundation", () => {
     completedTestCount += 1;
   });
 
+  test("refuses to invent provider configuration for an unexpected existing session", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      await applyMigrations(scopedConnectionString, migrations.slice(0, -1));
+      await admin.query("INSERT INTO users (user_id) VALUES ('unexpected-user')");
+      await admin.query(`INSERT INTO proof_sessions (
+        proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+        scope_kind, request_mode, protocol_version, environment, status,
+        requested_requirements, requested_claim_ids, subject_binding_intent, started_at, expires_at
+      ) VALUES (
+        'unexpected-session', 'unexpected-user', 'unexpected-intent', '${"f".repeat(64)}',
+        'unexpected.provider', 'document', 'unexpected.provider', 'none', 'dynamic',
+        'unexpected-v1', 'test', 'pending', '[{"claim_id":"document.valid"}]'::jsonb,
+        '["document.valid"]'::jsonb, 'none',
+        '2026-08-17T00:00:00.000Z', '2026-08-18T00:00:00.000Z'
+      )`);
+
+      await expect(applyMigrations(scopedConnectionString, migrations)).rejects.toBeDefined();
+      const applied = await admin.query<{ version: string }>(
+        "SELECT version FROM schema_migrations ORDER BY version",
+      );
+      expect(applied.rows.at(-1)?.version).toBe(gatesV2Migration.version);
+      const provenanceColumns = await admin.query<{ count: string }>(
+        `SELECT count(*)
+           FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'proof_sessions'
+            AND column_name LIKE 'provider_configuration_%'`,
+      );
+      expect(provenanceColumns.rows[0]?.count).toBe("0");
+    });
+    completedTestCount += 1;
+  });
+
   test("enforces gates v2 scope, co-reference, policy, and action-grant invariants", async () => {
     await withSchema(async (admin, scopedConnectionString) => {
       await applyMigrations(scopedConnectionString, migrations);
@@ -453,11 +553,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         `INSERT INTO proof_sessions (
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
           scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
-          requested_requirements, requested_claim_ids, started_at, expires_at
+          requested_requirements, requested_claim_ids, started_at, expires_at,
+          provider_configuration_kind, provider_configuration_ref, provider_configuration_version
         ) VALUES ('session-implicit-binding', 'user-a', 'intent-implicit-binding', $1,
           'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic',
           'fake-v2', 'test', 'pending', '[{"claim_id":"document.valid"}]'::jsonb,
-          '["document.valid"]'::jsonb, $2, $3)`,
+          '["document.valid"]'::jsonb, $2, $3, 'dynamic', 'test-config', '1')`,
         ["0".repeat(64), now, later],
       );
       await admin.query({
@@ -469,9 +570,11 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
           scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
           upstream_session_ref, requested_requirements, requested_claim_ids,
-          subject_binding_intent, started_at, expires_at
+          subject_binding_intent, started_at, expires_at,
+          provider_configuration_kind, provider_configuration_ref, provider_configuration_version
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'issuer_rp_scope', $8, 'dynamic', $9, $10,
-          'pending', 'upstream-a', $11::jsonb, $12::jsonb, 'establish', $13, $14)`,
+          'pending', 'upstream-a', $11::jsonb, $12::jsonb, 'establish', $13, $14,
+          'dynamic', 'test-config', '1')`,
         values: [
           "session-a",
           "user-a",
@@ -499,11 +602,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
           scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
           requested_requirements, requested_claim_ids, subject_binding_intent, started_at,
-          expires_at
+          expires_at, provider_configuration_kind, provider_configuration_ref,
+          provider_configuration_version
         ) VALUES ('session-requirement-drift', 'user-b', 'intent-requirement-drift', $1,
           'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic',
           'fake-v2', 'test', 'pending', '[{"claim_id":"age.minimum","minimum_age":"21"}]'::jsonb,
-          '["document.valid"]'::jsonb, 'establish', $2, $3)`,
+          '["document.valid"]'::jsonb, 'establish', $2, $3, 'dynamic', 'test-config', '1')`,
         ["9".repeat(64), now, later],
       );
       await expectPostgresFailure(
@@ -513,12 +617,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
           scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
           upstream_session_ref, requested_requirements, requested_claim_ids,
-          subject_binding_intent, started_at, expires_at
+          subject_binding_intent, started_at, expires_at,
+          provider_configuration_kind, provider_configuration_ref, provider_configuration_version
         ) VALUES ('session-provider-replay', 'user-b', 'intent-provider-replay', $1,
           'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic',
           'fake-v2', 'test', 'pending', 'upstream-a',
           '[{"claim_id":"document.valid"}]'::jsonb, '["document.valid"]'::jsonb,
-          'establish', $2, $3)`,
+          'establish', $2, $3, 'dynamic', 'test-config', '1')`,
         ["f".repeat(64), now, later],
       );
       await expectPostgresFailure(
@@ -592,9 +697,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method,
           scope_kind, issuer_rp_scope, protocol_version, environment, evidence_kind,
           evidence_hash, receipt_metadata, observed_at, provenance_kind, subject_key_id,
-          subject_binding_event_id, subject_binding_epoch
+          subject_binding_event_id, subject_binding_epoch, provider_configuration_kind,
+          provider_configuration_ref, provider_configuration_version
         ) VALUES ($1, $2, $3, $4, $5, $6, 'issuer_rp_scope', $7, $8, $9, $10, $11,
-          '{}'::jsonb, $12, 'proof_session', $13, $14, 1)`,
+          '{}'::jsonb, $12, 'proof_session', $13, $14, 1, 'dynamic', 'test-config', '1')`,
         [
           "receipt-wrong-provider",
           "session-a",
@@ -617,9 +723,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method,
           scope_kind, issuer_rp_scope, protocol_version, environment, evidence_kind,
           evidence_hash, receipt_metadata, observed_at, provenance_kind, subject_key_id,
-          subject_binding_event_id, subject_binding_epoch
+          subject_binding_event_id, subject_binding_epoch, provider_configuration_kind,
+          provider_configuration_ref, provider_configuration_version
         ) VALUES ($1, $2, $3, $4, $5, $6, 'issuer_rp_scope', $7, $8, $9, $10, $11,
-          '{}'::jsonb, $12, 'proof_session', $13, $14, 1)`,
+          '{}'::jsonb, $12, 'proof_session', $13, $14, 1, 'dynamic', 'test-config', '1')`,
         values: [
           "receipt-a",
           "session-a",
@@ -637,6 +744,19 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           "binding-event-a",
         ],
       });
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO evidence_receipts (
+          evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method,
+          scope_kind, issuer_rp_scope, protocol_version, environment, evidence_kind,
+          evidence_hash, receipt_metadata, observed_at, provenance_kind,
+          provider_configuration_kind, provider_configuration_ref, provider_configuration_version
+        ) VALUES ('receipt-wrong-configuration', 'session-a', 'user-a', 'test.fake',
+          'test.fake', 'document', 'issuer_rp_scope', 'pirate.example', 'fake-v2', 'test',
+          'document', $1, '{}'::jsonb, $2, 'proof_session', 'dynamic', 'other-config', '1')`,
+        ["b".repeat(64), now],
+      );
       await admin.query({
         text: `INSERT INTO assertion_bindings (
           binding_group_id, user_id, binding_mode, subject_key_id,
@@ -758,11 +878,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
           scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
           requested_requirements, requested_claim_ids, subject_binding_intent, started_at,
-          expires_at
+          expires_at, provider_configuration_kind, provider_configuration_ref,
+          provider_configuration_version
         ) VALUES ('session-ordinary', 'user-b', 'intent-ordinary', $1, 'test.fake',
           'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic', 'fake-v2', 'test',
           'pending', '[{"claim_id":"document.valid"}]'::jsonb,
-          '["document.valid"]'::jsonb, 'establish', $2, $3)`,
+          '["document.valid"]'::jsonb, 'establish', $2, $3, 'dynamic', 'test-config', '1')`,
         values: ["c".repeat(64), now, later],
       });
       await expectPostgresFailure(
@@ -780,11 +901,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
           scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
           requested_requirements, requested_claim_ids, subject_binding_intent, started_at,
-          expires_at
+          expires_at, provider_configuration_kind, provider_configuration_ref,
+          provider_configuration_version
         ) VALUES ('session-recovery', 'user-b', 'intent-recovery', $1, 'test.fake',
           'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic', 'fake-v2', 'test',
           'pending', '[{"claim_id":"document.valid"}]'::jsonb,
-          '["document.valid"]'::jsonb, 'recover', $2, $3)`,
+          '["document.valid"]'::jsonb, 'recover', $2, $3, 'dynamic', 'test-config', '1')`,
         values: ["e".repeat(64), now, later],
       });
       await admin.query({
@@ -815,11 +937,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           evidence_receipt_id, proof_session_id, user_id, provider_id, issuer, method,
           scope_kind, issuer_rp_scope, protocol_version, environment, evidence_kind,
           evidence_hash, receipt_metadata, observed_at, provenance_kind, subject_key_id,
-          subject_binding_event_id, subject_binding_epoch
+          subject_binding_event_id, subject_binding_epoch, provider_configuration_kind,
+          provider_configuration_ref, provider_configuration_version
         ) VALUES ('receipt-provider-replay', 'session-recovery', 'user-b', 'test.fake',
           'test.fake', 'document', 'issuer_rp_scope', 'pirate.example', 'fake-v2', 'test',
           'document', $1, '{}'::jsonb, $2, 'proof_session', 'subject-a',
-          'binding-event-recovery', 2)`,
+          'binding-event-recovery', 2, 'dynamic', 'test-config', '1')`,
         [evidenceHash, now],
       );
       await expectPostgresFailure(
@@ -1141,6 +1264,158 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         ) VALUES ('nonce-a', 'grant-a', 'action-intent-a', 'create_post', 'community-a',
           $1, 'post-replay')`,
         ["7".repeat(64)],
+      );
+    });
+    completedTestCount += 1;
+  });
+
+  test("enforces provider configuration provenance and append-only presentations", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      await applyMigrations(scopedConnectionString, migrations);
+      const now = new Date("2026-08-17T00:00:00.000Z");
+      const later = new Date("2026-08-18T00:00:00.000Z");
+
+      await admin.query("INSERT INTO users (user_id) VALUES ('user-a')");
+
+      const insertSession = async (
+        id: string,
+        requestMode: "curated" | "dynamic",
+        configurationKind: "managed" | "dynamic",
+        configurationRef: string,
+        configurationVersion: string,
+      ) => {
+        await admin.query({
+          text: `INSERT INTO proof_sessions (
+            proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+            scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
+            requested_requirements, requested_claim_ids, subject_binding_intent, started_at,
+            expires_at, provider_configuration_kind, provider_configuration_ref,
+            provider_configuration_version
+          ) VALUES ($1, 'user-a', $2, $3, 'test.fake', 'document', 'test.fake',
+            'issuer_rp_scope', 'pirate.example', $4, 'fake-v2', 'test', 'pending',
+            '[{"claim_id":"document.valid"}]'::jsonb, '["document.valid"]'::jsonb,
+            'none', $5, $6, $7, $8, $9)`,
+          values: [
+            id,
+            `intent-${id}`,
+            "a".repeat(64),
+            requestMode,
+            now,
+            later,
+            configurationKind,
+            configurationRef,
+            configurationVersion,
+          ],
+        });
+      };
+
+      await insertSession("session-dynamic", "dynamic", "dynamic", "dynamic-config", "v1");
+      await insertSession("session-curated", "curated", "managed", "managed-config", "v2");
+
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO proof_sessions (
+          proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+          scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
+          requested_requirements, requested_claim_ids, subject_binding_intent, started_at,
+          expires_at, provider_configuration_kind, provider_configuration_ref,
+          provider_configuration_version
+        ) VALUES ('session-curated-wrong-kind', 'user-a', 'intent-curated-wrong-kind', $1,
+          'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'curated',
+          'fake-v2', 'test', 'pending', '[{"claim_id":"document.valid"}]'::jsonb,
+          '["document.valid"]'::jsonb, 'none', $2, $3, 'dynamic', 'config', 'v1')`,
+        ["1".repeat(64), now, later],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO proof_sessions (
+          proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+          scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
+          requested_requirements, requested_claim_ids, subject_binding_intent, started_at,
+          expires_at, provider_configuration_kind, provider_configuration_ref,
+          provider_configuration_version
+        ) VALUES ('session-dynamic-wrong-kind', 'user-a', 'intent-dynamic-wrong-kind', $1,
+          'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic',
+          'fake-v2', 'test', 'pending', '[{"claim_id":"document.valid"}]'::jsonb,
+          '["document.valid"]'::jsonb, 'none', $2, $3, 'managed', 'config', 'v1')`,
+        ["2".repeat(64), now, later],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "UPDATE proof_sessions SET provider_configuration_ref = ' changed' WHERE proof_session_id = 'session-dynamic'",
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "UPDATE proof_sessions SET provider_configuration_version = 'v2' WHERE proof_session_id = 'session-dynamic'",
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "UPDATE proof_sessions SET provider_configuration_kind = 'managed' WHERE proof_session_id = 'session-dynamic'",
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO proof_sessions (
+          proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+          scope_kind, issuer_rp_scope, request_mode, protocol_version, environment, status,
+          requested_requirements, requested_claim_ids, subject_binding_intent, started_at,
+          expires_at, provider_configuration_kind, provider_configuration_ref,
+          provider_configuration_version
+        ) VALUES ('session-whitespace-version', 'user-a', 'intent-whitespace-version', $1,
+          'test.fake', 'document', 'test.fake', 'issuer_rp_scope', 'pirate.example', 'dynamic',
+          'fake-v2', 'test', 'pending', '[{"claim_id":"document.valid"}]'::jsonb,
+          '["document.valid"]'::jsonb, 'none', $2, $3, 'dynamic', 'config', 'v1 ')`,
+        ["3".repeat(64), now, later],
+      );
+
+      await admin.query({
+        text: `INSERT INTO proof_session_presentations (
+          proof_session_id, presentation_kind, payload
+        ) VALUES ('session-dynamic', 'redirect', '{"url":"https://example.test/callback"}'::jsonb)`,
+      });
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "UPDATE proof_session_presentations SET payload = '{}'::jsonb WHERE proof_session_id = 'session-dynamic'",
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "DELETE FROM proof_session_presentations WHERE proof_session_id = 'session-dynamic'",
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO proof_session_presentations (
+          proof_session_id, presentation_kind, payload
+        ) VALUES ('session-curated', 'unsupported', '{}'::jsonb)`,
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO proof_session_presentations (
+          proof_session_id, presentation_kind, payload
+        ) VALUES ('session-curated', 'poll', '[]'::jsonb)`,
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23503",
+        `INSERT INTO proof_session_presentations (
+          proof_session_id, presentation_kind, payload
+        ) VALUES ('session-missing', 'none', '{}'::jsonb)`,
+        [],
       );
     });
     completedTestCount += 1;

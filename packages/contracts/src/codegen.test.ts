@@ -75,6 +75,72 @@ describe("codegen pipeline", () => {
     expect(client).not.toContain("import {\n");
     expect(client).not.toContain("Promise<unknown>");
   });
+
+  test("headers and raw-text bodies are represented in OpenAPI and the generated client", () => {
+    const callback = endpoint({
+      method: "POST",
+      path: "/callbacks/raw",
+      auth: Auth.public(),
+      request: {
+        headers: Schema.Struct({
+          "x-signature": Schema.String,
+          "x-optional": Schema.optional(Schema.String),
+        }),
+        body: Schema.String,
+        bodyEncoding: "raw-text",
+      },
+      response: Schema.Struct({ accepted: Schema.Boolean }),
+    });
+
+    const operation = generateOpenApi([callback]).paths["/callbacks/raw"]?.post as {
+      parameters: Array<{
+        name: string;
+        in: string;
+        required: boolean;
+        schema: Record<string, unknown>;
+      }>;
+      requestBody: {
+        content: Record<string, { schema: Record<string, unknown> }>;
+      };
+    };
+    expect(operation.parameters).toEqual([
+      { name: "x-signature", in: "header", required: true, schema: { type: "string" } },
+      {
+        name: "x-optional",
+        in: "header",
+        required: false,
+        schema: { anyOf: [{ type: "string" }, { type: "null" }] },
+      },
+    ]);
+    expect(operation.requestBody.content["text/plain"]?.schema).toEqual({ type: "string" });
+
+    const client = generateClient({ RawCallback: callback });
+    expect(client).toContain(
+      'readonly headers: { readonly "x-signature": string; readonly "x-optional"?: string | null }',
+    );
+    expect(client).toContain('bodyEncoding === "raw-text"');
+    expect(client).toContain("headers.set(key, String(value))");
+    expect(client).toContain('body: bodyEncoding === "raw-text" ? requestInput.body as string');
+    expect(client).toContain(
+      'request("post_callbacksRaw", "POST", "/callbacks/raw", input, options, "raw-text")',
+    );
+  });
+
+  test("JSON remains the default request body encoding", () => {
+    const client = generateClient({ Json: fixture });
+    expect(client).toContain(
+      'headers.set("content-type", bodyEncoding === "raw-text" ? "text/plain" : "application/json")',
+    );
+    expect(client).toContain(
+      'body: bodyEncoding === "raw-text" ? requestInput.body as string : JSON.stringify(requestInput.body)',
+    );
+    expect(client).toContain(
+      'request("post_echoMessage", "POST", "/echo/:message", input, options),',
+    );
+    expect(generateOpenApi([fixture]).paths["/echo/{message}"]?.post).toMatchObject({
+      requestBody: { content: { "application/json": { schema: { type: "object" } } } },
+    });
+  });
 });
 
 describe("openapi breaking-change diff", () => {

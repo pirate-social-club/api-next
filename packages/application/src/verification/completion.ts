@@ -5,7 +5,7 @@ import {
   type Sha256Hex as Sha256HexValue,
 } from "@pirate/domain/verification";
 import { Data, Effect, Option, Schema } from "effect";
-import type { VerificationProviderFailure } from "./adapter.ts";
+import { type VerificationProviderFailure, VerificationSubmission } from "./adapter.ts";
 import type {
   VerificationProviderRegistryService,
   VerificationProviderUnknown,
@@ -15,7 +15,7 @@ export const CompleteVerificationInput = Schema.Struct({
   actor_id: Schema.NonEmptyString,
   proof_session_id: Schema.NonEmptyString,
   idempotency_key: Schema.NonEmptyString,
-  submission: Schema.Unknown,
+  submission: VerificationSubmission,
 });
 export type CompleteVerificationInput = Schema.Schema.Type<typeof CompleteVerificationInput>;
 
@@ -134,7 +134,8 @@ function completedResult(
 
 /**
  * Provider completion is deliberately transport-neutral. HTTP callbacks,
- * polled credentials, and SDK tokens arrive as `submission`; the provider
+ * polled credentials, and SDK tokens arrive in the explicit `submission`
+ * channel; the provider
  * adapter authenticates and decodes that value. This use case owns session
  * authorization, expiry, replay behavior, result hashing, and the atomic
  * evidence-ledger commit.

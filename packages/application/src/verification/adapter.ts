@@ -4,6 +4,7 @@ import {
   type EvidenceBundle,
   type ProofProviderManifest,
   ProofSession,
+  ProviderConfigurationRef,
   Sha256Hex,
   SubjectBindingIntent,
   SubjectScope,
@@ -52,6 +53,17 @@ export const ProviderSessionStart = Schema.Struct({
 });
 export type ProviderSessionStart = Schema.Schema.Type<typeof ProviderSessionStart>;
 
+/**
+ * The ceremony transport is explicit while its provider payload stays opaque.
+ * Adapters decode and authenticate `payload`; callers cannot smuggle session,
+ * actor, provider, or request identity through this envelope.
+ */
+export const VerificationSubmission = Schema.Struct({
+  channel: Schema.Literals(["client_result", "provider_callback", "poll_result"]),
+  payload: Schema.Unknown,
+});
+export type VerificationSubmission = Schema.Schema.Type<typeof VerificationSubmission>;
+
 export const VerificationProviderStartInput = Schema.Struct({
   actor_id: Schema.NonEmptyString,
   intent_id: Schema.NonEmptyString,
@@ -59,6 +71,7 @@ export const VerificationProviderStartInput = Schema.Struct({
   method: Schema.NonEmptyString,
   scope: SubjectScope,
   request_mode: VerificationRequestMode,
+  provider_configuration: ProviderConfigurationRef,
   requested_requirements: VerificationRequirements,
   requested_claim_ids: Schema.NonEmptyArray(CanonicalClaimIdentifier),
   subject_binding_intent: SubjectBindingIntent,
@@ -86,6 +99,7 @@ export const VerificationProviderPlanResult = Schema.Union([
   Schema.Struct({
     status: Schema.Literal("supported"),
     request_mode: VerificationRequestMode,
+    provider_configuration: ProviderConfigurationRef,
   }),
   Schema.Struct({ status: Schema.Literal("unsupported") }),
   Schema.Struct({ status: Schema.Literal("unknown") }),
@@ -97,13 +111,58 @@ export type VerificationProviderPlanResult = Schema.Schema.Type<
 export const VerificationProviderCompleteInput = Schema.Struct({
   session: ProofSession,
   /** Provider-specific callback/token/credential; never the launch presentation. */
-  submission: Schema.Unknown,
+  submission: VerificationSubmission,
 });
 export type VerificationProviderCompleteInput = Schema.Schema.Type<
   typeof VerificationProviderCompleteInput
 >;
 
-export type VerificationProviderOperation = "plan" | "start" | "complete";
+export const VerificationCallbackRawBody = Schema.String.check(
+  Schema.makeFilter((value) =>
+    value.length > 0 && value.length <= 1_048_576
+      ? undefined
+      : "Expected a non-empty callback body no larger than 1 MiB",
+  ),
+);
+
+export const VerificationCallbackHeaders = Schema.Record(Schema.String, Schema.String).check(
+  Schema.makeFilter((headers) => {
+    const entries = Object.entries(headers);
+    return entries.length <= 64 &&
+      entries.every(
+        ([name, value]) =>
+          name.length > 0 &&
+          name.length <= 128 &&
+          /^[a-z0-9!#$%&'*+.^_`|~-]+$/u.test(name) &&
+          value.length <= 8_192,
+      ) &&
+      entries.reduce((length, [name, value]) => length + name.length + value.length, 0) <= 32_768
+      ? undefined
+      : "Expected a bounded canonical callback header map";
+  }),
+);
+
+export const VerificationProviderCallbackInput = Schema.Struct({
+  raw_body: VerificationCallbackRawBody,
+  headers: VerificationCallbackHeaders,
+});
+export type VerificationProviderCallbackInput = Schema.Schema.Type<
+  typeof VerificationProviderCallbackInput
+>;
+
+export const VerificationProviderCallbackResolution = Schema.Struct({
+  proof_session_id: Schema.NonEmptyString,
+  idempotency_key: Schema.NonEmptyString,
+  submission: Schema.Struct({
+    channel: Schema.Literal("provider_callback"),
+    payload: Schema.Unknown,
+  }),
+});
+export type VerificationProviderCallbackResolution = Schema.Schema.Type<
+  typeof VerificationProviderCallbackResolution
+>;
+
+export type VerificationProviderOperation = "plan" | "start" | "complete" | "callback";
 
 /** Adapter failures are deliberately closed and contain no upstream payload. */
 export class VerificationProviderUnavailable extends Data.TaggedError(
@@ -154,6 +213,10 @@ export interface VerificationProviderAdapter {
   readonly complete: (
     input: VerificationProviderCompleteInput,
   ) => Effect.Effect<EvidenceBundle, VerificationProviderFailure>;
+  /** Optional signed-callback transport. Client-result providers omit it. */
+  readonly verifyCallback?: (
+    input: VerificationProviderCallbackInput,
+  ) => Effect.Effect<VerificationProviderCallbackResolution, VerificationProviderFailure>;
 }
 
 export type VerificationAssurance = Assurance;

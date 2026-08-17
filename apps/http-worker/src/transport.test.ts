@@ -1,8 +1,15 @@
 import { describe, expect, it } from "bun:test";
 import type { SessionExchangeServices } from "@pirate/application/use-cases/session-exchange";
-import { Conflict } from "@pirate/contracts";
-import { Effect } from "effect";
-import { createHttpWorker, type EndpointHandler, withEndpointResult } from "./transport.ts";
+import { Auth, BadRequest, Conflict, endpoint } from "@pirate/contracts";
+import { Effect, Schema } from "effect";
+import { Hono } from "hono";
+import {
+  createHttpWorker,
+  type DecodedRequest,
+  decodeInput,
+  type EndpointHandler,
+  withEndpointResult,
+} from "./transport.ts";
 
 const feed = { items: [], top_communities: [], next_cursor: null };
 const vote = { post: "post_1", value: 1 as const };
@@ -250,6 +257,108 @@ describe("contracts-generated HTTP worker", () => {
     expect(response.status).toBe(200);
     expect(received).toEqual({ body: undefined, params: undefined, query: {}, principal: null });
     expect(JSON.stringify(await response.json())).not.toContain("must-not-cross-boundary");
+  });
+
+  it("preserves raw-text body Unicode and whitespace and exposes only declared headers", async () => {
+    const rawBody = "\r\n  Mērs 🏴‍☠️  \n\t";
+    const callback = endpoint({
+      method: "POST",
+      path: "/test/raw",
+      auth: Auth.public(),
+      request: {
+        headers: Schema.Struct({ "x-signature": Schema.String }),
+        body: Schema.String,
+        bodyEncoding: "raw-text",
+      },
+      response: Schema.Struct({ ok: Schema.Boolean }),
+    });
+    let decoded: DecodedRequest | undefined;
+    const app = new Hono();
+    app.post("/test/raw", async (context) => {
+      decoded = await decodeInput(callback, context as never, null);
+      return new Response("ok");
+    });
+
+    const response = await app.request("http://worker.test/test/raw", {
+      method: "POST",
+      headers: {
+        "content-type": "text/plain",
+        "x-signature": "sig-value",
+        "x-undeclared": "must-not-cross-boundary",
+      },
+      body: rawBody,
+    });
+
+    expect(response.status).toBe(200);
+    expect(decoded).toEqual({
+      body: rawBody,
+      headers: { "x-signature": "sig-value" },
+      params: undefined,
+      query: undefined,
+      principal: null,
+    });
+  });
+
+  it("rejects a raw-text request with a missing required header", async () => {
+    const callback = endpoint({
+      method: "POST",
+      path: "/test/raw-required-header",
+      auth: Auth.public(),
+      request: {
+        headers: Schema.Struct({ "x-signature": Schema.String }),
+        body: Schema.String,
+        bodyEncoding: "raw-text",
+      },
+      response: Schema.Struct({ ok: Schema.Boolean }),
+    });
+    let failure: unknown;
+    const app = new Hono();
+    app.post("/test/raw-required-header", async (context) => {
+      try {
+        await decodeInput(callback, context as never, null);
+      } catch (error) {
+        failure = error;
+      }
+      return new Response("failed");
+    });
+
+    const response = await app.request("http://worker.test/test/raw-required-header", {
+      method: "POST",
+      body: "payload",
+    });
+
+    expect(response.status).toBe(200);
+    expect(failure).toBeInstanceOf(BadRequest);
+    expect(failure).toMatchObject({ details: { location: "headers" } });
+  });
+
+  it("rejects an oversized streamed body before schema decoding", async () => {
+    const callback = endpoint({
+      method: "POST",
+      path: "/test/raw-bounded",
+      auth: Auth.public(),
+      request: { body: Schema.String, bodyEncoding: "raw-text" },
+      response: Schema.Struct({ ok: Schema.Boolean }),
+    });
+    let failure: unknown;
+    const app = new Hono();
+    app.post("/test/raw-bounded", async (context) => {
+      try {
+        await decodeInput(callback, context as never, null);
+      } catch (error) {
+        failure = error;
+      }
+      return new Response("failed");
+    });
+
+    const response = await app.request("http://worker.test/test/raw-bounded", {
+      method: "POST",
+      body: "x".repeat(1_048_577),
+    });
+
+    expect(response.status).toBe(200);
+    expect(failure).toBeInstanceOf(BadRequest);
+    expect(failure).toMatchObject({ details: { location: "body" } });
   });
 
   it("ignores credentials on public routes while disabling shared caching", async () => {

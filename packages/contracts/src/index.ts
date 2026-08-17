@@ -6,3 +6,4 @@ export * from "./money.ts";
 export * from "./openapi-diff.ts";
 export * from "./registry.ts";
 export * from "./v1.ts";
+export * from "./verification.ts";

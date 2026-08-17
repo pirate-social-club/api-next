@@ -6,6 +6,7 @@ import {
   authorizeSession,
 } from "@pirate/application/use-cases/session-authentication";
 import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-exchange";
+import type { VerificationIntentResolver } from "@pirate/application/use-cases/verification-start";
 import { makeControlPlaneCommunityStore } from "@pirate/platform-cf/community-repository";
 import {
   HttpWorkerConfig,
@@ -26,9 +27,16 @@ import {
   makeRs256SessionTokenMinter,
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
+import {
+  makeControlPlaneVerificationCompletionStore,
+  makeSha256VerificationCompletionHasher,
+} from "@pirate/platform-cf/verification-completion-repository";
+import { makePlatformVerificationProviderRegistry } from "@pirate/platform-cf/verification-provider-registry";
+import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
 import { Effect, Redacted, Schema } from "effect";
 import { makeProductHandlers } from "./product-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
+import { makeVerificationHandlers } from "./verification-handlers.ts";
 
 export interface HttpWorkerBindings {
   readonly CONTROL_PLANE?: unknown;
@@ -114,6 +122,26 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const feedStore = makeControlPlaneFeedStore(controlPlane);
+  const verificationRegistry = await Effect.runPromise(makePlatformVerificationProviderRegistry());
+  const verificationCompletionStore = makeControlPlaneVerificationCompletionStore(controlPlane);
+  const verificationIntents: VerificationIntentResolver = {
+    // Intent creation belongs to the policy/evaluator slice. Keeping this
+    // resolver closed means the generic routes can land before a real provider
+    // without accepting client-authored requirements.
+    resolve: () => Effect.succeed(null),
+  };
+  const verificationHandlers = makeVerificationHandlers({
+    start: {
+      intents: verificationIntents,
+      registry: verificationRegistry,
+      store: makeControlPlaneVerificationSessionStartStore(controlPlane),
+    },
+    completion: {
+      registry: verificationRegistry,
+      store: verificationCompletionStore,
+      hasher: makeSha256VerificationCompletionHasher(),
+    },
+  });
   const productHandlers = makeProductHandlers({
     communityStore,
     contentStore,
@@ -163,6 +191,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     config: { corsOrigin: config.CORS_ORIGIN },
     handlers: {
       ...productHandlers,
+      ...verificationHandlers,
       GetJwks: () => bridge.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },

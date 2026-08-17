@@ -32,6 +32,7 @@ async function sentinelSet(): Promise<{
     "public-profile",
     "public-community-threads",
     "verification",
+    "verification-start",
   ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),
@@ -59,5 +60,12 @@ describe("Postgres suite sentinel verification", () => {
     await expect(verifyPostgresTestSentinels(sentinels)).rejects.toThrow(
       "completion marker missing",
     );
+  });
+
+  test("fails when the verification-start suite is skipped or omitted", async () => {
+    const { sentinels } = await sentinelSet();
+    const sentinel = sentinels.find(({ name }) => name === "verification-start");
+    await rm(sentinel?.path ?? "", { force: true });
+    await expect(verifyPostgresTestSentinels(sentinels)).rejects.toThrow("verification-start");
   });
 });

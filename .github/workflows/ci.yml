@@ -79,6 +79,7 @@ jobs:
           /tmp/api-next-control-plane-postgres-public-profile-suite-complete
           /tmp/api-next-control-plane-postgres-public-community-threads-suite-complete
           /tmp/api-next-control-plane-postgres-verification-suite-complete
+          /tmp/api-next-control-plane-postgres-verification-start-suite-complete
       - name: Run required Postgres 17 suite
         env:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
@@ -93,6 +94,7 @@ jobs:
           CONTROL_PLANE_POSTGRES_PUBLIC_PROFILE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-public-profile-suite-complete
           CONTROL_PLANE_POSTGRES_PUBLIC_COMMUNITY_THREADS_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-public-community-threads-suite-complete
           CONTROL_PLANE_POSTGRES_VERIFICATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-verification-suite-complete
+          CONTROL_PLANE_POSTGRES_VERIFICATION_START_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-verification-start-suite-complete
         run: >-
           timeout 180s bun test
           packages/platform-cf/src/postgres.pg.test.ts
@@ -105,5 +107,6 @@ jobs:
           packages/platform-cf/src/public-profile.pg.test.ts
           packages/platform-cf/src/public-community-threads-repository.pg.test.ts
           packages/platform-cf/src/verification-completion-repository.pg.test.ts
+          packages/platform-cf/src/verification-start-repository.pg.test.ts
       - name: Verify Postgres 17 completion sentinel
         run: bun run verify:postgres-sentinels

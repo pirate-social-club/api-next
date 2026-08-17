@@ -4,6 +4,7 @@ import type {
   VerificationProviderFailure,
   VerificationProviderPlanInput,
   VerificationProviderStartInput,
+  VerificationSubmission,
 } from "@pirate/application/verification";
 import { makeVerificationProviderRegistry } from "@pirate/application/verification";
 import type { SubjectScope } from "@pirate/domain/verification";
@@ -12,7 +13,7 @@ import { Cause, Effect, Exit, Result } from "effect";
 export interface ProviderConformanceHarness {
   readonly adapter: VerificationProviderAdapter;
   readonly startInput: VerificationProviderStartInput;
-  readonly submission: unknown;
+  readonly submission: VerificationSubmission;
 }
 
 export interface ProviderTransportConformanceCase<Transport> {
@@ -20,7 +21,7 @@ export interface ProviderTransportConformanceCase<Transport> {
   readonly makeTransport: () => Transport;
   readonly makeAdapter: (transport: Transport) => VerificationProviderAdapter;
   readonly startInput: VerificationProviderStartInput;
-  readonly submission: unknown;
+  readonly submission: VerificationSubmission;
   readonly operation: "plan" | "start" | "complete";
   readonly tamperSession?: (
     session: ProviderSessionStart["session"],
@@ -87,7 +88,12 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
   const provider = await Effect.runPromise(registry.resolve(adapter.manifest.provider_id));
   const planInput = planInputOf(startInput);
   const planned = await Effect.runPromise(provider.plan(planInput));
-  if (planned.status !== "supported" || planned.request_mode !== startInput.request_mode) {
+  if (
+    planned.status !== "supported" ||
+    planned.request_mode !== startInput.request_mode ||
+    JSON.stringify(planned.provider_configuration) !==
+      JSON.stringify(startInput.provider_configuration)
+  ) {
     throw new Error("provider did not support its conformance request");
   }
   const started = await Effect.runPromise(provider.start(startInput));
@@ -96,6 +102,8 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
     started.session.actor_id !== startInput.actor_id ||
     started.session.intent_id !== startInput.intent_id ||
     started.session.request_hash !== startInput.request_hash ||
+    JSON.stringify(started.session.provider_configuration) !==
+      JSON.stringify(startInput.provider_configuration) ||
     started.session.method !== startInput.method ||
     !sameScope(started.session.scope, startInput.scope) ||
     JSON.stringify(started.session.requested_requirements) !==
@@ -127,6 +135,8 @@ export async function runProviderConformance(harness: ProviderConformanceHarness
     bundle.receipts.some(
       (receipt) =>
         receipt.provider_id !== adapter.manifest.provider_id ||
+        JSON.stringify(receipt.provider_configuration) !==
+          JSON.stringify(startInput.provider_configuration) ||
         receipt.protocol_version !== startInput.protocol_version ||
         receipt.environment !== startInput.environment ||
         !sameScope(receipt.scope, startInput.scope),

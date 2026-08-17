@@ -59,7 +59,17 @@ function sessionFromRow(row: Row): StoredVerificationCompletion | null {
   const issuer = stringField(row, "issuer");
   const rpScope = stringField(row, "issuer_rp_scope");
   const actionScope = stringField(row, "issuer_rp_action_scope");
-  if (issuer === null) return null;
+  const providerConfigurationKind = stringField(row, "provider_configuration_kind");
+  const providerConfigurationReference = stringField(row, "provider_configuration_ref");
+  const providerConfigurationVersion = stringField(row, "provider_configuration_version");
+  if (
+    issuer === null ||
+    providerConfigurationKind === null ||
+    providerConfigurationReference === null ||
+    providerConfigurationVersion === null
+  ) {
+    return null;
+  }
   const scope =
     scopeKind === "none"
       ? { kind: "none" as const, issuer }
@@ -90,6 +100,11 @@ function sessionFromRow(row: Row): StoredVerificationCompletion | null {
     ...(row.upstream_session_ref === null
       ? {}
       : { upstream_session_ref: row.upstream_session_ref }),
+    provider_configuration: {
+      kind: providerConfigurationKind,
+      reference: providerConfigurationReference,
+      version: providerConfigurationVersion,
+    },
     method: row.method,
     scope,
     request_mode: row.request_mode,
@@ -123,7 +138,9 @@ function sessionFromRow(row: Row): StoredVerificationCompletion | null {
 }
 
 const sessionColumns = `
-  proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+  proof_session_id, actor_id, intent_id, request_hash, provider_id,
+  provider_configuration_kind, provider_configuration_ref,
+  provider_configuration_version, method, issuer,
   scope_kind, issuer_rp_scope, issuer_rp_action_scope, request_mode, requested_requirements,
   requested_claim_ids, upstream_session_ref,
   subject_binding_intent, protocol_version, environment, status, started_at,
@@ -317,6 +334,9 @@ function sessionIdentityMatches(
     actual.request_hash === expected.request_hash &&
     actual.provider_id === expected.provider_id &&
     actual.upstream_session_ref === expected.upstream_session_ref &&
+    actual.provider_configuration.kind === expected.provider_configuration.kind &&
+    actual.provider_configuration.reference === expected.provider_configuration.reference &&
+    actual.provider_configuration.version === expected.provider_configuration.version &&
     actual.method === expected.method &&
     actual.protocol_version === expected.protocol_version &&
     actual.environment === expected.environment &&
@@ -412,20 +432,26 @@ export function makeControlPlaneVerificationCompletionRepository() {
                 yield* transaction.execute({
                   label: "verification.evidence-receipts.insert",
                   text: `INSERT INTO evidence_receipts (
-                           evidence_receipt_id, proof_session_id, user_id, provider_id, issuer,
-                           method, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
+                           evidence_receipt_id, proof_session_id, user_id, provider_id,
+                           provider_configuration_kind, provider_configuration_ref,
+                           provider_configuration_version, issuer, method, scope_kind,
+                           issuer_rp_scope, issuer_rp_action_scope,
                            protocol_version, environment, evidence_kind, evidence_hash,
                            receipt_metadata, observed_at, expires_at, provenance_kind,
                            subject_key_id, subject_binding_event_id, subject_binding_epoch
                          ) VALUES (
                            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                           '{}'::jsonb, $14, $15, 'proof_session', $16, $17, $18
+                           $14, $15, $16, '{}'::jsonb, $17, $18, 'proof_session',
+                           $19, $20, $21
                          )`,
                   values: [
                     receiptId,
                     stored.session.id,
                     input.actor_id,
                     receipt.provider_id,
+                    receipt.provider_configuration.kind,
+                    receipt.provider_configuration.reference,
+                    receipt.provider_configuration.version,
                     receipt.issuer,
                     receipt.method,
                     scopeKind,

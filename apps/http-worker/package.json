@@ -5,5 +5,8 @@
   "type": "module",
   "dependencies": {
     "hono": "4.12.25"
+  },
+  "devDependencies": {
+    "@pirate/testing": "workspace:*"
   }
 }

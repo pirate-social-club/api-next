@@ -1,4 +1,5 @@
 import {
+  makeVerificationProviderRegistry,
   type ProviderSessionStart,
   type VerificationProviderAdapter,
   type VerificationProviderCompleteInput,
@@ -72,6 +73,7 @@ export type FakeProviderOptions = Readonly<{
   readonly mode?: FakeProviderMode;
   readonly manifest?: ProofProviderManifest;
   readonly transport?: FakeProviderTransport;
+  readonly verifyCallback?: NonNullable<VerificationProviderAdapter["verifyCallback"]>;
 }>;
 
 export interface FakeProviderTransport {
@@ -87,7 +89,7 @@ const FakeSubmission = Schema.Struct({
 
 function validateSubmission(input: VerificationProviderCompleteInput, provider_id: string) {
   return Effect.try({
-    try: () => Schema.decodeUnknownSync(FakeSubmission)(input.submission),
+    try: () => Schema.decodeUnknownSync(FakeSubmission)(input.submission.payload),
     catch: () => new VerificationProviderRejected({ provider_id, operation: "complete" }),
   }).pipe(
     Effect.flatMap((submission) =>
@@ -112,6 +114,7 @@ function startResult(
     method: input.method,
     scope: input.scope,
     request_mode: input.request_mode,
+    provider_configuration: input.provider_configuration,
     requested_requirements: input.requested_requirements,
     requested_claim_ids: input.requested_claim_ids,
     subject_binding_intent: input.subject_binding_intent,
@@ -255,6 +258,7 @@ function bundleFor(
         issuer: session.scope.issuer,
         method: session.method,
         scope: receiptScope,
+        provider_configuration: session.provider_configuration,
         protocol_version: protocolVersion,
         environment,
         provenance_kind: "proof_session",
@@ -333,7 +337,12 @@ export function makeFakeVerificationProvider(
     plan: (input) => transport.plan(input),
     start: (input) => transport.start(input),
     complete: (input) => transport.complete(input),
+    ...(options.verifyCallback === undefined ? {} : { verifyCallback: options.verifyCallback }),
   };
+}
+
+export function makeFakeVerificationProviderRegistry(options: FakeProviderOptions = {}) {
+  return makeVerificationProviderRegistry([makeFakeVerificationProvider(options)]);
 }
 
 export function makeFakeVerificationTransport(
@@ -344,7 +353,16 @@ export function makeFakeVerificationTransport(
     options.manifest ??
     (mode === "no-subject" ? NO_SUBJECT_FAKE_PROVIDER_MANIFEST : FAKE_PROVIDER_MANIFEST);
   return {
-    plan: () => Effect.succeed({ status: "supported" as const, request_mode: "dynamic" as const }),
+    plan: () =>
+      Effect.succeed({
+        status: "supported" as const,
+        request_mode: "dynamic" as const,
+        provider_configuration: {
+          kind: "dynamic" as const,
+          reference: "fake-query",
+          version: "1",
+        },
+      }),
     start: (input) => {
       if (mode === "throw-start") {
         throw new Error("fake provider start secret");

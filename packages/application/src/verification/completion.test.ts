@@ -50,6 +50,7 @@ function session(overrides: Partial<ProofSession> = {}): ProofSession {
       rp_scope: "pirate.example",
     },
     request_mode: "dynamic",
+    provider_configuration: { kind: "dynamic", reference: "test-query", version: "1" },
     requested_requirements: [{ claim_id: "document.valid" }],
     requested_claim_ids: ["document.valid"],
     subject_binding_intent: "establish",
@@ -74,6 +75,7 @@ function bundle(proofSession: ProofSession): EvidenceBundle {
         issuer: proofSession.scope.issuer,
         method: proofSession.method,
         scope: proofSession.scope,
+        provider_configuration: proofSession.provider_configuration,
         protocol_version: proofSession.protocol_version,
         environment: proofSession.environment,
         provenance_kind: "proof_session",
@@ -143,7 +145,7 @@ function input() {
     actor_id: "user-1",
     proof_session_id: "proof-session-1",
     idempotency_key: "callback-1",
-    submission: { callback: "signed" },
+    submission: { channel: "client_result" as const, payload: { credential: "signed" } },
   };
 }
 

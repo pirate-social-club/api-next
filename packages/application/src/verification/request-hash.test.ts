@@ -17,6 +17,7 @@ const INPUT: VerificationRequestHashInput = {
     rp_scope: "pirate.test",
   },
   request_mode: "dynamic",
+  provider_configuration: { kind: "dynamic", reference: "test-query", version: "1" },
   requested_requirements: [
     { claim_id: "credential.subject_unique" },
     { claim_id: "document.valid" },
@@ -29,7 +30,7 @@ const INPUT: VerificationRequestHashInput = {
 describe("verification request hashing", () => {
   test("has a stable, canonical SHA-256 vector", async () => {
     const hash = await computeVerificationRequestHash("test.adversarial", INPUT);
-    expect(hash).toBe("d30bcbe842ef8e7046be5cf21531d99fe95f2cb7e92d3efe1f46e094b4fa833b");
+    expect(hash).toBe("8894e655b50bebf543a857a265449d0eac5c9908b156dce4a5c4707a4e740f22");
     expect(Schema.decodeUnknownSync(Sha256Hex)(hash)).toBe(hash);
   });
 
@@ -59,7 +60,7 @@ describe("verification request hashing", () => {
     );
   });
 
-  test("binds provider, scope, request mode, and requirements", async () => {
+  test("binds provider, scope, configuration, request mode, and requirements", async () => {
     const baseline = await computeVerificationRequestHash("test.adversarial", INPUT);
     const variants: readonly [string, VerificationRequestHashInput][] = [
       ["other.provider", INPUT],
@@ -76,6 +77,23 @@ describe("verification request hashing", () => {
         },
       ],
       ["test.adversarial", { ...INPUT, request_mode: "curated" }],
+      [
+        "test.adversarial",
+        {
+          ...INPUT,
+          provider_configuration: {
+            ...INPUT.provider_configuration,
+            reference: "other-query",
+          },
+        },
+      ],
+      [
+        "test.adversarial",
+        {
+          ...INPUT,
+          provider_configuration: { ...INPUT.provider_configuration, version: "2" },
+        },
+      ],
       ["test.adversarial", { ...INPUT, requested_requirements: [{ claim_id: "document.valid" }] }],
     ];
     for (const [providerId, input] of variants) {

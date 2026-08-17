@@ -37,6 +37,7 @@ const migrationFiles = [
   "0007_public_profile_handle_invariants.sql",
   "0008_community_route_slug.sql",
   "0009_gates_v2_foundation.sql",
+  "0010_proof_session_provenance.sql",
 ] as const;
 const migrations: readonly PostgresMigration[] = await Promise.all(
   migrationFiles.map(async (version) => {
@@ -105,6 +106,7 @@ function proofSession(
       rp_scope: "pirate.example",
     },
     request_mode: "dynamic",
+    provider_configuration: { kind: "dynamic", reference: "test-query", version: "1" },
     requested_requirements: [
       { claim_id: "credential.subject_unique" },
       { claim_id: "document.valid" },
@@ -124,18 +126,23 @@ async function insertSession(admin: Client, session: ProofSession): Promise<void
   if (scope.kind !== "named") throw new Error("test session must use a named scope");
   await admin.query({
     text: `INSERT INTO proof_sessions (
-      proof_session_id, actor_id, intent_id, request_hash, provider_id, method, issuer,
+      proof_session_id, actor_id, intent_id, request_hash, provider_id,
+      provider_configuration_kind, provider_configuration_ref,
+      provider_configuration_version, method, issuer,
       scope_kind, issuer_rp_scope, issuer_rp_action_scope, request_mode, protocol_version,
       environment, status, requested_requirements, requested_claim_ids, subject_binding_intent,
       started_at, expires_at, upstream_session_ref
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'pending',
-      $14::jsonb, $15::jsonb, $16, $17, $18, $19)`,
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
+      $16, 'pending', $17::jsonb, $18::jsonb, $19, $20, $21, $22)`,
     values: [
       session.id,
       session.actor_id,
       session.intent_id,
       session.request_hash,
       session.provider_id,
+      session.provider_configuration.kind,
+      session.provider_configuration.reference,
+      session.provider_configuration.version,
       session.method,
       scope.issuer,
       scope.scope_semantics,
@@ -180,6 +187,7 @@ function evidenceBundle(session: ProofSession, evidenceHash: string): EvidenceBu
         issuer: "test.complete",
         method: "document",
         scope: session.scope,
+        provider_configuration: session.provider_configuration,
         protocol_version: "complete-v1",
         environment: "test",
         provenance_kind: "proof_session",
