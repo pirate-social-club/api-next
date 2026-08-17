@@ -36,21 +36,36 @@ export type VerificationCallbackFailure =
 function decodeInput(
   input: unknown,
 ): Effect.Effect<HandleVerificationCallbackInput, VerificationCallbackRejected> {
-  const decoded = Schema.decodeUnknownOption(HandleVerificationCallbackInput)(input);
-  if (
-    Option.isNone(decoded) ||
-    decoded.value.provider_id.trim() !== decoded.value.provider_id ||
-    Object.keys(decoded.value.headers).some((name) => name !== name.toLowerCase())
-  ) {
+  const decoded = Schema.decodeUnknownOption(HandleVerificationCallbackInput)(
+    normalizeCallbackInput(input),
+  );
+  if (Option.isNone(decoded) || decoded.value.provider_id.trim() !== decoded.value.provider_id) {
     return Effect.fail(new VerificationCallbackRejected({ reason: "invalid" }));
   }
   return Effect.succeed(decoded.value);
 }
 
+function normalizeCallbackInput(input: unknown): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  const record = input as Readonly<Record<string, unknown>>;
+  const rawHeaders = record.headers;
+  if (typeof rawHeaders !== "object" || rawHeaders === null || Array.isArray(rawHeaders)) {
+    return input;
+  }
+  const headers: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(rawHeaders)) {
+    const normalized = name.toLowerCase();
+    if (Object.hasOwn(headers, normalized)) return undefined;
+    headers[normalized] = value;
+  }
+  return { ...record, headers };
+}
+
 /**
- * Authenticate a provider callback before resolving local session identity,
- * then delegate to the same idempotent transactional completion path used by
- * authenticated client-result ceremonies.
+ * Resolve callback trust according to the provider manifest, then delegate to
+ * the same idempotent transactional completion path used by authenticated
+ * client-result ceremonies. Signed envelopes authenticate before lookup;
+ * session-bound proofs only disclose an opaque session ID before completion.
  */
 export const handleVerificationCallback = Effect.fn("handleVerificationCallback")(function* (
   untrustedInput: unknown,
@@ -58,11 +73,20 @@ export const handleVerificationCallback = Effect.fn("handleVerificationCallback"
 ): Effect.fn.Return<CompleteVerificationResult, VerificationCallbackFailure> {
   const input = yield* decodeInput(untrustedInput);
   const provider = yield* services.registry.resolve(input.provider_id);
-  if (provider.verifyCallback === undefined) {
+  const resolveCallback =
+    provider.manifest.callback_mode === "signed_envelope"
+      ? provider.verifyCallback
+      : provider.manifest.callback_mode === "session_bound_proof"
+        ? provider.resolveCallback
+        : undefined;
+  if (resolveCallback === undefined) {
     return yield* new VerificationCallbackRejected({ reason: "unsupported" });
   }
 
-  const callback = yield* provider.verifyCallback({
+  // Signed envelopes authenticate before lookup. Session-bound proofs only
+  // extract an opaque high-entropy ID here; completeVerification performs the
+  // cryptographic verification after loading the stored session.
+  const callback = yield* resolveCallback({
     raw_body: input.raw_body,
     headers: input.headers,
   });

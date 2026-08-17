@@ -13,6 +13,19 @@ import {
 } from "@pirate/domain/verification";
 import { Data, type Effect, Schema } from "effect";
 
+/** Credentials never cross the public callback boundary. */
+export const VERIFICATION_CALLBACK_CREDENTIAL_HEADERS = new Set([
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  "set-cookie",
+  "x-api-key",
+  "x-auth-token",
+  "cf-access-jwt-assertion",
+  "cf-access-client-id",
+  "cf-access-client-secret",
+]);
+
 /**
  * A presentation is the only provider output exposed to a client. Provider
  * SDK response objects stay inside the adapter and never cross this boundary.
@@ -215,6 +228,10 @@ export interface VerificationProviderAdapter {
   ) => Effect.Effect<EvidenceBundle, VerificationProviderFailure>;
   /** Optional signed-callback transport. Client-result providers omit it. */
   readonly verifyCallback?: (
+    input: VerificationProviderCallbackInput,
+  ) => Effect.Effect<VerificationProviderCallbackResolution, VerificationProviderFailure>;
+  /** Session-bound providers structurally extract an opaque proof/session ID. */
+  readonly resolveCallback?: (
     input: VerificationProviderCallbackInput,
   ) => Effect.Effect<VerificationProviderCallbackResolution, VerificationProviderFailure>;
 }

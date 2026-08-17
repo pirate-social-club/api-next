@@ -41,6 +41,9 @@ const SELF_ENTERPRISE_CLAIMS = [
 export const SELF_ENTERPRISE_MANIFEST: Schema.Schema.Type<typeof ProofProviderManifest> = {
   provider_id: SELF_ENTERPRISE_PROVIDER_ID,
   manifest_version: "1",
+  operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 5000, callback_ms: 5000 },
+  callback_mode: "none",
+  callback_header_allowlist: [],
   protocol_versions: [SELF_ENTERPRISE_PROTOCOL_VERSION],
   environments: ["test", "development", "staging", "production"],
   supported_methods: ["document"],

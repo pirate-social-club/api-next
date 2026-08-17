@@ -118,6 +118,31 @@ export const ProviderClaimCapability = Schema.Struct({
 });
 export type ProviderClaimCapability = Schema.Schema.Type<typeof ProviderClaimCapability>;
 
+const PositiveMilliseconds = Schema.Int.check(
+  Schema.makeFilter((value) =>
+    value > 0 && value <= 600_000
+      ? undefined
+      : "Expected a positive millisecond deadline no larger than ten minutes",
+  ),
+);
+
+/** Every provider operation has a finite, manifest-declared deadline. */
+export const ProviderOperationDeadlines = Schema.Struct({
+  plan_ms: PositiveMilliseconds,
+  start_ms: PositiveMilliseconds,
+  complete_ms: PositiveMilliseconds,
+  callback_ms: PositiveMilliseconds,
+});
+export type ProviderOperationDeadlines = Schema.Schema.Type<typeof ProviderOperationDeadlines>;
+
+/** Callback trust is explicit: signed envelopes authenticate before lookup. */
+export const VerificationCallbackMode = Schema.Literals([
+  "none",
+  "signed_envelope",
+  "session_bound_proof",
+]);
+export type VerificationCallbackMode = Schema.Schema.Type<typeof VerificationCallbackMode>;
+
 /**
  * Providers must declare whether a subject key is scoped to an issuer and RP,
  * to an issuer/RP/action tuple, or is not produced at all.
@@ -224,6 +249,9 @@ export const CANONICAL_CLAIM_CATALOG: readonly ClaimCatalogEntry[] = [
 export const ProofProviderManifest = Schema.Struct({
   provider_id: Schema.NonEmptyString,
   manifest_version: Schema.NonEmptyString,
+  operation_deadlines: ProviderOperationDeadlines,
+  callback_mode: VerificationCallbackMode,
+  callback_header_allowlist: Schema.Array(Schema.NonEmptyString),
   protocol_versions: Schema.Array(Schema.NonEmptyString),
   environments: Schema.Array(Schema.NonEmptyString),
   supported_methods: Schema.Array(Schema.NonEmptyString),

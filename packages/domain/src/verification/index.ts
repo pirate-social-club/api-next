@@ -21,10 +21,12 @@ export {
   ProofProviderManifest,
   ProviderClaimCapability,
   ProviderConfigurationRef,
+  ProviderOperationDeadlines,
   ScopeRequirement,
   SubjectBindingIntent,
   SubjectKeyScopeSemantics,
   SubjectScope,
+  VerificationCallbackMode,
   VerificationRequestMode,
 } from "./claims.ts";
 export {

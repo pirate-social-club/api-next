@@ -27,6 +27,9 @@ function provider(
   const manifest: ProofProviderManifest = {
     provider_id,
     manifest_version: "1",
+    operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 5000, callback_ms: 5000 },
+    callback_mode: "none",
+    callback_header_allowlist: [],
     protocol_versions: ["test-v1"],
     environments: ["test"],
     supported_methods: ["document"],

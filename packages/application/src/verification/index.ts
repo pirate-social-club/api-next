@@ -70,7 +70,10 @@ export type {
   StartVerificationResult,
   StartVerificationServices,
   VerificationIntentResolver,
-  VerificationSessionStartCommitOutcome,
+  VerificationSessionStartFinalizeOutcome,
+  VerificationSessionStartReservation,
+  VerificationSessionStartReservationInput,
+  VerificationSessionStartReservationOutcome,
   VerificationSessionStartStore,
 } from "./start.ts";
 export {

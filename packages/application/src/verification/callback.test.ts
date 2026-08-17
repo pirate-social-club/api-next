@@ -1,12 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import { CompleteVerificationCallback } from "@pirate/contracts";
 import type {
   EvidenceBundle,
   ProofProviderManifest,
   ProofSession,
 } from "@pirate/domain/verification";
-import { Cause, Effect, Exit, Result } from "effect";
+import { Cause, Effect, Exit, Result, Schema } from "effect";
 import type { VerificationProviderAdapter } from "./adapter.ts";
-import { handleVerificationCallback, VerificationCallbackRejected } from "./callback.ts";
+import {
+  HandleVerificationCallbackInput,
+  handleVerificationCallback,
+  VerificationCallbackRejected,
+} from "./callback.ts";
 import type { StoredVerificationCompletion, VerificationCompletionStore } from "./completion.ts";
 import { makeVerificationProviderRegistry } from "./registry.ts";
 
@@ -15,6 +20,9 @@ const RESULT_HASH = "a".repeat(64);
 const manifest: ProofProviderManifest = {
   provider_id: "test.callback",
   manifest_version: "1",
+  operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 5000, callback_ms: 5000 },
+  callback_mode: "signed_envelope",
+  callback_header_allowlist: ["webhook-signature"],
   protocol_versions: ["callback-v1"],
   environments: ["test"],
   supported_methods: ["document"],
@@ -86,8 +94,11 @@ function bundle(proofSession: ProofSession): EvidenceBundle {
 }
 
 function adapterFor(proofSession: ProofSession, callback = true): VerificationProviderAdapter {
+  const adapterManifest = callback
+    ? manifest
+    : { ...manifest, callback_mode: "none" as const, callback_header_allowlist: [] };
   return {
-    manifest,
+    manifest: adapterManifest,
     plan: () => Effect.die("plan is outside this use case"),
     start: () => Effect.die("start is outside this use case"),
     complete: ({ submission }) => {
@@ -127,6 +138,21 @@ function failureOf(exit: Exit.Exit<unknown, unknown>): unknown {
 }
 
 describe("verification provider callback", () => {
+  test("keeps the HTTP callback envelope and application callback schema in parity", () => {
+    const input = {
+      provider_id: manifest.provider_id,
+      raw_body: '{"signed":true}',
+      headers: { "webhook-signature": "sig", "cf-ray": "trace" },
+    };
+    const request = CompleteVerificationCallback.request;
+    if (request === undefined || (typeof request === "object" && !("headers" in request))) {
+      throw new Error("callback request schema is missing headers");
+    }
+    expect(Schema.is(HandleVerificationCallbackInput)(input)).toBe(true);
+    expect(Schema.is(request.headers as never)(input.headers)).toBe(true);
+    expect(Schema.is(HandleVerificationCallbackInput)({ ...input, raw_body: "" })).toBe(false);
+  });
+
   test("authenticates the exact callback before deriving actor identity and completing", async () => {
     const proofSession = session();
     const registry = await Effect.runPromise(
@@ -208,5 +234,96 @@ describe("verification provider callback", () => {
       ),
     );
     expect(failureOf(exit)).toEqual(new VerificationCallbackRejected({ reason: "unavailable" }));
+  });
+
+  test("strips credential and unlisted headers before provider authentication", async () => {
+    let observedHeaders: Record<string, string> | undefined;
+    const proofSession = session();
+    const adapter = adapterFor(proofSession);
+    const registry = await Effect.runPromise(
+      makeVerificationProviderRegistry([
+        {
+          ...adapter,
+          verifyCallback: (input) => {
+            observedHeaders = input.headers;
+            return adapter.verifyCallback?.(input) ?? Effect.die("missing callback");
+          },
+        },
+      ]),
+    );
+    const exit = await Effect.runPromiseExit(
+      handleVerificationCallback(
+        {
+          provider_id: manifest.provider_id,
+          raw_body: ' {\n  "signed": true\n} ',
+          headers: {
+            Authorization: "Bearer secret",
+            "WebHook-Signature": "sig",
+            "CF-Access-Client-Secret": "internal-secret",
+            "cf-ray": "ordinary-cloudflare-header",
+          },
+        },
+        {
+          registry,
+          store: {
+            load: () => Effect.succeed(stored(proofSession)),
+            commit: (input) =>
+              Effect.succeed({ kind: "committed", result_hash: input.result_hash }),
+          },
+          hasher: { hash: () => Effect.succeed(RESULT_HASH) },
+        },
+      ),
+    );
+    expect(exit._tag).toBe("Success");
+    expect(observedHeaders).toEqual({ "webhook-signature": "sig" });
+  });
+
+  test("session-bound proofs resolve an opaque ID before lookup and verify after lookup", async () => {
+    const proofSession = session();
+    const sessionBoundManifest: ProofProviderManifest = {
+      ...manifest,
+      callback_mode: "session_bound_proof",
+      callback_header_allowlist: ["proof-signature"],
+    };
+    const base = adapterFor(proofSession, false);
+    const registry = await Effect.runPromise(
+      makeVerificationProviderRegistry([
+        {
+          ...base,
+          manifest: sessionBoundManifest,
+          resolveCallback: ({ raw_body }) =>
+            Effect.succeed({
+              proof_session_id: raw_body,
+              idempotency_key: "proof-1",
+              submission: {
+                channel: "provider_callback" as const,
+                payload: { proof: "opaque" },
+              },
+            }),
+        },
+      ]),
+    );
+    const result = await Effect.runPromise(
+      handleVerificationCallback(
+        {
+          provider_id: sessionBoundManifest.provider_id,
+          raw_body: proofSession.id,
+          headers: { "proof-signature": "present" },
+        },
+        {
+          registry,
+          store: {
+            load: ({ proof_session_id }) => {
+              expect(proof_session_id).toBe(proofSession.id);
+              return Effect.succeed(stored(proofSession));
+            },
+            commit: (input) =>
+              Effect.succeed({ kind: "committed", result_hash: input.result_hash }),
+          },
+          hasher: { hash: () => Effect.succeed(RESULT_HASH) },
+        },
+      ),
+    );
+    expect(result).toMatchObject({ proof_session_id: proofSession.id, replayed: false });
   });
 });

@@ -23,6 +23,9 @@ import { Effect, Schema } from "effect";
 export const FAKE_PROVIDER_MANIFEST: ProofProviderManifest = {
   provider_id: "test.fake",
   manifest_version: "1",
+  operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 5000, callback_ms: 5000 },
+  callback_mode: "none",
+  callback_header_allowlist: [],
   protocol_versions: ["fake-v2"],
   environments: ["test"],
   supported_methods: ["document"],
@@ -40,6 +43,9 @@ export const FAKE_PROVIDER_MANIFEST: ProofProviderManifest = {
 export const NO_SUBJECT_FAKE_PROVIDER_MANIFEST: ProofProviderManifest = {
   provider_id: "test.fake.no-subject",
   manifest_version: "1",
+  operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 5000, callback_ms: 5000 },
+  callback_mode: "none",
+  callback_header_allowlist: [],
   protocol_versions: ["fake-v2"],
   environments: ["test"],
   supported_methods: ["document"],
@@ -57,7 +63,7 @@ export type FakeProviderMode =
   | "throw-start"
   | "defect-complete"
   | "no-subject"
-  | "undeclared-output"
+  | "unrequested-output"
   | "undeclared-assurance"
   | "duplicate-assertion-id"
   | "invalid-binding-reference"
@@ -235,7 +241,7 @@ function bundleFor(
   const environment = mode === "environment-mismatch" ? "production" : session.environment;
   const requested = [...session.requested_claim_ids];
   const claims: readonly CanonicalClaimIdentifier[] =
-    mode === "undeclared-output" ? [...requested, "age.minimum"] : requested;
+    mode === "unrequested-output" ? [...requested, "age.minimum"] : requested;
   const assertions: EvidenceBundle["assertions"] = claims.map((claim, index) =>
     assertionFor({
       claim,
@@ -328,9 +334,17 @@ export function makeFakeVerificationProvider(
   options: FakeProviderOptions = {},
 ): VerificationProviderAdapter {
   const mode = options.mode ?? "valid";
-  const manifest =
+  const baseManifest =
     options.manifest ??
     (mode === "no-subject" ? NO_SUBJECT_FAKE_PROVIDER_MANIFEST : FAKE_PROVIDER_MANIFEST);
+  const manifest =
+    options.verifyCallback === undefined
+      ? baseManifest
+      : {
+          ...baseManifest,
+          callback_mode: "signed_envelope" as const,
+          callback_header_allowlist: ["webhook-signature"],
+        };
   const transport = options.transport ?? makeFakeVerificationTransport({ manifest, mode });
   return {
     manifest,

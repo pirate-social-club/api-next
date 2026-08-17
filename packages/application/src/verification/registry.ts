@@ -14,6 +14,7 @@ import {
 import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import {
   ProviderSessionStart,
+  VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
   type VerificationProviderAdapter,
   VerificationProviderCallbackInput,
   VerificationProviderCallbackResolution,
@@ -33,6 +34,10 @@ export type VerificationProviderManifestField =
   | "schema"
   | "provider_id"
   | "manifest_version"
+  | "operation_deadlines"
+  | "callback_mode"
+  | "callback_header_allowlist"
+  | "callback_seam"
   | "protocol_versions"
   | "environments"
   | "supported_methods"
@@ -88,9 +93,46 @@ function nonBlankStrings(values: readonly string[]): boolean {
   return values.every((value) => value.length > 0 && value.trim() === value);
 }
 
+const callbackHeaderName = /^[a-z0-9!#$%&'*+.^_`|~-]+$/u;
+
+type CallbackCredentialHeaderOptions = Readonly<{
+  readonly callbackCredentialHeaders?: readonly string[] | ReadonlySet<string>;
+}>;
+
+function credentialHeaderSet(
+  extra: readonly string[] | ReadonlySet<string> | undefined,
+): ReadonlySet<string> {
+  const headers = new Set(VERIFICATION_CALLBACK_CREDENTIAL_HEADERS);
+  for (const name of extra ?? []) headers.add(name.toLowerCase());
+  return headers;
+}
+
+function callbackManifestValid(
+  manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
+  credentials: ReadonlySet<string> = VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
+): VerificationProviderManifestField | undefined {
+  if (
+    !uniqueStrings(manifest.callback_header_allowlist) ||
+    !manifest.callback_header_allowlist.every(
+      (name) =>
+        name.length <= 128 &&
+        name === name.toLowerCase() &&
+        callbackHeaderName.test(name) &&
+        !credentials.has(name),
+    )
+  ) {
+    return "callback_header_allowlist";
+  }
+  if (manifest.callback_mode === "none" && manifest.callback_header_allowlist.length !== 0) {
+    return "callback_mode";
+  }
+  return undefined;
+}
+
 /** Decode and validate provider metadata before it enters the registry. */
 export function validateProofProviderManifest(
   input: unknown,
+  options: CallbackCredentialHeaderOptions = {},
 ): Effect.Effect<
   Schema.Schema.Type<typeof ProofProviderManifest>,
   VerificationProviderManifestInvalid
@@ -101,6 +143,13 @@ export function validateProofProviderManifest(
     catch: () => invalid(provider_id, "schema"),
   }).pipe(
     Effect.flatMap((manifest) => {
+      const callbackError = callbackManifestValid(
+        manifest,
+        credentialHeaderSet(options.callbackCredentialHeaders),
+      );
+      if (callbackError !== undefined) {
+        return Effect.fail(invalid(provider_id, callbackError));
+      }
       if (manifest.provider_id.trim() !== manifest.provider_id) {
         return Effect.fail(invalid(provider_id, "provider_id"));
       }
@@ -357,6 +406,97 @@ function safeAdapterFailure(
   return new VerificationProviderInvalidResponse({ provider_id, operation });
 }
 
+function unavailable(
+  provider_id: string,
+  operation: "plan" | "start" | "complete" | "callback",
+): VerificationProviderUnavailable {
+  return new VerificationProviderUnavailable({ provider_id, operation });
+}
+
+function sanitizeCallbackHeaders(
+  manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
+  headers: Readonly<Record<string, string>>,
+  credentials: ReadonlySet<string>,
+): Readonly<Record<string, string>> {
+  const allowed = new Set(manifest.callback_header_allowlist);
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name]) => allowed.has(name) && !credentials.has(name)),
+  );
+}
+
+function callbackSeamValid(
+  adapter: VerificationProviderAdapter,
+  manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
+): boolean {
+  const hasVerify = adapter.verifyCallback !== undefined;
+  const hasResolve = adapter.resolveCallback !== undefined;
+  return (
+    (manifest.callback_mode === "none" && !hasVerify && !hasResolve) ||
+    (manifest.callback_mode === "signed_envelope" && hasVerify && !hasResolve) ||
+    (manifest.callback_mode === "session_bound_proof" && !hasVerify && hasResolve)
+  );
+}
+
+function normalizeCallbackInput(input: unknown): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  const record = input as Readonly<Record<string, unknown>>;
+  const rawHeaders = record.headers;
+  if (typeof rawHeaders !== "object" || rawHeaders === null || Array.isArray(rawHeaders)) {
+    return input;
+  }
+  const headers: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(rawHeaders)) {
+    const normalized = name.toLowerCase();
+    if (Object.hasOwn(headers, normalized)) return undefined;
+    headers[normalized] = value;
+  }
+  return { ...record, headers };
+}
+
+function guardCallback(
+  implementation: NonNullable<VerificationProviderAdapter["verifyCallback"]>,
+  manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
+  credentials: ReadonlySet<string>,
+): NonNullable<VerificationProviderAdapter["verifyCallback"]> {
+  return (untrustedInput) => {
+    const decodedInput = Schema.decodeUnknownOption(VerificationProviderCallbackInput)(
+      normalizeCallbackInput(untrustedInput),
+    );
+    if (Option.isNone(decodedInput)) {
+      return Effect.fail(
+        new VerificationProviderRejected({
+          provider_id: manifest.provider_id,
+          operation: "callback",
+        }),
+      );
+    }
+    const sanitized = {
+      ...decodedInput.value,
+      headers: sanitizeCallbackHeaders(manifest, decodedInput.value.headers, credentials),
+    };
+    return Effect.suspend(() => implementation(sanitized)).pipe(
+      Effect.timeout(manifest.operation_deadlines.callback_ms),
+      Effect.catchTag("TimeoutError", () =>
+        Effect.fail(unavailable(manifest.provider_id, "callback")),
+      ),
+      Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "callback", error)),
+      Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "callback"))),
+      Effect.flatMap((result) =>
+        Effect.try({
+          try: () => Schema.decodeUnknownSync(VerificationProviderCallbackResolution)(result),
+          catch: () => invalidResponse(manifest.provider_id, "callback"),
+        }),
+      ),
+      Effect.filterOrFail(
+        (result) =>
+          result.proof_session_id.trim() === result.proof_session_id &&
+          result.idempotency_key.trim() === result.idempotency_key,
+        () => invalidResponse(manifest.provider_id, "callback"),
+      ),
+    );
+  };
+}
+
 function invalidResponse(
   provider_id: string,
   operation: "plan" | "start" | "complete" | "callback",
@@ -552,6 +692,7 @@ function guardAdapter(
   adapter: VerificationProviderAdapter,
   manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
   now: () => number,
+  credentials: ReadonlySet<string>,
 ): VerificationProviderAdapter {
   const guarded: VerificationProviderAdapter = {
     manifest,
@@ -571,6 +712,10 @@ function guardAdapter(
         );
       }
       return Effect.suspend(() => adapter.plan(decodedInput.value)).pipe(
+        Effect.timeout(manifest.operation_deadlines.plan_ms),
+        Effect.catchTag("TimeoutError", () =>
+          Effect.fail(unavailable(manifest.provider_id, "plan")),
+        ),
         Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "plan", error)),
         Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "plan"))),
         Effect.flatMap((result) =>
@@ -629,7 +774,14 @@ function guardAdapter(
               operation: "start",
             }),
         ),
-        Effect.flatMap(() => Effect.suspend(() => adapter.start(input))),
+        Effect.flatMap(() =>
+          Effect.suspend(() => adapter.start(input)).pipe(
+            Effect.timeout(manifest.operation_deadlines.start_ms),
+            Effect.catchTag("TimeoutError", () =>
+              Effect.fail(unavailable(manifest.provider_id, "start")),
+            ),
+          ),
+        ),
         Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "start", error)),
         Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "start"))),
         Effect.flatMap((result) => validateStartOutput(manifest, input, result, now())),
@@ -652,45 +804,24 @@ function guardAdapter(
       }
       const input = decodedInput.value;
       return Effect.suspend(() => adapter.complete(input)).pipe(
+        Effect.timeout(manifest.operation_deadlines.complete_ms),
+        Effect.catchTag("TimeoutError", () =>
+          Effect.fail(unavailable(manifest.provider_id, "complete")),
+        ),
         Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "complete", error)),
         Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "complete"))),
         Effect.flatMap((result) => validateBundle(manifest, input, result)),
       );
     },
   };
-  const verifyCallback = adapter.verifyCallback;
-  if (verifyCallback === undefined) return guarded;
   return {
     ...guarded,
-    verifyCallback: (untrustedInput) => {
-      const decodedInput = Schema.decodeUnknownOption(VerificationProviderCallbackInput)(
-        untrustedInput,
-      );
-      if (Option.isNone(decodedInput)) {
-        return Effect.fail(
-          new VerificationProviderRejected({
-            provider_id: manifest.provider_id,
-            operation: "callback",
-          }),
-        );
-      }
-      return Effect.suspend(() => verifyCallback(decodedInput.value)).pipe(
-        Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "callback", error)),
-        Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "callback"))),
-        Effect.flatMap((result) =>
-          Effect.try({
-            try: () => Schema.decodeUnknownSync(VerificationProviderCallbackResolution)(result),
-            catch: () => invalidResponse(manifest.provider_id, "callback"),
-          }),
-        ),
-        Effect.filterOrFail(
-          (result) =>
-            result.proof_session_id.trim() === result.proof_session_id &&
-            result.idempotency_key.trim() === result.idempotency_key,
-          () => invalidResponse(manifest.provider_id, "callback"),
-        ),
-      );
-    },
+    ...(adapter.verifyCallback === undefined
+      ? {}
+      : { verifyCallback: guardCallback(adapter.verifyCallback, manifest, credentials) }),
+    ...(adapter.resolveCallback === undefined
+      ? {}
+      : { resolveCallback: guardCallback(adapter.resolveCallback, manifest, credentials) }),
   };
 }
 
@@ -709,6 +840,8 @@ export class VerificationProviderRegistry extends Context.Service<
 export interface VerificationProviderRegistryOptions {
   /** Injectable for deterministic expiry tests and request-scoped clocks. */
   readonly now?: () => number;
+  /** Additional deployment-specific credential headers are always stripped. */
+  readonly callbackCredentialHeaders?: readonly string[] | ReadonlySet<string>;
 }
 
 export function makeVerificationProviderRegistry(
@@ -717,15 +850,21 @@ export function makeVerificationProviderRegistry(
 ): Effect.Effect<VerificationProviderRegistryService, VerificationProviderRegistryError> {
   return Effect.gen(function* () {
     const now = options.now ?? Date.now;
+    const credentials = credentialHeaderSet(options.callbackCredentialHeaders);
     const registered = new Map<string, VerificationProviderAdapter>();
     for (const adapter of adapters) {
-      const manifest = yield* validateProofProviderManifest(adapter.manifest);
+      const manifest = yield* validateProofProviderManifest(adapter.manifest, {
+        callbackCredentialHeaders: credentials,
+      });
+      if (!callbackSeamValid(adapter, manifest)) {
+        return yield* Effect.fail(invalid(manifest.provider_id, "callback_seam"));
+      }
       if (registered.has(manifest.provider_id)) {
         return yield* Effect.fail(
           new VerificationProviderDuplicate({ provider_id: manifest.provider_id }),
         );
       }
-      registered.set(manifest.provider_id, guardAdapter(adapter, manifest, now));
+      registered.set(manifest.provider_id, guardAdapter(adapter, manifest, now, credentials));
     }
     return {
       list: () => [...registered.values()].map((adapter) => adapter.manifest),

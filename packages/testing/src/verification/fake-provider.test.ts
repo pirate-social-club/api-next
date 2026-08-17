@@ -140,6 +140,20 @@ describe("verification provider adapter boundary", () => {
         },
       },
       {
+        name: "plan-only transport",
+        makeTransport: () => recordedTransport("valid"),
+        makeAdapter: (transport) => makeFakeVerificationProvider({ transport }),
+        startInput: FAKE_START_INPUT,
+        submission,
+        operation: "plan",
+        expected: "success",
+        assertTransport: (transport) => {
+          expect(transport.plans).toHaveLength(1);
+          expect(transport.starts).toEqual([]);
+          expect(transport.completions).toEqual([]);
+        },
+      },
+      {
         name: "malformed translated evidence",
         makeTransport: () => recordedTransport("duplicate-assertion-id"),
         makeAdapter: (transport) => makeFakeVerificationProvider({ transport }),
@@ -166,6 +180,39 @@ describe("verification provider adapter boundary", () => {
           expect(transport.plans).toHaveLength(1);
           expect(transport.starts).toEqual([FAKE_START_INPUT]);
           expect(transport.completions).toEqual([submission]);
+        },
+      },
+      {
+        name: "expired session after successful start",
+        makeTransport: () => recordedTransport("valid"),
+        makeAdapter: (transport) => makeFakeVerificationProvider({ transport }),
+        startInput: FAKE_START_INPUT,
+        submission,
+        operation: "complete",
+        tamperSession: (session) => ({
+          ...session,
+          expires_at: "2026-08-17T00:00:00.000Z",
+        }),
+        expected: "VerificationProviderRejected",
+        assertTransport: (transport) => {
+          expect(transport.plans).toHaveLength(1);
+          expect(transport.starts).toEqual([FAKE_START_INPUT]);
+          expect(transport.completions).toEqual([]);
+        },
+      },
+      {
+        name: "foreign session after successful start",
+        makeTransport: () => recordedTransport("valid"),
+        makeAdapter: (transport) => makeFakeVerificationProvider({ transport }),
+        startInput: FAKE_START_INPUT,
+        submission,
+        operation: "complete",
+        tamperSession: (session) => ({ ...session, provider_id: "other.provider" }),
+        expected: "VerificationProviderRejected",
+        assertTransport: (transport) => {
+          expect(transport.plans).toHaveLength(1);
+          expect(transport.starts).toEqual([FAKE_START_INPUT]);
+          expect(transport.completions).toEqual([]);
         },
       },
     ]);
@@ -277,7 +324,7 @@ describe("verification provider adapter boundary", () => {
 
   test("rejects unrequested output and broken binding references", async () => {
     for (const mode of [
-      "undeclared-output",
+      "unrequested-output",
       "undeclared-assurance",
       "duplicate-assertion-id",
       "invalid-binding-reference",

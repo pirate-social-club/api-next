@@ -13,12 +13,19 @@ import {
   type VerificationProviderStartInput,
   VerificationProviderUnavailable,
 } from "./adapter.ts";
-import { makeVerificationProviderRegistry } from "./registry.ts";
+import {
+  makeVerificationProviderRegistry,
+  VerificationProviderManifestInvalid,
+  validateProofProviderManifest,
+} from "./registry.ts";
 
 const NOW = Date.parse("2026-08-17T00:00:00.000Z");
 const MANIFEST: ProofProviderManifest = {
   provider_id: "test.adversarial",
   manifest_version: "1",
+  operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 5000, callback_ms: 5000 },
+  callback_mode: "none",
+  callback_header_allowlist: [],
   protocol_versions: ["test-v1"],
   environments: ["test"],
   supported_methods: ["document"],
@@ -230,6 +237,100 @@ async function providerFor(adapter: VerificationProviderAdapter) {
 }
 
 describe("verification registry adversarial corpus", () => {
+  test("validates callback trust metadata without requiring callback headers", async () => {
+    const signedWithoutHeaders = await Effect.runPromise(
+      validateProofProviderManifest({ ...MANIFEST, callback_mode: "signed_envelope" }),
+    );
+    expect(signedWithoutHeaders.callback_header_allowlist).toEqual([]);
+
+    const credentialHeader = await Effect.runPromiseExit(
+      validateProofProviderManifest({
+        ...MANIFEST,
+        callback_mode: "signed_envelope",
+        callback_header_allowlist: ["cf-access-client-secret"],
+      }),
+    );
+    expect(failureOf(credentialHeader)).toEqual(
+      new VerificationProviderManifestInvalid({
+        provider_id: MANIFEST.provider_id,
+        field: "callback_header_allowlist",
+      }),
+    );
+
+    const noneWithHeaders = await Effect.runPromiseExit(
+      validateProofProviderManifest({
+        ...MANIFEST,
+        callback_header_allowlist: ["webhook-signature"],
+      }),
+    );
+    expect(failureOf(noneWithHeaders)).toEqual(
+      new VerificationProviderManifestInvalid({
+        provider_id: MANIFEST.provider_id,
+        field: "callback_mode",
+      }),
+    );
+
+    const oversizedDeadline = await Effect.runPromiseExit(
+      validateProofProviderManifest({
+        ...MANIFEST,
+        operation_deadlines: { ...MANIFEST.operation_deadlines, start_ms: 600_001 },
+      }),
+    );
+    expect(failureOf(oversizedDeadline)).toEqual(
+      new VerificationProviderManifestInvalid({
+        provider_id: MANIFEST.provider_id,
+        field: "schema",
+      }),
+    );
+
+    const customCredential = await Effect.runPromiseExit(
+      makeVerificationProviderRegistry(
+        [
+          {
+            ...adapterFor({}, undefined, {
+              ...MANIFEST,
+              callback_mode: "signed_envelope",
+              callback_header_allowlist: ["x-internal-auth"],
+            }),
+            verifyCallback: () =>
+              Effect.succeed({
+                proof_session_id: "session-1",
+                idempotency_key: "callback-1",
+                submission: { channel: "provider_callback" as const, payload: {} },
+              }),
+          },
+        ],
+        { callbackCredentialHeaders: ["X-Internal-Auth"] },
+      ),
+    );
+    expect(failureOf(customCredential)).toEqual(
+      new VerificationProviderManifestInvalid({
+        provider_id: MANIFEST.provider_id,
+        field: "callback_header_allowlist",
+      }),
+    );
+
+    const seamMismatch = await Effect.runPromiseExit(
+      makeVerificationProviderRegistry([
+        {
+          ...adapterFor({}, undefined, MANIFEST),
+          verifyCallback: () =>
+            Effect.succeed({
+              proof_session_id: "session-1",
+              idempotency_key: "callback-1",
+              submission: { channel: "provider_callback" as const, payload: {} },
+            }),
+        },
+      ]),
+    );
+    expect(failureOf(seamMismatch)).toEqual(
+      new VerificationProviderManifestInvalid({
+        provider_id: MANIFEST.provider_id,
+        field: "callback_seam",
+      }),
+    );
+  });
+
   test("keeps request support distinct from runtime document coverage", async () => {
     const planInput = {
       method: START_INPUT.method,
@@ -399,6 +500,17 @@ describe("verification registry adversarial corpus", () => {
       { ...base, session: { ...base.session, status: "completed" } },
       { ...base, session: { ...base.session, expires_at: "2026-08-17T00:00:00.000Z" } },
       { ...base, session: { ...base.session, provider_id: "other.provider" } },
+      {
+        ...base,
+        session: { ...base.session, scope: { ...base.session.scope, issuer: "other.issuer" } },
+      },
+      {
+        ...base,
+        session: {
+          ...base.session,
+          scope: { kind: "none", issuer: MANIFEST.provider_id },
+        },
+      },
       { ...base, session: { ...base.session, actor_id: "other-user" } },
       { ...base, session: { ...base.session, intent_id: "other-intent" } },
       { ...base, session: { ...base.session, request_hash: "4".repeat(64) } },
@@ -523,8 +635,9 @@ describe("verification registry adversarial corpus", () => {
 
   test("guards optional signed-callback translation independently of completion", async () => {
     let callbackCalls = 0;
+    const callbackManifest = { ...MANIFEST, callback_mode: "signed_envelope" as const };
     const provider = await providerFor({
-      ...adapterFor(),
+      ...adapterFor({}, undefined, callbackManifest),
       verifyCallback: ({ raw_body }) => {
         callbackCalls += 1;
         return Effect.succeed(
@@ -586,6 +699,28 @@ describe("verification registry adversarial corpus", () => {
     }
   });
 
+  test("rejects ledger topology drift and missing subject evidence", async () => {
+    const base = bundleFor();
+    const hostile: readonly unknown[] = [
+      {
+        ...base,
+        binding_groups: [{ id: "binding-1", kind: "same_receipt", evidence_receipt_id: "other" }],
+      },
+      {
+        ...base,
+        receipts: base.receipts.map((receipt) => ({ ...receipt, subject_key_id: "missing" })),
+      },
+      { ...base, subject_keys: [] },
+    ];
+    for (const complete of hostile) {
+      const provider = await providerFor(adapterFor({ complete }));
+      const exit = await Effect.runPromiseExit(
+        provider.complete({ session: sessionFor(), submission: clientSubmission() }),
+      );
+      expect(failureOf(exit)).toBeInstanceOf(VerificationProviderInvalidResponse);
+    }
+  });
+
   test("preserves closed failures and redacts defects at both operations", async () => {
     for (const operation of ["start", "complete"] as const) {
       const unavailable = await providerFor(
@@ -616,5 +751,73 @@ describe("verification registry adversarial corpus", () => {
             );
       expect(failureOf(defectExit)).toBeInstanceOf(VerificationProviderInvalidResponse);
     }
+  });
+
+  test("maps a manifest deadline timeout to provider unavailable", async () => {
+    const manifest: ProofProviderManifest = {
+      ...MANIFEST,
+      operation_deadlines: { ...MANIFEST.operation_deadlines, start_ms: 1 },
+    };
+    const provider = await providerFor({
+      ...adapterFor({}, undefined, manifest),
+      start: () => Effect.never,
+    });
+    const exit = await Effect.runPromiseExit(provider.start(START_INPUT));
+    expect(failureOf(exit)).toEqual(
+      new VerificationProviderUnavailable({
+        provider_id: manifest.provider_id,
+        operation: "start",
+      }),
+    );
+  });
+
+  test("enforces plan, complete, and callback deadlines", async () => {
+    const manifest: ProofProviderManifest = {
+      ...MANIFEST,
+      operation_deadlines: { plan_ms: 1, start_ms: 1, complete_ms: 1, callback_ms: 1 },
+    };
+    const planProvider = await providerFor({
+      ...adapterFor({}, undefined, manifest),
+      plan: () => Effect.never,
+    });
+    expect(failureOf(await Effect.runPromiseExit(planProvider.plan(START_INPUT)))).toEqual(
+      new VerificationProviderUnavailable({ provider_id: manifest.provider_id, operation: "plan" }),
+    );
+
+    const completeProvider = await providerFor({
+      ...adapterFor({}, undefined, manifest),
+      complete: () => Effect.never,
+    });
+    expect(
+      failureOf(
+        await Effect.runPromiseExit(
+          completeProvider.complete({ session: sessionFor(), submission: clientSubmission() }),
+        ),
+      ),
+    ).toEqual(
+      new VerificationProviderUnavailable({
+        provider_id: manifest.provider_id,
+        operation: "complete",
+      }),
+    );
+
+    const callbackManifest = { ...manifest, callback_mode: "signed_envelope" as const };
+    const callbackProvider = await providerFor({
+      ...adapterFor({}, undefined, callbackManifest),
+      verifyCallback: () => Effect.never,
+    });
+    if (callbackProvider.verifyCallback === undefined) throw new Error("callback guard missing");
+    expect(
+      failureOf(
+        await Effect.runPromiseExit(
+          callbackProvider.verifyCallback({ raw_body: "{}", headers: {} }),
+        ),
+      ),
+    ).toEqual(
+      new VerificationProviderUnavailable({
+        provider_id: manifest.provider_id,
+        operation: "callback",
+      }),
+    );
   });
 });
