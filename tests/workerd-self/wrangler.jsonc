@@ -1,0 +1,6 @@
+{
+  "name": "pirate-self-pass-workerd-test",
+  "main": "./entry.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"]
+}
