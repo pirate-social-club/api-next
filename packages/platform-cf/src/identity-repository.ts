@@ -194,6 +194,18 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
             readonly: false,
           });
           yield* transaction.execute({
+            label: "identity.public-handles.redirect-previous",
+            text: `UPDATE public_handle_index
+                      SET status = 'redirect',
+                          redirect_target_handle_id = $2,
+                          updated_at = now()
+                    WHERE owner_user_id = $1
+                      AND status IN ('active', 'redirect')
+                      AND handle_id <> $2`,
+            values: [userId, document.global_handle.global_handle_id],
+            readonly: false,
+          });
+          const currentHandle = yield* transaction.execute({
             label: "identity.public-handles.upsert-current",
             text: `INSERT INTO public_handle_index (
                      handle_id, label_normalized, label_display, status,
@@ -205,7 +217,8 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
                          status = 'active',
                          owner_user_id = EXCLUDED.owner_user_id,
                          redirect_target_handle_id = NULL,
-                         updated_at = now()`,
+                         updated_at = now()
+                   WHERE public_handle_index.owner_user_id = EXCLUDED.owner_user_id`,
             values: [
               document.global_handle.global_handle_id,
               label.normalized,
@@ -214,18 +227,7 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
             ],
             readonly: false,
           });
-          yield* transaction.execute({
-            label: "identity.public-handles.redirect-previous",
-            text: `UPDATE public_handle_index
-                      SET status = 'redirect',
-                          redirect_target_handle_id = $2,
-                          updated_at = now()
-                    WHERE owner_user_id = $1
-                      AND status = 'active'
-                      AND handle_id <> $2`,
-            values: [userId, document.global_handle.global_handle_id],
-            readonly: false,
-          });
+          if (currentHandle.rowCount !== 1) return yield* Effect.fail(invalid());
         }),
       );
     });
