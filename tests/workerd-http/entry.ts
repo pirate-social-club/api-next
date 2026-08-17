@@ -132,6 +132,7 @@ const app = createHttpWorker({
   sessionExchange,
   handlers: {
     CastPostVote: () => ({ post: "post_1", value: 1 }),
+    ClearPostVote: () => ({ post: "post_1", value: null }),
     GetJwks: () => bridge.jwks(),
   },
   profile: ({ principal }) =>

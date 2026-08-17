@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import {
+  castPostVoteInputFrom,
+  clearPostVoteInputFrom,
+  createCommentReplyInputFrom,
+  createPostInputFrom,
   followCommunityInputFrom,
   makeProductHandlers,
   type ProductHandlerServices,
@@ -250,6 +254,222 @@ describe("HTTP product handlers", () => {
         },
       },
     ]);
+  });
+
+  test("maps content mutation paths, bodies, actors, parent resolution, and vote operations", async () => {
+    const observed: unknown[] = [];
+    const handlers = makeProductHandlers(
+      stores({
+        content: {
+          createPost: (input) => {
+            observed.push({ createPost: input });
+            return Effect.succeed({} as never);
+          },
+          resolveComment: (input) => {
+            observed.push({ resolveComment: input });
+            return Effect.succeed({
+              communityId: "community-a",
+              postId: "post-a",
+              commentId: input.commentId,
+            });
+          },
+          createCommentReply: (input) => {
+            observed.push({ createCommentReply: input });
+            return Effect.succeed({} as never);
+          },
+          resolvePost: (input) => {
+            observed.push({ resolvePost: input });
+            return Effect.succeed({ communityId: "community-a", postId: input.postId });
+          },
+          castPostVote: (input) => {
+            observed.push({ castPostVote: input });
+            return Effect.succeed({ post: input.postId, value: input.body.value });
+          },
+          clearPostVote: (input) => {
+            observed.push({ clearPostVote: input });
+            return Effect.succeed({ post: input.postId, value: null });
+          },
+        },
+      }),
+    );
+    const principal = { kind: "user" as const, subject: "user-a" };
+    const postBody = {
+      post_type: "text" as const,
+      idempotency_key: "post-key",
+      body: "hello",
+      authorship_mode: "human_direct" as const,
+      identity_mode: "public" as const,
+    };
+    const replyBody = {
+      body: "reply",
+      idempotency_key: "reply-key",
+      authorship_mode: "human_direct" as const,
+      identity_mode: "public" as const,
+    };
+    const voteBody = { value: -1 as const, altcha: "proof" };
+    const clearBody = { altcha: "proof" };
+
+    expect(
+      createPostInputFrom(
+        request({ params: { communityId: "community-a" }, body: postBody, principal }),
+      ),
+    ).toEqual({
+      communityId: "community-a",
+      actor: { userId: "user-a", kind: "user" },
+      body: postBody,
+    });
+    expect(
+      createCommentReplyInputFrom(
+        request({ params: { commentId: "comment-a" }, body: replyBody, principal }),
+      ),
+    ).toEqual({
+      parentCommentId: "comment-a",
+      actor: { userId: "user-a", kind: "user" },
+      body: replyBody,
+    });
+    expect(
+      castPostVoteInputFrom(request({ params: { postId: "post-a" }, body: voteBody, principal })),
+    ).toEqual({ postId: "post-a", actor: { userId: "user-a", kind: "user" }, body: voteBody });
+    expect(
+      clearPostVoteInputFrom(request({ params: { postId: "post-a" }, body: clearBody, principal })),
+    ).toEqual({ postId: "post-a", actor: { userId: "user-a", kind: "user" }, body: clearBody });
+
+    await handlers.CreatePost(
+      request({ params: { communityId: "community-a" }, body: postBody, principal }),
+    );
+    await handlers.CreateCommentReply(
+      request({ params: { commentId: "comment-a" }, body: replyBody, principal }),
+    );
+    await handlers.CastPostVote(
+      request({ params: { postId: "post-a" }, body: voteBody, principal }),
+    );
+    await handlers.ClearPostVote(
+      request({ params: { postId: "post-a" }, body: clearBody, principal }),
+    );
+
+    expect(observed).toEqual([
+      {
+        createPost: {
+          communityId: "community-a",
+          actor: { userId: "user-a", kind: "user" },
+          body: postBody,
+          idempotencyBodyHash: expect.any(String),
+        },
+      },
+      { resolveComment: { commentId: "comment-a" } },
+      {
+        createCommentReply: {
+          communityId: "community-a",
+          postId: "post-a",
+          parentCommentId: "comment-a",
+          actor: { userId: "user-a", kind: "user" },
+          body: replyBody,
+          idempotencyBodyHash: expect.any(String),
+        },
+      },
+      { resolvePost: { postId: "post-a" } },
+      {
+        castPostVote: {
+          communityId: "community-a",
+          postId: "post-a",
+          actor: { userId: "user-a", kind: "user" },
+          body: voteBody,
+        },
+      },
+      { resolvePost: { postId: "post-a" } },
+      {
+        clearPostVote: {
+          communityId: "community-a",
+          postId: "post-a",
+          actor: { userId: "user-a", kind: "user" },
+          body: clearBody,
+        },
+      },
+    ]);
+  });
+
+  test("fails closed for null, device, and agent principals on every content mutation", async () => {
+    const handlers = makeProductHandlers(stores());
+    const requests = [
+      handlers.CreatePost,
+      handlers.CreateCommentReply,
+      handlers.CastPostVote,
+      handlers.ClearPostVote,
+    ];
+    for (const principal of [
+      null,
+      { kind: "device" as const, subject: "device-a" },
+      { kind: "agent" as const, subject: "agent-a" },
+    ]) {
+      for (const handler of requests) {
+        await expect(handler(request({ principal }))).rejects.toMatchObject({ code: "auth_error" });
+      }
+    }
+  });
+
+  test("preserves repository replay results at the content handler seam", async () => {
+    const replay = {
+      id: "post-replayed",
+      object: "post" as const,
+      community: "community-a",
+      authorship_mode: "human_direct" as const,
+      identity_mode: "public" as const,
+      post_type: "text" as const,
+      status: "processing" as const,
+      visibility: "public" as const,
+      analysis_state: "pending" as const,
+      content_safety_state: "pending" as const,
+      age_gate_policy: "none" as const,
+      created: 1_700_000_000,
+    };
+    const body = { post_type: "text" as const, idempotency_key: "replay-key", body: "hello" };
+    let replayCalls = 0;
+    const replayHandlers = makeProductHandlers(
+      stores({
+        content: {
+          createPost: () => {
+            replayCalls += 1;
+            return Effect.succeed(replay);
+          },
+        },
+      }),
+    );
+
+    await expect(
+      replayHandlers.CreatePost(
+        request({
+          params: { communityId: "community-a" },
+          body,
+          principal: { kind: "user", subject: "user-a" },
+        }),
+      ),
+    ).resolves.toEqual(replay);
+    expect(replayCalls).toBe(1);
+  });
+
+  test("never invokes content storage for a home-feed request", async () => {
+    let contentCalls = 0;
+    const content = Object.fromEntries(
+      [
+        "resolvePost",
+        "resolveComment",
+        "createPost",
+        "getPost",
+        "createCommentReply",
+        "castPostVote",
+        "clearPostVote",
+      ].map((name) => [
+        name,
+        () => {
+          contentCalls += 1;
+          return Effect.succeed(null);
+        },
+      ]),
+    ) as Partial<ContentStore>;
+    const handlers = makeProductHandlers(stores({ content }));
+
+    await expect(handlers.GetPublicHomeFeed(request({ principal: null }))).resolves.toEqual(feed);
+    expect(contentCalls).toBe(0);
   });
 
   test("rejects device and agent principals for every community operation", async () => {

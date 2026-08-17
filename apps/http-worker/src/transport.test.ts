@@ -6,6 +6,45 @@ import { createHttpWorker, type EndpointHandler, withEndpointResult } from "./tr
 
 const feed = { items: [], top_communities: [], next_cursor: null };
 const vote = { post: "post_1", value: 1 as const };
+const clearedVote = { post: "post_1", value: null };
+const post = {
+  id: "post_1",
+  object: "post" as const,
+  community: "community_1",
+  authorship_mode: "human_direct" as const,
+  identity_mode: "public" as const,
+  post_type: "text" as const,
+  status: "processing" as const,
+  visibility: "public" as const,
+  analysis_state: "pending" as const,
+  content_safety_state: "pending" as const,
+  age_gate_policy: "none" as const,
+  created: 1_700_000_000,
+};
+const comment = {
+  id: "comment_1",
+  object: "comment" as const,
+  community: "community_1",
+  thread_root_post: "post_1",
+  parent_comment: "comment_parent",
+  author_user: "user_1",
+  authorship_mode: "human_direct" as const,
+  identity_mode: "public" as const,
+  anonymous_scope: null,
+  anonymous_label: null,
+  body: "reply",
+  status: "published" as const,
+  depth: 1,
+  direct_reply_count: 0,
+  descendant_count: 0,
+  upvote_count: 0,
+  downvote_count: 0,
+  score: 0,
+  content_hash: null,
+  swarm_body_ref: null,
+  idempotency_key: "reply-key",
+  created: 1_700_000_000,
+};
 
 const sessionServices: SessionExchangeServices = {
   proofVerifier: {
@@ -381,10 +420,85 @@ describe("contracts-generated HTTP worker", () => {
   });
 
   it("returns not_found for an uninstalled route instead of undeclared not_implemented", async () => {
-    const response = await createHttpWorker().request("http://worker.test/posts/post_1");
+    for (const [path, method] of [
+      ["/posts/post_1", "GET"],
+      ["/communities/community_1/posts", "POST"],
+      ["/comments/comment_1/replies", "POST"],
+      ["/posts/post_1/vote", "POST"],
+      ["/posts/post_1/clear_vote", "POST"],
+    ] as const) {
+      const response = await createHttpWorker().request(`http://worker.test${path}`, { method });
 
-    expect(response.status).toBe(404);
-    expect(await response.json()).toMatchObject({ code: "not_found" });
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ code: "not_found" });
+    }
+  });
+
+  it("validates installed content mutation responses through the normal route schemas", async () => {
+    const app = createHttpWorker({
+      handlers: {
+        CreatePost: () => withEndpointResult(post, 201),
+        CreateCommentReply: () => withEndpointResult(comment, 201),
+        CastPostVote: () => vote,
+        ClearPostVote: () => clearedVote,
+      },
+      authenticate: () => ({ kind: "user", subject: "user_1" }),
+      authorize: () => undefined,
+    });
+    const auth = { authorization: "Bearer test", "content-type": "application/json" };
+    const postResponse = await app.request("http://worker.test/communities/community_1/posts", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ post_type: "text", idempotency_key: "post-key", body: "hello" }),
+    });
+    const replyResponse = await app.request("http://worker.test/comments/comment_1/replies", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ body: "reply", idempotency_key: "reply-key" }),
+    });
+    const voteResponse = await app.request("http://worker.test/posts/post_1/vote", {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ value: 1 }),
+    });
+    const clearResponse = await app.request("http://worker.test/posts/post_1/clear_vote", {
+      method: "POST",
+      headers: auth,
+    });
+
+    expect(postResponse.status).toBe(201);
+    expect(await postResponse.json()).toEqual(post);
+    expect(replyResponse.status).toBe(201);
+    expect(await replyResponse.json()).toEqual(comment);
+    expect(voteResponse.status).toBe(200);
+    expect(await voteResponse.json()).toEqual(vote);
+    expect(clearResponse.status).toBe(200);
+    expect(await clearResponse.json()).toEqual(clearedVote);
+  });
+
+  it("passes a declared idempotency conflict through the normal redacted error envelope", async () => {
+    const app = createHttpWorker({
+      handlers: {
+        CreatePost: () => {
+          throw new Conflict({ message: "Idempotency key was already used" });
+        },
+      },
+      authenticate: () => ({ kind: "user", subject: "user_1" }),
+      authorize: () => undefined,
+    });
+    const response = await app.request("http://worker.test/communities/community_1/posts", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ post_type: "text", idempotency_key: "same-key", body: "hello" }),
+    });
+
+    expect(response.status).toBe(409);
+    const body = await response.json();
+    expect(body).toMatchObject({ code: "conflict" });
+    expect(JSON.stringify(body)).not.toContain("same-key");
   });
 
   it("adds configured CORS and no-store to credential-bearing success responses", async () => {
