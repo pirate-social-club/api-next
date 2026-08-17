@@ -68,6 +68,12 @@ const verificationStartReservationsMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const verificationCompletionAttemptsMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0012_verification_completion_attempts.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -127,6 +133,11 @@ const verificationStartReservationsMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0011_verification_start_reservations.sql"] ?? "",
   sql: verificationStartReservationsMigrationSql,
 };
+const verificationCompletionAttemptsMigration: PostgresMigration = {
+  version: "0012_verification_completion_attempts.sql",
+  checksum: checksumManifest.migrations["0012_verification_completion_attempts.sql"] ?? "",
+  sql: verificationCompletionAttemptsMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -139,6 +150,7 @@ const migrations: readonly PostgresMigration[] = [
   gatesV2Migration,
   proofSessionProvenanceMigration,
   verificationStartReservationsMigration,
+  verificationCompletionAttemptsMigration,
 ];
 
 function checksum(value: string): string {
@@ -346,6 +358,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "subject_keys",
         "used_action_grants",
         "users",
+        "verification_completion_attempts",
         "verification_start_reservations",
       ]);
 

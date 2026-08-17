@@ -6,6 +6,7 @@ import type {
 } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import type { VerificationProviderAdapter } from "./adapter.ts";
+import { VerificationProviderUnavailable } from "./adapter.ts";
 import {
   completeVerification,
   type StoredVerificationCompletion,
@@ -21,6 +22,19 @@ import {
 
 const RESULT_HASH = "a".repeat(64);
 const NOW = Date.parse("2026-08-17T00:30:00.000Z");
+const ATTEMPT = {
+  attempt_id: "attempt-test",
+  fence_token: 1,
+  lease_expires_at: "2099-08-17T00:00:00.000Z",
+} as const;
+
+function attemptMethods() {
+  return {
+    reserveAttempt: () => Effect.succeed({ kind: "acquired" as const, reservation: ATTEMPT }),
+    releaseAttempt: () => Effect.void,
+    consumeAttempt: () => Effect.void,
+  };
+}
 
 const manifest: ProofProviderManifest = {
   provider_id: "test.complete",
@@ -121,6 +135,8 @@ function bundle(proofSession: ProofSession): EvidenceBundle {
 function adapterFor(
   proofSession: ProofSession,
   calls: { complete: number },
+  complete: () => Effect.Effect<EvidenceBundle, VerificationProviderUnavailable> = () =>
+    Effect.succeed(bundle(proofSession)),
 ): VerificationProviderAdapter {
   return {
     manifest,
@@ -128,7 +144,7 @@ function adapterFor(
     start: () => Effect.die("start is outside this use case"),
     complete: () => {
       calls.complete += 1;
-      return Effect.succeed(bundle(proofSession));
+      return complete();
     },
   };
 }
@@ -166,10 +182,55 @@ function servicesFor(
 }
 
 describe("verification completion use case", () => {
+  test("releases an unavailable provider attempt and permits a same-key retry", async () => {
+    const stored = { session: session(), terminal: null } satisfies StoredVerificationCompletion;
+    const calls = { complete: 0 };
+    const providerOutcomes = [
+      Effect.fail(
+        new VerificationProviderUnavailable({
+          provider_id: manifest.provider_id,
+          operation: "complete",
+        }),
+      ),
+      Effect.succeed(bundle(stored.session)),
+    ];
+    let nextAttempt = 0;
+    let released = 0;
+    const store: VerificationCompletionStore = {
+      ...attemptMethods(),
+      load: () => Effect.succeed(stored),
+      reserveAttempt: () =>
+        Effect.succeed({
+          kind: "acquired" as const,
+          reservation: { ...ATTEMPT, fence_token: ++nextAttempt },
+        }),
+      releaseAttempt: () => Effect.sync(() => void released++),
+      consumeAttempt: () => Effect.void,
+      commit: ({ result_hash }) => Effect.succeed({ kind: "committed", result_hash }),
+    };
+    const services = {
+      registry: registryFor(
+        adapterFor(stored.session, calls, () => providerOutcomes.shift() ?? Effect.die("missing")),
+      ),
+      store,
+      hasher: { hash: () => Effect.succeed(RESULT_HASH) },
+      now: () => NOW,
+    } satisfies VerificationCompletionServices;
+
+    await expect(Effect.runPromise(completeVerification(input(), services))).rejects.toBeInstanceOf(
+      VerificationProviderUnavailable,
+    );
+    const result = await Effect.runPromise(completeVerification(input(), services));
+    expect(result.replayed).toBe(false);
+    expect(calls.complete).toBe(2);
+    expect(released).toBe(1);
+  });
+
   test("authenticates the session and delegates one atomic evidence commit", async () => {
     const stored = { session: session(), terminal: null } satisfies StoredVerificationCompletion;
     const calls = { complete: 0, commit: 0 };
     const store: VerificationCompletionStore = {
+      ...attemptMethods(),
       load: () => Effect.succeed(stored),
       commit: (commitInput) => {
         calls.commit += 1;
@@ -198,6 +259,7 @@ describe("verification completion use case", () => {
     } satisfies StoredVerificationCompletion;
     const calls = { complete: 0, commit: 0 };
     const store: VerificationCompletionStore = {
+      ...attemptMethods(),
       load: () => Effect.succeed(stored),
       commit: () => {
         calls.commit += 1;
@@ -219,6 +281,7 @@ describe("verification completion use case", () => {
     } satisfies StoredVerificationCompletion;
     const calls = { complete: 0 };
     const store: VerificationCompletionStore = {
+      ...attemptMethods(),
       load: () => Effect.succeed(stored),
       commit: () => Effect.die("commit must not run for a conflicting replay"),
     };
@@ -251,6 +314,7 @@ describe("verification completion use case", () => {
     ] as const) {
       const calls = { complete: 0 };
       const store: VerificationCompletionStore = {
+        ...attemptMethods(),
         load: () => Effect.succeed(testCase.stored),
         commit: () => Effect.die("commit must not run for a rejected completion"),
       };
@@ -269,6 +333,7 @@ describe("verification completion use case", () => {
     const commitState: { hash: string | null } = { hash: null };
     let commitAttempts = 0;
     const store: VerificationCompletionStore = {
+      ...attemptMethods(),
       load: () => Effect.succeed(stored),
       commit: ({ result_hash }) =>
         Effect.sync(() => {
@@ -295,6 +360,7 @@ describe("verification completion use case", () => {
     const stored = { session: session(), terminal: null } satisfies StoredVerificationCompletion;
     const calls = { complete: 0, now: 0 };
     const store: VerificationCompletionStore = {
+      ...attemptMethods(),
       load: () => Effect.succeed(stored),
       commit: () => Effect.die("commit must not run after the ceremony expires"),
     };
@@ -315,6 +381,7 @@ describe("verification completion use case", () => {
     const stored = { session: session(), terminal: null } satisfies StoredVerificationCompletion;
     const calls = { complete: 0 };
     const store: VerificationCompletionStore = {
+      ...attemptMethods(),
       load: () => Effect.succeed(stored),
       commit: () => Effect.die("commit must not receive an invalid hash"),
     };

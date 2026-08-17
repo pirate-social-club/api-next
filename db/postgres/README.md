@@ -44,6 +44,11 @@ database transaction across the provider call. Reservation finalization checks
 the active generation inside the transaction before it can persist the proof
 session and presentation.
 
+`0012_verification_completion_attempts.sql` adds per-proof-session, idempotency-
+keyed completion reservations. Active and consumed generations share a bounded
+attempt budget; provider-unavailable attempts are released, while stale
+finalizers are fenced before they can write the evidence ledger.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every

@@ -100,10 +100,17 @@ function wireFailure(error: unknown): Error {
       if (tagged.reason === "unavailable") {
         return new NotFound({ message: "Verification session not found" });
       }
+      if (tagged.reason === "attempt_in_flight") {
+        return new ProviderUnavailable({
+          message: "Verification provider is already processing this attempt",
+        });
+      }
       if (
         tagged.reason === "expired" ||
         tagged.reason === "terminal" ||
-        tagged.reason === "binding_conflict"
+        tagged.reason === "binding_conflict" ||
+        tagged.reason === "attempt_consumed" ||
+        tagged.reason === "attempt_budget_exhausted"
       ) {
         return new Conflict({ message: "Verification session cannot be completed" });
       }

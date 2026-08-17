@@ -17,6 +17,19 @@ import type { StoredVerificationCompletion, VerificationCompletionStore } from "
 import { makeVerificationProviderRegistry } from "./registry.ts";
 
 const RESULT_HASH = "a".repeat(64);
+const ATTEMPT = {
+  attempt_id: "attempt-test",
+  fence_token: 1,
+  lease_expires_at: "2099-08-17T00:00:00.000Z",
+} as const;
+
+function attemptMethods() {
+  return {
+    reserveAttempt: () => Effect.succeed({ kind: "acquired" as const, reservation: ATTEMPT }),
+    releaseAttempt: () => Effect.void,
+    consumeAttempt: () => Effect.void,
+  };
+}
 
 const manifest: ProofProviderManifest = {
   provider_id: "test.callback",
@@ -175,6 +188,7 @@ describe("verification provider callback", () => {
       makeVerificationProviderRegistry([adapterFor(proofSession)]),
     );
     const store: VerificationCompletionStore = {
+      ...attemptMethods(),
       load: () => Effect.succeed(stored(proofSession)),
       commit: (input) => {
         expect(input.actor_id).toBe("user-1");
@@ -217,6 +231,7 @@ describe("verification provider callback", () => {
         {
           registry,
           store: {
+            ...attemptMethods(),
             load: () => Effect.die("session lookup must not run"),
             commit: () => Effect.die("commit must not run"),
           },
@@ -242,6 +257,7 @@ describe("verification provider callback", () => {
         {
           registry,
           store: {
+            ...attemptMethods(),
             load: () => Effect.succeed(stored(proofSession)),
             commit: () => Effect.die("commit must not run"),
           },
@@ -282,6 +298,7 @@ describe("verification provider callback", () => {
         {
           registry,
           store: {
+            ...attemptMethods(),
             load: () => Effect.succeed(stored(proofSession)),
             commit: (input) =>
               Effect.succeed({ kind: "committed", result_hash: input.result_hash }),
@@ -329,6 +346,7 @@ describe("verification provider callback", () => {
         {
           registry,
           store: {
+            ...attemptMethods(),
             load: ({ proof_session_id }) => {
               expect(proof_session_id).toBe(proofSession.id);
               return Effect.succeed(stored(proofSession));

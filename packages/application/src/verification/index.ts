@@ -31,6 +31,8 @@ export {
 export type {
   CompleteVerificationResult,
   StoredVerificationCompletion,
+  VerificationCompletionAttemptReservation,
+  VerificationCompletionAttemptReservationOutcome,
   VerificationCompletionCommitOutcome,
   VerificationCompletionFailure,
   VerificationCompletionHasher,
@@ -40,6 +42,8 @@ export type {
 export {
   CompleteVerificationInput,
   completeVerification,
+  VERIFICATION_COMPLETION_ATTEMPT_LEASE_MARGIN_MS,
+  VERIFICATION_COMPLETION_MAX_ATTEMPTS,
   VerificationCompletionHashFailed,
   VerificationCompletionRejected,
   VerificationCompletionStorageFailed,
