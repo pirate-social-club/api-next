@@ -690,6 +690,9 @@ function reduceCommunityPurchaseFunding(
   ) {
     return rejectTransition("reconciliation_observation_not_fresh");
   }
+  if (current.confirmedReceiptIdentity !== null && event.evidence.receiptStatus !== "success") {
+    return rejectTransition("confirmed_receipt_outcome_changed");
+  }
   if (confirmedReceiptIdentityChanged(current, event.evidence)) {
     return rejectTransition("confirmed_receipt_identity_changed");
   }

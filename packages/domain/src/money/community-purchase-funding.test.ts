@@ -274,6 +274,24 @@ describe("community-purchase funding state machine", () => {
           at: reconciliation.updatedAt + 1,
           evidence: {
             ...EVIDENCE,
+            receiptStatus: "reverted",
+            logIndex: null,
+            observationId: OBSERVATION_4,
+            observedHeadBlockNumber: 126,
+            observedHeadBlockHash: HEAD_HASH_3,
+          },
+        }),
+      ).rejected,
+    ).toBe("confirmed_receipt_outcome_changed");
+
+    expect(
+      rejected(
+        transitionCommunityPurchaseFunding(reconciliation, {
+          type: "reconciliation_resolved",
+          expectedVersion: reconciliation.version,
+          at: reconciliation.updatedAt + 1,
+          evidence: {
+            ...EVIDENCE,
             blockNumber: 124,
             blockHash: REORG_BLOCK_HASH,
             observationId: OBSERVATION_4,
