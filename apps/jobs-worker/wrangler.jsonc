@@ -36,8 +36,8 @@
       "hyperdrive": [
         {
           "binding": "CONTROL_PLANE",
-          // Replace with the user-provisioned staging Hyperdrive ID.
-          "id": "8cb7658a0f7143359c1becfec6a15c23",
+          // Staging-only Hyperdrive; never reuse the production resource.
+          "id": "11c1ad1806004f3b87fa771833093132",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],

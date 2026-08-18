@@ -1,13 +1,53 @@
 # Self staging incident and restart record
 
-Status: frozen by policy; not completed. The former credential-rotation restart
-gate is superseded by control-plane `TASKS.md` at `9b4f2d1`. Updated 2026-08-18.
+Status: staging infrastructure is provisioned and the HTTP Worker is deployed
+with Self disabled. The real-document ceremony and ceremony matrix have not
+begun. Updated 2026-08-18.
 
-This is the durable, redacted record for the interrupted Self staging tranche.
-It is authoritative for the incident state and restart gates. Production was
-not authorized for changes and remains out of scope.
+This is the durable, redacted record for the Self staging tranche. It preserves
+the earlier incident and containment history, then records the verified
+post-restart state. No secret value is recorded here.
 
-## Published and observed state
+## Current verified staging state
+
+- Infisical is the new project `fac45f92-9450-42fb-8c2f-f20d043fdfab` in
+  organization `d9615445-c0d4-445a-ad58-1d55d365635a`; the relevant secrets
+  are at the project root in the `staging` environment.
+- Value-safe comparisons prove that staging and production Privy values and
+  Pirate JWT values are separate. The stale derived staging Privy and upstream
+  authentication tuple was repaired and re-verified without printing values.
+- PlanetScale has a dedicated `api_next` schema owned by
+  `api_next_migrator`. The runtime role is `api_next_app`; both roles have the
+  exact search path `api_next, pg_catalog`. Unrelated-schema access is denied.
+- All 12 checksum-pinned migrations are applied. The migration ledger matches
+  the reviewed manifest hash
+  `dff403966354712b3648ac8db2290a5770a6fc3e6de8c36f56f64c5fa0a56e6a`.
+  The schema contains 36 tables, all owned by the migrator. Runtime CRUD
+  passed and runtime DDL was denied.
+- The temporary provisioner role `arhnkpu17vll` was deleted after
+  provisioning.
+- Staging uses the staging-only Hyperdrive
+  `pirate-control-plane-staging`, ID `11c1ad1806004f3b87fa771833093132`,
+  with caching disabled and limit 5. The public staging API hostname is
+  `api-next-staging.pirate.sc`.
+- The staging HTTP Worker is deployed with Self disabled. The current good
+  version is `734a588d-406c-4f2e-82fa-2c30e64ddfd7`. Health returned 200,
+  JWKS returned 200, the public-profile probe returned 404 (proving the DB
+  path), and missing/invalid authentication returned 401.
+- The first health probes used an explicit Cloudflare IPv4 resolution while DNS
+  A propagation was incomplete. A and AAAA records subsequently published, and
+  a normal direct health request returned 200.
+- The first deployment version (`e4c...`) returned 500 because the JWT PEM
+  entries contained trailing newlines. The Worker was redeployed with
+  canonical trimming, and the two new-project staging entries were then
+  normalized and value-safely re-verified.
+- The jobs configuration has the staging Hyperdrive ID, but the jobs Worker
+  has not been deployed.
+
+No Self ceremony has begun. Self remains disabled until the staging smoke
+checks are complete and the real-document gate is deliberately started.
+
+## Published and observed code state
 
 - The runtime code baseline at the incident was `6ab70b6`. It includes staging
   identity bootstrap `169fe46` and the Privy ES256 verification fix
@@ -22,18 +62,20 @@ not authorized for changes and remains out of scope.
 - The empty `api_next` schema was dropped after proving zero tables and no
   migration ledger. Six `/services/api-next` entries were deleted, as was
   the secure temporary directory.
-- No migration, Hyperdrive configuration, Worker, custom-domain route, or
-  deployment occurred. The pre-existing `api_next_app` was untouched;
-  `bookings`, `public`, and production were unchanged.
+- The incident-era statement that no migration, Hyperdrive configuration,
+  Worker, custom-domain route, or deployment occurred is retained below as
+  historical context. The current state above supersedes it for staging.
 
-## Credential impact and containment boundary
+## Historical incident and containment
 
-An equality-only secure audit proved that staging and production
-`/services/api` contain identical `PRIVY_APP_SECRET` and
-`PIRATE_APP_JWT_PRIVATE_KEY`. The web repository-level Privy app ID has no
-production override. Consequently, rotating either shared Privy/JWT
-credential affects production and is outside the authorization for this
-tranche. Do not attempt a staging-only workaround.
+## Credential impact and redaction boundary
+
+The earlier equality-only audit proved that the old staging and production
+`/services/api` entries contained identical `PRIVY_APP_SECRET` and
+`PIRATE_APP_JWT_PRIVATE_KEY`. That finding explains the original stop; it is
+not evidence that the new staging project is still sharing those values. The
+new project’s staging/production Privy and Pirate JWT values are now proven
+separate by equality-only checks.
 
 The following are redaction rules for all future evidence:
 
@@ -47,58 +89,53 @@ The following are redaction rules for all future evidence:
 - Keep temporary evidence outside the repository, remove it after use, and
   treat any accidentally displayed value as compromised without copying it.
 
-## Mandatory restart gates
+## Current gates
 
-The original restart checklist is retained as historical evidence only. The
-tranche is frozen, not an active resumable operation, until a new decision
-record explicitly reopens it. In particular, do not infer authorization from
-the checklist below:
+1. Keep Self disabled until the staging smoke checks and configuration audit
+   are complete.
+2. Run one fresh real-document Session A. Record only redacted session,
+   receipt, assertion, subject binding, provenance, pinned `pirate-social`
+   scope, and `credential.subject_unique` evidence.
+3. Run the accepted-completion, identical-replay, bound-rejection, and
+   unbound-garbage callback cases using fresh sessions as required. Inspect
+   temporary leases versus durably consumed attempts.
+4. Produce and audit the redacted staging evidence report before beginning the
+   pure evaluator. The first evaluator vertical consumes this real staging
+   evidence.
 
-1. ~~Coordinate an authorized rotation of the shared Privy app secret and JWT
-   signing key pair across every consumer and source store.~~ Superseded: no
-   legacy rotation or secret mutation is authorized by the current control
-   record; staging and production share production authentication material.
-2. Invalidate or assess existing sessions as applicable to that rotation.
-3. Re-run the complete inventory using value-safe commands and equality-only
-   checks. Confirm no production resource, secret, or route is in scope.
-4. Recreate the staging-only roles and `api_next` schema with least privilege;
-   prove role grants, search paths, zero unrelated-schema access, and the
-   migration-ledger starting state.
-5. Use only reviewed secret-loading procedures. Never use `infisical secrets`
-   table output for inventory.
+The original restart checklist and its stop conditions remain retained below
+as historical evidence. They do not authorize repeating already-completed
+provisioning steps.
 
-Until a new decision record reopens this work, Self remains disabled and the
-original tranche is frozen. The real-document Session A is deferred.
+## Original tranche sequence and current disposition
 
-## Remaining original tranche steps (historical; not authorized)
-
-The sequence below is retained to preserve the interrupted-tranche record. It is
-not an execution checklist under the current control decision. Do not perform
-any step, including credential loading, schema/role creation, Hyperdrive
-creation, deployment, or Self enablement, unless a new decision record
-explicitly reopens this tranche and replaces the superseded gates above.
+The sequence below is retained to preserve the interrupted-tranche record. The
+completed items are annotated by the current verified state; pending ceremony
+work remains the active checklist.
 
 For historical reference, the original sequence was:
 
 1. Reconfirm this file against current external state; do not trust IDs if
-   resources have changed.
+   resources have changed. **Complete for the state recorded above.**
 2. Decide the staging API hostname/route without displacing the existing
-   `staging.pirate.sc` service.
+   `staging.pirate.sc` service. **Complete:** `api-next-staging.pirate.sc`.
 3. Establish the dedicated PlanetScale `api_next` schema, migrator role,
    runtime role, explicit search paths, grants, and default privileges. Prove
-   the runtime role cannot migrate or access unrelated schemas.
-4. Create `/services/api-next` in Infisical and install the reviewed staging
-   values. Keep values out of logs and repository files.
+   the runtime role cannot migrate or access unrelated schemas. **Complete.**
+4. Create the new-project staging secret set and install the reviewed values.
+   Keep values out of logs and repository files. **Complete and value-safely
+   re-verified.**
 5. Run the migration dry-run, then apply migrations with the dedicated
-   migrator connection. Record every applied migration and the exact
-   `checksums.json` hash set. Verify the ledger by read-back.
+   migrator connection, and verify the ledger by read-back. **Complete:** 12
+   migrations match the manifest hash above.
 6. Create a staging-only Hyperdrive configuration against the least-privilege
-   runtime role. Replace the nonexistent staging ID in both Worker configs in
-   a distinct commit and run both Wrangler dry-runs.
+   runtime role and update both Worker configs. **Complete:** the HTTP Worker
+   is deployed; jobs configuration is updated but jobs is not deployed.
 7. Deploy the HTTP Worker with `SELF_PASS_ENABLED=false`. Verify health,
    authentication, and database connectivity before introducing Self.
-8. Install the reviewed Self/Privy/JWT secrets, enable `self.pass` in staging
-   only, deploy, and confirm production remains disabled and unchanged.
+   **Complete for the recorded probes.**
+8. Install the reviewed Self/Privy/JWT secrets and enable `self.pass` in
+   staging only. **Pending; Self is still disabled.**
 9. **Deferred: real-document Session A.** Run a fresh live Self ceremony with
    a supported physical document, then resend the byte-identical callback for
    the replay check. Capture session, receipt, assertion,

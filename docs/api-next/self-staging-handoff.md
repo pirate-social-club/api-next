@@ -1,18 +1,19 @@
 # Self staging enablement handoff
 
-Status: operationally blocked, engineering gate closed. Updated 2026-08-18.
+Status: staging infrastructure is provisioned; Self remains disabled pending
+the first real-document ceremony. Updated 2026-08-18.
 
 This is the durable handoff for enabling the self-hosted Self Pass adapter in
-staging. It records observed external state, not assumptions. Production must
-remain untouched throughout this tranche.
+staging. It records observed external state, not assumptions. Secret values
+are intentionally omitted.
 
-## Current incident gate
+## Current staging gate
 
 The interrupted staging attempt is recorded in
-[self-staging-evidence.md](self-staging-evidence.md), which is authoritative
-for the current published state, credential impact, containment, and restart
-gates. The inventory and continuation sequence below are historical until
-that record's credential-rotation gates pass; do not resume them directly.
+[self-staging-evidence.md](self-staging-evidence.md), which preserves the
+credential exposure and containment history. The current verified state below
+supersedes the pre-provisioning inventory. Self is disabled and the real
+ceremony has not begun.
 
 ## Published code state
 
@@ -23,12 +24,56 @@ that record's credential-rotation gates pass; do not resume them directly.
 - The Self engineering gate is closed: the adapter, registry boundary,
   reservation fencing, callback budgets, transport credential stripping,
   workerd coverage, and adversarial conformance tests are complete.
-- Self is disabled in every checked-in environment. No migration or deploy was
-  performed during this inventory.
+- At the pre-provisioning inventory, Self was disabled in every checked-in
+  environment and no migration or deploy had been performed. The current
+  staging deployment is recorded in the verified-state section below.
 - The migration checksum manifest SHA-256 is
   `dff403966354712b3648ac8db2290a5770a6fc3e6de8c36f56f64c5fa0a56e6a`.
 
-## Observed staging inventory
+## Current verified staging state
+
+### Infisical and authentication
+
+- The active project is `fac45f92-9450-42fb-8c2f-f20d043fdfab` in
+  organization `d9615445-c0d4-445a-ad58-1d55d365635a`; staging secrets are at
+  the project root in the `staging` environment.
+- Staging and production Privy values and Pirate JWT values are separate by
+  equality-only comparison. The stale derived staging Privy and upstream
+  authentication tuple was repaired and re-verified without exposing values.
+- The initial deployment failed because two JWT PEM entries had trailing
+  newlines. The Worker was redeployed with canonical trimming; the two new
+  project staging entries were normalized and value-safely re-verified.
+
+### Database and migrations
+
+- The dedicated `api_next` schema is owned by `api_next_migrator`; runtime is
+  `api_next_app`. Both roles use the exact search path
+  `api_next, pg_catalog`, unrelated-schema access is denied, runtime CRUD
+  passes, and runtime DDL is denied.
+- All 12 migrations are present in the ledger and match manifest hash
+  `dff403966354712b3648ac8db2290a5770a6fc3e6de8c36f56f64c5fa0a56e6a`.
+  There are 36 tables, all migrator-owned.
+- The temporary provisioner role `arhnkpu17vll` was deleted after setup.
+
+### Cloudflare and probes
+
+- Staging uses Hyperdrive `pirate-control-plane-staging`, ID
+  `11c1ad1806004f3b87fa771833093132`, with caching disabled and limit 5.
+- The staging API hostname is `api-next-staging.pirate.sc`; it does not
+  replace the existing `staging.pirate.sc` service.
+- The HTTP Worker’s current good version is
+  `734a588d-406c-4f2e-82fa-2c30e64ddfd7`, deployed with Self disabled.
+  Health returned 200, JWKS returned 200, public-profile returned 404 (DB
+  path), and missing/invalid authentication returned 401.
+- Initial probes used explicit Cloudflare IPv4 resolution while DNS A
+  propagation was incomplete. A and AAAA records subsequently published, and a
+  normal direct health request returned 200. The jobs configuration is updated
+  with the staging Hyperdrive ID, but jobs has not been deployed.
+
+## Historical pre-provisioning inventory
+
+The following findings describe the state before the current provisioning and
+are retained to explain the resource choices. They are not current values.
 
 ### PlanetScale
 
@@ -58,7 +103,8 @@ verified backup before deletion.
 
 ### Infisical
 
-- Staging exists in project `5acea78e-7813-4d8a-b29c-9b862a0b1c71`.
+- The prior staging inventory was in project
+  `5acea78e-7813-4d8a-b29c-9b862a0b1c71`.
 - Current database URLs live under `/services/api` and
   `/services/control-plane`; there is no `/services/api-next` folder and no
   `.infisical.json` in this repository.
@@ -79,7 +125,7 @@ on old service folder names.
 - The only existing Hyperdrive configuration is
   `pirate-control-plane-production` (`7e457bc33b414671833ee4436548d9ee`),
   connected to production. Never reuse it for staging.
-- The checked-in staging Hyperdrive ID
+- The checked-in pre-provisioning staging Hyperdrive ID
   `8cb7658a0f7143359c1becfec6a15c23` does not exist and must be replaced in
   both Worker configs after a staging configuration is created.
 - `pirate-http-worker-staging` does not exist, so it has no installed Worker
@@ -93,25 +139,25 @@ on old service folder names.
 
 ## Exact continuation sequence
 
-1. Reconfirm this file against current external state; do not trust IDs if
-   resources have changed.
+1. Reconfirm this file against current external state. **Complete for the
+   state recorded above.**
 2. Decide the staging API hostname/route without displacing the existing
-   `staging.pirate.sc` service.
+   `staging.pirate.sc` service. **Complete:** `api-next-staging.pirate.sc`.
 3. Establish the dedicated PlanetScale `api_next` schema, migrator role,
    runtime role, explicit search paths, grants, and default privileges. Prove
-   the runtime role cannot migrate or access unrelated schemas.
-4. Create `/services/api-next` in Infisical and install the reviewed staging
-   values. Keep values out of logs and repository files.
-5. Run the migration dry-run, then apply migrations with the dedicated
-   migrator connection. Record every applied migration and the exact
-   `checksums.json` hash set. Verify the ledger by read-back.
+   the runtime role cannot migrate or access unrelated schemas. **Complete.**
+4. Create the new-project staging values and install them with reviewed,
+   value-safe procedures. **Complete.**
+5. Run the migration dry-run, apply the migrations, and verify the ledger.
+   **Complete:** 12 migrations match the manifest hash above.
 6. Create a staging-only Hyperdrive configuration against the least-privilege
-   runtime role. Replace the nonexistent staging ID in both Worker configs in
-   a distinct commit and run both Wrangler dry-runs.
-7. Deploy the HTTP Worker with `SELF_PASS_ENABLED=false`. Verify health,
-   authentication, and database connectivity before introducing Self.
-8. Install the reviewed Self/Privy/JWT secrets, enable `self.pass` in staging
-   only, deploy, and confirm production remains disabled and unchanged.
+   runtime role and update both Worker configs. **Complete for configuration;**
+   the jobs Worker is not deployed.
+7. Deploy the HTTP Worker with `SELF_PASS_ENABLED=false` and verify health,
+   authentication, and database connectivity. **Complete for the recorded
+   probes.**
+8. Install the reviewed Self/Privy/JWT secrets and enable `self.pass` in
+   staging only. **Pending; Self remains disabled.**
 9. Run one fresh Self ceremony with a supported physical document. Capture
    session, receipt, assertion, subject-key/binding, provenance, pinned
    `pirate-social` scope, and `credential.subject_unique` evidence without
