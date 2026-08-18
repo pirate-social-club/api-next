@@ -1,6 +1,7 @@
 import type { Bytes32, CommunityPurchaseOperationId } from "@pirate/domain";
 import { Data, Effect } from "effect";
 import type {
+  CommunityPurchaseFundingInterpreter,
   CommunityPurchaseFundingJournalRecord,
   CommunityPurchaseFundingStorageFailed,
 } from "./community-purchase-funding.ts";
@@ -9,6 +10,13 @@ import type { CommunityPurchaseFundingObservationUseCase } from "./community-pur
 export type CommunityPurchaseFundingReconcilable = Readonly<{
   readonly operationId: CommunityPurchaseOperationId;
   readonly transactionHash: Bytes32;
+}>;
+
+export type CommunityPurchaseFundingDormancyCandidate = Readonly<{
+  readonly operationId: CommunityPurchaseOperationId;
+  readonly expectedVersion: number;
+  /** Database time captured by the candidate-selection statement. */
+  readonly databaseNowMs: number;
 }>;
 
 export interface CommunityPurchaseFundingQueryStore {
@@ -23,6 +31,13 @@ export interface CommunityPurchaseFundingQueryStore {
     readonly limit: number;
   }) => Effect.Effect<
     readonly CommunityPurchaseFundingReconcilable[],
+    CommunityPurchaseFundingStorageFailed
+  >;
+  readonly listDormancyCandidates: (input: {
+    readonly limit: number;
+    readonly submissionWindowMs: number;
+  }) => Effect.Effect<
+    readonly CommunityPurchaseFundingDormancyCandidate[],
     CommunityPurchaseFundingStorageFailed
   >;
 }
@@ -73,24 +88,108 @@ export function makeCommunityPurchaseFundingReconciler(
     readonly limit: number;
     readonly ownerId: string;
     readonly leaseMs: number;
-    readonly at: number;
   }) {
     if (input.ownerId.length === 0 || input.ownerId.trim() !== input.ownerId) {
       return yield* new CommunityPurchaseFundingQueryRejected({ reason: "invalid-input" });
     }
     const candidates = yield* listReconcilableCommunityPurchaseFunding(input.limit, store);
     let processed = 0;
+    const failures: Array<{
+      readonly operationId: CommunityPurchaseOperationId;
+      readonly errorTag: string;
+      readonly reason: string;
+    }> = [];
     for (const candidate of candidates) {
-      yield* observation.observe({
-        operationId: candidate.operationId,
-        transactionHash: candidate.transactionHash,
-        ownerId: `${input.ownerId}:${candidate.operationId}`,
-        leaseMs: input.leaseMs,
-        source: "reconciler",
-        at: input.at,
-      });
-      processed += 1;
+      yield* observation
+        .observe({
+          operationId: candidate.operationId,
+          transactionHash: candidate.transactionHash,
+          ownerId: `${input.ownerId}:${candidate.operationId}`,
+          leaseMs: input.leaseMs,
+          source: "reconciler",
+        })
+        .pipe(
+          Effect.tap(() => Effect.sync(() => (processed += 1))),
+          Effect.catch((error) =>
+            Effect.sync(() => {
+              failures.push({
+                operationId: candidate.operationId,
+                errorTag: error._tag,
+                reason: error.reason,
+              });
+            }),
+          ),
+        );
     }
-    return { selected: candidates.length, processed };
+    return { selected: candidates.length, processed, failures };
+  });
+}
+
+/** Moves only database-clock-expired, never-observed operations out of hot scheduling. */
+export function makeCommunityPurchaseFundingDormancySweeper(
+  store: CommunityPurchaseFundingQueryStore,
+  interpreter: CommunityPurchaseFundingInterpreter,
+) {
+  return Effect.fn("sweepDormantCommunityPurchaseFunding")(function* (input: {
+    readonly limit: number;
+    readonly ownerId: string;
+    readonly leaseMs: number;
+    readonly submissionWindowMs: number;
+  }) {
+    if (
+      input.ownerId.length === 0 ||
+      input.ownerId.trim() !== input.ownerId ||
+      !Number.isSafeInteger(input.limit) ||
+      input.limit < 1 ||
+      input.limit > 100 ||
+      !Number.isSafeInteger(input.submissionWindowMs) ||
+      input.submissionWindowMs < 1
+    ) {
+      return yield* new CommunityPurchaseFundingQueryRejected({ reason: "invalid-input" });
+    }
+    const candidates = yield* store.listDormancyCandidates({
+      limit: input.limit,
+      submissionWindowMs: input.submissionWindowMs,
+    });
+    let processed = 0;
+    const failures: Array<{
+      readonly operationId: CommunityPurchaseOperationId;
+      readonly errorTag: string;
+      readonly reason: string;
+    }> = [];
+    for (const candidate of candidates) {
+      const ownerId = `${input.ownerId}:${candidate.operationId}`;
+      yield* interpreter
+        .acquireLease({
+          operationId: candidate.operationId,
+          ownerId,
+          leaseMs: input.leaseMs,
+        })
+        .pipe(
+          Effect.flatMap((lease) =>
+            interpreter.transition({
+              lease,
+              source: "reconciler",
+              expectedVersion: candidate.expectedVersion,
+              event: {
+                type: "submission_window_elapsed",
+                expectedVersion: candidate.expectedVersion,
+                at: candidate.databaseNowMs,
+              },
+            }),
+          ),
+          Effect.tap(() => Effect.sync(() => (processed += 1))),
+          Effect.catch((error) =>
+            Effect.sync(() => {
+              failures.push({
+                operationId: candidate.operationId,
+                errorTag: error._tag,
+                reason: error.reason,
+              });
+            }),
+          ),
+        );
+    }
+    return { selected: candidates.length, processed, failures };
   });
 }

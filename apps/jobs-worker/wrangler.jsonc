@@ -19,6 +19,9 @@
   "vars": {
     "API_NEXT_ENV": "development"
   },
+  "secrets": {
+    "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
+  },
   "env": {
     "staging": {
       "name": "pirate-jobs-worker-staging",
@@ -45,6 +48,9 @@
         "API_NEXT_ENV": "staging"
         // Staging uses the local alert sink. If external delivery is enabled,
         // inject endpoint URLs and tokens from the staging secret environment.
+      },
+      "secrets": {
+        "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
       }
     },
     "production": {
@@ -71,6 +77,9 @@
       ],
       "vars": {
         "API_NEXT_ENV": "production"
+      },
+      "secrets": {
+        "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
       }
     }
   },

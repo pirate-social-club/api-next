@@ -62,7 +62,7 @@ function wireFailure(error: unknown): Error {
       return new Conflict({ message: "Funding request conflicts with its durable identity" });
     }
     if (tagged.reason === "actor-mismatch" || tagged.reason === "wallet-mismatch") {
-      return new AuthError({ message: "Funding plan does not belong to this session" });
+      return new NotFound({ message: "Funding plan not found" });
     }
     return new BadRequest({ message: "Invalid funding request" });
   }
@@ -158,7 +158,6 @@ export function makeCommunityPurchaseFundingHandlers(
             ownerId: `http:${actorId}:${path.operationRef}:${body.transaction_hash}`,
             leaseMs: 30_000,
             source: "request",
-            at: Date.now(),
           })
           .pipe(Effect.mapError(wireFailure)),
       );

@@ -64,6 +64,12 @@ window. Its trigger permits only active-to-bound or active-to-cancelled
 transitions; binding requires one unique journal operation and cannot be
 undone.
 
+`0018_m3_funding_dormancy_and_retention.sql` adds the nonterminal
+`dormant_unobserved` state for plans whose browser never reports a transaction
+hash, permits late evidence to resume observation, and makes the M3 canonical
+journal, request, and plan rows non-deletable under the indefinite retention
+policy.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every

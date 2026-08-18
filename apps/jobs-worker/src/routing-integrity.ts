@@ -1,4 +1,4 @@
-import { AlertCollector, ControlPlaneDb, type ControlPlaneError } from "@pirate/application";
+import { AlertCollector, ControlPlaneDb } from "@pirate/application";
 import type { AlertSink } from "@pirate/platform-cf";
 import { type Duration, Effect } from "effect";
 
@@ -100,7 +100,7 @@ export interface CommunityCatalogIntegrityJobOptions {
 export function makeCommunityCatalogIntegrityJob(
   sink: AlertSink,
   options: CommunityCatalogIntegrityJobOptions = {},
-): JobDeclaration<ControlPlaneError, ControlPlaneDb | AlertCollector> {
+): JobDeclaration<unknown, ControlPlaneDb | AlertCollector> {
   const run = Effect.gen(function* () {
     const runtime = yield* JobContext;
     const db = yield* ControlPlaneDb;

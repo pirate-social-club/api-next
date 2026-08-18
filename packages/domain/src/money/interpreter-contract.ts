@@ -20,6 +20,7 @@ export type ServerDerivedIdempotencyKey = string & {
 export type MoneyFlowJournalStatus =
   // Flow-specific pre-effect state; §7's ten durable effect states follow.
   | "planned"
+  | "dormant_unobserved"
   | "nonce_reserved"
   | "prepared"
   | "broadcast_pending"

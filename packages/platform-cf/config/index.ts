@@ -44,19 +44,21 @@ export function loadConfig<A>(config: Config.Config<A>): A {
   );
 }
 
-/**
- * The money-path configuration group (000 §9): chain ids, RPC URLs, USDC
- * addresses, treasury/floor thresholds. Deliberately empty until M3 —
- * each money flow declares its member here when it lands, which is the
- * in-code half of the money-path ratchet the invariant test enforces.
- */
-export const MoneyPathConfig = Config.all({});
-
 /** Secrets are redacted so they never surface in logs or error text. */
 export const secret = (name: string): Config.Config<RedactedType<string>> =>
   // Config.redacted does not read from the default env provider in this RC;
   // wrap explicitly until the pinned Effect bump fixes it.
   Config.string(name).pipe(Config.map((value: string) => Redacted.make(value)));
+
+/** The fail-closed money-path variables required by M3. */
+export const MoneyPathConfig = Config.all({
+  COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
+});
+
+export const JobsWorkerConfig = Config.all({
+  API_NEXT_ENV: AppEnv,
+  COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
+});
 
 /**
  * Configuration required before the HTTP application layer is constructed.
@@ -113,9 +115,11 @@ export const HttpWorkerConfig = Config.all({
   PRIVY_JWKS_URL: Config.nonEmptyString("PRIVY_JWKS_URL"),
   PRIVY_JWT_ISSUER: Config.nonEmptyString("PRIVY_JWT_ISSUER"),
   PRIVY_JWT_AUDIENCE: Config.nonEmptyString("PRIVY_JWT_AUDIENCE"),
+  COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
 });
 
 export type HttpWorkerConfigValue = Config.Success<typeof HttpWorkerConfig>;
+export type JobsWorkerConfigValue = Config.Success<typeof JobsWorkerConfig>;
 
 export type ConfigSource = Readonly<Record<string, string | undefined>>;
 
