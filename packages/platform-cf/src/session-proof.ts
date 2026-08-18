@@ -72,6 +72,31 @@ export interface SessionProofProviderConfig {
 
 export type SessionProofFetcher = (input: string, init?: RequestInit) => Promise<Response>;
 
+const SESSION_PROOF_FAILURE_REASONS = new Set([
+  "invalid token",
+  "invalid header",
+  "JWKS request failed",
+  "JWKS response too large",
+  "unknown key",
+  "algorithm mismatch",
+  "invalid ECDSA signature",
+  "invalid signature",
+  "invalid issuer",
+  "invalid audience",
+  "expired token",
+  "future token",
+  "not yet valid",
+  "identity mismatch",
+  "wallet mismatch",
+]);
+
+function safeSessionProofFailureReason(error: unknown): string {
+  if (!(error instanceof Error) || !SESSION_PROOF_FAILURE_REASONS.has(error.message)) {
+    return "internal_error";
+  }
+  return error.message.replaceAll(" ", "_").toLowerCase();
+}
+
 export interface SessionProofAdapterOptions {
   readonly privy: SessionProofProviderConfig;
   readonly fetcher?: SessionProofFetcher;
@@ -351,7 +376,10 @@ export function makeJwksSessionProofVerifier(
   const run = <A>(operation: () => Promise<A>): Effect.Effect<A, SessionProofRejected> =>
     Effect.tryPromise({
       try: operation,
-      catch: () => new SessionProofRejected(),
+      catch: (error) => {
+        console.warn("session_proof_rejected", safeSessionProofFailureReason(error));
+        return new SessionProofRejected();
+      },
     });
 
   return {
