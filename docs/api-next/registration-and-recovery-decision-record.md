@@ -57,6 +57,12 @@ idempotent and returns the existing account. A credential that resolves to a del
 invalid, or conflicting identity fails closed without revealing whether another
 account exists.
 
+A caller presenting a tombstoned credential receives a specific permanent-deletion
+response explaining that the credential cannot register again. This is not account
+enumeration because the caller has proved control of that credential. An inconsistent
+active binding (missing, deleted, or malformed canonical account) remains an opaque
+internal failure and never exposes persisted identity state.
+
 Generated identifiers and handle stems use cryptographically secure randomness. The
 handle grammar is lowercase ASCII, reserved-word safe, and independent of row counts,
 timestamps, email addresses, phone numbers, or provider subject fragments.

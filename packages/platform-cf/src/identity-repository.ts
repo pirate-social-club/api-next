@@ -5,6 +5,10 @@ import {
   type IdentityStore,
 } from "@pirate/application";
 import { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
+import {
+  type IdentityRegistrationStore,
+  IdentityRegistrationStoreFailure,
+} from "@pirate/application/use-cases/identity-registration";
 import { Data, Effect, type Layer, Result, Schema } from "effect";
 
 export const MAX_CANONICAL_ALIAS_HOPS = 8;
@@ -102,13 +106,17 @@ const invalid = (): IdentityRepositoryError => new IdentityRepositoryError({ rea
 const missing = (deleted = false): IdentityRepositoryError =>
   new IdentityRepositoryError({ reason: deleted ? "deleted" : "missing" });
 
-const credentialOutcome = (row: CredentialRow | undefined): ExistingCredentialOutcome => {
-  if (row === undefined || typeof row.canonical_user_id !== "string") throw invalid();
-  if (row.status === "tombstoned") return { kind: "tombstoned" };
-  if (row.status !== "active" || row.user_status !== "active" || !validId(row.canonical_user_id)) {
-    throw invalid();
+const credentialOutcome = (
+  row: CredentialRow | undefined,
+): Effect.Effect<ExistingCredentialOutcome, IdentityRepositoryError> => {
+  if (row === undefined || typeof row.canonical_user_id !== "string") {
+    return Effect.fail(invalid());
   }
-  return { kind: "already_registered", canonicalUserId: row.canonical_user_id };
+  if (row.status === "tombstoned") return Effect.succeed({ kind: "tombstoned" });
+  if (row.status !== "active" || row.user_status !== "active" || !validId(row.canonical_user_id)) {
+    return Effect.fail(invalid());
+  }
+  return Effect.succeed({ kind: "already_registered", canonicalUserId: row.canonical_user_id });
 };
 
 const persistedPirateLabel = (
@@ -354,7 +362,7 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
           readonly: false,
         });
         if (existing.rows.length > 1) return yield* Effect.fail(invalid());
-        if (existing.rows.length === 1) return credentialOutcome(existing.rows[0]);
+        if (existing.rows.length === 1) return yield* credentialOutcome(existing.rows[0]);
 
         const insertedUser = yield* transaction.execute({
           label: "identity.registration.insert-user",
@@ -425,7 +433,7 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
       return { kind: "candidate_collision", field: "credential_id" };
     }
     if (winner.rows.length !== 1) return yield* Effect.fail(invalid());
-    return credentialOutcome(winner.rows[0]);
+    return yield* credentialOutcome(winner.rows[0]);
   });
 
   return { findUser, resolveCanonical, upsertAccount, registerCredential };
@@ -456,6 +464,25 @@ export function makeControlPlaneIdentityStore(
           error instanceof IdentityRepositoryError
             ? new IdentityResolutionError({ reason: error.reason })
             : error,
+        ),
+      ),
+  };
+}
+
+/** Registration-specific adapter with a closed, non-driver error vocabulary. */
+export function makeControlPlaneIdentityRegistrationStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): IdentityRegistrationStore {
+  const repository = makeControlPlaneIdentityRepository();
+  return {
+    registerCredential: (input) =>
+      repository.registerCredential(input).pipe(
+        Effect.provide(runtime),
+        Effect.mapError(
+          (error) =>
+            new IdentityRegistrationStoreFailure({
+              reason: error instanceof IdentityRepositoryError ? "identity-conflict" : "storage",
+            }),
         ),
       ),
   };

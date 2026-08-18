@@ -6,6 +6,7 @@ import {
   IdentityRegistrationExhausted,
   IdentityRegistrationFailed,
   type IdentityRegistrationServices,
+  IdentityRegistrationStoreFailure,
   MAX_IDENTITY_REGISTRATION_ATTEMPTS,
   makeUnverifiedIdentityAccount,
   registerIdentity,
@@ -124,5 +125,29 @@ describe("identity registration use case", () => {
       new IdentityRegistrationFailed({ reason: "invalid-candidate" }),
     );
     expect(invalidStoreCalls).toBe(0);
+  });
+
+  test("preserves identity inconsistency separately from storage failure", async () => {
+    let storeCalls = 0;
+    const result = await Effect.runPromiseExit(
+      registerIdentity(
+        { providerAppId: "privy-staging", providerSubject: "did:privy:inconsistent" },
+        {
+          candidates: { next: () => Effect.succeed(candidate("inconsistent")) },
+          store: {
+            registerCredential: () => {
+              storeCalls += 1;
+              return Effect.fail(
+                new IdentityRegistrationStoreFailure({ reason: "identity-conflict" }),
+              );
+            },
+          },
+        },
+      ),
+    );
+    expect(failureOf(result)).toEqual(
+      new IdentityRegistrationFailed({ reason: "identity-conflict" }),
+    );
+    expect(storeCalls).toBe(1);
   });
 });

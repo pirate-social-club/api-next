@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { ControlPlaneDb } from "@pirate/application";
 import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import {
   IdentityRepositoryError,
+  makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityRepository,
 } from "./identity-repository.ts";
 
@@ -192,5 +193,24 @@ describe("identity credential registration", () => {
     );
     expect(result).toEqual({ kind: "candidate_collision", field: "credential_id" });
     expect(fake.labels.at(-1)).toBe("identity.credentials.read");
+  });
+
+  test("maps inconsistent persisted identity state to a closed identity-conflict failure", async () => {
+    const fake = registrationDb(() => ({
+      rows: [{ canonical_user_id: "user-old", status: "active", user_status: "deleted" }],
+      rowCount: 1,
+    }));
+    const failure = await Effect.runPromise(
+      Effect.flip(
+        makeControlPlaneIdentityRegistrationStore(
+          Layer.succeed(ControlPlaneDb, fake.db),
+        ).registerCredential(input),
+      ),
+    );
+    expect(failure).toMatchObject({
+      _tag: "IdentityRegistrationStoreFailure",
+      reason: "identity-conflict",
+    });
+    expect(fake.labels).toEqual(["identity.registration.lock-credential"]);
   });
 });

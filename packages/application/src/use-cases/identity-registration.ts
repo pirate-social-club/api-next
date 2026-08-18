@@ -20,6 +20,12 @@ export type IdentityRegistrationStoreOutcome =
       readonly field: "credential_id" | "user_id" | "handle";
     };
 
+export class IdentityRegistrationStoreFailure extends Data.TaggedError(
+  "IdentityRegistrationStoreFailure",
+)<{
+  readonly reason: "identity-conflict" | "storage";
+}> {}
+
 export interface IdentityRegistrationStore {
   readonly registerCredential: (input: {
     readonly provider: "privy";
@@ -28,7 +34,7 @@ export interface IdentityRegistrationStore {
     readonly credentialId: string;
     readonly userId: string;
     readonly account: IdentityAccountDocument;
-  }) => Effect.Effect<IdentityRegistrationStoreOutcome, unknown>;
+  }) => Effect.Effect<IdentityRegistrationStoreOutcome, IdentityRegistrationStoreFailure>;
 }
 
 export interface IdentityRegistrationCandidateSource {
@@ -41,7 +47,7 @@ export interface IdentityRegistrationServices {
 }
 
 export class IdentityRegistrationFailed extends Data.TaggedError("IdentityRegistrationFailed")<{
-  readonly reason: "invalid-input" | "invalid-candidate" | "storage";
+  readonly reason: "invalid-input" | "invalid-candidate" | "identity-conflict" | "storage";
 }> {}
 
 export class IdentityRegistrationExhausted extends Data.TaggedError(
@@ -165,7 +171,7 @@ export const registerIdentity = Effect.fn("registerIdentity")(function* (
         userId: candidate.userId,
         account: makeUnverifiedIdentityAccount(candidate),
       })
-      .pipe(Effect.mapError(() => new IdentityRegistrationFailed({ reason: "storage" })));
+      .pipe(Effect.mapError((error) => new IdentityRegistrationFailed({ reason: error.reason })));
 
     if (outcome.kind === "created" || outcome.kind === "already_registered") {
       return { status: outcome.kind, canonicalUserId: outcome.canonicalUserId };
