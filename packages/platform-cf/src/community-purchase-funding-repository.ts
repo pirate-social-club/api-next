@@ -1,4 +1,7 @@
 import {
+  COMMUNITY_PURCHASE_FUNDING_ENDPOINT,
+  type CommunityPurchaseFundingAdmissionStore,
+  type CommunityPurchaseFundingAdmissionStoreInput,
   type CommunityPurchaseFundingJournalRecord,
   type CommunityPurchaseFundingJournalStore,
   CommunityPurchaseFundingStorageFailed,
@@ -10,13 +13,19 @@ import {
   encodeCommunityPurchaseFundingEvent,
   encodeCommunityPurchaseFundingSnapshot,
   journalEntryFromCommunityPurchaseFunding,
+  normalizeCommunityPurchaseEvmAddress,
 } from "@pirate/application";
-import type {
-  CommunityPurchaseFundingEvent,
-  CommunityPurchaseFundingEvidence,
-  CommunityPurchaseFundingSnapshot,
-  CommunityPurchaseOperationId,
-  MoneyFlowJournalEntry,
+import {
+  type CommunityPurchaseFundingEvent,
+  type CommunityPurchaseFundingEvidence,
+  type CommunityPurchaseFundingPlan,
+  type CommunityPurchaseFundingSnapshot,
+  type CommunityPurchaseOperationId,
+  communityPurchaseAtomicAmount,
+  createCommunityPurchaseFunding,
+  deriveCommunityPurchaseOperationId,
+  type EvmAddress,
+  type MoneyFlowJournalEntry,
 } from "@pirate/domain";
 import { Effect, type Layer } from "effect";
 
@@ -289,7 +298,249 @@ function insertJournal(
     .pipe(Effect.asVoid);
 }
 
+function bigintString(row: Row, field: string): bigint | null {
+  const value = row[field];
+  if (typeof value === "bigint") return value > 0n ? value : null;
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) {
+    return BigInt(value);
+  }
+  if (typeof value === "string" && /^[1-9][0-9]*$/u.test(value)) {
+    try {
+      return BigInt(value);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function address(row: Row, field: string): EvmAddress | null {
+  return normalizeCommunityPurchaseEvmAddress(row[field]);
+}
+
+type FundingPlanRow = Readonly<{
+  readonly plan: CommunityPurchaseFundingPlan;
+  readonly status: "active" | "bound" | "cancelled";
+  readonly operationId: string | null;
+  readonly expiresAt: string;
+  readonly databaseNowMs: number;
+}>;
+
+function fundingPlanFromRow(row: Row): FundingPlanRow | null {
+  const communityId = requiredString(row, "community_id");
+  const quoteId = requiredString(row, "quote_id");
+  const purchaseId = requiredString(row, "purchase_id");
+  const actorId = requiredString(row, "actor_id");
+  const buyerWallet = address(row, "buyer_wallet_address");
+  const chainId = integer(row, "chain_id");
+  const buyerChainId = integer(row, "buyer_chain_id");
+  const policyVersion = integer(row, "policy_version");
+  const tokenContract = address(row, "token_contract");
+  const tokenDecimals = integer(row, "token_decimals");
+  const treasuryAddress = address(row, "treasury_address");
+  const amountAtomic = bigintString(row, "amount_atomic");
+  const requiredConfirmations = integer(row, "required_confirmations");
+  const status = requiredString(row, "status");
+  const operationId = row.operation_id === null ? null : requiredString(row, "operation_id");
+  const expiresAt = timestamp(row, "expires_at");
+  const databaseNowMs = integer(row, "database_now_ms");
+  if (
+    communityId === null ||
+    quoteId === null ||
+    purchaseId === null ||
+    actorId === null ||
+    buyerWallet === null ||
+    chainId === null ||
+    buyerChainId !== chainId ||
+    policyVersion === null ||
+    tokenContract === null ||
+    tokenDecimals !== 6 ||
+    treasuryAddress === null ||
+    amountAtomic === null ||
+    requiredConfirmations === null ||
+    (status !== "active" && status !== "bound" && status !== "cancelled") ||
+    (status === "bound" && operationId === null) ||
+    (status !== "bound" && operationId !== null) ||
+    expiresAt === null ||
+    databaseNowMs === null
+  ) {
+    return null;
+  }
+  try {
+    const plan: CommunityPurchaseFundingPlan = {
+      communityId,
+      quoteId,
+      purchaseId,
+      policyVersion,
+      expected: {
+        chainId,
+        tokenContract,
+        tokenDecimals: 6,
+        sender: buyerWallet,
+        recipient: treasuryAddress,
+        amountAtomic: communityPurchaseAtomicAmount(amountAtomic),
+        requiredConfirmations,
+      },
+      now: databaseNowMs,
+    };
+    // Exercise the domain derivation while the row is still locked. A malformed
+    // persisted term is a storage defect, never caller-controlled input.
+    deriveCommunityPurchaseOperationId(plan);
+    return { plan, status, operationId, expiresAt, databaseNowMs };
+  } catch {
+    return null;
+  }
+}
+
+const PLAN_COLUMNS = `
+  quote_id, community_id, actor_id, buyer_wallet_address, buyer_chain_id,
+  purchase_id, policy_version, chain_id, token_contract, token_decimals,
+  treasury_address, amount_atomic, required_confirmations, quoted_at,
+  expires_at, status, operation_id,
+  (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint AS database_now_ms`;
+
+function insertAdmissionRequest(
+  transaction: Transaction,
+  input: CommunityPurchaseFundingAdmissionStoreInput,
+  operationId: CommunityPurchaseOperationId,
+  entry: MoneyFlowJournalEntry<CommunityPurchaseFundingSnapshot>,
+): Effect.Effect<void, ControlPlaneError> {
+  return transaction
+    .execute({
+      label: "money.community-purchase-funding.insert-admission-request",
+      text: `INSERT INTO community_purchase_funding_requests (
+               actor_id, endpoint, client_nonce, request_hash, canonical_request,
+               operation_id, status, result, result_version
+             ) VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9)`,
+      values: [
+        input.actorId,
+        COMMUNITY_PURCHASE_FUNDING_ENDPOINT,
+        input.clientNonce,
+        input.requestHash,
+        JSON.stringify(input.canonicalRequest),
+        operationId,
+        entry.status,
+        JSON.stringify(resultDocument(entry)),
+        entry.version,
+      ],
+      readonly: false,
+    })
+    .pipe(Effect.asVoid);
+}
+
 export function makeControlPlaneCommunityPurchaseFundingRepository() {
+  const beginFromPlan = Effect.fn("CommunityPurchaseFundingRepository.beginFromPlan")(function* (
+    input: CommunityPurchaseFundingAdmissionStoreInput,
+  ) {
+    const db = yield* ControlPlaneDb;
+    return yield* db.withTransaction((transaction) =>
+      Effect.gen(function* () {
+        // This lock is the idempotency fence. It is intentionally checked before
+        // expiry, so a lost response can be replayed after the quote expires.
+        yield* advisoryLock(
+          transaction,
+          `cpf:request:${input.actorId}:${COMMUNITY_PURCHASE_FUNDING_ENDPOINT}:${input.clientNonce}`,
+        );
+        const requestResult = yield* transaction.execute<Row>({
+          label: "money.community-purchase-funding.admission.lock-request",
+          text: `SELECT request_hash, operation_id
+                   FROM community_purchase_funding_requests
+                  WHERE actor_id = $1 AND endpoint = $2 AND client_nonce = $3
+                  FOR UPDATE`,
+          values: [input.actorId, COMMUNITY_PURCHASE_FUNDING_ENDPOINT, input.clientNonce],
+          readonly: false,
+        });
+        const requestRow = yield* oneRow(requestResult.rows);
+        if (requestRow !== null) {
+          if (requiredString(requestRow, "request_hash") !== input.requestHash) {
+            return { kind: "request_conflict" } as const;
+          }
+          const operationId = requiredString(requestRow, "operation_id");
+          if (operationId === null) return yield* Effect.fail(storageFailure("invalid-row"));
+          const row = yield* loadJournal(
+            transaction,
+            operationId as CommunityPurchaseOperationId,
+            true,
+          );
+          if (
+            row === null ||
+            requiredString(row, "actor_id") !== input.actorId ||
+            requiredString(row, "quote_id") !== input.quoteId ||
+            requiredString(row, "expected_sender") !== input.authenticatedWalletAddress
+          ) {
+            return yield* Effect.fail(storageFailure("invalid-row"));
+          }
+          const record = yield* decodeRecord(row);
+          if (record === null) return yield* Effect.fail(storageFailure("invalid-row"));
+          return { kind: "replayed", record } as const;
+        }
+
+        const planResult = yield* transaction.execute<Row>({
+          label: "money.community-purchase-funding.admission.lock-plan",
+          text: `SELECT ${PLAN_COLUMNS}
+                   FROM community_purchase_funding_plans
+                  WHERE quote_id = $1
+                  FOR UPDATE`,
+          values: [input.quoteId],
+          readonly: false,
+        });
+        const planRow = yield* oneRow(planResult.rows);
+        if (planRow === null) return { kind: "plan_not_found" } as const;
+        const planRecord = fundingPlanFromRow(planRow);
+        if (planRecord === null) return yield* Effect.fail(storageFailure("invalid-row"));
+        if (planRecord.plan.quoteId !== input.quoteId) {
+          return { kind: "plan_not_found" } as const;
+        }
+        if (requiredString(planRow, "actor_id") !== input.actorId) {
+          return { kind: "actor_mismatch" } as const;
+        }
+        if (planRecord.plan.expected.sender !== input.authenticatedWalletAddress) {
+          return { kind: "wallet_mismatch" } as const;
+        }
+        if (planRecord.status === "cancelled") return { kind: "plan_cancelled" } as const;
+        if (
+          planRecord.status === "active" &&
+          Date.parse(planRecord.expiresAt) <= planRecord.databaseNowMs
+        ) {
+          return { kind: "plan_expired" } as const;
+        }
+
+        const operationId = deriveCommunityPurchaseOperationId(planRecord.plan);
+        yield* advisoryLock(transaction, `cpf:operation:${operationId}`);
+        const existing = yield* loadJournal(transaction, operationId, true);
+        if (planRecord.status === "bound") {
+          if (planRecord.operationId !== operationId || existing === null) {
+            return { kind: "operation_conflict" } as const;
+          }
+          const expected = createCommunityPurchaseFunding(planRecord.plan);
+          if (!sameIdentity(existing, input.actorId, expected)) {
+            return { kind: "operation_conflict" } as const;
+          }
+          const record = yield* decodeRecord(existing);
+          if (record === null) return yield* Effect.fail(storageFailure("invalid-row"));
+          yield* insertAdmissionRequest(transaction, input, operationId, record.entry);
+          return { kind: "replayed", record } as const;
+        }
+        if (existing !== null) return { kind: "operation_conflict" } as const;
+
+        const snapshot = createCommunityPurchaseFunding(planRecord.plan);
+        const entry = journalEntryFromCommunityPurchaseFunding(snapshot);
+        yield* insertJournal(transaction, input.actorId, entry);
+        const bound = yield* transaction.execute({
+          label: "money.community-purchase-funding.admission.bind-plan",
+          text: `UPDATE community_purchase_funding_plans
+                    SET status = 'bound', operation_id = $2
+                  WHERE quote_id = $1 AND status = 'active' AND operation_id IS NULL`,
+          values: [input.quoteId, operationId],
+          readonly: false,
+        });
+        if (bound.rowCount !== 1) return { kind: "operation_conflict" } as const;
+        yield* insertAdmissionRequest(transaction, input, operationId, entry);
+        return { kind: "inserted", record: { entry } } as const;
+      }),
+    );
+  });
+
   const begin = Effect.fn("CommunityPurchaseFundingRepository.begin")(function* (
     input: BeginInput,
   ) {
@@ -678,7 +929,18 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
     },
   );
 
-  return { begin, load, acquireLease, wasTransitionCommitted, commitTransition };
+  return { begin, beginFromPlan, load, acquireLease, wasTransitionCommitted, commitTransition };
+}
+
+export function makeControlPlaneCommunityPurchaseFundingAdmissionStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): CommunityPurchaseFundingAdmissionStore {
+  const repository = makeControlPlaneCommunityPurchaseFundingRepository();
+  const provide = <A>(effect: Effect.Effect<A, RepositoryError, ControlPlaneDb>) =>
+    Effect.provide(runtime)(effect).pipe(Effect.mapError(mapRepositoryError));
+  return {
+    beginFromPlan: (input) => provide(repository.beginFromPlan(input)),
+  };
 }
 
 export function makeControlPlaneCommunityPurchaseFundingStore(

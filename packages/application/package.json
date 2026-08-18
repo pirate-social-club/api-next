@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./money/community-purchase-funding-admission": "./src/money/community-purchase-funding-admission.ts",
     "./verification": "./src/verification/index.ts",
     "./use-cases/community/follow-community": "./src/use-cases/community/follow-community.ts",
     "./use-cases/community/get-community-preview": "./src/use-cases/community/get-community-preview.ts",

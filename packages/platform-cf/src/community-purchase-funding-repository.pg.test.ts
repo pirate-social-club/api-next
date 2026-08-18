@@ -1,5 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application";
+import {
+  admitCommunityPurchaseFunding,
+  makeCommunityPurchaseFundingInterpreter,
+} from "@pirate/application";
 import {
   type CommunityPurchaseFundingEvidence,
   type CommunityPurchaseFundingPlan,
@@ -8,7 +11,10 @@ import {
 import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
-import { makeControlPlaneCommunityPurchaseFundingStore } from "./community-purchase-funding-repository";
+import {
+  makeControlPlaneCommunityPurchaseFundingAdmissionStore,
+  makeControlPlaneCommunityPurchaseFundingStore,
+} from "./community-purchase-funding-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -59,7 +65,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
     const connection = connectionForSchema(connectionString, schema);
     await runPostgresMigrations({ connectionString: connection });
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-    await admin.query("INSERT INTO users (user_id) VALUES ('user_1')");
+    await admin.query("INSERT INTO users (user_id) VALUES ('user_1'), ('user_2')");
     await admin.query(`INSERT INTO communities (
       community_id, display_name, created_by_user_id, created_at, updated_at
     ) VALUES ('community_1', 'Community One', 'user_1', clock_timestamp(), clock_timestamp())`);
@@ -113,8 +119,65 @@ function interpreterFor(connection: string) {
   );
 }
 
+function admissionFor(connection: string) {
+  return makeControlPlaneCommunityPurchaseFundingAdmissionStore(
+    makeDirectPostgresControlPlaneLayer(connection),
+  );
+}
+
 function run<A, E>(effect: Effect.Effect<A, E, never>): Promise<A> {
   return Effect.runPromise(Effect.scoped(effect));
+}
+
+function admit(
+  connection: string,
+  input: Partial<{
+    actorId: string;
+    authenticatedWalletAddress: string;
+    quoteId: string;
+    clientNonce: string;
+  }> = {},
+) {
+  return run(
+    admitCommunityPurchaseFunding(
+      {
+        actorId: input.actorId ?? "user_1",
+        authenticatedWalletAddress: input.authenticatedWalletAddress ?? BUYER,
+        quoteId: input.quoteId ?? "quote_admission",
+        clientNonce: input.clientNonce ?? "nonce_admission",
+      },
+      admissionFor(connection),
+    ),
+  );
+}
+
+async function insertAdmissionPlan(
+  admin: Client,
+  options: {
+    readonly quoteId?: string;
+    readonly status?: string;
+    readonly expired?: boolean;
+    readonly shortLived?: boolean;
+  } = {},
+) {
+  const quoteId = options.quoteId ?? "quote_admission";
+  const status = options.status ?? "active";
+  const expires = options.expired
+    ? "clock_timestamp() - INTERVAL '1 second'"
+    : options.shortLived
+      ? "clock_timestamp() + INTERVAL '2 seconds'"
+      : "clock_timestamp() + INTERVAL '1 hour'";
+  await admin.query(
+    `
+    INSERT INTO community_purchase_funding_plans (
+      quote_id, community_id, actor_id, buyer_wallet_address, buyer_chain_id, purchase_id,
+      policy_version, chain_id, token_contract, token_decimals, treasury_address,
+      amount_atomic, required_confirmations, quoted_at, expires_at, status
+    ) VALUES ($1, 'community_1', 'user_1', $2, 8453, $3, 3, 8453, $4, 6, $5,
+              12500000, 3, clock_timestamp() - INTERVAL '1 hour', ${expires}, $6)
+  `,
+    [quoteId, BUYER, `${quoteId}_purchase`, TOKEN, TREASURY, status],
+  );
 }
 
 async function begin(
@@ -510,8 +573,97 @@ suite("Postgres 17 community-purchase funding journal", () => {
     completedTestCount += 1;
   });
 
+  test("admits from a locked server plan and replays after plan expiry", async () => {
+    await withSchema(async (connection, admin) => {
+      await insertAdmissionPlan(admin, { shortLived: true });
+      const first = await admit(connection);
+      expect(first.replayed).toBe(false);
+      await Bun.sleep(2_100);
+      const replay = await admit(connection);
+      expect(replay.replayed).toBe(true);
+      expect(replay.entry.state.operationId).toBe(first.entry.state.operationId);
+      await insertAdmissionPlan(admin, { quoteId: "quote_other" });
+      await expect(admit(connection, { quoteId: "quote_other" })).rejects.toMatchObject({
+        reason: "request-conflict",
+      });
+      const counts = await admin.query(
+        `SELECT
+           (SELECT count(*) FROM community_purchase_funding_journal) AS journals,
+           (SELECT count(*) FROM community_purchase_funding_requests) AS requests`,
+      );
+      expect(counts.rows[0]).toEqual({ journals: "1", requests: "1" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("aliases a bound plan for a second nonce and rejects actor or wallet mismatch", async () => {
+    await withSchema(async (connection, admin) => {
+      await insertAdmissionPlan(admin);
+      const [first, alias] = await Promise.all([
+        admit(connection),
+        admit(connection, { clientNonce: "nonce_admission_2" }),
+      ]);
+      expect([first.replayed, alias.replayed].sort()).toEqual([false, true]);
+      expect(alias.entry.state.operationId).toBe(first.entry.state.operationId);
+      await expect(
+        admit(connection, { actorId: "user_2", clientNonce: "nonce_actor" }),
+      ).rejects.toMatchObject({
+        reason: "actor-mismatch",
+      });
+      await expect(
+        admit(connection, {
+          authenticatedWalletAddress: `0x${"99".repeat(20)}`,
+          clientNonce: "nonce_wallet",
+        }),
+      ).rejects.toMatchObject({ reason: "wallet-mismatch" });
+      const counts = await admin.query(
+        `SELECT
+           (SELECT count(*) FROM community_purchase_funding_journal) AS journals,
+           (SELECT count(*) FROM community_purchase_funding_requests) AS requests`,
+      );
+      expect(counts.rows[0]).toEqual({ journals: "1", requests: "2" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects an expired first admission without creating a journal", async () => {
+    await withSchema(async (connection, admin) => {
+      await insertAdmissionPlan(admin, { expired: true });
+      await expect(admit(connection)).rejects.toMatchObject({ reason: "plan-expired" });
+      const count = await admin.query("SELECT count(*) FROM community_purchase_funding_journal");
+      expect(count.rows[0]?.count).toBe("0");
+    });
+    completedTestCount += 1;
+  });
+
+  test("rolls back plan binding and journal creation when request persistence fails", async () => {
+    await withSchema(async (connection, admin) => {
+      await insertAdmissionPlan(admin);
+      await admin.query(`
+        CREATE FUNCTION fail_funding_admission_request() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'injected request failure';
+        END;
+        $$;
+        CREATE TRIGGER fail_funding_admission_request
+        BEFORE INSERT ON community_purchase_funding_requests
+        FOR EACH ROW EXECUTE FUNCTION fail_funding_admission_request();
+      `);
+      await expect(admit(connection)).rejects.toMatchObject({ reason: "unavailable" });
+      const state = await admin.query(
+        `SELECT status, operation_id,
+                (SELECT count(*) FROM community_purchase_funding_journal) AS journals
+           FROM community_purchase_funding_plans
+          WHERE quote_id = 'quote_admission'`,
+      );
+      expect(state.rows[0]).toEqual({ status: "active", operation_id: null, journals: "0" });
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 7) {
+    if (connectionString !== undefined && completedTestCount === 11) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

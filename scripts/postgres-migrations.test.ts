@@ -34,6 +34,7 @@ describe("Postgres migration runner", () => {
       "0011_verification_start_reservations.sql",
       "0012_verification_completion_attempts.sql",
       "0013_m3_community_purchase_funding_journal.sql",
+      "0014_m3_community_purchase_funding_plans.sql",
     ]);
     expect(formatMigrationPlan(migrations)).toContain("0001_v1_product_slice.sql");
     expect(formatMigrationPlan(migrations)).toContain("0002_identity.sql");
@@ -50,13 +51,16 @@ describe("Postgres migration runner", () => {
     expect(formatMigrationPlan(migrations)).toContain(
       "0013_m3_community_purchase_funding_journal.sql",
     );
+    expect(formatMigrationPlan(migrations)).toContain(
+      "0014_m3_community_purchase_funding_plans.sql",
+    );
   });
 
   test("dry-run does not require an administrative URL or open a connection", async () => {
     const output = await runPostgresMigrations({ dryRun: true });
     expect(output).toMatchObject({ dryRun: true });
     if (!output.dryRun) throw new Error("expected a dry-run result");
-    expect(output.plan).toHaveLength(13);
+    expect(output.plan).toHaveLength(14);
   });
 
   test("normalizes psql's system sslrootcert value for node pg", () => {
@@ -121,6 +125,13 @@ describe("Postgres migration runner", () => {
     await Bun.write(
       join(directory, "0013_m3_community_purchase_funding_journal.sql"),
       communityPurchaseFundingJournal,
+    );
+    const communityPurchaseFundingPlans = await Bun.file(
+      new URL("0014_m3_community_purchase_funding_plans.sql", source),
+    ).text();
+    await Bun.write(
+      join(directory, "0014_m3_community_purchase_funding_plans.sql"),
+      communityPurchaseFundingPlans,
     );
 
     await expect(loadPostgresMigrations(new URL(`file://${directory}/`))).rejects.toThrow(

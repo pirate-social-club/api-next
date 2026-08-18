@@ -57,6 +57,13 @@ lease generations, reducer-consistent version advances, and append-only
 evidence. It is intentionally flow-specific; shared journal extraction waits
 for the second proven money flow required by spec 004.
 
+`0014_m3_community_purchase_funding_plans.sql` adds immutable, flow-specific
+community-purchase funding terms. A plan has one deterministic purchase,
+canonical wallet/chain and treasury terms, and a database-timestamped quote
+window. Its trigger permits only active-to-bound or active-to-cancelled
+transitions; binding requires one unique journal operation and cannot be
+undone.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every
