@@ -171,7 +171,15 @@ function parseCookies(context: HttpContext): ParsedCookies {
   const invalidNames = new Set<string>();
   for (const pair of header.split(";")) {
     const separator = pair.indexOf("=");
-    if (separator <= 0) continue;
+    if (separator <= 0) {
+      const bareName = pair.trim();
+      if (SENSITIVE_COOKIE_NAMES.has(bareName)) {
+        if (seenNames.has(bareName)) duplicateNames.add(bareName);
+        seenNames.add(bareName);
+        invalidNames.add(bareName);
+      }
+      continue;
+    }
     const name = pair.slice(0, separator).trim();
     const raw = pair.slice(separator + 1).trim();
     if (name === "") continue;
@@ -488,7 +496,6 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       allowHeaders: ["Authorization", "Content-Type", "X-Request-Id", "X-CSRF-Token"],
       exposeHeaders: ["X-Request-Id"],
       allowMethods: ["GET", "POST", "OPTIONS"],
-      credentials: true,
     }),
   );
 

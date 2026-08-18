@@ -293,6 +293,16 @@ describe("contracts-generated HTTP worker", () => {
       headers: { cookie: "__Host-pirate_session=%ZZ; __Host-pirate_csrf=csrf" },
     });
     expect(malformedSession.status).toBe(401);
+
+    for (const cookie of [
+      "__Host-pirate_session; __Host-pirate_session=one; __Host-pirate_csrf=csrf",
+      "__Host-pirate_session=one; __Host-pirate_session; __Host-pirate_csrf=csrf",
+    ]) {
+      const bareSensitive = await app.request("http://worker.test/users/me", {
+        headers: { cookie },
+      });
+      expect(bareSensitive.status).toBe(401);
+    }
   });
 
   it("returns the declared redacted internal error for an adapter defect", async () => {
@@ -855,7 +865,7 @@ describe("contracts-generated HTTP worker", () => {
 
       expect(response.status).toBe(200);
       expect(response.headers.get("access-control-allow-origin")).toBe(origin);
-      expect(response.headers.get("access-control-allow-credentials")).toBe("true");
+      expect(response.headers.get("access-control-allow-credentials")).toBeNull();
       expect(response.headers.get("vary")).toContain("Origin");
     }
   });

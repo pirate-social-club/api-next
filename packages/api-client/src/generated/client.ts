@@ -186,8 +186,8 @@ export type StartVerificationSessionError = PostVerificationSessionsError;
 export interface PirateApiRequestOptions {
   readonly headers?: Headers | readonly [string, string][] | Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
-  /** Browser cookie mode; use include when the API is on another origin. */
-  readonly credentials?: "omit" | "same-origin" | "include";
+  /** Browser cookie mode is limited to the same-origin Solid /api proxy. */
+  readonly credentials?: "omit" | "same-origin";
 }
 export interface PirateApiClientOptions extends PirateApiRequestOptions {
   readonly fetchImpl?: typeof fetch;
