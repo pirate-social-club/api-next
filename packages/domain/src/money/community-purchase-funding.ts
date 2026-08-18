@@ -6,6 +6,7 @@
 import {
   AMBIGUOUS,
   type AmbiguousFailure,
+  LEGACY,
   type LegacyFailure,
   type ReclaimableFailure,
 } from "./failure-fence";
@@ -171,11 +172,28 @@ export type CommunityPurchaseFundingEvent =
   | (EventHeader & {
       readonly type: "reconciliation_resolved";
       readonly evidence: CommunityPurchaseFundingEvidence;
+    })
+  | (EventHeader & {
+      /**
+       * Silent checkout abandonment. The server-owned deadline derives from the
+       * immutable plan expiry; `at` comes from the database clock. Carries no
+       * transaction identity and never proves that no value moved, so the only
+       * honest outcome is legacy ambiguity — never reclaimable or terminal.
+       */
+      readonly type: "planned_observation_window_expired";
+      readonly policyVersion: number;
+      readonly observationDeadline: number;
     });
 
 export const COMMUNITY_PURCHASE_FUNDING_ALLOWED_TRANSITIONS: AllowedTransitionTable<CommunityPurchaseFundingState> =
   {
-    planned: ["confirming", "confirmed", "reverted", "reclaimable_failed"],
+    planned: [
+      "confirming",
+      "confirmed",
+      "reverted",
+      "reclaimable_failed",
+      "reconciliation_required",
+    ],
     confirming: ["confirming", "confirmed", "reverted", "reconciliation_required"],
     confirmed: ["confirmed", "reconciliation_required"],
     reverted: ["reverted", "reconciliation_required"],
@@ -657,6 +675,26 @@ function reduceCommunityPurchaseFunding(
       failureReason: null,
       reconciliationEvidence: null,
     };
+  }
+
+  if (event.type === "planned_observation_window_expired") {
+    if (current.state !== "planned") {
+      return rejectTransition(`planned_observation_expiry_not_allowed_from:${current.state}`);
+    }
+    if (event.policyVersion !== current.policyVersion) {
+      return rejectTransition("planned_observation_expiry_policy_mismatch");
+    }
+    if (!Number.isSafeInteger(event.observationDeadline) || event.observationDeadline < 1) {
+      return rejectTransition("planned_observation_expiry_deadline_invalid");
+    }
+    if (event.at < event.observationDeadline) {
+      return rejectTransition("planned_observation_expiry_not_due");
+    }
+    return requireReconciliation(current, {
+      at: event.at,
+      failure: LEGACY,
+      reason: "planned_observation_window_expired",
+    });
   }
 
   if (event.type === "reconciliation_required") {

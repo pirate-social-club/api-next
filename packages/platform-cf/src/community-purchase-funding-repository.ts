@@ -2,6 +2,7 @@ import {
   COMMUNITY_PURCHASE_FUNDING_ENDPOINT,
   type CommunityPurchaseFundingAdmissionStore,
   type CommunityPurchaseFundingAdmissionStoreInput,
+  type CommunityPurchaseFundingExpiryStore,
   type CommunityPurchaseFundingJournalRecord,
   type CommunityPurchaseFundingJournalStore,
   type CommunityPurchaseFundingQueryStore,
@@ -44,6 +45,7 @@ type CommitTransitionInput = Parameters<
 >[0];
 type LoadForActorInput = Parameters<CommunityPurchaseFundingQueryStore["loadForActor"]>[0];
 type ListReconcilableInput = Parameters<CommunityPurchaseFundingQueryStore["listReconcilable"]>[0];
+type ReadPlanExpiryInput = Parameters<CommunityPurchaseFundingExpiryStore["readPlanExpiry"]>[0];
 
 const JOURNAL_COLUMNS = `
   operation_id, community_id, actor_id, quote_id, purchase_id, policy_version,
@@ -687,6 +689,37 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
     },
   );
 
+  // The plan row is locked so the immutable expires_at and the Postgres clock
+  // are read in the same transaction. The deadline and "now" never come from a
+  // browser, a worker clock, or a cached read.
+  const readPlanExpiry = Effect.fn("CommunityPurchaseFundingRepository.readPlanExpiry")(function* (
+    input: ReadPlanExpiryInput,
+  ) {
+    const db = yield* ControlPlaneDb;
+    return yield* db.withTransaction((transaction) =>
+      Effect.gen(function* () {
+        const result = yield* transaction.execute<Row>({
+          label: "money.community-purchase-funding.read-plan-expiry",
+          text: `SELECT expires_at,
+                        (EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint AS database_now_ms
+                   FROM community_purchase_funding_plans
+                  WHERE operation_id = $1
+                  FOR UPDATE`,
+          values: [input.operationId],
+          readonly: false,
+        });
+        const row = yield* oneRow(result.rows);
+        if (row === null) return null;
+        const expiresAt = timestamp(row, "expires_at");
+        const databaseNowMs = integer(row, "database_now_ms");
+        if (expiresAt === null || databaseNowMs === null) {
+          return yield* Effect.fail(storageFailure("invalid-row"));
+        }
+        return { observationDeadlineMs: Date.parse(expiresAt), databaseNowMs } as const;
+      }),
+    );
+  });
+
   const acquireLease = Effect.fn("CommunityPurchaseFundingRepository.acquireLease")(function* (
     input: AcquireLeaseInput,
   ) {
@@ -994,6 +1027,7 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
     load,
     loadForActor,
     listReconcilable,
+    readPlanExpiry,
     acquireLease,
     wasTransitionCommitted,
     commitTransition,
@@ -1009,6 +1043,17 @@ export function makeControlPlaneCommunityPurchaseFundingQueryStore(
   return {
     loadForActor: (input) => provide(repository.loadForActor(input)),
     listReconcilable: (input) => provide(repository.listReconcilable(input)),
+  };
+}
+
+export function makeControlPlaneCommunityPurchaseFundingExpiryStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): CommunityPurchaseFundingExpiryStore {
+  const repository = makeControlPlaneCommunityPurchaseFundingRepository();
+  const provide = <A>(effect: Effect.Effect<A, RepositoryError, ControlPlaneDb>) =>
+    Effect.provide(runtime)(effect).pipe(Effect.mapError(mapRepositoryError));
+  return {
+    readPlanExpiry: (input) => provide(repository.readPlanExpiry(input)),
   };
 }
 

@@ -2773,7 +2773,7 @@ BEGIN
   END IF;
 
   IF NOT (
-    (OLD.state = 'planned' AND NEW.state IN ('confirming', 'confirmed', 'reverted', 'reclaimable_failed'))
+    (OLD.state = 'planned' AND NEW.state IN ('confirming', 'confirmed', 'reverted', 'reclaimable_failed', 'reconciliation_required'))
     OR (OLD.state = 'confirming' AND NEW.state IN ('confirming', 'confirmed', 'reverted', 'reconciliation_required'))
     OR (OLD.state = 'confirmed' AND NEW.state IN ('confirmed', 'reconciliation_required'))
     OR (OLD.state = 'reverted' AND NEW.state IN ('reverted', 'reconciliation_required'))

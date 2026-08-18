@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   admitCommunityPurchaseFunding,
+  makeCommunityPurchaseFundingExpiryUseCase,
   makeCommunityPurchaseFundingInterpreter,
 } from "@pirate/application";
 import {
@@ -13,6 +14,8 @@ import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
 import {
   makeControlPlaneCommunityPurchaseFundingAdmissionStore,
+  makeControlPlaneCommunityPurchaseFundingExpiryStore,
+  makeControlPlaneCommunityPurchaseFundingQueryStore,
   makeControlPlaneCommunityPurchaseFundingStore,
 } from "./community-purchase-funding-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -121,6 +124,21 @@ function interpreterFor(connection: string) {
 
 function admissionFor(connection: string) {
   return makeControlPlaneCommunityPurchaseFundingAdmissionStore(
+    makeDirectPostgresControlPlaneLayer(connection),
+  );
+}
+
+function expiryFor(connection: string) {
+  return makeCommunityPurchaseFundingExpiryUseCase(
+    interpreterFor(connection),
+    makeControlPlaneCommunityPurchaseFundingExpiryStore(
+      makeDirectPostgresControlPlaneLayer(connection),
+    ),
+  );
+}
+
+function queryFor(connection: string) {
+  return makeControlPlaneCommunityPurchaseFundingQueryStore(
     makeDirectPostgresControlPlaneLayer(connection),
   );
 }
@@ -662,8 +680,302 @@ suite("Postgres 17 community-purchase funding journal", () => {
     completedTestCount += 1;
   });
 
+  test("parks a silent planned operation as legacy-ambiguous through the journal", async () => {
+    await withSchema(async (connection, admin) => {
+      await insertAdmissionPlan(admin, { shortLived: true });
+      const admitted = await admit(connection);
+      const operationId = admitted.entry.state.operationId;
+      await Bun.sleep(2_100);
+      const result = await run(
+        expiryFor(connection)({
+          operationId,
+          ownerId: "worker_1",
+          leaseMs: 30_000,
+          source: "reconciler",
+        }),
+      );
+      expect(result.kind).toBe("expired");
+      const journal = await admin.query(
+        `SELECT state, version, failure_tag, failure_reason,
+                funding_transaction_hash, funding_log_index, funding_observation_id
+           FROM community_purchase_funding_journal
+          WHERE operation_id = $1`,
+        [operationId],
+      );
+      expect(journal.rows[0]).toEqual({
+        state: "reconciliation_required",
+        version: "2",
+        failure_tag: "legacy",
+        failure_reason: "planned_observation_window_expired",
+        funding_transaction_hash: null,
+        funding_log_index: null,
+        funding_observation_id: null,
+      });
+      const planRow = await admin.query(
+        `SELECT status, operation_id FROM community_purchase_funding_plans
+          WHERE quote_id = 'quote_admission'`,
+      );
+      expect(planRow.rows[0]).toEqual({ status: "bound", operation_id: operationId });
+      const request = await admin.query(
+        `SELECT status FROM community_purchase_funding_requests WHERE operation_id = $1`,
+        [operationId],
+      );
+      expect(request.rows[0]).toEqual({ status: "reconciliation_required" });
+      const transition = await admin.query(
+        `SELECT source, event_type, observation_id, transaction_hash, log_index
+           FROM community_purchase_funding_transitions
+          WHERE operation_id = $1`,
+        [operationId],
+      );
+      expect(transition.rows[0]).toEqual({
+        source: "reconciler",
+        event_type: "planned_observation_window_expired",
+        observation_id: null,
+        transaction_hash: null,
+        log_index: null,
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("does not expire before the database-clock deadline", async () => {
+    await withSchema(async (connection, admin) => {
+      await insertAdmissionPlan(admin);
+      const admitted = await admit(connection);
+      const operationId = admitted.entry.state.operationId;
+      const result = await run(
+        expiryFor(connection)({
+          operationId,
+          ownerId: "worker_1",
+          leaseMs: 30_000,
+          source: "reconciler",
+        }),
+      );
+      expect(result.kind).toBe("not_due");
+      const journal = await admin.query(
+        `SELECT state, version FROM community_purchase_funding_journal WHERE operation_id = $1`,
+        [operationId],
+      );
+      expect(journal.rows[0]).toEqual({ state: "planned", version: "1" });
+      const transitions = await admin.query(
+        "SELECT count(*) FROM community_purchase_funding_transitions",
+      );
+      expect(transitions.rows[0]?.count).toBe("0");
+    });
+    completedTestCount += 1;
+  });
+
+  test("excludes a parked hashless operation from listReconcilable", async () => {
+    await withSchema(async (connection, admin) => {
+      await insertAdmissionPlan(admin, { shortLived: true });
+      const admitted = await admit(connection);
+      const parkedId = admitted.entry.state.operationId;
+      const { interpreter, begun } = await begin(connection, {
+        nonce: "nonce_2",
+        fundingPlan: plan("quote_2", "purchase_2"),
+      });
+      const lease = await run(
+        interpreter.acquireLease({
+          operationId: begun.entry.state.operationId,
+          ownerId: "worker_1",
+          leaseMs: 60_000,
+        }),
+      );
+      await run(
+        interpreter.transition({
+          lease,
+          source: "request",
+          expectedVersion: 1,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 1,
+            at: 1_001,
+            evidence: { ...evidence(), observedHeadBlockNumber: 123 },
+          },
+        }),
+      );
+      await Bun.sleep(2_100);
+      const expired = await run(
+        expiryFor(connection)({
+          operationId: parkedId,
+          ownerId: "worker_1",
+          leaseMs: 30_000,
+          source: "reconciler",
+        }),
+      );
+      expect(expired.kind).toBe("expired");
+      const reconcilable = await run(queryFor(connection).listReconcilable({ limit: 10 }));
+      expect(reconcilable.map((candidate) => candidate.operationId)).toEqual([
+        begun.entry.state.operationId,
+      ]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("resolves a parked operation from later actor-supplied evidence", async () => {
+    await withSchema(async (connection, admin) => {
+      await insertAdmissionPlan(admin, { shortLived: true });
+      const admitted = await admit(connection);
+      const operationId = admitted.entry.state.operationId;
+      await Bun.sleep(2_100);
+      const expired = await run(
+        expiryFor(connection)({
+          operationId,
+          ownerId: "worker_1",
+          leaseMs: 30_000,
+          source: "reconciler",
+        }),
+      );
+      expect(expired.kind).toBe("expired");
+      const interpreter = interpreterFor(connection);
+      const lease = await run(
+        interpreter.acquireLease({ operationId, ownerId: "worker_1", leaseMs: 60_000 }),
+      );
+      const resolved = await run(
+        interpreter.transition({
+          lease,
+          source: "request",
+          expectedVersion: 2,
+          event: {
+            type: "reconciliation_resolved",
+            expectedVersion: 2,
+            at: expired.entry.state.updatedAt + 1,
+            evidence: evidence(),
+          },
+        }),
+      );
+      expect(resolved.entry.status).toBe("confirmed");
+      const receipt = await admin.query(
+        `SELECT transaction_hash, log_index FROM community_purchase_funding_receipts
+          WHERE operation_id = $1`,
+        [operationId],
+      );
+      expect(receipt.rows[0]).toEqual({
+        transaction_hash: TRANSACTION_HASH,
+        log_index: 4,
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("rolls back expiry when the transition cannot persist", async () => {
+    await withSchema(async (connection, admin) => {
+      await insertAdmissionPlan(admin, { shortLived: true });
+      const admitted = await admit(connection);
+      const operationId = admitted.entry.state.operationId;
+      await admin.query(`
+        CREATE FUNCTION fail_funding_expiry_transition() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+          RAISE EXCEPTION 'injected transition failure';
+        END;
+        $$;
+        CREATE TRIGGER fail_funding_expiry_transition
+        BEFORE INSERT ON community_purchase_funding_transitions
+        FOR EACH ROW EXECUTE FUNCTION fail_funding_expiry_transition();
+      `);
+      await Bun.sleep(2_100);
+      await expect(
+        run(
+          expiryFor(connection)({
+            operationId,
+            ownerId: "worker_1",
+            leaseMs: 30_000,
+            source: "reconciler",
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "unavailable" });
+      const journal = await admin.query(
+        `SELECT state, version FROM community_purchase_funding_journal WHERE operation_id = $1`,
+        [operationId],
+      );
+      expect(journal.rows[0]).toEqual({ state: "planned", version: "1" });
+      const transitions = await admin.query(
+        "SELECT count(*) FROM community_purchase_funding_transitions",
+      );
+      expect(transitions.rows[0]?.count).toBe("0");
+      const planRow = await admin.query(
+        `SELECT status, operation_id FROM community_purchase_funding_plans
+          WHERE quote_id = 'quote_admission'`,
+      );
+      expect(planRow.rows[0]).toEqual({ status: "bound", operation_id: operationId });
+    });
+    completedTestCount += 1;
+  });
+
+  test("trigger accepts the planned expiry edge and rejects neighboring edges", async () => {
+    await withSchema(async (connection, admin) => {
+      const { interpreter, begun } = await begin(connection);
+      const firstLease = await run(
+        interpreter.acquireLease({
+          operationId: begun.entry.state.operationId,
+          ownerId: "worker_1",
+          leaseMs: 60_000,
+        }),
+      );
+      await run(
+        interpreter.transition({
+          lease: firstLease,
+          source: "request",
+          expectedVersion: 1,
+          event: {
+            type: "reclaimable_failure_recorded",
+            expectedVersion: 1,
+            at: 1_001,
+            failure: { _tag: "reclaimable", mayRebroadcast: true, mayRetry: true },
+            reason: "provider_unavailable_before_observation",
+          },
+        }),
+      );
+      await expect(
+        admin.query(
+          `UPDATE community_purchase_funding_journal
+              SET state = 'reconciliation_required', version = 3,
+                  updated_at = clock_timestamp()
+            WHERE operation_id = $1`,
+          [begun.entry.state.operationId],
+        ),
+      ).rejects.toThrow("journal transition is not allowed");
+
+      const second = await begin(connection, {
+        nonce: "nonce_2",
+        fundingPlan: plan("quote_2", "purchase_2"),
+      });
+      const secondLease = await run(
+        interpreter.acquireLease({
+          operationId: second.begun.entry.state.operationId,
+          ownerId: "worker_1",
+          leaseMs: 60_000,
+        }),
+      );
+      await run(
+        interpreter.transition({
+          lease: secondLease,
+          source: "request",
+          expectedVersion: 1,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 1,
+            at: 1_001,
+            evidence: { ...evidence(), observedHeadBlockNumber: 123 },
+          },
+        }),
+      );
+      await expect(
+        admin.query(
+          `UPDATE community_purchase_funding_journal
+              SET state = 'reclaimable_failed', version = 3,
+                  updated_at = clock_timestamp()
+            WHERE operation_id = $1`,
+          [second.begun.entry.state.operationId],
+        ),
+      ).rejects.toThrow("journal transition is not allowed");
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 11) {
+    if (connectionString !== undefined && completedTestCount === 17) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

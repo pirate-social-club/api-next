@@ -103,7 +103,13 @@ describe("community-purchase funding state machine", () => {
     "reconciliation_required",
   ];
   const expected: Record<CommunityPurchaseFundingState, CommunityPurchaseFundingState[]> = {
-    planned: ["confirming", "confirmed", "reverted", "reclaimable_failed"],
+    planned: [
+      "confirming",
+      "confirmed",
+      "reverted",
+      "reclaimable_failed",
+      "reconciliation_required",
+    ],
     confirming: ["confirming", "confirmed", "reverted", "reconciliation_required"],
     confirmed: ["confirmed", "reconciliation_required"],
     reverted: ["reverted", "reconciliation_required"],
@@ -378,5 +384,156 @@ describe("community-purchase funding state machine", () => {
         evidence: EVIDENCE,
       }),
     ).toThrow("community_purchase_operation_identity_mismatch");
+  });
+
+  test("parks silent planned expiry as legacy ambiguity without transaction identity", () => {
+    const planned = createCommunityPurchaseFunding(PLAN);
+    const deadline = planned.updatedAt + 10;
+    const expired = accepted(
+      transitionCommunityPurchaseFunding(planned, {
+        type: "planned_observation_window_expired",
+        expectedVersion: planned.version,
+        at: deadline,
+        policyVersion: PLAN.policyVersion,
+        observationDeadline: deadline,
+      }),
+    );
+    expect(expired).toMatchObject({
+      state: "reconciliation_required",
+      version: planned.version + 1,
+      updatedAt: deadline,
+      operationId: planned.operationId,
+      quoteId: planned.quoteId,
+      purchaseId: planned.purchaseId,
+      policyVersion: PLAN.policyVersion,
+      failure: LEGACY,
+      failureReason: "planned_observation_window_expired",
+      fundingEvidence: null,
+      reconciliationEvidence: null,
+      confirmedReceiptIdentity: null,
+    });
+
+    // A later expiry attempt is not a replay; the operation is already parked.
+    expect(
+      rejected(
+        transitionCommunityPurchaseFunding(expired, {
+          type: "planned_observation_window_expired",
+          expectedVersion: expired.version,
+          at: deadline + 1,
+          policyVersion: PLAN.policyVersion,
+          observationDeadline: deadline,
+        }),
+      ).rejected,
+    ).toBe("planned_observation_expiry_not_allowed_from:reconciliation_required");
+
+    // Parking never forfeits: actor-supplied evidence still resolves the operation.
+    const resolved = accepted(
+      transitionCommunityPurchaseFunding(expired, {
+        type: "reconciliation_resolved",
+        expectedVersion: expired.version,
+        at: expired.updatedAt + 1,
+        evidence: FINAL_EVIDENCE,
+      }),
+    );
+    expect(resolved).toMatchObject({
+      state: "confirmed",
+      fundingEvidence: FINAL_EVIDENCE,
+      confirmedReceiptIdentity: {
+        transactionHash: FINAL_EVIDENCE.transactionHash,
+        blockNumber: FINAL_EVIDENCE.blockNumber,
+        blockHash: FINAL_EVIDENCE.blockHash,
+        logIndex: FINAL_EVIDENCE.logIndex,
+      },
+    });
+  });
+
+  test("rejects planned observation expiry without a due, matching, well-formed deadline", () => {
+    const planned = createCommunityPurchaseFunding(PLAN);
+    const deadline = planned.updatedAt + 10;
+    expect(
+      rejected(
+        transitionCommunityPurchaseFunding(planned, {
+          type: "planned_observation_window_expired",
+          expectedVersion: planned.version,
+          at: deadline - 1,
+          policyVersion: PLAN.policyVersion,
+          observationDeadline: deadline,
+        }),
+      ).rejected,
+    ).toBe("planned_observation_expiry_not_due");
+    expect(
+      rejected(
+        transitionCommunityPurchaseFunding(planned, {
+          type: "planned_observation_window_expired",
+          expectedVersion: planned.version,
+          at: deadline,
+          policyVersion: PLAN.policyVersion + 1,
+          observationDeadline: deadline,
+        }),
+      ).rejected,
+    ).toBe("planned_observation_expiry_policy_mismatch");
+    for (const observationDeadline of [0, -5, 1.5]) {
+      expect(
+        rejected(
+          transitionCommunityPurchaseFunding(planned, {
+            type: "planned_observation_window_expired",
+            expectedVersion: planned.version,
+            at: deadline,
+            policyVersion: PLAN.policyVersion,
+            observationDeadline,
+          }),
+        ).rejected,
+      ).toBe("planned_observation_expiry_deadline_invalid");
+    }
+    expect(planned).toEqual(createCommunityPurchaseFunding(PLAN));
+  });
+
+  test("rejects planned observation expiry from every non-planned state", () => {
+    const planned = createCommunityPurchaseFunding(PLAN);
+    const confirmed = accepted(observe(createCommunityPurchaseFunding(PLAN), FINAL_EVIDENCE));
+    const confirming = accepted(
+      observe(createCommunityPurchaseFunding(PLAN), {
+        ...FINAL_EVIDENCE,
+        observedHeadBlockNumber: 123,
+      }),
+    );
+    const reclaimable = accepted(
+      transitionCommunityPurchaseFunding(createCommunityPurchaseFunding(PLAN), {
+        type: "reclaimable_failure_recorded",
+        expectedVersion: 1,
+        at: planned.updatedAt + 1,
+        failure: RECLAIMABLE,
+        reason: "provider_unavailable_before_observation",
+      }),
+    );
+    const reverted = accepted(
+      observe(createCommunityPurchaseFunding(PLAN), {
+        ...FINAL_EVIDENCE,
+        receiptStatus: "reverted",
+        logIndex: null,
+      }),
+    );
+    const parked = accepted(
+      transitionCommunityPurchaseFunding(createCommunityPurchaseFunding(PLAN), {
+        type: "planned_observation_window_expired",
+        expectedVersion: 1,
+        at: planned.updatedAt + 1,
+        policyVersion: PLAN.policyVersion,
+        observationDeadline: planned.updatedAt + 1,
+      }),
+    );
+    for (const snapshot of [confirming, confirmed, reverted, reclaimable, parked]) {
+      expect(
+        rejected(
+          transitionCommunityPurchaseFunding(snapshot, {
+            type: "planned_observation_window_expired",
+            expectedVersion: snapshot.version,
+            at: snapshot.updatedAt + 1,
+            policyVersion: PLAN.policyVersion,
+            observationDeadline: snapshot.updatedAt + 1,
+          }),
+        ).rejected,
+      ).toBe(`planned_observation_expiry_not_allowed_from:${snapshot.state}`);
+    }
   });
 });

@@ -41,6 +41,7 @@ export {
 } from "./community-purchase-funding-chain-reader";
 export {
   makeControlPlaneCommunityPurchaseFundingAdmissionStore,
+  makeControlPlaneCommunityPurchaseFundingExpiryStore,
   makeControlPlaneCommunityPurchaseFundingQueryStore,
   makeControlPlaneCommunityPurchaseFundingRepository,
   makeControlPlaneCommunityPurchaseFundingStore,
