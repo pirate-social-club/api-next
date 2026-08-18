@@ -89,6 +89,12 @@ const communityPurchaseFundingPlansMigrationSql = await Bun.file(
 const identityCredentialsMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0015_identity_credentials.sql", import.meta.url),
 ).text();
+const identityCredentialInvariantsMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0016_identity_credential_invariants.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -168,6 +174,11 @@ const identityCredentialsMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0015_identity_credentials.sql"] ?? "",
   sql: identityCredentialsMigrationSql,
 };
+const identityCredentialInvariantsMigration: PostgresMigration = {
+  version: "0016_identity_credential_invariants.sql",
+  checksum: checksumManifest.migrations["0016_identity_credential_invariants.sql"] ?? "",
+  sql: identityCredentialInvariantsMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -184,6 +195,7 @@ const migrations: readonly PostgresMigration[] = [
   communityPurchaseFundingJournalMigration,
   communityPurchaseFundingPlansMigration,
   identityCredentialsMigration,
+  identityCredentialInvariantsMigration,
 ];
 
 function checksum(value: string): string {
@@ -341,6 +353,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         communityPurchaseFundingPlansMigration.checksum,
       );
       expect(checksum(identityCredentialsMigrationSql)).toBe(identityCredentialsMigration.checksum);
+      expect(checksum(identityCredentialInvariantsMigrationSql)).toBe(
+        identityCredentialInvariantsMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -405,6 +420,65 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "verification_completion_attempts",
         "verification_start_reservations",
       ]);
+
+      await admin.query(
+        `INSERT INTO users (user_id, status, account)
+         VALUES ('credential-user-a', 'active', '{}'::jsonb),
+                ('credential-user-b', 'active', '{}'::jsonb)`,
+      );
+      await admin.query(
+        `INSERT INTO identity_credentials (
+           credential_id, provider, provider_app_id, provider_subject,
+           canonical_user_id, updated_at
+         ) VALUES (
+           'credential-a', 'privy', 'app-staging', 'did:privy:subject-a',
+           'credential-user-a', '2000-01-01T00:00:00Z'
+         )`,
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `UPDATE identity_credentials
+         SET canonical_user_id = 'credential-user-b'
+         WHERE credential_id = 'credential-a'`,
+        [],
+      );
+      await admin.query(
+        `UPDATE identity_credentials
+         SET status = 'tombstoned'
+         WHERE credential_id = 'credential-a'`,
+      );
+      const tombstone = await admin.query<{
+        readonly status: string;
+        readonly tombstoned_at: Date | null;
+        readonly updated_at: Date;
+      }>(
+        `SELECT status, tombstoned_at, updated_at
+         FROM identity_credentials
+         WHERE credential_id = 'credential-a'`,
+      );
+      expect(tombstone.rows[0]?.status).toBe("tombstoned");
+      expect(tombstone.rows[0]?.tombstoned_at).toBeInstanceOf(Date);
+      expect(tombstone.rows[0]?.updated_at.getUTCFullYear()).toBeGreaterThan(2000);
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `UPDATE identity_credentials
+         SET status = 'active', tombstoned_at = NULL
+         WHERE credential_id = 'credential-a'`,
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO identity_credentials (
+           credential_id, provider, provider_app_id, provider_subject, canonical_user_id
+         ) VALUES (
+           'credential-reuse', 'privy', 'app-staging', 'did:privy:subject-a',
+           'credential-user-b'
+         )`,
+        [],
+      );
 
       const gateTriggers = await admin.query<{ trigger_name: string }>(
         `SELECT trigger.tgname AS trigger_name

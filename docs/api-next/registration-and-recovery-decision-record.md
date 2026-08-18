@@ -30,6 +30,10 @@ External authentication subjects are credentials, not account identifiers.
 - A provider subject cannot be rebound by ordinary registration. Account recovery is
   the only operation allowed to change which user owns a credential or document
   subject, and it must leave an auditable binding event.
+- Authentication providers are a closed database enum. Adding a provider requires a
+  migration alongside its reviewed verifier and contract; this deliberately prevents
+  rows from naming providers the runtime cannot authenticate. Provider-neutrality here
+  means shared credential semantics, not accepting arbitrary provider strings.
 - Existing staging bootstrap records are migration fixtures, not a reason to preserve
   the external subject as the internal user identifier.
 

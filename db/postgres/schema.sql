@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS identity_credentials (
     CHECK (status IN ('active', 'tombstoned')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  tombstoned_at TIMESTAMPTZ,
   CONSTRAINT identity_credentials_id_not_blank CHECK (btrim(credential_id) <> ''),
   CONSTRAINT identity_credentials_app_not_blank CHECK (btrim(provider_app_id) <> ''),
   CONSTRAINT identity_credentials_subject_not_blank CHECK (btrim(provider_subject) <> ''),
@@ -51,11 +52,60 @@ CREATE TABLE IF NOT EXISTS identity_credentials (
     AND provider_subject = btrim(provider_subject)
   ),
   CONSTRAINT identity_credentials_provider_subject_unique
-    UNIQUE (provider, provider_app_id, provider_subject)
+    UNIQUE (provider, provider_app_id, provider_subject),
+  CONSTRAINT identity_credentials_tombstone_time_check CHECK (
+    (status = 'active' AND tombstoned_at IS NULL)
+    OR (status = 'tombstoned' AND tombstoned_at IS NOT NULL)
+  )
 );
 
 CREATE INDEX IF NOT EXISTS identity_credentials_user_status_idx
   ON identity_credentials (canonical_user_id, status, created_at DESC);
+
+CREATE OR REPLACE FUNCTION identity_credentials_enforce_lifecycle()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.status <> 'active' OR NEW.tombstoned_at IS NOT NULL THEN
+      RAISE EXCEPTION 'identity credentials must be inserted active'
+        USING ERRCODE = '23514', CONSTRAINT = 'identity_credentials_insert_active';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF NEW.credential_id IS DISTINCT FROM OLD.credential_id
+    OR NEW.provider IS DISTINCT FROM OLD.provider
+    OR NEW.provider_app_id IS DISTINCT FROM OLD.provider_app_id
+    OR NEW.provider_subject IS DISTINCT FROM OLD.provider_subject
+    OR NEW.canonical_user_id IS DISTINCT FROM OLD.canonical_user_id
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'identity credential ownership and identity are immutable'
+      USING ERRCODE = '23514', CONSTRAINT = 'identity_credentials_identity_immutable';
+  END IF;
+
+  IF OLD.status = 'tombstoned' THEN
+    RAISE EXCEPTION 'identity credential tombstones are immutable'
+      USING ERRCODE = '23514', CONSTRAINT = 'identity_credentials_tombstone_terminal';
+  END IF;
+
+  IF NEW.status = 'tombstoned' THEN
+    NEW.tombstoned_at := COALESCE(NEW.tombstoned_at, now());
+  ELSIF NEW.status <> 'active' OR NEW.tombstoned_at IS NOT NULL THEN
+    RAISE EXCEPTION 'invalid identity credential lifecycle transition'
+      USING ERRCODE = '23514', CONSTRAINT = 'identity_credentials_lifecycle';
+  END IF;
+
+  NEW.updated_at := now();
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER identity_credentials_enforce_lifecycle
+BEFORE INSERT OR UPDATE ON identity_credentials
+FOR EACH ROW
+EXECUTE FUNCTION identity_credentials_enforce_lifecycle();
 
 CREATE TABLE IF NOT EXISTS public_handle_index (
   handle_id TEXT PRIMARY KEY,
