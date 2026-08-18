@@ -80,6 +80,12 @@ const communityPurchaseFundingJournalMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const communityPurchaseFundingPlansMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0014_m3_community_purchase_funding_plans.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -149,6 +155,11 @@ const communityPurchaseFundingJournalMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0013_m3_community_purchase_funding_journal.sql"] ?? "",
   sql: communityPurchaseFundingJournalMigrationSql,
 };
+const communityPurchaseFundingPlansMigration: PostgresMigration = {
+  version: "0014_m3_community_purchase_funding_plans.sql",
+  checksum: checksumManifest.migrations["0014_m3_community_purchase_funding_plans.sql"] ?? "",
+  sql: communityPurchaseFundingPlansMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -163,6 +174,7 @@ const migrations: readonly PostgresMigration[] = [
   verificationStartReservationsMigration,
   verificationCompletionAttemptsMigration,
   communityPurchaseFundingJournalMigration,
+  communityPurchaseFundingPlansMigration,
 ];
 
 function checksum(value: string): string {
@@ -316,6 +328,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(verificationStartReservationsMigrationSql)).toBe(
         verificationStartReservationsMigration.checksum,
       );
+      expect(checksum(communityPurchaseFundingPlansMigrationSql)).toBe(
+        communityPurchaseFundingPlansMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -351,6 +366,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_memberships",
         "community_policy_current",
         "community_purchase_funding_journal",
+        "community_purchase_funding_plans",
         "community_purchase_funding_receipts",
         "community_purchase_funding_requests",
         "community_purchase_funding_transaction_claims",
