@@ -26,4 +26,5 @@ export {
   evaluateAge18,
   evaluateCuratedAge,
   evaluateCuratedAge18,
+  policyCanonicalPreimage,
 } from "./evaluator.ts";

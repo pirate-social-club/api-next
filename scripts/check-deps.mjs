@@ -263,6 +263,7 @@ const GATES_V2_EXPORTS = {
     "evaluateAge18",
     "evaluateCuratedAge",
     "evaluateCuratedAge18",
+    "policyCanonicalPreimage",
   ],
 };
 

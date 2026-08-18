@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import type { EvidenceBundle } from "../verification/index.ts";
-import { policyCanonicalPreimage } from "./evaluator.ts";
 import {
   SELF_STAGING_18_PLUS_DEVELOPMENT_EVIDENCE,
   SELF_STAGING_18_PLUS_EVALUATION_NOW,
@@ -12,6 +11,7 @@ import {
   evaluateAge18,
   evaluateCuratedAge,
   evaluateCuratedAge18,
+  policyCanonicalPreimage,
 } from "./index.ts";
 import { sha256Hex } from "./sha256.ts";
 
@@ -185,21 +185,28 @@ describe("policy-driven curated-age evaluator", () => {
     }
   });
 
-  test("missing claims need evidence and human.unique is not a substitute", () => {
-    const evidence = copyEvidence();
-    evidence.assertions = evidence.assertions.filter(
+  test("missing claims need evidence and unrequired claims invalidate the bundle", () => {
+    const missing = copyEvidence();
+    missing.assertions = missing.assertions.filter(
       (assertion) => assertion.claim_id !== "credential.subject_unique",
     );
-    evidence.assertions.push({
-      ...evidence.assertions[0],
+    expect(evaluate(missing)).toMatchObject({
+      outcome: "needs_evidence",
+      reasons: ["required_claim_missing"],
+      claim_ids: ["credential.subject_unique"],
+      winning_witness: [],
+    });
+
+    const unrequired = copyEvidence();
+    unrequired.assertions.push({
+      ...unrequired.assertions[0],
       id: "fixture-human-unique-not-a-substitute",
       claim_id: "human.unique",
       value: { unique: true },
     });
-    expect(evaluate(evidence)).toMatchObject({
-      outcome: "needs_evidence",
-      reasons: ["required_claim_missing"],
-      claim_ids: ["credential.subject_unique"],
+    expect(evaluate(unrequired)).toMatchObject({
+      outcome: "fail",
+      reason: "invalid_evidence",
       winning_witness: [],
     });
   });
@@ -287,6 +294,120 @@ describe("policy-driven curated-age evaluator", () => {
         now,
       }),
     ).toMatchObject({ outcome: "fail", reason: "invalid_evidence" });
+  });
+
+  test("malformed outer input and policy are classified without throwing", () => {
+    expect(() => evaluateCuratedAge(null as never)).not.toThrow();
+    expect(evaluateCuratedAge(null as never)).toMatchObject({
+      outcome: "fail",
+      reason: "policy_invalid",
+      winning_witness: [],
+    });
+
+    expect(
+      evaluateCuratedAge({
+        policy: null,
+        evidence: { kind: "indeterminate", reason: "provider_unavailable" },
+        now,
+      } as never),
+    ).toMatchObject({ outcome: "fail", reason: "policy_invalid" });
+
+    expect(
+      evaluateCuratedAge({
+        policy: CURATED_AGE_18_POLICY,
+        evidence: { kind: "indeterminate", reason: "provider_unavailable" },
+        now: "not-an-instant",
+      } as never),
+    ).toMatchObject({ outcome: "fail", reason: "invalid_evidence" });
+  });
+
+  test("invalid now is rejected before an indeterminate availability result", () => {
+    expect(
+      evaluateCuratedAge({
+        policy: CURATED_AGE_18_POLICY,
+        evidence: { kind: "indeterminate", reason: "provider_unavailable" },
+        now: "2026-02-30T00:00:00.000Z",
+      } as never),
+    ).toMatchObject({
+      outcome: "fail",
+      reason: "invalid_evidence",
+      winning_witness: [],
+    });
+  });
+
+  test("strictly decodes every evidence record and rejects unrequired records", () => {
+    const schemaInvalidCases: Array<(evidence: MutableEvidence) => void> = [
+      (evidence) => {
+        if (evidence.assertions[0]) evidence.assertions[0].unexpected = true;
+      },
+      (evidence) => {
+        if (evidence.receipts[0]) evidence.receipts[0].unexpected = true;
+      },
+      (evidence) => {
+        if (evidence.subject_keys[0]) evidence.subject_keys[0].unexpected = true;
+      },
+      (evidence) => {
+        if (evidence.binding_groups[0]) evidence.binding_groups[0].unexpected = true;
+      },
+    ];
+    for (const mutate of schemaInvalidCases) {
+      const evidence = copyEvidence();
+      mutate(evidence);
+      expect(evaluate(evidence)).toMatchObject({
+        outcome: "fail",
+        reason: "invalid_evidence",
+        winning_witness: [],
+      });
+    }
+
+    const extraReceipt = copyEvidence();
+    extraReceipt.receipts.push({
+      ...extraReceipt.receipts[0],
+      id: "fixture-unrequired-receipt",
+      evidence_hash: "c".repeat(64),
+    });
+    expect(evaluate(extraReceipt)).toMatchObject({ outcome: "fail", reason: "invalid_evidence" });
+
+    const extraSubjectKey = copyEvidence();
+    extraSubjectKey.subject_keys.push({
+      ...extraSubjectKey.subject_keys[0],
+      id: "fixture-unrequired-subject-key",
+      subject_digest: "d".repeat(64),
+    });
+    expect(evaluate(extraSubjectKey)).toMatchObject({
+      outcome: "fail",
+      reason: "invalid_evidence",
+    });
+
+    const extraBinding = copyEvidence();
+    extraBinding.binding_groups.push({
+      ...extraBinding.binding_groups[0],
+      id: "fixture-unrequired-binding",
+    });
+    expect(evaluate(extraBinding)).toMatchObject({ outcome: "fail", reason: "invalid_evidence" });
+
+    const extraAssertion = copyEvidence();
+    extraAssertion.assertions.push({
+      ...extraAssertion.assertions[0],
+      id: "fixture-unrequired-assertion",
+      claim_id: "human.unique",
+      value: { unique: true },
+    });
+    expect(evaluate(extraAssertion)).toMatchObject({
+      outcome: "fail",
+      reason: "invalid_evidence",
+    });
+  });
+
+  test("numeric age values are not coerced into canonical unsigned integers", () => {
+    const evidence = copyEvidence();
+    const age = evidence.assertions.find((assertion) => assertion.claim_id === "age.minimum");
+    if (age) (age.value as Record<string, unknown>).minimum_age = 18;
+    expect(evaluate(evidence)).toMatchObject({
+      outcome: "fail",
+      reason: "invalid_evidence",
+      winning_witness: [],
+    });
   });
 
   test("malformed assertion and receipt timestamps fail as invalid evidence", () => {

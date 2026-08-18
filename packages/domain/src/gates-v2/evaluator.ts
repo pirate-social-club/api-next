@@ -1,11 +1,15 @@
+import { Exit, Predicate, Schema } from "effect";
 import type {
   Assertion,
-  Assurance,
-  CanonicalIsoInstant,
   EvidenceBundle,
   EvidenceReceipt,
   SameSubjectBindingGroup,
   SubjectKey,
+} from "../verification/index.ts";
+import {
+  Assurance,
+  CanonicalIsoInstant,
+  EvidenceBundle as EvidenceBundleSchema,
 } from "../verification/index.ts";
 import { sha256Hex } from "./sha256.ts";
 
@@ -174,8 +178,44 @@ const POLICY_KEYS = [
   "co_reference",
   "freshness",
 ] as const;
+const STRICT_PARSE_OPTIONS = { onExcessProperty: "error" } as const;
 
-function canonicalUnsignedInteger(value: string): bigint | undefined {
+const CuratedAgePolicySchema = Schema.Struct({
+  policy_version_id: Schema.String,
+  policy_key: Schema.String,
+  policy_revision: Schema.Number,
+  policy_hash: Schema.String,
+  minimum_age: Schema.String,
+  requirements: Schema.Tuple([
+    Schema.Struct({ claim_id: Schema.Literal("age.minimum"), minimum_age: Schema.String }),
+    Schema.Struct({ claim_id: Schema.Literal("credential.subject_unique") }),
+    Schema.Struct({ claim_id: Schema.Literal("document.valid") }),
+  ]),
+  required_assurance: Assurance,
+  co_reference: Schema.Literal("same_subject"),
+  freshness: Schema.Literal("unexpired_at_evaluation"),
+});
+
+const EvidenceAvailabilitySchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("available"), bundle: EvidenceBundleSchema }),
+  Schema.Struct({
+    kind: Schema.Literal("indeterminate"),
+    reason: Schema.Literals([
+      "provider_unavailable",
+      "evidence_store_unavailable",
+      "snapshot_unavailable",
+    ]),
+  }),
+]);
+
+const CuratedAgeEvaluatorInputSchema = Schema.Struct({
+  policy: CuratedAgePolicySchema,
+  evidence: EvidenceAvailabilitySchema,
+  now: CanonicalIsoInstant,
+});
+
+function canonicalUnsignedInteger(value: unknown): bigint | undefined {
+  if (!Predicate.isString(value)) return undefined;
   if (!/^(0|[1-9][0-9]*)$/.test(value)) return undefined;
   try {
     return BigInt(value);
@@ -196,7 +236,11 @@ function hasExactKeys(value: unknown, keys: readonly string[]): boolean {
   return actual.length === keys.length && actual.every((key) => keys.includes(key));
 }
 
-/** Fixed-order policy hash preimage. This is internal to the gates-v2 module surface. */
+/**
+ * Fixed-order policy hash preimage. This is part of the public gates-v2
+ * policy contract; callers constructing or auditing policy hashes must use
+ * this exact UTF-8 JSON representation.
+ */
 export function policyCanonicalPreimage(policy: CuratedAgePolicy): string {
   return JSON.stringify({
     co_reference: policy.co_reference,
@@ -259,6 +303,28 @@ function metadata(policy: CuratedAgePolicy, trace: readonly string[]): DecisionM
   };
 }
 
+function metadataFromUnknown(policy: unknown): DecisionMetadata {
+  if (!Predicate.isObject(policy)) {
+    return {
+      policy_version_id: "",
+      policy_revision: 0,
+      policy_hash: "",
+      winning_witness: [],
+      trace: [],
+    };
+  }
+  return {
+    policy_version_id: Predicate.isString(policy.policy_version_id) ? policy.policy_version_id : "",
+    policy_revision:
+      Predicate.isNumber(policy.policy_revision) && Number.isSafeInteger(policy.policy_revision)
+        ? policy.policy_revision
+        : 0,
+    policy_hash: Predicate.isString(policy.policy_hash) ? policy.policy_hash : "",
+    winning_witness: [],
+    trace: [],
+  };
+}
+
 function sortedUnique<T extends string>(values: readonly T[]): T[] {
   return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
@@ -273,6 +339,21 @@ function fail(
     outcome: "fail",
     reason,
     ...metadata(policy, trace),
+    ...(assertionId === undefined ? {} : { assertion_id: assertionId }),
+  };
+}
+
+function failWithMetadata(
+  decisionMetadata: DecisionMetadata,
+  reason: CuratedAgeFail["reason"],
+  trace: readonly string[],
+  assertionId?: string,
+): CuratedAgeFail {
+  return {
+    outcome: "fail",
+    reason,
+    ...decisionMetadata,
+    trace,
     ...(assertionId === undefined ? {} : { assertion_id: assertionId }),
   };
 }
@@ -372,6 +453,7 @@ function hasDuplicateIds(values: readonly Readonly<{ readonly id: string }>[]): 
 function evaluateCuratedAgeUnsafe(input: CuratedAgeEvaluatorInput): CuratedAgeEvaluation {
   const { policy, evidence: availability, now } = input;
   if (!validPolicy(policy)) return fail(policy, "policy_invalid", ["policy_invalid"]);
+  if (!isCanonicalIsoInstant(now)) return fail(policy, "invalid_evidence", ["assertion_invalid"]);
   if (availability.kind === "indeterminate") {
     if (!EVIDENCE_UNAVAILABLE_REASONS.has(availability.reason))
       return fail(policy, "invalid_evidence", ["assertion_invalid"]);
@@ -383,7 +465,30 @@ function evaluateCuratedAgeUnsafe(input: CuratedAgeEvaluatorInput): CuratedAgeEv
   }
 
   const evidence = availability.bundle;
-  if (!isCanonicalIsoInstant(now)) return fail(policy, "invalid_evidence", ["assertion_invalid"]);
+  const requiredClaimIds = new Set<string>(REQUIRED_CLAIMS);
+  if (evidence.assertions.some((assertion) => !requiredClaimIds.has(assertion.claim_id)))
+    return fail(policy, "invalid_evidence", ["assertion_invalid"]);
+
+  const referencedReceiptIds = new Set(
+    evidence.assertions.map((assertion) => assertion.evidence_receipt_id),
+  );
+  if (evidence.receipts.some((receipt) => !referencedReceiptIds.has(receipt.id)))
+    return fail(policy, "invalid_evidence", ["receipt_mismatch"]);
+
+  const referencedSubjectKeyIds = new Set(
+    evidence.assertions.flatMap((assertion) =>
+      assertion.subject_key_id == null ? [] : [assertion.subject_key_id],
+    ),
+  );
+  if (evidence.subject_keys.some((subjectKey) => !referencedSubjectKeyIds.has(subjectKey.id)))
+    return fail(policy, "invalid_evidence", ["subject_key_mismatch"]);
+
+  const referencedBindingGroupIds = new Set(
+    evidence.assertions.map((assertion) => assertion.binding_group_id),
+  );
+  if (evidence.binding_groups.some((group) => !referencedBindingGroupIds.has(group.id)))
+    return fail(policy, "invalid_evidence", ["binding_mismatch"]);
+
   if (
     hasDuplicateIds(evidence.assertions) ||
     hasDuplicateIds(evidence.receipts) ||
@@ -520,13 +625,32 @@ function evaluateCuratedAgeUnsafe(input: CuratedAgeEvaluatorInput): CuratedAgeEv
 
 /**
  * Pure, provider-neutral evaluation of the bounded curated-age vertical.
- * Runtime-malformed decoded-looking evidence is classified, never thrown.
+ * Unknown input is decoded at this boundary so malformed decoded-looking
+ * policies, timestamps, and evidence are classified, never thrown.
  */
-export function evaluateCuratedAge(input: CuratedAgeEvaluatorInput): CuratedAgeEvaluation {
+export function evaluateCuratedAge(input: unknown): CuratedAgeEvaluation {
+  let fallbackMetadata: DecisionMetadata = metadataFromUnknown(undefined);
   try {
-    return evaluateCuratedAgeUnsafe(input);
+    const rawInput = Predicate.isObject(input) ? input : undefined;
+    fallbackMetadata = metadataFromUnknown(rawInput?.policy);
+
+    const policyExit = Schema.decodeUnknownExit(
+      CuratedAgePolicySchema,
+      STRICT_PARSE_OPTIONS,
+    )(rawInput?.policy);
+    if (Exit.isFailure(policyExit))
+      return failWithMetadata(fallbackMetadata, "policy_invalid", ["policy_invalid"]);
+
+    const inputExit = Schema.decodeUnknownExit(
+      CuratedAgeEvaluatorInputSchema,
+      STRICT_PARSE_OPTIONS,
+    )(input);
+    if (Exit.isFailure(inputExit))
+      return failWithMetadata(fallbackMetadata, "invalid_evidence", ["assertion_invalid"]);
+
+    return evaluateCuratedAgeUnsafe(inputExit.value as unknown as CuratedAgeEvaluatorInput);
   } catch {
-    return fail(input.policy, "invalid_evidence", ["assertion_invalid"]);
+    return failWithMetadata(fallbackMetadata, "invalid_evidence", ["assertion_invalid"]);
   }
 }
 

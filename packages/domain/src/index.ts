@@ -47,6 +47,7 @@ export {
   evaluateAge18,
   evaluateCuratedAge,
   evaluateCuratedAge18,
+  policyCanonicalPreimage,
 } from "./gates-v2/index.ts";
 export * from "./handles/label-claim-rules.ts";
 export * from "./handles/policy.ts";
