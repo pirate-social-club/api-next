@@ -55,6 +55,7 @@
       "name": "@pirate/platform-cf",
       "version": "0.0.0",
       "dependencies": {
+        "@pirate/verifier-response-contract": "0.0.0",
         "@selfxyz/core": "1.2.0-beta.1",
         "pg": "8.16.3",
       },
@@ -70,10 +71,15 @@
         "@pirate/domain": "workspace:*",
       },
     },
+    "packages/verifier-response-contract": {
+      "name": "@pirate/verifier-response-contract",
+      "version": "0.0.0",
+    },
     "packages/zkpassport-verifier-runtime": {
       "name": "@pirate/zkpassport-verifier-runtime",
       "version": "0.0.0",
       "dependencies": {
+        "@pirate/verifier-response-contract": "0.0.0",
         "@zkpassport/sdk": "0.14.2",
       },
     },
@@ -480,6 +486,8 @@
     "@pirate/platform-cf": ["@pirate/platform-cf@workspace:packages/platform-cf"],
 
     "@pirate/testing": ["@pirate/testing@workspace:packages/testing"],
+
+    "@pirate/verifier-response-contract": ["@pirate/verifier-response-contract@workspace:packages/verifier-response-contract"],
 
     "@pirate/zkpassport-verifier-runtime": ["@pirate/zkpassport-verifier-runtime@workspace:packages/zkpassport-verifier-runtime"],
 

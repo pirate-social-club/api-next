@@ -19,6 +19,7 @@ const INTERNAL = {
   "packages/platform-cf": "@pirate/platform-cf",
   "packages/testing": "@pirate/testing",
   "packages/zkpassport-verifier-runtime": "@pirate/zkpassport-verifier-runtime",
+  "packages/verifier-response-contract": "@pirate/verifier-response-contract",
   "apps/http-worker": "@pirate/http-worker",
   "apps/jobs-worker": "@pirate/jobs-worker",
 };
@@ -28,9 +29,15 @@ const ALLOWED = {
   "@pirate/api-client": [],
   "@pirate/domain": [],
   "@pirate/application": ["@pirate/contracts", "@pirate/domain"],
-  "@pirate/platform-cf": ["@pirate/application", "@pirate/contracts", "@pirate/domain"],
+  "@pirate/platform-cf": [
+    "@pirate/application",
+    "@pirate/contracts",
+    "@pirate/domain",
+    "@pirate/verifier-response-contract",
+  ],
   "@pirate/testing": ["@pirate/application", "@pirate/contracts", "@pirate/domain"],
-  "@pirate/zkpassport-verifier-runtime": [],
+  "@pirate/zkpassport-verifier-runtime": ["@pirate/verifier-response-contract"],
+  "@pirate/verifier-response-contract": [],
   "@pirate/http-worker": [
     "@pirate/application",
     "@pirate/contracts",
@@ -227,6 +234,36 @@ const VERIFICATION_EXPORTS = {
       "runProviderTransportConformance",
     ],
   },
+};
+
+const GATES_V2_EXPORTS = {
+  "./evaluator.ts": [
+    "CURATED_AGE_18_POLICY",
+    "CURATED_AGE_18_POLICY_CANONICAL_PREIMAGE",
+    "CuratedAge18Evaluation",
+    "CuratedAge18EvaluatorInput",
+    "CuratedAge18Fail",
+    "CuratedAge18Indeterminate",
+    "CuratedAge18NeedsEvidence",
+    "CuratedAge18Pass",
+    "CuratedAge18Policy",
+    "CuratedAgeEvaluation",
+    "CuratedAgeEvaluatorInput",
+    "CuratedAgeFail",
+    "CuratedAgeIndeterminate",
+    "CuratedAgeNeedsEvidence",
+    "CuratedAgePass",
+    "CuratedAgePolicy",
+    "EvaluatorReason",
+    "EvaluatorWitness",
+    "EvidenceAvailability",
+    "EvidenceUnavailableReason",
+    "GatesV2EvaluationOutcome",
+    "RequiredClaim",
+    "evaluateAge18",
+    "evaluateCuratedAge",
+    "evaluateCuratedAge18",
+  ],
 };
 
 function isTestFile(file) {
@@ -465,6 +502,33 @@ function checkVerificationExportSurface(root, violations, checkedFiles) {
       violations.push(`${relativeIndex}: verification export surface differs from the frozen list`);
     }
   }
+
+  const gatesPackageJsonPath = join(root, "packages/domain/package.json");
+  const gatesPackageJson = JSON.parse(readFileSync(gatesPackageJsonPath, "utf8"));
+  const gatesExports = Object.keys(gatesPackageJson.exports ?? {}).filter((key) =>
+    key.startsWith("./gates-v2"),
+  );
+  if (
+    gatesExports.length !== 1 ||
+    gatesExports[0] !== "./gates-v2" ||
+    gatesPackageJson.exports["./gates-v2"] !== "./src/gates-v2/index.ts"
+  )
+    violations.push(
+      "packages/domain/package.json: gates-v2 package export must remain exactly ./gates-v2",
+    );
+
+  const gatesRelativeIndex = "packages/domain/src/gates-v2/index.ts";
+  const gatesAnalysis = analyzeTypeScript(
+    readFileSync(join(root, gatesRelativeIndex), "utf8"),
+    gatesRelativeIndex,
+  );
+  checkedFiles.push(gatesRelativeIndex);
+  const expectedGates = Object.entries(GATES_V2_EXPORTS)
+    .flatMap(([spec, names]) => names.map((name) => `${spec}:${name}`))
+    .sort();
+  const actualGates = gatesAnalysis.exported.map(({ spec, name }) => `${spec}:${name}`).sort();
+  if (gatesAnalysis.hasLocalExport || actualGates.join("\n") !== expectedGates.join("\n"))
+    violations.push(`${gatesRelativeIndex}: gates-v2 export surface differs from the frozen list`);
 }
 
 function exportTargetEntersVerification(target) {

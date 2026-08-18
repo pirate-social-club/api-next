@@ -40,6 +40,7 @@
       "@pirate/platform-cf/*": ["./packages/platform-cf/src/*"],
       "@pirate/testing": ["./packages/testing/src/index.ts"],
       "@pirate/testing/verification": ["./packages/testing/src/verification/index.ts"]
+      ,"@pirate/verifier-response-contract": ["./packages/verifier-response-contract/src/index.ts"]
     }
   },
   "include": ["packages", "apps"],

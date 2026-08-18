@@ -6,6 +6,7 @@ export const PROVIDER_TESTING_PREFIX = "packages/testing/src/verification/";
 const PROVIDER_BOUNDARY_IMPORTS = [
   "@pirate/application/verification",
   "@pirate/domain/verification",
+  "@pirate/verifier-response-contract",
 ];
 const PROVIDER_TEST_IMPORTS = [...PROVIDER_BOUNDARY_IMPORTS, "@pirate/testing/verification"];
 
@@ -34,5 +35,5 @@ export function providerBoundaryViolation(relativeFile, spec) {
   if (allowed.includes(spec)) {
     return undefined;
   }
-  return `${relativeFile}: provider boundary files may import only @pirate/application/verification or @pirate/domain/verification (found ${spec})`;
+  return `${relativeFile}: provider boundary files may import only stable verification seams (found ${spec})`;
 }

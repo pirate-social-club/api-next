@@ -1,8 +1,13 @@
+import {
+  canonicalizeSignedVerifierResponse,
+  type SignedVerifierResponseUnsigned,
+} from "@pirate/verifier-response-contract";
 import { type ProofResult, type Query, type QueryResult, ZKPassport } from "@zkpassport/sdk";
 
 export const ZKPASSPORT_SDK_VERSION = "0.14.2" as const;
 export const DEFAULT_MAX_BODY_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_WRITING_DIRECTORY = "/tmp";
+export const ZKPASSPORT_RESPONSE_PROTOCOL_VERSION = "zkpassport-v2" as const;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -14,13 +19,17 @@ export type ZkPassportVerifyRequest = Readonly<{
   readonly validity?: number;
   readonly scope?: string;
   readonly devMode?: boolean;
+  readonly proof_session_id: string;
+  readonly request_hash: string;
+  readonly protocol_version: typeof ZKPASSPORT_RESPONSE_PROTOCOL_VERSION;
+  readonly nonce: string;
+  readonly expiry: string;
+  readonly key_id: string;
 }>;
 
-export type ZkPassportVerifyResponse = Readonly<{
-  readonly verified: boolean;
-  readonly uniqueIdentifier: string | null;
-  readonly uniqueIdentifierType: 0 | null;
-}>;
+export type ZkPassportVerifyResponse = Readonly<
+  SignedVerifierResponseUnsigned & { readonly signature: string }
+>;
 
 export type ZkPassportSdkVerifier = Readonly<{
   readonly verify: (input: Parameters<ZKPassport["verify"]>[0]) => ReturnType<ZKPassport["verify"]>;
@@ -30,12 +39,22 @@ export type ZkPassportSdkFactory = (domain: string) => ZkPassportSdkVerifier;
 
 export type ZkPassportVerifierEnv = Readonly<{
   readonly sharedSecret: string;
+  readonly responseSigningSecret: string;
+  readonly responseSigningKeyId: string;
   readonly maxBodyBytes?: number;
   readonly writingDirectory?: string;
 }>;
 
 function isRecord(value: unknown): value is JsonRecord {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function canonicalIsoInstant(value: string): boolean {
+  return (
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString() === value
+  );
 }
 
 function constantTimeEqual(left: string, right: string): boolean {
@@ -60,14 +79,41 @@ function jsonResponse(body: JsonRecord, status = 200): Response {
   });
 }
 
-function responseFromSdk(
+function base64UrlEncode(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+async function responseFromSdk(
   value: Awaited<ReturnType<ZKPassport["verify"]>>,
-): ZkPassportVerifyResponse {
-  return {
-    verified: value.verified,
-    uniqueIdentifier: value.verified && value.uniqueIdentifier ? value.uniqueIdentifier : null,
-    uniqueIdentifierType: value.verified && value.uniqueIdentifierType === 0 ? 0 : null,
+  input: ZkPassportVerifyRequest,
+  secret: string,
+): Promise<ZkPassportVerifyResponse> {
+  const unsigned: SignedVerifierResponseUnsigned = {
+    proof_session_id: input.proof_session_id,
+    request_hash: input.request_hash,
+    verdict: value.verified,
+    unique_identifier: value.verified && value.uniqueIdentifier ? value.uniqueIdentifier : null,
+    unique_identifier_type: value.verified && value.uniqueIdentifierType === 0 ? 0 : null,
+    protocol_version: input.protocol_version,
+    nonce: input.nonce,
+    expiry: input.expiry,
+    key_id: input.key_id,
   };
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(canonicalizeSignedVerifierResponse(unsigned)),
+  );
+  return { ...unsigned, signature: base64UrlEncode(new Uint8Array(signature)) };
 }
 
 function decodeVerifyBody(value: unknown): ZkPassportVerifyRequest | undefined {
@@ -80,6 +126,12 @@ function decodeVerifyBody(value: unknown): ZkPassportVerifyRequest | undefined {
     "validity",
     "scope",
     "devMode",
+    "proof_session_id",
+    "request_hash",
+    "protocol_version",
+    "nonce",
+    "expiry",
+    "key_id",
   ]);
   if (Object.keys(value).some((key) => !allowed.has(key))) return undefined;
   if (
@@ -90,7 +142,22 @@ function decodeVerifyBody(value: unknown): ZkPassportVerifyRequest | undefined {
     value.proofs.length === 0 ||
     value.proofs.length > 64 ||
     !isRecord(value.originalQuery) ||
-    !isRecord(value.queryResult)
+    !isRecord(value.queryResult) ||
+    typeof value.proof_session_id !== "string" ||
+    value.proof_session_id.trim() !== value.proof_session_id ||
+    value.proof_session_id.length === 0 ||
+    typeof value.request_hash !== "string" ||
+    value.request_hash.trim() !== value.request_hash ||
+    !/^[0-9a-f]{64}$/.test(value.request_hash) ||
+    value.protocol_version !== ZKPASSPORT_RESPONSE_PROTOCOL_VERSION ||
+    typeof value.nonce !== "string" ||
+    !/^[A-Za-z0-9_-]{16,128}$/.test(value.nonce) ||
+    typeof value.expiry !== "string" ||
+    value.expiry.trim() !== value.expiry ||
+    value.expiry.length === 0 ||
+    !canonicalIsoInstant(value.expiry) ||
+    typeof value.key_id !== "string" ||
+    !/^[A-Za-z0-9._-]{1,128}$/.test(value.key_id)
   )
     return undefined;
   if (
@@ -114,6 +181,12 @@ function decodeVerifyBody(value: unknown): ZkPassportVerifyRequest | undefined {
     ...(typeof value.validity !== "number" ? {} : { validity: value.validity }),
     ...(value.scope === undefined ? {} : { scope: value.scope }),
     ...(value.devMode === undefined ? {} : { devMode: value.devMode }),
+    proof_session_id: value.proof_session_id,
+    request_hash: value.request_hash,
+    protocol_version: value.protocol_version,
+    nonce: value.nonce,
+    expiry: value.expiry,
+    key_id: value.key_id,
   };
 }
 
@@ -151,7 +224,11 @@ async function readBoundedBody(
 /** SDK-only core. The factory is injectable for contract tests; production uses the pinned SDK. */
 export async function verifyLocally(
   input: ZkPassportVerifyRequest,
-  options: Readonly<{ sdkFactory?: ZkPassportSdkFactory; writingDirectory?: string }> = {},
+  options: Readonly<{
+    sdkFactory?: ZkPassportSdkFactory;
+    writingDirectory?: string;
+    responseSigningSecret: string;
+  }>,
 ): Promise<ZkPassportVerifyResponse> {
   const sdk = (options.sdkFactory ?? ((domain) => new ZKPassport(domain)))(input.domain);
   const result = await sdk.verify({
@@ -163,7 +240,20 @@ export async function verifyLocally(
     ...(input.devMode === undefined ? {} : { devMode: input.devMode }),
     writingDirectory: options.writingDirectory ?? DEFAULT_WRITING_DIRECTORY,
   });
-  return responseFromSdk(result);
+  return responseFromSdk(result, input, options.responseSigningSecret);
+}
+
+export function validZkPassportVerifierEnv(env: ZkPassportVerifierEnv): boolean {
+  return (
+    env.sharedSecret.length > 0 &&
+    env.responseSigningSecret.length > 0 &&
+    env.sharedSecret.trim() === env.sharedSecret &&
+    env.responseSigningSecret.trim() === env.responseSigningSecret &&
+    /^[A-Za-z0-9._-]{1,128}$/.test(env.responseSigningKeyId) &&
+    env.sharedSecret !== env.responseSigningSecret &&
+    (env.maxBodyBytes === undefined ||
+      (Number.isSafeInteger(env.maxBodyBytes) && env.maxBodyBytes > 0))
+  );
 }
 
 export async function handleZkPassportVerifierRequest(
@@ -172,6 +262,7 @@ export async function handleZkPassportVerifierRequest(
   options: Readonly<{ sdkFactory?: ZkPassportSdkFactory }> = {},
 ): Promise<Response> {
   const url = new URL(request.url);
+  if (!validZkPassportVerifierEnv(env)) return jsonResponse({ code: "not_configured" }, 503);
   if (request.method === "GET" && url.pathname === "/health") {
     return jsonResponse({
       ok: true,
@@ -181,12 +272,6 @@ export async function handleZkPassportVerifierRequest(
   }
   if (request.method !== "POST" || url.pathname !== "/verify")
     return jsonResponse({ code: "not_found" }, 404);
-  if (!env.sharedSecret) return jsonResponse({ code: "not_configured" }, 503);
-  if (
-    env.maxBodyBytes !== undefined &&
-    (!Number.isSafeInteger(env.maxBodyBytes) || env.maxBodyBytes <= 0)
-  )
-    return jsonResponse({ code: "not_configured" }, 503);
   if (!constantTimeEqual(bearerToken(request), env.sharedSecret)) {
     return jsonResponse({ code: "unauthorized" }, 401);
   }
@@ -206,18 +291,21 @@ export async function handleZkPassportVerifierRequest(
   }
   const body = decodeVerifyBody(parsed);
   if (body === undefined) return jsonResponse({ code: "invalid_request" }, 400);
+  if (body.key_id !== env.responseSigningKeyId)
+    return jsonResponse({ code: "invalid_request" }, 400);
   try {
     const result = await verifyLocally(body, {
       ...(options.sdkFactory === undefined ? {} : { sdkFactory: options.sdkFactory }),
       writingDirectory: env.writingDirectory ?? DEFAULT_WRITING_DIRECTORY,
+      responseSigningSecret: env.responseSigningSecret,
     });
     console.log(
       JSON.stringify({
         event: "zkpassport.verify.completed",
         service: "zkpassport-verifier",
         proof_count: body.proofs.length,
-        verified: result.verified,
-        has_unique_identifier: result.uniqueIdentifier !== null,
+        verified: result.verdict,
+        has_unique_identifier: result.unique_identifier !== null,
       }),
     );
     return jsonResponse(result);

@@ -122,4 +122,51 @@ describe("HTTP production composition", () => {
       }),
     ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
   });
+
+  test("fails closed on incomplete or reused ZKPassport signing configuration", async () => {
+    const configured = await bindings();
+    const base = {
+      ...configured,
+      ZKPASSPORT_ENABLED: "true",
+      ZKPASSPORT_DOMAIN: "api.example",
+      ZKPASSPORT_NAME: "Pirate",
+      ZKPASSPORT_VERIFIER_URL: "https://verifier.example/verify",
+      ZKPASSPORT_VERIFIER_SHARED_SECRET: "bearer-secret",
+      ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET: "response-secret",
+      ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID: "key-2026-08",
+    };
+    await expect(createProductionHttpWorker(base)).resolves.toBeDefined();
+    await expect(
+      createProductionHttpWorker({
+        ...base,
+        ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID: "",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+    await expect(
+      createProductionHttpWorker({
+        ...base,
+        ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID: "bad key id",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+    await expect(
+      createProductionHttpWorker({
+        ...base,
+        ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET: "bearer-secret",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+    await expect(
+      createProductionHttpWorker({
+        ...base,
+        ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID: "key-2026-07",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+    await expect(
+      createProductionHttpWorker({
+        ...base,
+        ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID: "key-2026-07",
+        ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET: "previous-response-secret",
+        ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL: "2099-01-01T00:30:00.000Z",
+      }),
+    ).resolves.toBeDefined();
+  });
 });

@@ -13,7 +13,7 @@ import {
 import {
   type Assertion,
   type CanonicalClaimIdentifier,
-  type CanonicalIsoInstant,
+  CanonicalIsoInstant,
   type EvidenceBundle,
   type Iso3166Alpha2,
   type ProofProviderManifest,
@@ -23,6 +23,11 @@ import {
   type SubjectScope,
   type VerificationRequirement,
 } from "@pirate/domain/verification";
+import {
+  canonicalizeSignedVerifierResponse,
+  type SignedVerifierResponseEnvelope,
+  type SignedVerifierResponseUnsigned,
+} from "@pirate/verifier-response-contract";
 import { Effect, Option, Schema } from "effect";
 import { selfCountryAlpha3 } from "./self-country-codes.ts";
 
@@ -81,14 +86,15 @@ export type ZkPassportVerifierInput = Readonly<{
   readonly validity_seconds: number;
   readonly scope: string;
   readonly dev_mode: boolean;
+  readonly proof_session_id: string;
+  readonly request_hash: string;
+  readonly protocol_version: typeof ZKPASSPORT_PROTOCOL_VERSION;
+  readonly nonce: string;
+  readonly expiry: CanonicalIsoInstant;
+  readonly key_id: string;
 }>;
 
-export type ZkPassportVerifierResult = Readonly<{
-  readonly verified: boolean;
-  readonly unique_identifier: string | null;
-  /** SDK 0.14.2 returns NullifierType numeric enum values. */
-  readonly unique_identifier_type: 0 | null;
-}>;
+export type ZkPassportVerifierResult = SignedVerifierResponseEnvelope;
 
 export type ZkPassportVerifierTransport = Readonly<{
   readonly verify: (
@@ -119,6 +125,16 @@ export type ZkPassportAdapterOptions = Readonly<{
   readonly clock: ZkPassportClock;
   readonly identifiers: ZkPassportIdentifiers;
   readonly digest: ZkPassportDigest;
+  /** Separate HMAC key for verifier responses; never reuse the bearer key. */
+  readonly verifier_response_signing_secret: string;
+  readonly verifier_response_signing_key_id: string;
+  readonly previous_verifier_response_signing_key?: Readonly<{
+    readonly key_id: string;
+    readonly secret: string;
+    readonly valid_until: CanonicalIsoInstant;
+  }>;
+  /** CSPRNG seam; production defaults to crypto.randomUUID. */
+  readonly nonce?: () => string;
   readonly validity_seconds?: number;
   /** Development/test only. Registry composition must never set this in production. */
   readonly dev_mode?: boolean;
@@ -131,9 +147,28 @@ const ZkPassportSubmission = Schema.Struct({
 type DecodedZkPassportSubmission = Schema.Schema.Type<typeof ZkPassportSubmission>;
 
 const VerifierResult = Schema.Struct({
-  verified: Schema.Boolean,
-  uniqueIdentifier: Schema.NullOr(Schema.String),
-  uniqueIdentifierType: Schema.NullOr(Schema.Literal(0)),
+  proof_session_id: Schema.NonEmptyString,
+  request_hash: Sha256Hex,
+  verdict: Schema.Boolean,
+  unique_identifier: Schema.NullOr(Schema.String),
+  unique_identifier_type: Schema.NullOr(Schema.Literal(0)),
+  protocol_version: Schema.NonEmptyString,
+  nonce: Schema.String.check(
+    Schema.makeFilter((value) =>
+      /^[A-Za-z0-9_-]{16,128}$/.test(value) ? undefined : "Expected a bounded base64url nonce",
+    ),
+  ),
+  expiry: CanonicalIsoInstant,
+  key_id: Schema.String.check(
+    Schema.makeFilter((value) =>
+      /^[A-Za-z0-9._-]{1,128}$/.test(value) ? undefined : "Expected a bounded signing key id",
+    ),
+  ),
+  signature: Schema.String.check(
+    Schema.makeFilter((value) =>
+      /^[A-Za-z0-9_-]{43}$/.test(value) ? undefined : "Expected an unpadded HMAC-SHA256 signature",
+    ),
+  ),
 });
 
 function invalid(operation: "plan" | "start" | "complete"): VerificationProviderInvalidResponse {
@@ -391,16 +426,153 @@ function queryResultBound(session: ProofSession, queryResult: JsonObject): boole
   return queryResultBinding(queryResult) === bindingFor(session);
 }
 
+function base64UrlDecode(value: string): Uint8Array | undefined {
+  if (!/^[A-Za-z0-9_-]+$/.test(value) || value.length % 4 === 1) return undefined;
+  try {
+    const decoded = atob(
+      value.replaceAll("-", "+").replaceAll("_", "/") + "=".repeat((4 - (value.length % 4)) % 4),
+    );
+    return Uint8Array.from(decoded, (character) => character.charCodeAt(0));
+  } catch {
+    return undefined;
+  }
+}
+
+async function verifyResponseSignature(
+  unsigned: SignedVerifierResponseUnsigned,
+  signature: string,
+  secret: string,
+): Promise<boolean> {
+  const signatureBytes = base64UrlDecode(signature);
+  if (signatureBytes === undefined || signatureBytes.byteLength !== 32 || secret.length === 0)
+    return false;
+  try {
+    const key = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    return await crypto.subtle.verify(
+      "HMAC",
+      key,
+      signatureBytes,
+      new TextEncoder().encode(canonicalizeSignedVerifierResponse(unsigned)),
+    );
+  } catch {
+    return false;
+  }
+}
+
 function decodeVerifierResult(
   value: unknown,
 ): Effect.Effect<ZkPassportVerifierResult, VerificationProviderInvalidResponse> {
+  const record = readRecord(value);
+  const allowed = new Set([
+    "proof_session_id",
+    "request_hash",
+    "verdict",
+    "unique_identifier",
+    "unique_identifier_type",
+    "protocol_version",
+    "nonce",
+    "expiry",
+    "key_id",
+    "signature",
+  ]);
+  if (record === undefined || Object.keys(record).some((key) => !allowed.has(key)))
+    return Effect.fail(invalid("complete"));
   const decoded = Schema.decodeUnknownOption(VerifierResult)(value);
   if (Option.isNone(decoded)) return Effect.fail(invalid("complete"));
   return Effect.succeed({
-    verified: decoded.value.verified,
-    unique_identifier: decoded.value.uniqueIdentifier,
-    unique_identifier_type: decoded.value.uniqueIdentifierType,
+    proof_session_id: decoded.value.proof_session_id,
+    request_hash: decoded.value.request_hash,
+    verdict: decoded.value.verdict,
+    unique_identifier: decoded.value.unique_identifier,
+    unique_identifier_type: decoded.value.unique_identifier_type,
+    protocol_version: decoded.value.protocol_version,
+    nonce: decoded.value.nonce,
+    expiry: decoded.value.expiry,
+    key_id: decoded.value.key_id,
+    signature: decoded.value.signature,
   });
+}
+
+function responseBoundToSession(
+  response: ZkPassportVerifierResult,
+  session: ProofSession,
+  nonce: string,
+  now: CanonicalIsoInstant,
+): boolean {
+  const nowMs = Date.parse(now);
+  const expiryMs = Date.parse(response.expiry);
+  return (
+    response.proof_session_id === session.id &&
+    response.request_hash === session.request_hash &&
+    response.protocol_version === ZKPASSPORT_PROTOCOL_VERSION &&
+    response.nonce === nonce &&
+    response.expiry === session.expires_at &&
+    Number.isFinite(nowMs) &&
+    Number.isFinite(expiryMs) &&
+    expiryMs > nowMs
+  );
+}
+
+function validVerifierVerdictShape(response: ZkPassportVerifierResult): boolean {
+  return response.verdict
+    ? response.unique_identifier !== null &&
+        response.unique_identifier.trim() !== "" &&
+        response.unique_identifier_type === 0
+    : response.unique_identifier === null && response.unique_identifier_type === null;
+}
+
+function validSigningConfiguration(
+  options: Pick<
+    ZkPassportAdapterOptions,
+    | "verifier_response_signing_key_id"
+    | "verifier_response_signing_secret"
+    | "previous_verifier_response_signing_key"
+  >,
+): boolean {
+  if (
+    options.verifier_response_signing_secret.length === 0 ||
+    options.verifier_response_signing_secret.trim() !== options.verifier_response_signing_secret ||
+    !/^[A-Za-z0-9._-]{1,128}$/.test(options.verifier_response_signing_key_id)
+  )
+    return false;
+  const previous = options.previous_verifier_response_signing_key;
+  if (previous === undefined) return true;
+  return (
+    previous.secret.length > 0 &&
+    previous.secret.trim() === previous.secret &&
+    previous.secret !== options.verifier_response_signing_secret &&
+    /^[A-Za-z0-9._-]{1,128}$/.test(previous.key_id) &&
+    previous.key_id !== options.verifier_response_signing_key_id &&
+    Option.isSome(Schema.decodeUnknownOption(CanonicalIsoInstant)(previous.valid_until))
+  );
+}
+
+function responseSigningSecretFor(
+  response: ZkPassportVerifierResult,
+  options: Pick<
+    ZkPassportAdapterOptions,
+    | "verifier_response_signing_key_id"
+    | "verifier_response_signing_secret"
+    | "previous_verifier_response_signing_key"
+  >,
+  now: CanonicalIsoInstant,
+): string | undefined {
+  if (response.key_id === options.verifier_response_signing_key_id)
+    return options.verifier_response_signing_secret;
+  const previous = options.previous_verifier_response_signing_key;
+  if (
+    previous !== undefined &&
+    previous.key_id === response.key_id &&
+    Date.parse(now) < Date.parse(previous.valid_until)
+  )
+    return previous.secret;
+  return undefined;
 }
 
 type ZkPassportRequestInput = Pick<
@@ -432,6 +604,7 @@ function normalizeInput(input: ZkPassportRequestInput, options: ZkPassportAdapte
     configuredValidity(options) > 0 &&
     options.name.length > 0 &&
     options.name.trim() === options.name &&
+    validSigningConfiguration(options) &&
     (input.environment === "production" ? options.dev_mode !== true : true)
   );
 }
@@ -456,6 +629,8 @@ function assertionFor(
     case "credential.subject_unique":
       return { ...common, claim_id: requirement.claim_id, value: { subject_unique: true } };
     case "document.valid":
+      // ZKPassport 0.14.2's validity check is expiry-date freshness of the
+      // document proof under validity_seconds, not a generic document claim.
       return { ...common, claim_id: requirement.claim_id, value: { valid: true } };
     case "age.minimum":
       return {
@@ -482,8 +657,13 @@ function evidenceBundle(
   const subject_key_id = runtime.identifiers.next("subject");
   const binding_group_id = runtime.identifiers.next("binding");
   return Effect.gen(function* () {
-    // The raw identifier is used only as input to the digest and never enters
-    // a receipt, assertion, log, or provider-neutral response.
+    // NON_SALTED is intentional for SDK 0.14.2 stability, but the raw value is
+    // identical across relying parties and is therefore cross-RP linkable.
+    // Carrying pirate-social on the provider-neutral subject key prevents our
+    // own key namespaces from colliding; it does not make the SDK identifier
+    // unlinkable. A future provider/version must supply a scoped identifier if
+    // unlinkability becomes a requirement. The raw value is used only as the
+    // digest input and never enters receipts, assertions, logs, or responses.
     const subject_digest = yield* runtime.digest.digest(uniqueIdentifier).pipe(
       Effect.flatMap((value) => {
         const decoded = Schema.decodeUnknownOption(Sha256Hex)(value);
@@ -647,6 +827,14 @@ export function makeZkPassportProvider(
       }
     },
     complete: (input: VerificationProviderCompleteInput) => {
+      if (!validSigningConfiguration(options)) {
+        return Effect.fail(
+          new VerificationProviderMisconfigured({
+            provider_id: ZKPASSPORT_PROVIDER_ID,
+            operation: "complete",
+          }),
+        );
+      }
       const verifierSettings = settingsFromConfiguration(input.session.provider_configuration);
       if (
         input.session.provider_id !== ZKPASSPORT_PROVIDER_ID ||
@@ -678,6 +866,8 @@ export function makeZkPassportProvider(
           } catch {
             return Effect.fail(invalid("complete"));
           }
+          const nonce = options.nonce?.() ?? crypto.randomUUID();
+          if (!/^[A-Za-z0-9_-]{16,128}$/.test(nonce)) return Effect.fail(invalid("complete"));
           return options.verifier
             .verify({
               domain: verifierSettings.domain,
@@ -687,24 +877,37 @@ export function makeZkPassportProvider(
               validity_seconds: verifierSettings.validity_seconds,
               scope: ZKPASSPORT_RP_SCOPE,
               dev_mode: verifierSettings.dev_mode,
+              proof_session_id: input.session.id,
+              request_hash: input.session.request_hash,
+              protocol_version: ZKPASSPORT_PROTOCOL_VERSION,
+              nonce,
+              expiry: input.session.expires_at,
+              key_id: options.verifier_response_signing_key_id,
             })
             .pipe(
               Effect.flatMap((result) => {
-                if (!result.verified) return Effect.fail(unbound());
-                if (
-                  result.unique_identifier_type !== 0 ||
-                  result.unique_identifier === null ||
-                  result.unique_identifier.trim() === ""
-                ) {
-                  return Effect.fail(invalid("complete"));
-                }
-                if (!exactPredicateChecks(input.session, queryResult))
-                  return Effect.fail(rejected("complete"));
-                return evidenceBundle(
-                  input.session,
-                  result.unique_identifier,
-                  options.clock.now(),
-                  options,
+                const now = options.clock.now();
+                const signingSecret = responseSigningSecretFor(result, options, now);
+                return Effect.tryPromise({
+                  try: () =>
+                    Promise.resolve(
+                      signingSecret === undefined
+                        ? false
+                        : verifyResponseSignature(result, result.signature, signingSecret),
+                    ),
+                  catch: () => invalid("complete"),
+                }).pipe(
+                  Effect.flatMap((signatureValid) => {
+                    if (!signatureValid) return Effect.fail(invalid("complete"));
+                    if (!validVerifierVerdictShape(result)) return Effect.fail(invalid("complete"));
+                    if (!responseBoundToSession(result, input.session, nonce, now))
+                      return Effect.fail(unbound());
+                    if (!result.verdict) return Effect.fail(unbound());
+                    if (result.unique_identifier === null) return Effect.fail(invalid("complete"));
+                    if (!exactPredicateChecks(input.session, queryResult))
+                      return Effect.fail(rejected("complete"));
+                    return evidenceBundle(input.session, result.unique_identifier, now, options);
+                  }),
                 );
               }),
             );
@@ -803,6 +1006,12 @@ export function makeZkPassportVerifierTransport(
               validity: input.validity_seconds,
               scope: input.scope,
               devMode: input.dev_mode,
+              proof_session_id: input.proof_session_id,
+              request_hash: input.request_hash,
+              protocol_version: input.protocol_version,
+              nonce: input.nonce,
+              expiry: input.expiry,
+              key_id: input.key_id,
             });
             if (new TextEncoder().encode(body).byteLength > ZKPASSPORT_MAX_BODY_BYTES) {
               throw new VerificationProviderInvalidResponse({
@@ -825,8 +1034,15 @@ export function makeZkPassportVerifierTransport(
             if (response.status === 400 || response.status === 413) throw unbound();
             if (response.status === 408 || response.status === 429 || response.status >= 500) {
               if (response.status === 503) {
-                const value = await readBoundedJson(response, ZKPASSPORT_MAX_RESPONSE_BYTES);
-                if (readRecord(value)?.code === "not_configured") {
+                let notConfigured = false;
+                try {
+                  const value = await readBoundedJson(response, ZKPASSPORT_MAX_RESPONSE_BYTES);
+                  notConfigured = readRecord(value)?.code === "not_configured";
+                } catch {
+                  // A broken error body cannot turn a retryable 503 into a
+                  // provider-response integrity failure.
+                }
+                if (notConfigured) {
                   throw new VerificationProviderMisconfigured({
                     provider_id: ZKPASSPORT_PROVIDER_ID,
                     operation: "complete",

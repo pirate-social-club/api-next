@@ -77,9 +77,24 @@ export const HttpWorkerConfig = Config.all({
   ZKPASSPORT_NAME: Config.string("ZKPASSPORT_NAME").pipe(Config.withDefault("Pirate")),
   ZKPASSPORT_LOGO: Config.string("ZKPASSPORT_LOGO").pipe(Config.withDefault("")),
   ZKPASSPORT_VERIFIER_URL: Config.string("ZKPASSPORT_VERIFIER_URL").pipe(Config.withDefault("")),
-  ZKPASSPORT_VERIFIER_SHARED_SECRET: Config.string("ZKPASSPORT_VERIFIER_SHARED_SECRET").pipe(
-    Config.withDefault(""),
+  ZKPASSPORT_VERIFIER_SHARED_SECRET: secret("ZKPASSPORT_VERIFIER_SHARED_SECRET").pipe(
+    Config.withDefault(Redacted.make("")),
   ),
+  ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET: secret(
+    "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
+  ).pipe(Config.withDefault(Redacted.make(""))),
+  ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID: Config.string(
+    "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID",
+  ).pipe(Config.withDefault("")),
+  ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET: secret(
+    "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET",
+  ).pipe(Config.withDefault(Redacted.make(""))),
+  ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID: Config.string(
+    "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID",
+  ).pipe(Config.withDefault("")),
+  ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL: Config.string(
+    "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL",
+  ).pipe(Config.withDefault("")),
   ZKPASSPORT_DEV_MODE: Config.boolean("ZKPASSPORT_DEV_MODE").pipe(Config.withDefault(false)),
   VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: Config.string(
     "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS",

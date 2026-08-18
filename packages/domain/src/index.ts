@@ -27,18 +27,26 @@ export type {
   CuratedAge18NeedsEvidence,
   CuratedAge18Pass,
   CuratedAge18Policy,
+  CuratedAgeEvaluation,
+  CuratedAgeEvaluatorInput,
+  CuratedAgeFail,
+  CuratedAgeIndeterminate,
+  CuratedAgeNeedsEvidence,
+  CuratedAgePass,
+  CuratedAgePolicy,
   EvaluatorReason,
   EvaluatorWitness,
   EvidenceAvailability,
   EvidenceUnavailableReason,
   GatesV2EvaluationOutcome,
+  RequiredClaim,
 } from "./gates-v2/index.ts";
 export {
   CURATED_AGE_18_POLICY,
+  CURATED_AGE_18_POLICY_CANONICAL_PREIMAGE,
   evaluateAge18,
+  evaluateCuratedAge,
   evaluateCuratedAge18,
-  SELF_STAGING_18_PLUS_DEVELOPMENT_EVIDENCE,
-  SELF_STAGING_18_PLUS_EVALUATION_NOW,
 } from "./gates-v2/index.ts";
 export * from "./handles/label-claim-rules.ts";
 export * from "./handles/policy.ts";

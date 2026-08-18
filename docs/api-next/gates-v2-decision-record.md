@@ -70,6 +70,13 @@ ZKPassport can emit `document.valid`, `nationality.allowed`, other disclosed
 document predicates, and `credential.subject_unique` with `document_zk`
 assurance. Nationality allowlists may be proven without disclosing the country;
 optional disclosure is represented separately in the typed assertion value.
+The pinned SDK's identifier type `0` is `NON_SALTED`: its raw identifier is
+stable but identical across relying parties and therefore cross-RP linkable.
+api-next never persists or logs that raw value; it SHA-256 hashes it and places
+the digest in a subject-key namespace carrying `pirate-social`. That namespace
+prevents internal key collisions but does not make the vendor identifier
+unlinkable. This is an explicit trust/privacy tradeoff, not a scope-derived
+privacy guarantee.
 Self Pass emits the same canonical claim class and currently uses
 `document_zk`; a stronger Self-specific assurance must not be introduced until
 the live method contract justifies it. The subject key is scoped to its issuer

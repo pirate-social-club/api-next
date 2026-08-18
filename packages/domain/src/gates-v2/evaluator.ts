@@ -1,5 +1,6 @@
 import type {
   Assertion,
+  Assurance,
   CanonicalIsoInstant,
   EvidenceBundle,
   EvidenceReceipt,
@@ -20,6 +21,7 @@ export type EvidenceAvailability =
 export type GatesV2EvaluationOutcome = "pass" | "fail" | "needs_evidence" | "indeterminate";
 
 export type EvaluatorReason =
+  | "policy_invalid"
   | "required_claim_missing"
   | "assertion_invalid"
   | "wrong_assurance"
@@ -34,96 +36,198 @@ export type EvaluatorReason =
   | "subject_key_mismatch"
   | "observed_in_future"
   | "evidence_expired"
-  | "evidence_not_fresh"
   | "conflicting_evidence";
 
-/** The fixed, provider-neutral first vertical policy. */
-export const CURATED_AGE_18_POLICY = {
-  id: "curated-age-18",
-  version: 1,
+export type RequiredClaim = "age.minimum" | "credential.subject_unique" | "document.valid";
+
+export type CuratedAgePolicy = Readonly<{
+  readonly policy_version_id: string;
+  readonly policy_key: string;
+  readonly policy_revision: number;
+  readonly policy_hash: string;
+  readonly minimum_age: string;
+  readonly requirements: readonly [
+    Readonly<{ readonly claim_id: "age.minimum"; readonly minimum_age: string }>,
+    Readonly<{ readonly claim_id: "credential.subject_unique" }>,
+    Readonly<{ readonly claim_id: "document.valid" }>,
+  ];
+  readonly required_assurance: Assurance;
+  readonly co_reference: "same_subject";
+  readonly freshness: "unexpired_at_evaluation";
+}>;
+
+/**
+ * UTF-8 SHA-256 preimage for the reviewed first policy revision. Keys and
+ * requirements are deliberately ordered; changing any byte requires a new
+ * revision and hash.
+ */
+export const CURATED_AGE_18_POLICY_CANONICAL_PREIMAGE =
+  '{"co_reference":"same_subject","freshness":"unexpired_at_evaluation","minimum_age":"18","policy_key":"curated-age","policy_version_id":"curated-age-v1","required_assurance":"document_zk","requirements":[{"claim_id":"age.minimum","minimum_age":"18"},{"claim_id":"credential.subject_unique"},{"claim_id":"document.valid"}],"revision":1}' as const;
+
+export const CURATED_AGE_18_POLICY: CuratedAgePolicy = {
+  policy_version_id: "curated-age-v1",
+  policy_key: "curated-age",
+  policy_revision: 1,
+  policy_hash: "6c2c4bfa0b842cc8afea19d0df3f576fa5d1779162b235d922be6cb3f39f11a0",
+  minimum_age: "18",
   requirements: [
     { claim_id: "age.minimum", minimum_age: "18" },
     { claim_id: "credential.subject_unique" },
     { claim_id: "document.valid" },
-  ] as const,
+  ],
   required_assurance: "document_zk",
   co_reference: "same_subject",
   freshness: "unexpired_at_evaluation",
-} as const;
+};
 
-export type CuratedAge18Policy = typeof CURATED_AGE_18_POLICY;
-
-export type EvaluatorWitness = {
+export type EvaluatorWitness = Readonly<{
   readonly assertion_ids: readonly string[];
   readonly evidence_receipt_ids: readonly string[];
   readonly subject_key_id: string;
   readonly binding_group_id: string;
-};
+}>;
 
-export type CuratedAge18Pass = {
-  readonly outcome: "pass";
-  readonly policy: CuratedAge18Policy;
-  readonly witness: EvaluatorWitness;
-};
+type DecisionMetadata = Readonly<{
+  readonly policy_version_id: string;
+  readonly policy_revision: number;
+  readonly policy_hash: string;
+  /** JSON array shape matches decision_records.winning_witness. */
+  readonly winning_witness: readonly EvaluatorWitness[];
+  /** JSON array shape matches decision_records.trace. */
+  readonly trace: readonly string[];
+}>;
 
-export type CuratedAge18Fail = {
-  readonly outcome: "fail";
-  readonly policy: CuratedAge18Policy;
-  readonly reason: "age_below_threshold";
-  readonly assertion_id: string;
-  readonly witness: null;
-};
+export type CuratedAgePass = DecisionMetadata & { readonly outcome: "pass" };
 
-export type CuratedAge18NeedsEvidence = {
-  readonly outcome: "needs_evidence";
-  readonly policy: CuratedAge18Policy;
-  readonly reasons: readonly EvaluatorReason[];
-  readonly claim_ids: readonly RequiredClaim[];
-  readonly witness: null;
-};
+export type CuratedAgeFail = DecisionMetadata &
+  Readonly<{
+    readonly outcome: "fail";
+    readonly reason:
+      | "policy_invalid"
+      | "invalid_evidence"
+      | "conflicting_evidence"
+      | "age_below_threshold";
+    readonly assertion_id?: string;
+  }>;
 
-export type CuratedAge18Indeterminate = {
-  readonly outcome: "indeterminate";
-  readonly policy: CuratedAge18Policy;
-  readonly reason: EvidenceUnavailableReason | "conflicting_evidence";
-  readonly witness: null;
-};
+export type CuratedAgeNeedsEvidence = DecisionMetadata &
+  Readonly<{
+    readonly outcome: "needs_evidence";
+    readonly reasons: readonly EvaluatorReason[];
+    readonly claim_ids: readonly RequiredClaim[];
+  }>;
 
-export type CuratedAge18Evaluation =
-  | CuratedAge18Pass
-  | CuratedAge18Fail
-  | CuratedAge18NeedsEvidence
-  | CuratedAge18Indeterminate;
+export type CuratedAgeIndeterminate = DecisionMetadata &
+  Readonly<{
+    readonly outcome: "indeterminate";
+    readonly reason: EvidenceUnavailableReason;
+  }>;
 
-export type CuratedAge18EvaluatorInput = {
+export type CuratedAgeEvaluation =
+  | CuratedAgePass
+  | CuratedAgeFail
+  | CuratedAgeNeedsEvidence
+  | CuratedAgeIndeterminate;
+
+export type CuratedAgeEvaluatorInput = Readonly<{
+  readonly policy: CuratedAgePolicy;
   readonly evidence: EvidenceAvailability;
   readonly now: CanonicalIsoInstant;
-};
+}>;
 
-const REQUIRED_CLAIMS = CURATED_AGE_18_POLICY.requirements.map(
-  (requirement) => requirement.claim_id,
-);
-type RequiredClaim = (typeof REQUIRED_CLAIMS)[number];
+/** Stable age-18 aliases retained while callers move to the policy-driven names. */
+export type CuratedAge18Policy = CuratedAgePolicy;
+export type CuratedAge18Pass = CuratedAgePass;
+export type CuratedAge18Fail = CuratedAgeFail;
+export type CuratedAge18NeedsEvidence = CuratedAgeNeedsEvidence;
+export type CuratedAge18Indeterminate = CuratedAgeIndeterminate;
+export type CuratedAge18Evaluation = CuratedAgeEvaluation;
+export type CuratedAge18EvaluatorInput = CuratedAgeEvaluatorInput;
 
-function needsEvidence(
-  policy: CuratedAge18Policy,
-  reasons: readonly EvaluatorReason[],
-  claimIds: readonly RequiredClaim[],
-): CuratedAge18NeedsEvidence {
+const REQUIRED_CLAIMS = [
+  "age.minimum",
+  "credential.subject_unique",
+  "document.valid",
+] as const satisfies readonly RequiredClaim[];
+const ASSURANCES = new Set<Assurance>([
+  "holder_live",
+  "personhood",
+  "document_zk",
+  "provider_attested",
+]);
+
+function canonicalUnsignedInteger(value: string): bigint | undefined {
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) return undefined;
+  try {
+    return BigInt(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function validPolicy(policy: CuratedAgePolicy): boolean {
+  const threshold = canonicalUnsignedInteger(policy.minimum_age);
+  return (
+    policy.policy_version_id.trim() === policy.policy_version_id &&
+    policy.policy_version_id.length > 0 &&
+    policy.policy_key.trim() === policy.policy_key &&
+    policy.policy_key.length > 0 &&
+    Number.isSafeInteger(policy.policy_revision) &&
+    policy.policy_revision > 0 &&
+    /^[0-9a-f]{64}$/.test(policy.policy_hash) &&
+    threshold !== undefined &&
+    threshold > 0n &&
+    policy.requirements.length === 3 &&
+    policy.requirements[0]?.claim_id === "age.minimum" &&
+    policy.requirements[0].minimum_age === policy.minimum_age &&
+    policy.requirements[1]?.claim_id === "credential.subject_unique" &&
+    policy.requirements[2]?.claim_id === "document.valid" &&
+    ASSURANCES.has(policy.required_assurance) &&
+    policy.co_reference === "same_subject" &&
+    policy.freshness === "unexpired_at_evaluation"
+  );
+}
+
+function metadata(policy: CuratedAgePolicy, trace: readonly string[]): DecisionMetadata {
   return {
-    outcome: "needs_evidence",
-    policy,
-    reasons: [...new Set(reasons)].sort() as EvaluatorReason[],
-    claim_ids: REQUIRED_CLAIMS.filter((claimId) => claimIds.includes(claimId)),
-    witness: null,
+    policy_version_id: policy.policy_version_id,
+    policy_revision: policy.policy_revision,
+    policy_hash: policy.policy_hash,
+    winning_witness: [],
+    trace,
   };
 }
 
-function indeterminate(
-  policy: CuratedAge18Policy,
-  reason: CuratedAge18Indeterminate["reason"],
-): CuratedAge18Indeterminate {
-  return { outcome: "indeterminate", policy, reason, witness: null };
+function sortedUnique<T extends string>(values: readonly T[]): T[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+}
+
+function fail(
+  policy: CuratedAgePolicy,
+  reason: CuratedAgeFail["reason"],
+  trace: readonly string[],
+  assertionId?: string,
+): CuratedAgeFail {
+  return {
+    outcome: "fail",
+    reason,
+    ...metadata(policy, trace),
+    ...(assertionId === undefined ? {} : { assertion_id: assertionId }),
+  };
+}
+
+function needsEvidence(
+  policy: CuratedAgePolicy,
+  reasons: readonly EvaluatorReason[],
+  claimIds: readonly RequiredClaim[],
+): CuratedAgeNeedsEvidence {
+  const uniqueReasons = sortedUnique(reasons);
+  return {
+    outcome: "needs_evidence",
+    reasons: uniqueReasons,
+    claim_ids: REQUIRED_CLAIMS.filter((claimId) => claimIds.includes(claimId)),
+    ...metadata(policy, uniqueReasons),
+  };
 }
 
 function assertionForClaim(
@@ -176,15 +280,13 @@ function sameSubjectScope(
     receiptScope.issuer !== subjectScope.issuer ||
     receiptScope.scope_semantics !== subjectScope.scope_semantics ||
     receiptScope.rp_scope !== subjectScope.rp_scope
-  ) {
+  )
     return false;
-  }
   if (
     receiptScope.scope_semantics === "issuer_rp_action_scope" &&
     subjectScope.scope_semantics === "issuer_rp_action_scope"
-  ) {
+  )
     return receiptScope.action_scope === subjectScope.action_scope;
-  }
   return (
     receiptScope.scope_semantics === "issuer_rp_scope" &&
     subjectScope.scope_semantics === "issuer_rp_scope"
@@ -202,145 +304,140 @@ function receiptMatchesSubjectKey(receipt: EvidenceReceipt, subjectKey: SubjectK
   );
 }
 
-function sortedUnique(values: readonly string[]): string[] {
-  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
+function hasDuplicateIds(values: readonly Readonly<{ readonly id: string }>[]): boolean {
+  return new Set(values.map((value) => value.id)).size !== values.length;
 }
 
-/**
- * Evaluate the fixed curated age-18 policy over normalized evidence.
- * There is no provider branch, I/O, persistence, or implicit clock access.
- */
-export function evaluateCuratedAge18(input: CuratedAge18EvaluatorInput): CuratedAge18Evaluation {
-  const { evidence: availability, now } = input;
-  const policy = CURATED_AGE_18_POLICY;
+/** Pure, provider-neutral evaluation of the bounded curated-age vertical. */
+export function evaluateCuratedAge(input: CuratedAgeEvaluatorInput): CuratedAgeEvaluation {
+  const { policy, evidence: availability, now } = input;
+  if (!validPolicy(policy)) return fail(policy, "policy_invalid", ["policy_invalid"]);
   if (availability.kind === "indeterminate") {
-    return indeterminate(policy, availability.reason);
+    return {
+      outcome: "indeterminate",
+      reason: availability.reason,
+      ...metadata(policy, [availability.reason]),
+    };
   }
 
   const evidence = availability.bundle;
+  if (
+    hasDuplicateIds(evidence.assertions) ||
+    hasDuplicateIds(evidence.receipts) ||
+    hasDuplicateIds(evidence.subject_keys) ||
+    hasDuplicateIds(evidence.binding_groups)
+  )
+    return fail(policy, "conflicting_evidence", ["conflicting_evidence"]);
+
   const duplicateRequiredClaim = REQUIRED_CLAIMS.some(
     (claimId) =>
       evidence.assertions.filter((assertion) => assertion.claim_id === claimId).length > 1,
   );
-  if (duplicateRequiredClaim) return indeterminate(policy, "conflicting_evidence");
+  if (duplicateRequiredClaim) return fail(policy, "conflicting_evidence", ["conflicting_evidence"]);
 
   const required = REQUIRED_CLAIMS.map((claimId) =>
     assertionForClaim(evidence.assertions, claimId),
   );
   const missingClaims = REQUIRED_CLAIMS.filter((_, index) => required[index] == null);
-  if (missingClaims.length > 0) {
+  if (missingClaims.length > 0)
     return needsEvidence(policy, ["required_claim_missing"], missingClaims);
-  }
+
   const assertions = required as Assertion[];
-  const reasons: EvaluatorReason[] = [];
-  const affectedClaims = new Set<RequiredClaim>();
+  const invalidReasons: EvaluatorReason[] = [];
+  const needsReasons: EvaluatorReason[] = [];
+  const affectedNeeds = new Set<RequiredClaim>();
   const receipts: EvidenceReceipt[] = [];
   const subjectKeys: SubjectKey[] = [];
 
   for (const assertion of assertions) {
+    const claimId = assertion.claim_id as RequiredClaim;
     if (assertion.assurance !== policy.required_assurance) {
-      reasons.push("wrong_assurance");
-      affectedClaims.add(assertion.claim_id as RequiredClaim);
+      needsReasons.push("wrong_assurance");
+      affectedNeeds.add(claimId);
     }
     const assertionFreshness = freshnessReasons(assertion.observed_at, now, assertion.expires_at);
-    reasons.push(...assertionFreshness);
-    if (assertionFreshness.length > 0) affectedClaims.add(assertion.claim_id as RequiredClaim);
+    needsReasons.push(...assertionFreshness);
+    if (assertionFreshness.length > 0) affectedNeeds.add(claimId);
 
     const receipt = receiptForAssertion(evidence.receipts, assertion);
     if (receipt == null) {
-      reasons.push("receipt_missing");
-      affectedClaims.add(assertion.claim_id as RequiredClaim);
+      invalidReasons.push("receipt_missing");
     } else {
       receipts.push(receipt);
       const receiptFreshness = freshnessReasons(receipt.observed_at, now, receipt.expires_at);
-      reasons.push(...receiptFreshness);
-      if (receiptFreshness.length > 0) affectedClaims.add(assertion.claim_id as RequiredClaim);
-      if (receipt.proof_session_id !== evidence.proof_session_id) {
-        reasons.push("receipt_mismatch");
-        affectedClaims.add(assertion.claim_id as RequiredClaim);
-      }
-      if (receipt.subject_key_id !== assertion.subject_key_id) {
-        reasons.push("subject_key_mismatch");
-        affectedClaims.add(assertion.claim_id as RequiredClaim);
-      }
+      needsReasons.push(...receiptFreshness);
+      if (receiptFreshness.length > 0) affectedNeeds.add(claimId);
+      if (receipt.proof_session_id !== evidence.proof_session_id)
+        invalidReasons.push("receipt_mismatch");
+      if (receipt.subject_key_id !== assertion.subject_key_id)
+        invalidReasons.push("subject_key_mismatch");
     }
 
     const subjectKey = subjectKeyForAssertion(evidence.subject_keys, assertion);
     if (subjectKey == null) {
-      reasons.push("subject_key_missing");
-      affectedClaims.add(assertion.claim_id as RequiredClaim);
+      invalidReasons.push("subject_key_missing");
     } else {
       subjectKeys.push(subjectKey);
-      if (receipt != null && !receiptMatchesSubjectKey(receipt, subjectKey)) {
-        reasons.push("subject_key_mismatch");
-        affectedClaims.add(assertion.claim_id as RequiredClaim);
-      }
+      if (receipt != null && !receiptMatchesSubjectKey(receipt, subjectKey))
+        invalidReasons.push("subject_key_mismatch");
     }
   }
 
   const binding = sameSubjectBinding(evidence, assertions);
   if (binding == null) {
-    reasons.push("binding_missing");
-    for (const claimId of REQUIRED_CLAIMS) affectedClaims.add(claimId);
-  } else if (subjectKeys.some((subjectKey) => subjectKey.id !== binding.subject_key_id)) {
-    reasons.push("binding_mismatch");
-    for (const claimId of REQUIRED_CLAIMS) affectedClaims.add(claimId);
+    const bindingIds = new Set(assertions.map((assertion) => assertion.binding_group_id));
+    invalidReasons.push(bindingIds.size === 1 ? "binding_missing" : "binding_mismatch");
+  } else if (
+    subjectKeys.length !== assertions.length ||
+    subjectKeys.some((subjectKey) => subjectKey.id !== binding.subject_key_id)
+  ) {
+    invalidReasons.push("binding_mismatch");
   }
 
   const age = assertions.find((assertion) => assertion.claim_id === "age.minimum");
   let underageAssertionId: string | undefined;
-  if (age?.claim_id === "age.minimum") {
-    try {
-      if (BigInt(age.value.minimum_age) < BigInt(18)) {
-        underageAssertionId = age.id;
-      }
-    } catch {
-      reasons.push("age_not_canonical");
-      affectedClaims.add("age.minimum");
-    }
+  if (age?.claim_id !== "age.minimum") {
+    invalidReasons.push("assertion_invalid");
+  } else {
+    const assertedAge = canonicalUnsignedInteger(age.value.minimum_age);
+    const policyAge = canonicalUnsignedInteger(policy.minimum_age);
+    if (assertedAge === undefined || policyAge === undefined)
+      invalidReasons.push("age_not_canonical");
+    else if (assertedAge < policyAge) underageAssertionId = age.id;
   }
 
   const credential = assertions.find(
     (assertion) => assertion.claim_id === "credential.subject_unique",
   );
   if (
-    credential?.claim_id === "credential.subject_unique" &&
+    credential?.claim_id !== "credential.subject_unique" ||
     credential.value.subject_unique !== true
-  ) {
-    reasons.push("assertion_invalid");
-    affectedClaims.add("credential.subject_unique");
-  }
+  )
+    invalidReasons.push("assertion_invalid");
+
   const document = assertions.find((assertion) => assertion.claim_id === "document.valid");
-  if (document?.claim_id === "document.valid" && document.value.valid !== true) {
-    reasons.push("assertion_invalid");
-    affectedClaims.add("document.valid");
-  }
+  if (document?.claim_id !== "document.valid" || document.value.valid !== true)
+    invalidReasons.push("assertion_invalid");
 
-  if (reasons.length > 0) return needsEvidence(policy, reasons, [...affectedClaims]);
-  if (underageAssertionId != null) {
-    return {
-      outcome: "fail",
-      policy,
-      reason: "age_below_threshold",
-      assertion_id: underageAssertionId,
-      witness: null,
-    };
-  }
-  const subjectKeyId = binding?.subject_key_id;
-  if (subjectKeyId == null || binding == null) {
-    return needsEvidence(policy, ["binding_invalid"], REQUIRED_CLAIMS);
-  }
+  if (invalidReasons.length > 0)
+    return fail(policy, "invalid_evidence", sortedUnique(invalidReasons));
+  if (needsReasons.length > 0) return needsEvidence(policy, needsReasons, [...affectedNeeds]);
+  if (underageAssertionId !== undefined)
+    return fail(policy, "age_below_threshold", ["age_below_threshold"], underageAssertionId);
+  if (binding === undefined) return fail(policy, "invalid_evidence", ["binding_invalid"]);
 
+  const witness: EvaluatorWitness = {
+    assertion_ids: sortedUnique(assertions.map((assertion) => assertion.id)),
+    evidence_receipt_ids: sortedUnique(receipts.map((receipt) => receipt.id)),
+    subject_key_id: binding.subject_key_id,
+    binding_group_id: binding.id,
+  };
   return {
     outcome: "pass",
-    policy,
-    witness: {
-      assertion_ids: sortedUnique(assertions.map((assertion) => assertion.id)),
-      evidence_receipt_ids: sortedUnique(receipts.map((receipt) => receipt.id)),
-      subject_key_id: subjectKeyId,
-      binding_group_id: binding.id,
-    },
+    ...metadata(policy, ["policy_valid", "required_claims_valid", "same_subject_valid"]),
+    winning_witness: [witness],
   };
 }
 
-export const evaluateAge18 = evaluateCuratedAge18;
+export const evaluateCuratedAge18 = evaluateCuratedAge;
+export const evaluateAge18 = evaluateCuratedAge;

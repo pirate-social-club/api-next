@@ -7,10 +7,11 @@
     ".": "./src/index.ts",
     "./server": "./src/server.ts"
   },
+  "dependencies": {
+    "@pirate/verifier-response-contract": "0.0.0",
+    "@zkpassport/sdk": "0.14.2"
+  },
   "scripts": {
     "start": "bun run src/server.ts"
-  },
-  "dependencies": {
-    "@zkpassport/sdk": "0.14.2"
   }
 }

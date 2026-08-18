@@ -4,6 +4,10 @@ import { defineConfig } from "vitest/config";
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
 const alias = {
+  "@pirate/application/verification": new URL(
+    "../../packages/application/src/verification/index.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/use-cases/identity-account": new URL(
     "../../packages/application/src/use-cases/identity-account.ts",
     import.meta.url,
@@ -12,12 +16,20 @@ const alias = {
     "../../packages/application/src/use-cases/session-exchange.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/domain/verification": new URL(
+    "../../packages/domain/src/verification/index.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/contracts": new URL("../../packages/contracts/src/index.ts", import.meta.url).pathname,
   "@pirate/domain": new URL("../../packages/domain/src/index.ts", import.meta.url).pathname,
   "@pirate/application": new URL("../../packages/application/src/index.ts", import.meta.url)
     .pathname,
   "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)
     .pathname,
+  "@pirate/verifier-response-contract": new URL(
+    "../../packages/verifier-response-contract/src/index.ts",
+    import.meta.url,
+  ).pathname,
 };
 
 export default defineConfig({

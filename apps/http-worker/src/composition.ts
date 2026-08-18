@@ -53,6 +53,11 @@ export interface HttpWorkerBindings {
   readonly ZKPASSPORT_LOGO?: string;
   readonly ZKPASSPORT_VERIFIER_URL?: string;
   readonly ZKPASSPORT_VERIFIER_SHARED_SECRET?: string;
+  readonly ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET?: string;
+  readonly ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID?: string;
+  readonly ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET?: string;
+  readonly ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID?: string;
+  readonly ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL?: string;
   readonly ZKPASSPORT_DEV_MODE?: string;
   readonly VERIFICATION_CALLBACK_CREDENTIAL_HEADERS?: string;
   readonly PIRATE_APP_JWT_PRIVATE_KEY?: string;
@@ -84,6 +89,16 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     ZKPASSPORT_LOGO: bindings.ZKPASSPORT_LOGO,
     ZKPASSPORT_VERIFIER_URL: bindings.ZKPASSPORT_VERIFIER_URL,
     ZKPASSPORT_VERIFIER_SHARED_SECRET: bindings.ZKPASSPORT_VERIFIER_SHARED_SECRET,
+    ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET:
+      bindings.ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET,
+    ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID:
+      bindings.ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID,
+    ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET:
+      bindings.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET,
+    ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID:
+      bindings.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID,
+    ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL:
+      bindings.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL,
     ZKPASSPORT_DEV_MODE: bindings.ZKPASSPORT_DEV_MODE,
     VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: bindings.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
     PIRATE_APP_JWT_PRIVATE_KEY: bindings.PIRATE_APP_JWT_PRIVATE_KEY,
@@ -155,8 +170,38 @@ function callbackCredentialHeaders(value: string): readonly string[] {
     .filter((header) => header !== "");
 }
 
+function isCanonicalIsoInstant(value: string): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function isSigningKeyId(value: string): boolean {
+  return /^[A-Za-z0-9._-]{1,128}$/.test(value);
+}
+
 export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const config = loadWorkerConfig(bindings);
+  const zkPassportBearerSecret = Redacted.value(config.ZKPASSPORT_VERIFIER_SHARED_SECRET);
+  const zkPassportSigningSecret = Redacted.value(
+    config.ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET,
+  );
+  const zkPassportPreviousSigningSecret = Redacted.value(
+    config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET,
+  );
+  const previousSigningFields = [
+    zkPassportPreviousSigningSecret,
+    config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID,
+    config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL,
+  ];
+  const previousSigningKeyAbsent = previousSigningFields.every((value) => value === "");
+  const previousSigningKeyComplete =
+    previousSigningFields.every((value) => value !== "" && value.trim() === value) &&
+    isSigningKeyId(config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID) &&
+    config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID !==
+      config.ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID &&
+    zkPassportPreviousSigningSecret !== zkPassportSigningSecret &&
+    zkPassportPreviousSigningSecret !== zkPassportBearerSecret &&
+    isCanonicalIsoInstant(config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL);
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
   const publicProfileStore = makeControlPlanePublicProfileStore(controlPlane, identityStore);
@@ -184,7 +229,13 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
         config.ZKPASSPORT_NAME.trim() === "" ||
         config.ZKPASSPORT_NAME.trim() !== config.ZKPASSPORT_NAME ||
         config.ZKPASSPORT_VERIFIER_URL.trim() === "" ||
-        config.ZKPASSPORT_VERIFIER_SHARED_SECRET.trim() === "" ||
+        zkPassportBearerSecret.trim() === "" ||
+        zkPassportBearerSecret.trim() !== zkPassportBearerSecret ||
+        zkPassportSigningSecret.trim() === "" ||
+        zkPassportSigningSecret.trim() !== zkPassportSigningSecret ||
+        zkPassportBearerSecret === zkPassportSigningSecret ||
+        !isSigningKeyId(config.ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID) ||
+        (!previousSigningKeyAbsent && !previousSigningKeyComplete) ||
         (config.API_NEXT_ENV === "production" && config.ZKPASSPORT_DEV_MODE)))
   ) {
     throw new Error("HTTP worker configuration is incomplete or invalid");
@@ -207,7 +258,18 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
               name: config.ZKPASSPORT_NAME,
               ...(config.ZKPASSPORT_LOGO.trim() === "" ? {} : { logo: config.ZKPASSPORT_LOGO }),
               verifier_url: config.ZKPASSPORT_VERIFIER_URL,
-              verifier_shared_secret: config.ZKPASSPORT_VERIFIER_SHARED_SECRET,
+              verifier_shared_secret: zkPassportBearerSecret,
+              verifier_response_signing_secret: zkPassportSigningSecret,
+              verifier_response_signing_key_id: config.ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID,
+              ...(previousSigningKeyComplete
+                ? {
+                    previous_verifier_response_signing_key: {
+                      key_id: config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID,
+                      secret: zkPassportPreviousSigningSecret,
+                      valid_until: config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL,
+                    },
+                  }
+                : {}),
               dev_mode: config.ZKPASSPORT_DEV_MODE,
             },
           }

@@ -20,6 +20,7 @@ const dependencyRoots = [
   "packages/platform-cf",
   "packages/testing",
   "packages/zkpassport-verifier-runtime",
+  "packages/verifier-response-contract",
   "apps/http-worker",
   "apps/jobs-worker",
 ] as const;
@@ -54,6 +55,9 @@ describe("provider dependency boundary", () => {
       undefined,
     );
     expect(providerBoundaryViolation(providerFile, "@pirate/domain/verification")).toBe(undefined);
+    expect(providerBoundaryViolation(providerFile, "@pirate/verifier-response-contract")).toBe(
+      undefined,
+    );
     expect(providerBoundaryViolation(providerFile, "effect")).toBe(undefined);
     expect(providerBoundaryViolation(providerFile, "./local-helper.ts")).toBe(undefined);
   });
@@ -104,6 +108,7 @@ describe("provider dependency boundary", () => {
     expect(result.checkedFiles).toContain(
       "packages/platform-cf/src/verification/provider-registry.ts",
     );
+    expect(result.checkedFiles).toContain("packages/domain/src/gates-v2/index.ts");
   });
 
   test("recognizes re-exported boundary symbols and local export-surface widening", () => {
@@ -215,14 +220,27 @@ describe("provider dependency boundary", () => {
         await Bun.file(join(repositoryRoot, relativeIndex)).text(),
       );
     }
+    const gatesIndex = "packages/domain/src/gates-v2/index.ts";
+    await mkdir(dirname(join(root, gatesIndex)), { recursive: true });
+    await writeFile(
+      join(root, gatesIndex),
+      await Bun.file(join(repositoryRoot, gatesIndex)).text(),
+    );
     const domainIndex = join(root, "packages/domain/src/verification/index.ts");
     await writeFile(
       domainIndex,
       `${await Bun.file(domainIndex).text()}\nexport const widened = true;\n`,
     );
+    await writeFile(
+      join(root, gatesIndex),
+      `${await Bun.file(join(root, gatesIndex)).text()}\nexport const widened = true;\n`,
+    );
     const result = lintDependencies(root);
     expect(result.violations).toContain(
       "packages/domain/src/verification/index.ts: verification export surface differs from the frozen list",
+    );
+    expect(result.violations).toContain(
+      "packages/domain/src/gates-v2/index.ts: gates-v2 export surface differs from the frozen list",
     );
   });
 

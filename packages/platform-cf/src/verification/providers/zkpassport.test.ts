@@ -5,6 +5,7 @@ import type {
 } from "@pirate/application/verification";
 import { computeVerificationRequestHash } from "@pirate/application/verification";
 import { runProviderConformance } from "@pirate/testing/verification";
+import { canonicalizeSignedVerifierResponse } from "@pirate/verifier-response-contract";
 import { Cause, Effect, Exit, Result } from "effect";
 import {
   compileZkPassportQuery,
@@ -32,6 +33,57 @@ const SCOPE = {
   issuer: "zkpassport",
   rp_scope: ZKPASSPORT_RP_SCOPE,
 };
+const RESPONSE_SECRET = "response-secret";
+const RESPONSE_KEY_ID = "key-2026-08";
+const NONCE = "n".repeat(32);
+
+async function signedResult(
+  input: Parameters<NonNullable<ZkPassportAdapterOptions["verifier"]>["verify"]>[0],
+  overrides: Partial<{
+    verdict: boolean;
+    unique_identifier: string | null;
+    unique_identifier_type: 0 | null;
+    proof_session_id: string;
+    request_hash: string;
+    protocol_version: string;
+    expiry: string;
+    nonce: string;
+    key_id: string;
+  }> = {},
+  signingSecret = RESPONSE_SECRET,
+) {
+  const unsigned = {
+    proof_session_id: overrides.proof_session_id ?? input.proof_session_id,
+    request_hash: overrides.request_hash ?? input.request_hash,
+    verdict: overrides.verdict ?? true,
+    unique_identifier:
+      overrides.unique_identifier === undefined ? "raw-id" : overrides.unique_identifier,
+    unique_identifier_type:
+      "unique_identifier_type" in overrides ? overrides.unique_identifier_type : (0 as const),
+    protocol_version: overrides.protocol_version ?? input.protocol_version,
+    nonce: overrides.nonce ?? input.nonce,
+    expiry: overrides.expiry ?? input.expiry,
+    key_id: overrides.key_id ?? RESPONSE_KEY_ID,
+  } as const;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(signingSecret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(canonicalizeSignedVerifierResponse(unsigned)),
+  );
+  let binary = "";
+  for (const byte of new Uint8Array(signature)) binary += String.fromCharCode(byte);
+  return {
+    ...unsigned,
+    signature: btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", ""),
+  } as const;
+}
 const INPUT: VerificationProviderStartInput = {
   actor_id: "actor-1",
   intent_id: "intent-1",
@@ -60,12 +112,7 @@ function options(overrides: Partial<ZkPassportAdapterOptions> = {}): ZkPassportA
     domain: "api.example",
     name: "Pirate",
     verifier: {
-      verify: () =>
-        Effect.succeed({
-          verified: true,
-          unique_identifier: "raw-id",
-          unique_identifier_type: 0 as const,
-        }),
+      verify: (input) => Effect.promise(() => signedResult(input)),
     },
     clock: { now: () => NOW, expiresAt: () => EXPIRES },
     identifiers: {
@@ -76,6 +123,9 @@ function options(overrides: Partial<ZkPassportAdapterOptions> = {}): ZkPassportA
       },
     },
     digest: { digest: () => Effect.succeed("a".repeat(64)) },
+    verifier_response_signing_secret: RESPONSE_SECRET,
+    verifier_response_signing_key_id: RESPONSE_KEY_ID,
+    nonce: () => NONCE,
     ...overrides,
   };
 }
@@ -190,13 +240,9 @@ describe("ZKPassport provider", () => {
     const provider = makeZkPassportProvider(
       options({
         verifier: {
-          verify: () => {
+          verify: (input) => {
             calls += 1;
-            return Effect.succeed({
-              verified: true,
-              unique_identifier: "id",
-              unique_identifier_type: 0 as const,
-            });
+            return Effect.promise(() => signedResult(input, { unique_identifier: "id" }));
           },
         },
       }),
@@ -229,12 +275,14 @@ describe("ZKPassport provider", () => {
     const falseProvider = makeZkPassportProvider(
       options({
         verifier: {
-          verify: () =>
-            Effect.succeed({
-              verified: false,
-              unique_identifier: null,
-              unique_identifier_type: null,
-            }),
+          verify: (input) =>
+            Effect.promise(() =>
+              signedResult(input, {
+                verdict: false,
+                unique_identifier: null,
+                unique_identifier_type: null,
+              }),
+            ),
         },
       }),
     );
@@ -281,6 +329,365 @@ describe("ZKPassport provider", () => {
     expect(unsupportedCountry.status).toBe("unsupported");
   });
 
+  test("rejects signed response replay, rebinding, expiry/nonce drift, and MAC tampering", async () => {
+    const started = await Effect.runPromise(makeZkPassportProvider(options()).start(INPUT));
+    const completeWith = async (result: unknown) =>
+      Effect.runPromiseExit(
+        makeZkPassportProvider(
+          options({ verifier: { verify: () => Effect.succeed(result as never) } }),
+        ).complete({
+          session: started.session,
+          submission: {
+            channel: "client_result",
+            payload: {
+              proofs: [{}],
+              queryResult: {
+                bind: {
+                  custom_data: JSON.stringify({
+                    proof_session_id: "session-1",
+                    request_hash: HASH,
+                  }),
+                },
+                age: { gte: { expected: 18, result: true } },
+                nationality: { in: { expected: ["GEO", "USA"], result: true } },
+              },
+            },
+          },
+        }),
+      );
+    const base = await signedResult({
+      domain: "api.example",
+      proofs: [{}],
+      original_query: {},
+      query_result: {},
+      validity_seconds: 3600,
+      scope: ZKPASSPORT_RP_SCOPE,
+      dev_mode: false,
+      proof_session_id: started.session.id,
+      request_hash: HASH,
+      protocol_version: ZKPASSPORT_PROTOCOL_VERSION,
+      nonce: NONCE,
+      expiry: EXPIRES,
+      key_id: RESPONSE_KEY_ID,
+    });
+    const cases = [
+      {
+        name: "replay nonce",
+        response: await signedResult({ ...base, nonce: "o".repeat(32) } as never, {
+          nonce: "o".repeat(32),
+        }),
+        tag: "VerificationProviderUnboundRejected",
+      },
+      {
+        name: "cross-session",
+        response: await signedResult({ ...base, proof_session_id: "other" } as never, {
+          proof_session_id: "other",
+        }),
+        tag: "VerificationProviderUnboundRejected",
+      },
+      {
+        name: "expiry drift",
+        response: await signedResult({ ...base, expiry: "2099-01-01T00:30:00.000Z" } as never, {
+          expiry: "2099-01-01T00:30:00.000Z",
+        }),
+        tag: "VerificationProviderUnboundRejected",
+      },
+      {
+        name: "protocol drift",
+        response: await signedResult({ ...base, protocol_version: "other" } as never, {
+          protocol_version: "other",
+        }),
+        tag: "VerificationProviderUnboundRejected",
+      },
+      {
+        name: "tampered MAC",
+        response: { ...base, unique_identifier: "changed" },
+        tag: "VerificationProviderInvalidResponse",
+      },
+      {
+        name: "missing MAC",
+        response: { ...base, signature: "" },
+        tag: "VerificationProviderInvalidResponse",
+      },
+    ] as const;
+    for (const item of cases) {
+      const exit = await completeWith(item.response);
+      expect(failureTag(exit), item.name).toBe(item.tag);
+    }
+  });
+
+  test("rejects a replayed complete response after generating a fresh nonce", async () => {
+    const nonces = ["n".repeat(32), "o".repeat(32)];
+    let captured: Awaited<ReturnType<typeof signedResult>> | undefined;
+    const provider = makeZkPassportProvider(
+      options({
+        nonce: () => nonces.shift() ?? "p".repeat(32),
+        verifier: {
+          verify: (input) =>
+            Effect.promise(async () => {
+              captured ??= await signedResult(input);
+              return captured;
+            }),
+        },
+      }),
+    );
+    const started = await Effect.runPromise(provider.start(INPUT));
+    const payload = {
+      proofs: [{}],
+      queryResult: {
+        bind: {
+          custom_data: JSON.stringify({ proof_session_id: started.session.id, request_hash: HASH }),
+        },
+        age: { gte: { expected: 18, result: true } },
+        nationality: { in: { expected: ["GEO", "USA"], result: true } },
+      },
+    };
+    await expect(
+      Effect.runPromise(
+        provider.complete({
+          session: started.session,
+          submission: { channel: "client_result", payload },
+        }),
+      ),
+    ).resolves.toBeDefined();
+    const replay = await Effect.runPromiseExit(
+      provider.complete({
+        session: started.session,
+        submission: { channel: "client_result", payload },
+      }),
+    );
+    expect(failureTag(replay)).toBe("VerificationProviderUnboundRejected");
+  });
+
+  test("rejects cross-session response substitution", async () => {
+    let firstResponse: Awaited<ReturnType<typeof signedResult>> | undefined;
+    const provider = makeZkPassportProvider(
+      options({
+        verifier: {
+          verify: (input) =>
+            Effect.promise(async () => {
+              firstResponse ??= await signedResult(input);
+              return firstResponse;
+            }),
+        },
+      }),
+    );
+    const first = await Effect.runPromise(provider.start(INPUT));
+    const second = await Effect.runPromise(provider.start(INPUT));
+    const payloadFor = (sessionId: string) => ({
+      proofs: [{}],
+      queryResult: {
+        bind: { custom_data: JSON.stringify({ proof_session_id: sessionId, request_hash: HASH }) },
+        age: { gte: { expected: 18, result: true } },
+        nationality: { in: { expected: ["GEO", "USA"], result: true } },
+      },
+    });
+    await Effect.runPromise(
+      provider.complete({
+        session: first.session,
+        submission: { channel: "client_result", payload: payloadFor(first.session.id) },
+      }),
+    );
+    const substituted = await Effect.runPromiseExit(
+      provider.complete({
+        session: second.session,
+        submission: { channel: "client_result", payload: payloadFor(second.session.id) },
+      }),
+    );
+    expect(failureTag(substituted)).toBe("VerificationProviderUnboundRejected");
+  });
+
+  test("rejects unsigned, extended, malformed, and field-tampered verifier envelopes", async () => {
+    const started = await Effect.runPromise(makeZkPassportProvider(options()).start(INPUT));
+    const verifierInput = {
+      domain: "api.example",
+      proofs: [{}],
+      original_query: {},
+      query_result: {},
+      validity_seconds: 3600,
+      scope: ZKPASSPORT_RP_SCOPE,
+      dev_mode: false,
+      proof_session_id: started.session.id,
+      request_hash: HASH,
+      protocol_version: ZKPASSPORT_PROTOCOL_VERSION,
+      nonce: NONCE,
+      expiry: EXPIRES,
+      key_id: RESPONSE_KEY_ID,
+    } as const;
+    const base = await signedResult(verifierInput);
+    const completeWith = (result: unknown) =>
+      Effect.runPromiseExit(
+        makeZkPassportProvider(
+          options({ verifier: { verify: () => Effect.succeed(result as never) } }),
+        ).complete({
+          session: started.session,
+          submission: {
+            channel: "client_result",
+            payload: {
+              proofs: [{}],
+              queryResult: {
+                bind: {
+                  custom_data: JSON.stringify({
+                    proof_session_id: started.session.id,
+                    request_hash: HASH,
+                  }),
+                },
+                age: { gte: { expected: 18, result: true } },
+                nationality: { in: { expected: ["GEO", "USA"], result: true } },
+              },
+            },
+          },
+        }),
+      );
+    const mutations = [
+      { ...base, proof_session_id: "other-session" },
+      { ...base, request_hash: "2".repeat(64) },
+      { ...base, verdict: false },
+      { ...base, unique_identifier: "other-id" },
+      { ...base, unique_identifier_type: null },
+      { ...base, protocol_version: "zkpassport-v3" },
+      { ...base, nonce: "o".repeat(32) },
+      { ...base, expiry: "2099-01-01T00:30:00.000Z" },
+      { ...base, key_id: "unknown-key" },
+    ];
+    for (const mutation of mutations) {
+      expect(failureTag(await completeWith(mutation))).toBe("VerificationProviderInvalidResponse");
+    }
+    const { signature: _signature, ...legacyUnsigned } = base;
+    for (const malformed of [
+      legacyUnsigned,
+      { ...base, signature: "a".repeat(42) },
+      { ...base, signature: "a".repeat(43), extra: true },
+    ]) {
+      expect(failureTag(await completeWith(malformed))).toBe("VerificationProviderInvalidResponse");
+    }
+  });
+
+  test("rejects validly signed impossible verdict shapes", async () => {
+    const started = await Effect.runPromise(makeZkPassportProvider(options()).start(INPUT));
+    const queryResult = {
+      bind: {
+        custom_data: JSON.stringify({ proof_session_id: started.session.id, request_hash: HASH }),
+      },
+      age: { gte: { expected: 18, result: true } },
+      nationality: { in: { expected: ["GEO", "USA"], result: true } },
+    };
+    const invalidShapes = [
+      { verdict: false, unique_identifier: "raw-id", unique_identifier_type: 0 as const },
+      { verdict: true, unique_identifier: null, unique_identifier_type: null },
+      { verdict: true, unique_identifier: "raw-id", unique_identifier_type: null },
+    ] as const;
+    for (const shape of invalidShapes) {
+      const provider = makeZkPassportProvider(
+        options({
+          verifier: { verify: (input) => Effect.promise(() => signedResult(input, shape)) },
+        }),
+      );
+      const result = await Effect.runPromiseExit(
+        provider.complete({
+          session: started.session,
+          submission: { channel: "client_result", payload: { proofs: [{}], queryResult } },
+        }),
+      );
+      expect(failureTag(result)).toBe("VerificationProviderInvalidResponse");
+    }
+  });
+
+  test("accepts a previous response key only inside its explicit grace window", async () => {
+    const previous = {
+      key_id: "key-2026-07",
+      secret: "previous-response-secret",
+      valid_until: "2099-01-01T00:30:00.000Z",
+    } as const;
+    const withPrevious = (now: typeof NOW | "2099-01-01T00:31:00.000Z") =>
+      makeZkPassportProvider(
+        options({
+          clock: { now: () => now, expiresAt: () => EXPIRES },
+          previous_verifier_response_signing_key: previous,
+          verifier: {
+            verify: (input) =>
+              Effect.promise(() =>
+                signedResult(input, { key_id: previous.key_id }, previous.secret),
+              ),
+          },
+        }),
+      );
+    const active = withPrevious(NOW);
+    const started = await Effect.runPromise(active.start(INPUT));
+    const input = {
+      session: started.session,
+      submission: {
+        channel: "client_result" as const,
+        payload: {
+          proofs: [{}],
+          queryResult: {
+            bind: {
+              custom_data: JSON.stringify({
+                proof_session_id: started.session.id,
+                request_hash: HASH,
+              }),
+            },
+            age: { gte: { expected: 18, result: true } },
+            nationality: { in: { expected: ["GEO", "USA"], result: true } },
+          },
+        },
+      },
+    };
+    await expect(Effect.runPromise(active.complete(input))).resolves.toBeDefined();
+    const expired = await Effect.runPromiseExit(
+      withPrevious("2099-01-01T00:31:00.000Z").complete(input),
+    );
+    expect(failureTag(expired)).toBe("VerificationProviderInvalidResponse");
+  });
+
+  test("a verifier false result cannot emit document.valid evidence", async () => {
+    let digests = 0;
+    const provider = makeZkPassportProvider(
+      options({
+        digest: {
+          digest: () => {
+            digests += 1;
+            return Effect.succeed("a".repeat(64));
+          },
+        },
+        verifier: {
+          verify: (input) =>
+            Effect.promise(() =>
+              signedResult(input, {
+                verdict: false,
+                unique_identifier: null,
+                unique_identifier_type: null,
+              }),
+            ),
+        },
+      }),
+    );
+    const started = await Effect.runPromise(provider.start(INPUT));
+    const result = await Effect.runPromiseExit(
+      provider.complete({
+        session: started.session,
+        submission: {
+          channel: "client_result",
+          payload: {
+            proofs: [{}],
+            queryResult: {
+              bind: {
+                custom_data: JSON.stringify({
+                  proof_session_id: started.session.id,
+                  request_hash: HASH,
+                }),
+              },
+              age: { gte: { expected: 18, result: true } },
+              nationality: { in: { expected: ["GEO", "USA"], result: true } },
+            },
+          },
+        },
+      }),
+    );
+    expect(failureTag(result)).toBe("VerificationProviderUnboundRejected");
+    expect(digests).toBe(0);
+  });
+
   test("maps verifier transport timeout/auth/5xx/malformed responses to closed failures", async () => {
     const input = {
       domain: "api.example",
@@ -290,6 +697,12 @@ describe("ZKPassport provider", () => {
       validity_seconds: 3600,
       scope: ZKPASSPORT_RP_SCOPE,
       dev_mode: false,
+      proof_session_id: "session-1",
+      request_hash: HASH,
+      protocol_version: ZKPASSPORT_PROTOCOL_VERSION,
+      nonce: NONCE,
+      expiry: EXPIRES,
+      key_id: RESPONSE_KEY_ID,
     } as const;
     const responseTransport = (response: Response) =>
       makeZkPassportVerifierTransport({
@@ -320,6 +733,15 @@ describe("ZKPassport provider", () => {
         ),
       ),
     ).toBe("VerificationProviderMisconfigured");
+    for (const body of ["not-json", JSON.stringify({ value: "x".repeat(70 * 1024) })]) {
+      expect(
+        failureTag(
+          await Effect.runPromiseExit(
+            responseTransport(new Response(body, { status: 503 })).verify(input),
+          ),
+        ),
+      ).toBe("VerificationProviderUnavailable");
+    }
     for (const status of [400, 413]) {
       expect(
         failureTag(

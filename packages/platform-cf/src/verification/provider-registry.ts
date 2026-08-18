@@ -25,6 +25,13 @@ export interface PlatformVerificationProviderOptions {
     readonly logo?: string;
     readonly verifier_url?: string;
     readonly verifier_shared_secret?: string;
+    readonly verifier_response_signing_secret?: string;
+    readonly verifier_response_signing_key_id?: string;
+    readonly previous_verifier_response_signing_key?: Readonly<{
+      readonly key_id: string;
+      readonly secret: string;
+      readonly valid_until: string;
+    }>;
     readonly verifier?: ZkPassportVerifierTransport;
     readonly dev_mode?: boolean;
   }>;
@@ -52,6 +59,47 @@ function selfPassAdapter(config: NonNullable<PlatformVerificationProviderOptions
   });
 }
 
+function validZkPassportOptions(
+  options: NonNullable<PlatformVerificationProviderOptions["zkpassport"]>,
+): boolean {
+  const signingSecret = options.verifier_response_signing_secret;
+  const signingKeyId = options.verifier_response_signing_key_id;
+  if (
+    options.domain.trim() === "" ||
+    options.name.trim() === "" ||
+    signingSecret === undefined ||
+    signingSecret.trim() === "" ||
+    signingSecret.trim() !== signingSecret ||
+    signingKeyId === undefined ||
+    !/^[A-Za-z0-9._-]{1,128}$/.test(signingKeyId)
+  )
+    return false;
+  if (options.verifier === undefined) {
+    const bearer = options.verifier_shared_secret;
+    if (
+      options.verifier_url === undefined ||
+      options.verifier_url.trim() === "" ||
+      bearer === undefined ||
+      bearer.trim() === "" ||
+      bearer.trim() !== bearer ||
+      bearer === signingSecret
+    )
+      return false;
+  }
+  const previous = options.previous_verifier_response_signing_key;
+  return (
+    previous === undefined ||
+    (previous.secret.trim() !== "" &&
+      previous.secret.trim() === previous.secret &&
+      previous.secret !== signingSecret &&
+      previous.secret !== options.verifier_shared_secret &&
+      /^[A-Za-z0-9._-]{1,128}$/.test(previous.key_id) &&
+      previous.key_id !== signingKeyId &&
+      Number.isFinite(Date.parse(previous.valid_until)) &&
+      new Date(Date.parse(previous.valid_until)).toISOString() === previous.valid_until)
+  );
+}
+
 /**
  * The single production assembly point for provider adapters. Real providers
  * are added to this local list only after passing the shared conformance kit.
@@ -61,14 +109,7 @@ export function makePlatformVerificationProviderRegistry(
 ) {
   const providers: readonly VerificationProviderAdapter[] = [
     ...(options.self_pass === undefined ? [] : [selfPassAdapter(options.self_pass)]),
-    ...(options.zkpassport === undefined ||
-    options.zkpassport.domain.trim() === "" ||
-    options.zkpassport.name.trim() === "" ||
-    (options.zkpassport.verifier === undefined &&
-      (options.zkpassport.verifier_url?.trim() === "" ||
-        options.zkpassport.verifier_shared_secret?.trim() === "" ||
-        options.zkpassport.verifier_url === undefined ||
-        options.zkpassport.verifier_shared_secret === undefined))
+    ...(options.zkpassport === undefined || !validZkPassportOptions(options.zkpassport)
       ? []
       : [
           makeZkPassportProvider({
@@ -94,6 +135,16 @@ export function makePlatformVerificationProviderRegistry(
                 kind === "session" ? crypto.randomUUID() : `${kind}-${crypto.randomUUID()}`,
             },
             digest: { digest: sha256 },
+            verifier_response_signing_secret:
+              options.zkpassport.verifier_response_signing_secret ?? "",
+            verifier_response_signing_key_id:
+              options.zkpassport.verifier_response_signing_key_id ?? "",
+            ...(options.zkpassport.previous_verifier_response_signing_key === undefined
+              ? {}
+              : {
+                  previous_verifier_response_signing_key:
+                    options.zkpassport.previous_verifier_response_signing_key,
+                }),
           }),
         ]),
   ];
