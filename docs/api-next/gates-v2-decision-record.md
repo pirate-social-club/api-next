@@ -361,3 +361,29 @@ translations and hostile cases through the shared transport harness. The SDK's
 named registry and verifier contract errors map to provider unavailability;
 unknown throws remain proof rejection rather than being silently upgraded to
 an outage.
+
+## ZKPassport backend checkpoint
+
+The backend vertical was implemented and independently audited on 2026-08-18,
+after the pure age-18 evaluator checkpoint. It adds a deterministic dynamic
+query compiler, client-result adapter, authenticated verifier transport, and a
+separate Bun-only verifier runtime pinned exactly to `@zkpassport/sdk@0.14.2`.
+The SDK is not imported by the Cloudflare Worker. Domain, development mode,
+validity, query compiler, SDK, and verifier-contract versions are persisted in
+the provider configuration; completion regenerates the query from the stored
+session and ignores client-authored query material.
+
+The first adapter surface is limited to `age.minimum`,
+`credential.subject_unique`, `document.valid`, and `nationality.allowed` with
+`document_zk` assurance and the pinned `pirate-social` relying-party scope. It
+does not emit `human.unique`, liveness, personhood, holder binding, gender,
+facematch, sanctions, or arbitrary disclosed predicates. Nationality uses the
+exact canonical allowlist through a sorted alpha-2 to alpha-3 conversion.
+
+This checkpoint is code-complete but not deployed. ZKPassport remains disabled
+in every checked-in Worker environment. Staging requires a frontend consumer
+for the embedded-SDK presentation, a separately provisioned verifier runtime
+and secret, and a representative real-proof payload measurement. The public
+completion route currently caps request bodies at 1 MiB while the internal
+verifier accepts at most 10 MiB, so staging must prove the real payload fits or
+make and review a deliberate ingress-limit change before enablement.

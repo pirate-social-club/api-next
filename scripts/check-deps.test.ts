@@ -19,6 +19,7 @@ const dependencyRoots = [
   "packages/application",
   "packages/platform-cf",
   "packages/testing",
+  "packages/zkpassport-verifier-runtime",
   "apps/http-worker",
   "apps/jobs-worker",
 ] as const;

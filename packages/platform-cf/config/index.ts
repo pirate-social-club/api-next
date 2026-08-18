@@ -72,6 +72,15 @@ export const HttpWorkerConfig = Config.all({
   SELF_PASS_MOCK_PASSPORT: Config.boolean("SELF_PASS_MOCK_PASSPORT").pipe(
     Config.withDefault(false),
   ),
+  ZKPASSPORT_ENABLED: Config.boolean("ZKPASSPORT_ENABLED").pipe(Config.withDefault(false)),
+  ZKPASSPORT_DOMAIN: Config.string("ZKPASSPORT_DOMAIN").pipe(Config.withDefault("")),
+  ZKPASSPORT_NAME: Config.string("ZKPASSPORT_NAME").pipe(Config.withDefault("Pirate")),
+  ZKPASSPORT_LOGO: Config.string("ZKPASSPORT_LOGO").pipe(Config.withDefault("")),
+  ZKPASSPORT_VERIFIER_URL: Config.string("ZKPASSPORT_VERIFIER_URL").pipe(Config.withDefault("")),
+  ZKPASSPORT_VERIFIER_SHARED_SECRET: Config.string("ZKPASSPORT_VERIFIER_SHARED_SECRET").pipe(
+    Config.withDefault(""),
+  ),
+  ZKPASSPORT_DEV_MODE: Config.boolean("ZKPASSPORT_DEV_MODE").pipe(Config.withDefault(false)),
   VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: Config.string(
     "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS",
   ).pipe(Config.withDefault("")),

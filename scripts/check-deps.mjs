@@ -18,6 +18,7 @@ const INTERNAL = {
   "packages/application": "@pirate/application",
   "packages/platform-cf": "@pirate/platform-cf",
   "packages/testing": "@pirate/testing",
+  "packages/zkpassport-verifier-runtime": "@pirate/zkpassport-verifier-runtime",
   "apps/http-worker": "@pirate/http-worker",
   "apps/jobs-worker": "@pirate/jobs-worker",
 };
@@ -29,6 +30,7 @@ const ALLOWED = {
   "@pirate/application": ["@pirate/contracts", "@pirate/domain"],
   "@pirate/platform-cf": ["@pirate/application", "@pirate/contracts", "@pirate/domain"],
   "@pirate/testing": ["@pirate/application", "@pirate/contracts", "@pirate/domain"],
+  "@pirate/zkpassport-verifier-runtime": [],
   "@pirate/http-worker": [
     "@pirate/application",
     "@pirate/contracts",

@@ -12,6 +12,12 @@ const ISO2_BY_ISO3 = new Map<string, string>(
   }),
 );
 const ISO2_CODES = new Set(ISO_COUNTRY_CODE_PAIRS.split(",").map((pair) => pair.slice(0, 2)));
+const ISO3_BY_ISO2 = new Map<string, string>(
+  ISO_COUNTRY_CODE_PAIRS.split(",").map((pair) => {
+    const [alpha2, alpha3] = pair.split(":") as [string, string];
+    return [alpha2, alpha3];
+  }),
+);
 
 export function normalizeSelfCountry(value: string): Iso3166Alpha2 | undefined {
   const normalized = value.trim().toUpperCase();
@@ -20,4 +26,9 @@ export function normalizeSelfCountry(value: string): Iso3166Alpha2 | undefined {
   }
   const alpha2 = ISO2_BY_ISO3.get(normalized);
   return alpha2 === undefined ? undefined : (alpha2 as Iso3166Alpha2);
+}
+
+/** ZKPassport queries use ISO-3166 alpha-3 values for nationality predicates. */
+export function selfCountryAlpha3(value: Iso3166Alpha2): string | undefined {
+  return ISO3_BY_ISO2.get(value);
 }

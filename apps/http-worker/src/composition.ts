@@ -47,6 +47,13 @@ export interface HttpWorkerBindings {
   readonly SELF_PASS_ENABLED?: string;
   readonly SELF_PASS_APP_NAME?: string;
   readonly SELF_PASS_MOCK_PASSPORT?: string;
+  readonly ZKPASSPORT_ENABLED?: string;
+  readonly ZKPASSPORT_DOMAIN?: string;
+  readonly ZKPASSPORT_NAME?: string;
+  readonly ZKPASSPORT_LOGO?: string;
+  readonly ZKPASSPORT_VERIFIER_URL?: string;
+  readonly ZKPASSPORT_VERIFIER_SHARED_SECRET?: string;
+  readonly ZKPASSPORT_DEV_MODE?: string;
   readonly VERIFICATION_CALLBACK_CREDENTIAL_HEADERS?: string;
   readonly PIRATE_APP_JWT_PRIVATE_KEY?: string;
   readonly PIRATE_APP_JWT_PUBLIC_KEY?: string;
@@ -74,6 +81,13 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     SELF_PASS_ENABLED: bindings.SELF_PASS_ENABLED,
     SELF_PASS_APP_NAME: bindings.SELF_PASS_APP_NAME,
     SELF_PASS_MOCK_PASSPORT: bindings.SELF_PASS_MOCK_PASSPORT,
+    ZKPASSPORT_ENABLED: bindings.ZKPASSPORT_ENABLED,
+    ZKPASSPORT_DOMAIN: bindings.ZKPASSPORT_DOMAIN,
+    ZKPASSPORT_NAME: bindings.ZKPASSPORT_NAME,
+    ZKPASSPORT_LOGO: bindings.ZKPASSPORT_LOGO,
+    ZKPASSPORT_VERIFIER_URL: bindings.ZKPASSPORT_VERIFIER_URL,
+    ZKPASSPORT_VERIFIER_SHARED_SECRET: bindings.ZKPASSPORT_VERIFIER_SHARED_SECRET,
+    ZKPASSPORT_DEV_MODE: bindings.ZKPASSPORT_DEV_MODE,
     VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: bindings.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
     PIRATE_APP_JWT_PRIVATE_KEY: bindings.PIRATE_APP_JWT_PRIVATE_KEY,
     PIRATE_APP_JWT_PUBLIC_KEY: bindings.PIRATE_APP_JWT_PUBLIC_KEY,
@@ -169,6 +183,18 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   ) {
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
+  if (
+    (config.API_NEXT_ENV === "production" && config.ZKPASSPORT_DEV_MODE) ||
+    (config.ZKPASSPORT_ENABLED &&
+      (config.ZKPASSPORT_DOMAIN.trim() === "" ||
+        config.ZKPASSPORT_NAME.trim() === "" ||
+        config.ZKPASSPORT_NAME.trim() !== config.ZKPASSPORT_NAME ||
+        config.ZKPASSPORT_VERIFIER_URL.trim() === "" ||
+        config.ZKPASSPORT_VERIFIER_SHARED_SECRET.trim() === "" ||
+        (config.API_NEXT_ENV === "production" && config.ZKPASSPORT_DEV_MODE)))
+  ) {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  }
   const verificationRegistry = await Effect.runPromise(
     makePlatformVerificationProviderRegistry({
       ...(config.SELF_PASS_ENABLED && selfPassOrigin !== undefined
@@ -177,6 +203,18 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
               callback_origin: selfPassOrigin,
               app_name: config.SELF_PASS_APP_NAME,
               mock_passport: config.SELF_PASS_MOCK_PASSPORT,
+            },
+          }
+        : {}),
+      ...(config.ZKPASSPORT_ENABLED
+        ? {
+            zkpassport: {
+              domain: config.ZKPASSPORT_DOMAIN,
+              name: config.ZKPASSPORT_NAME,
+              ...(config.ZKPASSPORT_LOGO.trim() === "" ? {} : { logo: config.ZKPASSPORT_LOGO }),
+              verifier_url: config.ZKPASSPORT_VERIFIER_URL,
+              verifier_shared_secret: config.ZKPASSPORT_VERIFIER_SHARED_SECRET,
+              dev_mode: config.ZKPASSPORT_DEV_MODE,
             },
           }
         : {}),

@@ -18,6 +18,7 @@
     "./session-tokens": "./src/session-tokens.ts",
     "./verification-completion-repository": "./src/verification-completion-repository.ts",
     "./verification-provider-registry": "./src/verification/provider-registry.ts",
+    "./verification/providers/zkpassport": "./src/verification/providers/zkpassport.ts",
     "./verification-intent-resolver": "./src/verification-intent-resolver.ts",
     "./verification-start-repository": "./src/verification-start-repository.ts"
   },
