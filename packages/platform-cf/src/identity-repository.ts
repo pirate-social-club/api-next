@@ -1,14 +1,12 @@
 import {
   ControlPlaneDb,
   type ControlPlaneError,
+  type IdentityRegistrationStore,
+  IdentityRegistrationStoreFailure,
   IdentityResolutionError,
   type IdentityStore,
 } from "@pirate/application";
 import { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
-import {
-  type IdentityRegistrationStore,
-  IdentityRegistrationStoreFailure,
-} from "@pirate/application/use-cases/identity-registration";
 import { Data, Effect, type Layer, Result, Schema } from "effect";
 
 export const MAX_CANONICAL_ALIAS_HOPS = 8;
