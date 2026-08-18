@@ -95,6 +95,12 @@ const identityCredentialInvariantsMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const identityCredentialDeleteGuardMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0017_identity_credential_delete_guard.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -179,6 +185,11 @@ const identityCredentialInvariantsMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0016_identity_credential_invariants.sql"] ?? "",
   sql: identityCredentialInvariantsMigrationSql,
 };
+const identityCredentialDeleteGuardMigration: PostgresMigration = {
+  version: "0017_identity_credential_delete_guard.sql",
+  checksum: checksumManifest.migrations["0017_identity_credential_delete_guard.sql"] ?? "",
+  sql: identityCredentialDeleteGuardMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -196,6 +207,7 @@ const migrations: readonly PostgresMigration[] = [
   communityPurchaseFundingPlansMigration,
   identityCredentialsMigration,
   identityCredentialInvariantsMigration,
+  identityCredentialDeleteGuardMigration,
 ];
 
 function checksum(value: string): string {
@@ -356,6 +368,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(identityCredentialInvariantsMigrationSql)).toBe(
         identityCredentialInvariantsMigration.checksum,
       );
+      expect(checksum(identityCredentialDeleteGuardMigrationSql)).toBe(
+        identityCredentialDeleteGuardMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -445,7 +460,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       await admin.query(
         `UPDATE identity_credentials
-         SET status = 'tombstoned'
+         SET status = 'tombstoned', tombstoned_at = '1970-01-01T00:00:00Z'
          WHERE credential_id = 'credential-a'`,
       );
       const tombstone = await admin.query<{
@@ -459,6 +474,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(tombstone.rows[0]?.status).toBe("tombstoned");
       expect(tombstone.rows[0]?.tombstoned_at).toBeInstanceOf(Date);
+      expect(tombstone.rows[0]?.tombstoned_at?.getUTCFullYear()).toBeGreaterThan(1970);
       expect(tombstone.rows[0]?.updated_at.getUTCFullYear()).toBeGreaterThan(2000);
       await expectPostgresFailure(
         admin,
@@ -477,6 +493,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
            'credential-reuse', 'privy', 'app-staging', 'did:privy:subject-a',
            'credential-user-b'
          )`,
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "DELETE FROM identity_credentials WHERE credential_id = 'credential-a'",
         [],
       );
 

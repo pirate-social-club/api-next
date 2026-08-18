@@ -37,6 +37,7 @@ describe("Postgres migration runner", () => {
       "0014_m3_community_purchase_funding_plans.sql",
       "0015_identity_credentials.sql",
       "0016_identity_credential_invariants.sql",
+      "0017_identity_credential_delete_guard.sql",
     ]);
     expect(formatMigrationPlan(migrations)).toContain("0001_v1_product_slice.sql");
     expect(formatMigrationPlan(migrations)).toContain("0002_identity.sql");
@@ -58,13 +59,14 @@ describe("Postgres migration runner", () => {
     );
     expect(formatMigrationPlan(migrations)).toContain("0015_identity_credentials.sql");
     expect(formatMigrationPlan(migrations)).toContain("0016_identity_credential_invariants.sql");
+    expect(formatMigrationPlan(migrations)).toContain("0017_identity_credential_delete_guard.sql");
   });
 
   test("dry-run does not require an administrative URL or open a connection", async () => {
     const output = await runPostgresMigrations({ dryRun: true });
     expect(output).toMatchObject({ dryRun: true });
     if (!output.dryRun) throw new Error("expected a dry-run result");
-    expect(output.plan).toHaveLength(16);
+    expect(output.plan).toHaveLength(17);
   });
 
   test("normalizes psql's system sslrootcert value for node pg", () => {
@@ -147,6 +149,13 @@ describe("Postgres migration runner", () => {
     await Bun.write(
       join(directory, "0016_identity_credential_invariants.sql"),
       identityCredentialInvariants,
+    );
+    const identityCredentialDeleteGuard = await Bun.file(
+      new URL("0017_identity_credential_delete_guard.sql", source),
+    ).text();
+    await Bun.write(
+      join(directory, "0017_identity_credential_delete_guard.sql"),
+      identityCredentialDeleteGuard,
     );
 
     await expect(loadPostgresMigrations(new URL(`file://${directory}/`))).rejects.toThrow(

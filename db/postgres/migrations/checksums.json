@@ -16,6 +16,7 @@
     "0013_m3_community_purchase_funding_journal.sql": "a3bb7deed76d76c1642220cf54b5dd277cbbaf0239946cd6a9967328e2e277a3",
     "0014_m3_community_purchase_funding_plans.sql": "a60a534038ef9e56e5e8fb50ae10c92a74b7333f97c289cf8cc298676673ec98",
     "0015_identity_credentials.sql": "c903d74fdc282b1ab3b0c0be3d46758ba1c50f30282c0d02976b52c43b92966f",
-    "0016_identity_credential_invariants.sql": "b9d94049c5e796b567f9d11e8b210d147561fd3b0e38abaea60a5c73fe436220"
+    "0016_identity_credential_invariants.sql": "b9d94049c5e796b567f9d11e8b210d147561fd3b0e38abaea60a5c73fe436220",
+    "0017_identity_credential_delete_guard.sql": "c66ac7d2076b9db3f25f31a5a96fddf7569e1aaf4bfc6ba931e5d2400d5a8aaa"
   }
 }

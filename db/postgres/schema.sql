@@ -67,6 +67,11 @@ RETURNS trigger
 LANGUAGE plpgsql
 AS $$
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'identity credentials cannot be deleted'
+      USING ERRCODE = '23514', CONSTRAINT = 'identity_credentials_delete_forbidden';
+  END IF;
+
   IF TG_OP = 'INSERT' THEN
     IF NEW.status <> 'active' OR NEW.tombstoned_at IS NOT NULL THEN
       RAISE EXCEPTION 'identity credentials must be inserted active'
@@ -91,7 +96,7 @@ BEGIN
   END IF;
 
   IF NEW.status = 'tombstoned' THEN
-    NEW.tombstoned_at := COALESCE(NEW.tombstoned_at, now());
+    NEW.tombstoned_at := now();
   ELSIF NEW.status <> 'active' OR NEW.tombstoned_at IS NOT NULL THEN
     RAISE EXCEPTION 'invalid identity credential lifecycle transition'
       USING ERRCODE = '23514', CONSTRAINT = 'identity_credentials_lifecycle';
@@ -103,7 +108,7 @@ END;
 $$;
 
 CREATE TRIGGER identity_credentials_enforce_lifecycle
-BEFORE INSERT OR UPDATE ON identity_credentials
+BEFORE INSERT OR UPDATE OR DELETE ON identity_credentials
 FOR EACH ROW
 EXECUTE FUNCTION identity_credentials_enforce_lifecycle();
 
