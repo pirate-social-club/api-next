@@ -19,6 +19,27 @@ export * from "./gates/policy-validation.ts";
 export * from "./gates/proof-of-work.ts";
 export * from "./gates/verification-eligibility.ts";
 export * from "./gates/wallet-score.ts";
+export type {
+  CuratedAge18Evaluation,
+  CuratedAge18EvaluatorInput,
+  CuratedAge18Fail,
+  CuratedAge18Indeterminate,
+  CuratedAge18NeedsEvidence,
+  CuratedAge18Pass,
+  CuratedAge18Policy,
+  EvaluatorReason,
+  EvaluatorWitness,
+  EvidenceAvailability,
+  EvidenceUnavailableReason,
+  GatesV2EvaluationOutcome,
+} from "./gates-v2/index.ts";
+export {
+  CURATED_AGE_18_POLICY,
+  evaluateAge18,
+  evaluateCuratedAge18,
+  SELF_STAGING_18_PLUS_DEVELOPMENT_EVIDENCE,
+  SELF_STAGING_18_PLUS_EVALUATION_NOW,
+} from "./gates-v2/index.ts";
 export * from "./handles/label-claim-rules.ts";
 export * from "./handles/policy.ts";
 export * from "./money/failure-fence.ts";
