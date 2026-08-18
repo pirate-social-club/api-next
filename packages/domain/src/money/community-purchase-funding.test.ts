@@ -266,22 +266,23 @@ describe("community-purchase funding state machine", () => {
       ).rejected,
     ).toBe("reconciliation_observation_not_fresh");
 
-    const resolved = accepted(
-      transitionCommunityPurchaseFunding(reconciliation, {
-        type: "reconciliation_resolved",
-        expectedVersion: reconciliation.version,
-        at: reconciliation.updatedAt + 1,
-        evidence: {
-          ...EVIDENCE,
-          blockNumber: 124,
-          blockHash: REORG_BLOCK_HASH,
-          observationId: OBSERVATION_4,
-          observedHeadBlockNumber: 126,
-          observedHeadBlockHash: HEAD_HASH_3,
-        },
-      }),
-    );
-    expect(resolved.state).toBe("confirmed");
+    expect(
+      rejected(
+        transitionCommunityPurchaseFunding(reconciliation, {
+          type: "reconciliation_resolved",
+          expectedVersion: reconciliation.version,
+          at: reconciliation.updatedAt + 1,
+          evidence: {
+            ...EVIDENCE,
+            blockNumber: 124,
+            blockHash: REORG_BLOCK_HASH,
+            observationId: OBSERVATION_4,
+            observedHeadBlockNumber: 126,
+            observedHeadBlockHash: HEAD_HASH_3,
+          },
+        }),
+      ).rejected,
+    ).toBe("confirmed_receipt_identity_changed");
   });
 
   test("records only explicit safe failures as reclaimable and preserves other fences", () => {

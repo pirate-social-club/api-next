@@ -31,6 +31,10 @@ const TRANSACTION_HASH = `0x${"44".repeat(32)}` as const;
 const BLOCK_HASH = `0x${"55".repeat(32)}` as const;
 const HEAD_HASH = `0x${"66".repeat(32)}` as const;
 const OBSERVATION = `0x${"77".repeat(32)}` as const;
+const OBSERVATION_2 = `0x${"88".repeat(32)}` as const;
+const OBSERVATION_3 = `0x${"99".repeat(32)}` as const;
+const HEAD_HASH_2 = `0x${"aa".repeat(32)}` as const;
+const HEAD_HASH_3 = `0x${"bb".repeat(32)}` as const;
 
 function schemaIdentifier(): string {
   return `api_next_money_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -257,6 +261,193 @@ suite("Postgres 17 community-purchase funding journal", () => {
     completedTestCount += 1;
   });
 
+  test("persists a fresh confirmed head while retaining one append-only receipt", async () => {
+    await withSchema(async (connection, admin) => {
+      const { interpreter, begun } = await begin(connection);
+      const lease = await run(
+        interpreter.acquireLease({
+          operationId: begun.entry.state.operationId,
+          ownerId: "worker_1",
+          leaseMs: 60_000,
+        }),
+      );
+      await run(
+        interpreter.transition({
+          lease,
+          source: "request",
+          expectedVersion: 1,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 1,
+            at: 1_001,
+            evidence: evidence(),
+          },
+        }),
+      );
+      const refreshed = await run(
+        interpreter.transition({
+          lease,
+          source: "reconciler",
+          expectedVersion: 2,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 2,
+            at: 1_002,
+            evidence: {
+              ...evidence(OBSERVATION_2),
+              observedHeadBlockNumber: 126,
+              observedHeadBlockHash: HEAD_HASH_2,
+            },
+          },
+        }),
+      );
+      expect(refreshed).toMatchObject({
+        replayed: false,
+        entry: { status: "confirmed", version: 3 },
+      });
+      expect(refreshed.entry.state.fundingEvidence?.observationId).toBe(OBSERVATION_2);
+      const counts = await admin.query(`SELECT
+        (SELECT count(*) FROM community_purchase_funding_transitions) AS transitions,
+        (SELECT count(*) FROM community_purchase_funding_receipts) AS receipts`);
+      expect(counts.rows[0]).toEqual({ transitions: "2", receipts: "1" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("re-confirms the pinned receipt after a canonical-head reconciliation round-trip", async () => {
+    await withSchema(async (connection, admin) => {
+      const { interpreter, begun } = await begin(connection);
+      const lease = await run(
+        interpreter.acquireLease({
+          operationId: begun.entry.state.operationId,
+          ownerId: "worker_1",
+          leaseMs: 60_000,
+        }),
+      );
+      await run(
+        interpreter.transition({
+          lease,
+          source: "request",
+          expectedVersion: 1,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 1,
+            at: 1_001,
+            evidence: evidence(),
+          },
+        }),
+      );
+      const reconciliation = await run(
+        interpreter.transition({
+          lease,
+          source: "reconciler",
+          expectedVersion: 2,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 2,
+            at: 1_002,
+            evidence: {
+              ...evidence(OBSERVATION_2),
+              observedHeadBlockHash: HEAD_HASH_2,
+            },
+          },
+        }),
+      );
+      expect(reconciliation.entry).toMatchObject({
+        status: "reconciliation_required",
+        version: 3,
+      });
+      const resolved = await run(
+        interpreter.transition({
+          lease,
+          source: "reconciler",
+          expectedVersion: 3,
+          event: {
+            type: "reconciliation_resolved",
+            expectedVersion: 3,
+            at: 1_003,
+            evidence: {
+              ...evidence(OBSERVATION_3),
+              observedHeadBlockNumber: 126,
+              observedHeadBlockHash: HEAD_HASH_3,
+            },
+          },
+        }),
+      );
+      expect(resolved.entry).toMatchObject({ status: "confirmed", version: 4 });
+      const counts = await admin.query(`SELECT
+        (SELECT count(*) FROM community_purchase_funding_transitions) AS transitions,
+        (SELECT count(*) FROM community_purchase_funding_receipts) AS receipts`);
+      expect(counts.rows[0]).toEqual({ transitions: "3", receipts: "1" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("rolls back confirmation when a pre-existing receipt disagrees with pinned evidence", async () => {
+    await withSchema(async (connection, admin) => {
+      const { interpreter, begun } = await begin(connection);
+      await admin.query(
+        `INSERT INTO community_purchase_funding_receipts (
+           receipt_id, operation_id, community_id, purchase_id, chain_id,
+           token_contract, sender, recipient, amount_atomic,
+           transaction_hash, log_index, block_number, block_hash
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
+          "corrupt-receipt",
+          begun.entry.state.operationId,
+          "community_1",
+          "purchase_1",
+          8453,
+          TOKEN,
+          BUYER,
+          TREASURY,
+          "12500000",
+          TRANSACTION_HASH,
+          4,
+          123,
+          `0x${"cc".repeat(32)}`,
+        ],
+      );
+      const lease = await run(
+        interpreter.acquireLease({
+          operationId: begun.entry.state.operationId,
+          ownerId: "worker_1",
+          leaseMs: 60_000,
+        }),
+      );
+      await expect(
+        run(
+          interpreter.transition({
+            lease,
+            source: "reconciler",
+            expectedVersion: 1,
+            event: {
+              type: "funding_evidence_observed",
+              expectedVersion: 1,
+              at: 1_001,
+              evidence: evidence(),
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "constraint" });
+      const durable = await admin.query(
+        `SELECT state, version,
+          (SELECT count(*) FROM community_purchase_funding_transitions) AS transitions,
+          (SELECT count(*) FROM community_purchase_funding_transaction_claims) AS claims
+         FROM community_purchase_funding_journal
+        WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      expect(durable.rows[0]).toEqual({
+        state: "planned",
+        version: "1",
+        transitions: "0",
+        claims: "0",
+      });
+    });
+    completedTestCount += 1;
+  });
+
   test("prevents one funding transaction from settling a second operation", async () => {
     await withSchema(async (connection, admin) => {
       const first = await begin(connection);
@@ -320,7 +511,7 @@ suite("Postgres 17 community-purchase funding journal", () => {
   });
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 4) {
+    if (connectionString !== undefined && completedTestCount === 7) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

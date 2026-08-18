@@ -76,6 +76,14 @@ const EncodedSnapshot = Schema.Struct({
   }),
   version: Schema.Number,
   updatedAt: Schema.Number,
+  confirmedReceiptIdentity: Schema.NullOr(
+    Schema.Struct({
+      transactionHash: Schema.String,
+      blockNumber: Schema.Number,
+      blockHash: Schema.String,
+      logIndex: Schema.Number,
+    }),
+  ),
   fundingEvidence: Schema.NullOr(EncodedEvidence),
   failure: Schema.NullOr(EncodedFailure),
   failureReason: Schema.NullOr(Schema.String),

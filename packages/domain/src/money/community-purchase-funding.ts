@@ -78,6 +78,13 @@ export type CommunityPurchaseFundingEvidence = {
   readonly observedHeadBlockHash: Bytes32;
 };
 
+export type CommunityPurchaseConfirmedReceiptIdentity = Readonly<{
+  readonly transactionHash: Bytes32;
+  readonly blockNumber: number;
+  readonly blockHash: Bytes32;
+  readonly logIndex: number;
+}>;
+
 type CommunityPurchaseFundingBase = {
   readonly operationId: CommunityPurchaseOperationId;
   readonly communityId: string;
@@ -87,6 +94,8 @@ type CommunityPurchaseFundingBase = {
   readonly expected: CommunityPurchaseFundingExpectation;
   readonly version: number;
   readonly updatedAt: number;
+  /** First confirmed receipt identity; retained forever to pin append-only receipt history. */
+  readonly confirmedReceiptIdentity: CommunityPurchaseConfirmedReceiptIdentity | null;
 };
 
 type UnfailedFundingSnapshot = CommunityPurchaseFundingBase & {
@@ -308,6 +317,43 @@ function confirmationDepth(evidence: CommunityPurchaseFundingEvidence): number {
   return evidence.observedHeadBlockNumber - evidence.blockNumber + 1;
 }
 
+function receiptIdentity(
+  evidence: CommunityPurchaseFundingEvidence,
+): CommunityPurchaseConfirmedReceiptIdentity | null {
+  return evidence.receiptStatus === "success" && evidence.logIndex !== null
+    ? {
+        transactionHash: evidence.transactionHash,
+        blockNumber: evidence.blockNumber,
+        blockHash: evidence.blockHash,
+        logIndex: evidence.logIndex,
+      }
+    : null;
+}
+
+function sameReceiptIdentity(
+  left: CommunityPurchaseConfirmedReceiptIdentity,
+  right: CommunityPurchaseConfirmedReceiptIdentity,
+): boolean {
+  return (
+    left.transactionHash === right.transactionHash &&
+    left.blockNumber === right.blockNumber &&
+    left.blockHash === right.blockHash &&
+    left.logIndex === right.logIndex
+  );
+}
+
+function confirmedReceiptIdentityChanged(
+  current: CommunityPurchaseFundingSnapshot,
+  evidence: CommunityPurchaseFundingEvidence,
+): boolean {
+  const next = receiptIdentity(evidence);
+  return (
+    current.confirmedReceiptIdentity !== null &&
+    next !== null &&
+    !sameReceiptIdentity(current.confirmedReceiptIdentity, next)
+  );
+}
+
 function assertSnapshot(snapshot: CommunityPurchaseFundingSnapshot): void {
   assertBusinessId(snapshot.communityId, "community_id");
   assertBusinessId(snapshot.quoteId, "quote_id");
@@ -341,8 +387,22 @@ function assertSnapshot(snapshot: CommunityPurchaseFundingSnapshot): void {
       throw new Error("reconciliation_evidence_effect_identity_changed");
     }
   }
+  if (snapshot.confirmedReceiptIdentity !== null) {
+    const identity = snapshot.confirmedReceiptIdentity;
+    if (
+      !isBytes32(identity.transactionHash) ||
+      !isBytes32(identity.blockHash) ||
+      !Number.isSafeInteger(identity.blockNumber) ||
+      identity.blockNumber < 0 ||
+      !Number.isSafeInteger(identity.logIndex) ||
+      identity.logIndex < 0
+    ) {
+      throw new Error("confirmed_receipt_identity_invalid");
+    }
+  }
   if (snapshot.state === "planned") {
     if (
+      snapshot.confirmedReceiptIdentity !== null ||
       snapshot.fundingEvidence !== null ||
       snapshot.failure !== null ||
       snapshot.failureReason !== null ||
@@ -367,11 +427,15 @@ function assertSnapshot(snapshot: CommunityPurchaseFundingSnapshot): void {
     return;
   }
   if (snapshot.state === "confirmed") {
+    const currentIdentity = receiptIdentity(snapshot.fundingEvidence);
     if (
       snapshot.fundingEvidence === null ||
       snapshot.failure !== null ||
       snapshot.failureReason !== null ||
       snapshot.reconciliationEvidence !== null ||
+      currentIdentity === null ||
+      snapshot.confirmedReceiptIdentity === null ||
+      !sameReceiptIdentity(snapshot.confirmedReceiptIdentity, currentIdentity) ||
       snapshot.fundingEvidence.receiptStatus !== "success" ||
       confirmationDepth(snapshot.fundingEvidence) < snapshot.expected.requiredConfirmations
     ) {
@@ -429,6 +493,7 @@ export function createCommunityPurchaseFunding(
     expected: plan.expected,
     version: 1,
     updatedAt: plan.now,
+    confirmedReceiptIdentity: null,
     fundingEvidence: null,
     failure: null,
     failureReason: null,
@@ -486,6 +551,11 @@ function stateForEvidence(
     failure: null,
     failureReason: null,
     reconciliationEvidence: null,
+    confirmedReceiptIdentity:
+      evidence.receiptStatus === "success" &&
+      confirmationDepth(evidence) >= current.expected.requiredConfirmations
+        ? (current.confirmedReceiptIdentity ?? receiptIdentity(evidence))
+        : current.confirmedReceiptIdentity,
   } as const;
   if (confirmationDepth(evidence) < current.expected.requiredConfirmations) {
     return { ...base, state: "confirming" };
@@ -619,6 +689,9 @@ function reduceCommunityPurchaseFunding(
     event.evidence.observationId === current.reconciliationEvidence?.observationId
   ) {
     return rejectTransition("reconciliation_observation_not_fresh");
+  }
+  if (confirmedReceiptIdentityChanged(current, event.evidence)) {
+    return rejectTransition("confirmed_receipt_identity_changed");
   }
   return stateForEvidence(current, event.evidence, event.at);
 }

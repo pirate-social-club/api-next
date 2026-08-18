@@ -174,6 +174,29 @@ function currentEvidence(snapshot: CommunityPurchaseFundingSnapshot): readonly u
     : [evidence.receiptStatus, evidence.transactionHash, evidence.logIndex, evidence.observationId];
 }
 
+function sameConfirmedReceipt(
+  row: Row,
+  snapshot: Extract<CommunityPurchaseFundingSnapshot, { readonly state: "confirmed" }>,
+): boolean {
+  const evidence = snapshot.fundingEvidence;
+  return (
+    requiredString(row, "receipt_id") ===
+      confirmedCommunityPurchaseReceiptId(snapshot.operationId) &&
+    requiredString(row, "operation_id") === snapshot.operationId &&
+    requiredString(row, "community_id") === snapshot.communityId &&
+    requiredString(row, "purchase_id") === snapshot.purchaseId &&
+    integer(row, "chain_id") === evidence.chainId &&
+    requiredString(row, "token_contract") === evidence.tokenContract &&
+    requiredString(row, "sender") === evidence.sender &&
+    requiredString(row, "recipient") === evidence.recipient &&
+    requiredString(row, "amount_atomic") === evidence.amountAtomic.toString() &&
+    requiredString(row, "transaction_hash") === evidence.transactionHash &&
+    integer(row, "log_index") === evidence.logIndex &&
+    integer(row, "block_number") === evidence.blockNumber &&
+    requiredString(row, "block_hash") === evidence.blockHash
+  );
+}
+
 function eventEvidence(
   event: CommunityPurchaseFundingEvent,
 ): CommunityPurchaseFundingEvidence | null {
@@ -598,7 +621,8 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
                      receipt_id, operation_id, community_id, purchase_id, chain_id,
                      token_contract, sender, recipient, amount_atomic,
                      transaction_hash, log_index, block_number, block_hash
-                   ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+                   ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                   ON CONFLICT (operation_id) DO NOTHING`,
               values: [
                 confirmedCommunityPurchaseReceiptId(snapshot.operationId),
                 snapshot.operationId,
@@ -616,6 +640,20 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
               ],
               readonly: false,
             });
+            const persistedReceipt = yield* transaction.execute<Row>({
+              label: "money.community-purchase-funding.verify-receipt",
+              text: `SELECT receipt_id, operation_id, community_id, purchase_id, chain_id,
+                            token_contract, sender, recipient, amount_atomic,
+                            transaction_hash, log_index, block_number, block_hash
+                       FROM community_purchase_funding_receipts
+                      WHERE operation_id = $1`,
+              values: [snapshot.operationId],
+              readonly: false,
+            });
+            const receiptRow = yield* oneRow(persistedReceipt.rows);
+            if (receiptRow === null || !sameConfirmedReceipt(receiptRow, snapshot)) {
+              return yield* Effect.fail(storageFailure("constraint"));
+            }
           }
 
           yield* transaction.execute({
