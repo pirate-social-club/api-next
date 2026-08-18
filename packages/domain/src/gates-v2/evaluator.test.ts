@@ -26,6 +26,26 @@ function copyEvidence(): MutableEvidence {
   return structuredClone(SELF_STAGING_18_PLUS_DEVELOPMENT_EVIDENCE) as unknown as MutableEvidence;
 }
 
+async function withContentHash(policy: CuratedAgePolicy): Promise<CuratedAgePolicy> {
+  const preimage = JSON.stringify({
+    co_reference: policy.co_reference,
+    freshness: policy.freshness,
+    minimum_age: policy.minimum_age,
+    policy_key: policy.policy_key,
+    policy_version_id: policy.policy_version_id,
+    required_assurance: policy.required_assurance,
+    requirements: policy.requirements,
+    revision: policy.policy_revision,
+  });
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(preimage));
+  return {
+    ...policy,
+    policy_hash: [...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join(""),
+  };
+}
+
 function evaluate(evidence: MutableEvidence, policy: CuratedAgePolicy = CURATED_AGE_18_POLICY) {
   return evaluateCuratedAge({
     policy,
@@ -77,34 +97,34 @@ describe("policy-driven curated-age evaluator", () => {
     expect(Object.keys(CURATED_AGE_18_POLICY)).not.toContain("provider");
   });
 
-  test("reads threshold and assurance from the supplied policy", () => {
-    const age21: CuratedAgePolicy = {
+  test("reads threshold and assurance from a content-bound supplied policy", async () => {
+    const age21 = await withContentHash({
       ...CURATED_AGE_18_POLICY,
       policy_version_id: "curated-age-v2",
       policy_revision: 2,
-      policy_hash: "c".repeat(64),
+      policy_hash: "0".repeat(64),
       minimum_age: "21",
       requirements: [
         { claim_id: "age.minimum", minimum_age: "21" },
         { claim_id: "credential.subject_unique" },
         { claim_id: "document.valid" },
       ],
-    };
+    });
     expect(evaluate(copyEvidence(), age21)).toMatchObject({
       outcome: "fail",
       reason: "age_below_threshold",
       policy_version_id: "curated-age-v2",
       policy_revision: 2,
-      policy_hash: "c".repeat(64),
+      policy_hash: age21.policy_hash,
       winning_witness: [],
     });
 
-    const stronger: CuratedAgePolicy = {
+    const stronger = await withContentHash({
       ...CURATED_AGE_18_POLICY,
       policy_version_id: "curated-age-holder-live-v1",
-      policy_hash: "d".repeat(64),
+      policy_hash: "0".repeat(64),
       required_assurance: "holder_live",
-    };
+    });
     expect(evaluate(copyEvidence(), stronger)).toMatchObject({
       outcome: "needs_evidence",
       reasons: ["wrong_assurance"],
@@ -116,6 +136,7 @@ describe("policy-driven curated-age evaluator", () => {
   test("fails closed for incoherent policy metadata", () => {
     for (const policy of [
       { ...CURATED_AGE_18_POLICY, policy_hash: "not-a-hash" },
+      { ...CURATED_AGE_18_POLICY, policy_hash: "c".repeat(64) },
       { ...CURATED_AGE_18_POLICY, policy_revision: 0 },
       {
         ...CURATED_AGE_18_POLICY,
@@ -210,6 +231,9 @@ describe("policy-driven curated-age evaluator", () => {
         if (age) (age.value as Record<string, unknown>).minimum_age = "018";
       },
       (evidence) => {
+        if (evidence.assertions[0]) evidence.assertions[0].observed_at = "not-an-instant";
+      },
+      (evidence) => {
         if (evidence.receipts[0]) evidence.receipts[0].proof_session_id = "foreign-session";
       },
       (evidence) => {
@@ -231,6 +255,52 @@ describe("policy-driven curated-age evaluator", () => {
         winning_witness: [],
       });
     }
+  });
+
+  test("is total over hostile runtime shapes and rejects unknown union members", () => {
+    const hostileBundles = [
+      (() => {
+        const evidence = copyEvidence();
+        evidence.assertions[0] = null as unknown as Record<string, unknown>;
+        return evidence;
+      })(),
+      (() => {
+        const evidence = copyEvidence();
+        const assertion = evidence.assertions[0];
+        if (!assertion) throw new Error("fixture assertion missing");
+        assertion.value = null;
+        return evidence;
+      })(),
+      (() => {
+        const evidence = copyEvidence();
+        const receipt = evidence.receipts[0];
+        if (!receipt) throw new Error("fixture receipt missing");
+        receipt.scope = null;
+        return evidence;
+      })(),
+      (() => {
+        const evidence = copyEvidence();
+        const assertion = evidence.assertions[0];
+        if (!assertion) throw new Error("fixture assertion missing");
+        assertion.assurance = "unknown_assurance";
+        return evidence;
+      })(),
+    ];
+    for (const evidence of hostileBundles) {
+      expect(() => evaluate(evidence)).not.toThrow();
+      expect(evaluate(evidence)).toMatchObject({
+        outcome: "fail",
+        reason: "invalid_evidence",
+      });
+    }
+
+    expect(
+      evaluateCuratedAge({
+        policy: CURATED_AGE_18_POLICY,
+        evidence: { kind: "indeterminate", reason: "unknown" } as never,
+        now,
+      }),
+    ).toMatchObject({ outcome: "fail", reason: "invalid_evidence" });
   });
 
   test("invalid evidence outranks an apparent underage decision", () => {

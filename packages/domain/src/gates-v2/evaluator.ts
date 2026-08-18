@@ -7,6 +7,7 @@ import type {
   SameSubjectBindingGroup,
   SubjectKey,
 } from "../verification/index.ts";
+import { sha256Hex } from "./sha256.ts";
 
 export type EvidenceUnavailableReason =
   | "provider_unavailable"
@@ -155,6 +156,11 @@ const ASSURANCES = new Set<Assurance>([
   "document_zk",
   "provider_attested",
 ]);
+const UNAVAILABLE_REASONS = new Set<EvidenceUnavailableReason>([
+  "provider_unavailable",
+  "evidence_store_unavailable",
+  "snapshot_unavailable",
+]);
 
 function canonicalUnsignedInteger(value: string): bigint | undefined {
   if (!/^(0|[1-9][0-9]*)$/.test(value)) return undefined;
@@ -163,6 +169,26 @@ function canonicalUnsignedInteger(value: string): bigint | undefined {
   } catch {
     return undefined;
   }
+}
+
+function policyCanonicalPreimage(policy: CuratedAgePolicy): string {
+  return JSON.stringify({
+    co_reference: policy.co_reference,
+    freshness: policy.freshness,
+    minimum_age: policy.minimum_age,
+    policy_key: policy.policy_key,
+    policy_version_id: policy.policy_version_id,
+    required_assurance: policy.required_assurance,
+    requirements: [
+      {
+        claim_id: policy.requirements[0].claim_id,
+        minimum_age: policy.requirements[0].minimum_age,
+      },
+      { claim_id: policy.requirements[1].claim_id },
+      { claim_id: policy.requirements[2].claim_id },
+    ],
+    revision: policy.policy_revision,
+  });
 }
 
 function validPolicy(policy: CuratedAgePolicy): boolean {
@@ -184,7 +210,8 @@ function validPolicy(policy: CuratedAgePolicy): boolean {
     policy.requirements[2]?.claim_id === "document.valid" &&
     ASSURANCES.has(policy.required_assurance) &&
     policy.co_reference === "same_subject" &&
-    policy.freshness === "unexpired_at_evaluation"
+    policy.freshness === "unexpired_at_evaluation" &&
+    sha256Hex(policyCanonicalPreimage(policy)) === policy.policy_hash
   );
 }
 
@@ -271,6 +298,11 @@ function freshnessReasons(observedAt: string, now: string, expiresAt?: string): 
   return reasons;
 }
 
+function canonicalIsoInstant(value: string): boolean {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
 function sameSubjectScope(
   receiptScope: EvidenceReceipt["scope"],
   subjectScope: SubjectKey["scope"],
@@ -309,10 +341,12 @@ function hasDuplicateIds(values: readonly Readonly<{ readonly id: string }>[]): 
 }
 
 /** Pure, provider-neutral evaluation of the bounded curated-age vertical. */
-export function evaluateCuratedAge(input: CuratedAgeEvaluatorInput): CuratedAgeEvaluation {
+function evaluateCuratedAgeUnsafe(input: CuratedAgeEvaluatorInput): CuratedAgeEvaluation {
   const { policy, evidence: availability, now } = input;
   if (!validPolicy(policy)) return fail(policy, "policy_invalid", ["policy_invalid"]);
   if (availability.kind === "indeterminate") {
+    if (!UNAVAILABLE_REASONS.has(availability.reason))
+      return fail(policy, "invalid_evidence", ["assertion_invalid"]);
     return {
       outcome: "indeterminate",
       reason: availability.reason,
@@ -351,22 +385,38 @@ export function evaluateCuratedAge(input: CuratedAgeEvaluatorInput): CuratedAgeE
 
   for (const assertion of assertions) {
     const claimId = assertion.claim_id as RequiredClaim;
-    if (assertion.assurance !== policy.required_assurance) {
+    if (!ASSURANCES.has(assertion.assurance)) {
+      invalidReasons.push("assertion_invalid");
+    } else if (assertion.assurance !== policy.required_assurance) {
       needsReasons.push("wrong_assurance");
       affectedNeeds.add(claimId);
     }
-    const assertionFreshness = freshnessReasons(assertion.observed_at, now, assertion.expires_at);
-    needsReasons.push(...assertionFreshness);
-    if (assertionFreshness.length > 0) affectedNeeds.add(claimId);
+    if (
+      !canonicalIsoInstant(assertion.observed_at) ||
+      (assertion.expires_at !== undefined && !canonicalIsoInstant(assertion.expires_at))
+    ) {
+      invalidReasons.push("assertion_invalid");
+    } else {
+      const assertionFreshness = freshnessReasons(assertion.observed_at, now, assertion.expires_at);
+      needsReasons.push(...assertionFreshness);
+      if (assertionFreshness.length > 0) affectedNeeds.add(claimId);
+    }
 
     const receipt = receiptForAssertion(evidence.receipts, assertion);
     if (receipt == null) {
       invalidReasons.push("receipt_missing");
     } else {
       receipts.push(receipt);
-      const receiptFreshness = freshnessReasons(receipt.observed_at, now, receipt.expires_at);
-      needsReasons.push(...receiptFreshness);
-      if (receiptFreshness.length > 0) affectedNeeds.add(claimId);
+      if (
+        !canonicalIsoInstant(receipt.observed_at) ||
+        (receipt.expires_at !== undefined && !canonicalIsoInstant(receipt.expires_at))
+      ) {
+        invalidReasons.push("receipt_mismatch");
+      } else {
+        const receiptFreshness = freshnessReasons(receipt.observed_at, now, receipt.expires_at);
+        needsReasons.push(...receiptFreshness);
+        if (receiptFreshness.length > 0) affectedNeeds.add(claimId);
+      }
       if (receipt.proof_session_id !== evidence.proof_session_id)
         invalidReasons.push("receipt_mismatch");
       if (receipt.subject_key_id !== assertion.subject_key_id)
@@ -437,6 +487,15 @@ export function evaluateCuratedAge(input: CuratedAgeEvaluatorInput): CuratedAgeE
     ...metadata(policy, ["policy_valid", "required_claims_valid", "same_subject_valid"]),
     winning_witness: [witness],
   };
+}
+
+/** Total runtime boundary: malformed decoded-looking input fails, never throws. */
+export function evaluateCuratedAge(input: CuratedAgeEvaluatorInput): CuratedAgeEvaluation {
+  try {
+    return evaluateCuratedAgeUnsafe(input);
+  } catch {
+    return fail(input.policy, "invalid_evidence", ["assertion_invalid"]);
+  }
 }
 
 export const evaluateCuratedAge18 = evaluateCuratedAge;
