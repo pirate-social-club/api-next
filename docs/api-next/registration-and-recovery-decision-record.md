@@ -73,6 +73,18 @@ and bounded serialization. Cloudflare's native rate-limit binding is not used fo
 boundary because its counters are per-colocation and permissively consistent; it would
 not provide the stated global application cap.
 
+Limiter availability is part of authorization: timeout, RPC failure, malformed output,
+or unavailable Durable Object state fails registration closed before proof verification
+or database access. An outage may therefore stop new registration while existing users
+continue to authenticate. The Worker emits a bounded limiter-unavailable reason and the
+runbook treats sustained failure as an availability incident; there is no bypass flag.
+
+The application-wide object is acceptable only while registration remains low-volume.
+Operations must track RPC latency, limiter-unavailable failures, and sustained request
+rate. Before a launch or campaign expected to create a signup spike, the owner must
+review capacity and choose an explicitly sharded globally coordinated design rather
+than weakening the limit or silently falling back to per-colocation counters.
+
 At the public Worker edge, the client IP comes exclusively from `CF-Connecting-IP`.
 `X-Forwarded-For`, `X-Real-IP`, request bodies, query parameters, and arbitrary caller
 headers are never accepted as substitutes. A registration request without trusted edge
@@ -127,6 +139,10 @@ financial integrity, and auditability remain. Any future erasure or label-reclam
 policy is a separate privacy/security decision with an explicit quarantine period; it
 cannot be inferred from ordinary deletion.
 
+Deletion confirmation must state in plain language that the same login credential
+cannot be used to register a new account afterward. Generic language such as “you can
+always come back” is forbidden unless a reviewed restoration flow actually exists.
+
 ## Handle lifecycle
 
 The generated handle is a placeholder with `tier = generated`,
@@ -146,6 +162,8 @@ reserve a user-chosen label.
 - different subjects cannot claim the same credential binding or generated handle;
 - session exchange remains mutation-free and still rejects an unregistered subject;
 - rate-limit failures perform no database mutation;
+- limiter unavailability fails closed and performs no proof verification or database
+  mutation;
 - rate limits coordinate globally per application and per trusted edge IP; spoofable
   forwarding headers and missing edge metadata cannot reach proof verification;
 - deleted/conflicting bindings fail closed without enumeration;
