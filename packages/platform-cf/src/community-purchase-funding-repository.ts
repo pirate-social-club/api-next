@@ -4,6 +4,8 @@ import {
   type CommunityPurchaseFundingAdmissionStoreInput,
   type CommunityPurchaseFundingJournalRecord,
   type CommunityPurchaseFundingJournalStore,
+  type CommunityPurchaseFundingPlanRecord,
+  type CommunityPurchaseFundingPlanStore,
   type CommunityPurchaseFundingQueryStore,
   CommunityPurchaseFundingStorageFailed,
   ControlPlaneDb,
@@ -47,6 +49,7 @@ type ListReconcilableInput = Parameters<CommunityPurchaseFundingQueryStore["list
 type ListDormancyCandidatesInput = Parameters<
   CommunityPurchaseFundingQueryStore["listDormancyCandidates"]
 >[0];
+type CreatePlanInput = Parameters<CommunityPurchaseFundingPlanStore["createPlan"]>[0];
 
 const JOURNAL_COLUMNS = `
   operation_id, community_id, actor_id, quote_id, purchase_id, policy_version,
@@ -329,6 +332,7 @@ type FundingPlanRow = Readonly<{
   readonly plan: CommunityPurchaseFundingPlan;
   readonly status: "active" | "bound" | "cancelled";
   readonly operationId: string | null;
+  readonly quotedAt: string;
   readonly expiresAt: string;
   readonly databaseNowMs: number;
 }>;
@@ -349,6 +353,7 @@ function fundingPlanFromRow(row: Row): FundingPlanRow | null {
   const requiredConfirmations = integer(row, "required_confirmations");
   const status = requiredString(row, "status");
   const operationId = row.operation_id === null ? null : requiredString(row, "operation_id");
+  const quotedAt = timestamp(row, "quoted_at");
   const expiresAt = timestamp(row, "expires_at");
   const databaseNowMs = integer(row, "database_now_ms");
   if (
@@ -368,6 +373,7 @@ function fundingPlanFromRow(row: Row): FundingPlanRow | null {
     (status !== "active" && status !== "bound" && status !== "cancelled") ||
     (status === "bound" && operationId === null) ||
     (status !== "bound" && operationId !== null) ||
+    quotedAt === null ||
     expiresAt === null ||
     databaseNowMs === null
   ) {
@@ -393,7 +399,7 @@ function fundingPlanFromRow(row: Row): FundingPlanRow | null {
     // Exercise the domain derivation while the row is still locked. A malformed
     // persisted term is a storage defect, never caller-controlled input.
     deriveCommunityPurchaseOperationId(plan);
-    return { plan, status, operationId, expiresAt, databaseNowMs };
+    return { plan, status, operationId, quotedAt, expiresAt, databaseNowMs };
   } catch {
     return null;
   }
@@ -436,6 +442,94 @@ function insertAdmissionRequest(
 }
 
 export function makeControlPlaneCommunityPurchaseFundingRepository() {
+  const createPlan = Effect.fn("CommunityPurchaseFundingRepository.createPlan")(function* (
+    input: CreatePlanInput,
+  ) {
+    const db = yield* ControlPlaneDb;
+    return yield* db.withTransaction((transaction) =>
+      Effect.gen(function* () {
+        const lockKeys = [
+          `cpf:plan:purchase:${input.purchaseId}`,
+          `cpf:plan:quote:${input.quoteId}`,
+        ].sort();
+        for (const key of lockKeys) yield* advisoryLock(transaction, key);
+        const existingResult = yield* transaction.execute<Row>({
+          label: "money.community-purchase-funding.plan.find-existing",
+          text: `SELECT ${PLAN_COLUMNS}
+                   FROM community_purchase_funding_plans
+                  WHERE quote_id = $1 OR purchase_id = $2
+                  FOR UPDATE`,
+          values: [input.quoteId, input.purchaseId],
+          readonly: false,
+        });
+        if (existingResult.rows.length > 1) return { kind: "conflict" } as const;
+        const existingRow = existingResult.rows[0];
+        if (existingRow !== undefined) {
+          const existing = fundingPlanFromRow(existingRow);
+          if (existing === null || existing.status !== "active") {
+            return { kind: "conflict" } as const;
+          }
+          const expected = existing.plan.expected;
+          const exact =
+            existing.plan.quoteId === input.quoteId &&
+            existing.plan.communityId === input.communityId &&
+            requiredString(existingRow, "actor_id") === input.actorId &&
+            existing.plan.purchaseId === input.purchaseId &&
+            existing.plan.policyVersion === input.policyVersion &&
+            expected.sender === input.buyerWalletAddress &&
+            expected.chainId === input.buyerChainId &&
+            expected.tokenContract === input.tokenContract &&
+            expected.tokenDecimals === input.tokenDecimals &&
+            expected.recipient === input.treasuryAddress &&
+            expected.amountAtomic === input.amountAtomic &&
+            expected.requiredConfirmations === input.requiredConfirmations &&
+            Date.parse(existing.expiresAt) - Date.parse(existing.quotedAt) ===
+              input.quoteTtlSeconds * 1_000;
+          if (!exact) return { kind: "conflict" } as const;
+          return {
+            kind: "replayed",
+            plan: fundingPlanRecord(existing, input.actorId),
+          } as const;
+        }
+
+        const inserted = yield* transaction.execute<Row>({
+          label: "money.community-purchase-funding.plan.insert",
+          text: `INSERT INTO community_purchase_funding_plans (
+                   quote_id, community_id, actor_id, buyer_wallet_address, buyer_chain_id,
+                   purchase_id, policy_version, chain_id, token_contract, token_decimals,
+                   treasury_address, amount_atomic, required_confirmations, quoted_at,
+                   expires_at, status
+                 ) VALUES (
+                   $1, $2, $3, $4, $5, $6, $7, $5, $8, $9, $10, $11, $12,
+                   statement_timestamp(),
+                   statement_timestamp() + ($13 * INTERVAL '1 second'), 'active'
+                 )
+                 RETURNING ${PLAN_COLUMNS}`,
+          values: [
+            input.quoteId,
+            input.communityId,
+            input.actorId,
+            input.buyerWalletAddress,
+            input.buyerChainId,
+            input.purchaseId,
+            input.policyVersion,
+            input.tokenContract,
+            input.tokenDecimals,
+            input.treasuryAddress,
+            input.amountAtomic.toString(),
+            input.requiredConfirmations,
+            input.quoteTtlSeconds,
+          ],
+          readonly: false,
+        });
+        const row = yield* oneRow(inserted.rows);
+        const record = row === null ? null : fundingPlanFromRow(row);
+        if (record === null) return yield* Effect.fail(storageFailure("invalid-row"));
+        return { kind: "inserted", plan: fundingPlanRecord(record, input.actorId) } as const;
+      }),
+    );
+  });
+
   const beginFromPlan = Effect.fn("CommunityPurchaseFundingRepository.beginFromPlan")(function* (
     input: CommunityPurchaseFundingAdmissionStoreInput,
   ) {
@@ -1039,6 +1133,7 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
   );
 
   return {
+    createPlan,
     begin,
     beginFromPlan,
     load,
@@ -1048,6 +1143,22 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
     acquireLease,
     wasTransitionCommitted,
     commitTransition,
+  };
+}
+
+function fundingPlanRecord(
+  row: FundingPlanRow,
+  actorId: string,
+): CommunityPurchaseFundingPlanRecord {
+  return {
+    quoteId: row.plan.quoteId,
+    communityId: row.plan.communityId,
+    actorId,
+    purchaseId: row.plan.purchaseId,
+    policyVersion: row.plan.policyVersion,
+    expected: row.plan.expected,
+    quotedAt: row.quotedAt,
+    expiresAt: row.expiresAt,
   };
 }
 
@@ -1073,6 +1184,15 @@ export function makeControlPlaneCommunityPurchaseFundingAdmissionStore(
   return {
     beginFromPlan: (input) => provide(repository.beginFromPlan(input)),
   };
+}
+
+export function makeControlPlaneCommunityPurchaseFundingPlanStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): CommunityPurchaseFundingPlanStore {
+  const repository = makeControlPlaneCommunityPurchaseFundingRepository();
+  const provide = <A>(effect: Effect.Effect<A, RepositoryError, ControlPlaneDb>) =>
+    Effect.provide(runtime)(effect).pipe(Effect.mapError(mapRepositoryError));
+  return { createPlan: (input) => provide(repository.createPlan(input)) };
 }
 
 export function makeControlPlaneCommunityPurchaseFundingStore(
