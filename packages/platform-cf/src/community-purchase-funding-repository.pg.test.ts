@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
   admitCommunityPurchaseFunding,
+  createCommunityPurchaseFundingPlan,
   makeCommunityPurchaseFundingInterpreter,
 } from "@pirate/application";
 import {
@@ -13,6 +14,7 @@ import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
 import {
   makeControlPlaneCommunityPurchaseFundingAdmissionStore,
+  makeControlPlaneCommunityPurchaseFundingPlanStore,
   makeControlPlaneCommunityPurchaseFundingQueryStore,
   makeControlPlaneCommunityPurchaseFundingStore,
 } from "./community-purchase-funding-repository";
@@ -721,8 +723,48 @@ suite("Postgres 17 community-purchase funding journal", () => {
     completedTestCount += 1;
   });
 
+  test("creates immutable plans from product-derived terms using database quote time", async () => {
+    await withSchema(async (connection) => {
+      const store = makeControlPlaneCommunityPurchaseFundingPlanStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const draft = {
+        quoteId: "quote_product",
+        communityId: "community_1",
+        actorId: "user_1",
+        buyerWalletAddress: BUYER,
+        buyerChainId: 8453,
+        purchaseId: "purchase_product",
+        policyVersion: 3,
+        tokenContract: TOKEN,
+        tokenDecimals: 6 as const,
+        treasuryAddress: TREASURY,
+        amountAtomic: communityPurchaseAtomicAmount(12_500_000n),
+        requiredConfirmations: 3,
+        quoteTtlSeconds: 300,
+      };
+      const inserted = await run(createCommunityPurchaseFundingPlan(draft, store));
+      expect(inserted.kind).toBe("inserted");
+      if (inserted.kind !== "inserted") throw new Error("plan was not inserted");
+      expect(Date.parse(inserted.plan.expiresAt) - Date.parse(inserted.plan.quotedAt)).toBe(
+        300_000,
+      );
+      const replayed = await run(createCommunityPurchaseFundingPlan(draft, store));
+      expect(replayed.kind).toBe("replayed");
+      await expect(
+        run(
+          createCommunityPurchaseFundingPlan(
+            { ...draft, amountAtomic: communityPurchaseAtomicAmount(12_500_001n) },
+            store,
+          ),
+        ),
+      ).rejects.toMatchObject({ reason: "conflict" });
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 12) {
+    if (connectionString !== undefined && completedTestCount === 13) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });
