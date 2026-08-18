@@ -51,7 +51,6 @@ export type CommunityPurchaseFundingObservationInput = Readonly<{
   readonly ownerId: string;
   readonly leaseMs: number;
   readonly source: CommunityPurchaseFundingCaller;
-  readonly at: number;
 }>;
 
 export type CommunityPurchaseFundingObservationResult = Readonly<{
@@ -91,9 +90,7 @@ export function makeCommunityPurchaseFundingObservationUseCase(
   ) {
     if (
       !isBytes32(input.transactionHash) ||
-      (input.source !== "request" && input.source !== "reconciler") ||
-      !Number.isSafeInteger(input.at) ||
-      input.at < 0
+      (input.source !== "request" && input.source !== "reconciler")
     ) {
       return yield* new CommunityPurchaseFundingRejected({ reason: "invalid-input" });
     }
@@ -127,13 +124,13 @@ export function makeCommunityPurchaseFundingObservationUseCase(
           ? {
               type: "reconciliation_resolved",
               expectedVersion: loaded.entry.version,
-              at: input.at,
+              at: lease.databaseNowMs,
               evidence,
             }
           : {
               type: "funding_evidence_observed",
               expectedVersion: loaded.entry.version,
-              at: input.at,
+              at: lease.databaseNowMs,
               evidence,
             },
     });

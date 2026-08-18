@@ -58,6 +58,7 @@ describe("config system (000 §9)", () => {
       PRIVY_JWKS_URL: "https://privy.test/jwks",
       PRIVY_JWT_ISSUER: "privy",
       PRIVY_JWT_AUDIENCE: "pirate",
+      COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.test",
     });
     expect(configured).toMatchObject({
       SELF_PASS_ENABLED: false,

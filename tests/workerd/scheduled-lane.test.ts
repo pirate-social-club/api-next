@@ -5,19 +5,71 @@ import { type Alert, ControlPlaneDb } from "@pirate/application";
 import type { AlertDigest } from "@pirate/platform-cf";
 import { Cause, Effect, Exit, Layer, Option, Schedule } from "effect";
 import { describe, expect, it } from "vitest";
-
+import {
+  COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_JOB,
+  COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_LANE,
+  COMMUNITY_PURCHASE_FUNDING_WRITES,
+} from "../../apps/jobs-worker/src/community-purchase-funding";
 import {
   defaultRetrySchedule,
   handleScheduled,
   type JobDefinition,
   type JobsWorkerEnv,
+  default as jobsWorker,
   makeCommunityCatalogIntegrityJob,
+  makeJobsWorkerDeclarations,
   runScheduled,
 } from "../../apps/jobs-worker/src/index";
 
 const env = testEnv as unknown as JobsWorkerEnv;
 
 describe("scheduled lane holding a DO lease (workerd)", () => {
+  it("registers the bounded funding reconciler as the only writer for its tables", () => {
+    const sink = { email: () => Effect.void, webhook: () => Effect.void };
+    const declarations = makeJobsWorkerDeclarations(sink, "https://rpc.test/");
+    const funding = declarations.find(
+      (declaration) => declaration.name === COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_JOB,
+    );
+
+    expect(funding?.lane).toBe(COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_LANE);
+    expect(funding?.writes).toEqual(COMMUNITY_PURCHASE_FUNDING_WRITES);
+    expect(funding?.requiresAdapterSafety).toBe(true);
+    const fundingWrites = new Set<string>(COMMUNITY_PURCHASE_FUNDING_WRITES);
+    expect(
+      declarations.filter((declaration) =>
+        declaration.writes.some((table) => fundingWrites.has(table)),
+      ),
+    ).toEqual([funding]);
+  });
+
+  it("fails closed before registry or database work when funding RPC config is invalid", async () => {
+    const scheduledEvent = {
+      scheduledTime: Date.UTC(2026, 7, 19),
+      cron: "*/5 * * * *",
+    } as ScheduledEvent;
+    const context = { waitUntil: () => undefined } as unknown as ExecutionContext;
+    const controlPlane = {} as NonNullable<JobsWorkerEnv["CONTROL_PLANE"]>;
+
+    await expect(
+      jobsWorker.scheduled(
+        scheduledEvent,
+        { CONTROL_PLANE: controlPlane } as JobsWorkerEnv,
+        context,
+      ),
+    ).rejects.toThrow("Jobs worker configuration is incomplete or invalid");
+    await expect(
+      jobsWorker.scheduled(
+        scheduledEvent,
+        {
+          CONTROL_PLANE: controlPlane,
+          API_NEXT_ENV: "staging",
+          COMMUNITY_PURCHASE_FUNDING_RPC_URL: "http://rpc.test",
+        } as JobsWorkerEnv,
+        context,
+      ),
+    ).rejects.toThrow("Jobs worker configuration is incomplete or invalid");
+  });
+
   it("runs exactly one concurrent tick per lane; loser runs nothing", async () => {
     let ran = 0;
     const job: JobDefinition = {

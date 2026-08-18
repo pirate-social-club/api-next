@@ -1,3 +1,7 @@
+import {
+  makeCommunityPurchaseFundingInterpreter,
+  makeCommunityPurchaseFundingObservationUseCase,
+} from "@pirate/application/use-cases/community-purchase-funding-observation";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
 import { makePublicProfileHandler } from "@pirate/application/use-cases/public-profile";
 import {
@@ -7,6 +11,12 @@ import {
 } from "@pirate/application/use-cases/session-authentication";
 import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-exchange";
 import type { VerificationIntentResolver } from "@pirate/application/use-cases/verification-start";
+import { makeCommunityPurchaseFundingChainReader } from "@pirate/platform-cf/community-purchase-funding-chain-reader";
+import {
+  makeControlPlaneCommunityPurchaseFundingAdmissionStore,
+  makeControlPlaneCommunityPurchaseFundingQueryStore,
+  makeControlPlaneCommunityPurchaseFundingStore,
+} from "@pirate/platform-cf/community-purchase-funding-repository";
 import { makeControlPlaneCommunityStore } from "@pirate/platform-cf/community-repository";
 import {
   HttpWorkerConfig,
@@ -35,6 +45,7 @@ import { makeStaticVerificationIntentResolver } from "@pirate/platform-cf/verifi
 import { makePlatformVerificationProviderRegistry } from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
 import { Effect, Redacted, Schema } from "effect";
+import { makeCommunityPurchaseFundingHandlers } from "./community-purchase-funding-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
@@ -72,6 +83,7 @@ export interface HttpWorkerBindings {
   readonly PRIVY_JWKS_URL?: string;
   readonly PRIVY_JWT_ISSUER?: string;
   readonly PRIVY_JWT_AUDIENCE?: string;
+  readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
 }
 
 type WorkerConfig = HttpWorkerConfigValue;
@@ -114,6 +126,7 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     PRIVY_JWKS_URL: bindings.PRIVY_JWKS_URL,
     PRIVY_JWT_ISSUER: bindings.PRIVY_JWT_ISSUER,
     PRIVY_JWT_AUDIENCE: bindings.PRIVY_JWT_AUDIENCE,
+    COMMUNITY_PURCHASE_FUNDING_RPC_URL: bindings.COMMUNITY_PURCHASE_FUNDING_RPC_URL,
   };
 }
 
@@ -182,6 +195,20 @@ function isSigningKeyId(value: string): boolean {
   return /^[A-Za-z0-9._-]{1,128}$/.test(value);
 }
 
+function fundingRpcUrl(value: string, environment: WorkerConfig["API_NEXT_ENV"]): string {
+  try {
+    const parsed = new URL(value);
+    const developmentLocal =
+      environment === "development" &&
+      parsed.protocol === "http:" &&
+      (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost");
+    if (parsed.protocol !== "https:" && !developmentLocal) throw new Error("invalid RPC URL");
+    return parsed.toString();
+  } catch {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  }
+}
+
 export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const config = loadWorkerConfig(bindings);
   const zkPassportBearerSecret = Redacted.value(config.ZKPASSPORT_VERIFIER_SHARED_SECRET);
@@ -211,6 +238,23 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const feedStore = makeControlPlaneFeedStore(controlPlane);
+  const fundingJournal = makeControlPlaneCommunityPurchaseFundingStore(controlPlane);
+  const fundingInterpreter = makeCommunityPurchaseFundingInterpreter(fundingJournal);
+  const fundingQuery = makeControlPlaneCommunityPurchaseFundingQueryStore(controlPlane);
+  const fundingObservation = makeCommunityPurchaseFundingObservationUseCase(
+    fundingInterpreter,
+    makeCommunityPurchaseFundingChainReader({
+      rpcUrl: fundingRpcUrl(
+        Redacted.value(config.COMMUNITY_PURCHASE_FUNDING_RPC_URL),
+        config.API_NEXT_ENV,
+      ),
+    }),
+  );
+  const fundingHandlers = makeCommunityPurchaseFundingHandlers({
+    admission: makeControlPlaneCommunityPurchaseFundingAdmissionStore(controlPlane),
+    observation: fundingObservation,
+    query: fundingQuery,
+  });
   const callbackCredentialHeaderNames = callbackCredentialHeaders(
     config.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
   );
@@ -351,6 +395,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     handlers: {
       ...productHandlers,
       ...verificationHandlers,
+      ...fundingHandlers,
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },

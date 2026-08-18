@@ -19,8 +19,25 @@ import {
   makeHyperdriveControlPlaneLayer,
   type ScheduledCronLockDO,
 } from "@pirate/platform-cf";
-import { Cause, Deferred, Effect, Exit, Fiber, type Layer, Option, Schedule, Schema } from "effect";
+import {
+  JobsWorkerConfig,
+  type JobsWorkerConfigValue,
+  loadConfigFrom,
+} from "@pirate/platform-cf/config";
+import {
+  Cause,
+  Deferred,
+  Effect,
+  Exit,
+  Fiber,
+  type Layer,
+  Option,
+  Redacted,
+  Schedule,
+  Schema,
+} from "effect";
 
+import { makeCommunityPurchaseFundingReconciliationJob } from "./community-purchase-funding";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
 
@@ -53,6 +70,33 @@ export {
 export interface JobsWorkerEnv extends AlertSinkBindings {
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly CONTROL_PLANE?: HyperdriveConnection;
+  readonly API_NEXT_ENV?: string;
+  readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
+}
+
+function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
+  try {
+    return loadConfigFrom(JobsWorkerConfig, {
+      API_NEXT_ENV: env.API_NEXT_ENV,
+      COMMUNITY_PURCHASE_FUNDING_RPC_URL: env.COMMUNITY_PURCHASE_FUNDING_RPC_URL,
+    });
+  } catch {
+    throw new Error("Jobs worker configuration is incomplete or invalid");
+  }
+}
+
+function fundingRpcUrl(value: string, environment: JobsWorkerConfigValue["API_NEXT_ENV"]): string {
+  try {
+    const parsed = new URL(value);
+    const developmentLocal =
+      environment === "development" &&
+      parsed.protocol === "http:" &&
+      (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost");
+    if (parsed.protocol !== "https:" && !developmentLocal) throw new Error("invalid RPC URL");
+    return parsed.toString();
+  } catch {
+    throw new Error("Jobs worker configuration is incomplete or invalid");
+  }
 }
 
 /** One job as declaration-as-data (000 §12), consumed by the generic runner. */
@@ -418,11 +462,11 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
   return Effect.runPromise(runScheduled(env, lane, jobsInput, now, options));
 }
 
-export function makeJobsWorkerDeclarations(
-  sink: AlertSink,
-): readonly JobDefinition<ControlPlaneError, ControlPlaneDb | AlertCollector>[] {
-  const factories = [makeCommunityCatalogIntegrityJob] as const;
-  return factories.map((factory) => factory(sink));
+export function makeJobsWorkerDeclarations(sink: AlertSink, rpcUrl: string) {
+  return [
+    makeCommunityCatalogIntegrityJob(sink),
+    makeCommunityPurchaseFundingReconciliationJob(sink, rpcUrl),
+  ];
 }
 
 export default {
@@ -430,9 +474,14 @@ export default {
     if (env.CONTROL_PLANE === undefined) {
       throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");
     }
+    const config = loadJobsWorkerConfig(env);
+    const rpcUrl = fundingRpcUrl(
+      Redacted.value(config.COMMUNITY_PURCHASE_FUNDING_RPC_URL),
+      config.API_NEXT_ENV,
+    );
     const deliveryStub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alerts`);
     const sink = makeConfiguredAlertSink(env, makeAlertDeliveryLedger(deliveryStub));
-    const declarations = makeJobsWorkerDeclarations(sink);
+    const declarations = makeJobsWorkerDeclarations(sink, rpcUrl);
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);

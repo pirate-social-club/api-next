@@ -24,6 +24,10 @@ const alias = {
   "@pirate/domain": new URL("../../packages/domain/src/index.ts", import.meta.url).pathname,
   "@pirate/application": new URL("../../packages/application/src/index.ts", import.meta.url)
     .pathname,
+  "@pirate/platform-cf/config": new URL(
+    "../../packages/platform-cf/config/index.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)
     .pathname,
   "@pirate/verifier-response-contract": new URL(

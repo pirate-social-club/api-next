@@ -101,6 +101,12 @@ const identityCredentialDeleteGuardMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const fundingDormancyAndRetentionMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0018_m3_funding_dormancy_and_retention.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -190,6 +196,11 @@ const identityCredentialDeleteGuardMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0017_identity_credential_delete_guard.sql"] ?? "",
   sql: identityCredentialDeleteGuardMigrationSql,
 };
+const fundingDormancyAndRetentionMigration: PostgresMigration = {
+  version: "0018_m3_funding_dormancy_and_retention.sql",
+  checksum: checksumManifest.migrations["0018_m3_funding_dormancy_and_retention.sql"] ?? "",
+  sql: fundingDormancyAndRetentionMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -208,6 +219,7 @@ const migrations: readonly PostgresMigration[] = [
   identityCredentialsMigration,
   identityCredentialInvariantsMigration,
   identityCredentialDeleteGuardMigration,
+  fundingDormancyAndRetentionMigration,
 ];
 
 function checksum(value: string): string {
@@ -370,6 +382,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(identityCredentialDeleteGuardMigrationSql)).toBe(
         identityCredentialDeleteGuardMigration.checksum,
+      );
+      expect(checksum(fundingDormancyAndRetentionMigrationSql)).toBe(
+        fundingDormancyAndRetentionMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);

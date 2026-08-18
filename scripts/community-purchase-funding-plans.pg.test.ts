@@ -215,7 +215,7 @@ suite("Postgres 17 community purchase funding plans", () => {
 
       await expectPgFailure(
         admin,
-        "23514",
+        "P0001",
         "UPDATE community_purchase_funding_plans SET amount_atomic = 2 WHERE quote_id = 'quote_1'",
       );
       await admin.query(

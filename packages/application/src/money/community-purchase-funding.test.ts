@@ -113,6 +113,7 @@ function makeMemoryStore(): CommunityPurchaseFundingJournalStore {
           ownerId: input.ownerId,
           fenceToken: ++nextFence,
           expiresAt: "2099-08-18T00:00:00.000Z",
+          databaseNowMs: PLAN.now + 1,
         };
         leases.set(input.operationId, lease);
         return { kind: "acquired", lease } as const;

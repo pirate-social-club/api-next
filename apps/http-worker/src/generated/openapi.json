@@ -27719,6 +27719,7 @@
                       "type": "string",
                       "enum": [
                         "planned",
+                        "dormant_unobserved",
                         "confirming",
                         "confirmed",
                         "reverted",
@@ -27823,6 +27824,7 @@
                       "type": "string",
                       "enum": [
                         "planned",
+                        "dormant_unobserved",
                         "confirming",
                         "confirmed",
                         "reverted",
@@ -28172,6 +28174,7 @@
                       "type": "string",
                       "enum": [
                         "planned",
+                        "dormant_unobserved",
                         "confirming",
                         "confirmed",
                         "reverted",
@@ -28481,6 +28484,7 @@
                       "type": "string",
                       "enum": [
                         "planned",
+                        "dormant_unobserved",
                         "confirming",
                         "confirmed",
                         "reverted",

@@ -96,6 +96,7 @@ function observe(
 describe("community-purchase funding state machine", () => {
   const states: CommunityPurchaseFundingState[] = [
     "planned",
+    "dormant_unobserved",
     "confirming",
     "confirmed",
     "reverted",
@@ -103,7 +104,8 @@ describe("community-purchase funding state machine", () => {
     "reconciliation_required",
   ];
   const expected: Record<CommunityPurchaseFundingState, CommunityPurchaseFundingState[]> = {
-    planned: ["confirming", "confirmed", "reverted", "reclaimable_failed"],
+    planned: ["dormant_unobserved", "confirming", "confirmed", "reverted", "reclaimable_failed"],
+    dormant_unobserved: ["confirming", "confirmed", "reverted"],
     confirming: ["confirming", "confirmed", "reverted", "reconciliation_required"],
     confirmed: ["confirmed", "reconciliation_required"],
     reverted: ["reverted", "reconciliation_required"],
@@ -155,6 +157,29 @@ describe("community-purchase funding state machine", () => {
       version: 3,
       operationId: planned.operationId,
       failure: null,
+    });
+  });
+
+  test("moves an unobserved operation to dormancy and accepts late evidence", () => {
+    const planned = createCommunityPurchaseFunding(PLAN);
+    const dormant = accepted(
+      transitionCommunityPurchaseFunding(planned, {
+        type: "submission_window_elapsed",
+        expectedVersion: planned.version,
+        at: planned.updatedAt + 1,
+      }),
+    );
+    expect(dormant).toMatchObject({
+      state: "dormant_unobserved",
+      version: 2,
+      fundingEvidence: null,
+    });
+
+    const confirming = accepted(observe(dormant, EVIDENCE));
+    expect(confirming).toMatchObject({
+      state: "confirming",
+      version: 3,
+      fundingEvidence: { transactionHash: EVIDENCE.transactionHash },
     });
   });
 

@@ -17,6 +17,7 @@ const Address = Schema.String.check(Schema.isPattern(/^0x[0-9a-f]{40}$/u));
 const AtomicAmount = Schema.String.check(Schema.isPattern(/^[1-9][0-9]*$/u));
 const FundingStatus = Schema.Literals([
   "planned",
+  "dormant_unobserved",
   "confirming",
   "confirmed",
   "reverted",

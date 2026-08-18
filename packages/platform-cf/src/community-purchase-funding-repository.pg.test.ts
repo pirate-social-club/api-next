@@ -13,6 +13,7 @@ import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
 import {
   makeControlPlaneCommunityPurchaseFundingAdmissionStore,
+  makeControlPlaneCommunityPurchaseFundingQueryStore,
   makeControlPlaneCommunityPurchaseFundingStore,
 } from "./community-purchase-funding-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -662,8 +663,66 @@ suite("Postgres 17 community-purchase funding journal", () => {
     completedTestCount += 1;
   });
 
+  test("selects database-aged dormancy candidates and retains all canonical M3 rows", async () => {
+    await withSchema(async (connection, admin) => {
+      const { interpreter, begun } = await begin(connection);
+      await insertAdmissionPlan(admin, { quoteId: "quote_retained" });
+      await admin.query(
+        `UPDATE community_purchase_funding_journal
+            SET created_at = clock_timestamp() - INTERVAL '31 minutes'
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      const query = makeControlPlaneCommunityPurchaseFundingQueryStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const candidates = await run(
+        query.listDormancyCandidates({ limit: 10, submissionWindowMs: 30 * 60 * 1_000 }),
+      );
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]).toMatchObject({
+        operationId: begun.entry.state.operationId,
+        expectedVersion: 1,
+      });
+      const candidate = candidates[0];
+      if (candidate === undefined) throw new Error("missing dormancy candidate");
+      const lease = await run(
+        interpreter.acquireLease({
+          operationId: candidate.operationId,
+          ownerId: "dormancy-worker",
+          leaseMs: 60_000,
+        }),
+      );
+      const dormant = await run(
+        interpreter.transition({
+          lease,
+          source: "reconciler",
+          expectedVersion: candidate.expectedVersion,
+          event: {
+            type: "submission_window_elapsed",
+            expectedVersion: candidate.expectedVersion,
+            at: candidate.databaseNowMs,
+          },
+        }),
+      );
+      expect(dormant.entry).toMatchObject({ status: "dormant_unobserved", version: 2 });
+      expect(await run(query.listDormancyCandidates({ limit: 10, submissionWindowMs: 1 }))).toEqual(
+        [],
+      );
+
+      for (const table of [
+        "community_purchase_funding_requests",
+        "community_purchase_funding_journal",
+        "community_purchase_funding_plans",
+      ]) {
+        await expect(admin.query(`DELETE FROM ${table}`)).rejects.toThrow("append-only");
+      }
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 11) {
+    if (connectionString !== undefined && completedTestCount === 12) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

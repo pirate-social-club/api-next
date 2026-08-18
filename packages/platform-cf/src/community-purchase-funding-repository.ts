@@ -44,6 +44,9 @@ type CommitTransitionInput = Parameters<
 >[0];
 type LoadForActorInput = Parameters<CommunityPurchaseFundingQueryStore["loadForActor"]>[0];
 type ListReconcilableInput = Parameters<CommunityPurchaseFundingQueryStore["listReconcilable"]>[0];
+type ListDormancyCandidatesInput = Parameters<
+  CommunityPurchaseFundingQueryStore["listDormancyCandidates"]
+>[0];
 
 const JOURNAL_COLUMNS = `
   operation_id, community_id, actor_id, quote_id, purchase_id, policy_version,
@@ -687,6 +690,52 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
     },
   );
 
+  const listDormancyCandidates = Effect.fn(
+    "CommunityPurchaseFundingRepository.listDormancyCandidates",
+  )(function* (input: ListDormancyCandidatesInput) {
+    const db = yield* ControlPlaneDb;
+    const result = yield* db.execute<Row>({
+      label: "money.community-purchase-funding.list-dormancy-candidates",
+      text: `SELECT operation_id, version,
+                    (EXTRACT(EPOCH FROM statement_timestamp()) * 1000)::bigint
+                      AS database_now_ms
+               FROM community_purchase_funding_journal
+              WHERE state = 'planned'
+                AND funding_transaction_hash IS NULL
+                AND created_at <= statement_timestamp()
+                  - ($2 * INTERVAL '1 millisecond')
+              ORDER BY created_at ASC, operation_id ASC
+              LIMIT $1`,
+      values: [input.limit, input.submissionWindowMs],
+      readonly: true,
+    });
+    const records: Array<{
+      readonly operationId: CommunityPurchaseOperationId;
+      readonly expectedVersion: number;
+      readonly databaseNowMs: number;
+    }> = [];
+    for (const row of result.rows) {
+      const operationId = requiredString(row, "operation_id");
+      const expectedVersion = integer(row, "version");
+      const databaseNowMs = integer(row, "database_now_ms");
+      if (
+        operationId === null ||
+        expectedVersion === null ||
+        expectedVersion < 1 ||
+        databaseNowMs === null ||
+        databaseNowMs < 0
+      ) {
+        return yield* Effect.fail(storageFailure("invalid-row"));
+      }
+      records.push({
+        operationId: operationId as CommunityPurchaseOperationId,
+        expectedVersion,
+        databaseNowMs,
+      });
+    }
+    return records;
+  });
+
   const acquireLease = Effect.fn("CommunityPurchaseFundingRepository.acquireLease")(function* (
     input: AcquireLeaseInput,
   ) {
@@ -749,6 +798,7 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
             ownerId: input.ownerId,
             fenceToken,
             expiresAt,
+            databaseNowMs: Date.parse(databaseNow),
           },
         } as const;
       }),
@@ -994,6 +1044,7 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
     load,
     loadForActor,
     listReconcilable,
+    listDormancyCandidates,
     acquireLease,
     wasTransitionCommitted,
     commitTransition,
@@ -1009,6 +1060,7 @@ export function makeControlPlaneCommunityPurchaseFundingQueryStore(
   return {
     loadForActor: (input) => provide(repository.loadForActor(input)),
     listReconcilable: (input) => provide(repository.listReconcilable(input)),
+    listDormancyCandidates: (input) => provide(repository.listDormancyCandidates(input)),
   };
 }
 

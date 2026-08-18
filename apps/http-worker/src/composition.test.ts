@@ -40,6 +40,7 @@ async function bindings(): Promise<HttpWorkerBindings> {
     PRIVY_JWKS_URL: "https://auth.privy.test/jwks.json",
     PRIVY_JWT_ISSUER: "privy-test",
     PRIVY_JWT_AUDIENCE: "privy-test",
+    COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.test",
   };
 }
 
@@ -62,6 +63,24 @@ describe("HTTP production composition", () => {
     const currentUser = await worker.request("https://worker.test/users/me");
     expect(currentUser.status).toBe(401);
     expect(await currentUser.json()).toMatchObject({ error: { code: "auth_error" } });
+
+    for (const fundingRequest of [
+      new Request("https://worker.test/money/community-purchase-funding", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ quote_id: "quote-a", client_nonce: "nonce-a" }),
+      }),
+      new Request("https://worker.test/money/community-purchase-funding/operation-a"),
+      new Request("https://worker.test/money/community-purchase-funding/operation-a/observations", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ transaction_hash: `0x${"1".repeat(64)}` }),
+      }),
+    ]) {
+      const fundingResponse = await worker.request(fundingRequest);
+      expect(fundingResponse.status).toBe(401);
+      expect(await fundingResponse.json()).toMatchObject({ error: { code: "auth_error" } });
+    }
 
     const startVerification = await worker.request("https://worker.test/verification/sessions", {
       method: "POST",
@@ -90,6 +109,17 @@ describe("HTTP production composition", () => {
     await expect(createProductionHttpWorker(incomplete)).rejects.toThrow(
       "HTTP worker configuration is incomplete or invalid",
     );
+  });
+
+  test("rejects non-TLS funding RPC origins outside local development", async () => {
+    const configured = await bindings();
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        API_NEXT_ENV: "staging",
+        COMMUNITY_PURCHASE_FUNDING_RPC_URL: "http://rpc.test",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
   });
 
   test("enables Self only with an explicit public HTTPS origin", async () => {

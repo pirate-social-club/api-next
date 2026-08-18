@@ -54,6 +54,7 @@ const EncodedFailure = Schema.Union([ReclaimableFence, AmbiguousFence]);
 const EncodedSnapshot = Schema.Struct({
   state: Schema.Literals([
     "planned",
+    "dormant_unobserved",
     "confirming",
     "confirmed",
     "reverted",
@@ -107,6 +108,8 @@ export type CommunityPurchaseFundingLease = Readonly<{
   ownerId: string;
   fenceToken: number;
   expiresAt: string;
+  /** Database time captured while acquiring the fenced lease. */
+  databaseNowMs: number;
 }>;
 
 export type CommunityPurchaseFundingJournalRecord = Readonly<{

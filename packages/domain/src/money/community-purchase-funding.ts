@@ -36,6 +36,7 @@ export type CommunityPurchaseAtomicAmount = bigint & {
 
 export type CommunityPurchaseFundingState =
   | "planned"
+  | "dormant_unobserved"
   | "confirming"
   | "confirmed"
   | "reverted"
@@ -110,6 +111,10 @@ export type CommunityPurchaseFundingSnapshot =
       readonly fundingEvidence: null;
     })
   | (UnfailedFundingSnapshot & {
+      readonly state: "dormant_unobserved";
+      readonly fundingEvidence: null;
+    })
+  | (UnfailedFundingSnapshot & {
       readonly state: "confirming";
       readonly fundingEvidence: CommunityPurchaseFundingEvidence;
     })
@@ -152,6 +157,9 @@ type EventHeader = {
 
 export type CommunityPurchaseFundingEvent =
   | (EventHeader & {
+      readonly type: "submission_window_elapsed";
+    })
+  | (EventHeader & {
       readonly type: "funding_evidence_observed";
       readonly evidence: CommunityPurchaseFundingEvidence;
     })
@@ -175,7 +183,8 @@ export type CommunityPurchaseFundingEvent =
 
 export const COMMUNITY_PURCHASE_FUNDING_ALLOWED_TRANSITIONS: AllowedTransitionTable<CommunityPurchaseFundingState> =
   {
-    planned: ["confirming", "confirmed", "reverted", "reclaimable_failed"],
+    planned: ["dormant_unobserved", "confirming", "confirmed", "reverted", "reclaimable_failed"],
+    dormant_unobserved: ["confirming", "confirmed", "reverted"],
     confirming: ["confirming", "confirmed", "reverted", "reconciliation_required"],
     confirmed: ["confirmed", "reconciliation_required"],
     reverted: ["reverted", "reconciliation_required"],
@@ -400,7 +409,7 @@ function assertSnapshot(snapshot: CommunityPurchaseFundingSnapshot): void {
       throw new Error("confirmed_receipt_identity_invalid");
     }
   }
-  if (snapshot.state === "planned") {
+  if (snapshot.state === "planned" || snapshot.state === "dormant_unobserved") {
     if (
       snapshot.confirmedReceiptIdentity !== null ||
       snapshot.fundingEvidence !== null ||
@@ -408,7 +417,7 @@ function assertSnapshot(snapshot: CommunityPurchaseFundingSnapshot): void {
       snapshot.failureReason !== null ||
       snapshot.reconciliationEvidence !== null
     ) {
-      throw new Error("planned_funding_requires_empty_evidence_and_failure");
+      throw new Error("unobserved_funding_requires_empty_evidence_and_failure");
     }
     return;
   }
@@ -593,9 +602,22 @@ function reduceCommunityPurchaseFunding(
   const invalidHeader = validateEventHeader(current, event);
   if (invalidHeader) return invalidHeader;
 
+  if (event.type === "submission_window_elapsed") {
+    if (current.state !== "planned") {
+      return rejectTransition(`submission_window_elapsed_not_allowed_from:${current.state}`);
+    }
+    return {
+      ...current,
+      state: "dormant_unobserved",
+      version: current.version + 1,
+      updatedAt: event.at,
+    };
+  }
+
   if (event.type === "funding_evidence_observed") {
     if (
       current.state !== "planned" &&
+      current.state !== "dormant_unobserved" &&
       current.state !== "confirming" &&
       current.state !== "confirmed" &&
       current.state !== "reverted"
@@ -604,7 +626,7 @@ function reduceCommunityPurchaseFunding(
     }
     const invalid = invalidEvidence(current.expected, event.evidence);
     if (invalid) return rejectTransition(invalid);
-    if (current.state !== "planned") {
+    if (current.state !== "planned" && current.state !== "dormant_unobserved") {
       if (!hasSameEffectIdentity(current.fundingEvidence, event.evidence)) {
         return rejectTransition("funding_evidence_effect_identity_changed");
       }

@@ -83,6 +83,7 @@ function makeMemoryStore() {
           ownerId: input.ownerId,
           fenceToken: ++nextFence,
           expiresAt: "2099-08-18T00:00:00.000Z",
+          databaseNowMs: 1_001,
         };
         return { kind: "acquired", lease } as const;
       }),
@@ -124,7 +125,6 @@ function observationInput(
     ownerId: `${source}_worker`,
     leaseMs: 60_000,
     source,
-    at: 1_001,
   };
 }
 
