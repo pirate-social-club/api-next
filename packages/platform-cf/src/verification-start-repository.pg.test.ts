@@ -20,6 +20,10 @@ const sentinelPath =
 const sentinelContents = "api-next-control-plane-postgres-verification-start-suite-complete\n";
 const expectedTestCount = 10;
 let completedTestCount = 0;
+// Keep the ordinary pending-session fixture valid independently of the day the
+// CI database runs. Expiry-specific tests override this value with an
+// intentionally past or database-relative timestamp below.
+const defaultSessionExpiresAt = "2099-08-18T00:00:00.000Z";
 
 const migrationFiles = [
   "0001_v1_product_slice.sql",
@@ -106,7 +110,7 @@ function startFor(id: string, actorId = "user-a", intentId = `intent-${id}`): Pr
     environment: "test",
     status: "pending",
     started_at: "2026-08-17T00:00:00.000Z",
-    expires_at: "2026-08-18T00:00:00.000Z",
+    expires_at: defaultSessionExpiresAt,
   };
   return {
     session,
