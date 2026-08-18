@@ -93,6 +93,9 @@ describe("policy-driven curated-age evaluator", () => {
     expect(policyCanonicalPreimage(reorderedRequirements)).toBe(
       CURATED_AGE_18_POLICY_CANONICAL_PREIMAGE,
     );
+    expect(sha256Hex(policyCanonicalPreimage(reorderedRequirements))).toBe(
+      CURATED_AGE_18_POLICY.policy_hash,
+    );
     expect(evaluate(copyEvidence(), reorderedRequirements).outcome).toBe("pass");
   });
 
@@ -131,6 +134,23 @@ describe("policy-driven curated-age evaluator", () => {
   });
 
   test("fails closed for incoherent policy metadata", () => {
+    const nestedExcessField = withPolicyHash({
+      ...CURATED_AGE_18_POLICY,
+      requirements: [
+        { claim_id: "age.minimum", minimum_age: "18", unbound_semantics: true },
+        { claim_id: "credential.subject_unique" },
+        { claim_id: "document.valid" },
+      ],
+    } as unknown as CuratedAgePolicy);
+    const reorderedRequirementTuple = withPolicyHash({
+      ...CURATED_AGE_18_POLICY,
+      requirements: [
+        { claim_id: "credential.subject_unique" },
+        { claim_id: "age.minimum", minimum_age: "18" },
+        { claim_id: "document.valid" },
+      ],
+    } as unknown as CuratedAgePolicy);
+
     for (const policy of [
       { ...CURATED_AGE_18_POLICY, policy_hash: "not-a-hash" },
       { ...CURATED_AGE_18_POLICY, policy_revision: 0 },
@@ -141,6 +161,8 @@ describe("policy-driven curated-age evaluator", () => {
       },
       { ...CURATED_AGE_18_POLICY, minimum_age: "21" },
       { ...CURATED_AGE_18_POLICY, unbound_semantics: true },
+      nestedExcessField,
+      reorderedRequirementTuple,
     ] as CuratedAgePolicy[]) {
       expect(evaluate(copyEvidence(), policy)).toMatchObject({
         outcome: "fail",
