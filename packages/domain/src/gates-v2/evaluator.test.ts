@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { EvidenceBundle } from "../verification/index.ts";
+import { policyCanonicalPreimage } from "./evaluator.ts";
 import {
   SELF_STAGING_18_PLUS_DEVELOPMENT_EVIDENCE,
   SELF_STAGING_18_PLUS_EVALUATION_NOW,
@@ -12,6 +13,7 @@ import {
   evaluateCuratedAge,
   evaluateCuratedAge18,
 } from "./index.ts";
+import { sha256Hex } from "./sha256.ts";
 
 type MutableEvidence = {
   assertions: Array<Record<string, unknown>>;
@@ -32,6 +34,10 @@ function evaluate(evidence: MutableEvidence, policy: CuratedAgePolicy = CURATED_
     evidence: { kind: "available", bundle: evidence as unknown as EvidenceBundle },
     now,
   });
+}
+
+function withPolicyHash(policy: CuratedAgePolicy): CuratedAgePolicy {
+  return { ...policy, policy_hash: sha256Hex(policyCanonicalPreimage(policy)) };
 }
 
 describe("policy-driven curated-age evaluator", () => {
@@ -75,36 +81,47 @@ describe("policy-driven curated-age evaluator", () => {
       .join("");
     expect(hex).toBe(CURATED_AGE_18_POLICY.policy_hash);
     expect(Object.keys(CURATED_AGE_18_POLICY)).not.toContain("provider");
+
+    const reorderedRequirements = {
+      ...CURATED_AGE_18_POLICY,
+      requirements: [
+        { minimum_age: "18", claim_id: "age.minimum" },
+        { claim_id: "credential.subject_unique" },
+        { claim_id: "document.valid" },
+      ],
+    } as CuratedAgePolicy;
+    expect(policyCanonicalPreimage(reorderedRequirements)).toBe(
+      CURATED_AGE_18_POLICY_CANONICAL_PREIMAGE,
+    );
+    expect(evaluate(copyEvidence(), reorderedRequirements).outcome).toBe("pass");
   });
 
   test("reads threshold and assurance from the supplied policy", () => {
-    const age21: CuratedAgePolicy = {
+    const age21 = withPolicyHash({
       ...CURATED_AGE_18_POLICY,
       policy_version_id: "curated-age-v2",
       policy_revision: 2,
-      policy_hash: "c".repeat(64),
       minimum_age: "21",
       requirements: [
         { claim_id: "age.minimum", minimum_age: "21" },
         { claim_id: "credential.subject_unique" },
         { claim_id: "document.valid" },
       ],
-    };
+    });
     expect(evaluate(copyEvidence(), age21)).toMatchObject({
       outcome: "fail",
       reason: "age_below_threshold",
       policy_version_id: "curated-age-v2",
       policy_revision: 2,
-      policy_hash: "c".repeat(64),
+      policy_hash: age21.policy_hash,
       winning_witness: [],
     });
 
-    const stronger: CuratedAgePolicy = {
+    const stronger = withPolicyHash({
       ...CURATED_AGE_18_POLICY,
       policy_version_id: "curated-age-holder-live-v1",
-      policy_hash: "d".repeat(64),
       required_assurance: "holder_live",
-    };
+    });
     expect(evaluate(copyEvidence(), stronger)).toMatchObject({
       outcome: "needs_evidence",
       reasons: ["wrong_assurance"],
@@ -122,6 +139,8 @@ describe("policy-driven curated-age evaluator", () => {
         minimum_age: "21",
         requirements: CURATED_AGE_18_POLICY.requirements,
       },
+      { ...CURATED_AGE_18_POLICY, minimum_age: "21" },
+      { ...CURATED_AGE_18_POLICY, unbound_semantics: true },
     ] as CuratedAgePolicy[]) {
       expect(evaluate(copyEvidence(), policy)).toMatchObject({
         outcome: "fail",
@@ -229,6 +248,61 @@ describe("policy-driven curated-age evaluator", () => {
         outcome: "fail",
         reason: "invalid_evidence",
         winning_witness: [],
+      });
+    }
+  });
+
+  test("runtime-malformed decoded-looking evidence fails instead of throwing", () => {
+    const cases: Array<(evidence: MutableEvidence) => void> = [
+      (evidence) => {
+        evidence.assertions[0] = null as unknown as Record<string, unknown>;
+      },
+      (evidence) => {
+        if (evidence.assertions[0]) evidence.assertions[0].value = null;
+      },
+      (evidence) => {
+        if (evidence.receipts[0]) evidence.receipts[0].scope = null;
+      },
+      (evidence) => {
+        if (evidence.assertions[0]) evidence.assertions[0].assurance = "unknown_assurance";
+      },
+    ];
+    for (const mutate of cases) {
+      const evidence = copyEvidence();
+      mutate(evidence);
+      expect(evaluate(evidence)).toMatchObject({
+        outcome: "fail",
+        reason: "invalid_evidence",
+        winning_witness: [],
+      });
+    }
+
+    expect(
+      evaluateCuratedAge({
+        policy: CURATED_AGE_18_POLICY,
+        evidence: {
+          kind: "indeterminate",
+          reason: "unknown_unavailability",
+        } as never,
+        now,
+      }),
+    ).toMatchObject({ outcome: "fail", reason: "invalid_evidence" });
+  });
+
+  test("malformed assertion and receipt timestamps fail as invalid evidence", () => {
+    for (const mutate of [
+      (evidence: MutableEvidence) => {
+        if (evidence.assertions[0]) evidence.assertions[0].observed_at = "not-an-instant";
+      },
+      (evidence: MutableEvidence) => {
+        if (evidence.receipts[0]) evidence.receipts[0].expires_at = "2026-02-30T00:00:00.000Z";
+      },
+    ]) {
+      const evidence = copyEvidence();
+      mutate(evidence);
+      expect(evaluate(evidence)).toMatchObject({
+        outcome: "fail",
+        reason: "invalid_evidence",
       });
     }
   });
