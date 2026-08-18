@@ -74,6 +74,12 @@ const verificationCompletionAttemptsMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const communityPurchaseFundingJournalMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0013_m3_community_purchase_funding_journal.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -138,6 +144,11 @@ const verificationCompletionAttemptsMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0012_verification_completion_attempts.sql"] ?? "",
   sql: verificationCompletionAttemptsMigrationSql,
 };
+const communityPurchaseFundingJournalMigration: PostgresMigration = {
+  version: "0013_m3_community_purchase_funding_journal.sql",
+  checksum: checksumManifest.migrations["0013_m3_community_purchase_funding_journal.sql"] ?? "",
+  sql: communityPurchaseFundingJournalMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -151,6 +162,7 @@ const migrations: readonly PostgresMigration[] = [
   proofSessionProvenanceMigration,
   verificationStartReservationsMigration,
   verificationCompletionAttemptsMigration,
+  communityPurchaseFundingJournalMigration,
 ];
 
 function checksum(value: string): string {
@@ -338,6 +350,11 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_follows",
         "community_memberships",
         "community_policy_current",
+        "community_purchase_funding_journal",
+        "community_purchase_funding_receipts",
+        "community_purchase_funding_requests",
+        "community_purchase_funding_transaction_claims",
+        "community_purchase_funding_transitions",
         "decision_records",
         "evidence_receipts",
         "home_feed_projection",
@@ -379,6 +396,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "assertion_revalidation_events_append_only",
         "assertions_append_only",
         "assertions_validate_binding",
+        "community_purchase_funding_claims_append_only",
+        "community_purchase_funding_receipts_append_only",
+        "community_purchase_funding_transitions_append_only",
         "decision_records_append_only",
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",

@@ -105,8 +105,8 @@ describe("community-purchase funding state machine", () => {
   const expected: Record<CommunityPurchaseFundingState, CommunityPurchaseFundingState[]> = {
     planned: ["confirming", "confirmed", "reverted", "reclaimable_failed"],
     confirming: ["confirming", "confirmed", "reverted", "reconciliation_required"],
-    confirmed: ["reconciliation_required"],
-    reverted: ["reconciliation_required"],
+    confirmed: ["confirmed", "reconciliation_required"],
+    reverted: ["reverted", "reconciliation_required"],
     reclaimable_failed: ["planned"],
     reconciliation_required: ["confirming", "confirmed", "reverted"],
   };

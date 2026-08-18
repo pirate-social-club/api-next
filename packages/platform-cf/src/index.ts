@@ -33,6 +33,10 @@ export {
   makeLocalAlertSink,
 } from "./alerts";
 export {
+  makeControlPlaneCommunityPurchaseFundingRepository,
+  makeControlPlaneCommunityPurchaseFundingStore,
+} from "./community-purchase-funding-repository";
+export {
   makeControlPlaneCommunityRepository,
   makeControlPlaneCommunityStore,
 } from "./community-repository";

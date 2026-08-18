@@ -84,6 +84,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-verification-start-suite-complete",
     contents: "api-next-control-plane-postgres-verification-start-suite-complete\n",
   },
+  {
+    name: "postgres community purchase funding journal",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_COMMUNITY_PURCHASE_FUNDING_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-community-purchase-funding-suite-complete",
+    contents: "api-next-control-plane-postgres-community-purchase-funding-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

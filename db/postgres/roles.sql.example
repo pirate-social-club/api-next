@@ -8,3 +8,9 @@ GRANT USAGE ON SCHEMA public TO api_next_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO api_next_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO api_next_app;
+
+-- Money evidence and derived receipts are append-only even if a deployment
+-- role is accidentally broader than the repository methods.
+REVOKE UPDATE, DELETE ON community_purchase_funding_transaction_claims FROM api_next_app;
+REVOKE UPDATE, DELETE ON community_purchase_funding_transitions FROM api_next_app;
+REVOKE UPDATE, DELETE ON community_purchase_funding_receipts FROM api_next_app;

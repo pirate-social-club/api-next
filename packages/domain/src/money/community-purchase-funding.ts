@@ -168,8 +168,8 @@ export const COMMUNITY_PURCHASE_FUNDING_ALLOWED_TRANSITIONS: AllowedTransitionTa
   {
     planned: ["confirming", "confirmed", "reverted", "reclaimable_failed"],
     confirming: ["confirming", "confirmed", "reverted", "reconciliation_required"],
-    confirmed: ["reconciliation_required"],
-    reverted: ["reconciliation_required"],
+    confirmed: ["confirmed", "reconciliation_required"],
+    reverted: ["reverted", "reconciliation_required"],
     reclaimable_failed: ["planned"],
     reconciliation_required: ["confirming", "confirmed", "reverted"],
   };
@@ -341,8 +341,26 @@ function assertSnapshot(snapshot: CommunityPurchaseFundingSnapshot): void {
       throw new Error("reconciliation_evidence_effect_identity_changed");
     }
   }
-  if (snapshot.state === "planned") return;
+  if (snapshot.state === "planned") {
+    if (
+      snapshot.fundingEvidence !== null ||
+      snapshot.failure !== null ||
+      snapshot.failureReason !== null ||
+      snapshot.reconciliationEvidence !== null
+    ) {
+      throw new Error("planned_funding_requires_empty_evidence_and_failure");
+    }
+    return;
+  }
   if (snapshot.state === "confirming") {
+    if (
+      snapshot.fundingEvidence === null ||
+      snapshot.failure !== null ||
+      snapshot.failureReason !== null ||
+      snapshot.reconciliationEvidence !== null
+    ) {
+      throw new Error("confirming_funding_shape_invalid");
+    }
     if (confirmationDepth(snapshot.fundingEvidence) >= snapshot.expected.requiredConfirmations) {
       throw new Error("confirming_funding_cannot_have_finality");
     }
@@ -350,6 +368,10 @@ function assertSnapshot(snapshot: CommunityPurchaseFundingSnapshot): void {
   }
   if (snapshot.state === "confirmed") {
     if (
+      snapshot.fundingEvidence === null ||
+      snapshot.failure !== null ||
+      snapshot.failureReason !== null ||
+      snapshot.reconciliationEvidence !== null ||
       snapshot.fundingEvidence.receiptStatus !== "success" ||
       confirmationDepth(snapshot.fundingEvidence) < snapshot.expected.requiredConfirmations
     ) {
@@ -359,6 +381,10 @@ function assertSnapshot(snapshot: CommunityPurchaseFundingSnapshot): void {
   }
   if (snapshot.state === "reverted") {
     if (
+      snapshot.fundingEvidence === null ||
+      snapshot.failure !== null ||
+      snapshot.failureReason !== null ||
+      snapshot.reconciliationEvidence !== null ||
       snapshot.fundingEvidence.receiptStatus !== "reverted" ||
       confirmationDepth(snapshot.fundingEvidence) < snapshot.expected.requiredConfirmations
     ) {
@@ -368,7 +394,11 @@ function assertSnapshot(snapshot: CommunityPurchaseFundingSnapshot): void {
   }
   if (snapshot.state === "reclaimable_failed") {
     assertFailureReason(snapshot.failureReason);
-    if (snapshot.failure._tag !== "reclaimable") {
+    if (
+      snapshot.fundingEvidence !== null ||
+      snapshot.failure._tag !== "reclaimable" ||
+      snapshot.reconciliationEvidence !== null
+    ) {
       throw new Error("reclaimable_failure_requires_reclaimable_fence");
     }
     return;
@@ -377,6 +407,13 @@ function assertSnapshot(snapshot: CommunityPurchaseFundingSnapshot): void {
   if (!["ambiguous", "legacy"].includes(snapshot.failure._tag as string)) {
     throw new Error("reconciliation_requires_ambiguous_or_legacy_fence");
   }
+}
+
+/** Re-check a snapshot decoded from durable storage before interpreting it. */
+export function assertCommunityPurchaseFundingSnapshot(
+  snapshot: CommunityPurchaseFundingSnapshot,
+): void {
+  assertSnapshot(snapshot);
 }
 
 export function createCommunityPurchaseFunding(
@@ -511,9 +548,6 @@ function reduceCommunityPurchaseFunding(
           reason: "funding_block_identity_changed",
           evidence: event.evidence,
         });
-      }
-      if (current.state === "confirmed" || current.state === "reverted") {
-        return rejectTransition("funding_state_already_final");
       }
     }
     return stateForEvidence(current, event.evidence, event.at);

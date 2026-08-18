@@ -49,6 +49,14 @@ keyed completion reservations. Active and consumed generations share a bounded
 attempt budget; provider-unavailable attempts are released, while stale
 finalizers are fenced before they can write the evidence ledger.
 
+`0013_m3_community_purchase_funding_journal.sql` adds the concrete M3
+community-purchase funding journal, request bindings, transaction claims,
+transition history, and confirmed receipts. PostgreSQL constraints and trigger
+guards fence immutable economic identity, cross-operation transaction reuse,
+lease generations, reducer-consistent version advances, and append-only
+evidence. It is intentionally flow-specific; shared journal extraction waits
+for the second proven money flow required by spec 004.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every
