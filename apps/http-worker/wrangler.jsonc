@@ -22,6 +22,9 @@
     // Reviewed inventory: development currently has no additional internal
     // credential headers beyond the platform denylist.
     "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
+    "PIRATE_APP_JWT_ISSUER": "api-next-session-development",
+    "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-development",
+    "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-development",
     "PRIVY_API_URL": "https://auth.privy.io"
   },
   "secrets": {
@@ -57,8 +60,9 @@
         "SELF_PASS_ENABLED": "true",
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
-        "PIRATE_APP_JWT_ISSUER": "pirate-api-next-staging",
-        "PIRATE_APP_JWT_AUDIENCE": "pirate-app-staging",
+        "PIRATE_APP_JWT_ISSUER": "api-next-session-staging",
+        "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-staging",
+        "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-staging",
         "PIRATE_APP_JWT_TTL_SECONDS": "3600",
         "PRIVY_JWT_ISSUER": "privy.io",
         // PRIVY_JWKS_URL and PRIVY_JWT_AUDIENCE are derived from the
@@ -93,6 +97,9 @@
         "SELF_PASS_ENABLED": "false",
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
+        "PIRATE_APP_JWT_ISSUER": "api-next-session-production",
+        "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-production",
+        "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-production",
         // Reviewed inventory: production currently has no additional internal
         // credential headers beyond the platform denylist.
         "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",

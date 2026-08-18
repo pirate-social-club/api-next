@@ -132,7 +132,7 @@ describe("identity account application boundary", () => {
           ? Effect.succeed({
               userId: "usr_canonical",
               classification: "user" as const,
-              scope: { tokens: ["pirate_app_session"] },
+              scope: { tokens: ["api-next-browser-session-test"] },
             })
           : Effect.fail(new Error("invalid")),
     };

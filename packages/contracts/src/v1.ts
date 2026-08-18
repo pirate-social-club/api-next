@@ -52,10 +52,6 @@ const LocaleQuery = Schema.Struct({
   locale: Schema.optional(Schema.String),
 });
 
-const CommunityRefQuery = Schema.Struct({
-  community_ref: Schema.optional(Schema.String),
-});
-
 const FeedQuery = Schema.Struct({
   cursor: Schema.optional(Schema.String),
   locale: Schema.optional(Schema.String),
@@ -186,15 +182,6 @@ const GlobalHandle = Schema.Struct({
 const User = Schema.Struct({
   id: Schema.String,
   object: Schema.Literal("user"),
-  community_posting_state: Schema.optional(
-    Schema.NullOr(
-      Schema.Struct({
-        community_ref: Schema.optional(Schema.String),
-        community: Schema.optional(Schema.String),
-        has_created_text_post: Schema.optional(Schema.Boolean),
-      }),
-    ),
-  ),
   primary_wallet_attachment: Schema.optional(Schema.NullOr(Schema.String)),
   verification_state: Schema.Literals([
     "unverified",
@@ -824,7 +811,6 @@ export const GetCurrentUser = endpoint({
   method: "GET",
   path: "/users/me",
   auth: Auth.user(),
-  request: { query: CommunityRefQuery },
   response: User,
   successStatus: 200,
   errors: [AuthError],

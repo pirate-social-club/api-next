@@ -10,9 +10,6 @@
 export const PIRATE_SESSION_POLICY = {
   algorithm: "RS256",
   typ: "JWT",
-  issuer: "pirate-api",
-  audience: "pirate-app",
-  defaultScope: "pirate_app_session",
   defaultTtlSeconds: 3_600,
 } as const;
 
@@ -85,9 +82,10 @@ export type SessionPolicyInput = {
   readonly nowSeconds: number;
   readonly requiredScope?: string;
   readonly requiredClassification?: SessionClassification;
-  readonly issuer?: string;
-  readonly audience?: string;
-  readonly defaultScope?: string;
+  /** Explicit api-next session values; there are no domain defaults. */
+  readonly issuer: string;
+  readonly audience: string;
+  readonly defaultScope: string;
   /** An optional deployment-specific upper bound; omission keeps TTL positive-only. */
   readonly maxTtlSeconds?: number;
   readonly maxAliasDepth?: number;
@@ -194,10 +192,8 @@ function isSafeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);
 }
 
-function scopeForClaim(value: unknown, defaultScope: string): SessionScope | SessionPolicyFailure {
-  if (value === undefined) {
-    return { value: defaultScope, tokens: [defaultScope] };
-  }
+function scopeForClaim(value: unknown): SessionScope | SessionPolicyFailure {
+  if (value === undefined) return failure("invalid_claims");
   if (typeof value !== "string") return failure("invalid_claims");
   const trimmed = value.trim();
   if (!trimmed) return failure("invalid_claims");
@@ -216,9 +212,19 @@ function isSessionScope(value: SessionScope | SessionPolicyFailure): value is Se
  * this function.
  */
 export function evaluateSessionPolicy(input: SessionPolicyInput): SessionPolicyResult {
-  const issuer = input.issuer ?? PIRATE_SESSION_POLICY.issuer;
-  const audience = input.audience ?? PIRATE_SESSION_POLICY.audience;
-  const defaultScope = input.defaultScope ?? PIRATE_SESSION_POLICY.defaultScope;
+  const issuer = input.issuer;
+  const audience = input.audience;
+  const defaultScope = input.defaultScope;
+  if (
+    issuer.trim() !== issuer ||
+    issuer === "" ||
+    audience.trim() !== audience ||
+    audience === "" ||
+    defaultScope.trim() !== defaultScope ||
+    defaultScope === ""
+  ) {
+    return failed("invalid_claims");
+  }
 
   if (!isSafeInteger(input.nowSeconds) || input.nowSeconds < 0) {
     return failed("invalid_claims");
@@ -260,7 +266,7 @@ export function evaluateSessionPolicy(input: SessionPolicyInput): SessionPolicyR
     return failed("authentication_failed");
   }
 
-  const scope = scopeForClaim(claims.scope, defaultScope);
+  const scope = scopeForClaim(claims.scope);
   if (!isSessionScope(scope)) return { ok: false, failure: scope };
   const classification: SessionClassification = scope.value === defaultScope ? "user" : "device";
 

@@ -70,5 +70,91 @@
       "removedIn": "unreleased",
       "reason": "Legacy OpenID discovery was part of the superseded compatibility design and is not an api-next browser-session contract."
     }
+  ],
+  "cleanBreakOperations": [
+    {
+      "operationId": "post_postsPostIdVote",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_postsPostIdClearVote",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_commentsCommentIdReplies",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_communitiesCommunityIdPosts",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_communitiesCommunityIdFollow",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "get_communitiesCommunityIdPreview",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "get_usersMe",
+      "reason": "api-next clean break removes community_ref and community_posting_state and adopts the v2 error envelope."
+    },
+    {
+      "operationId": "get_feedHome",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "get_communitiesCommunityIdJoinEligibility",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "get_profilesMe",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "get_postsPostId",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "get_publicCommunitiesCommunityRefFeed",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "get_feedHomePublic",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "get_publicProfilesHandle",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_communitiesCommunityIdJoin",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_authSessionExchange",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_authSessionLogout",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_communitiesCommunityIdUnfollow",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_verificationCallbacksProviderId",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_verificationSessionsProofSessionIdComplete",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_verificationSessions",
+      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    }
   ]
 }

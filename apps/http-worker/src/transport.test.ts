@@ -110,6 +110,7 @@ const sessionServices: SessionExchangeServices = {
       }),
   },
   tokenMinter: {
+    scope: "api-next-browser-session-test",
     mint: ({ subject }) => Effect.succeed(`token-for-${subject}`),
   },
 };
@@ -311,6 +312,7 @@ describe("contracts-generated HTTP worker", () => {
       sessionExchange: {
         ...sessionServices,
         tokenMinter: {
+          scope: "api-next-browser-session-test",
           mint: () => Effect.fail(new Error("private key and bearer token")),
         },
       },
@@ -322,9 +324,9 @@ describe("contracts-generated HTTP worker", () => {
       }),
     });
 
-    const body = (await response.json()) as { code?: string; message?: string };
+    const body = (await response.json()) as { error?: { code?: string; message?: string } };
     expect(response.status).toBe(500);
-    expect(body).toMatchObject({ code: "internal_error" });
+    expect(body).toMatchObject({ error: { code: "internal_error" } });
     expect(JSON.stringify(body)).not.toContain("private key and bearer token");
   });
 
@@ -336,7 +338,7 @@ describe("contracts-generated HTTP worker", () => {
     ).toThrow("Protected handlers require an authenticator");
   });
 
-  it("returns 401 with the old envelope before decoding an unauthenticated request", async () => {
+  it("returns 401 with the api-next v2 envelope before decoding an unauthenticated request", async () => {
     const app = protectedWorker("CastPostVote", () => vote);
     const response = await app.request("http://worker.test/posts/post_1/vote", {
       method: "POST",
@@ -346,7 +348,7 @@ describe("contracts-generated HTTP worker", () => {
 
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({
-      code: "auth_error",
+      error: { code: "auth_error" },
       request_id: "req-unauth",
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -370,7 +372,7 @@ describe("contracts-generated HTTP worker", () => {
 
     expect(response.status).toBe(401);
     expect(authenticated).toBe(false);
-    expect(await response.json()).toMatchObject({ code: "auth_error" });
+    expect(await response.json()).toMatchObject({ error: { code: "auth_error" } });
   });
 
   it("authenticates before decoding: authenticated malformed input is 400", async () => {
@@ -386,8 +388,7 @@ describe("contracts-generated HTTP worker", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({
-      code: "bad_request",
-      details: { location: "body" },
+      error: { code: "bad_request", details: { location: "body" } },
     });
   });
 
@@ -398,8 +399,7 @@ describe("contracts-generated HTTP worker", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({
-      code: "bad_request",
-      details: { location: "query" },
+      error: { code: "bad_request", details: { location: "query" } },
     });
   });
 
@@ -641,8 +641,8 @@ describe("contracts-generated HTTP worker", () => {
     }).request("http://worker.test/feed/home/public");
 
     expect(response.status).toBe(500);
-    const body = (await response.json()) as { request_id?: string; code?: string };
-    expect(body).toMatchObject({ code: "internal_error" });
+    const body = (await response.json()) as { request_id?: string; error?: { code?: string } };
+    expect(body).toMatchObject({ error: { code: "internal_error" } });
     expect(response.headers.get("x-request-id")).toBe(body.request_id ?? null);
   });
 
@@ -656,7 +656,7 @@ describe("contracts-generated HTTP worker", () => {
     }).request("http://worker.test/feed/home/public");
 
     expect(response.status).toBe(500);
-    expect(await response.json()).toMatchObject({ code: "internal_error" });
+    expect(await response.json()).toMatchObject({ error: { code: "internal_error" } });
   });
 
   it("constrains authentication and authorization failures to the declared union", async () => {
@@ -693,9 +693,11 @@ describe("contracts-generated HTTP worker", () => {
     );
 
     expect(authenticationResponse.status).toBe(500);
-    expect(await authenticationResponse.json()).toMatchObject({ code: "internal_error" });
+    expect(await authenticationResponse.json()).toMatchObject({
+      error: { code: "internal_error" },
+    });
     expect(authorizationResponse.status).toBe(500);
-    expect(await authorizationResponse.json()).toMatchObject({ code: "internal_error" });
+    expect(await authorizationResponse.json()).toMatchObject({ error: { code: "internal_error" } });
   });
 
   it("returns not_found for an uninstalled route instead of undeclared not_implemented", async () => {
@@ -709,7 +711,7 @@ describe("contracts-generated HTTP worker", () => {
       const response = await createHttpWorker().request(`http://worker.test${path}`, { method });
 
       expect(response.status).toBe(404);
-      expect(await response.json()).toMatchObject({ code: "not_found" });
+      expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
     }
   });
 
@@ -776,7 +778,7 @@ describe("contracts-generated HTTP worker", () => {
 
     expect(response.status).toBe(409);
     const body = await response.json();
-    expect(body).toMatchObject({ code: "conflict" });
+    expect(body).toMatchObject({ error: { code: "conflict" } });
     expect(JSON.stringify(body)).not.toContain("same-key");
   });
 
@@ -800,8 +802,7 @@ describe("contracts-generated HTTP worker", () => {
     expect(inProgressResponse.status).toBe(409);
     expect(inProgressResponse.headers.get("retry-after")).toBe("4");
     expect(await inProgressResponse.json()).toMatchObject({
-      code: "verification_start_in_progress",
-      retryable: true,
+      error: { code: "verification_start_in_progress", retryable: true },
     });
 
     const conflictResponse = await createHttpWorker({
@@ -820,8 +821,7 @@ describe("contracts-generated HTTP worker", () => {
     expect(conflictResponse.status).toBe(409);
     expect(conflictResponse.headers.get("retry-after")).toBeNull();
     expect(await conflictResponse.json()).toMatchObject({
-      code: "conflict",
-      retryable: false,
+      error: { code: "conflict", retryable: false },
     });
   });
 

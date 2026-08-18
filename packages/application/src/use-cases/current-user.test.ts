@@ -71,9 +71,9 @@ const identityStore: IdentityStore["Service"] = {
 };
 
 describe("getCurrentUser", () => {
-  test("returns the identity projection and accepts the retained community query", async () => {
+  test("returns the identity projection without a community query", async () => {
     const result = await Effect.runPromise(
-      getCurrentUser({ userId: "usr_current", communityRef: "community_ref_1" }, { identityStore }),
+      getCurrentUser({ userId: "usr_current" }, { identityStore }),
     );
 
     expect(result).toMatchObject({

@@ -64,11 +64,6 @@ export type UserVerificationState =
 export type UserResponse = {
   readonly id: string;
   readonly object: "user";
-  readonly community_posting_state?: {
-    readonly community_ref?: string;
-    readonly community?: string;
-    readonly has_created_text_post?: boolean;
-  } | null;
   readonly primary_wallet_attachment?: string | null;
   readonly verification_state: UserVerificationState;
   readonly capability_provider?: "self" | "zkpassport" | "very" | null;
@@ -79,11 +74,6 @@ export type UserResponse = {
 
 export type LegacyUserInput = {
   readonly user_id: string;
-  readonly community_posting_state?: {
-    readonly community_ref?: string;
-    readonly community_id?: string;
-    readonly has_created_text_post?: boolean;
-  } | null;
   readonly primary_wallet_attachment_id?: string | null;
   readonly verification_state: UserVerificationState;
   readonly capability_provider?: "self" | "very" | null;
@@ -477,34 +467,10 @@ export function serializeUserRow(row: UserRowInput): UserResponse {
   };
 }
 
-type LegacyCommunityPostingState = Exclude<LegacyUserInput["community_posting_state"], undefined>;
-type SerializedCommunityPostingState = Exclude<UserResponse["community_posting_state"], undefined>;
-
-function serializeCommunityPostingState(
-  state: LegacyCommunityPostingState,
-): SerializedCommunityPostingState {
-  if (state === null) return null;
-  return {
-    ...(state.community_ref === undefined ? {} : { community_ref: state.community_ref }),
-    ...(state.community_id === undefined
-      ? {}
-      : state.community_id
-        ? { community: `com_${state.community_id}` }
-        : {}),
-    ...(state.has_created_text_post === undefined
-      ? {}
-      : { has_created_text_post: state.has_created_text_post }),
-  };
-}
-
 export function serializeUser(user: LegacyUserInput): UserResponse {
-  const communityPostingState = user.community_posting_state;
   return {
     id: publicId(user.user_id, "usr"),
     object: "user",
-    ...(communityPostingState === undefined
-      ? {}
-      : { community_posting_state: serializeCommunityPostingState(communityPostingState) }),
     ...(user.primary_wallet_attachment_id === undefined
       ? {}
       : { primary_wallet_attachment: user.primary_wallet_attachment_id }),

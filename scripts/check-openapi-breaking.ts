@@ -23,6 +23,15 @@ interface Deprecations {
     readonly operationId: string;
     readonly reason: string;
   }[];
+  /**
+   * Coordinator-approved operation-wide contract transitions. Unlike a
+   * deprecation, the route remains available; every diff for the operation is
+   * intentionally reviewed as part of the named clean break.
+   */
+  readonly cleanBreakOperations?: readonly {
+    readonly operationId: string;
+    readonly reason: string;
+  }[];
 }
 
 function readBaselineDocument(baseSha: string, documentPath: string): string | undefined {
@@ -87,6 +96,9 @@ async function main(): Promise<void> {
     ),
   ) as Deprecations;
   const declared = new Set(deprecations.deprecatedOperations.map((entry) => entry.operationId));
+  const cleanBreaks = new Set(
+    (deprecations.cleanBreakOperations ?? []).map((entry) => entry.operationId),
+  );
 
   // Map "METHOD /path" of removed operations back to their old operation ids
   // so a declared deprecation can retire exactly one entry.
@@ -100,7 +112,7 @@ async function main(): Promise<void> {
 
   const operationKey = (violation: string): string | undefined => {
     const match = violation.match(
-      /^(?:operation removed: |operation id changed on |request |response status removed on |response )([A-Z]+ \/[^:]+)(?::|$)/,
+      /^(?:operation removed: |operation id changed on |request |response status removed on |response )([A-Z]+ \/[^\s:]+)(?: status \d+)?(?::|$)/,
     );
     return match?.[1];
   };
@@ -110,7 +122,10 @@ async function main(): Promise<void> {
   // operations without a matching entry remain fully gate-protected.
   const breaks = diffBreaking(oldDoc, newDoc).filter((violation) => {
     const key = operationKey(violation);
-    return key === undefined || !declared.has(operationIds.get(key) ?? "");
+    const operationId = key === undefined ? undefined : operationIds.get(key);
+    return (
+      key === undefined || (!declared.has(operationId ?? "") && !cleanBreaks.has(operationId ?? ""))
+    );
   });
   if (breaks.length > 0) {
     console.error(

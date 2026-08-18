@@ -1,18 +1,14 @@
 import { Data } from "effect";
 
 /**
- * Frozen wire-error catalog (api-next 000 §10; 001 phase 0 step 2).
+ * api-next-owned v2 wire-error catalog (api-next 000 §10; 001 phase 0 step 2).
  *
- * Every code, status, and retryability default below is ported verbatim from
- * the old API's `src/lib/errors.ts` so existing clients keep working. After
- * the phase-0 freeze, changes to this file are coordinator-mediated and
- * announced in the workspace task register (001 §2 freeze rule).
- *
- * The wire envelope is `{ code, message, retryable?, details?, request_id? }`
- * (old `ErrorResponseBody`); `toErrorBody` preserves the old fallback
- * behavior: unknown failures collapse to `internal_error` with a redacted
- * message — raw exception text can carry database URLs, shard routing, or
- * driver internals and must never reach a client.
+ * The error body is intentionally not the former top-level envelope. It is
+ * `{ error: { code, message, retryable, details? }, request_id? }`; this is a
+ * clean-break contract and makes the ownership/version boundary explicit.
+ * Unknown failures collapse to `internal_error` with a redacted message — raw
+ * exception text can carry database URLs, shard routing, or driver internals
+ * and must never reach a client.
  */
 
 interface WireArgs {
@@ -41,7 +37,7 @@ export class BadRequest extends Data.TaggedError("BadRequest")<WireArgs> {
 export class PaymentRequired extends Data.TaggedError("PaymentRequired")<WireArgs> {
   readonly status = 402 as const;
   readonly code = "payment_required" as const;
-  // Old API marks payment_required retryable; ported as-is.
+  // api-next v2 explicitly keeps payment_required retryable.
   readonly retryable = true as const;
 }
 
@@ -267,19 +263,21 @@ export type ApiError =
   | InternalError
   | NotImplemented;
 
-/** Wire error envelope; field-for-field the old `ErrorResponseBody`. */
+/** api-next-owned v2 error envelope. */
 export interface ErrorBody {
-  readonly code: string;
-  readonly message: string;
-  readonly retryable?: boolean;
-  readonly details?: Record<string, unknown> | null;
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: boolean;
+    readonly details?: Record<string, unknown> | null;
+  };
   readonly request_id?: string;
 }
 
 const hasWireShape = (u: unknown): u is ApiError =>
   u instanceof Error && "status" in u && "code" in u && "retryable" in u;
 
-/** Serialize any thrown value to the old wire envelope, redacting unknowns. */
+/** Serialize any thrown value to the api-next v2 envelope, redacting unknowns. */
 export function toErrorBody(
   error: unknown,
   requestId?: string,
@@ -293,10 +291,12 @@ export function toErrorBody(
     return {
       status: error.status,
       body: {
-        code: error.code,
-        message: error.message,
-        retryable: error.retryable,
-        ...(error.details ? { details: error.details } : {}),
+        error: {
+          code: error.code,
+          message: error.message,
+          retryable: error.retryable,
+          ...(error.details ? { details: error.details } : {}),
+        },
         ...requestIdField,
       },
       ...(error.code === "verification_start_in_progress" &&
@@ -320,11 +320,13 @@ export function toErrorBody(
   return {
     status: 500,
     body: {
-      code: "internal_error",
-      message: "Internal server error",
-      // Unknown failures may be transient (deploy rollover, network blip);
-      // deliberate terminal failures must use a typed error above.
-      retryable: true,
+      error: {
+        code: "internal_error",
+        message: "Internal server error",
+        // Unknown failures may be transient (deploy rollover, network blip);
+        // deliberate terminal failures must use a typed error above.
+        retryable: true,
+      },
       ...requestIdField,
     },
   };

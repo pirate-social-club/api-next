@@ -9,7 +9,6 @@ import { Data, Effect, Schema } from "effect";
 import { IdentityResolutionError, type IdentityStore } from "../ports.ts";
 import { loadIdentityAccount } from "./identity-account.ts";
 
-const DEFAULT_SESSION_SCOPE = "pirate_app_session";
 /** Browser sessions are intentionally bounded even if deployment config drifts. */
 export const MAX_BROWSER_SESSION_TTL_SECONDS = 86_400;
 
@@ -57,8 +56,10 @@ export interface SessionTokenMinter {
   /** The subject is always the canonical control-plane user id. */
   readonly mint: (input: {
     readonly subject: string;
-    readonly scope: typeof DEFAULT_SESSION_SCOPE;
+    readonly scope: string;
   }) => Effect.Effect<string, unknown>;
+  /** Explicit api-next-owned browser-session scope configured per environment. */
+  readonly scope: string;
   /** Maximum lifetime of a freshly minted browser session, in seconds. */
   readonly ttlSeconds?: number;
 }
@@ -178,9 +179,15 @@ export const exchangeSession = Effect.fn("exchangeSession")(function* (
   ) {
     return yield* Effect.fail(new InternalError({ message: "Session exchange failed" }));
   }
+  if (
+    services.tokenMinter.scope.trim() !== services.tokenMinter.scope ||
+    services.tokenMinter.scope === ""
+  ) {
+    return yield* Effect.fail(new InternalError({ message: "Session exchange failed" }));
+  }
 
   const accessToken = yield* services.tokenMinter
-    .mint({ subject: account.canonicalUserId, scope: DEFAULT_SESSION_SCOPE })
+    .mint({ subject: account.canonicalUserId, scope: services.tokenMinter.scope })
     .pipe(Effect.mapError(safeFailure));
   if (!validMintedToken(accessToken)) {
     return yield* Effect.fail(new InternalError({ message: "Session exchange failed" }));
