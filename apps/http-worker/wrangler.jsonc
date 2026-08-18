@@ -55,7 +55,7 @@
       ],
       "vars": {
         "API_NEXT_ENV": "staging",
-        "CORS_ORIGIN": "https://staging.pirate.sc",
+        "CORS_ORIGIN": "https://staging.pirate.sc,https://web-next-staging.pirate.sc",
         "PIRATE_API_PUBLIC_ORIGIN": "https://api-next-staging.pirate.sc",
         "SELF_PASS_ENABLED": "true",
         "SELF_PASS_APP_NAME": "Pirate",
