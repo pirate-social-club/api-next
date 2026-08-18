@@ -39,9 +39,13 @@ read-back of the winning binding; it never creates a second account.
 
 ## Registration contract
 
-Input contains the Privy access token and optional identity token in the same bounded
-shape used by session exchange. Client-supplied user IDs, handles, timestamps, provider
-subjects, verification state, and account documents are forbidden.
+Input contains only the Privy access token. Registration does not accept a Privy
+identity token: identity-token validation has a distinct contract and must not be
+silently routed through access-token validation. If identity tokens become necessary,
+they require a separate verifier path and explicit issuer, audience, signature, and
+claim tests before the registration contract can change. Client-supplied user IDs,
+handles, timestamps, provider subjects, verification state, and account documents are
+forbidden.
 
 Successful registration returns the same projected account and host-only browser
 session as session exchange. Repeating registration for the same credential is
@@ -55,10 +59,26 @@ timestamps, email addresses, phone numbers, or provider subject fragments.
 
 ## Abuse controls
 
-Registration uses two independent Worker-side limits before database provisioning:
+Registration uses two independent, strongly consistent Durable Object limits before
+database provisioning:
 
-1. a conservative per-client-IP bucket to bound anonymous resource creation; and
-2. a higher-capacity per-application bucket to cap a runaway or abused client.
+1. one deterministically sharded object per client IP, with a conservative bucket to
+   bound anonymous resource creation; and
+2. one object per configured application/environment, with a higher-capacity bucket to
+   cap a runaway or abused client.
+
+The application-wide object is an intentional coordination point. Registration is a
+low-volume control-plane action, so the global guarantee is worth the extra round trip
+and bounded serialization. Cloudflare's native rate-limit binding is not used for this
+boundary because its counters are per-colocation and permissively consistent; it would
+not provide the stated global application cap.
+
+At the public Worker edge, the client IP comes exclusively from `CF-Connecting-IP`.
+`X-Forwarded-For`, `X-Real-IP`, request bodies, query parameters, and arbitrary caller
+headers are never accepted as substitutes. A registration request without trusted edge
+metadata is refused before proof verification or database access. Tests inject a typed
+request-context value directly rather than manufacturing a second production trust
+path.
 
 Privy proof verification still occurs before any account mutation. Limits return the
 closed `RateLimited` contract and never reveal credential or account existence. The
@@ -84,7 +104,28 @@ The follow-up recovery policy must choose one explicit prior-owner factor (for e
 an old-account challenge or operator-assisted review with a cooling-off period). Fresh
 document proof plus control of the new Privy account is necessary but not, by itself,
 sufficient. Until that policy lands, the safe product behavior is to explain that
-recovery is required and preserve the existing binding.
+recovery is required and preserve the existing binding. The UI must state honestly that
+self-service recovery is unavailable; it must not promise an automatic or imminent
+rebind. A documented operator-assisted support intake remains available for genuine
+loss-of-access cases, but operators cannot mutate a binding until the same reviewed
+prior-owner policy is satisfied and recorded.
+
+## Account deletion
+
+Deletion is not an identity reset and releases nothing automatically.
+
+- The credential binding is retained in a disabled/tombstoned state, so deleting and
+  re-registering cannot mint a fresh account from the same Privy credential.
+- The generated or claimed handle is retired and is not returned to the available
+  namespace by the deletion transaction.
+- Subject-key bindings and binding-event history remain durable. They continue to fence
+  cross-account verification and subject-key-based reward uniqueness.
+
+User-facing account data is removed or minimized according to the deletion runbook,
+while the smallest non-public identity tombstones needed for abuse prevention, recovery,
+financial integrity, and auditability remain. Any future erasure or label-reclamation
+policy is a separate privacy/security decision with an explicit quarantine period; it
+cannot be inferred from ordinary deletion.
 
 ## Handle lifecycle
 
@@ -101,10 +142,15 @@ reserve a user-chosen label.
 
 - concurrent registration for one provider subject creates exactly one user;
 - retries return the same canonical account and do not rotate its generated handle;
+- registration rejects identity-token and caller-supplied identity metadata fields;
 - different subjects cannot claim the same credential binding or generated handle;
 - session exchange remains mutation-free and still rejects an unregistered subject;
 - rate-limit failures perform no database mutation;
+- rate limits coordinate globally per application and per trusted edge IP; spoofable
+  forwarding headers and missing edge metadata cannot reach proof verification;
 - deleted/conflicting bindings fail closed without enumeration;
+- deletion tombstones credential, handle, and subject-key bindings rather than making
+  them reusable;
 - registration cannot set verification evidence or capabilities;
 - a cross-account document binding produces `recovery_required`, never an automatic
   rebind;
@@ -116,5 +162,7 @@ reserve a user-chosen label.
 
 - the exact prior-owner factor and cooling-off/operator policy for recovery completion;
 - the separate user-chosen handle claim and rename contract;
+- the retention/minimization period and any exceptional erasure process for identity
+  tombstones, plus whether retired labels can ever return after quarantine;
 - production thresholds for the two rate-limit buckets, calibrated from staging
   telemetry without weakening the correctness constraints above.
