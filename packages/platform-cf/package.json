@@ -8,6 +8,7 @@
     "./config": "./config/index.ts",
     "./community-repository": "./src/community-repository.ts",
     "./community-purchase-funding-repository": "./src/community-purchase-funding-repository.ts",
+    "./community-purchase-funding-chain-reader": "./src/community-purchase-funding-chain-reader.ts",
     "./content-repository": "./src/content-repository.ts",
     "./feed-repository": "./src/feed-repository.ts",
     "./public-community-threads-repository": "./src/public-community-threads-repository.ts",
