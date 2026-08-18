@@ -188,7 +188,7 @@ function matchingTransferLogs(
       continue;
     }
     if (
-      candidate.removed !== false ||
+      (candidate.removed !== undefined && candidate.removed !== false) ||
       safeQuantity(candidate.blockNumber) !== blockNumber ||
       canonicalHash(candidate.blockHash) !== blockHash ||
       canonicalHash(candidate.transactionHash) !== transactionHash

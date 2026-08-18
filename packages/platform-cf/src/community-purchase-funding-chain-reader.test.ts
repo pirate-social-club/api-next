@@ -227,6 +227,19 @@ describe("community purchase JSON-RPC chain reader", () => {
     ).rejects.toMatchObject({ reason: "reorg" });
   });
 
+  test("accepts receipt logs that omit the optional removed marker", async () => {
+    const base = fixture();
+    const logs = (base.eth_getTransactionReceipt as Record<string, unknown>).logs as Array<
+      Record<string, unknown>
+    >;
+    const { removed: _removed, ...withoutRemoved } = logs[0] ?? {};
+    const { reader } = readerFrom(fixture({ receipt: { logs: [withoutRemoved] } }));
+    const result = await Effect.runPromise(
+      reader.read({ operationId: "op" as never, transactionHash: HASH, expected: EXPECTED }),
+    );
+    expect(result.receiptStatus).toBe("success");
+  });
+
   test("reports reverted calls without fabricating a log", async () => {
     const { reader } = readerFrom(fixture({ receipt: { status: "0x0", logs: [] } }));
     const result = await Effect.runPromise(
