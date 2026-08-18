@@ -74,6 +74,27 @@ function fakeDb() {
   return { db, statements };
 }
 
+function registrationDb(
+  respond: (
+    label: string,
+    call: number,
+  ) => { readonly rows: readonly unknown[]; readonly rowCount: number },
+) {
+  const labels: string[] = [];
+  let call = 0;
+  const execute: ControlPlaneDb["Service"]["execute"] = (statement) => {
+    labels.push(statement.label);
+    const result = respond(statement.label, call);
+    call += 1;
+    return Effect.succeed(result as { readonly rows: readonly never[]; readonly rowCount: number });
+  };
+  const db: ControlPlaneDb["Service"] = {
+    execute,
+    withTransaction: (use) => use({ execute }),
+  };
+  return { db, labels };
+}
+
 describe("identity public-handle maintenance", () => {
   test("writes the account and current handle index in one transaction, redirecting a rename", async () => {
     const fake = fakeDb();
@@ -112,5 +133,64 @@ describe("identity public-handle maintenance", () => {
     );
     expect(invalid).toBeInstanceOf(IdentityRepositoryError);
     expect(fake.statements).toHaveLength(0);
+  });
+});
+
+describe("identity credential registration", () => {
+  const input = {
+    provider: "privy" as const,
+    providerAppId: "privy-staging",
+    providerSubject: "did:privy:subject",
+    credentialId: "credential-new",
+    userId: "user-new",
+    account: account("user-new", "handle-new", "generated-new.pirate"),
+  };
+
+  test("creates the account, handle, and credential in one transaction", async () => {
+    const fake = registrationDb((label) => ({
+      rows: [],
+      rowCount: label === "identity.credentials.read" ? 0 : 1,
+    }));
+    const result = await Effect.runPromise(
+      makeControlPlaneIdentityRepository()
+        .registerCredential(input)
+        .pipe(Effect.provideService(ControlPlaneDb, fake.db)),
+    );
+    expect(result).toEqual({ kind: "created", canonicalUserId: "user-new" });
+    expect(fake.labels).toEqual([
+      "identity.registration.lock-credential",
+      "identity.registration.insert-user",
+      "identity.registration.insert-handle",
+      "identity.registration.insert-credential",
+    ]);
+    expect(fake.labels.some((label) => label.includes("delete"))).toBe(false);
+  });
+
+  test("returns a tombstone without attempting account mutation", async () => {
+    const fake = registrationDb(() => ({
+      rows: [{ canonical_user_id: "user-old", status: "tombstoned", user_status: "deleted" }],
+      rowCount: 1,
+    }));
+    const result = await Effect.runPromise(
+      makeControlPlaneIdentityRepository()
+        .registerCredential(input)
+        .pipe(Effect.provideService(ControlPlaneDb, fake.db)),
+    );
+    expect(result).toEqual({ kind: "tombstoned" });
+    expect(fake.labels).toEqual(["identity.registration.lock-credential"]);
+  });
+
+  test("classifies an unrelated credential-id conflict for bounded regeneration", async () => {
+    const fake = registrationDb((label, call) => ({
+      rows: [],
+      rowCount: label === "identity.registration.insert-credential" || call === 0 ? 0 : 1,
+    }));
+    const result = await Effect.runPromise(
+      makeControlPlaneIdentityRepository()
+        .registerCredential(input)
+        .pipe(Effect.provideService(ControlPlaneDb, fake.db)),
+    );
+    expect(result).toEqual({ kind: "candidate_collision", field: "credential_id" });
+    expect(fake.labels.at(-1)).toBe("identity.credentials.read");
   });
 });

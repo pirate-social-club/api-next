@@ -5,7 +5,7 @@ import {
   type IdentityStore,
 } from "@pirate/application";
 import { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
-import { Data, Effect, type Layer, Schema } from "effect";
+import { Data, Effect, type Layer, Result, Schema } from "effect";
 
 export const MAX_CANONICAL_ALIAS_HOPS = 8;
 
@@ -40,7 +40,37 @@ export interface IdentityRepository {
     readonly userId: string;
     readonly account: unknown;
   }) => Effect.Effect<void, ControlPlaneError | IdentityRepositoryError, ControlPlaneDb>;
+  readonly registerCredential: (
+    input: IdentityRegistrationInput,
+  ) => Effect.Effect<
+    IdentityRegistrationOutcome,
+    ControlPlaneError | IdentityRepositoryError,
+    ControlPlaneDb
+  >;
 }
+
+export type IdentityRegistrationInput = {
+  readonly provider: "privy";
+  readonly providerAppId: string;
+  readonly providerSubject: string;
+  readonly credentialId: string;
+  readonly userId: string;
+  readonly account: unknown;
+};
+
+export type IdentityRegistrationOutcome =
+  | { readonly kind: "created"; readonly canonicalUserId: string }
+  | { readonly kind: "already_registered"; readonly canonicalUserId: string }
+  | { readonly kind: "tombstoned" }
+  | {
+      readonly kind: "candidate_collision";
+      readonly field: "credential_id" | "user_id" | "handle";
+    };
+
+type ExistingCredentialOutcome = Exclude<
+  IdentityRegistrationOutcome,
+  { readonly kind: "candidate_collision" }
+>;
 
 type UserRow = {
   readonly user_id: unknown;
@@ -54,6 +84,16 @@ type AliasRow = {
   readonly status: unknown;
 };
 
+type CredentialRow = {
+  readonly canonical_user_id: unknown;
+  readonly status: unknown;
+  readonly user_status: unknown;
+};
+
+class IdentityRegistrationRace extends Data.TaggedError("IdentityRegistrationRace")<{
+  readonly reason: "provider_subject" | "credential_id" | "user_id" | "handle";
+}> {}
+
 const validId = (value: string): boolean =>
   value.length > 0 && value === value.trim() && !value.includes("\u0000");
 
@@ -61,6 +101,15 @@ const invalid = (): IdentityRepositoryError => new IdentityRepositoryError({ rea
 
 const missing = (deleted = false): IdentityRepositoryError =>
   new IdentityRepositoryError({ reason: deleted ? "deleted" : "missing" });
+
+const credentialOutcome = (row: CredentialRow | undefined): ExistingCredentialOutcome => {
+  if (row === undefined || typeof row.canonical_user_id !== "string") throw invalid();
+  if (row.status === "tombstoned") return { kind: "tombstoned" };
+  if (row.status !== "active" || row.user_status !== "active" || !validId(row.canonical_user_id)) {
+    throw invalid();
+  }
+  return { kind: "already_registered", canonicalUserId: row.canonical_user_id };
+};
 
 const persistedPirateLabel = (
   value: string,
@@ -232,7 +281,154 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
       );
     });
 
-  return { findUser, resolveCanonical, upsertAccount };
+  const registerCredential = Effect.fn("IdentityRepository.registerCredential")(function* (
+    input: IdentityRegistrationInput,
+  ): Effect.fn.Return<
+    IdentityRegistrationOutcome,
+    ControlPlaneError | IdentityRepositoryError,
+    ControlPlaneDb
+  > {
+    if (
+      input.provider !== "privy" ||
+      !validId(input.providerAppId) ||
+      !validId(input.providerSubject) ||
+      !validId(input.credentialId) ||
+      !validId(input.userId)
+    ) {
+      return yield* Effect.fail(invalid());
+    }
+    const document = yield* Effect.try({
+      try: () => Schema.decodeUnknownSync(IdentityAccountDocument)(input.account),
+      catch: () => invalid(),
+    });
+    if (
+      document.user.user_id !== input.userId ||
+      document.profile.user_id !== input.userId ||
+      document.profile.global_handle_id !== document.global_handle.global_handle_id ||
+      document.global_handle.status !== "active"
+    ) {
+      return yield* Effect.fail(invalid());
+    }
+    const label = persistedPirateLabel(document.global_handle.label_display);
+    if (label === null || !Number.isFinite(Date.parse(document.user.created_at))) {
+      return yield* Effect.fail(invalid());
+    }
+    const encodedAccount = yield* Effect.try({
+      try: () => JSON.stringify(input.account),
+      catch: () => invalid(),
+    });
+    const db = yield* ControlPlaneDb;
+
+    const readCredential = () =>
+      db.execute<CredentialRow>({
+        label: "identity.credentials.read",
+        text: `SELECT credential.canonical_user_id, credential.status,
+                        account.status AS user_status
+                 FROM identity_credentials AS credential
+                 LEFT JOIN users AS account
+                   ON account.user_id = credential.canonical_user_id
+                 WHERE credential.provider = $1
+                   AND credential.provider_app_id = $2
+                   AND credential.provider_subject = $3`,
+        values: [input.provider, input.providerAppId, input.providerSubject],
+        readonly: true,
+      });
+
+    const registrationAttempt: Effect.Effect<
+      ExistingCredentialOutcome,
+      ControlPlaneError | IdentityRegistrationRace | IdentityRepositoryError
+    > = db.withTransaction((transaction) =>
+      Effect.gen(function* () {
+        const existing = yield* transaction.execute<CredentialRow>({
+          label: "identity.registration.lock-credential",
+          text: `SELECT credential.canonical_user_id, credential.status,
+                          account.status AS user_status
+                   FROM identity_credentials AS credential
+                   LEFT JOIN users AS account
+                     ON account.user_id = credential.canonical_user_id
+                   WHERE credential.provider = $1
+                     AND credential.provider_app_id = $2
+                     AND credential.provider_subject = $3
+                   FOR UPDATE OF credential`,
+          values: [input.provider, input.providerAppId, input.providerSubject],
+          readonly: false,
+        });
+        if (existing.rows.length > 1) return yield* Effect.fail(invalid());
+        if (existing.rows.length === 1) return credentialOutcome(existing.rows[0]);
+
+        const insertedUser = yield* transaction.execute({
+          label: "identity.registration.insert-user",
+          text: `INSERT INTO users (user_id, status, account, created_at)
+                     VALUES ($1, 'active', $2::jsonb, $3::timestamptz)
+                     ON CONFLICT (user_id) DO NOTHING`,
+          values: [input.userId, encodedAccount, document.user.created_at],
+          readonly: false,
+        });
+        if (insertedUser.rowCount !== 1) {
+          return yield* Effect.fail(new IdentityRegistrationRace({ reason: "user_id" }));
+        }
+
+        const insertedHandle = yield* transaction.execute({
+          label: "identity.registration.insert-handle",
+          text: `INSERT INTO public_handle_index (
+                       handle_id, label_normalized, label_display, status,
+                       owner_user_id, redirect_target_handle_id
+                     ) VALUES ($1, $2, $3, 'active', $4, NULL)
+                     ON CONFLICT DO NOTHING`,
+          values: [
+            document.global_handle.global_handle_id,
+            label.normalized,
+            label.display,
+            input.userId,
+          ],
+          readonly: false,
+        });
+        if (insertedHandle.rowCount !== 1) {
+          return yield* Effect.fail(new IdentityRegistrationRace({ reason: "handle" }));
+        }
+
+        const insertedCredential = yield* transaction.execute({
+          label: "identity.registration.insert-credential",
+          text: `INSERT INTO identity_credentials (
+                       credential_id, provider, provider_app_id, provider_subject,
+                       canonical_user_id, status
+                     ) VALUES ($1, $2, $3, $4, $5, 'active')
+                     ON CONFLICT DO NOTHING`,
+          values: [
+            input.credentialId,
+            input.provider,
+            input.providerAppId,
+            input.providerSubject,
+            input.userId,
+          ],
+          readonly: false,
+        });
+        if (insertedCredential.rowCount !== 1) {
+          return yield* Effect.fail(new IdentityRegistrationRace({ reason: "provider_subject" }));
+        }
+        return { kind: "created", canonicalUserId: input.userId } as const;
+      }),
+    );
+    const attempted = yield* registrationAttempt.pipe(Effect.result);
+
+    if (Result.isSuccess(attempted)) return attempted.success;
+    const failure = attempted.failure;
+    if (!(failure instanceof IdentityRegistrationRace)) return yield* Effect.fail(failure);
+    if (failure.reason !== "provider_subject") {
+      return {
+        kind: "candidate_collision",
+        field: failure.reason,
+      };
+    }
+    const winner = yield* readCredential();
+    if (winner.rows.length === 0) {
+      return { kind: "candidate_collision", field: "credential_id" };
+    }
+    if (winner.rows.length !== 1) return yield* Effect.fail(invalid());
+    return credentialOutcome(winner.rows[0]);
+  });
+
+  return { findUser, resolveCanonical, upsertAccount, registerCredential };
 }
 
 /** Bind the SQL repository to one request-scoped ControlPlaneDb layer. */
