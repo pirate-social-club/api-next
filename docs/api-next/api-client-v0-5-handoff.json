@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.5.0",
+  "releaseType": "m3-contract-refresh",
+  "wireContract": "wire-v2",
+  "sourceCommit": "baa3c6c05e1401d5e53c5f538c9632992d6f45a7",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.5.0.tgz",
+    "sha256": "94536ae78d885c2978fd8cf50681c14a9a885cea1eca023296f5b3997f4f7bc7",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@2878b7263aded2e79fc3cac0714301140aa8c67c6de83455bb16d98dd43c3710",
+    "openapiSha256": "2878b7263aded2e79fc3cac0714301140aa8c67c6de83455bb16d98dd43c3710",
+    "clientSha256": "37218dbb239d066d088f1e51de4c414aa570afe07b7062bc2432bc6a72caa404"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "baa3c6c05e1401d5e53c5f538c9632992d6f45a7",
+      "reason": "The immutable 0.5.0 artifact is generated from the committed M3 contract baseline."
+    },
+    "focusedApiClientTests": "package verifier passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}
