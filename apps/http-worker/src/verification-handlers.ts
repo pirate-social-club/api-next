@@ -1,6 +1,7 @@
 import {
   handleVerificationCallback,
   stripVerificationCallbackCredentialHeaders,
+  type VerificationCallbackResult,
   type VerificationCallbackServices,
 } from "@pirate/application/use-cases/verification-callback";
 import {
@@ -141,6 +142,20 @@ function completionResponse(result: {
   };
 }
 
+function callbackResponse(result: VerificationCallbackResult) {
+  if (
+    typeof result === "object" &&
+    result !== null &&
+    "result_hash" in result &&
+    typeof result.result_hash === "string"
+  ) {
+    return completionResponse(
+      result as Extract<VerificationCallbackResult, { result_hash: string }>,
+    );
+  }
+  return result;
+}
+
 function startHandler(request: DecodedRequest, services: VerificationHandlerServices) {
   const body = request.body as Readonly<{ intent_id: string; provider_id: string }>;
   return Effect.runPromise(
@@ -188,7 +203,7 @@ function callbackHandler(request: DecodedRequest, services: VerificationHandlerS
         ),
       },
       callback,
-    ).pipe(Effect.map(completionResponse), Effect.mapError(wireFailure)),
+    ).pipe(Effect.map(callbackResponse), Effect.mapError(wireFailure)),
   );
 }
 

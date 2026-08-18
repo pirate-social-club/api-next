@@ -25108,34 +25108,7 @@
             "description": "Success",
             "content": {
               "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "proof_session_id": {
-                      "type": "string",
-                      "allOf": [
-                        {
-                          "minLength": 1
-                        }
-                      ]
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "completed"
-                      ]
-                    },
-                    "replayed": {
-                      "type": "boolean"
-                    }
-                  },
-                  "required": [
-                    "proof_session_id",
-                    "status",
-                    "replayed"
-                  ],
-                  "additionalProperties": false
-                }
+                "schema": {}
               }
             }
           },

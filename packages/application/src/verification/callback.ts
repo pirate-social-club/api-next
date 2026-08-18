@@ -50,6 +50,10 @@ export type VerificationCallbackFailure =
   | VerificationProviderFailure
   | VerificationProviderUnknown;
 
+export type VerificationCallbackResult =
+  | CompleteVerificationResult
+  | Schema.Schema.Type<typeof Schema.Json>;
+
 function decodeInput(
   input: unknown,
 ): Effect.Effect<HandleVerificationCallbackInput, VerificationCallbackRejected> {
@@ -87,7 +91,7 @@ function normalizeCallbackInput(input: unknown): unknown {
 export const handleVerificationCallback = Effect.fn("handleVerificationCallback")(function* (
   untrustedInput: unknown,
   services: VerificationCallbackServices,
-): Effect.fn.Return<CompleteVerificationResult, VerificationCallbackFailure> {
+): Effect.fn.Return<VerificationCallbackResult, VerificationCallbackFailure> {
   const input = yield* decodeInput(untrustedInput);
   const provider = yield* services.registry.resolve(input.provider_id);
   const resolveCallback =
@@ -112,7 +116,8 @@ export const handleVerificationCallback = Effect.fn("handleVerificationCallback"
     return yield* new VerificationCallbackRejected({ reason: "unavailable" });
   }
 
-  return yield* completeVerification(
+  const acknowledgment = provider.callbackResponse;
+  const completion = completeVerification(
     {
       actor_id: stored.session.actor_id,
       proof_session_id: stored.session.id,
@@ -120,5 +125,14 @@ export const handleVerificationCallback = Effect.fn("handleVerificationCallback"
       submission: callback.submission,
     },
     services,
+  );
+  if (acknowledgment === undefined) return yield* completion;
+
+  const response = (status: "verified" | "pending") =>
+    acknowledgment({ session: stored.session, status });
+  return yield* completion.pipe(
+    Effect.flatMap(() => response("verified")),
+    Effect.catchTag("VerificationProviderRejected", () => response("pending")),
+    Effect.catchTag("VerificationProviderUnboundRejected", () => response("pending")),
   );
 });

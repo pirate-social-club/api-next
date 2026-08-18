@@ -129,7 +129,7 @@ export const CompleteVerificationCallback = endpoint({
     body: CallbackRawBody,
     bodyEncoding: "raw-text",
   },
-  response: VerificationCompletionResponse,
+  response: Schema.Json,
   successStatus: 200,
   errors: [
     BadRequest,

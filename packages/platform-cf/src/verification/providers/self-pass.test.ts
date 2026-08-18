@@ -594,6 +594,19 @@ describe("Self Pass provider-local adapter", () => {
     expect(replay.submission).toEqual(resolution.submission);
   });
 
+  test("owns the exact provider callback acknowledgment shape", async () => {
+    const startedSession = await started();
+    const callbackResponse = provider().callbackResponse;
+    if (callbackResponse === undefined) throw new Error("callback response seam missing");
+
+    await expect(
+      Effect.runPromise(callbackResponse({ session: startedSession.session, status: "verified" })),
+    ).resolves.toEqual({ result: true, status: "verified", id: startedSession.session.id });
+    await expect(
+      Effect.runPromise(callbackResponse({ session: startedSession.session, status: "pending" })),
+    ).resolves.toEqual({ result: false, status: "pending", id: startedSession.session.id });
+  });
+
   test("rejects callback context without a high-entropy session binding", async () => {
     const payload = {
       kind: "self-proof",
@@ -754,5 +767,50 @@ describe("Self Pass provider-local adapter", () => {
     await expect(
       failureTag(adapter.complete(completionInput(session.session, payload))),
     ).resolves.toBe("VerificationProviderUnboundRejected");
+  });
+
+  test("logs only safe consume stage and canonical claim on claim rejection", async () => {
+    const adapter = provider();
+    const session = await started(adapter);
+    const payload = {
+      kind: "self-proof",
+      session_id: session.session.id,
+      attestation_id: 1,
+      proof: PROOF,
+      public_signals: ["1"],
+      user_context_data: contextFor(session.session),
+    };
+    const warnings: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      (warnings as unknown[][]).push(args);
+    };
+    try {
+      FakeVerifier.result = resultFor(session.session, {
+        isValidDetails: { isValid: true, isMinimumAgeValid: false, isOfacValid: true },
+      });
+      await expect(
+        failureTag(adapter.complete(completionInput(session.session, payload))),
+      ).resolves.toBe("VerificationProviderRejected");
+      expect(warnings).toEqual([
+        [
+          "self-pass claim rejected during consumption",
+          { failure_kind: "claim_validation", stage: "consume", claim_id: "age.minimum" },
+        ],
+      ]);
+      expect(JSON.stringify(warnings)).not.toContain("self-nullifier-1");
+      expect(JSON.stringify(warnings)).not.toContain(session.session.id);
+
+      warnings.splice(0, warnings.length);
+      FakeVerifier.result = resultFor(session.session, {
+        isValidDetails: { isValid: false, isMinimumAgeValid: false, isOfacValid: true },
+      });
+      await expect(
+        failureTag(adapter.complete(completionInput(session.session, payload))),
+      ).resolves.toBe("VerificationProviderUnboundRejected");
+      expect(warnings).toEqual([]);
+    } finally {
+      console.warn = originalWarn;
+    }
   });
 });

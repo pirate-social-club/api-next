@@ -18,6 +18,7 @@ import {
   type VerificationProviderAdapter,
   VerificationProviderCallbackInput,
   VerificationProviderCallbackResolution,
+  VerificationProviderCallbackResponseInput,
   VerificationProviderCompleteInput,
   type VerificationProviderFailure,
   VerificationProviderInvalidResponse,
@@ -361,30 +362,75 @@ function assertionMatchesRequirement(
   }
 }
 
+type SessionCompatibilityMember =
+  | "status"
+  | "expires_at"
+  | "provider_id"
+  | "method"
+  | "protocol_version"
+  | "environment"
+  | "requested_claim_ids"
+  | "request_mode"
+  | "provider_configuration"
+  | "requested_requirements"
+  | "claim_ids"
+  | "subject_binding_intent"
+  | "scope"
+  | "named_scope";
+
+function firstSessionCompatibilityFailure(
+  manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
+  session: ProofSession,
+  now: number,
+): SessionCompatibilityMember | undefined {
+  const expiresAt = Date.parse(session.expires_at);
+  if (session.status !== "pending") return "status";
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) return "expires_at";
+  if (session.provider_id !== manifest.provider_id) return "provider_id";
+  if (!manifest.supported_methods.includes(session.method)) return "method";
+  if (!manifest.protocol_versions.includes(session.protocol_version)) {
+    return "protocol_version";
+  }
+  if (!manifest.environments.includes(session.environment)) return "environment";
+  if (session.requested_claim_ids.length === 0 || !uniqueStrings(session.requested_claim_ids)) {
+    return "requested_claim_ids";
+  }
+  if (!requestModeSupported(manifest, session.requested_claim_ids, session.request_mode)) {
+    return "request_mode";
+  }
+  if (!configurationMatchesRequestMode(session.provider_configuration, session.request_mode)) {
+    return "provider_configuration";
+  }
+  if (!requirementsMatchClaims(session.requested_requirements, session.requested_claim_ids)) {
+    return "requested_requirements";
+  }
+  if (!session.requested_claim_ids.every((claim) => manifest.claim_ids.includes(claim))) {
+    return "claim_ids";
+  }
+  if (!bindingIntentMatchesManifest(manifest, session.subject_binding_intent)) {
+    return "subject_binding_intent";
+  }
+  if (scopeSemantics(session.scope) !== manifest.subject_key_scope_semantics) return "scope";
+  if (requiresNamedScope(session.requested_claim_ids) && scopeSemantics(session.scope) === "none") {
+    return "named_scope";
+  }
+  return undefined;
+}
+
 function compatibleSession(
   manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
   session: ProofSession,
   now: number,
 ): boolean {
-  const expiresAt = Date.parse(session.expires_at);
-  return (
-    session.status === "pending" &&
-    Number.isFinite(expiresAt) &&
-    expiresAt > now &&
-    session.provider_id === manifest.provider_id &&
-    manifest.supported_methods.includes(session.method) &&
-    manifest.protocol_versions.includes(session.protocol_version) &&
-    manifest.environments.includes(session.environment) &&
-    session.requested_claim_ids.length > 0 &&
-    uniqueStrings(session.requested_claim_ids) &&
-    requestModeSupported(manifest, session.requested_claim_ids, session.request_mode) &&
-    configurationMatchesRequestMode(session.provider_configuration, session.request_mode) &&
-    requirementsMatchClaims(session.requested_requirements, session.requested_claim_ids) &&
-    session.requested_claim_ids.every((claim) => manifest.claim_ids.includes(claim)) &&
-    bindingIntentMatchesManifest(manifest, session.subject_binding_intent) &&
-    scopeSemantics(session.scope) === manifest.subject_key_scope_semantics &&
-    (!requiresNamedScope(session.requested_claim_ids) || scopeSemantics(session.scope) !== "none")
-  );
+  const failure = firstSessionCompatibilityFailure(manifest, session, now);
+  if (failure !== undefined) {
+    console.warn("verification session rejected before provider completion", {
+      failure_kind: "session_compatibility",
+      compatibility_member: failure,
+    });
+    return false;
+  }
+  return true;
 }
 
 function safeAdapterFailure(
@@ -496,6 +542,34 @@ function guardCallback(
           result.proof_session_id.trim() === result.proof_session_id &&
           result.idempotency_key.trim() === result.idempotency_key,
         () => invalidResponse(manifest.provider_id, "callback"),
+      ),
+    );
+  };
+}
+
+function guardCallbackResponse(
+  implementation: NonNullable<VerificationProviderAdapter["callbackResponse"]>,
+  manifest: Schema.Schema.Type<typeof ProofProviderManifest>,
+): NonNullable<VerificationProviderAdapter["callbackResponse"]> {
+  return (untrustedInput) => {
+    const decodedInput = Schema.decodeUnknownOption(VerificationProviderCallbackResponseInput)(
+      untrustedInput,
+    );
+    if (Option.isNone(decodedInput)) {
+      return Effect.fail(invalidResponse(manifest.provider_id, "callback"));
+    }
+    return Effect.suspend(() => implementation(decodedInput.value)).pipe(
+      Effect.timeout(manifest.operation_deadlines.callback_ms),
+      Effect.catchTag("TimeoutError", () =>
+        Effect.fail(unavailable(manifest.provider_id, "callback")),
+      ),
+      Effect.mapError((error) => safeAdapterFailure(manifest.provider_id, "callback", error)),
+      Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "callback"))),
+      Effect.flatMap((result) =>
+        Effect.try({
+          try: () => Schema.decodeUnknownSync(Schema.Json)(result),
+          catch: () => invalidResponse(manifest.provider_id, "callback"),
+        }),
       ),
     );
   };
@@ -821,6 +895,9 @@ function guardAdapter(
     ...(adapter.resolveCallback === undefined
       ? {}
       : { resolveCallback: guardCallback(adapter.resolveCallback, manifest, credentials) }),
+    ...(adapter.callbackResponse === undefined
+      ? {}
+      : { callbackResponse: guardCallbackResponse(adapter.callbackResponse, manifest) }),
   };
 }
 

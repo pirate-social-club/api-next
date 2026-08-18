@@ -6,7 +6,7 @@ import type {
   ProofSession,
 } from "@pirate/domain/verification";
 import { Cause, Effect, Exit, Result, Schema } from "effect";
-import type { VerificationProviderAdapter } from "./adapter.ts";
+import { type VerificationProviderAdapter, VerificationProviderRejected } from "./adapter.ts";
 import {
   HandleVerificationCallbackInput,
   handleVerificationCallback,
@@ -359,5 +359,81 @@ describe("verification provider callback", () => {
       ),
     );
     expect(result).toMatchObject({ proof_session_id: proofSession.id, replayed: false });
+  });
+
+  test("returns an adapter-owned callback acknowledgment on successful completion", async () => {
+    const proofSession = session();
+    const adapter = {
+      ...adapterFor(proofSession),
+      callbackResponse: ({
+        session: resolved,
+        status,
+      }: {
+        readonly session: ProofSession;
+        readonly status: "verified" | "pending";
+      }) => Effect.succeed({ result: status === "verified", status, id: resolved.id }),
+    } satisfies VerificationProviderAdapter;
+    const registry = await Effect.runPromise(makeVerificationProviderRegistry([adapter]));
+    const result = await Effect.runPromise(
+      handleVerificationCallback(
+        {
+          provider_id: manifest.provider_id,
+          raw_body: ' {\n  "signed": true\n} ',
+          headers: { "webhook-signature": "sig" },
+        },
+        {
+          registry,
+          store: {
+            ...attemptMethods(),
+            load: () => Effect.succeed(stored(proofSession)),
+            commit: (input) =>
+              Effect.succeed({ kind: "committed", result_hash: input.result_hash }),
+          },
+          hasher: { hash: () => Effect.succeed(RESULT_HASH) },
+        },
+      ),
+    );
+    expect(result).toEqual({ result: true, status: "verified", id: proofSession.id });
+  });
+
+  test("acknowledges handled provider rejection as pending after session resolution", async () => {
+    const proofSession = session();
+    const adapter = {
+      ...adapterFor(proofSession),
+      complete: () =>
+        Effect.fail(
+          new VerificationProviderRejected({
+            provider_id: manifest.provider_id,
+            operation: "complete",
+          }),
+        ),
+      callbackResponse: ({
+        session: resolved,
+        status,
+      }: {
+        readonly session: ProofSession;
+        readonly status: "verified" | "pending";
+      }) => Effect.succeed({ result: status === "verified", status, id: resolved.id }),
+    } satisfies VerificationProviderAdapter;
+    const registry = await Effect.runPromise(makeVerificationProviderRegistry([adapter]));
+    const result = await Effect.runPromise(
+      handleVerificationCallback(
+        {
+          provider_id: manifest.provider_id,
+          raw_body: ' {\n  "signed": true\n} ',
+          headers: { "webhook-signature": "sig" },
+        },
+        {
+          registry,
+          store: {
+            ...attemptMethods(),
+            load: () => Effect.succeed(stored(proofSession)),
+            commit: () => Effect.die("rejected completion must not commit"),
+          },
+          hasher: { hash: () => Effect.succeed(RESULT_HASH) },
+        },
+      ),
+    );
+    expect(result).toEqual({ result: false, status: "pending", id: proofSession.id });
   });
 });

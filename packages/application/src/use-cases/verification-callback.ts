@@ -1,5 +1,6 @@
 export type {
   VerificationCallbackFailure,
+  VerificationCallbackResult,
   VerificationCallbackServices,
 } from "../verification/callback.ts";
 export {

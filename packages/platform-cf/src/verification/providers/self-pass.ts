@@ -239,6 +239,15 @@ function rejected(operation: "start" | "complete" | "callback") {
   });
 }
 
+function consumeClaimRejected(claim_id: CanonicalClaimIdentifier) {
+  console.warn("self-pass claim rejected during consumption", {
+    failure_kind: "claim_validation",
+    stage: "consume",
+    claim_id,
+  });
+  return rejected("complete");
+}
+
 function unboundRejected() {
   return new VerificationProviderUnboundRejected({
     provider_id: SELF_PASS_PROVIDER_ID,
@@ -270,6 +279,21 @@ function selfSdkInfrastructureError(
       ? (errorConstructor as { readonly name?: unknown }).name
       : undefined;
   return constructorName === "RegistryContractError" || constructorName === "VerifierContractError";
+}
+
+function selfSdkFailureKind(error: unknown): string {
+  if (typeof error !== "object" || error === null) return "unknown";
+  const errorConstructor = (error as { readonly constructor?: unknown }).constructor;
+  const name =
+    typeof errorConstructor === "function" && "name" in errorConstructor
+      ? (errorConstructor as { readonly name?: unknown }).name
+      : undefined;
+  return name === "ConfigMismatchError" ||
+    name === "ProofError" ||
+    name === "RegistryContractError" ||
+    name === "VerifierContractError"
+    ? name
+    : "unknown";
 }
 
 function sameConfiguration(left: ProviderConfigurationRef, right: ProviderConfigurationRef) {
@@ -658,9 +682,11 @@ function validateClaims(
     (requirement) => requirement.claim_id === "age.minimum",
   );
   if (requiresMinimumAge && result.isValidDetails.isMinimumAgeValid !== true) {
-    return Effect.fail(rejected("complete"));
+    return Effect.fail(consumeClaimRejected("age.minimum"));
   }
-  if (result.discloseOutput.nullifier.trim() === "") return Effect.fail(rejected("complete"));
+  if (result.discloseOutput.nullifier.trim() === "") {
+    return Effect.fail(consumeClaimRejected("credential.subject_unique"));
+  }
 
   const age = minimumAge(result);
   const nationality = normalizeSelfCountry(result.discloseOutput.nationality);
@@ -675,25 +701,27 @@ function validateClaims(
       case "credential.subject_unique":
         break;
       case "document.valid":
-        if (documentExpiry === undefined) return Effect.fail(rejected("complete"));
+        if (documentExpiry === undefined) {
+          return Effect.fail(consumeClaimRejected(requirement.claim_id));
+        }
         break;
       case "age.minimum":
         if (age === undefined || BigInt(age) < BigInt(requirement.minimum_age)) {
-          return Effect.fail(rejected("complete"));
+          return Effect.fail(consumeClaimRejected(requirement.claim_id));
         }
         break;
       case "nationality.allowed":
         if (nationality === undefined || !requirement.allowed_countries.includes(nationality)) {
-          return Effect.fail(rejected("complete"));
+          return Effect.fail(consumeClaimRejected(requirement.claim_id));
         }
         break;
       case "gender.marker":
         if (gender === undefined || !requirement.allowed_markers.includes(gender)) {
-          return Effect.fail(rejected("complete"));
+          return Effect.fail(consumeClaimRejected(requirement.claim_id));
         }
         break;
       default:
-        return Effect.fail(rejected("complete"));
+        return Effect.fail(consumeClaimRejected(requirement.claim_id));
     }
   }
   return Effect.succeed({
@@ -945,12 +973,30 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
         input.submission.channel !== "client_result" &&
         input.submission.channel !== "provider_callback"
       ) {
+        console.warn("self-pass submission rejected before decoding", {
+          failure_kind: "session_precondition",
+        });
         return Effect.fail(unboundRejected());
       }
       return decodeSubmission(input.submission.payload).pipe(
+        Effect.tapError(() =>
+          Effect.sync(() =>
+            console.warn("self-pass submission rejected before verification", {
+              failure_kind: "submission_decode",
+            }),
+          ),
+        ),
         Effect.filterOrFail(
-          (submission) =>
-            submission.session_id === undefined || submission.session_id === input.session.id,
+          (submission) => {
+            const matches =
+              submission.session_id === undefined || submission.session_id === input.session.id;
+            if (!matches) {
+              console.warn("self-pass submission rejected before verification", {
+                failure_kind: "session_id_mismatch",
+              });
+            }
+            return matches;
+          },
           () => unboundRejected(),
         ),
         Effect.flatMap((submission) => {
@@ -984,10 +1030,14 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
                     submission.public_signals,
                     submission.user_context_data,
                   ),
-                catch: (error) =>
-                  selfSdkInfrastructureError(error, sdk)
+                catch: (error) => {
+                  console.warn("self-pass verifier rejected submission", {
+                    failure_kind: selfSdkFailureKind(error),
+                  });
+                  return selfSdkInfrastructureError(error, sdk)
                     ? unavailable("complete")
-                    : unboundRejected(),
+                    : unboundRejected();
+                },
               }).pipe(
                 Effect.flatMap((result) =>
                   decodeResult(result).pipe(
@@ -1042,6 +1092,12 @@ export function makeSelfPassProvider(options: SelfPassAdapterOptions): Verificat
         }),
       );
     },
+    callbackResponse: ({ session, status }) =>
+      Effect.succeed({
+        result: status === "verified",
+        status,
+        id: session.id,
+      }),
   } satisfies VerificationProviderAdapter;
   return provider;
 }

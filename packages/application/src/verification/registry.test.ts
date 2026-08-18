@@ -633,6 +633,38 @@ describe("verification registry adversarial corpus", () => {
     expect(failureOf(drift)).toBeInstanceOf(VerificationProviderInvalidResponse);
   });
 
+  test("emits only the first safe session compatibility member", async () => {
+    const warnings: readonly unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      (warnings as unknown[][]).push(args);
+    };
+    try {
+      const provider = await providerFor(adapterFor());
+      const exit = await Effect.runPromiseExit(
+        provider.complete({
+          session: unsafe({
+            ...sessionFor(),
+            status: "completed",
+            provider_id: "secret-provider-id",
+          }),
+          submission: clientSubmission(),
+        }),
+      );
+      expect(failureOf(exit)).toBeInstanceOf(VerificationProviderRejected);
+      expect(warnings).toEqual([
+        [
+          "verification session rejected before provider completion",
+          { failure_kind: "session_compatibility", compatibility_member: "status" },
+        ],
+      ]);
+      expect(JSON.stringify(warnings)).not.toContain("secret-provider-id");
+      expect(JSON.stringify(warnings)).not.toContain("session-1");
+    } finally {
+      console.warn = originalWarn;
+    }
+  });
+
   test("guards optional signed-callback translation independently of completion", async () => {
     let callbackCalls = 0;
     const callbackManifest = { ...MANIFEST, callback_mode: "signed_envelope" as const };
@@ -665,6 +697,25 @@ describe("verification registry adversarial corpus", () => {
       verifyCallback({ raw_body: "invalid", headers: {} }),
     );
     expect(failureOf(malformedOutput)).toBeInstanceOf(VerificationProviderInvalidResponse);
+  });
+
+  test("guards provider-owned callback acknowledgments as JSON", async () => {
+    const callbackManifest = { ...MANIFEST, callback_mode: "signed_envelope" as const };
+    const provider = await providerFor({
+      ...adapterFor({}, undefined, callbackManifest),
+      verifyCallback: () =>
+        Effect.succeed({
+          proof_session_id: "session-1",
+          idempotency_key: "callback-1",
+          submission: { channel: "provider_callback" as const, payload: {} },
+        }),
+      callbackResponse: () => Effect.succeed({ result: true, status: "verified", id: "session-1" }),
+    });
+    const callbackResponse = provider.callbackResponse;
+    if (callbackResponse === undefined) throw new Error("callback response guard missing");
+    await expect(
+      Effect.runPromise(callbackResponse({ session: sessionFor(), status: "verified" })),
+    ).resolves.toEqual({ result: true, status: "verified", id: "session-1" });
   });
 
   test("rejects partial fulfillment, every duplicate record set, and untyped claim values", async () => {

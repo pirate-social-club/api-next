@@ -149,6 +149,14 @@ export type VerificationProviderCallbackResolution = Schema.Schema.Type<
   typeof VerificationProviderCallbackResolution
 >;
 
+export const VerificationProviderCallbackResponseInput = Schema.Struct({
+  session: ProofSession,
+  status: Schema.Literals(["verified", "pending"]),
+});
+export type VerificationProviderCallbackResponseInput = Schema.Schema.Type<
+  typeof VerificationProviderCallbackResponseInput
+>;
+
 export type VerificationProviderOperation = "plan" | "start" | "complete" | "callback";
 
 /** Adapter failures are deliberately closed and contain no upstream payload. */
@@ -221,6 +229,10 @@ export interface VerificationProviderAdapter {
   readonly resolveCallback?: (
     input: VerificationProviderCallbackInput,
   ) => Effect.Effect<VerificationProviderCallbackResolution, VerificationProviderFailure>;
+  /** Optional provider-owned callback acknowledgment, kept opaque to the application. */
+  readonly callbackResponse?: (
+    input: VerificationProviderCallbackResponseInput,
+  ) => Effect.Effect<Schema.Schema.Type<typeof Schema.Json>, VerificationProviderFailure>;
 }
 
 export type VerificationAssurance = Assurance;
