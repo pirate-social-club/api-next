@@ -85,6 +85,13 @@ plan without opening a database connection. A normal run is an administrative
 operation and must be performed with the migration role, never with a Worker
 credential.
 
+Before an authorized M3 staging migration, run `bun run db:preflight:m3` with
+both `CONTROL_PLANE_POSTGRES_ADMIN_URL` and
+`CONTROL_PLANE_POSTGRES_RUNTIME_URL`. It performs read-only checks of the exact
+checksummed ledger prefix, M3 row counts, the physical runtime principal, and
+per-table privileges without printing either credential. After applying 0018
+and its reviewed grants, rerun with `--require-ready`.
+
 The real-Postgres CI gate must invoke the adapter, foundation, migration-runner,
 and identity suites together, then run
 `bun run verify:postgres-sentinels`. Each file writes a different completion
