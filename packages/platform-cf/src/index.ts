@@ -108,17 +108,17 @@ export {
 } from "./queue-retry";
 export {
   MAX_SESSION_TOKEN_LENGTH,
-  makeSessionBridge,
-  makeSessionBridgeFromEnv,
-  type SessionBridge,
-  type SessionBridgeEnvironment,
-  SessionBridgeError,
-  type SessionBridgeOptions,
+  makeSessionCrypto,
+  makeSessionCryptoFromEnv,
   type SessionClaimsInput,
+  type SessionCrypto,
+  type SessionCryptoEnvironment,
+  SessionCryptoError,
+  type SessionCryptoOptions,
   type SessionJwks,
   type SessionPublicJwk,
   type VerifiedSessionClaims,
-} from "./session-bridge";
+} from "./session-crypto";
 export {
   makeJwksSessionProofVerifier,
   SESSION_PROOF_CACHE_TTL_MS,

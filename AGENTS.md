@@ -5,6 +5,25 @@ Workers. The architecture, non-negotiables, and milestones live in the
 workspace control plane: `../docs/specs/api-next/000-foundation.md` and
 `001-execution-lanes.md`. Read both before working here.
 
+## Clean-break ownership
+
+api-next and the standalone SolidJS application are the only runtime systems.
+No code, configuration, contract, test fixture, or deployment topology may
+depend on the legacy API. Do not add a fallback, shim, dual-write, old/new
+token interoperability path, legacy JWKS trust, browser bearer exposure, or
+React/workspace linkage. Proposals requiring legacy interop are rejected.
+Browser authentication is an api-next-owned HttpOnly host-only cookie; any
+machine bearer contract is independent and must never be used as a browser
+exchange response.
+
+Standalone Solid reaches the Worker through its same-origin `/api` proxy. The
+host-only session and CSRF cookies are issued and returned through that proxy;
+do not add a cross-site cookie shortcut or a direct browser-to-Worker auth path.
+
+Historical profile backfill scripts and fixtures are offline, api-next-owned
+control-plane migration tooling only. They are never imported by the Worker,
+must not read from or call a legacy API, and cannot be used as an auth fallback.
+
 ## Effect v4
 
 This repository pins `effect` to `4.0.0-rc.109`. Before writing or reviewing

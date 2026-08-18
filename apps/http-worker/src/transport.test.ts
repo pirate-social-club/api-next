@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test";
 import type { SessionExchangeServices } from "@pirate/application/use-cases/session-exchange";
 import {
   Auth,
+  AuthError,
   BadRequest,
   Conflict,
   endpoint,
@@ -62,7 +63,6 @@ const comment = {
 const sessionServices: SessionExchangeServices = {
   proofVerifier: {
     verifyPrivy: () => Effect.succeed({ sourceUserId: "source-user", classification: "user" }),
-    verifyJwt: () => Effect.succeed({ sourceUserId: "source-user", classification: "user" }),
   },
   identityStore: {
     resolve: () =>
@@ -120,7 +120,7 @@ const protectedWorker = (name: string, handler: EndpointHandler, corsOrigin?: st
     handlers: { [name]: handler },
     authenticate: ({ credentials }) => ({
       kind: "user",
-      subject: credentials.authorization,
+      subject: credentials.authorization ?? credentials.sessionCookie ?? "",
     }),
     authorize: ({ input }) => {
       if (input.principal === null) throw new Error("principal missing");
@@ -137,21 +137,167 @@ describe("contracts-generated HTTP worker", () => {
   });
 
   it("installs session exchange through the generated route binding", async () => {
-    const response = await createHttpWorker({ sessionExchange: sessionServices }).request(
-      "http://worker.test/auth/session/exchange",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } }),
-      },
-    );
+    const response = await createHttpWorker({
+      config: { corsOrigin: "https://solid.test" },
+      sessionExchange: sessionServices,
+    }).request("http://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "privy-proof" },
+      }),
+    });
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ access_token: "token-for-canonical-user" });
+    expect(await response.json()).toMatchObject({ user: { id: "canonical-user" } });
+    expect(response.headers.get("set-cookie")).toContain(
+      "__Host-pirate_session=token-for-canonical-user; HttpOnly; Path=/; Secure; SameSite=Lax; Max-Age=3600",
+    );
+    expect(response.headers.get("set-cookie")).not.toContain("access_token");
+  });
+
+  it("requires exact Origin for browser session exchange", async () => {
+    const app = createHttpWorker({
+      config: { corsOrigin: "https://solid.test" },
+      sessionExchange: sessionServices,
+    });
+    const request = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "privy-proof" },
+      }),
+    } as const;
+    expect((await app.request("https://worker.test/auth/session/exchange", request)).status).toBe(
+      401,
+    );
+    expect(
+      (
+        await app.request("https://worker.test/auth/session/exchange", {
+          ...request,
+          headers: { ...request.headers, origin: "https://evil.test" },
+        })
+      ).status,
+    ).toBe(401);
+  });
+
+  it("requires exact Origin and double-submit CSRF for cookie-authenticated writes", async () => {
+    const app = createHttpWorker({
+      config: { corsOrigin: "https://solid.test" },
+      sessionExchange: sessionServices,
+      handlers: { ClearPostVote: () => clearedVote },
+      authenticate: ({ credentials }) => ({
+        kind: "user",
+        subject: credentials.sessionCookie ?? "",
+      }),
+      authorize: ({ input }) => {
+        if (input.principal === null) throw new AuthError({ message: "Authentication required" });
+      },
+    });
+    const exchange = await app.request("https://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "privy-proof" },
+      }),
+    });
+    const setCookie = exchange.headers.get("set-cookie") ?? "";
+    const cookie = setCookie
+      .split(/, (?=__Host-pirate_)/u)
+      .map((part) => part.split(";", 1)[0] ?? "")
+      .join("; ");
+    const csrf = cookie.match(/__Host-pirate_csrf=([^;]+)/u)?.[1];
+    expect(csrf).toBeTruthy();
+
+    const missingCsrf = await app.request("https://worker.test/posts/post_1/clear_vote", {
+      method: "POST",
+      headers: { cookie, origin: "https://solid.test" },
+    });
+    expect(missingCsrf.status).toBe(401);
+
+    const wrongOrigin = await app.request("https://worker.test/posts/post_1/clear_vote", {
+      method: "POST",
+      headers: { cookie, origin: "https://evil.test", "x-csrf-token": csrf as string },
+    });
+    expect(wrongOrigin.status).toBe(401);
+
+    const allowed = await app.request("https://worker.test/posts/post_1/clear_vote", {
+      method: "POST",
+      headers: { cookie, origin: "https://solid.test", "x-csrf-token": csrf as string },
+    });
+    expect(allowed.status).toBe(200);
+  });
+
+  it("clears the host-only session and CSRF cookies exactly on logout", async () => {
+    const app = createHttpWorker({ config: { corsOrigin: "https://solid.test" } });
+    const wrongOrigin = await app.request("https://worker.test/auth/session/logout", {
+      method: "POST",
+      headers: {
+        cookie: "__Host-pirate_session=token; __Host-pirate_csrf=csrf",
+        origin: "https://evil.test",
+        "x-csrf-token": "csrf",
+      },
+    });
+    expect(wrongOrigin.status).toBe(401);
+    const response = await app.request("https://worker.test/auth/session/logout", {
+      method: "POST",
+      headers: {
+        cookie: "__Host-pirate_session=token; __Host-pirate_csrf=csrf",
+        origin: "https://solid.test",
+        "x-csrf-token": "csrf",
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "ok" });
+    const setCookie = response.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("__Host-pirate_session=;");
+    expect(setCookie).toContain("__Host-pirate_csrf=;");
+    expect(setCookie).toContain("Path=/");
+    expect(setCookie).toContain("Max-Age=0");
+    expect(setCookie).not.toContain("Domain=");
+  });
+
+  it("rejects duplicate session or CSRF cookies instead of choosing one", async () => {
+    const app = createHttpWorker({
+      handlers: { GetCurrentUser: () => ({}) },
+      authenticate: ({ credentials }) => ({
+        kind: "user",
+        subject: credentials.sessionCookie ?? "",
+      }),
+      authorize: () => undefined,
+    });
+    const duplicateSession = await app.request("http://worker.test/users/me", {
+      headers: { cookie: "__Host-pirate_session=one; __Host-pirate_session=two" },
+    });
+    expect(duplicateSession.status).toBe(401);
+    const duplicateCsrf = await app.request("http://worker.test/users/me", {
+      headers: {
+        cookie: "__Host-pirate_session=one; __Host-pirate_csrf=a; __Host-pirate_csrf=b",
+      },
+    });
+    expect(duplicateCsrf.status).toBe(401);
+
+    const mixedCredentials = await app.request("http://worker.test/users/me", {
+      headers: {
+        authorization: "Bearer machine-token",
+        cookie: "__Host-pirate_session=one",
+      },
+    });
+    expect(mixedCredentials.status).toBe(401);
+
+    const emptySession = await app.request("http://worker.test/users/me", {
+      headers: { cookie: "__Host-pirate_session=; __Host-pirate_csrf=csrf" },
+    });
+    expect(emptySession.status).toBe(401);
+    const malformedSession = await app.request("http://worker.test/users/me", {
+      headers: { cookie: "__Host-pirate_session=%ZZ; __Host-pirate_csrf=csrf" },
+    });
+    expect(malformedSession.status).toBe(401);
   });
 
   it("returns the declared redacted internal error for an adapter defect", async () => {
     const response = await createHttpWorker({
+      config: { corsOrigin: "https://solid.test" },
       sessionExchange: {
         ...sessionServices,
         tokenMinter: {
@@ -160,8 +306,10 @@ describe("contracts-generated HTTP worker", () => {
       },
     }).request("http://worker.test/auth/session/exchange", {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } }),
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "privy-proof" },
+      }),
     });
 
     const body = (await response.json()) as { code?: string; message?: string };
@@ -384,6 +532,12 @@ describe("contracts-generated HTTP worker", () => {
     expect(response.status).toBe(200);
     expect(authenticated).toBe(false);
     expect(response.headers.get("cache-control")).toBe("no-store");
+
+    const cookieResponse = await app.request("http://worker.test/feed/home/public", {
+      headers: { cookie: "unrelated=viewer-state" },
+    });
+    expect(cookieResponse.status).toBe(200);
+    expect(cookieResponse.headers.get("cache-control")).toBe("no-store");
   });
 
   it("keeps public profile bodies viewer-invariant and disables bearer caching", async () => {
@@ -438,7 +592,7 @@ describe("contracts-generated HTTP worker", () => {
       },
       authenticate: ({ credentials }) => ({
         kind: "user",
-        subject: credentials.authorization,
+        subject: credentials.authorization ?? credentials.sessionCookie ?? "",
       }),
       authorize: ({ input }) => {
         if (input.principal === null) throw new Error("signed-out request reached authorization");
@@ -701,6 +855,7 @@ describe("contracts-generated HTTP worker", () => {
 
       expect(response.status).toBe(200);
       expect(response.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(response.headers.get("access-control-allow-credentials")).toBe("true");
       expect(response.headers.get("vary")).toContain("Origin");
     }
   });

@@ -15,7 +15,7 @@ const RSA_IMPORT_ALGORITHM = {
 
 const PRIVATE_JWK_MEMBERS = new Set(["d", "dp", "dq", "p", "q", "qi", "oth"]);
 
-export type SessionBridgeErrorCode =
+export type SessionCryptoErrorCode =
   | "configuration_invalid"
   | "key_import_failed"
   | "key_pair_mismatch"
@@ -28,12 +28,12 @@ export type SessionBridgeErrorCode =
   | "token_not_yet_valid";
 
 /** Safe for an HTTP boundary: it carries no token, PEM, provider error, or key. */
-export class SessionBridgeError extends Data.TaggedError("SessionBridgeError")<{
-  readonly code: SessionBridgeErrorCode;
+export class SessionCryptoError extends Data.TaggedError("SessionCryptoError")<{
+  readonly code: SessionCryptoErrorCode;
   readonly operation: "configure" | "mint" | "verify" | "jwks";
 }> {}
 
-export interface SessionBridgeEnvironment {
+export interface SessionCryptoEnvironment {
   readonly PIRATE_APP_JWT_PRIVATE_KEY?: string;
   readonly PIRATE_APP_JWT_PUBLIC_KEY?: string;
   readonly PIRATE_APP_JWT_ISSUER?: string;
@@ -41,7 +41,7 @@ export interface SessionBridgeEnvironment {
   readonly PIRATE_APP_JWT_TTL_SECONDS?: string;
 }
 
-export interface SessionBridgeOptions {
+export interface SessionCryptoOptions {
   readonly privateKeyPem?: string;
   readonly publicKeyPem: string;
   readonly issuer?: string;
@@ -83,7 +83,7 @@ export interface SessionJwks {
   readonly keys: readonly [SessionPublicJwk];
 }
 
-export interface SessionBridge {
+export interface SessionCrypto {
   readonly issuer: string;
   readonly audience: string;
   readonly defaultScope: string;
@@ -94,16 +94,16 @@ export interface SessionBridge {
 }
 
 function error(
-  operation: SessionBridgeError["operation"],
-  code: SessionBridgeErrorCode,
-): SessionBridgeError {
-  return new SessionBridgeError({ operation, code });
+  operation: SessionCryptoError["operation"],
+  code: SessionCryptoErrorCode,
+): SessionCryptoError {
+  return new SessionCryptoError({ operation, code });
 }
 
 function configuredString(
   value: string | undefined,
   fallback: string | undefined,
-  operation: SessionBridgeError["operation"],
+  operation: SessionCryptoError["operation"],
 ): string {
   const resolved = (value ?? fallback)?.trim();
   if (!resolved || resolved.includes("\n") || resolved.includes("\r")) {
@@ -112,7 +112,7 @@ function configuredString(
   return resolved;
 }
 
-function positiveInteger(value: number, operation: SessionBridgeError["operation"]): number {
+function positiveInteger(value: number, operation: SessionCryptoError["operation"]): number {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw error(operation, "configuration_invalid");
   }
@@ -221,7 +221,7 @@ async function publicMaterial(publicKey: CryptoKey): Promise<SessionPublicJwk> {
 
 function validateConfiguredValue(
   value: string,
-  operation: SessionBridgeError["operation"],
+  operation: SessionCryptoError["operation"],
 ): string {
   if (!value || value.trim() !== value || value.includes("\n") || value.includes("\r")) {
     throw error(operation, "configuration_invalid");
@@ -229,7 +229,7 @@ function validateConfiguredValue(
   return value;
 }
 
-function validatePemValue(value: string, operation: SessionBridgeError["operation"]): string {
+function validatePemValue(value: string, operation: SessionCryptoError["operation"]): string {
   if (!value || value.trim() !== value || value.includes("\r")) {
     throw error(operation, "configuration_invalid");
   }
@@ -301,7 +301,7 @@ function optionalTime(claims: Record<string, unknown>, name: "nbf"): number | un
   return value;
 }
 
-function makeEnvironmentOptions(environment: SessionBridgeEnvironment): SessionBridgeOptions {
+function makeEnvironmentOptions(environment: SessionCryptoEnvironment): SessionCryptoOptions {
   const privateKeyPem = environment.PIRATE_APP_JWT_PRIVATE_KEY?.trim();
   const publicKeyPem = environment.PIRATE_APP_JWT_PUBLIC_KEY?.trim();
   const ttlRaw = environment.PIRATE_APP_JWT_TTL_SECONDS;
@@ -319,17 +319,17 @@ function makeEnvironmentOptions(environment: SessionBridgeEnvironment): SessionB
 }
 
 /** Import one environment's same-key material and construct the platform primitive. */
-export async function makeSessionBridgeFromEnv(
-  environment: SessionBridgeEnvironment,
-): Promise<SessionBridge> {
-  return makeSessionBridge(makeEnvironmentOptions(environment));
+export async function makeSessionCryptoFromEnv(
+  environment: SessionCryptoEnvironment,
+): Promise<SessionCrypto> {
+  return makeSessionCrypto(makeEnvironmentOptions(environment));
 }
 
 /**
  * Construct the WebCrypto-only session primitive. Application classification,
  * alias resolution, and HTTP bearer extraction remain outside this module.
  */
-export async function makeSessionBridge(options: SessionBridgeOptions): Promise<SessionBridge> {
+export async function makeSessionCrypto(options: SessionCryptoOptions): Promise<SessionCrypto> {
   const publicKeyPem = validatePemValue(options.publicKeyPem, "configure");
   const issuer = configuredString(options.issuer, DEFAULT_ISSUER, "configure");
   const audience = configuredString(options.audience, DEFAULT_AUDIENCE, "configure");
@@ -367,7 +367,7 @@ export async function makeSessionBridge(options: SessionBridgeOptions): Promise<
         throw error("configure", "key_pair_mismatch");
       }
     } catch (cause) {
-      if (cause instanceof SessionBridgeError) throw cause;
+      if (cause instanceof SessionCryptoError) throw cause;
       throw error("configure", "key_import_failed");
     }
   }
@@ -448,7 +448,7 @@ export async function makeSessionBridge(options: SessionBridgeOptions): Promise<
       );
       if (!valid) throw error("verify", "token_signature_invalid");
     } catch (cause) {
-      if (cause instanceof SessionBridgeError) throw cause;
+      if (cause instanceof SessionCryptoError) throw cause;
       throw error("verify", "token_signature_invalid");
     }
 

@@ -17,29 +17,28 @@ import {
 } from "./errors.ts";
 
 /**
- * v1 product-slice endpoint contracts (api-next 000 §13): session exchange
- * and auth -> profile -> community discovery and membership -> posts,
- * comments, votes -> home feed. Payments, rewards, bookings, Telegram,
- * karaoke/dance, and HNS/EFP stay on the old API. Gates-v2 verification uses
- * its provider-neutral contracts in `verification.ts`.
+ * v1 api-next endpoint contracts: session exchange and auth -> profile ->
+ * community discovery and membership -> posts, comments, votes -> home feed.
+ * Payments, rewards, bookings, Telegram, karaoke/dance, and HNS/EFP are out
+ * of this standalone slice. Gates-v2 verification uses its provider-neutral
+ * contracts in `verification.ts`.
  *
- * The old serializers are the wire source of truth. Fields that are already
- * described by the old OpenAPI document are represented below. A few nested
- * compatibility objects remain JSON-valued because their complete schemas are
- * owned by the old contracts package; those fields are called out in the
- * endpoint audit and are not silently treated as frozen application shapes.
+ * The api-next schemas are the wire source of truth. A few nested fields
+ * remain JSON-valued because their complete api-next shapes are not yet
+ * frozen; those fields are called out in the endpoint audit and are not
+ * silently treated as typed application shapes.
  */
 
 /**
- * Compatibility gaps are deliberately bounded to these old-contract fields:
+ * Untyped fields are deliberately bounded to these not-yet-ported shapes:
  * media descriptors; linked-handle metadata; community donation partners and
  * reference links; recursive gate-expression children and gate evaluation;
  * post qualifiers, link enrichment, embeds, creator relation, promotion
  * disclosure, event, crosspost source, asset story; localized post gate,
  * market, label, song, study, karaoke, streak, derivative, and translation
  * components; and create-post listing/royalty metadata. They are JSON-valued
- * until their old components are ported; no whole request or response is
- * represented as Schema.Unknown.
+ * until their api-next schemas are explicitly typed; no whole request or
+ * response is represented as Schema.Unknown.
  */
 const JsonValue = Schema.Json;
 const JsonObject = Schema.Record(Schema.String, Schema.Json);
@@ -87,10 +86,6 @@ const AuthProof = Schema.Union([
     privy_access_token: Schema.String,
     privy_identity_token: Schema.optional(Schema.NullOr(Schema.String)),
     wallet_address: Schema.optional(Schema.NullOr(Schema.String)),
-  }),
-  Schema.Struct({
-    type: Schema.Literal("jwt_based_auth"),
-    jwt: Schema.String,
   }),
 ]);
 
@@ -187,7 +182,7 @@ const GlobalHandle = Schema.Struct({
   replaced_at: Schema.optional(Schema.NullOr(Schema.Number)),
 });
 
-/** Wire user shape from old-api auth-serializers.ts. */
+/** Wire user shape for the api-next identity boundary. */
 const User = Schema.Struct({
   id: Schema.String,
   object: Schema.Literal("user"),
@@ -322,11 +317,14 @@ const Onboarding = Schema.Struct({
 });
 
 const SessionExchangeResponse = Schema.Struct({
-  access_token: Schema.String,
   user: User,
   profile: Profile,
   onboarding: Onboarding,
   wallet_attachments: Schema.Array(WalletAttachment),
+});
+
+const SessionLogoutResponse = Schema.Struct({
+  status: Schema.Literal("ok"),
 });
 
 const CommunityBranding = Schema.Struct({
@@ -800,40 +798,6 @@ const Jwk = Schema.Struct({
 
 const Jwks = Schema.Struct({ keys: Schema.Array(Jwk) });
 
-const OAuthProtectedResource = Schema.Struct({
-  resource: Schema.String,
-  authorization_servers: Schema.Array(Schema.String),
-  jwks_uri: Schema.String,
-  bearer_methods_supported: Schema.Array(Schema.Literal("header")),
-  scopes_supported: Schema.Array(Schema.Literal("pirate_app_session")),
-});
-
-const OAuthAuthorizationServer = Schema.Struct({
-  issuer: Schema.String,
-  authorization_endpoint: Schema.String,
-  token_endpoint: Schema.String,
-  jwks_uri: Schema.String,
-  grant_types_supported: Schema.Array(
-    Schema.Literal("urn:pirate:params:oauth:grant-type:session-exchange"),
-  ),
-  response_types_supported: Schema.Array(Schema.String),
-  scopes_supported: Schema.Array(Schema.Literal("pirate_app_session")),
-  token_endpoint_auth_methods_supported: Schema.Array(Schema.Literal("none")),
-  bearer_methods_supported: Schema.Array(Schema.Literal("header")),
-  protected_resources: Schema.Array(Schema.String),
-});
-
-const OpenIdConfiguration = Schema.Struct({
-  issuer: Schema.String,
-  authorization_endpoint: Schema.String,
-  token_endpoint: Schema.String,
-  jwks_uri: Schema.String,
-  response_types_supported: Schema.Array(Schema.String),
-  subject_types_supported: Schema.Array(Schema.Literal("public")),
-  id_token_signing_alg_values_supported: Schema.Array(Schema.Literal("RS256")),
-  scopes_supported: Schema.Array(Schema.Literal("pirate_app_session")),
-});
-
 // --- session exchange and auth -------------------------------------------
 
 export const SessionExchange = endpoint({
@@ -844,6 +808,16 @@ export const SessionExchange = endpoint({
   response: SessionExchangeResponse,
   successStatus: 200,
   errors: [AuthError, BadRequest, InternalError, RateLimited],
+});
+
+/** Same-origin browser logout; the transport clears the exact cookie tuple. */
+export const SessionLogout = endpoint({
+  method: "POST",
+  path: "/auth/session/logout",
+  auth: Auth.public(),
+  response: SessionLogoutResponse,
+  successStatus: 200,
+  errors: [AuthError, BadRequest],
 });
 
 export const GetCurrentUser = endpoint({
@@ -953,9 +927,8 @@ const JoinEligibility = Schema.Struct({
       }),
     ),
   ),
-  // GatePolicyEvaluation is still owned by the old API package. Keep its
-  // envelope JSON-valued until that component is ported; this is an explicit
-  // compatibility gap, not an unbounded request schema.
+  // GatePolicyEvaluation remains explicitly JSON-valued until its api-next
+  // envelope is frozen; this is a bounded schema gap, not an open request.
   gate_evaluation: Schema.optional(Schema.NullOr(JsonObject)),
 });
 
@@ -1158,36 +1131,10 @@ export const GetHomeFeed = endpoint({
   errors: [AuthError, BadRequest, RateLimited],
 });
 
-// --- session bridge discovery (003) ---------------------------------------
-
 export const GetJwks = endpoint({
   method: "GET",
   path: "/.well-known/jwks.json",
   auth: Auth.public(),
   response: Jwks,
-  successStatus: 200,
-});
-
-export const GetOAuthProtectedResource = endpoint({
-  method: "GET",
-  path: "/.well-known/oauth-protected-resource",
-  auth: Auth.public(),
-  response: OAuthProtectedResource,
-  successStatus: 200,
-});
-
-export const GetOAuthAuthorizationServer = endpoint({
-  method: "GET",
-  path: "/.well-known/oauth-authorization-server",
-  auth: Auth.public(),
-  response: OAuthAuthorizationServer,
-  successStatus: 200,
-});
-
-export const GetOpenIdConfiguration = endpoint({
-  method: "GET",
-  path: "/.well-known/openid-configuration",
-  auth: Auth.public(),
-  response: OpenIdConfiguration,
   successStatus: 200,
 });

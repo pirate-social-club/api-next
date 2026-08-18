@@ -4,6 +4,19 @@ import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 describe("real HTTP worker transport", () => {
+  const browserCookies = (
+    response: Response,
+  ): { readonly cookie: string; readonly csrf: string } => {
+    const setCookie = response.headers.get("set-cookie") ?? "";
+    const parts = setCookie
+      .split(/, (?=__Host-pirate_)/u)
+      .map((value) => value.split(";", 1)[0] ?? "");
+    const cookie = parts.join("; ");
+    const csrf = parts.find((value) => value.startsWith("__Host-pirate_csrf="))?.split("=", 2)[1];
+    if (csrf === undefined) throw new Error("session exchange did not set CSRF cookie");
+    return { cookie, csrf };
+  };
+
   it("enforces auth and emits configured transport headers through workerd", async () => {
     const response = await SELF.fetch("https://worker.test/posts/post_1/vote", {
       method: "POST",
@@ -27,13 +40,14 @@ describe("real HTTP worker transport", () => {
   it("exchanges a seeded identity and serves current-user and profile projections", async () => {
     const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proof: { type: "jwt_based_auth", jwt: "workerd-proof" } }),
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "workerd-proof" },
+      }),
     });
 
     expect(exchange.status).toBe(200);
     const exchanged = (await exchange.json()) as {
-      readonly access_token: string;
       readonly user: { readonly id: string };
       readonly profile: { readonly id: string };
     };
@@ -41,10 +55,11 @@ describe("real HTTP worker transport", () => {
       user: { id: "usr_workerd_test" },
       profile: { id: "usr_workerd_test" },
     });
+    const browser = browserCookies(exchange);
 
     const currentUser = await SELF.fetch(
       "https://worker.test/users/me?community_ref=compatibility-ref",
-      { headers: { authorization: `Bearer ${exchanged.access_token}` } },
+      { headers: { cookie: browser.cookie } },
     );
     expect(currentUser.status).toBe(200);
     expect(await currentUser.json()).toMatchObject({
@@ -54,7 +69,7 @@ describe("real HTTP worker transport", () => {
     });
 
     const profile = await SELF.fetch("https://worker.test/profiles/me", {
-      headers: { authorization: `Bearer ${exchanged.access_token}` },
+      headers: { cookie: browser.cookie },
     });
     expect(profile.status).toBe(200);
     expect(await profile.json()).toMatchObject({
@@ -67,16 +82,20 @@ describe("real HTTP worker transport", () => {
   it("serves an installed content mutation and leaves an uninstalled write at 404", async () => {
     const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ proof: { type: "jwt_based_auth", jwt: "workerd-proof" } }),
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "workerd-proof" },
+      }),
     });
-    const { access_token: accessToken } = (await exchange.json()) as {
-      readonly access_token: string;
-    };
+    const browser = browserCookies(exchange);
 
     const clear = await SELF.fetch("https://worker.test/posts/post_1/clear_vote", {
       method: "POST",
-      headers: { authorization: `Bearer ${accessToken}` },
+      headers: {
+        cookie: browser.cookie,
+        origin: "https://solid.test",
+        "x-csrf-token": browser.csrf,
+      },
     });
     expect(clear.status).toBe(200);
     expect(await clear.json()).toEqual({ post: "post_1", value: null });
@@ -84,10 +103,7 @@ describe("real HTTP worker transport", () => {
 
     const uninstalled = await SELF.fetch("https://worker.test/communities/community_1/posts", {
       method: "POST",
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        "content-type": "application/json",
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ post_type: "text", idempotency_key: "workerd-key", body: "hello" }),
     });
     expect(uninstalled.status).toBe(404);

@@ -14,7 +14,7 @@ import { AuthError } from "@pirate/contracts";
 import {
   makeRs256SessionTokenMinter,
   makeRs256SessionTokenVerifier,
-  makeSessionBridge,
+  makeSessionCrypto,
 } from "@pirate/platform-cf";
 import { Effect } from "effect";
 import { createHttpWorker, type Principal } from "../../apps/http-worker/src/transport.ts";
@@ -31,7 +31,7 @@ function toPem(label: "PRIVATE KEY" | "PUBLIC KEY", bytes: ArrayBuffer): string 
   return `-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----`;
 }
 
-async function sessionBridge() {
+async function sessionCrypto() {
   const pair = await crypto.subtle.generateKey(
     {
       name: "RSASSA-PKCS1-v1_5",
@@ -42,7 +42,7 @@ async function sessionBridge() {
     true,
     ["sign", "verify"],
   );
-  return makeSessionBridge({
+  return makeSessionCrypto({
     privateKeyPem: toPem("PRIVATE KEY", await crypto.subtle.exportKey("pkcs8", pair.privateKey)),
     publicKeyPem: toPem("PUBLIC KEY", await crypto.subtle.exportKey("spki", pair.publicKey)),
   });
@@ -117,19 +117,19 @@ const identityStore: IdentityStore["Service"] = {
     }),
 };
 
-const bridge = await sessionBridge();
-const tokenVerifier = makeRs256SessionTokenVerifier(bridge, identityStore);
+const sessionCryptoInstance = await sessionCrypto();
+const tokenVerifier = makeRs256SessionTokenVerifier(sessionCryptoInstance, identityStore);
 const sessionExchange: SessionExchangeServices = {
   proofVerifier: {
     verifyPrivy: () =>
       Effect.succeed({ sourceUserId: "usr_workerd_source", classification: "user" }),
-    verifyJwt: () => Effect.succeed({ sourceUserId: "usr_workerd_source", classification: "user" }),
   },
   identityStore: makeSessionIdentityStore(identityStore),
-  tokenMinter: makeRs256SessionTokenMinter(bridge),
+  tokenMinter: makeRs256SessionTokenMinter(sessionCryptoInstance),
 };
 
 const app = createHttpWorker({
+  config: { corsOrigin: "https://solid.test" },
   sessionExchange,
   handlers: {
     GetCurrentUser: ({ principal, query }) => {
@@ -151,14 +151,21 @@ const app = createHttpWorker({
     },
     CastPostVote: () => ({ post: "post_1", value: 1 }),
     ClearPostVote: () => ({ post: "post_1", value: null }),
-    GetJwks: () => bridge.jwks(),
+    GetJwks: () => sessionCryptoInstance.jwks(),
   },
   profile: ({ principal }) =>
     Effect.runPromise(getMyProfile({ userId: principal?.subject ?? "" }, { identityStore })),
   authenticate: ({ credentials }) =>
     Effect.runPromise(
       authenticateSession(
-        { authorization: credentials.authorization },
+        {
+          ...(credentials.authorization === undefined
+            ? {}
+            : { authorization: credentials.authorization }),
+          ...(credentials.sessionCookie === undefined
+            ? {}
+            : { sessionCookie: credentials.sessionCookie }),
+        },
         { verifier: tokenVerifier },
       ).pipe(
         Effect.map(

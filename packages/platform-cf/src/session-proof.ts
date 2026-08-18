@@ -74,7 +74,6 @@ export type SessionProofFetcher = (input: string, init?: RequestInit) => Promise
 
 export interface SessionProofAdapterOptions {
   readonly privy: SessionProofProviderConfig;
-  readonly jwt: SessionProofProviderConfig;
   readonly fetcher?: SessionProofFetcher;
   readonly nowMs?: () => number;
   readonly fetchTimeoutMs?: number;
@@ -249,14 +248,6 @@ export function makeJwksSessionProofVerifier(
         ? {}
         : { audience: configuredString(options.privy.audience) }),
     },
-    jwt: {
-      ...options.jwt,
-      jwksUrl: configuredUrl(options.jwt.jwksUrl),
-      issuer: configuredString(options.jwt.issuer),
-      ...(options.jwt.audience === undefined
-        ? {}
-        : { audience: configuredString(options.jwt.audience) }),
-    },
   };
 
   const getJwks = async (url: string, forceRefresh = false): Promise<readonly ValidJwk[]> => {
@@ -367,10 +358,6 @@ export function makeJwksSessionProofVerifier(
     });
 
   return {
-    verifyJwt: ({ jwt }) =>
-      run(() => verifyProviderToken(jwt, providers.jwt)).pipe(
-        Effect.map(({ sourceUserId, classification }) => ({ sourceUserId, classification })),
-      ),
     verifyPrivy: ({ accessToken, identityToken, walletAddress }) =>
       run(async () => {
         const access = await verifyProviderToken(accessToken, providers.privy);

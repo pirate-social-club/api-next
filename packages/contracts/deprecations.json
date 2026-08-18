@@ -49,6 +49,26 @@
       "operationId": "post_communitiesCommunityIdJoin",
       "removedIn": "unreleased",
       "reason": "The placeholder membership envelope is retired in favor of the typed v1 join result."
+    },
+    {
+      "operationId": "post_authSessionExchange",
+      "removedIn": "unreleased",
+      "reason": "The browser session exchange is api-next-owned: direct Privy proof in, host-only HttpOnly cookie out; legacy JWT proof and browser bearer response are retired."
+    },
+    {
+      "operationId": "get_wellKnownOauthProtectedResource",
+      "removedIn": "unreleased",
+      "reason": "Legacy OAuth resource discovery was part of the superseded compatibility design and is not an api-next browser-session contract."
+    },
+    {
+      "operationId": "get_wellKnownOauthAuthorizationServer",
+      "removedIn": "unreleased",
+      "reason": "Legacy OAuth authorization-server discovery was part of the superseded compatibility design and is not an api-next browser-session contract."
+    },
+    {
+      "operationId": "get_wellKnownOpenidConfiguration",
+      "removedIn": "unreleased",
+      "reason": "Legacy OpenID discovery was part of the superseded compatibility design and is not an api-next browser-session contract."
     }
   ]
 }

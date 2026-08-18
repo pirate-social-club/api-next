@@ -21,7 +21,7 @@ import {
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
 import { makeControlPlanePublicProfileStore } from "@pirate/platform-cf/public-profile-repository";
-import { makeSessionBridge } from "@pirate/platform-cf/session-bridge";
+import { makeSessionCrypto } from "@pirate/platform-cf/session-crypto";
 import { makeJwksSessionProofVerifier } from "@pirate/platform-cf/session-proof";
 import {
   makeRs256SessionTokenMinter,
@@ -66,9 +66,6 @@ export interface HttpWorkerBindings {
   readonly PRIVY_JWKS_URL?: string;
   readonly PRIVY_JWT_ISSUER?: string;
   readonly PRIVY_JWT_AUDIENCE?: string;
-  readonly AUTH_UPSTREAM_JWT_JWKS_URL?: string;
-  readonly AUTH_UPSTREAM_JWT_ISSUER?: string;
-  readonly AUTH_UPSTREAM_JWT_AUDIENCE?: string;
 }
 
 type WorkerConfig = HttpWorkerConfigValue;
@@ -100,9 +97,6 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     PRIVY_JWKS_URL: bindings.PRIVY_JWKS_URL,
     PRIVY_JWT_ISSUER: bindings.PRIVY_JWT_ISSUER,
     PRIVY_JWT_AUDIENCE: bindings.PRIVY_JWT_AUDIENCE,
-    AUTH_UPSTREAM_JWT_JWKS_URL: bindings.AUTH_UPSTREAM_JWT_JWKS_URL,
-    AUTH_UPSTREAM_JWT_ISSUER: bindings.AUTH_UPSTREAM_JWT_ISSUER,
-    AUTH_UPSTREAM_JWT_AUDIENCE: bindings.AUTH_UPSTREAM_JWT_AUDIENCE,
   };
 }
 
@@ -245,7 +239,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     feedStore,
     identityStore,
   });
-  const bridge = await makeSessionBridge({
+  const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
     publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),
     issuer: config.PIRATE_APP_JWT_ISSUER,
@@ -259,24 +253,26 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
         issuer: config.PRIVY_JWT_ISSUER,
         audience: config.PRIVY_JWT_AUDIENCE,
       },
-      jwt: {
-        jwksUrl: config.AUTH_UPSTREAM_JWT_JWKS_URL,
-        issuer: config.AUTH_UPSTREAM_JWT_ISSUER,
-        audience: config.AUTH_UPSTREAM_JWT_AUDIENCE,
-      },
     }),
     identityStore: makeSessionIdentityStore(identityStore),
-    tokenMinter: makeRs256SessionTokenMinter(bridge),
+    tokenMinter: makeRs256SessionTokenMinter(sessionCrypto),
   };
-  const tokenVerifier = makeRs256SessionTokenVerifier(bridge, identityStore);
+  const tokenVerifier = makeRs256SessionTokenVerifier(sessionCrypto, identityStore);
   const authenticate = ({
     credentials,
   }: {
-    readonly credentials: { readonly authorization: string };
+    readonly credentials: { readonly authorization?: string; readonly sessionCookie?: string };
   }) =>
     Effect.runPromise(
       authenticateSession(
-        { authorization: credentials.authorization },
+        {
+          ...(credentials.authorization === undefined
+            ? {}
+            : { authorization: credentials.authorization }),
+          ...(credentials.sessionCookie === undefined
+            ? {}
+            : { sessionCookie: credentials.sessionCookie }),
+        },
         { verifier: tokenVerifier },
       ).pipe(Effect.map(principal)),
     );
@@ -289,7 +285,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     handlers: {
       ...productHandlers,
       ...verificationHandlers,
-      GetJwks: () => bridge.jwks(),
+      GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },
     sessionExchange,

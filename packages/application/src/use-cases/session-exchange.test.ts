@@ -3,6 +3,7 @@ import { AuthError, InternalError, RateLimited } from "@pirate/contracts";
 import { Cause, Effect, Exit, Result } from "effect";
 import {
   exchangeSession,
+  MAX_BROWSER_SESSION_TTL_SECONDS,
   makeSessionExchangeHandler,
   type SessionAccount,
   type SessionExchangeServices,
@@ -65,7 +66,6 @@ const servicesFor = (
 ): SessionExchangeServices => ({
   proofVerifier: {
     verifyPrivy: () => Effect.succeed({ sourceUserId: "source-user", classification: "user" }),
-    verifyJwt: () => Effect.succeed({ sourceUserId: "source-user", classification: "user" }),
   },
   identityStore: { resolve: () => Effect.succeed(account) },
   tokenMinter: { mint: () => Effect.succeed("session-token") },
@@ -73,20 +73,14 @@ const servicesFor = (
 });
 
 describe("session exchange application use case", () => {
-  it("exchanges Privy and JWT proofs through the injected verifier", async () => {
+  it("exchanges a Privy proof through the injected verifier", async () => {
     let privyCalls = 0;
-    let jwtCalls = 0;
     const services = servicesFor({
       proofVerifier: {
         verifyPrivy: (input) => {
           privyCalls += 1;
           expect(input.accessToken).toBe("privy-proof");
           return Effect.succeed({ sourceUserId: "privy-user", classification: "user" as const });
-        },
-        verifyJwt: (input) => {
-          jwtCalls += 1;
-          expect(input.jwt).toBe("upstream-jwt");
-          return Effect.succeed({ sourceUserId: "jwt-user", classification: "user" as const });
         },
       },
     });
@@ -95,17 +89,14 @@ describe("session exchange application use case", () => {
     await handler({
       body: { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
     });
-    await handler({ body: { proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } } });
-
     expect(privyCalls).toBe(1);
-    expect(jwtCalls).toBe(1);
   });
 
   it("mints the session for the canonical alias subject", async () => {
     let mintedSubject: string | undefined;
     const result = await Effect.runPromise(
       exchangeSession(
-        { proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } },
+        { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
         servicesFor({
           tokenMinter: {
             mint: ({ subject }) => {
@@ -118,7 +109,7 @@ describe("session exchange application use case", () => {
     );
 
     expect(mintedSubject).toBe("canonical-user");
-    expect(result.access_token).toBe("session-token");
+    expect(result.sessionToken).toBe("session-token");
   });
 
   it("maps missing, deleted, cyclic, and invalid identities to safe auth errors", async () => {
@@ -129,7 +120,7 @@ describe("session exchange application use case", () => {
     ]) {
       const result = await Effect.runPromiseExit(
         exchangeSession(
-          { proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } },
+          { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
           servicesFor({
             identityStore: {
               resolve: () =>
@@ -144,7 +135,7 @@ describe("session exchange application use case", () => {
     for (const canonicalUserId of [" ", " canonical-user "]) {
       const invalid = await Effect.runPromiseExit(
         exchangeSession(
-          { proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } },
+          { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
           servicesFor({
             identityStore: { resolve: () => Effect.succeed({ ...account, canonicalUserId }) },
           }),
@@ -157,12 +148,10 @@ describe("session exchange application use case", () => {
   it("fails closed for a device-classified proof", async () => {
     const result = await Effect.runPromiseExit(
       exchangeSession(
-        { proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } },
+        { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
         servicesFor({
           proofVerifier: {
             verifyPrivy: () =>
-              Effect.succeed({ sourceUserId: "source-user", classification: "device" as const }),
-            verifyJwt: () =>
               Effect.succeed({ sourceUserId: "source-user", classification: "device" as const }),
           },
         }),
@@ -174,11 +163,10 @@ describe("session exchange application use case", () => {
   it("fails closed when the verifier rejects an invalid scope", async () => {
     const result = await Effect.runPromiseExit(
       exchangeSession(
-        { proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } },
+        { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
         servicesFor({
           proofVerifier: {
             verifyPrivy: () => Effect.fail(new SessionProofRejected()),
-            verifyJwt: () => Effect.fail(new SessionProofRejected()),
           },
         }),
       ),
@@ -189,11 +177,10 @@ describe("session exchange application use case", () => {
   it("preserves a declared rate-limit error without exposing dependency details", async () => {
     const result = await Effect.runPromiseExit(
       exchangeSession(
-        { proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } },
+        { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
         servicesFor({
           proofVerifier: {
             verifyPrivy: () => Effect.fail(new RateLimited({ message: "slow down" })),
-            verifyJwt: () => Effect.fail(new RateLimited({ message: "slow down" })),
           },
         }),
       ),
@@ -204,7 +191,7 @@ describe("session exchange application use case", () => {
   it("maps unexpected adapter defects to a redacted internal error", async () => {
     const result = await Effect.runPromiseExit(
       exchangeSession(
-        { proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } },
+        { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
         servicesFor({
           tokenMinter: {
             mint: () => Effect.fail(new Error("private key and bearer token")),
@@ -220,11 +207,31 @@ describe("session exchange application use case", () => {
     for (const token of ["", " session-token "]) {
       const result = await Effect.runPromiseExit(
         exchangeSession(
-          { proof: { type: "jwt_based_auth", jwt: "upstream-jwt" } },
+          { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
           servicesFor({ tokenMinter: { mint: () => Effect.succeed(token) } }),
         ),
       );
       expect(failureOf(result)).toBeInstanceOf(InternalError);
     }
+  });
+
+  it("rejects an unbounded browser-session TTL before minting", async () => {
+    let minted = false;
+    const result = await Effect.runPromiseExit(
+      exchangeSession(
+        { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
+        servicesFor({
+          tokenMinter: {
+            ttlSeconds: MAX_BROWSER_SESSION_TTL_SECONDS + 1,
+            mint: () => {
+              minted = true;
+              return Effect.succeed("session-token");
+            },
+          },
+        }),
+      ),
+    );
+    expect(failureOf(result)).toBeInstanceOf(InternalError);
+    expect(minted).toBe(false);
   });
 });

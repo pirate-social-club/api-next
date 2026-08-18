@@ -323,7 +323,6 @@ describe("profile and identity projections", () => {
       user,
     );
     const session: Schema.Schema.Type<typeof SessionExchange.response> = {
-      access_token: "token",
       user,
       profile,
       onboarding: {

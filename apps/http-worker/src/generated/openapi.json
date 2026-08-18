@@ -13312,248 +13312,6 @@
         ]
       }
     },
-    "/.well-known/oauth-authorization-server": {
-      "get": {
-        "operationId": "get_wellKnownOauthAuthorizationServer",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "issuer": {
-                      "type": "string"
-                    },
-                    "authorization_endpoint": {
-                      "type": "string"
-                    },
-                    "token_endpoint": {
-                      "type": "string"
-                    },
-                    "jwks_uri": {
-                      "type": "string"
-                    },
-                    "grant_types_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "urn:pirate:params:oauth:grant-type:session-exchange"
-                        ]
-                      }
-                    },
-                    "response_types_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    },
-                    "scopes_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "pirate_app_session"
-                        ]
-                      }
-                    },
-                    "token_endpoint_auth_methods_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "none"
-                        ]
-                      }
-                    },
-                    "bearer_methods_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "header"
-                        ]
-                      }
-                    },
-                    "protected_resources": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    }
-                  },
-                  "required": [
-                    "issuer",
-                    "authorization_endpoint",
-                    "token_endpoint",
-                    "jwks_uri",
-                    "grant_types_supported",
-                    "response_types_supported",
-                    "scopes_supported",
-                    "token_endpoint_auth_methods_supported",
-                    "bearer_methods_supported",
-                    "protected_resources"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          }
-        },
-        "x-auth": {
-          "policy": {
-            "kind": "public"
-          }
-        },
-        "x-errors": []
-      }
-    },
-    "/.well-known/oauth-protected-resource": {
-      "get": {
-        "operationId": "get_wellKnownOauthProtectedResource",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "resource": {
-                      "type": "string"
-                    },
-                    "authorization_servers": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    },
-                    "jwks_uri": {
-                      "type": "string"
-                    },
-                    "bearer_methods_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "header"
-                        ]
-                      }
-                    },
-                    "scopes_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "pirate_app_session"
-                        ]
-                      }
-                    }
-                  },
-                  "required": [
-                    "resource",
-                    "authorization_servers",
-                    "jwks_uri",
-                    "bearer_methods_supported",
-                    "scopes_supported"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          }
-        },
-        "x-auth": {
-          "policy": {
-            "kind": "public"
-          }
-        },
-        "x-errors": []
-      }
-    },
-    "/.well-known/openid-configuration": {
-      "get": {
-        "operationId": "get_wellKnownOpenidConfiguration",
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "issuer": {
-                      "type": "string"
-                    },
-                    "authorization_endpoint": {
-                      "type": "string"
-                    },
-                    "token_endpoint": {
-                      "type": "string"
-                    },
-                    "jwks_uri": {
-                      "type": "string"
-                    },
-                    "response_types_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string"
-                      }
-                    },
-                    "subject_types_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "public"
-                        ]
-                      }
-                    },
-                    "id_token_signing_alg_values_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "RS256"
-                        ]
-                      }
-                    },
-                    "scopes_supported": {
-                      "type": "array",
-                      "items": {
-                        "type": "string",
-                        "enum": [
-                          "pirate_app_session"
-                        ]
-                      }
-                    }
-                  },
-                  "required": [
-                    "issuer",
-                    "authorization_endpoint",
-                    "token_endpoint",
-                    "jwks_uri",
-                    "response_types_supported",
-                    "subject_types_supported",
-                    "id_token_signing_alg_values_supported",
-                    "scopes_supported"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          }
-        },
-        "x-auth": {
-          "policy": {
-            "kind": "public"
-          }
-        },
-        "x-errors": []
-      }
-    },
     "/posts/{postId}": {
       "get": {
         "operationId": "get_postsPostId",
@@ -23269,25 +23027,6 @@
                           "privy_access_token"
                         ],
                         "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "type": {
-                            "type": "string",
-                            "enum": [
-                              "jwt_based_auth"
-                            ]
-                          },
-                          "jwt": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "type",
-                          "jwt"
-                        ],
-                        "additionalProperties": false
                       }
                     ]
                   }
@@ -23308,9 +23047,6 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "access_token": {
-                      "type": "string"
-                    },
                     "user": {
                       "type": "object",
                       "properties": {
@@ -23988,7 +23724,6 @@
                     }
                   },
                   "required": [
-                    "access_token",
                     "user",
                     "profile",
                     "onboarding",
@@ -24835,6 +24570,114 @@
           "BadRequest",
           "InternalError",
           "RateLimited"
+        ]
+      }
+    },
+    "/auth/session/logout": {
+      "post": {
+        "operationId": "post_authSessionLogout",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ok"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Error envelope (old wire format)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "Error envelope (old wire format)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "retryable": {
+                      "type": "boolean"
+                    },
+                    "details": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "public"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest"
         ]
       }
     },

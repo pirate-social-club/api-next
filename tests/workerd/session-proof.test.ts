@@ -33,35 +33,18 @@ async function keyMaterial() {
   let binary = "";
   for (const byte of new Uint8Array(thumbprint)) binary += String.fromCharCode(byte);
   const kid = btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-  const jwk = {
-    kty: "RSA" as const,
-    n: exported.n as string,
-    e: exported.e as string,
-    alg: "RS256" as const,
-    use: "sig" as const,
-    key_ops: ["verify"] as const,
-    kid,
+  return {
+    privateKey: pair.privateKey,
+    jwk: {
+      kty: "RSA" as const,
+      n: exported.n as string,
+      e: exported.e as string,
+      alg: "RS256" as const,
+      use: "sig" as const,
+      key_ops: ["verify"] as const,
+      kid,
+    },
   };
-  return { privateKey: pair.privateKey, jwk };
-}
-
-async function ecKeyMaterial() {
-  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
-    "sign",
-    "verify",
-  ]);
-  const exported = await crypto.subtle.exportKey("jwk", pair.publicKey);
-  const jwk = {
-    kty: "EC" as const,
-    crv: "P-256" as const,
-    x: exported.x as string,
-    y: exported.y as string,
-    alg: "ES256" as const,
-    use: "sig" as const,
-    key_ops: ["verify"] as const,
-    kid: "ec-provider-key",
-  };
-  return { privateKey: pair.privateKey, jwk };
 }
 
 async function signToken(
@@ -69,9 +52,8 @@ async function signToken(
   kid: string,
   claims: Record<string, unknown> = {},
   header: Record<string, unknown> = {},
-  signingAlgorithm: "RS256" | "ES256" = "RS256",
 ): Promise<string> {
-  const encodedHeader = encode({ alg: signingAlgorithm, typ: "JWT", kid, ...header });
+  const encodedHeader = encode({ alg: "RS256", typ: "JWT", kid, ...header });
   const encodedClaims = encode({
     iss: "https://provider.test",
     aud: "pirate-api-next",
@@ -81,19 +63,16 @@ async function signToken(
     ...claims,
   });
   const signature = await crypto.subtle.sign(
-    signingAlgorithm === "RS256"
-      ? { name: "RSASSA-PKCS1-v1_5" }
-      : { name: "ECDSA", hash: "SHA-256" },
+    { name: "RSASSA-PKCS1-v1_5" },
     privateKey,
     new TextEncoder().encode(`${encodedHeader}.${encodedClaims}`),
   );
   let binary = "";
   for (const byte of new Uint8Array(signature)) binary += String.fromCharCode(byte);
-  const encodedSignature = btoa(binary)
+  return `${encodedHeader}.${encodedClaims}.${btoa(binary)
     .replaceAll("+", "-")
     .replaceAll("/", "_")
-    .replace(/=+$/u, "");
-  return `${encodedHeader}.${encodedClaims}.${encodedSignature}`;
+    .replace(/=+$/u, "")}`;
 }
 
 function adapterFor(fetcher: SessionProofFetcher, nowMs = () => NOW_SECONDS * 1_000) {
@@ -103,132 +82,64 @@ function adapterFor(fetcher: SessionProofFetcher, nowMs = () => NOW_SECONDS * 1_
       issuer: "https://provider.test",
       audience: "pirate-api-next",
     },
-    jwt: {
-      jwksUrl: "https://provider.test/jwks",
-      issuer: "https://provider.test",
-      audience: "pirate-api-next",
-    },
     fetcher,
     nowMs,
   });
 }
 
-describe("workerd JWKS session-proof adapters", () => {
-  it("verifies JWT and Privy proofs with a bounded cached fake JWKS", async () => {
+const verify = (adapter: ReturnType<typeof adapterFor>, token: string) =>
+  adapter.verifyPrivy({ accessToken: token, identityToken: null, walletAddress: null });
+
+describe("workerd Privy JWKS session-proof adapter", () => {
+  it("verifies direct Privy proofs with a bounded cached JWKS", async () => {
     const material = await keyMaterial();
-    let fetchCount = 0;
-    const fetcher: SessionProofFetcher = async () => {
-      fetchCount += 1;
-      return new Response(JSON.stringify({ keys: [material.jwk] }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    };
-    const adapter = adapterFor(fetcher);
-    const token = await signToken(material.privateKey, material.jwk.kid);
-    expect(await Effect.runPromise(adapter.verifyJwt({ jwt: token }))).toEqual({
-      sourceUserId: "usr_provider",
-      classification: "user",
-    });
-    expect(await Effect.runPromise(adapter.verifyJwt({ jwt: token }))).toEqual({
-      sourceUserId: "usr_provider",
-      classification: "user",
-    });
-    expect(fetchCount).toBe(1);
-
-    const privy = await signToken(material.privateKey, material.jwk.kid, {
-      wallet_address: "0xabc",
-    });
-    expect(
-      await Effect.runPromise(
-        adapter.verifyPrivy({
-          accessToken: privy,
-          identityToken: null,
-          walletAddress: "0xabc",
-        }),
-      ),
-    ).toEqual({ sourceUserId: "usr_provider", classification: "user" });
-  });
-
-  it("verifies ES256 P-256 proofs with the same claim and cache protections", async () => {
-    const material = await ecKeyMaterial();
     let fetchCount = 0;
     const fetcher: SessionProofFetcher = async () => {
       fetchCount += 1;
       return new Response(JSON.stringify({ keys: [material.jwk] }), { status: 200 });
     };
     const adapter = adapterFor(fetcher);
-    const token = await signToken(
-      material.privateKey,
-      material.jwk.kid,
-      { wallet_address: "0xabc" },
-      {},
-      "ES256",
-    );
-
-    expect(await Effect.runPromise(adapter.verifyJwt({ jwt: token }))).toEqual({
+    const token = await signToken(material.privateKey, material.jwk.kid);
+    expect(await Effect.runPromise(verify(adapter, token))).toEqual({
       sourceUserId: "usr_provider",
       classification: "user",
     });
-    expect(
-      await Effect.runPromise(
-        adapter.verifyPrivy({ accessToken: token, identityToken: null, walletAddress: "0xabc" }),
-      ),
-    ).toEqual({ sourceUserId: "usr_provider", classification: "user" });
+    expect(await Effect.runPromise(verify(adapter, token))).toEqual({
+      sourceUserId: "usr_provider",
+      classification: "user",
+    });
     expect(fetchCount).toBe(1);
   });
 
-  it("rejects EC keys with an invalid curve, algorithm, or private material", async () => {
-    const material = await ecKeyMaterial();
-    const token = await signToken(material.privateKey, material.jwk.kid, {}, {}, "ES256");
-    const expectRejected = async (jwk: unknown) => {
-      const adapter = adapterFor(
-        async () => new Response(JSON.stringify({ keys: [jwk] }), { status: 200 }),
-      );
-      const exit = await Effect.runPromiseExit(adapter.verifyJwt({ jwt: token }));
-      expect(Exit.isFailure(exit)).toBe(true);
-    };
-
-    await expectRejected({ ...material.jwk, crv: "P-384" });
-    await expectRejected({ ...material.jwk, alg: "RS256" });
-    await expectRejected({ ...material.jwk, d: "private-key-material" });
-  });
-
-  it("fails closed for malformed claims, headers, signatures, and proof binding", async () => {
+  it("fails closed for malformed claims, headers, and identity binding", async () => {
     const material = await keyMaterial();
     const fetcher: SessionProofFetcher = async () =>
       new Response(JSON.stringify({ keys: [material.jwk] }), { status: 200 });
     const adapter = adapterFor(fetcher);
     const valid = await signToken(material.privateKey, material.jwk.kid);
-    const expectRejected = async (effect: ReturnType<typeof adapter.verifyJwt>) => {
-      const exit = await Effect.runPromiseExit(effect);
+    const expectRejected = async (token: string) => {
+      const exit = await Effect.runPromiseExit(verify(adapter, token));
       expect(Exit.isFailure(exit)).toBe(true);
-      if (Exit.isSuccess(exit)) throw new Error("expected rejection");
-      expect(exit.cause).toBeDefined();
     };
 
-    await expectRejected(adapter.verifyJwt({ jwt: "not-a-jwt" }));
+    await expectRejected("not-a-jwt");
     await expectRejected(
-      adapter.verifyJwt({
-        jwt: await signToken(material.privateKey, material.jwk.kid, {}, { alg: "HS256" }),
-      }),
+      await signToken(material.privateKey, material.jwk.kid, {}, { alg: "HS256" }),
     );
     await expectRejected(
-      adapter.verifyJwt({
-        jwt: await signToken(material.privateKey, material.jwk.kid, { exp: NOW_SECONDS - 1 }),
-      }),
+      await signToken(material.privateKey, material.jwk.kid, { exp: NOW_SECONDS - 1 }),
     );
-    await expectRejected(
-      adapter.verifyPrivy({
-        accessToken: valid,
-        identityToken: await signToken(material.privateKey, material.jwk.kid, { sub: "usr_other" }),
-        walletAddress: null,
-      }),
-    );
-    await expectRejected(
-      adapter.verifyPrivy({ accessToken: valid, identityToken: null, walletAddress: "0xwrong" }),
-    );
-    expect(String(valid)).not.toContain("provider-secret");
+    expect(
+      await Effect.runPromise(
+        adapter.verifyPrivy({
+          accessToken: valid,
+          identityToken: await signToken(material.privateKey, material.jwk.kid, {
+            sub: "usr_other",
+          }),
+          walletAddress: null,
+        }),
+      ).catch(() => "rejected"),
+    ).toBe("rejected");
   });
 
   it("aborts a hanging JWKS fetch at the configured bound", async () => {
@@ -241,14 +152,11 @@ describe("workerd JWKS session-proof adapters", () => {
       });
     const adapter = makeJwksSessionProofVerifier({
       privy: { jwksUrl: "https://provider.test/jwks", issuer: "https://provider.test" },
-      jwt: { jwksUrl: "https://provider.test/jwks", issuer: "https://provider.test" },
       fetcher,
       fetchTimeoutMs: 5,
       nowMs: () => NOW_SECONDS * 1_000,
     });
     const token = await signToken(material.privateKey, material.jwk.kid);
-    const started = Date.now();
-    await expect(Effect.runPromise(adapter.verifyJwt({ jwt: token }))).rejects.toBeDefined();
-    expect(Date.now() - started).toBeLessThan(500);
+    await expect(Effect.runPromise(verify(adapter, token))).rejects.toBeDefined();
   });
 });

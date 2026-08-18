@@ -10,6 +10,8 @@ import { IdentityResolutionError, type IdentityStore } from "../ports.ts";
 import { loadIdentityAccount } from "./identity-account.ts";
 
 const DEFAULT_SESSION_SCOPE = "pirate_app_session";
+/** Browser sessions are intentionally bounded even if deployment config drifts. */
+export const MAX_BROWSER_SESSION_TTL_SECONDS = 86_400;
 
 /** Expected proof rejection; adapters must not put token material in this error. */
 export class SessionProofRejected extends Data.TaggedError("SessionProofRejected") {}
@@ -19,17 +21,12 @@ export class SessionIdentityRejected extends Data.TaggedError("SessionIdentityRe
   readonly reason: "missing" | "deleted" | "cyclic" | "invalid";
 }> {}
 
-export type SessionExchangeProof =
-  | {
-      readonly type: "privy_access_token";
-      readonly privy_access_token: string;
-      readonly privy_identity_token?: string | null;
-      readonly wallet_address?: string | null;
-    }
-  | {
-      readonly type: "jwt_based_auth";
-      readonly jwt: string;
-    };
+export type SessionExchangeProof = {
+  readonly type: "privy_access_token";
+  readonly privy_access_token: string;
+  readonly privy_identity_token?: string | null;
+  readonly wallet_address?: string | null;
+};
 
 export type VerifiedSessionIdentity = {
   readonly sourceUserId: string;
@@ -39,16 +36,13 @@ export type VerifiedSessionIdentity = {
 
 export type SessionAccount = {
   readonly canonicalUserId: string;
-} & Omit<SessionExchangeResponse, "access_token">;
+} & SessionExchangeResponse;
 
 export interface SessionProofVerifier {
   readonly verifyPrivy: (input: {
     readonly accessToken: string;
     readonly identityToken: string | null;
     readonly walletAddress: string | null;
-  }) => Effect.Effect<VerifiedSessionIdentity, unknown>;
-  readonly verifyJwt: (input: {
-    readonly jwt: string;
   }) => Effect.Effect<VerifiedSessionIdentity, unknown>;
 }
 
@@ -65,6 +59,8 @@ export interface SessionTokenMinter {
     readonly subject: string;
     readonly scope: typeof DEFAULT_SESSION_SCOPE;
   }) => Effect.Effect<string, unknown>;
+  /** Maximum lifetime of a freshly minted browser session, in seconds. */
+  readonly ttlSeconds?: number;
 }
 
 export interface SessionExchangeServices {
@@ -96,6 +92,13 @@ export function makeSessionIdentityStore(
 }
 
 export type SessionExchangeResponse = Schema.Schema.Type<typeof SessionExchange.response>;
+
+/** Internal handoff: the token is consumed only by the HTTP cookie writer. */
+export type SessionExchangeHandlerResult = {
+  readonly response: SessionExchangeResponse;
+  readonly sessionToken: string;
+  readonly sessionTtlSeconds: number;
+};
 
 type SessionExchangeFailure = AuthError | BadRequest | RateLimited | InternalError;
 
@@ -140,7 +143,7 @@ const validMintedToken = (value: string): boolean =>
 export const exchangeSession = Effect.fn("exchangeSession")(function* (
   input: unknown,
   services: SessionExchangeServices,
-): Effect.fn.Return<SessionExchangeResponse, SessionExchangeFailure> {
+): Effect.fn.Return<SessionExchangeHandlerResult, SessionExchangeFailure> {
   let request: SessionExchangeRequest;
   try {
     request = decodeRequest(input);
@@ -148,18 +151,13 @@ export const exchangeSession = Effect.fn("exchangeSession")(function* (
     return yield* Effect.fail(safeFailure(error));
   }
 
-  const verified =
-    request.proof.type === "privy_access_token"
-      ? yield* services.proofVerifier
-          .verifyPrivy({
-            accessToken: request.proof.privy_access_token,
-            identityToken: request.proof.privy_identity_token ?? null,
-            walletAddress: request.proof.wallet_address ?? null,
-          })
-          .pipe(Effect.mapError(safeFailure))
-      : yield* services.proofVerifier
-          .verifyJwt({ jwt: request.proof.jwt })
-          .pipe(Effect.mapError(safeFailure));
+  const verified = yield* services.proofVerifier
+    .verifyPrivy({
+      accessToken: request.proof.privy_access_token,
+      identityToken: request.proof.privy_identity_token ?? null,
+      walletAddress: request.proof.wallet_address ?? null,
+    })
+    .pipe(Effect.mapError(safeFailure));
 
   if (verified.classification !== "user") {
     return yield* Effect.fail(new AuthError({ message: "Authentication failed" }));
@@ -172,6 +170,15 @@ export const exchangeSession = Effect.fn("exchangeSession")(function* (
     return yield* Effect.fail(new AuthError({ message: "Authentication failed" }));
   }
 
+  const sessionTtlSeconds = services.tokenMinter.ttlSeconds ?? 3_600;
+  if (
+    !Number.isSafeInteger(sessionTtlSeconds) ||
+    sessionTtlSeconds <= 0 ||
+    sessionTtlSeconds > MAX_BROWSER_SESSION_TTL_SECONDS
+  ) {
+    return yield* Effect.fail(new InternalError({ message: "Session exchange failed" }));
+  }
+
   const accessToken = yield* services.tokenMinter
     .mint({ subject: account.canonicalUserId, scope: DEFAULT_SESSION_SCOPE })
     .pipe(Effect.mapError(safeFailure));
@@ -180,15 +187,18 @@ export const exchangeSession = Effect.fn("exchangeSession")(function* (
   }
 
   return {
-    access_token: accessToken,
-    user: account.user,
-    profile: account.profile,
-    onboarding: account.onboarding,
-    wallet_attachments: account.wallet_attachments,
+    response: {
+      user: account.user,
+      profile: account.profile,
+      onboarding: account.onboarding,
+      wallet_attachments: account.wallet_attachments,
+    },
+    sessionToken: accessToken,
+    sessionTtlSeconds,
   };
 });
 
 export const makeSessionExchangeHandler =
   (services: SessionExchangeServices) =>
-  async (input: { readonly body: unknown }): Promise<SessionExchangeResponse> =>
+  async (input: { readonly body: unknown }): Promise<SessionExchangeHandlerResult> =>
     Effect.runPromise(exchangeSession(input.body, services));

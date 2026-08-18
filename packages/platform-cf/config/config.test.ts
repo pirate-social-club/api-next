@@ -55,9 +55,6 @@ describe("config system (000 §9)", () => {
       PRIVY_JWKS_URL: "https://privy.test/jwks",
       PRIVY_JWT_ISSUER: "privy",
       PRIVY_JWT_AUDIENCE: "pirate",
-      AUTH_UPSTREAM_JWT_JWKS_URL: "https://issuer.test/jwks",
-      AUTH_UPSTREAM_JWT_ISSUER: "issuer",
-      AUTH_UPSTREAM_JWT_AUDIENCE: "pirate",
     });
     expect(configured).toMatchObject({
       SELF_PASS_ENABLED: false,

@@ -139,10 +139,7 @@ export function projectIdentityAccount(identity: IdentityUser): ProjectedIdentit
     };
 
     Schema.decodeUnknownSync(GetMyProfile.response)(projected.profile);
-    Schema.decodeUnknownSync(SessionExchange.response)({
-      access_token: "validation",
-      ...projected,
-    });
+    Schema.decodeUnknownSync(SessionExchange.response)(projected);
     return projected;
   } catch (error) {
     if (error instanceof IdentityAccountInvalid) throw error;

@@ -13,7 +13,7 @@
     "./identity-repository": "./src/identity-repository.ts",
     "./public-profile-repository": "./src/public-profile-repository.ts",
     "./postgres": "./src/postgres.ts",
-    "./session-bridge": "./src/session-bridge.ts",
+    "./session-crypto": "./src/session-crypto.ts",
     "./session-proof": "./src/session-proof.ts",
     "./session-tokens": "./src/session-tokens.ts",
     "./verification-completion-repository": "./src/verification-completion-repository.ts",

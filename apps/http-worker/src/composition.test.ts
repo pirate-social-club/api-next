@@ -39,9 +39,6 @@ async function bindings(): Promise<HttpWorkerBindings> {
     PRIVY_JWKS_URL: "https://auth.privy.test/jwks.json",
     PRIVY_JWT_ISSUER: "privy-test",
     PRIVY_JWT_AUDIENCE: "privy-test",
-    AUTH_UPSTREAM_JWT_JWKS_URL: "https://issuer.test/jwks.json",
-    AUTH_UPSTREAM_JWT_ISSUER: "issuer-test",
-    AUTH_UPSTREAM_JWT_AUDIENCE: "pirate-test",
   };
 }
 
@@ -88,7 +85,7 @@ describe("HTTP production composition", () => {
 
   test("fails closed before route construction when a provider setting is absent", async () => {
     const complete = await bindings();
-    const { AUTH_UPSTREAM_JWT_ISSUER: _omitted, ...incomplete } = complete;
+    const { PRIVY_JWT_ISSUER: _omitted, ...incomplete } = complete;
     await expect(createProductionHttpWorker(incomplete)).rejects.toThrow(
       "HTTP worker configuration is incomplete or invalid",
     );

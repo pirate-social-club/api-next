@@ -3,7 +3,7 @@ import type { SessionTokenMinter } from "@pirate/application/use-cases/session-e
 import { Data, Effect } from "effect";
 
 import type { CanonicalIdentity } from "./identity-repository";
-import { type SessionBridge, SessionBridgeError } from "./session-bridge";
+import { type SessionCrypto, SessionCryptoError } from "./session-crypto";
 
 export type SessionTokenClassification = "user" | "device";
 
@@ -44,7 +44,7 @@ export interface SessionTokenVerifier {
   }) => Effect.Effect<SessionPrincipal, SessionTokenVerificationError>;
 }
 
-function bridgeFailureCode(error: SessionBridgeError): SessionTokenFailureCode {
+function cryptoFailureCode(error: SessionCryptoError): SessionTokenFailureCode {
   switch (error.code) {
     case "token_expired":
       return "token_expired";
@@ -84,11 +84,12 @@ function identityFailureCode(error: unknown): SessionTokenFailureCode {
   return "control_plane_record_missing";
 }
 
-export function makeRs256SessionTokenMinter(bridge: SessionBridge): SessionTokenMinter {
+export function makeRs256SessionTokenMinter(crypto: SessionCrypto): SessionTokenMinter {
   return {
+    ttlSeconds: crypto.defaultTtlSeconds,
     mint: ({ subject, scope }) =>
       Effect.tryPromise({
-        try: () => bridge.sign({ sub: subject, scope }),
+        try: () => crypto.sign({ sub: subject, scope }),
         catch: () => new SessionTokenVerificationError({ code: "invalid_claims" }),
       }),
   };
@@ -99,22 +100,22 @@ export function makeRs256SessionTokenMinter(bridge: SessionBridge): SessionToken
  * remains a repository dependency, keeping SQL and token policy separate.
  */
 export function makeRs256SessionTokenVerifier(
-  bridge: SessionBridge,
+  crypto: SessionCrypto,
   identityRepository: Pick<IdentityStore["Service"], "resolveCanonical">,
 ): SessionTokenVerifier {
   return {
     verify: ({ token, requiredScope, requiredClassification }) =>
       Effect.tryPromise({
-        try: () => bridge.verify(token),
+        try: () => crypto.verify(token),
         catch: (error) =>
           new SessionTokenVerificationError({
-            code: error instanceof SessionBridgeError ? bridgeFailureCode(error) : "invalid_token",
+            code: error instanceof SessionCryptoError ? cryptoFailureCode(error) : "invalid_token",
           }),
       }).pipe(
         Effect.flatMap((claims) => {
           const scopeValue = claims.scope;
           const scopeTokens = scopeValue.split(/\s+/u).filter(Boolean);
-          const classification = scopeValue === bridge.defaultScope ? "user" : ("device" as const);
+          const classification = scopeValue === crypto.defaultScope ? "user" : ("device" as const);
           if (
             classification === "device" &&
             requiredScope !== undefined &&

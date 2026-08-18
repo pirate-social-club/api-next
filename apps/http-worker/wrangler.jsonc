@@ -63,9 +63,6 @@
         "PRIVY_JWT_ISSUER": "privy.io",
         // PRIVY_JWKS_URL and PRIVY_JWT_AUDIENCE are derived from the
         // staging Privy app and are injected at deployment time.
-        "AUTH_UPSTREAM_JWT_JWKS_URL": "https://api-staging.pirate.sc/.well-known/jwks.json",
-        "AUTH_UPSTREAM_JWT_ISSUER": "pirate-api-staging",
-        "AUTH_UPSTREAM_JWT_AUDIENCE": "pirate-app-staging",
         // Reviewed inventory: staging currently has no additional internal
         // credential headers beyond the platform denylist.
         "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",

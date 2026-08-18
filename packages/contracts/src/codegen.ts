@@ -442,6 +442,8 @@ ${registryAliases}
 export interface PirateApiRequestOptions {
   readonly headers?: Headers | readonly [string, string][] | Readonly<Record<string, string>>;
   readonly signal?: AbortSignal;
+  /** Browser cookie mode; use include when the API is on another origin. */
+  readonly credentials?: "omit" | "same-origin" | "include";
 }
 export interface PirateApiClientOptions extends PirateApiRequestOptions {
   readonly fetchImpl?: typeof fetch;
@@ -634,9 +636,11 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
     addHeaders(options?.headers);
     if (requestInput.body !== undefined && !headers.has("content-type")) headers.set("content-type", bodyEncoding === "raw-text" ? "text/plain" : "application/json");
     const signal = options?.signal ?? config.signal;
+    const credentials = options?.credentials ?? config.credentials;
     const response = await fetchImpl(url, {
       method,
       headers,
+      ...(credentials === undefined ? {} : { credentials }),
       ...(requestInput.body === undefined ? {} : { body: bodyEncoding === "raw-text" ? requestInput.body as string : JSON.stringify(requestInput.body) }),
       ...(signal === undefined ? {} : { signal }),
     });

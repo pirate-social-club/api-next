@@ -101,9 +101,6 @@ export const HttpWorkerConfig = Config.all({
   PRIVY_JWKS_URL: Config.nonEmptyString("PRIVY_JWKS_URL"),
   PRIVY_JWT_ISSUER: Config.nonEmptyString("PRIVY_JWT_ISSUER"),
   PRIVY_JWT_AUDIENCE: Config.nonEmptyString("PRIVY_JWT_AUDIENCE"),
-  AUTH_UPSTREAM_JWT_JWKS_URL: Config.nonEmptyString("AUTH_UPSTREAM_JWT_JWKS_URL"),
-  AUTH_UPSTREAM_JWT_ISSUER: Config.nonEmptyString("AUTH_UPSTREAM_JWT_ISSUER"),
-  AUTH_UPSTREAM_JWT_AUDIENCE: Config.nonEmptyString("AUTH_UPSTREAM_JWT_AUDIENCE"),
 });
 
 export type HttpWorkerConfigValue = Config.Success<typeof HttpWorkerConfig>;

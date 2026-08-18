@@ -2,7 +2,10 @@ import { AuthError } from "@pirate/contracts";
 import { Effect } from "effect";
 
 export type AuthenticateSessionInput = Readonly<{
-  readonly authorization: string;
+  /** Machine callers use an explicit bearer credential. */
+  readonly authorization?: string;
+  /** Browser callers use the host-only session cookie. */
+  readonly sessionCookie?: string;
 }>;
 
 export type AuthenticatedSession = Readonly<{
@@ -34,7 +37,8 @@ export interface SessionAuthenticationServices {
   readonly verifier: BearerSessionVerifier;
 }
 
-const bearerToken = (authorization: string): string | null => {
+const bearerToken = (authorization: string | undefined): string | null => {
+  if (authorization === undefined) return null;
   const match = /^Bearer ([^\s]+)$/u.exec(authorization);
   return match?.[1] ?? null;
 };
@@ -43,7 +47,7 @@ export const authenticateSession = Effect.fn("authenticateSession")(function* (
   input: AuthenticateSessionInput,
   services: SessionAuthenticationServices,
 ): Effect.fn.Return<AuthenticatedSession, AuthError> {
-  const token = bearerToken(input.authorization);
+  const token = input.sessionCookie ?? bearerToken(input.authorization);
   if (token === null) return yield* new AuthError({ message: "Authentication failed" });
 
   const verified = yield* services.verifier
