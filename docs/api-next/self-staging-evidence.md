@@ -1,6 +1,7 @@
 # Self staging incident and restart record
 
-Status: blocked by credential rotation; not completed. Updated 2026-08-18.
+Status: frozen by policy; not completed. The former credential-rotation restart
+gate is superseded by control-plane `TASKS.md` at `9b4f2d1`. Updated 2026-08-18.
 
 This is the durable, redacted record for the interrupted Self staging tranche.
 It is authoritative for the incident state and restart gates. Production was
@@ -48,11 +49,15 @@ The following are redaction rules for all future evidence:
 
 ## Mandatory restart gates
 
-Resume is blocked until all gates below are explicitly authorized and
-recorded:
+The original restart checklist is retained as historical evidence only. The
+tranche is frozen, not an active resumable operation, until a new decision
+record explicitly reopens it. In particular, do not infer authorization from
+the checklist below:
 
-1. Coordinate an authorized rotation of the shared Privy app secret and JWT
-   signing key pair across every consumer and source store.
+1. ~~Coordinate an authorized rotation of the shared Privy app secret and JWT
+   signing key pair across every consumer and source store.~~ Superseded: no
+   legacy rotation or secret mutation is authorized by the current control
+   record; staging and production share production authentication material.
 2. Invalidate or assess existing sessions as applicable to that rotation.
 3. Re-run the complete inventory using value-safe commands and equality-only
    checks. Confirm no production resource, secret, or route is in scope.
@@ -62,12 +67,18 @@ recorded:
 5. Use only reviewed secret-loading procedures. Never use `infisical secrets`
    table output for inventory.
 
-Until these gates pass, Self remains disabled and the original tranche is
-paused. The real-document Session A is deferred.
+Until a new decision record reopens this work, Self remains disabled and the
+original tranche is frozen. The real-document Session A is deferred.
 
-## Remaining original tranche steps
+## Remaining original tranche steps (historical; not authorized)
 
-After the restart gates, continue the original sequence exactly:
+The sequence below is retained to preserve the interrupted-tranche record. It is
+not an execution checklist under the current control decision. Do not perform
+any step, including credential loading, schema/role creation, Hyperdrive
+creation, deployment, or Self enablement, unless a new decision record
+explicitly reopens this tranche and replaces the superseded gates above.
+
+For historical reference, the original sequence was:
 
 1. Reconfirm this file against current external state; do not trust IDs if
    resources have changed.
