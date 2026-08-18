@@ -2,6 +2,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { diffBreaking, type OpenApiDocument } from "@pirate/contracts";
 
+const MAX_BASELINE_DOCUMENT_BYTES = 16 * 1024 * 1024;
+
 export type BaselineEvent = "pull_request" | "push";
 
 export interface BaselineSelectionInput {
@@ -53,11 +55,13 @@ function readBaselineDocument(baseSha: string, documentPath: string): string | u
 
   const show = spawnSync("git", ["show", `${resolvedSha}:${documentPath}`], {
     encoding: "utf8",
+    maxBuffer: MAX_BASELINE_DOCUMENT_BYTES,
   });
   if (show.status === 0) return show.stdout;
 
   const tree = spawnSync("git", ["ls-tree", "-r", "--name-only", resolvedSha, "--", documentPath], {
     encoding: "utf8",
+    maxBuffer: MAX_BASELINE_DOCUMENT_BYTES,
   });
   if (tree.status !== 0) {
     throw new Error(`Unable to inspect baseline tree ${resolvedSha}: ${tree.stderr.trim()}`);
