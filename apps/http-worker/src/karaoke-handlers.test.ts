@@ -141,4 +141,61 @@ describe("karaoke HTTP handlers", () => {
     });
     expect(called).toBe(false);
   });
+
+  it("rejects unauthenticated attempt reads before calling storage", async () => {
+    let called = false;
+    const handlers = makeKaraokeHandlers({
+      createAttempt: async () => session,
+      getAttempt: async () => {
+        called = true;
+        return attempt;
+      },
+      getLeaderboard: async () => leaderboard,
+    });
+
+    await expect(
+      handlers.GetKaraokeAttempt(
+        request({
+          params: { attemptId: "attempt-1", communityId: "community-1" },
+          principal: null,
+        }),
+      ),
+    ).rejects.toMatchObject({ _tag: "AuthError" });
+    expect(called).toBe(false);
+  });
+
+  it("returns not found when the attempt port has no result", async () => {
+    const handlers = makeKaraokeHandlers({
+      createAttempt: async () => session,
+      getAttempt: async () => null,
+      getLeaderboard: async () => leaderboard,
+    });
+
+    await expect(
+      handlers.GetKaraokeAttempt(
+        request({
+          params: { attemptId: "missing-attempt", communityId: "community-1" },
+        }),
+      ),
+    ).rejects.toMatchObject({ _tag: "NotFound" });
+  });
+
+  it("rejects missing or blank idempotency keys before creating an attempt", async () => {
+    let called = false;
+    const handlers = makeKaraokeHandlers({
+      createAttempt: async () => {
+        called = true;
+        return session;
+      },
+      getAttempt: async () => attempt,
+      getLeaderboard: async () => leaderboard,
+    });
+
+    for (const headers of [{}, { "idempotency-key": "   " }]) {
+      await expect(handlers.CreateKaraokeAttempt(request({ headers }))).rejects.toMatchObject({
+        _tag: "BadRequest",
+      });
+    }
+    expect(called).toBe(false);
+  });
 });
