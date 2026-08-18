@@ -37,9 +37,7 @@ async function verifyReleaseLedger(currentVersion: string): Promise<void> {
     if (artifactSha256 !== release.artifactSha256) {
       throw new Error(`Immutable api-client artifact drifted: ${release.version}`);
     }
-    const handoff = JSON.parse(
-      await readFile(join(repositoryRoot, release.handoff), "utf8"),
-    ) as {
+    const handoff = JSON.parse(await readFile(join(repositoryRoot, release.handoff), "utf8")) as {
       readonly package?: string;
       readonly version?: string;
       readonly artifact?: { readonly path?: string; readonly sha256?: string };
