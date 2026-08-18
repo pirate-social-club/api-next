@@ -1,7 +1,8 @@
 # Self staging incident and restart record
 
-Status: staging infrastructure is provisioned and Self is enabled in staging
-only. The real-document ceremony has not begun. Updated 2026-08-18.
+Status: staging infrastructure is provisioned, the staging-only mock ceremony
+matrix has passed, and Self is restored to real-document mode in staging. The
+physical real-document ceremony remains pending. Updated 2026-08-18.
 
 This is the durable, redacted record for the Self staging tranche. It preserves
 the earlier incident and containment history, then records the verified
@@ -30,10 +31,13 @@ post-restart state. No secret value is recorded here.
   with caching disabled and limit 5. The public staging API hostname is
   `api-next-staging.pirate.sc`.
 - The Self-disabled staging baseline was
-  `734a588d-406c-4f2e-82fa-2c30e64ddfd7`. Self was then enabled in staging only;
-  the current good version is `5704627a-be9d-499c-933a-ec76e685babf`. Health returned 200,
-  JWKS returned 200, the public-profile probe returned 404 (proving the DB
-  path), and missing/invalid authentication returned 401.
+  `734a588d-406c-4f2e-82fa-2c30e64ddfd7`. Self was then enabled in staging only.
+  The passing mock ceremony ran on version
+  `d0c2d426-e269-4d7e-9826-993fef98f041`; staging was then restored to
+  real-document mode on version `8eaf64fa-6cc1-4d48-bb33-213c46cdf775`.
+  Health returned 200, JWKS returned 200, the public-profile probe returned
+  404 (demonstrating that the DB-backed route was reached), and missing/invalid
+  authentication returned 401.
 - The first health probes used an explicit Cloudflare IPv4 resolution while DNS
   A propagation was incomplete. A and AAAA records subsequently published, and
   a normal direct health request returned 200.
@@ -44,16 +48,97 @@ post-restart state. No secret value is recorded here.
 - The jobs configuration has the staging Hyperdrive ID, but the jobs Worker
   has not been deployed.
 
-No real-document ceremony has begun. After Self enablement, health returned 200,
-an unauthenticated Self session start returned 401, and an unbound garbage
-`self.pass` callback failed closed with 400.
+No physical real-document ceremony has completed. After Self enablement,
+health returned 200, an unauthenticated Self session start returned 401, and
+unknown or malformed callback targets remained redacted 404/400 responses.
+
+## Staging mock ceremony evidence
+
+The approved staging-only mock window was enabled by deployment configuration,
+never in production. Mock launches used `staging_https`, Celo Sepolia chain
+`11142220`, and fresh sessions after every configuration change. The window is
+now closed: the current staging deployment has
+`SELF_PASS_MOCK_PASSPORT=false`; production was not mutated.
+
+The initial mock ceremony attempts exposed two integration defects before the
+passing run:
+
+- The generic callback response did not speak Self's provider protocol. The
+  provider now owns the exact acknowledgment: handled outcomes return HTTP 200
+  with `{result, status, id}`. Malformed callbacks, unknown providers/sessions,
+  storage failures, and provider infrastructure failures retain their closed
+  generic error behavior.
+- The launch compiler required `document.valid` but did not request Self's
+  `expiry_date` disclosure. The verifier therefore produced no usable expiry
+  and the fail-closed claim normalizer correctly rejected `document.valid`.
+  The compiler now requests expiry exactly when that requirement is present.
+
+Published commits are `f337a63` (provider callback acknowledgments) and
+`0b1d5b8` (document-expiry disclosure). GitHub Actions run `32107951218`
+passed at `0b1d5b8`. Local validation passed 606 unit tests and all 32 workerd
+tests, with zero failures.
+
+The accepted session identifier is recorded only by SHA-256 digest:
+`f0f69006158235c3809979825a38b11178158f948ecab198d3f31daf679b19e1`.
+Its read-back proved:
+
+- terminal status `completed`, one completion event, one evidence receipt, and
+  one consumed accepted attempt;
+- provider/issuer `self.pass`, method `document`, protocol `self-pass-v1`,
+  environment `staging`, dynamic configuration pinned to SDK
+  `1.2.0-beta.1`, and proof-session provenance;
+- issuer/RP scope `pirate-social`, with no action scope;
+- receipt kind `self.pass.attestation.1`, metadata limited to passport
+  credential type and source attestation type, and valid SHA-256 evidence hash;
+- assertions `age.minimum = 18`, `credential.subject_unique = true`, and
+  `document.valid = true`, all at `document_zk` assurance and co-bound to the
+  same subject;
+- one valid SHA-256 subject key, initial binding epoch 1, and matching active
+  binding; and
+- zero `human.unique` assertions.
+
+The live rejection matrix also passed:
+
+- Bound claim rejection digest
+  `e62c4725129a0caa6841dab9e56eaa2e7f0b0e124a9c6dd10af3dc3dd03ab237`:
+  one durable `consumed` attempt, pending session, zero completion events, and
+  zero receipts.
+- Structurally valid, correctly session-bound, cryptographically invalid proof
+  digest
+  `8b232047e1249a0a0e7fe75ed89a78114efbc0ee3afa2ae2623c4b7a6aaeeb29`:
+  Self-shaped HTTP 200 acknowledgment with `result=false/status=pending`, one
+  temporary `leased` attempt, zero completion events, and zero receipts.
+- Terminal same-idempotency replay through the shared completion path returned
+  HTTP 200 with `completed=true`, `replayed=true`, and the same session ID,
+  without provider work or another ledger write.
+
+The accepted raw provider callback was deliberately neither logged nor stored,
+so a byte-identical public callback replay could not be performed after the
+fact. The terminal replay above proves the common idempotent completion path,
+but it is not represented as a byte-identical provider-callback replay. A
+future physical-document ceremony must arrange a value-safe one-shot capture
+or controlled provider retry before submission if that exact transport case is
+still required.
+
+### Staging rollback
+
+- The reviewed post-window real-document deployment is
+  `8eaf64fa-6cc1-4d48-bb33-213c46cdf775`. If a later staging deployment
+  regresses, use Wrangler's explicit version rollback to that ID, then verify
+  `/health` returns 200 and the deployed staging binding keeps
+  `SELF_PASS_MOCK_PASSPORT=false`.
+- If mock mode is accidentally re-enabled, redeploy `main` with the checked-in
+  staging configuration. Do not reuse a session minted under the other mode;
+  create a fresh session after the redeploy.
+- These instructions target `pirate-http-worker-staging` only. Production
+  remains outside this rollback and was not changed by the ceremony.
 
 ## Published and observed code state
 
 - The runtime code baseline at the incident was `6ab70b6`. It includes staging
   identity bootstrap `169fe46` and the Privy ES256 verification fix
-  (`6ab70b6`). This incident record changes documentation only.
-- GitHub Actions run `32072658803` is green.
+  (`6ab70b6`). The current ceremony-tested code is `0b1d5b8`.
+- GitHub Actions runs `32072658803` and `32107951218` are green.
 - A mandatory stop condition fired when the Infisical CLI displayed secret
   values without `--show-values`. Six displayed credentials are treated as
   compromised. The command transcript is the exposure; no value is reproduced
@@ -64,7 +149,7 @@ an unauthenticated Self session start returned 401, and an unbound garbage
   migration ledger. Six `/services/api-next` entries were deleted, as was
   the secure temporary directory.
 - The incident-era statement that no migration, Hyperdrive configuration,
-  Worker, custom-domain route, or deployment occurred is retained below as
+  Worker, custom-domain route, or deployment occurred is retained here for
   historical context. The current state above supersedes it for staging.
 
 ## Historical incident and containment
@@ -93,15 +178,15 @@ The following are redaction rules for all future evidence:
 ## Current gates
 
 1. Keep Self enabled only in staging; production must remain disabled.
-2. Run one fresh real-document Session A. Record only redacted session,
+2. Run one fresh physical real-document Session A. Record only redacted session,
    receipt, assertion, subject binding, provenance, pinned `pirate-social`
    scope, and `credential.subject_unique` evidence.
-3. Run the accepted-completion, identical-replay, bound-rejection, and
-   unbound-garbage callback cases using fresh sessions as required. Inspect
-   temporary leases versus durably consumed attempts.
-4. Produce and audit the redacted staging evidence report before beginning the
-   pure evaluator. The first evaluator vertical consumes this real staging
-   evidence.
+3. The staging mock accepted-completion, terminal replay, bound-rejection, and
+   unbound-invalid-proof cases are complete. Byte-identical public callback
+   replay remains explicitly unproven.
+4. Audit this redacted staging mock evidence before beginning the pure
+   evaluator. It may be used as a development fixture; it must not be labeled
+   physical-document production evidence.
 
 The original restart checklist and its stop conditions remain retained below
 as historical evidence. They do not authorize repeating already-completed
@@ -136,22 +221,21 @@ For historical reference, the original sequence was:
    **Complete for the recorded probes.**
 8. Install the reviewed Self/Privy/JWT secrets and enable `self.pass` in
    staging only. **Complete; post-enable fail-closed probes passed.**
-9. **Deferred: real-document Session A.** Run a fresh live Self ceremony with
-   a supported physical document, then resend the byte-identical callback for
-   the replay check. Capture session, receipt, assertion,
+9. **Mock complete; physical document deferred.** Run a fresh live Self
+   ceremony with a supported physical document, then arrange a value-safe
+   byte-identical callback replay. Capture session, receipt, assertion,
    subject-key/binding, provenance, pinned `pirate-social` scope, and
    `credential.subject_unique` evidence without recording private document
    data.
-10. Use separate fresh sessions for the remaining cases: Session B for a
-    cryptographically bound but policy-rejected proof during the approved
-    staging-only mock window, and Session C for a structurally valid callback
-    with correct session context but an unbound/invalid proof. Record consumed
-    attempts for Session B and the temporary lease for Session C; malformed
-    pre-admission input does not prove the lease invariant.
-11. Produce a redacted staging evidence report containing deployed commit,
-    Worker route, Hyperdrive ID/name (not credentials), migration ledger and
-    checksum manifest, ceremony outcomes, database invariants, and rollback
-    instructions.
+10. **Complete in the mock window.** Separate fresh sessions proved a
+    cryptographically bound but policy-rejected proof and a structurally valid,
+    correctly session-bound, cryptographically invalid proof. Read-back proved
+    the durable consumed attempt for the former and temporary lease for the
+    latter; malformed pre-admission input was not used as lease evidence.
+11. **Complete for the mock ceremony.** This redacted staging evidence report
+    contains the deployed commit, Worker route, Hyperdrive ID/name (not
+    credentials), migration ledger and checksum manifest, ceremony outcomes,
+    database invariants, and rollback instructions.
 12. Audit that report before beginning the pure evaluator slice. The first
     evaluator vertical should consume the staging ceremony evidence and decide
     the curated 18+ policy. ZKPassport follows the evaluator; its verifier VPS
