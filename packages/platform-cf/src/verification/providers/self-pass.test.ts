@@ -475,7 +475,12 @@ describe("Self Pass provider-local adapter", () => {
         endpoint_type: "staging_https",
         scope: SELF_PASS_RP_SCOPE,
         user_id_type: "uuid",
-        disclosures: { minimum_age: 18, nationality: true, gender: true },
+        disclosures: {
+          minimum_age: 18,
+          nationality: true,
+          gender: true,
+          expiry_date: true,
+        },
         dev_mode: true,
         version: 2,
       },

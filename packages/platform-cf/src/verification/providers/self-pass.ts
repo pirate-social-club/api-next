@@ -371,12 +371,14 @@ function compileDisclosures(requirements: readonly VerificationRequirement[]) {
     minimum_age?: number;
     nationality?: true;
     gender?: true;
+    expiry_date?: true;
   } = {};
   for (const requirement of requirements) {
     if (requirement.claim_id === "age.minimum")
       disclosures.minimum_age = Number(requirement.minimum_age);
     if (requirement.claim_id === "nationality.allowed") disclosures.nationality = true;
     if (requirement.claim_id === "gender.marker") disclosures.gender = true;
+    if (requirement.claim_id === "document.valid") disclosures.expiry_date = true;
   }
   return disclosures;
 }
