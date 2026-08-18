@@ -216,6 +216,13 @@ export interface CommunityPurchaseFundingInterpreter {
     readonly ownerId: string;
     readonly leaseMs: number;
   }) => Effect.Effect<CommunityPurchaseFundingLease, CommunityPurchaseFundingInterpreterFailure>;
+  /** Load the server-owned journal entry before any external observation. */
+  readonly load: (
+    operationId: CommunityPurchaseOperationId,
+  ) => Effect.Effect<
+    CommunityPurchaseFundingJournalRecord | null,
+    CommunityPurchaseFundingInterpreterFailure
+  >;
   readonly transition: (input: {
     readonly lease: CommunityPurchaseFundingLease;
     readonly source: CommunityPurchaseFundingCaller;
@@ -471,6 +478,13 @@ export function makeCommunityPurchaseFundingInterpreter(
     },
   );
 
+  const load = Effect.fn("CommunityPurchaseFundingInterpreter.load")(function* (
+    operationId: CommunityPurchaseOperationId,
+  ) {
+    if (!canonicalNonEmpty(operationId)) return yield* reject("invalid-input");
+    return yield* store.load(operationId);
+  });
+
   const transition = Effect.fn("CommunityPurchaseFundingInterpreter.transition")(function* (input: {
     readonly lease: CommunityPurchaseFundingLease;
     readonly source: CommunityPurchaseFundingCaller;
@@ -521,7 +535,7 @@ export function makeCommunityPurchaseFundingInterpreter(
     return { entry: outcome.record.entry, replayed: outcome.kind === "replayed" };
   });
 
-  return { begin, acquireLease, transition };
+  return { begin, acquireLease, load, transition };
 }
 
 export function confirmedCommunityPurchaseReceiptId(
