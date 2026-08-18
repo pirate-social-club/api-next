@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -8,6 +9,54 @@ import { sha256 } from "./api-client-provenance.ts";
 const repositoryRoot = resolve(fileURLToPath(new URL("../", import.meta.url)));
 const packageRoot = join(repositoryRoot, "packages", "api-client");
 const packageName = "pirate-api-client-0.5.0.tgz";
+
+interface ReleaseLedger {
+  readonly schemaVersion: 1;
+  readonly package: "@pirate/api-client";
+  readonly releases: readonly {
+    readonly version: string;
+    readonly artifact: string;
+    readonly artifactSha256: string;
+    readonly handoff: string;
+  }[];
+}
+
+async function verifyReleaseLedger(currentVersion: string): Promise<void> {
+  const ledger = JSON.parse(
+    await readFile(join(repositoryRoot, "docs/api-next/api-client-release-ledger.json"), "utf8"),
+  ) as ReleaseLedger;
+  if (ledger.schemaVersion !== 1 || ledger.package !== "@pirate/api-client") {
+    throw new Error("Invalid api-client release ledger identity");
+  }
+  const versions = new Set<string>();
+  for (const release of ledger.releases) {
+    if (versions.has(release.version)) throw new Error(`Duplicate release ${release.version}`);
+    versions.add(release.version);
+    const artifact = await readFile(join(repositoryRoot, release.artifact));
+    const artifactSha256 = createHash("sha256").update(artifact).digest("hex");
+    if (artifactSha256 !== release.artifactSha256) {
+      throw new Error(`Immutable api-client artifact drifted: ${release.version}`);
+    }
+    const handoff = JSON.parse(
+      await readFile(join(repositoryRoot, release.handoff), "utf8"),
+    ) as {
+      readonly package?: string;
+      readonly version?: string;
+      readonly artifact?: { readonly path?: string; readonly sha256?: string };
+    };
+    if (
+      handoff.package !== ledger.package ||
+      handoff.version !== release.version ||
+      handoff.artifact?.path !== release.artifact ||
+      handoff.artifact.sha256 !== release.artifactSha256
+    ) {
+      throw new Error(`Api-client handoff does not match its release ledger: ${release.version}`);
+    }
+  }
+  if (!versions.has(currentVersion)) {
+    throw new Error(`Current api-client ${currentVersion} is absent from the release ledger`);
+  }
+}
 
 function run(command: string, args: readonly string[], cwd: string): void {
   const result = spawnSync(command, [...args], { cwd, encoding: "utf8" });
@@ -60,6 +109,7 @@ async function main(): Promise<void> {
     if (packedPackage.name !== "@pirate/api-client" || packedPackage.version !== "0.5.0") {
       throw new Error("Packed package identity/version is not @pirate/api-client@0.5.0");
     }
+    await verifyReleaseLedger(packedPackage.version);
     for (const field of ["dependencies", "devDependencies", "peerDependencies"] as const) {
       if (packedPackage[field] !== undefined) {
         throw new Error(`Packed client must have zero package dependencies (${field} present)`);

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "package": "@pirate/api-client",
+  "releases": [
+    {
+      "version": "0.4.0",
+      "artifact": "artifacts/api-client/pirate-api-client-0.4.0.tgz",
+      "artifactSha256": "edca83bf774b7bcfe94e235da3cca13783807e1c3bf3cea0e84243f71f4b85f6",
+      "handoff": "docs/api-next/api-client-v0-4-handoff.json"
+    },
+    {
+      "version": "0.5.0",
+      "artifact": "artifacts/api-client/pirate-api-client-0.5.0.tgz",
+      "artifactSha256": "94536ae78d885c2978fd8cf50681c14a9a885cea1eca023296f5b3997f4f7bc7",
+      "handoff": "docs/api-next/api-client-v0-5-handoff.json"
+    }
+  ]
+}
