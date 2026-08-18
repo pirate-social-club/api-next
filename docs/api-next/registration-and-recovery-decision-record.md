@@ -137,6 +137,15 @@ Deletion is not an identity reset and releases nothing automatically.
 - Subject-key bindings and binding-event history remain durable. They continue to fence
   cross-account verification and subject-key-based reward uniqueness.
 
+The row lifecycle trigger is the portable schema-level guarantee against `DELETE` and
+reactivation. PostgreSQL `TRUNCATE` does not execute row-level triggers, so environment
+provisioning must also prove that the application runtime principal has neither
+`DELETE` nor `TRUNCATE` on `identity_credentials`. The actual principal is
+environment-specific (currently `api_next_runtime` in staging); the legacy
+`roles.sql.example` file is not evidence of live grants and must never be cited as such.
+The migrator necessarily retains schema-changing authority and remains an operational
+credential unavailable to Workers.
+
 User-facing account data is removed or minimized according to the deletion runbook,
 while the smallest non-public identity tombstones needed for abuse prevention, recovery,
 financial integrity, and auditability remain. Any future erasure or label-reclamation
@@ -173,6 +182,8 @@ reserve a user-chosen label.
 - deleted/conflicting bindings fail closed without enumeration;
 - deletion tombstones credential, handle, and subject-key bindings rather than making
   them reusable;
+- the deployed runtime principal is read back as lacking both `DELETE` and `TRUNCATE`
+  on `identity_credentials`; example SQL and intended grants are not sufficient evidence;
 - registration cannot set verification evidence or capabilities;
 - a cross-account document binding produces `recovery_required`, never an automatic
   rebind;

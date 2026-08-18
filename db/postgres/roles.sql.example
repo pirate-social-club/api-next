@@ -14,4 +14,3 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 REVOKE UPDATE, DELETE ON community_purchase_funding_transaction_claims FROM api_next_app;
 REVOKE UPDATE, DELETE ON community_purchase_funding_transitions FROM api_next_app;
 REVOKE UPDATE, DELETE ON community_purchase_funding_receipts FROM api_next_app;
-REVOKE DELETE ON identity_credentials FROM api_next_app;
