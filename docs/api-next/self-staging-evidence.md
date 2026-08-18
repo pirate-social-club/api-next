@@ -1,8 +1,7 @@
 # Self staging incident and restart record
 
-Status: staging infrastructure is provisioned and the HTTP Worker is deployed
-with Self disabled. The real-document ceremony and ceremony matrix have not
-begun. Updated 2026-08-18.
+Status: staging infrastructure is provisioned and Self is enabled in staging
+only. The real-document ceremony has not begun. Updated 2026-08-18.
 
 This is the durable, redacted record for the Self staging tranche. It preserves
 the earlier incident and containment history, then records the verified
@@ -30,8 +29,9 @@ post-restart state. No secret value is recorded here.
   `pirate-control-plane-staging`, ID `11c1ad1806004f3b87fa771833093132`,
   with caching disabled and limit 5. The public staging API hostname is
   `api-next-staging.pirate.sc`.
-- The staging HTTP Worker is deployed with Self disabled. The current good
-  version is `734a588d-406c-4f2e-82fa-2c30e64ddfd7`. Health returned 200,
+- The Self-disabled staging baseline was
+  `734a588d-406c-4f2e-82fa-2c30e64ddfd7`. Self was then enabled in staging only;
+  the current good version is `5704627a-be9d-499c-933a-ec76e685babf`. Health returned 200,
   JWKS returned 200, the public-profile probe returned 404 (proving the DB
   path), and missing/invalid authentication returned 401.
 - The first health probes used an explicit Cloudflare IPv4 resolution while DNS
@@ -44,8 +44,9 @@ post-restart state. No secret value is recorded here.
 - The jobs configuration has the staging Hyperdrive ID, but the jobs Worker
   has not been deployed.
 
-No Self ceremony has begun. Self remains disabled until the staging smoke
-checks are complete and the real-document gate is deliberately started.
+No real-document ceremony has begun. After Self enablement, health returned 200,
+an unauthenticated Self session start returned 401, and an unbound garbage
+`self.pass` callback failed closed with 400.
 
 ## Published and observed code state
 
@@ -91,8 +92,7 @@ The following are redaction rules for all future evidence:
 
 ## Current gates
 
-1. Keep Self disabled until the staging smoke checks and configuration audit
-   are complete.
+1. Keep Self enabled only in staging; production must remain disabled.
 2. Run one fresh real-document Session A. Record only redacted session,
    receipt, assertion, subject binding, provenance, pinned `pirate-social`
    scope, and `credential.subject_unique` evidence.
@@ -135,7 +135,7 @@ For historical reference, the original sequence was:
    authentication, and database connectivity before introducing Self.
    **Complete for the recorded probes.**
 8. Install the reviewed Self/Privy/JWT secrets and enable `self.pass` in
-   staging only. **Pending; Self is still disabled.**
+   staging only. **Complete; post-enable fail-closed probes passed.**
 9. **Deferred: real-document Session A.** Run a fresh live Self ceremony with
    a supported physical document, then resend the byte-identical callback for
    the replay check. Capture session, receipt, assertion,

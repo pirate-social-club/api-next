@@ -54,7 +54,7 @@
         "API_NEXT_ENV": "staging",
         "CORS_ORIGIN": "https://staging.pirate.sc",
         "PIRATE_API_PUBLIC_ORIGIN": "https://api-next-staging.pirate.sc",
-        "SELF_PASS_ENABLED": "false",
+        "SELF_PASS_ENABLED": "true",
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
         "PIRATE_APP_JWT_ISSUER": "pirate-api-next-staging",

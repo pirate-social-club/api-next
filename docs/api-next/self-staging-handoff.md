@@ -1,7 +1,7 @@
 # Self staging enablement handoff
 
-Status: staging infrastructure is provisioned; Self remains disabled pending
-the first real-document ceremony. Updated 2026-08-18.
+Status: staging infrastructure is provisioned and Self is enabled in staging
+only; the first real-document ceremony is pending. Updated 2026-08-18.
 
 This is the durable handoff for enabling the self-hosted Self Pass adapter in
 staging. It records observed external state, not assumptions. Secret values
@@ -12,8 +12,7 @@ are intentionally omitted.
 The interrupted staging attempt is recorded in
 [self-staging-evidence.md](self-staging-evidence.md), which preserves the
 credential exposure and containment history. The current verified state below
-supersedes the pre-provisioning inventory. Self is disabled and the real
-ceremony has not begun.
+supersedes the pre-provisioning inventory. The real ceremony has not begun.
 
 ## Published code state
 
@@ -61,10 +60,14 @@ ceremony has not begun.
   `11c1ad1806004f3b87fa771833093132`, with caching disabled and limit 5.
 - The staging API hostname is `api-next-staging.pirate.sc`; it does not
   replace the existing `staging.pirate.sc` service.
-- The HTTP Worker’s current good version is
-  `734a588d-406c-4f2e-82fa-2c30e64ddfd7`, deployed with Self disabled.
+- The Self-disabled baseline was `734a588d-406c-4f2e-82fa-2c30e64ddfd7`.
+  Self is now enabled in staging only at current good version
+  `5704627a-be9d-499c-933a-ec76e685babf`.
   Health returned 200, JWKS returned 200, public-profile returned 404 (DB
   path), and missing/invalid authentication returned 401.
+- After enablement, health returned 200, unauthenticated Self session start
+  returned 401, and an unbound garbage `self.pass` callback failed closed with
+  400.
 - Initial probes used explicit Cloudflare IPv4 resolution while DNS A
   propagation was incomplete. A and AAAA records subsequently published, and a
   normal direct health request returned 200. The jobs configuration is updated
@@ -157,7 +160,7 @@ on old service folder names.
    authentication, and database connectivity. **Complete for the recorded
    probes.**
 8. Install the reviewed Self/Privy/JWT secrets and enable `self.pass` in
-   staging only. **Pending; Self remains disabled.**
+   staging only. **Complete; post-enable fail-closed probes passed.**
 9. Run one fresh Self ceremony with a supported physical document. Capture
    session, receipt, assertion, subject-key/binding, provenance, pinned
    `pirate-social` scope, and `credential.subject_unique` evidence without
