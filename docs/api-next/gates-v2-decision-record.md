@@ -154,6 +154,38 @@ The exact beta SDK pin is deliberate production parity; prerelease churn and
 the newer package's deprecation signal are accepted compatibility risks to be
 reviewed through an explicit upgrade, never a floating dependency range.
 
+### Canonical policy identity and hash
+
+Every curated policy's `policy_hash` is the SHA-256 commitment to one
+authoritative preimage. The gates-v2 public `policyCanonicalPreimage` helper
+is the implementation of this contract. It constructs compact JSON with the
+following exact top-level key order:
+
+1. `co_reference`
+2. `freshness`
+3. `minimum_age`
+4. `policy_key`
+5. `policy_version_id`
+6. `required_assurance`
+7. `requirements`
+8. `revision`
+
+The `requirements` value is normalized to exactly three objects, in the policy
+order: `{ claim_id, minimum_age }` for `age.minimum`, followed by
+`{ claim_id }` for `credential.subject_unique`, followed by `{ claim_id }` for
+`document.valid`. No other requirement fields or object keys participate. The
+`revision` JSON key is the wire representation of the policy's
+`policy_revision` field. The preimage is the UTF-8 encoding of this compact
+JSON (no insignificant whitespace); its SHA-256 digest is encoded as
+lowercase hexadecimal.
+
+Changing any policy value, requirement ordering/content, normalized
+representation, or hash algorithm requires a new policy revision, a newly
+computed hash, and a new `policy_version_id` where the versioning policy calls
+for one. A stored revision must never be reused with a different preimage or
+hash. The exported helper is the only supported way for callers to construct
+or audit this preimage.
+
 ## Session start and replay
 
 Session start is a reservation state machine keyed by actor and intent and

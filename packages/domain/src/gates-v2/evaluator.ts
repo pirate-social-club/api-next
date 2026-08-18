@@ -1,4 +1,4 @@
-import { Exit, Predicate, Schema } from "effect";
+import { Schema } from "effect";
 import type {
   Assertion,
   EvidenceBundle,
@@ -215,7 +215,7 @@ const CuratedAgeEvaluatorInputSchema = Schema.Struct({
 });
 
 function canonicalUnsignedInteger(value: unknown): bigint | undefined {
-  if (!Predicate.isString(value)) return undefined;
+  if (typeof value !== "string") return undefined;
   if (!/^(0|[1-9][0-9]*)$/.test(value)) return undefined;
   try {
     return BigInt(value);
@@ -238,8 +238,10 @@ function hasExactKeys(value: unknown, keys: readonly string[]): boolean {
 
 /**
  * Fixed-order policy hash preimage. This is part of the public gates-v2
- * policy contract; callers constructing or auditing policy hashes must use
- * this exact UTF-8 JSON representation.
+ * policy contract: compact UTF-8 JSON is hashed with SHA-256 and rendered as
+ * lowercase hexadecimal; the `revision` wire key is sourced from
+ * `policy_revision`, and requirements are normalized to their reviewed claim
+ * fields in this order.
  */
 export function policyCanonicalPreimage(policy: CuratedAgePolicy): string {
   return JSON.stringify({
@@ -304,7 +306,7 @@ function metadata(policy: CuratedAgePolicy, trace: readonly string[]): DecisionM
 }
 
 function metadataFromUnknown(policy: unknown): DecisionMetadata {
-  if (!Predicate.isObject(policy)) {
+  if (policy === null || typeof policy !== "object" || Array.isArray(policy)) {
     return {
       policy_version_id: "",
       policy_revision: 0,
@@ -313,13 +315,14 @@ function metadataFromUnknown(policy: unknown): DecisionMetadata {
       trace: [],
     };
   }
+  const record = policy as Record<string, unknown>;
   return {
-    policy_version_id: Predicate.isString(policy.policy_version_id) ? policy.policy_version_id : "",
+    policy_version_id: typeof record.policy_version_id === "string" ? record.policy_version_id : "",
     policy_revision:
-      Predicate.isNumber(policy.policy_revision) && Number.isSafeInteger(policy.policy_revision)
-        ? policy.policy_revision
+      typeof record.policy_revision === "number" && Number.isSafeInteger(record.policy_revision)
+        ? record.policy_revision
         : 0,
-    policy_hash: Predicate.isString(policy.policy_hash) ? policy.policy_hash : "",
+    policy_hash: typeof record.policy_hash === "string" ? record.policy_hash : "",
     winning_witness: [],
     trace: [],
   };
@@ -631,24 +634,33 @@ function evaluateCuratedAgeUnsafe(input: CuratedAgeEvaluatorInput): CuratedAgeEv
 export function evaluateCuratedAge(input: unknown): CuratedAgeEvaluation {
   let fallbackMetadata: DecisionMetadata = metadataFromUnknown(undefined);
   try {
-    const rawInput = Predicate.isObject(input) ? input : undefined;
+    const rawInput =
+      input !== null && typeof input === "object" && !Array.isArray(input)
+        ? (input as Record<string, unknown>)
+        : undefined;
     fallbackMetadata = metadataFromUnknown(rawInput?.policy);
 
-    const policyExit = Schema.decodeUnknownExit(
-      CuratedAgePolicySchema,
-      STRICT_PARSE_OPTIONS,
-    )(rawInput?.policy);
-    if (Exit.isFailure(policyExit))
+    let policy: CuratedAgePolicy;
+    try {
+      policy = Schema.decodeUnknownSync(
+        CuratedAgePolicySchema,
+        STRICT_PARSE_OPTIONS,
+      )(rawInput?.policy) as unknown as CuratedAgePolicy;
+    } catch {
       return failWithMetadata(fallbackMetadata, "policy_invalid", ["policy_invalid"]);
+    }
 
-    const inputExit = Schema.decodeUnknownExit(
-      CuratedAgeEvaluatorInputSchema,
-      STRICT_PARSE_OPTIONS,
-    )(input);
-    if (Exit.isFailure(inputExit))
+    let decodedInput: CuratedAgeEvaluatorInput;
+    try {
+      decodedInput = Schema.decodeUnknownSync(
+        CuratedAgeEvaluatorInputSchema,
+        STRICT_PARSE_OPTIONS,
+      )(input) as unknown as CuratedAgeEvaluatorInput;
+    } catch {
       return failWithMetadata(fallbackMetadata, "invalid_evidence", ["assertion_invalid"]);
+    }
 
-    return evaluateCuratedAgeUnsafe(inputExit.value as unknown as CuratedAgeEvaluatorInput);
+    return evaluateCuratedAgeUnsafe({ ...decodedInput, policy });
   } catch {
     return failWithMetadata(fallbackMetadata, "invalid_evidence", ["assertion_invalid"]);
   }
