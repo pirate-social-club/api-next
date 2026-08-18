@@ -141,7 +141,9 @@ The row lifecycle trigger is the portable schema-level guarantee against `DELETE
 reactivation. PostgreSQL `TRUNCATE` does not execute row-level triggers, so environment
 provisioning must also prove that the application runtime principal has neither
 `DELETE` nor `TRUNCATE` on `identity_credentials`. The actual principal is
-environment-specific (currently `api_next_runtime` in staging); the legacy
+environment-specific (the staging runtime connection currently resolves to the
+PlanetScale-managed role `pscale_api_gy9lze83nr29`); the logical name
+`api_next_runtime` and the legacy
 `roles.sql.example` file is not evidence of live grants and must never be cited as such.
 The migrator necessarily retains schema-changing authority and remains an operational
 credential unavailable to Workers.
