@@ -19,9 +19,11 @@ import {
 /**
  * v1 api-next endpoint contracts: session exchange and auth -> profile ->
  * community discovery and membership -> posts, comments, votes -> home feed.
- * Payments, rewards, bookings, Telegram, karaoke/dance, and HNS/EFP are out
- * of this standalone slice. Gates-v2 verification uses its provider-neutral
- * contracts in `verification.ts`.
+ * Karaoke session, attempt, leaderboard, and WebSocket protocol contracts are
+ * part of this slice; capture, scoring runtime, and rewards remain the M4
+ * clean-break vertical. Payments, bookings, Telegram, dance, and HNS/EFP are
+ * out of this standalone slice. Gates-v2 verification uses its provider-
+ * neutral contracts in `verification.ts`.
  *
  * The api-next schemas are the wire source of truth. A few nested fields
  * remain JSON-valued because their complete api-next shapes are not yet
