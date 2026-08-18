@@ -1,4 +1,4 @@
-import { applyMachineEvent, type MoneyFlowMachine } from "../money/state-machine";
+import { applyMachineEvent, defineMoneyFlowMachine } from "../money/state-machine";
 
 export type StorySettlementStepState =
   | "planned"
@@ -171,16 +171,16 @@ function reduceStorySettlementStep(
   return next;
 }
 
-export const storySettlementStepMachine: MoneyFlowMachine<
+export const storySettlementStepMachine = defineMoneyFlowMachine<
   StorySettlementStepSnapshot,
   StorySettlementStepTransition,
   StorySettlementStepState
-> = {
+>({
   stateOf: (state) => state.state,
   allowedTransitions: STORY_SETTLEMENT_STEP_ALLOWED_TRANSITIONS,
   assertInvariants: assertSnapshot,
   reduce: reduceStorySettlementStep,
-};
+});
 
 export function transitionStorySettlementStep(
   current: StorySettlementStepSnapshot,

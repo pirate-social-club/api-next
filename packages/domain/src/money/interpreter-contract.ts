@@ -1,71 +1,111 @@
-import type { FailureFence } from "./failure-fence";
+import type {
+  AmbiguousFailure,
+  FailureFence,
+  LegacyFailure,
+  ReclaimableFailure,
+} from "./failure-fence";
 
 /**
  * M3's application interpreter owns persistence and I/O. This file fixes the
  * domain contract that both the request path and reconciler must call; it is
  * deliberately not a journal implementation.
  */
-export type MoneyFlowJournalStatus = "begun" | "confirmed" | "failed";
+declare const serverDerivedIdempotencyKeyBrand: unique symbol;
 
-export type MoneyFlowJournalEntry<S> = {
-  readonly idempotencyKey: string;
+/** A journal key that can only enter the domain through server-owned derivation. */
+export type ServerDerivedIdempotencyKey = string & {
+  readonly [serverDerivedIdempotencyKeyBrand]: "ServerDerivedIdempotencyKey";
+};
+
+export type MoneyFlowJournalStatus =
+  // Flow-specific pre-effect state; §7's ten durable effect states follow.
+  | "planned"
+  | "nonce_reserved"
+  | "prepared"
+  | "broadcast_pending"
+  | "confirming"
+  | "confirmed"
+  | "reverted"
+  | "replaced"
+  | "reclaimable_failed"
+  | "reconciliation_required"
+  | "terminal_failed";
+
+type NonFailureJournalStatus = Exclude<
+  MoneyFlowJournalStatus,
+  "reclaimable_failed" | "reconciliation_required" | "terminal_failed"
+>;
+
+type JournalEntryBase<S> = {
+  readonly idempotencyKey: ServerDerivedIdempotencyKey;
   readonly version: number;
   readonly state: S;
-  readonly status: MoneyFlowJournalStatus;
 };
+
+export type TerminalFailureResolution = {
+  readonly _tag: "terminal";
+  readonly disposition: "terminal_failed";
+  readonly noValueMoved: true;
+  readonly mayRebroadcast: false;
+  readonly mayRetry: false;
+  readonly priorFence: FailureFence;
+  readonly evidenceRef: string;
+};
+
+export type MoneyFlowJournalEntry<S> = JournalEntryBase<S> &
+  (
+    | { readonly status: NonFailureJournalStatus; readonly failure?: never }
+    | { readonly status: "reclaimable_failed"; readonly failure: ReclaimableFailure }
+    | {
+        readonly status: "reconciliation_required";
+        readonly failure: AmbiguousFailure | LegacyFailure;
+      }
+    | { readonly status: "terminal_failed"; readonly failure: TerminalFailureResolution }
+  );
 
 export type BeginJournalCommand<S> = {
   readonly operation: "begin";
-  readonly idempotencyKey: string;
+  readonly idempotencyKey: ServerDerivedIdempotencyKey;
   readonly initialState: S;
 };
 
-export type ConfirmJournalCommand<E extends object> = {
-  readonly operation: "confirm";
-  readonly idempotencyKey: string;
+export type MoneyFlowEvent = { readonly type: string };
+
+/**
+ * `E` is the concrete reducer's closed event union. Any event capable of
+ * producing a failure state carries its typed fence inside that union; the
+ * interpreter never invents a failure status beside the reducer.
+ */
+export type TransitionJournalCommand<E extends MoneyFlowEvent> = {
+  readonly operation: "transition";
+  readonly idempotencyKey: ServerDerivedIdempotencyKey;
   readonly expectedVersion: number;
   readonly event: E;
 };
 
-export type FailJournalCommand = {
-  readonly operation: "fail";
-  readonly idempotencyKey: string;
-  readonly expectedVersion: number;
-  readonly failure: FailureFence;
-};
-
 export type JournalBeginOutcome<S> = {
   readonly _tag: "journal_begin";
-  readonly idempotencyKey: string;
+  readonly idempotencyKey: ServerDerivedIdempotencyKey;
   readonly entry: MoneyFlowJournalEntry<S>;
   readonly replayed: boolean;
 };
 
-export type JournalConfirmOutcome<S> = {
-  readonly _tag: "journal_confirm";
-  readonly idempotencyKey: string;
+export type JournalTransitionOutcome<S> = {
+  readonly _tag: "journal_transition";
+  readonly idempotencyKey: ServerDerivedIdempotencyKey;
   readonly entry: MoneyFlowJournalEntry<S>;
-  readonly replayed: boolean;
-};
-
-export type JournalFailOutcome<S> = {
-  readonly _tag: "journal_fail";
-  readonly idempotencyKey: string;
-  readonly entry: MoneyFlowJournalEntry<S>;
-  readonly failure: FailureFence;
   readonly replayed: boolean;
 };
 
 /**
  * The application layer supplies this interpreter over a durable journal.
  * Every operation is keyed by the same server-derived idempotency key.
- * `confirm` is the only success transition, while `fail` must retain the
- * typed fence so reconciliation can never rebroadcast an ambiguous or legacy
- * effect. Repeated commands return `replayed: true` rather than creating a
- * second journal effect.
+ * `transition` is the only update path and must drive the domain reducer for
+ * both requests and reconciliation. Failed entries retain the typed fence so
+ * an ambiguous or legacy effect can never become an ordinary retry. Repeated
+ * commands return `replayed: true` rather than creating another journal effect.
  */
-export interface MoneyFlowInterpreter<S, E extends object> {
+export interface MoneyFlowInterpreter<S, E extends MoneyFlowEvent> {
   readonly begin: (command: BeginJournalCommand<S>) => JournalBeginOutcome<S>;
-  readonly confirm: (command: ConfirmJournalCommand<E>) => JournalConfirmOutcome<S>;
-  readonly fail: (command: FailJournalCommand) => JournalFailOutcome<S>;
+  readonly transition: (command: TransitionJournalCommand<E>) => JournalTransitionOutcome<S>;
 }
