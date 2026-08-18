@@ -30,8 +30,9 @@ async function bindings(): Promise<HttpWorkerBindings> {
       "PUBLIC KEY",
       (await crypto.subtle.exportKey("spki", pair.publicKey)) as ArrayBuffer,
     ),
-    PIRATE_APP_JWT_ISSUER: "pirate-api",
-    PIRATE_APP_JWT_AUDIENCE: "pirate-app",
+    PIRATE_APP_JWT_ISSUER: "api-next-session-test",
+    PIRATE_APP_JWT_AUDIENCE: "api-next-browser-test",
+    PIRATE_APP_JWT_SCOPE: "api-next-browser-session-test",
     PIRATE_APP_JWT_TTL_SECONDS: "3600",
     PRIVY_APP_ID: "privy-test",
     PRIVY_APP_SECRET: "test-only-secret",
@@ -60,7 +61,7 @@ describe("HTTP production composition", () => {
 
     const currentUser = await worker.request("https://worker.test/users/me");
     expect(currentUser.status).toBe(401);
-    expect(await currentUser.json()).toMatchObject({ code: "auth_error" });
+    expect(await currentUser.json()).toMatchObject({ error: { code: "auth_error" } });
 
     const startVerification = await worker.request("https://worker.test/verification/sessions", {
       method: "POST",
@@ -79,7 +80,7 @@ describe("HTTP production composition", () => {
     );
     expect(callback.status).toBe(404);
     const callbackBody = await callback.text();
-    expect(JSON.parse(callbackBody)).toMatchObject({ code: "not_found" });
+    expect(JSON.parse(callbackBody)).toMatchObject({ error: { code: "not_found" } });
     expect(callbackBody).not.toContain("future.provider");
   });
 

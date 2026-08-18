@@ -12,7 +12,7 @@ const fixture = endpoint({
   method: "POST",
   path: "/echo/:message",
   auth: Auth.user(),
-  request: Schema.Struct({ uppercase: Schema.optional(Schema.Boolean) }),
+  request: { body: Schema.Struct({ uppercase: Schema.optional(Schema.Boolean) }) },
   response: Schema.Struct({ message: Schema.String }),
   errors: [RateLimited],
 });
@@ -45,7 +45,7 @@ describe("codegen pipeline", () => {
         method: "POST",
         path: "/x",
         auth: Auth.user(),
-        request: Schema.Struct({ a: Schema.String }),
+        request: { body: Schema.Struct({ a: Schema.String }) },
         response: Schema.Struct({ b: Schema.String }),
         errors: [BadRequest, RateLimited],
       }),
@@ -211,7 +211,7 @@ describe("openapi breaking-change diff", () => {
         method: "POST",
         path: "/session",
         auth: Auth.public(),
-        request: Schema.Struct({ proof }),
+        request: { body: Schema.Struct({ proof }) },
         response: Schema.Struct({ ok: Schema.Boolean }),
       }),
     ]);

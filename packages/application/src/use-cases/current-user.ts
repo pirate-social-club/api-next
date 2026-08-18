@@ -5,8 +5,6 @@ import { loadIdentityAccount } from "./identity-account.ts";
 
 export type GetCurrentUserInput = Readonly<{
   readonly userId: string;
-  /** Retained for the old wire contract; no api-next posting-state port exists yet. */
-  readonly communityRef?: string;
 }>;
 
 export type CurrentUser = Schema.Schema.Type<typeof GetCurrentUser.response>;
@@ -17,9 +15,7 @@ export interface CurrentUserServices {
 
 /**
  * Return the validated identity projection used by session exchange and
- * profile. `community_ref` remains a decoded compatibility query, but the
- * current identity store does not expose posting-state lookup, so it must not
- * cause a made-up field or side effect here.
+ * profile. Current-user identity is independent of community context.
  */
 export const getCurrentUser = Effect.fn("getCurrentUser")(function* (
   input: GetCurrentUserInput,

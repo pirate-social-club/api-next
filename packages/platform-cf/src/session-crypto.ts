@@ -2,9 +2,6 @@ import { Data } from "effect";
 
 const SESSION_ALGORITHM = "RS256" as const;
 const SESSION_TYPE = "JWT" as const;
-const DEFAULT_ISSUER = "pirate-api";
-const DEFAULT_AUDIENCE = "pirate-app";
-const DEFAULT_SCOPE = "pirate_app_session";
 const DEFAULT_TTL_SECONDS = 3_600;
 /** Conservative bound for this fixed-claim bearer token before any decoding. */
 export const MAX_SESSION_TOKEN_LENGTH = 16 * 1024;
@@ -38,22 +35,23 @@ export interface SessionCryptoEnvironment {
   readonly PIRATE_APP_JWT_PUBLIC_KEY?: string;
   readonly PIRATE_APP_JWT_ISSUER?: string;
   readonly PIRATE_APP_JWT_AUDIENCE?: string;
+  readonly PIRATE_APP_JWT_SCOPE?: string;
   readonly PIRATE_APP_JWT_TTL_SECONDS?: string;
 }
 
 export interface SessionCryptoOptions {
   readonly privateKeyPem?: string;
   readonly publicKeyPem: string;
-  readonly issuer?: string;
-  readonly audience?: string;
-  readonly defaultScope?: string;
+  readonly issuer: string;
+  readonly audience: string;
+  readonly defaultScope: string;
   readonly defaultTtlSeconds?: number;
   readonly nowSeconds?: () => number;
 }
 
 export interface SessionClaimsInput {
   readonly sub: string;
-  readonly scope?: string;
+  readonly scope: string;
   readonly iat?: number;
   readonly exp?: number;
   readonly ttlSeconds?: number;
@@ -100,13 +98,9 @@ function error(
   return new SessionCryptoError({ operation, code });
 }
 
-function configuredString(
-  value: string | undefined,
-  fallback: string | undefined,
-  operation: SessionCryptoError["operation"],
-): string {
-  const resolved = (value ?? fallback)?.trim();
-  if (!resolved || resolved.includes("\n") || resolved.includes("\r")) {
+function configuredString(value: string, operation: SessionCryptoError["operation"]): string {
+  const resolved = value.trim();
+  if (!resolved || resolved !== value || resolved.includes("\n") || resolved.includes("\r")) {
     throw error(operation, "configuration_invalid");
   }
   return resolved;
@@ -312,10 +306,18 @@ function makeEnvironmentOptions(environment: SessionCryptoEnvironment): SessionC
   return {
     ...(privateKeyPem === undefined ? {} : { privateKeyPem }),
     publicKeyPem: publicKeyPem ?? "",
-    issuer: environment.PIRATE_APP_JWT_ISSUER?.trim() || DEFAULT_ISSUER,
-    audience: environment.PIRATE_APP_JWT_AUDIENCE?.trim() || DEFAULT_AUDIENCE,
+    issuer: requiredEnvironmentValue(environment.PIRATE_APP_JWT_ISSUER),
+    audience: requiredEnvironmentValue(environment.PIRATE_APP_JWT_AUDIENCE),
+    defaultScope: requiredEnvironmentValue(environment.PIRATE_APP_JWT_SCOPE),
     defaultTtlSeconds: ttl,
   };
+}
+
+function requiredEnvironmentValue(value: string | undefined): string {
+  if (value === undefined || value.trim() !== value || value.trim() === "") {
+    throw error("configure", "configuration_invalid");
+  }
+  return value;
 }
 
 /** Import one environment's same-key material and construct the platform primitive. */
@@ -331,9 +333,9 @@ export async function makeSessionCryptoFromEnv(
  */
 export async function makeSessionCrypto(options: SessionCryptoOptions): Promise<SessionCrypto> {
   const publicKeyPem = validatePemValue(options.publicKeyPem, "configure");
-  const issuer = configuredString(options.issuer, DEFAULT_ISSUER, "configure");
-  const audience = configuredString(options.audience, DEFAULT_AUDIENCE, "configure");
-  const defaultScope = configuredString(options.defaultScope, DEFAULT_SCOPE, "configure");
+  const issuer = configuredString(options.issuer, "configure");
+  const audience = configuredString(options.audience, "configure");
+  const defaultScope = configuredString(options.defaultScope, "configure");
   const defaultTtlSeconds = positiveInteger(
     options.defaultTtlSeconds ?? DEFAULT_TTL_SECONDS,
     "configure",
@@ -455,13 +457,7 @@ export async function makeSessionCrypto(options: SessionCryptoOptions): Promise<
     const iss = requiredString(payload, "iss");
     const aud = requiredString(payload, "aud");
     const sub = requiredString(payload, "sub");
-    const rawScope = payload.scope;
-    const scope =
-      rawScope === undefined
-        ? defaultScope
-        : typeof rawScope === "string" && rawScope.trim().length === 0
-          ? defaultScope
-          : requiredString(payload, "scope");
+    const scope = requiredString(payload, "scope");
     const iat = requiredTime(payload, "iat");
     const exp = requiredTime(payload, "exp");
     const nbf = optionalTime(payload, "nbf");

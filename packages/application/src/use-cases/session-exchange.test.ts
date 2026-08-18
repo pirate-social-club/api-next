@@ -68,7 +68,10 @@ const servicesFor = (
     verifyPrivy: () => Effect.succeed({ sourceUserId: "source-user", classification: "user" }),
   },
   identityStore: { resolve: () => Effect.succeed(account) },
-  tokenMinter: { mint: () => Effect.succeed("session-token") },
+  tokenMinter: {
+    scope: "api-next-browser-session-test",
+    mint: () => Effect.succeed("session-token"),
+  },
   ...overrides,
 });
 
@@ -99,6 +102,7 @@ describe("session exchange application use case", () => {
         { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
         servicesFor({
           tokenMinter: {
+            scope: "api-next-browser-session-test",
             mint: ({ subject }) => {
               mintedSubject = subject;
               return Effect.succeed("session-token");
@@ -194,6 +198,7 @@ describe("session exchange application use case", () => {
         { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
         servicesFor({
           tokenMinter: {
+            scope: "api-next-browser-session-test",
             mint: () => Effect.fail(new Error("private key and bearer token")),
           },
         }),
@@ -208,7 +213,12 @@ describe("session exchange application use case", () => {
       const result = await Effect.runPromiseExit(
         exchangeSession(
           { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
-          servicesFor({ tokenMinter: { mint: () => Effect.succeed(token) } }),
+          servicesFor({
+            tokenMinter: {
+              scope: "api-next-browser-session-test",
+              mint: () => Effect.succeed(token),
+            },
+          }),
         ),
       );
       expect(failureOf(result)).toBeInstanceOf(InternalError);
@@ -222,6 +232,7 @@ describe("session exchange application use case", () => {
         { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
         servicesFor({
           tokenMinter: {
+            scope: "api-next-browser-session-test",
             ttlSeconds: MAX_BROWSER_SESSION_TTL_SECONDS + 1,
             mint: () => {
               minted = true;

@@ -22,7 +22,10 @@ describe("generated api client", () => {
 
   test("preserves declared errors and distinguishes undeclared wire errors", async () => {
     let response = new Response(
-      JSON.stringify({ code: "not_found", message: "missing", request_id: "req-1" }),
+      JSON.stringify({
+        error: { code: "not_found", message: "missing", retryable: false },
+        request_id: "req-1",
+      }),
       { status: 404 },
     );
     const fetchImpl = Object.assign(async () => response, { preconnect: fetch.preconnect });
@@ -36,9 +39,12 @@ describe("generated api client", () => {
       requestId: "req-1",
     });
 
-    response = new Response(JSON.stringify({ code: "rate_limited", message: "slow down" }), {
-      status: 429,
-    });
+    response = new Response(
+      JSON.stringify({ error: { code: "rate_limited", message: "slow down", retryable: true } }),
+      {
+        status: 429,
+      },
+    );
     await expect(client.get_health(undefined)).rejects.toBeInstanceOf(ApiClientUnexpectedError);
   });
 
@@ -47,9 +53,7 @@ describe("generated api client", () => {
       async () =>
         new Response(
           JSON.stringify({
-            code: "verification_start_in_progress",
-            message: "busy",
-            retryable: true,
+            error: { code: "verification_start_in_progress", message: "busy", retryable: true },
           }),
           { status: 409, headers: { "Retry-After": "5" } },
         ),
@@ -129,7 +133,10 @@ describe("generated api client", () => {
     ).resolves.toMatchObject({ requested_handle_label: "captainpublic.pirate" });
 
     response = new Response(
-      JSON.stringify({ code: "bad_request", message: "invalid handle", request_id: "req-2" }),
+      JSON.stringify({
+        error: { code: "bad_request", message: "invalid handle", retryable: false },
+        request_id: "req-2",
+      }),
       { status: 400 },
     );
     await expect(

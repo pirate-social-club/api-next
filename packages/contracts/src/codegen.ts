@@ -15,23 +15,7 @@ export interface OpenApiDocument {
 }
 
 function requestSchemas(endpoint: EndpointDefinition): EndpointRequest | undefined {
-  const request = endpoint.request;
-  if (request === undefined) return undefined;
-  if (
-    typeof request === "object" &&
-    request !== null &&
-    ("body" in request ||
-      "bodyRequired" in request ||
-      "bodyEncoding" in request ||
-      "headers" in request ||
-      "path" in request ||
-      "query" in request)
-  ) {
-    return request as EndpointRequest;
-  }
-  // Compatibility for the phase-0 request shorthand: a schema value meant a
-  // required JSON body. New endpoint declarations use the explicit shape.
-  return { body: request as Schema.Schema<unknown> };
+  return endpoint.request;
 }
 
 /**
@@ -51,13 +35,23 @@ export function schemaToOpenApi(value: unknown): JsonSchema {
 const wireErrorBodySchema: JsonSchema = {
   type: "object",
   properties: {
-    code: { type: "string" },
-    message: { type: "string" },
-    retryable: { type: "boolean" },
-    details: { type: "object", additionalProperties: true },
+    error: {
+      type: "object",
+      properties: {
+        code: { type: "string" },
+        message: { type: "string" },
+        retryable: { type: "boolean" },
+        details: {
+          anyOf: [{ type: "object", additionalProperties: true }, { type: "null" }],
+        },
+      },
+      required: ["code", "message", "retryable"],
+      additionalProperties: false,
+    },
     request_id: { type: "string" },
   },
-  required: ["code", "message"],
+  required: ["error"],
+  additionalProperties: false,
 };
 
 /**
@@ -73,7 +67,7 @@ function errorResponses(errors: readonly ApiErrorCtor[] | undefined): Record<str
     const previous = responses[status];
     const existing = (previous?.["x-error-codes"] as string[] | undefined) ?? [];
     responses[status] = {
-      description: "Error envelope (old wire format)",
+      description: "api-next error envelope v2",
       content: { "application/json": { schema: wireErrorBodySchema } },
       "x-error-codes": [...existing, instance.code],
       ...(previous?.headers === undefined ? {} : { headers: previous.headers }),
@@ -362,7 +356,7 @@ function clientErrorType(
   if (errors.length === 0) return "never";
   const members = errors.map(
     (error) =>
-      `(ApiClientError & { readonly status: ${error.status}; readonly code: ${JSON.stringify(error.code)}; readonly declaredName: ${JSON.stringify(error.name)}; readonly retryable: boolean | undefined${error.code === "verification_start_in_progress" ? "; readonly retryAfterSeconds: number | undefined" : ""} })`,
+      `(ApiClientError & { readonly status: ${error.status}; readonly code: ${JSON.stringify(error.code)}; readonly declaredName: ${JSON.stringify(error.name)}; readonly retryable: boolean${error.code === "verification_start_in_progress" ? "; readonly retryAfterSeconds: number | undefined" : ""} })`,
   );
   return members.join(" | ").replace(/^/, `/* ${operationTypeName} declared errors */ `);
 }
@@ -450,10 +444,12 @@ export interface PirateApiClientOptions extends PirateApiRequestOptions {
 }
 type JsonSchema = Record<string, unknown>;
 export interface ApiClientErrorBody {
-  readonly code: string;
-  readonly message: string;
-  readonly retryable?: boolean;
-  readonly details?: Record<string, unknown> | null;
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+    readonly retryable: boolean;
+    readonly details?: Record<string, unknown> | null;
+  };
   readonly request_id?: string;
 }
 export interface ApiClientErrorDefinition {
@@ -490,18 +486,18 @@ export class ApiClientError extends Error {
   readonly status: number;
   readonly code: string;
   readonly declaredName: string;
-  readonly retryable: boolean | undefined;
+  readonly retryable: boolean;
   readonly details: Record<string, unknown> | null | undefined;
   readonly requestId: string | undefined;
   readonly retryAfterSeconds: number | undefined;
   constructor(definition: ApiClientErrorDefinition, body: ApiClientErrorBody, responseHeaders?: Headers) {
-    super(body.message);
+    super(body.error.message);
     this.name = definition.name;
     this.status = definition.status;
-    this.code = body.code;
+    this.code = body.error.code;
     this.declaredName = definition.name;
-    this.retryable = body.retryable;
-    this.details = body.details;
+    this.retryable = body.error.retryable;
+    this.details = body.error.details;
     this.requestId = body.request_id;
     const retryAfter = responseHeaders?.get("retry-after");
     const parsedRetryAfter = retryAfter === null || retryAfter === undefined ? NaN : Number(retryAfter);
@@ -515,16 +511,16 @@ export class ApiClientUnexpectedError extends Error {
   readonly _tag = "ApiClientUnexpectedError" as const;
   readonly status: number;
   readonly code: string;
-  readonly retryable: boolean | undefined;
+  readonly retryable: boolean;
   readonly details: Record<string, unknown> | null | undefined;
   readonly requestId: string | undefined;
   constructor(status: number, body: ApiClientErrorBody) {
-    super("Unexpected declared API error: " + body.code);
+    super("Unexpected declared API error: " + body.error.code);
     this.name = "ApiClientUnexpectedError";
     this.status = status;
-    this.code = body.code;
-    this.retryable = body.retryable;
-    this.details = body.details;
+    this.code = body.error.code;
+    this.retryable = body.error.retryable;
+    this.details = body.error.details;
     this.requestId = body.request_id;
   }
 }
@@ -540,15 +536,22 @@ ${errorDefinitions}
 };
 const WIRE_ERROR_SCHEMA: JsonSchema = {
   type: "object",
-  required: ["code", "message"],
+  required: ["error"],
   properties: {
-    code: { type: "string" },
-    message: { type: "string" },
-    retryable: { type: "boolean" },
-    details: { anyOf: [{ type: "object", additionalProperties: true }, { type: "null" }] },
+    error: {
+      type: "object",
+      required: ["code", "message", "retryable"],
+      properties: {
+        code: { type: "string" },
+        message: { type: "string" },
+        retryable: { type: "boolean" },
+        details: { anyOf: [{ type: "object", additionalProperties: true }, { type: "null" }] },
+      },
+      additionalProperties: false,
+    },
     request_id: { type: "string" },
   },
-  additionalProperties: true,
+  additionalProperties: false,
 };
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -603,7 +606,7 @@ function schemaError(value: unknown, schema: JsonSchema, path: string, root: Jso
   return undefined;
 }
 function parseWireError(value: unknown, status: number): ApiClientErrorBody {
-  if (schemaError(value, WIRE_ERROR_SCHEMA, "$", WIRE_ERROR_SCHEMA) !== undefined || !record(value) || typeof value.code !== "string" || typeof value.message !== "string") {
+  if (schemaError(value, WIRE_ERROR_SCHEMA, "$", WIRE_ERROR_SCHEMA) !== undefined) {
     throw new ApiClientProtocolError("API error response was not a valid wire envelope", status);
   }
   return value as unknown as ApiClientErrorBody;
@@ -648,7 +651,7 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
     try { payload = await response.json(); } catch { throw new ApiClientProtocolError("API response was not valid JSON", response.status); }
     if (!response.ok) {
       const body = parseWireError(payload, response.status);
-      const definition = ERROR_DEFINITIONS[operation]?.find((candidate) => candidate.status === response.status && candidate.code === body.code);
+      const definition = ERROR_DEFINITIONS[operation]?.find((candidate) => candidate.status === response.status && candidate.code === body.error.code);
       if (definition === undefined) throw new ApiClientUnexpectedError(response.status, body);
       throw new ApiClientError(definition, body, response.headers);
     }

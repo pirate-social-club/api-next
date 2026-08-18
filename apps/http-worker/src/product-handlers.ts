@@ -91,15 +91,8 @@ const currentUser = async (request: DecodedRequest, services: ProductHandlerServ
   if (services.identityStore === undefined) {
     throw new Error("Current user identity store is not configured");
   }
-  const query = (request.query ?? {}) as Readonly<{ readonly community_ref?: string }>;
   return Effect.runPromise(
-    getCurrentUser(
-      {
-        userId: actor.userId,
-        ...(query.community_ref === undefined ? {} : { communityRef: query.community_ref }),
-      },
-      { identityStore: services.identityStore },
-    ),
+    getCurrentUser({ userId: actor.userId }, { identityStore: services.identityStore }),
   );
 };
 

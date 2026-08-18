@@ -56,7 +56,7 @@ async function signToken(
   const encodedHeader = encode({ alg: "RS256", typ: "JWT", kid, ...header });
   const encodedClaims = encode({
     iss: "https://provider.test",
-    aud: "pirate-api-next",
+    aud: "api-next-proof-test",
     sub: "usr_provider",
     iat: NOW_SECONDS - 10,
     exp: NOW_SECONDS + 300,
@@ -80,7 +80,7 @@ function adapterFor(fetcher: SessionProofFetcher, nowMs = () => NOW_SECONDS * 1_
     privy: {
       jwksUrl: "https://provider.test/jwks",
       issuer: "https://provider.test",
-      audience: "pirate-api-next",
+      audience: "api-next-proof-test",
     },
     fetcher,
     nowMs,
@@ -129,6 +129,15 @@ describe("workerd Privy JWKS session-proof adapter", () => {
     await expectRejected(
       await signToken(material.privateKey, material.jwk.kid, { exp: NOW_SECONDS - 1 }),
     );
+    await expectRejected(
+      await signToken(material.privateKey, material.jwk.kid, { user_id: "usr_provider" }),
+    );
+    await expectRejected(
+      await signToken(material.privateKey, material.jwk.kid, { scope: "api-next-machine" }),
+    );
+    await expectRejected(
+      await signToken(material.privateKey, material.jwk.kid, { classification: "user" }),
+    );
     expect(
       await Effect.runPromise(
         adapter.verifyPrivy({
@@ -151,7 +160,11 @@ describe("workerd Privy JWKS session-proof adapter", () => {
         });
       });
     const adapter = makeJwksSessionProofVerifier({
-      privy: { jwksUrl: "https://provider.test/jwks", issuer: "https://provider.test" },
+      privy: {
+        jwksUrl: "https://provider.test/jwks",
+        issuer: "https://provider.test",
+        audience: "api-next-proof-test",
+      },
       fetcher,
       fetchTimeoutMs: 5,
       nowMs: () => NOW_SECONDS * 1_000,

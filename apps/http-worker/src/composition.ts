@@ -59,6 +59,7 @@ export interface HttpWorkerBindings {
   readonly PIRATE_APP_JWT_PUBLIC_KEY?: string;
   readonly PIRATE_APP_JWT_ISSUER?: string;
   readonly PIRATE_APP_JWT_AUDIENCE?: string;
+  readonly PIRATE_APP_JWT_SCOPE?: string;
   readonly PIRATE_APP_JWT_TTL_SECONDS?: string;
   readonly PRIVY_APP_ID?: string;
   readonly PRIVY_APP_SECRET?: string;
@@ -90,6 +91,7 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     PIRATE_APP_JWT_PUBLIC_KEY: bindings.PIRATE_APP_JWT_PUBLIC_KEY,
     PIRATE_APP_JWT_ISSUER: bindings.PIRATE_APP_JWT_ISSUER,
     PIRATE_APP_JWT_AUDIENCE: bindings.PIRATE_APP_JWT_AUDIENCE,
+    PIRATE_APP_JWT_SCOPE: bindings.PIRATE_APP_JWT_SCOPE,
     PIRATE_APP_JWT_TTL_SECONDS: bindings.PIRATE_APP_JWT_TTL_SECONDS,
     PRIVY_APP_ID: bindings.PRIVY_APP_ID,
     PRIVY_APP_SECRET: bindings.PRIVY_APP_SECRET,
@@ -244,6 +246,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),
     issuer: config.PIRATE_APP_JWT_ISSUER,
     audience: config.PIRATE_APP_JWT_AUDIENCE,
+    defaultScope: config.PIRATE_APP_JWT_SCOPE,
     defaultTtlSeconds: config.PIRATE_APP_JWT_TTL_SECONDS,
   });
   const sessionExchange = {

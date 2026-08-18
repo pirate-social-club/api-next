@@ -86,12 +86,9 @@ export const HttpWorkerConfig = Config.all({
   ).pipe(Config.withDefault("")),
   PIRATE_APP_JWT_PRIVATE_KEY: secret("PIRATE_APP_JWT_PRIVATE_KEY"),
   PIRATE_APP_JWT_PUBLIC_KEY: secret("PIRATE_APP_JWT_PUBLIC_KEY"),
-  PIRATE_APP_JWT_ISSUER: Config.string("PIRATE_APP_JWT_ISSUER").pipe(
-    Config.withDefault("pirate-api"),
-  ),
-  PIRATE_APP_JWT_AUDIENCE: Config.string("PIRATE_APP_JWT_AUDIENCE").pipe(
-    Config.withDefault("pirate-app"),
-  ),
+  PIRATE_APP_JWT_ISSUER: Config.nonEmptyString("PIRATE_APP_JWT_ISSUER"),
+  PIRATE_APP_JWT_AUDIENCE: Config.nonEmptyString("PIRATE_APP_JWT_AUDIENCE"),
+  PIRATE_APP_JWT_SCOPE: Config.nonEmptyString("PIRATE_APP_JWT_SCOPE"),
   PIRATE_APP_JWT_TTL_SECONDS: Config.int("PIRATE_APP_JWT_TTL_SECONDS").pipe(
     Config.withDefault(3_600),
   ),

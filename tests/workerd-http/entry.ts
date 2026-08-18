@@ -45,6 +45,9 @@ async function sessionCrypto() {
   return makeSessionCrypto({
     privateKeyPem: toPem("PRIVATE KEY", await crypto.subtle.exportKey("pkcs8", pair.privateKey)),
     publicKeyPem: toPem("PUBLIC KEY", await crypto.subtle.exportKey("spki", pair.publicKey)),
+    issuer: "api-next-session-workerd",
+    audience: "api-next-browser-workerd",
+    defaultScope: "api-next-browser-session-workerd",
   });
 }
 
@@ -132,22 +135,11 @@ const app = createHttpWorker({
   config: { corsOrigin: "https://solid.test" },
   sessionExchange,
   handlers: {
-    GetCurrentUser: ({ principal, query }) => {
+    GetCurrentUser: ({ principal }) => {
       if (principal === null || (principal.kind !== "user" && principal.kind !== "admin")) {
         throw new AuthError({ message: "Authorization failed" });
       }
-      const communityRef = (query ?? {}) as { readonly community_ref?: string };
-      return Effect.runPromise(
-        getCurrentUser(
-          {
-            userId: principal.subject,
-            ...(communityRef.community_ref === undefined
-              ? {}
-              : { communityRef: communityRef.community_ref }),
-          },
-          { identityStore },
-        ),
-      );
+      return Effect.runPromise(getCurrentUser({ userId: principal.subject }, { identityStore }));
     },
     CastPostVote: () => ({ post: "post_1", value: 1 }),
     ClearPostVote: () => ({ post: "post_1", value: null }),

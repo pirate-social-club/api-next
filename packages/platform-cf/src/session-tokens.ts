@@ -87,6 +87,7 @@ function identityFailureCode(error: unknown): SessionTokenFailureCode {
 export function makeRs256SessionTokenMinter(crypto: SessionCrypto): SessionTokenMinter {
   return {
     ttlSeconds: crypto.defaultTtlSeconds,
+    scope: crypto.defaultScope,
     mint: ({ subject, scope }) =>
       Effect.tryPromise({
         try: () => crypto.sign({ sub: subject, scope }),

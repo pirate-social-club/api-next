@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   evaluateSessionPolicy,
-  PIRATE_SESSION_POLICY,
   resolveCanonicalUserAlias,
   type SessionAliasRecord,
   type SessionPolicyClaims,
@@ -10,11 +9,14 @@ import {
 } from "./session-policy";
 
 const nowSeconds = 1_800_000_000;
+const TEST_ISSUER = "api-next-session-test";
+const TEST_AUDIENCE = "api-next-browser-test";
+const TEST_SCOPE = "api-next-browser-session-test";
 const claims = (overrides: SessionPolicyClaims = {}): SessionPolicyClaims => ({
-  iss: PIRATE_SESSION_POLICY.issuer,
-  aud: PIRATE_SESSION_POLICY.audience,
+  iss: TEST_ISSUER,
+  aud: TEST_AUDIENCE,
   sub: "usr_source",
-  scope: PIRATE_SESSION_POLICY.defaultScope,
+  scope: TEST_SCOPE,
   iat: nowSeconds - 60,
   exp: nowSeconds + 3_540,
   ...overrides,
@@ -44,6 +46,9 @@ function evaluate(
     users: activeUsers("usr_source"),
     aliases: [],
     nowSeconds,
+    issuer: TEST_ISSUER,
+    audience: TEST_AUDIENCE,
+    defaultScope: TEST_SCOPE,
     ...options,
   });
 }
@@ -56,7 +61,7 @@ describe("evaluateSessionPolicy", () => {
       principal: {
         userId: "usr_source",
         classification: "user",
-        scope: { value: "pirate_app_session", tokens: ["pirate_app_session"] },
+        scope: { value: TEST_SCOPE, tokens: [TEST_SCOPE] },
         canonical: { sourceUserId: "usr_source", canonicalUserId: "usr_source", aliasPath: [] },
         issuedAt: nowSeconds - 60,
         expiresAt: nowSeconds + 3_540,
@@ -88,8 +93,8 @@ describe("evaluateSessionPolicy", () => {
     const vectors: ReadonlyArray<readonly [string, SessionPolicyClaims]> = [
       ["wrong issuer", { iss: "other-api" }],
       ["wrong audience", { aud: "other-app" }],
-      ["audience array", { aud: [PIRATE_SESSION_POLICY.audience] }],
-      ["issuer array", { iss: [PIRATE_SESSION_POLICY.issuer] }],
+      ["audience array", { aud: [TEST_AUDIENCE] }],
+      ["issuer array", { iss: [TEST_ISSUER] }],
     ];
     for (const [name, overrides] of vectors) {
       const result = evaluate(overrides);
@@ -130,7 +135,7 @@ describe("evaluateSessionPolicy", () => {
 
   test("defaults only an omitted scope and rejects malformed or empty scope", () => {
     const omitted = evaluate({ scope: undefined });
-    expect(omitted.ok && omitted.principal.scope.value).toBe(PIRATE_SESSION_POLICY.defaultScope);
+    expect(omitted.ok ? undefined : omitted.failure.code).toBe("invalid_claims");
 
     const vectors: ReadonlyArray<readonly [string, SessionPolicyClaims]> = [
       ["non-string", { scope: 42 }],

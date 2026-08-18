@@ -30,7 +30,7 @@ describe("real HTTP worker transport", () => {
 
     expect(response.status).toBe(401);
     expect(await response.json()).toMatchObject({
-      code: "auth_error",
+      error: { code: "auth_error" },
       request_id: "workerd-request",
     });
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -57,10 +57,9 @@ describe("real HTTP worker transport", () => {
     });
     const browser = browserCookies(exchange);
 
-    const currentUser = await SELF.fetch(
-      "https://worker.test/users/me?community_ref=compatibility-ref",
-      { headers: { cookie: browser.cookie } },
-    );
+    const currentUser = await SELF.fetch("https://worker.test/users/me", {
+      headers: { cookie: browser.cookie },
+    });
     expect(currentUser.status).toBe(200);
     expect(await currentUser.json()).toMatchObject({
       id: "usr_workerd_test",
@@ -107,14 +106,14 @@ describe("real HTTP worker transport", () => {
       body: JSON.stringify({ post_type: "text", idempotency_key: "workerd-key", body: "hello" }),
     });
     expect(uninstalled.status).toBe(404);
-    expect(await uninstalled.json()).toMatchObject({ code: "not_found" });
+    expect(await uninstalled.json()).toMatchObject({ error: { code: "not_found" } });
   });
 
   it("requires authentication on the installed current-user route", async () => {
     const response = await SELF.fetch("https://worker.test/users/me");
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toMatchObject({ code: "auth_error" });
+    expect(await response.json()).toMatchObject({ error: { code: "auth_error" } });
   });
 
   it("serves only the public RS256 verification key", async () => {

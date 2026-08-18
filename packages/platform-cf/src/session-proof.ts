@@ -67,7 +67,7 @@ type EcJwkImporter = {
 export interface SessionProofProviderConfig {
   readonly jwksUrl: string;
   readonly issuer: string;
-  readonly audience?: string;
+  readonly audience: string;
 }
 
 export type SessionProofFetcher = (input: string, init?: RequestInit) => Promise<Response>;
@@ -82,7 +82,6 @@ export interface SessionProofAdapterOptions {
 
 type VerifiedProviderToken = {
   readonly sourceUserId: string;
-  readonly classification: "user" | "device";
   readonly claims: JsonObject;
 };
 
@@ -211,20 +210,21 @@ function audienceMatches(value: unknown, expected: string): boolean {
         value.includes(expected);
 }
 
-function classify(claims: JsonObject): "user" | "device" {
-  const explicit = claims.classification;
-  if (explicit !== undefined) {
-    if (explicit !== "user" && explicit !== "device") throw new Error("invalid classification");
-    return explicit;
+/**
+ * Privy is an external identity proof, not an api-next session or machine
+ * credential. Its documented subject is `sub`; api-next classification and
+ * scopes are intentionally not accepted on this boundary.
+ */
+function directPrivySubject(claims: JsonObject): string {
+  if (
+    "user_id" in claims ||
+    "userId" in claims ||
+    "classification" in claims ||
+    "scope" in claims
+  ) {
+    throw new Error("unsupported Privy identity claims");
   }
-  const scope = claims.scope;
-  if (scope !== undefined && typeof scope !== "string") throw new Error("invalid scope");
-  return scope === undefined || scope === "pirate_app_session" ? "user" : "device";
-}
-
-function sourceUserId(claims: JsonObject): string {
-  const value = "sub" in claims ? claims.sub : claims.user_id;
-  return claimString({ source: value }, "source");
+  return claimString(claims, "sub");
 }
 
 /**
@@ -244,9 +244,7 @@ export function makeJwksSessionProofVerifier(
       ...options.privy,
       jwksUrl: configuredUrl(options.privy.jwksUrl),
       issuer: configuredString(options.privy.issuer),
-      ...(options.privy.audience === undefined
-        ? {}
-        : { audience: configuredString(options.privy.audience) }),
+      audience: configuredString(options.privy.audience),
     },
   };
 
@@ -334,7 +332,7 @@ export function makeJwksSessionProofVerifier(
     if (!valid) throw new Error("invalid signature");
 
     if (claims.iss !== provider.issuer) throw new Error("invalid issuer");
-    if (provider.audience !== undefined && !audienceMatches(claims.aud, provider.audience)) {
+    if (!audienceMatches(claims.aud, provider.audience)) {
       throw new Error("invalid audience");
     }
     const now = Math.floor(nowMs() / 1_000);
@@ -345,8 +343,7 @@ export function makeJwksSessionProofVerifier(
     const nbf = claimTime(claims, "nbf");
     if (nbf !== undefined && nbf > now) throw new Error("not yet valid");
     return {
-      sourceUserId: sourceUserId(claims),
-      classification: classify(claims),
+      sourceUserId: directPrivySubject(claims),
       claims,
     };
   };
@@ -373,7 +370,9 @@ export function makeJwksSessionProofVerifier(
         }
         return {
           sourceUserId: access.sourceUserId,
-          classification: access.classification,
+          // Direct Privy proofs are accepted only as external user identity;
+          // machine/session classification is owned by api-next tokens.
+          classification: "user",
         };
       }),
   };

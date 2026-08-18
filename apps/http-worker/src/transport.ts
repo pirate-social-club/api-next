@@ -100,19 +100,8 @@ type HttpWorkerEnv = {
 };
 type HttpContext = Context<HttpWorkerEnv>;
 
-const isRequestShape = (request: EndpointDefinition["request"]): request is EndpointRequest =>
-  typeof request === "object" &&
-  request !== null &&
-  ("body" in request ||
-    "bodyRequired" in request ||
-    "bodyEncoding" in request ||
-    "headers" in request ||
-    "path" in request ||
-    "query" in request);
-
 const requestShape = (endpoint: EndpointDefinition): EndpointRequest | undefined => {
-  if (endpoint.request === undefined) return undefined;
-  return isRequestShape(endpoint.request) ? endpoint.request : { body: endpoint.request };
+  return endpoint.request;
 };
 
 const decode = (
@@ -384,7 +373,7 @@ const declaredStatuses = (endpoint: EndpointDefinition): readonly number[] => {
 
 const errorCodeAndStatus = (error: unknown): { readonly code: string; readonly status: number } => {
   const serialized = toErrorBody(error);
-  return { code: serialized.body.code, status: serialized.status };
+  return { code: serialized.body.error.code, status: serialized.status };
 };
 
 const declaredError = (endpoint: EndpointDefinition, error: unknown): boolean => {

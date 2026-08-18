@@ -47,7 +47,7 @@ export interface EndpointDefinition {
   readonly path: string;
   readonly auth: AuthPolicyApplication;
   /** Effect Schemas for body, path params, and query params. */
-  readonly request?: EndpointRequest | Schema.Schema<unknown>;
+  readonly request?: EndpointRequest;
   /** Effect Schema for the exact success response envelope. */
   readonly response: Schema.Schema<unknown>;
   /** HTTP status emitted for a successful handler result; defaults to 200. */

@@ -143,11 +143,6 @@ function capabilities(
 function legacyUser(overrides: Partial<LegacyUserInput> = {}): LegacyUserInput {
   return {
     user_id: "usr_usr_user",
-    community_posting_state: {
-      community_ref: "home",
-      community_id: "cmt_1",
-      has_created_text_post: true,
-    },
     primary_wallet_attachment_id: "wallet_1",
     verification_state: "verified",
     capability_provider: "self",
@@ -171,22 +166,15 @@ function row(overrides: Partial<UserRowInput> = {}): UserRowInput {
 }
 
 describe("profile and identity projections", () => {
-  test("keeps user serializer public ids, community mapping, and timestamp flooring", () => {
+  test("keeps user serializer public ids and timestamp flooring", () => {
     const result = serializeUser(legacyUser());
     expect(result).toMatchObject({
       id: "usr_user",
       object: "user",
-      community_posting_state: {
-        community_ref: "home",
-        community: "com_cmt_1",
-        has_created_text_post: true,
-      },
       verified_at: Math.floor(Date.parse("2026-08-10T00:00:01.999Z") / 1000),
     });
     expect(result.created).toBe(Math.floor(Date.parse("2026-08-01T00:00:01.999Z") / 1000));
-    expect(JSON.stringify(serializeUser(legacyUser({ community_posting_state: null })))).toContain(
-      '"community_posting_state":null',
-    );
+    expect(result).not.toHaveProperty("community_posting_state");
   });
 
   test("maps database rows through old verification defaults and provider aliases", () => {
