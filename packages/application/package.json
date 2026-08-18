@@ -6,6 +6,9 @@
   "exports": {
     ".": "./src/index.ts",
     "./money/community-purchase-funding-admission": "./src/money/community-purchase-funding-admission.ts",
+    "./use-cases/community-purchase-funding-admission": "./src/use-cases/community-purchase-funding-admission.ts",
+    "./use-cases/community-purchase-funding-observation": "./src/use-cases/community-purchase-funding-observation.ts",
+    "./use-cases/community-purchase-funding-query": "./src/use-cases/community-purchase-funding-query.ts",
     "./verification": "./src/verification/index.ts",
     "./use-cases/community/follow-community": "./src/use-cases/community/follow-community.ts",
     "./use-cases/community/get-community-preview": "./src/use-cases/community/get-community-preview.ts",

@@ -122,12 +122,20 @@ export function makeCommunityPurchaseFundingObservationUseCase(
       lease,
       source: input.source,
       expectedVersion: loaded.entry.version,
-      event: {
-        type: "funding_evidence_observed",
-        expectedVersion: loaded.entry.version,
-        at: input.at,
-        evidence,
-      },
+      event:
+        loaded.entry.state.state === "reconciliation_required"
+          ? {
+              type: "reconciliation_resolved",
+              expectedVersion: loaded.entry.version,
+              at: input.at,
+              evidence,
+            }
+          : {
+              type: "funding_evidence_observed",
+              expectedVersion: loaded.entry.version,
+              at: input.at,
+              evidence,
+            },
     });
     return { lease, entry: transitioned.entry, replayed: transitioned.replayed };
   });

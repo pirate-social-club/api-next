@@ -8,6 +8,7 @@
 import type { ExecutionContext } from "@cloudflare/workers-types";
 import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
 
+export { makeCommunityPurchaseFundingHandlers } from "./community-purchase-funding-handlers.ts";
 export {
   createProductionHttpWorker,
   type HttpWorkerBindings,

@@ -4,6 +4,7 @@ import {
   type CommunityPurchaseFundingAdmissionStoreInput,
   type CommunityPurchaseFundingJournalRecord,
   type CommunityPurchaseFundingJournalStore,
+  type CommunityPurchaseFundingQueryStore,
   CommunityPurchaseFundingStorageFailed,
   ControlPlaneDb,
   type ControlPlaneError,
@@ -16,6 +17,7 @@ import {
   normalizeCommunityPurchaseEvmAddress,
 } from "@pirate/application";
 import {
+  type Bytes32,
   type CommunityPurchaseFundingEvent,
   type CommunityPurchaseFundingEvidence,
   type CommunityPurchaseFundingPlan,
@@ -40,6 +42,8 @@ type WasTransitionCommittedInput = Parameters<
 type CommitTransitionInput = Parameters<
   CommunityPurchaseFundingJournalStore["commitTransition"]
 >[0];
+type LoadForActorInput = Parameters<CommunityPurchaseFundingQueryStore["loadForActor"]>[0];
+type ListReconcilableInput = Parameters<CommunityPurchaseFundingQueryStore["listReconcilable"]>[0];
 
 const JOURNAL_COLUMNS = `
   operation_id, community_id, actor_id, quote_id, purchase_id, policy_version,
@@ -548,11 +552,14 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
     return yield* db.withTransaction((transaction) =>
       Effect.gen(function* () {
         const snapshot = input.entry.state;
-        yield* advisoryLock(transaction, `cpf:operation:${snapshot.operationId}`);
         yield* advisoryLock(
           transaction,
           `cpf:request:${input.request.actorId}:${input.request.endpoint}:${input.request.clientNonce}`,
         );
+        // Keep the same request-before-operation ordering as beginFromPlan.
+        // The raw begin seam is internal, but matching its lock order prevents
+        // a future internal caller from deadlocking public admission.
+        yield* advisoryLock(transaction, `cpf:operation:${snapshot.operationId}`);
 
         const requestResult = yield* transaction.execute<Row>({
           label: "money.community-purchase-funding.lock-request",
@@ -627,6 +634,58 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
     });
     return yield* decodeRecord(yield* oneRow(result.rows));
   });
+
+  const loadForActor = Effect.fn("CommunityPurchaseFundingRepository.loadForActor")(function* (
+    input: LoadForActorInput,
+  ) {
+    const db = yield* ControlPlaneDb;
+    const result = yield* db.execute<Row>({
+      label: "money.community-purchase-funding.load-for-actor",
+      text: `SELECT ${JOURNAL_COLUMNS}
+               FROM community_purchase_funding_journal
+              WHERE operation_id = $1 AND actor_id = $2`,
+      values: [input.operationId, input.actorId],
+      readonly: true,
+    });
+    return yield* decodeRecord(yield* oneRow(result.rows));
+  });
+
+  const listReconcilable = Effect.fn("CommunityPurchaseFundingRepository.listReconcilable")(
+    function* (input: ListReconcilableInput) {
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<Row>({
+        label: "money.community-purchase-funding.list-reconcilable",
+        text: `SELECT operation_id, funding_transaction_hash
+               FROM community_purchase_funding_journal
+              WHERE state IN ('confirming', 'reconciliation_required')
+                AND funding_transaction_hash IS NOT NULL
+              ORDER BY updated_at ASC, operation_id ASC
+              LIMIT $1`,
+        values: [input.limit],
+        readonly: true,
+      });
+      const records: Array<{
+        readonly operationId: CommunityPurchaseOperationId;
+        readonly transactionHash: Bytes32;
+      }> = [];
+      for (const row of result.rows) {
+        const operationId = requiredString(row, "operation_id");
+        const transactionHash = requiredString(row, "funding_transaction_hash");
+        if (
+          operationId === null ||
+          transactionHash === null ||
+          !/^0x[0-9a-f]{64}$/u.test(transactionHash)
+        ) {
+          return yield* Effect.fail(storageFailure("invalid-row"));
+        }
+        records.push({
+          operationId: operationId as CommunityPurchaseOperationId,
+          transactionHash: transactionHash as Bytes32,
+        });
+      }
+      return records;
+    },
+  );
 
   const acquireLease = Effect.fn("CommunityPurchaseFundingRepository.acquireLease")(function* (
     input: AcquireLeaseInput,
@@ -929,7 +988,28 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
     },
   );
 
-  return { begin, beginFromPlan, load, acquireLease, wasTransitionCommitted, commitTransition };
+  return {
+    begin,
+    beginFromPlan,
+    load,
+    loadForActor,
+    listReconcilable,
+    acquireLease,
+    wasTransitionCommitted,
+    commitTransition,
+  };
+}
+
+export function makeControlPlaneCommunityPurchaseFundingQueryStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): CommunityPurchaseFundingQueryStore {
+  const repository = makeControlPlaneCommunityPurchaseFundingRepository();
+  const provide = <A>(effect: Effect.Effect<A, RepositoryError, ControlPlaneDb>) =>
+    Effect.provide(runtime)(effect).pipe(Effect.mapError(mapRepositoryError));
+  return {
+    loadForActor: (input) => provide(repository.loadForActor(input)),
+    listReconcilable: (input) => provide(repository.listReconcilable(input)),
+  };
 }
 
 export function makeControlPlaneCommunityPurchaseFundingAdmissionStore(
