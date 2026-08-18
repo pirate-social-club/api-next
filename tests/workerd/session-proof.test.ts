@@ -111,6 +111,29 @@ describe("workerd Privy JWKS session-proof adapter", () => {
     expect(fetchCount).toBe(1);
   });
 
+  it("returns the signed wallet claim in canonical lowercase form", async () => {
+    const material = await keyMaterial();
+    const fetcher: SessionProofFetcher = async () =>
+      new Response(JSON.stringify({ keys: [material.jwk] }), { status: 200 });
+    const adapter = adapterFor(fetcher);
+    const token = await signToken(material.privateKey, material.jwk.kid, {
+      wallet_address: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    });
+    expect(
+      await Effect.runPromise(
+        adapter.verifyPrivy({
+          accessToken: token,
+          identityToken: null,
+          walletAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        }),
+      ),
+    ).toEqual({
+      sourceUserId: "usr_provider",
+      classification: "user",
+      walletAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+  });
+
   it("fails closed for malformed claims, headers, and identity binding", async () => {
     const material = await keyMaterial();
     const fetcher: SessionProofFetcher = async () =>

@@ -23,6 +23,8 @@ export interface Principal {
   readonly kind: "user" | "admin" | "agent" | "device";
   readonly subject: string;
   readonly scopes?: readonly string[];
+  /** Optional wallet authenticated by the session exchange, never a profile default. */
+  readonly walletAddress?: string;
 }
 
 /** The only request value a handler or policy authorizer can observe. */

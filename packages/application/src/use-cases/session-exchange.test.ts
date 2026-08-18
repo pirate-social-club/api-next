@@ -116,6 +116,67 @@ describe("session exchange application use case", () => {
     expect(result.sessionToken).toBe("session-token");
   });
 
+  it("carries only the verifier-authenticated wallet into the session mint", async () => {
+    let mintedWallet: string | undefined;
+    await Effect.runPromise(
+      exchangeSession(
+        {
+          proof: {
+            type: "privy_access_token",
+            privy_access_token: "privy-proof",
+            wallet_address: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          },
+        },
+        servicesFor({
+          proofVerifier: {
+            verifyPrivy: () =>
+              Effect.succeed({
+                sourceUserId: "source-user",
+                classification: "user" as const,
+                walletAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              }),
+          },
+          tokenMinter: {
+            scope: "api-next-browser-session-test",
+            mint: ({ walletAddress }) => {
+              mintedWallet = walletAddress;
+              return Effect.succeed("session-token");
+            },
+          },
+        }),
+      ),
+    );
+    expect(mintedWallet).toBe("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  });
+
+  it("rejects a non-canonical verifier wallet instead of minting it", async () => {
+    let minted = false;
+    const result = await Effect.runPromiseExit(
+      exchangeSession(
+        { proof: { type: "privy_access_token", privy_access_token: "privy-proof" } },
+        servicesFor({
+          proofVerifier: {
+            verifyPrivy: () =>
+              Effect.succeed({
+                sourceUserId: "source-user",
+                classification: "user" as const,
+                walletAddress: "0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+              }),
+          },
+          tokenMinter: {
+            scope: "api-next-browser-session-test",
+            mint: () => {
+              minted = true;
+              return Effect.succeed("session-token");
+            },
+          },
+        }),
+      ),
+    );
+    expect(failureOf(result)).toBeInstanceOf(AuthError);
+    expect(minted).toBe(false);
+  });
+
   it("maps missing, deleted, cyclic, and invalid identities to safe auth errors", async () => {
     for (const identityFailure of [
       null,

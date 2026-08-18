@@ -12,6 +12,8 @@ export type AuthenticatedSession = Readonly<{
   readonly subject: string;
   readonly kind: "user" | "admin" | "agent" | "device";
   readonly scopes?: readonly string[];
+  /** Optional wallet authenticated by the session exchange. */
+  readonly walletAddress?: string;
 }>;
 
 export type AuthorizeSessionInput = Readonly<{
@@ -28,6 +30,7 @@ export interface BearerSessionVerifier {
       readonly userId: string;
       readonly classification: "user" | "device";
       readonly scope: { readonly tokens: readonly string[] };
+      readonly walletAddress?: string;
     },
     unknown
   >;
@@ -60,6 +63,7 @@ export const authenticateSession = Effect.fn("authenticateSession")(function* (
     subject: verified.userId,
     kind: "user",
     scopes: verified.scope.tokens,
+    ...(verified.walletAddress === undefined ? {} : { walletAddress: verified.walletAddress }),
   };
 });
 

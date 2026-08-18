@@ -165,6 +165,9 @@ const app = createHttpWorker({
             kind: session.kind,
             subject: session.subject,
             ...(session.scopes === undefined ? {} : { scopes: session.scopes }),
+            ...(session.walletAddress === undefined
+              ? {}
+              : { walletAddress: session.walletAddress }),
           }),
         ),
       ),

@@ -52,6 +52,8 @@ export interface SessionCryptoOptions {
 export interface SessionClaimsInput {
   readonly sub: string;
   readonly scope: string;
+  /** Optional wallet authenticated by the upstream Privy proof. */
+  readonly walletAddress?: string;
   readonly iat?: number;
   readonly exp?: number;
   readonly ttlSeconds?: number;
@@ -62,6 +64,8 @@ export interface VerifiedSessionClaims {
   readonly aud: string;
   readonly sub: string;
   readonly scope: string;
+  /** Present only when the session exchange authenticated a wallet. */
+  readonly wallet_address?: string;
   readonly iat: number;
   readonly exp: number;
   readonly nbf?: number;
@@ -240,6 +244,10 @@ function validateClaimsInput(
 ): { readonly payload: VerifiedSessionClaims } {
   const sub = validateConfiguredValue(input.sub, "mint");
   const scope = validateConfiguredValue(input.scope ?? defaultScope, "mint");
+  const walletAddress = input.walletAddress;
+  if (walletAddress !== undefined && !/^0x[0-9a-f]{40}$/u.test(walletAddress)) {
+    throw error("mint", "claims_invalid");
+  }
   const iat = input.iat ?? nowSeconds;
   positiveInteger(iat, "mint");
   if (iat > nowSeconds) throw error("mint", "claims_invalid");
@@ -251,7 +259,17 @@ function validateClaimsInput(
   if (input.exp !== undefined && input.ttlSeconds !== undefined) {
     throw error("mint", "claims_invalid");
   }
-  return { payload: { iss: issuer, aud: audience, sub, scope, iat, exp } };
+  return {
+    payload: {
+      iss: issuer,
+      aud: audience,
+      sub,
+      scope,
+      ...(walletAddress === undefined ? {} : { wallet_address: walletAddress }),
+      iat,
+      exp,
+    },
+  };
 }
 
 function validateHeader(header: Record<string, unknown>, kid: string): void {
@@ -458,6 +476,13 @@ export async function makeSessionCrypto(options: SessionCryptoOptions): Promise<
     const aud = requiredString(payload, "aud");
     const sub = requiredString(payload, "sub");
     const scope = requiredString(payload, "scope");
+    const walletAddress = payload.wallet_address;
+    if (
+      walletAddress !== undefined &&
+      (typeof walletAddress !== "string" || !/^0x[0-9a-f]{40}$/u.test(walletAddress))
+    ) {
+      throw error("verify", "claims_invalid");
+    }
     const iat = requiredTime(payload, "iat");
     const exp = requiredTime(payload, "exp");
     const nbf = optionalTime(payload, "nbf");
@@ -472,8 +497,25 @@ export async function makeSessionCrypto(options: SessionCryptoOptions): Promise<
     if (exp <= now) throw error("verify", "token_expired");
     if (exp <= iat) throw error("verify", "claims_invalid");
     return nbf === undefined
-      ? { iss, aud, sub, scope, iat, exp }
-      : { iss, aud, sub, scope, iat, exp, nbf };
+      ? {
+          iss,
+          aud,
+          sub,
+          scope,
+          ...(walletAddress === undefined ? {} : { wallet_address: walletAddress }),
+          iat,
+          exp,
+        }
+      : {
+          iss,
+          aud,
+          sub,
+          scope,
+          ...(walletAddress === undefined ? {} : { wallet_address: walletAddress }),
+          iat,
+          exp,
+          nbf,
+        };
   };
 
   return {

@@ -31,6 +31,8 @@ export type VerifiedSessionIdentity = {
   readonly sourceUserId: string;
   /** The verifier has already applied the shared session classification policy. */
   readonly classification: "user" | "device";
+  /** Optional wallet authenticated by the upstream proof; never a profile default. */
+  readonly walletAddress?: string | null;
 };
 
 export type SessionAccount = {
@@ -57,6 +59,8 @@ export interface SessionTokenMinter {
   readonly mint: (input: {
     readonly subject: string;
     readonly scope: string;
+    /** Optional wallet authenticated by the upstream proof. */
+    readonly walletAddress?: string;
   }) => Effect.Effect<string, unknown>;
   /** Explicit api-next-owned browser-session scope configured per environment. */
   readonly scope: string;
@@ -141,6 +145,8 @@ const validCanonicalUserId = (value: string): boolean =>
 const validMintedToken = (value: string): boolean =>
   value.trim().length > 0 && value === value.trim();
 
+const validCanonicalWalletAddress = (value: string): boolean => /^0x[0-9a-f]{40}$/u.test(value);
+
 export const exchangeSession = Effect.fn("exchangeSession")(function* (
   input: unknown,
   services: SessionExchangeServices,
@@ -161,6 +167,13 @@ export const exchangeSession = Effect.fn("exchangeSession")(function* (
     .pipe(Effect.mapError(safeFailure));
 
   if (verified.classification !== "user") {
+    return yield* Effect.fail(new AuthError({ message: "Authentication failed" }));
+  }
+  if (
+    verified.walletAddress !== undefined &&
+    verified.walletAddress !== null &&
+    !validCanonicalWalletAddress(verified.walletAddress)
+  ) {
     return yield* Effect.fail(new AuthError({ message: "Authentication failed" }));
   }
 
@@ -187,7 +200,13 @@ export const exchangeSession = Effect.fn("exchangeSession")(function* (
   }
 
   const accessToken = yield* services.tokenMinter
-    .mint({ subject: account.canonicalUserId, scope: services.tokenMinter.scope })
+    .mint({
+      subject: account.canonicalUserId,
+      scope: services.tokenMinter.scope,
+      ...(verified.walletAddress === undefined || verified.walletAddress === null
+        ? {}
+        : { walletAddress: verified.walletAddress }),
+    })
     .pipe(Effect.mapError(safeFailure));
   if (!validMintedToken(accessToken)) {
     return yield* Effect.fail(new InternalError({ message: "Session exchange failed" }));

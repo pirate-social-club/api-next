@@ -220,6 +220,12 @@ function claimString(claims: JsonObject, name: string): string {
   return value;
 }
 
+function canonicalWalletAddress(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const canonical = value.toLowerCase();
+  return /^0x[0-9a-f]{40}$/u.test(canonical) ? canonical : null;
+}
+
 function claimTime(claims: JsonObject, name: string): number | undefined {
   const value = claims[name];
   if (value === undefined) return undefined;
@@ -390,9 +396,21 @@ export function makeJwksSessionProofVerifier(
           const identity = await verifyProviderToken(identityToken, providers.privy);
           if (identity.sourceUserId !== access.sourceUserId) throw new Error("identity mismatch");
         }
+        const snakeClaim = access.claims.wallet_address;
+        const camelClaim = access.claims.walletAddress;
+        const claimedSnake = snakeClaim === undefined ? null : canonicalWalletAddress(snakeClaim);
+        const claimedCamel = camelClaim === undefined ? null : canonicalWalletAddress(camelClaim);
+        if (
+          (snakeClaim !== undefined && claimedSnake === null) ||
+          (camelClaim !== undefined && claimedCamel === null) ||
+          (snakeClaim !== undefined && camelClaim !== undefined && claimedSnake !== claimedCamel)
+        ) {
+          throw new Error("wallet mismatch");
+        }
+        const claimedWallet = claimedSnake ?? claimedCamel;
         if (walletAddress !== null) {
-          const claimed = access.claims.wallet_address ?? access.claims.walletAddress;
-          if (typeof claimed !== "string" || claimed !== walletAddress) {
+          const requestedWallet = canonicalWalletAddress(walletAddress);
+          if (requestedWallet === null || claimedWallet !== requestedWallet) {
             throw new Error("wallet mismatch");
           }
         }
@@ -401,6 +419,7 @@ export function makeJwksSessionProofVerifier(
           // Direct Privy proofs are accepted only as external user identity;
           // machine/session classification is owned by api-next tokens.
           classification: "user",
+          ...(claimedWallet === null ? {} : { walletAddress: claimedWallet }),
         };
       }),
   };

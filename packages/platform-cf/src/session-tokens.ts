@@ -17,6 +17,8 @@ export type SessionPrincipal = {
   readonly classification: SessionTokenClassification;
   readonly scope: SessionTokenScope;
   readonly canonical: CanonicalIdentity;
+  /** Optional wallet authenticated when the api-next session was exchanged. */
+  readonly walletAddress?: string;
 };
 
 export type SessionTokenFailureCode =
@@ -88,9 +90,14 @@ export function makeRs256SessionTokenMinter(crypto: SessionCrypto): SessionToken
   return {
     ttlSeconds: crypto.defaultTtlSeconds,
     scope: crypto.defaultScope,
-    mint: ({ subject, scope }) =>
+    mint: ({ subject, scope, walletAddress }) =>
       Effect.tryPromise({
-        try: () => crypto.sign({ sub: subject, scope }),
+        try: () =>
+          crypto.sign({
+            sub: subject,
+            scope,
+            ...(walletAddress === undefined ? {} : { walletAddress }),
+          }),
         catch: () => new SessionTokenVerificationError({ code: "invalid_claims" }),
       }),
   };
@@ -138,6 +145,9 @@ export function makeRs256SessionTokenVerifier(
               classification,
               scope: { value: scopeValue, tokens: scopeTokens },
               canonical,
+              ...(claims.wallet_address === undefined
+                ? {}
+                : { walletAddress: claims.wallet_address }),
             })),
           );
         }),
