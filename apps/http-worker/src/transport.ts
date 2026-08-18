@@ -18,6 +18,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { routeTable } from "./generated/route-table.ts";
+import { type KaraokeHandlerServices, makeKaraokeHandlers } from "./karaoke-handlers.ts";
 
 export interface Principal {
   readonly kind: "user" | "admin" | "agent" | "device";
@@ -91,6 +92,8 @@ export interface HttpWorkerOptions {
   readonly sessionExchange?: SessionExchangeServices;
   /** Profile projection is installed by the generated GetMyProfile binding. */
   readonly profile?: EndpointHandler;
+  /** Karaoke routes are installed only when their storage/use-case port is provided. */
+  readonly karaoke?: KaraokeHandlerServices;
   /** Runs before any request location is decoded. It receives no Hono data. */
   readonly authenticate?: (args: AuthenticationArgs) => Principal | Promise<Principal>;
   /** Runs after decoding and receives only the frozen request shape. */
@@ -450,6 +453,8 @@ const validateHandlerStatus = (endpoint: EndpointDefinition, status: number): vo
 };
 
 export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWorkerEnv> {
+  const karaokeHandlers: Readonly<Record<string, EndpointHandler>> | undefined =
+    options.karaoke === undefined ? undefined : makeKaraokeHandlers(options.karaoke);
   const sessionExchangeHandler =
     options.sessionExchange === undefined
       ? undefined
@@ -457,6 +462,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   const installedProtectedHandlers = routeTable.filter(
     (binding) =>
       (options.handlers?.[binding.name] !== undefined ||
+        karaokeHandlers?.[binding.name] !== undefined ||
         (binding.name === "GetMyProfile" && options.profile !== undefined)) &&
       !isPublic(binding.endpoint),
   );
@@ -494,6 +500,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     app.on(binding.method, binding.path, async (context) => {
       const handler =
         options.handlers?.[binding.name] ??
+        karaokeHandlers?.[binding.name] ??
         (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
         (binding.name === "SessionLogout" ? () => ({ status: "ok" }) : undefined) ??
         (binding.name === "GetMyProfile" ? options.profile : undefined);
