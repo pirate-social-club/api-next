@@ -86,6 +86,9 @@ const communityPurchaseFundingPlansMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const identityCredentialsMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0015_identity_credentials.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -160,6 +163,11 @@ const communityPurchaseFundingPlansMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0014_m3_community_purchase_funding_plans.sql"] ?? "",
   sql: communityPurchaseFundingPlansMigrationSql,
 };
+const identityCredentialsMigration: PostgresMigration = {
+  version: "0015_identity_credentials.sql",
+  checksum: checksumManifest.migrations["0015_identity_credentials.sql"] ?? "",
+  sql: identityCredentialsMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -175,6 +183,7 @@ const migrations: readonly PostgresMigration[] = [
   verificationCompletionAttemptsMigration,
   communityPurchaseFundingJournalMigration,
   communityPurchaseFundingPlansMigration,
+  identityCredentialsMigration,
 ];
 
 function checksum(value: string): string {
@@ -331,6 +340,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(communityPurchaseFundingPlansMigrationSql)).toBe(
         communityPurchaseFundingPlansMigration.checksum,
       );
+      expect(checksum(identityCredentialsMigrationSql)).toBe(identityCredentialsMigration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -374,6 +384,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "decision_records",
         "evidence_receipts",
         "home_feed_projection",
+        "identity_credentials",
         "moderation_actions",
         "moderation_reports",
         "observations",
