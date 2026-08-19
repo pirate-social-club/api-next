@@ -170,10 +170,7 @@ describe("Postgres migration runner", () => {
     const reconciliationAttempts = await Bun.file(
       new URL("0019_m3_reconciliation_attempts.sql", source),
     ).text();
-    await Bun.write(
-      join(directory, "0019_m3_reconciliation_attempts.sql"),
-      reconciliationAttempts,
-    );
+    await Bun.write(join(directory, "0019_m3_reconciliation_attempts.sql"), reconciliationAttempts);
 
     await expect(loadPostgresMigrations(new URL(`file://${directory}/`))).rejects.toThrow(
       "checksum mismatch: 0001_v1_product_slice.sql",
