@@ -398,6 +398,11 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
       issuer: config.PRIVY_JWT_ISSUER,
       audience: config.PRIVY_JWT_AUDIENCE,
     },
+    privyApi: {
+      apiUrl: config.PRIVY_API_URL,
+      appId: config.PRIVY_APP_ID,
+      appSecret: Redacted.value(config.PRIVY_APP_SECRET),
+    },
   });
   const tokenMinter = makeRs256SessionTokenMinter(sessionCrypto);
   const sessionExchange = {

@@ -196,3 +196,144 @@ describe("workerd Privy JWKS session-proof adapter", () => {
     await expect(Effect.runPromise(verify(adapter, token))).rejects.toBeDefined();
   });
 });
+
+describe("workerd Privy linked-wallet lookup", () => {
+  const embeddedWallet = `0x${"b".repeat(40)}`;
+  const otherWallet = `0x${"c".repeat(40)}`;
+  const embeddedAccount = {
+    type: "wallet",
+    chain_type: "ethereum",
+    address: `0x${"bB".repeat(20)}`,
+    wallet_client: "privy",
+  };
+  const solanaAccount = { type: "wallet", chain_type: "solana", address: "not-an-evm-address" };
+
+  const adapterWithApi = (fetcher: SessionProofFetcher) =>
+    makeJwksSessionProofVerifier({
+      privy: {
+        jwksUrl: "https://provider.test/jwks",
+        issuer: "https://provider.test",
+        audience: "api-next-proof-test",
+      },
+      privyApi: {
+        apiUrl: "https://provider.test",
+        appId: "privy-test",
+        appSecret: "test-secret",
+      },
+      fetcher,
+      nowMs: () => NOW_SECONDS * 1_000,
+    });
+
+  const jwksResponse = (jwk: unknown) =>
+    new Response(JSON.stringify({ keys: [jwk] }), { status: 200 });
+  const userResponse = (accounts: readonly unknown[]) =>
+    new Response(JSON.stringify({ id: "usr_provider", linked_accounts: accounts }), {
+      status: 200,
+    });
+
+  it("attaches the single provider-linked wallet when the token carries no claim", async () => {
+    const material = await keyMaterial();
+    let authorization: string | undefined;
+    const fetcher: SessionProofFetcher = async (input, init) => {
+      if (input.includes("/api/v1/users/")) {
+        const headers = init?.headers as Record<string, string> | undefined;
+        authorization = headers?.authorization;
+        return userResponse([embeddedAccount, solanaAccount]);
+      }
+      return jwksResponse(material.jwk);
+    };
+    const adapter = adapterWithApi(fetcher);
+    const token = await signToken(material.privateKey, material.jwk.kid);
+    expect(await Effect.runPromise(verify(adapter, token))).toEqual({
+      sourceUserId: "usr_provider",
+      classification: "user",
+      walletAddress: embeddedWallet,
+    });
+    expect(authorization).toBe(`Basic ${btoa("privy-test:test-secret")}`);
+  });
+
+  it("resolves a requested wallet only when the provider attests it", async () => {
+    const material = await keyMaterial();
+    const fetcher: SessionProofFetcher = async (input) =>
+      input.includes("/api/v1/users/")
+        ? userResponse([embeddedAccount])
+        : jwksResponse(material.jwk);
+    const adapter = adapterWithApi(fetcher);
+    const token = await signToken(material.privateKey, material.jwk.kid);
+    expect(
+      await Effect.runPromise(
+        adapter.verifyPrivy({
+          accessToken: token,
+          identityToken: null,
+          walletAddress: embeddedWallet,
+        }),
+      ),
+    ).toEqual({
+      sourceUserId: "usr_provider",
+      classification: "user",
+      walletAddress: embeddedWallet,
+    });
+    const rejected = await Effect.runPromiseExit(
+      adapter.verifyPrivy({ accessToken: token, identityToken: null, walletAddress: otherWallet }),
+    );
+    expect(Exit.isFailure(rejected)).toBe(true);
+  });
+
+  it("fails open without a wallet when the lookup fails", async () => {
+    const material = await keyMaterial();
+    const fetcher: SessionProofFetcher = async (input) =>
+      input.includes("/api/v1/users/")
+        ? new Response("upstream failure", { status: 500 })
+        : jwksResponse(material.jwk);
+    const adapter = adapterWithApi(fetcher);
+    const token = await signToken(material.privateKey, material.jwk.kid);
+    expect(await Effect.runPromise(verify(adapter, token))).toEqual({
+      sourceUserId: "usr_provider",
+      classification: "user",
+    });
+    const requested = await Effect.runPromiseExit(
+      adapter.verifyPrivy({
+        accessToken: token,
+        identityToken: null,
+        walletAddress: embeddedWallet,
+      }),
+    );
+    expect(Exit.isFailure(requested)).toBe(true);
+  });
+
+  it("never selects from multiple linked wallets", async () => {
+    const material = await keyMaterial();
+    const fetcher: SessionProofFetcher = async (input) =>
+      input.includes("/api/v1/users/")
+        ? userResponse([embeddedAccount, { ...embeddedAccount, address: otherWallet }])
+        : jwksResponse(material.jwk);
+    const adapter = adapterWithApi(fetcher);
+    const token = await signToken(material.privateKey, material.jwk.kid);
+    expect(await Effect.runPromise(verify(adapter, token))).toEqual({
+      sourceUserId: "usr_provider",
+      classification: "user",
+    });
+  });
+
+  it("does not call the provider API when the token carries a wallet claim", async () => {
+    const material = await keyMaterial();
+    let lookupCount = 0;
+    const fetcher: SessionProofFetcher = async (input) => {
+      if (input.includes("/api/v1/users/")) {
+        lookupCount += 1;
+        return userResponse([embeddedAccount]);
+      }
+      return jwksResponse(material.jwk);
+    };
+    const adapter = adapterWithApi(fetcher);
+    const token = await signToken(material.privateKey, material.jwk.kid, {
+      wallet_address: `0x${"aA".repeat(20)}`,
+    });
+    expect(await Effect.runPromise(verify(adapter, token))).toEqual({
+      sourceUserId: "usr_provider",
+      classification: "user",
+      walletAddress: `0x${"a".repeat(40)}`,
+    });
+    expect(lookupCount).toBe(0);
+  });
+});

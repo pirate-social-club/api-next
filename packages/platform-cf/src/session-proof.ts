@@ -6,6 +6,7 @@ import { Effect } from "effect";
 
 export const SESSION_PROOF_MAX_TOKEN_LENGTH = 16 * 1024;
 export const SESSION_PROOF_MAX_JWKS_BYTES = 64 * 1024;
+export const SESSION_PROOF_MAX_USER_BYTES = 64 * 1024;
 export const SESSION_PROOF_FETCH_TIMEOUT_MS = 5_000;
 export const SESSION_PROOF_CACHE_TTL_MS = 5 * 60 * 1_000;
 
@@ -70,6 +71,17 @@ export interface SessionProofProviderConfig {
   readonly audience: string;
 }
 
+/**
+ * Privy server-API credentials for the linked-wallet lookup. The access token
+ * alone does not carry wallet attestation; the account's provider-owned
+ * linked accounts do.
+ */
+export interface SessionProofPrivyApiConfig {
+  readonly apiUrl: string;
+  readonly appId: string;
+  readonly appSecret: string;
+}
+
 export type SessionProofFetcher = (input: string, init?: RequestInit) => Promise<Response>;
 
 const SESSION_PROOF_FAILURE_REASONS = new Set([
@@ -99,6 +111,7 @@ function safeSessionProofFailureReason(error: unknown): string {
 
 export interface SessionProofAdapterOptions {
   readonly privy: SessionProofProviderConfig;
+  readonly privyApi?: SessionProofPrivyApiConfig;
   readonly fetcher?: SessionProofFetcher;
   readonly nowMs?: () => number;
   readonly fetchTimeoutMs?: number;
@@ -147,6 +160,12 @@ function configuredUrl(value: string): string {
   const url = new URL(value);
   if (url.protocol !== "https:") throw new Error("JWKS URL must use HTTPS");
   return url.toString();
+}
+
+function configuredApiUrl(value: string): string {
+  const url = new URL(configuredString(value));
+  if (url.protocol !== "https:") throw new Error("provider API URL must use HTTPS");
+  return url.toString().replace(/\/+$/u, "");
 }
 
 function configuredString(value: string): string {
@@ -226,6 +245,33 @@ function canonicalWalletAddress(value: unknown): string | null {
   return /^0x[0-9a-f]{40}$/u.test(canonical) ? canonical : null;
 }
 
+const PRIVY_LINKED_WALLET_TYPE = "wallet";
+const PRIVY_ETHEREUM_CHAIN_TYPE = "ethereum";
+
+/**
+ * Mirrors the legacy control-plane rule: only provider-attested Ethereum
+ * wallet accounts count, addresses are canonical lowercase, and duplicates
+ * collapse. A structurally unexpected document is rejected whole.
+ */
+function collectLinkedEthereumWallets(document: unknown): readonly string[] {
+  const accounts = object(document).linked_accounts;
+  if (!Array.isArray(accounts)) throw new Error("invalid provider user document");
+  const wallets = new Set<string>();
+  for (const account of accounts) {
+    if (account === null || typeof account !== "object" || Array.isArray(account)) continue;
+    const record = account as JsonObject;
+    if (
+      record.type !== PRIVY_LINKED_WALLET_TYPE ||
+      record.chain_type !== PRIVY_ETHEREUM_CHAIN_TYPE
+    ) {
+      continue;
+    }
+    const address = canonicalWalletAddress(record.address);
+    if (address !== null) wallets.add(address);
+  }
+  return [...wallets];
+}
+
 function claimTime(claims: JsonObject, name: string): number | undefined {
   const value = claims[name];
   if (value === undefined) return undefined;
@@ -278,6 +324,14 @@ export function makeJwksSessionProofVerifier(
       audience: configuredString(options.privy.audience),
     },
   };
+  const privyApi =
+    options.privyApi === undefined
+      ? undefined
+      : {
+          apiUrl: configuredApiUrl(options.privyApi.apiUrl),
+          appId: configuredString(options.privyApi.appId),
+          appSecret: configuredString(options.privyApi.appSecret),
+        };
 
   const getJwks = async (url: string, forceRefresh = false): Promise<readonly ValidJwk[]> => {
     const cached = cache.get(url);
@@ -296,6 +350,40 @@ export function makeJwksSessionProofVerifier(
       const keys = validateJwks(JSON.parse(body));
       cache.set(url, { keys, expiresAt: nowMs() + cacheTtlMs });
       return keys;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  /**
+   * Reads the account's provider-attested linked wallets over the Privy
+   * server API. Fail-open by contract: an outage, rejection, or malformed
+   * document yields a walletless session, never an authentication failure.
+   */
+  const lookupLinkedEthereumWallets = async (
+    sourceUserId: string,
+  ): Promise<readonly string[] | undefined> => {
+    if (privyApi === undefined) return undefined;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
+    try {
+      const response = await fetcher(
+        `${privyApi.apiUrl}/api/v1/users/${encodeURIComponent(sourceUserId)}`,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/json",
+            authorization: `Basic ${btoa(`${privyApi.appId}:${privyApi.appSecret}`)}`,
+          },
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok) return undefined;
+      const body = await response.text();
+      if (body.length > SESSION_PROOF_MAX_USER_BYTES) return undefined;
+      return collectLinkedEthereumWallets(JSON.parse(body));
+    } catch {
+      return undefined;
     } finally {
       clearTimeout(timeout);
     }
@@ -408,18 +496,33 @@ export function makeJwksSessionProofVerifier(
           throw new Error("wallet mismatch");
         }
         const claimedWallet = claimedSnake ?? claimedCamel;
-        if (walletAddress !== null) {
-          const requestedWallet = canonicalWalletAddress(walletAddress);
-          if (requestedWallet === null || claimedWallet !== requestedWallet) {
-            throw new Error("wallet mismatch");
+        const requestedWallet =
+          walletAddress === null ? null : canonicalWalletAddress(walletAddress);
+        if (walletAddress !== null && requestedWallet === null) {
+          throw new Error("wallet mismatch");
+        }
+        let resolvedWallet = claimedWallet;
+        if (resolvedWallet === null && privyApi !== undefined) {
+          const linkedWallets = await lookupLinkedEthereumWallets(access.sourceUserId);
+          if (linkedWallets !== undefined) {
+            if (requestedWallet !== null && linkedWallets.includes(requestedWallet)) {
+              resolvedWallet = requestedWallet;
+            } else if (requestedWallet === null && linkedWallets.length === 1) {
+              // Exactly one provider-linked wallet is unambiguous; with zero
+              // or several, auth never picks from incidental ordering.
+              resolvedWallet = linkedWallets[0] ?? null;
+            }
           }
+        }
+        if (requestedWallet !== null && resolvedWallet !== requestedWallet) {
+          throw new Error("wallet mismatch");
         }
         return {
           sourceUserId: access.sourceUserId,
           // Direct Privy proofs are accepted only as external user identity;
           // machine/session classification is owned by api-next tokens.
           classification: "user",
-          ...(claimedWallet === null ? {} : { walletAddress: claimedWallet }),
+          ...(resolvedWallet === null ? {} : { walletAddress: resolvedWallet }),
         };
       }),
   };
