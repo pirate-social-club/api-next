@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import type { SessionExchangeServices } from "@pirate/application/use-cases/session-exchange";
 import type { IdentityRegistrationHandlerServices } from "@pirate/application/use-cases/identity-registration-handler";
+import type { SessionExchangeServices } from "@pirate/application/use-cases/session-exchange";
 import {
   Auth,
   AuthError,

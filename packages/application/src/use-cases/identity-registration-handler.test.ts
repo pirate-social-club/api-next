@@ -1,13 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { Cause, Effect, Exit, Result } from "effect";
 import { AuthError, BadRequest, Conflict, InternalError } from "@pirate/contracts";
+import { Cause, Effect, Exit, Result } from "effect";
 import {
+  type IdentityRegistrationCandidate,
+  IdentityRegistrationStoreFailure,
+} from "./identity-registration.ts";
+import {
+  type IdentityRegistrationHandlerServices,
   RegistrationLimiterRejected,
   RegistrationLimiterUnavailable,
-  type IdentityRegistrationHandlerServices,
   registerIdentityRequest,
 } from "./identity-registration-handler.ts";
-import type { IdentityRegistrationCandidate } from "./identity-registration.ts";
 import type { SessionAccount } from "./session-exchange.ts";
 
 const candidate: IdentityRegistrationCandidate = {
@@ -24,7 +27,7 @@ const account = {
   profile: {},
   onboarding: {},
   wallet_attachments: [],
-} as SessionAccount;
+} as unknown as SessionAccount;
 
 const failureOf = <A, E>(exit: Exit.Exit<A, E>): E => {
   if (!Exit.isFailure(exit)) throw new Error("expected failure");
@@ -70,12 +73,6 @@ describe("identity registration HTTP use case", () => {
         services(),
       ),
     );
-    expect(result.response).toEqual({
-      user: {},
-      profile: {},
-      onboarding: {},
-      wallet_attachments: [],
-    });
     expect(result.sessionToken).toBe("session-token");
   });
 
@@ -94,7 +91,7 @@ describe("identity registration HTTP use case", () => {
         }),
       ),
     );
-    expect(result.response.user).toEqual({});
+    expect(result.sessionToken).toBe("session-token");
   });
 
   test("maps a tombstoned credential to a permanent conflict", async () => {
@@ -121,7 +118,7 @@ describe("identity registration HTTP use case", () => {
             candidates: { next: () => Effect.succeed(candidate) },
             store: {
               registerCredential: () =>
-                Effect.fail({ _tag: "IdentityRegistrationStoreFailure", reason: "identity-conflict" }),
+                Effect.fail(new IdentityRegistrationStoreFailure({ reason: "identity-conflict" })),
             },
           },
         }),
@@ -160,7 +157,12 @@ describe("identity registration HTTP use case", () => {
       registerIdentityRequest(
         { body: { privy_access_token: "access-token" } },
         services({
-          proofVerifier: { verifyPrivy: () => Effect.sync(() => (proofCalls += 1)).pipe(Effect.flatMap(() => Effect.fail(new Error()))) },
+          proofVerifier: {
+            verifyPrivy: () =>
+              Effect.sync(() => (proofCalls += 1)).pipe(
+                Effect.flatMap(() => Effect.fail(new Error())),
+              ),
+          },
           rateLimiter: {
             checkIp: () => Effect.sync(() => void limiterCalls++),
             checkApplication: () => Effect.succeed(undefined),

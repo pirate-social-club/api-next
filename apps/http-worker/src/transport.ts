@@ -1,13 +1,13 @@
 import {
+  type IdentityRegistrationHandlerServices,
+  makeIdentityRegistrationHandler,
+} from "@pirate/application/use-cases/identity-registration-handler";
+import {
   MAX_BROWSER_SESSION_TTL_SECONDS,
   makeSessionExchangeHandler,
   type SessionExchangeHandlerResult,
   type SessionExchangeServices,
 } from "@pirate/application/use-cases/session-exchange";
-import {
-  makeIdentityRegistrationHandler,
-  type IdentityRegistrationHandlerServices,
-} from "@pirate/application/use-cases/identity-registration-handler";
 import {
   AuthError,
   BadRequest,
@@ -593,11 +593,10 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
 
         // Authentication deliberately precedes every request-schema decode.
         const input = await decodeInput(binding.endpoint, context, principal);
+        const edgeClientIp = context.req.header("CF-Connecting-IP");
         const requestWithEdgeIp = {
           ...input,
-          ...(context.req.header("CF-Connecting-IP") === undefined
-            ? {}
-            : { edgeClientIp: context.req.header("CF-Connecting-IP") }),
+          ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
         };
         if (
           !isPublic(binding.endpoint) &&
