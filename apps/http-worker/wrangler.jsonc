@@ -32,6 +32,16 @@
         "RegistrationIpRateLimiterDO",
         "RegistrationApplicationRateLimiterDO"
       ]
+    },
+    {
+      // The staging-only Self callback capture seam held this class from its
+      // lane deployment; v3 retires it after the capture lane was parked.
+      "tag": "v2",
+      "new_sqlite_classes": ["SelfCallbackCaptureDO"]
+    },
+    {
+      "tag": "v3",
+      "deleted_classes": ["SelfCallbackCaptureDO"]
     }
   ],
   "vars": {
