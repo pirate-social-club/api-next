@@ -22,6 +22,10 @@ const alias = {
     "../../packages/application/src/use-cases/session-exchange.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/use-cases/identity-registration-handler": new URL(
+    "../../packages/application/src/use-cases/identity-registration-handler.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application": new URL("../../packages/application/src/index.ts", import.meta.url)
     .pathname,
   "@pirate/contracts": new URL("../../packages/contracts/src/index.ts", import.meta.url).pathname,
