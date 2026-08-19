@@ -27,6 +27,7 @@ async function sentinelSet(): Promise<{
     "migration",
     "identity",
     "community",
+    "gates-v2-community",
     "feed",
     "content",
     "public-profile",

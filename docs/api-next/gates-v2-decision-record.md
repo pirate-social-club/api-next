@@ -426,3 +426,27 @@ and secret, and a representative real-proof payload measurement. The public
 completion route currently caps request bodies at 1 MiB while the internal
 verifier accepts at most 10 MiB, so staging must prove the real payload fits or
 make and review a deliberate ingress-limit change before enablement.
+
+## Curated community-join lifecycle amendment — 2026-08-19
+
+For the first curated-age community-join vertical, expired evidence is
+actionable rather than terminal: the evaluator returns `needs_evidence` with
+`evidence_expired`, so a member can obtain fresh evidence and retry. This
+amendment makes explicit the behavior pinned by the evaluator and the
+PostgreSQL join suite and supersedes any earlier provisional wording that
+treated expiry itself as a terminal `fail`.
+
+Terminal `fail` remains reserved for evidence that cannot satisfy the active
+policy for the request, including an underage result or conflicting evidence;
+provider/store unavailability remains `indeterminate`. Wrong assurance,
+missing claims, future observations, and expired evidence remain actionable
+`needs_evidence`. The preview path remains read-only, while an enforce-mode
+join records the decision and inserts membership in one transaction only when
+the outcome is `pass`.
+
+The current PostgreSQL vertical pins the core five cases. A follow-up test
+tranche still owes explicit database-level assertions for policy/hash mismatch,
+decision-insert rollback, gated-path replay predicate, witness JSON read-back,
+and the invariant that no gated membership exists without its committed
+enforce/pass decision. Those are test-coverage obligations, not permission to
+change the lifecycle above.

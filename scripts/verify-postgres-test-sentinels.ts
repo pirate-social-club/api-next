@@ -43,6 +43,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-community-suite-complete\n",
   },
   {
+    name: "gates v2 community repository",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_GATES_V2_COMMUNITY_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-gates-v2-community-suite-complete",
+    contents: "api-next-control-plane-postgres-gates-v2-community-suite-complete\n",
+  },
+  {
     name: "postgres feed repository",
     path:
       process.env.CONTROL_PLANE_POSTGRES_FEED_TEST_SENTINEL ??
