@@ -154,6 +154,98 @@ suite("community purchase funding producer repository", () => {
       );
     });
   });
+
+  test("expires the quote with its hold and restores finite availability once", async () => {
+    await withSchema(async (connection, admin) => {
+      const store = makeControlPlaneCommunityPurchaseFundingProducerStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const input = {
+        actorId: "user_1",
+        authenticatedWalletAddress: `0x${"22".repeat(20)}`,
+        communityId: "community_1",
+        listingId: "listing_1",
+      };
+      const first = await run(produceCommunityPurchaseFundingQuote(input, store));
+      await admin.query(
+        `UPDATE community_purchase_intents
+            SET expires_at = created_at + INTERVAL '10 milliseconds'
+          WHERE purchase_id = $1`,
+        [first.purchaseId],
+      );
+      await admin.query("SELECT pg_sleep(0.05)");
+
+      const replacement = await run(produceCommunityPurchaseFundingQuote(input, store));
+      expect(replacement.replayed).toBe(false);
+      expect(replacement.purchaseId).not.toBe(first.purchaseId);
+
+      const rows = await admin.query<{
+        readonly quote_status: string;
+        readonly intent_status: string;
+        readonly reservation_state: string;
+        readonly available_quantity: number;
+      }>(
+        `SELECT quote.status AS quote_status,
+                intent.status AS intent_status,
+                reservation.state AS reservation_state,
+                listing.available_quantity
+           FROM community_purchase_quotes AS quote
+           JOIN community_purchase_intents AS intent ON intent.purchase_id = quote.purchase_id
+           JOIN community_purchase_availability_reservations AS reservation
+             ON reservation.purchase_id = quote.purchase_id
+           JOIN community_commerce_listings AS listing ON listing.listing_id = quote.listing_id
+          WHERE quote.quote_id = $1`,
+        [first.quoteId],
+      );
+      expect(rows.rows[0]).toMatchObject({
+        quote_status: "expired",
+        intent_status: "expired",
+        reservation_state: "expired",
+        available_quantity: 1,
+      });
+    });
+  });
+
+  test("requires a recent verification snapshot for the active policy revision", async () => {
+    await withSchema(async (connection, admin) => {
+      await admin.query(
+        `UPDATE community_commerce_eligibility_policy_versions
+            SET verification_required = TRUE
+          WHERE community_id = 'community_1' AND policy_version = 7`,
+      );
+      await admin.query(
+        `INSERT INTO community_purchase_verification_snapshots (
+           snapshot_id, actor_id, policy_version, provider, verified_at, snapshot
+         ) VALUES ('verification_source_1', 'user_1', 7, 'zkpassport',
+                   clock_timestamp(), '{"source":"test"}'::jsonb)`,
+      );
+      const store = makeControlPlaneCommunityPurchaseFundingProducerStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const result = await run(
+        produceCommunityPurchaseFundingQuote(
+          {
+            actorId: "user_1",
+            authenticatedWalletAddress: `0x${"22".repeat(20)}`,
+            communityId: "community_1",
+            listingId: "listing_1",
+          },
+          store,
+        ),
+      );
+      expect(result.replayed).toBe(false);
+      const rows = await admin.query<{
+        readonly policy_version: string;
+        readonly provider: string;
+      }>(
+        `SELECT policy_version, provider
+           FROM community_purchase_verification_snapshots
+          WHERE quote_id = $1`,
+        [result.quoteId],
+      );
+      expect(rows.rows[0]).toEqual({ policy_version: "7", provider: "zkpassport" });
+    });
+  });
 });
 
 afterAll(() => undefined);

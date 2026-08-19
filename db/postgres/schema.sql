@@ -3264,7 +3264,7 @@ CREATE TABLE community_purchase_quotes (
     quoted_at timestamp with time zone NOT NULL DEFAULT clock_timestamp(),
     expires_at timestamp with time zone NOT NULL,
     status text NOT NULL DEFAULT 'active',
-    CONSTRAINT community_purchase_quote_status_check CHECK (status IN ('active', 'bound', 'cancelled')),
+    CONSTRAINT community_purchase_quote_status_check CHECK (status IN ('active', 'bound', 'cancelled', 'expired')),
     CONSTRAINT community_purchase_quote_wallet_check CHECK (buyer_wallet_address ~ '^0x[0-9a-f]{40}$'),
     CONSTRAINT community_purchase_quote_chain_check CHECK (buyer_chain_id = chain_id AND chain_id > 0),
     CONSTRAINT community_purchase_quote_token_check CHECK (
@@ -3296,6 +3296,7 @@ CREATE TABLE community_purchase_verification_snapshots (
     snapshot_id text PRIMARY KEY,
     quote_id text UNIQUE REFERENCES community_purchase_quotes (quote_id),
     actor_id text NOT NULL REFERENCES users (user_id),
+    policy_version bigint NOT NULL,
     provider text NOT NULL,
     verified_at timestamp with time zone,
     snapshot jsonb NOT NULL

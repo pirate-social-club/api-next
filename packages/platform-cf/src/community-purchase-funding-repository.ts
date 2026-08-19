@@ -643,6 +643,13 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
                       AND status = 'reserved'
                       AND expires_at <= clock_timestamp()
                     RETURNING purchase_id
+                 ), expired_quotes AS (
+                   UPDATE community_purchase_quotes AS quote
+                      SET status = 'expired'
+                     FROM expired_intents
+                    WHERE quote.purchase_id = expired_intents.purchase_id
+                      AND quote.status = 'active'
+                    RETURNING quote.purchase_id
                  ), expired_reservations AS (
                    UPDATE community_purchase_availability_reservations AS reservation
                       SET state = 'expired', transitioned_at = clock_timestamp()
@@ -662,10 +669,10 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
 
           const existingResult = yield* transaction.execute<Row>({
             label: "money.community-purchase-funding.producer.find-replay",
-            text: `SELECT quote_id, purchase_id, community_id, actor_id, listing_id,
-                        policy_version, buyer_wallet_address, chain_id, token_contract,
-                        token_decimals, treasury_address, amount_atomic, required_confirmations,
-                        quoted_at, expires_at
+            text: `SELECT quote.quote_id, quote.purchase_id, quote.community_id, quote.actor_id, quote.listing_id,
+                        quote.policy_version, quote.buyer_wallet_address, quote.chain_id, quote.token_contract,
+                        quote.token_decimals, quote.treasury_address, quote.amount_atomic, quote.required_confirmations,
+                        quote.quoted_at, quote.expires_at
                    FROM community_purchase_quotes AS quote
                    JOIN community_purchase_intents AS intent
                      ON intent.purchase_id = quote.purchase_id
@@ -760,15 +767,16 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
           if (verificationRequired) {
             const verificationResult = yield* transaction.execute<Row>({
               label: "money.community-purchase-funding.producer.check-verification",
-              text: `SELECT snapshot_id, provider, verified_at, snapshot
+              text: `SELECT snapshot_id, policy_version, provider, verified_at, snapshot
                      FROM community_purchase_verification_snapshots
                     WHERE actor_id = $1
+                      AND policy_version = $2
                       AND provider = 'zkpassport'
                       AND verified_at IS NOT NULL
                       AND verified_at >= clock_timestamp() - INTERVAL '24 hours'
                     ORDER BY verified_at DESC, snapshot_id DESC
                     LIMIT 1`,
-              values: [input.actorId],
+              values: [input.actorId, policyVersion],
               readonly: true,
             });
             verification = yield* oneRow(verificationResult.rows);
@@ -947,12 +955,13 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
             yield* transaction.execute({
               label: "money.community-purchase-funding.producer.insert-verification-snapshot",
               text: `INSERT INTO community_purchase_verification_snapshots (
-                     snapshot_id, quote_id, actor_id, provider, verified_at, snapshot
-                   ) VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+                     snapshot_id, quote_id, actor_id, policy_version, provider, verified_at, snapshot
+                   ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
               values: [
                 snapshotIds.verification,
                 quote.quoteId,
                 input.actorId,
+                policyVersion,
                 requiredString(verification, "provider"),
                 verification.verified_at,
                 JSON.stringify(verification.snapshot ?? {}),
