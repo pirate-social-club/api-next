@@ -110,6 +110,12 @@ const fundingDormancyAndRetentionMigrationSql = await Bun.file(
 const reconciliationAttemptsMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0019_m3_reconciliation_attempts.sql", import.meta.url),
 ).text();
+const reconciliationFinalizationMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0020_m3_reconciliation_finalization.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -209,6 +215,11 @@ const reconciliationAttemptsMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0019_m3_reconciliation_attempts.sql"] ?? "",
   sql: reconciliationAttemptsMigrationSql,
 };
+const reconciliationFinalizationMigration: PostgresMigration = {
+  version: "0020_m3_reconciliation_finalization.sql",
+  checksum: checksumManifest.migrations["0020_m3_reconciliation_finalization.sql"] ?? "",
+  sql: reconciliationFinalizationMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -229,6 +240,7 @@ const migrations: readonly PostgresMigration[] = [
   identityCredentialDeleteGuardMigration,
   fundingDormancyAndRetentionMigration,
   reconciliationAttemptsMigration,
+  reconciliationFinalizationMigration,
 ];
 
 function checksum(value: string): string {
@@ -398,6 +410,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(reconciliationAttemptsMigrationSql)).toBe(
         reconciliationAttemptsMigration.checksum,
       );
+      expect(checksum(reconciliationFinalizationMigrationSql)).toBe(
+        reconciliationFinalizationMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -439,6 +454,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_purchase_funding_transaction_claims",
         "community_purchase_funding_transitions",
         "community_purchase_funding_reconciliation_attempts",
+        "community_purchase_funding_reconciliation_operator_actions",
         "decision_records",
         "evidence_receipts",
         "home_feed_projection",

@@ -10,6 +10,7 @@ import {
   type CommunityPurchaseFundingPlanStore,
   type CommunityPurchaseFundingQueryStore,
   type CommunityPurchaseFundingReconciliationAttemptStore,
+  type CommunityPurchaseFundingReconciliationOperatorStore,
   CommunityPurchaseFundingStorageFailed,
   ControlPlaneDb,
   type ControlPlaneError,
@@ -61,6 +62,9 @@ type RecordAttemptSuccessInput = Parameters<
 >[0];
 type RecordAttemptFailureInput = Parameters<
   CommunityPurchaseFundingReconciliationAttemptStore["recordAttemptFailure"]
+>[0];
+type ResetEscalatedAttemptInput = Parameters<
+  CommunityPurchaseFundingReconciliationOperatorStore["resetEscalatedAttempt"]
 >[0];
 type CreatePlanInput = Parameters<CommunityPurchaseFundingPlanStore["createPlan"]>[0];
 
@@ -128,6 +132,7 @@ const RECONCILIATION_FAILURE_CLASSES = new Set<ReconciliationFailureClass>([
 function attemptFromRow(row: Row): CommunityPurchaseFundingAttemptState | null {
   const operationId = requiredString(row, "operation_id");
   const generation = integer(row, "generation");
+  const finalizedGeneration = integer(row, "finalized_generation");
   const lastAttemptAt = timestamp(row, "last_attempt_at");
   const nextAttemptAt = timestamp(row, "next_attempt_at");
   const failureValue = row.last_failure_class;
@@ -144,6 +149,11 @@ function attemptFromRow(row: Row): CommunityPurchaseFundingAttemptState | null {
     operationId === null ||
     generation === null ||
     generation < 0 ||
+    (row.finalized_generation !== null &&
+      row.finalized_generation !== undefined &&
+      finalizedGeneration === null) ||
+    (finalizedGeneration !== null &&
+      (finalizedGeneration < 0 || finalizedGeneration > generation)) ||
     lastFailureClass === undefined ||
     consecutiveFailures === null ||
     consecutiveFailures < 0 ||
@@ -156,6 +166,7 @@ function attemptFromRow(row: Row): CommunityPurchaseFundingAttemptState | null {
   return {
     operationId: operationId as CommunityPurchaseOperationId,
     generation,
+    finalizedGeneration,
     lastAttemptAt,
     nextAttemptAt,
     lastFailureClass,
@@ -936,10 +947,13 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
         label: "money.community-purchase-funding.record-attempt-start",
         text: `INSERT INTO community_purchase_funding_reconciliation_attempts (
                  operation_id, generation, last_attempt_at, next_attempt_at, updated_at
-               ) VALUES (
-                 $1, 1, clock_timestamp(),
-                 clock_timestamp() + ($2 * INTERVAL '1 millisecond'), clock_timestamp()
                )
+               SELECT $1, 1, clock_timestamp(),
+                      clock_timestamp() + ($2 * INTERVAL '1 millisecond'), clock_timestamp()
+                 FROM community_purchase_funding_journal AS source_journal
+                WHERE source_journal.operation_id = $1
+                  AND source_journal.state IN ('confirming', 'reconciliation_required')
+                  AND source_journal.funding_transaction_hash IS NOT NULL
                ON CONFLICT (operation_id) DO UPDATE SET
                  generation = community_purchase_funding_reconciliation_attempts.generation + 1,
                  last_attempt_at = clock_timestamp(),
@@ -950,8 +964,15 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
                  OR community_purchase_funding_reconciliation_attempts.next_attempt_at <= clock_timestamp()
                )
                  AND community_purchase_funding_reconciliation_attempts.escalated_at IS NULL
-               RETURNING operation_id, generation, last_attempt_at, next_attempt_at,
-                         last_failure_class, consecutive_failures, escalated_at`,
+                 AND EXISTS (
+                   SELECT 1
+                     FROM community_purchase_funding_journal AS eligible_journal
+                    WHERE eligible_journal.operation_id = $1
+                      AND eligible_journal.state IN ('confirming', 'reconciliation_required')
+                      AND eligible_journal.funding_transaction_hash IS NOT NULL
+                 )
+               RETURNING operation_id, generation, finalized_generation, last_attempt_at,
+                         next_attempt_at, last_failure_class, consecutive_failures, escalated_at`,
         values: [input.operationId, input.reservationMs],
         readonly: false,
       });
@@ -969,12 +990,15 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
       const result = yield* db.execute<Row>({
         label: "money.community-purchase-funding.record-attempt-success",
         text: `UPDATE community_purchase_funding_reconciliation_attempts
-                   SET last_failure_class = NULL, consecutive_failures = 0,
+                   SET finalized_generation = $2,
+                       last_failure_class = NULL, consecutive_failures = 0,
                        next_attempt_at = NULL, escalated_at = NULL,
                        updated_at = clock_timestamp()
-                 WHERE operation_id = $1 AND generation = $2
-                 RETURNING operation_id, generation, last_attempt_at, next_attempt_at,
-                           last_failure_class, consecutive_failures, escalated_at`,
+                 WHERE operation_id = $1
+                   AND generation = $2
+                   AND finalized_generation IS DISTINCT FROM $2
+                 RETURNING operation_id, generation, finalized_generation, last_attempt_at,
+                           next_attempt_at, last_failure_class, consecutive_failures, escalated_at`,
         values: [input.operationId, input.generation],
         readonly: false,
       });
@@ -992,7 +1016,8 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
       const result = yield* db.execute<Row>({
         label: "money.community-purchase-funding.record-attempt-failure",
         text: `UPDATE community_purchase_funding_reconciliation_attempts
-                   SET last_failure_class = $2,
+                   SET finalized_generation = $5,
+                       last_failure_class = $2,
                        consecutive_failures = consecutive_failures + 1,
                        next_attempt_at = clock_timestamp() + ($3 * INTERVAL '1 millisecond'),
                        escalated_at = CASE
@@ -1001,9 +1026,11 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
                          ELSE escalated_at
                        END,
                        updated_at = clock_timestamp()
-                 WHERE operation_id = $1 AND generation = $5
-                 RETURNING operation_id, generation, last_attempt_at, next_attempt_at,
-                           last_failure_class, consecutive_failures, escalated_at`,
+                 WHERE operation_id = $1
+                   AND generation = $5
+                   AND finalized_generation IS DISTINCT FROM $5
+                 RETURNING operation_id, generation, finalized_generation, last_attempt_at,
+                           next_attempt_at, last_failure_class, consecutive_failures, escalated_at`,
         values: [
           input.operationId,
           input.failureClass,
@@ -1020,6 +1047,52 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
       return { kind: "finalized", state } as const;
     },
   );
+
+  const resetEscalatedAttempt = Effect.fn(
+    "CommunityPurchaseFundingRepository.resetEscalatedAttempt",
+  )(function* (input: ResetEscalatedAttemptInput) {
+    if (
+      input.actorId.length === 0 ||
+      input.actorId.trim() !== input.actorId ||
+      input.reason.length === 0 ||
+      input.reason.trim() !== input.reason ||
+      input.reason.length > 500
+    ) {
+      return yield* Effect.fail(storageFailure("invalid-row"));
+    }
+    const db = yield* ControlPlaneDb;
+    return yield* db.withTransaction((transaction) =>
+      Effect.gen(function* () {
+        const reset = yield* transaction.execute<Row>({
+          label: "money.community-purchase-funding.reset-escalated-attempt",
+          text: `UPDATE community_purchase_funding_reconciliation_attempts
+                    SET escalated_at = NULL,
+                        consecutive_failures = 0,
+                        last_failure_class = NULL,
+                        next_attempt_at = clock_timestamp(),
+                        updated_at = clock_timestamp()
+                  WHERE operation_id = $1
+                    AND escalated_at IS NOT NULL
+                  RETURNING operation_id, generation`,
+          values: [input.operationId],
+          readonly: false,
+        });
+        const row = yield* oneRow(reset.rows);
+        if (row === null) return { kind: "not-escalated" } as const;
+        const generation = integer(row, "generation");
+        if (generation === null) return yield* Effect.fail(storageFailure("invalid-row"));
+        yield* transaction.execute({
+          label: "money.community-purchase-funding.record-operator-reset",
+          text: `INSERT INTO community_purchase_funding_reconciliation_operator_actions (
+                   operation_id, actor_id, action, reason, generation
+                 ) VALUES ($1, $2, 'unpark_escalated', $3, $4)`,
+          values: [input.operationId, input.actorId, input.reason, generation],
+          readonly: false,
+        });
+        return { kind: "reset", generation } as const;
+      }),
+    );
+  });
 
   const acquireLease = Effect.fn("CommunityPurchaseFundingRepository.acquireLease")(function* (
     input: AcquireLeaseInput,
@@ -1335,6 +1408,7 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
     recordAttemptStart,
     recordAttemptSuccess,
     recordAttemptFailure,
+    resetEscalatedAttempt,
     acquireLease,
     wasTransitionCommitted,
     commitTransition,
@@ -1381,6 +1455,17 @@ export function makeControlPlaneCommunityPurchaseFundingAttemptStore(
     recordAttemptStart: (input) => provide(repository.recordAttemptStart(input)),
     recordAttemptSuccess: (input) => provide(repository.recordAttemptSuccess(input)),
     recordAttemptFailure: (input) => provide(repository.recordAttemptFailure(input)),
+  };
+}
+
+export function makeControlPlaneCommunityPurchaseFundingOperatorStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): CommunityPurchaseFundingReconciliationOperatorStore {
+  const repository = makeControlPlaneCommunityPurchaseFundingRepository();
+  const provide = <A>(effect: Effect.Effect<A, RepositoryError, ControlPlaneDb>) =>
+    Effect.provide(runtime)(effect).pipe(Effect.mapError(mapRepositoryError));
+  return {
+    resetEscalatedAttempt: (input) => provide(repository.resetEscalatedAttempt(input)),
   };
 }
 

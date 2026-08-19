@@ -22,6 +22,8 @@ import {
 export type CommunityPurchaseFundingAttemptState = Readonly<{
   readonly operationId: CommunityPurchaseOperationId;
   readonly generation: number;
+  /** The claim generation whose finalizer has already been consumed, if any. */
+  readonly finalizedGeneration: number | null;
   readonly lastAttemptAt: string | null;
   readonly nextAttemptAt: string | null;
   readonly lastFailureClass: ReconciliationFailureClass | null;
@@ -38,6 +40,19 @@ export type CommunityPurchaseFundingAttemptFinalization = Readonly<
   | { readonly kind: "finalized"; readonly state: CommunityPurchaseFundingAttemptState }
   | { readonly kind: "stale" }
 >;
+
+export type CommunityPurchaseFundingAttemptReset = Readonly<
+  { readonly kind: "reset"; readonly generation: number } | { readonly kind: "not-escalated" }
+>;
+
+/** Coordinator-only recovery seam; it never creates a claim or advances generation. */
+export interface CommunityPurchaseFundingReconciliationOperatorStore {
+  readonly resetEscalatedAttempt: (input: {
+    readonly operationId: CommunityPurchaseOperationId;
+    readonly actorId: string;
+    readonly reason: string;
+  }) => Effect.Effect<CommunityPurchaseFundingAttemptReset, CommunityPurchaseFundingStorageFailed>;
+}
 
 export interface CommunityPurchaseFundingReconciliationAttemptStore {
   /** Claim only if absent, due, and non-escalated; generation fences every write. */

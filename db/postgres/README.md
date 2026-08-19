@@ -75,6 +75,12 @@ operations that have transaction identity. Conditional claims advance a
 generation fence, and success/failure finalizers require that generation;
 hashless parked entries therefore never acquire attempt rows or RPC work.
 
+`0020_m3_reconciliation_finalization.sql` adds the one-shot finalization fence
+for each attempt generation and the append-only operator-action ledger used to
+record an authorized unpark of an escalated attempt. The reset and its audit
+record commit in one transaction; migration `0019` remains byte-for-byte
+immutable.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every
@@ -94,7 +100,7 @@ Before an authorized M3 staging migration, run `bun run db:preflight:m3` with
 both `CONTROL_PLANE_POSTGRES_ADMIN_URL` and
 `CONTROL_PLANE_POSTGRES_RUNTIME_URL`. It performs read-only checks of the exact
 checksummed ledger prefix, M3 row counts, the physical runtime principal, and
-per-table privileges without printing either credential. After applying 0019
+per-table privileges without printing either credential. After applying 0020
 and its reviewed grants, rerun with `--require-ready`.
 
 The real-Postgres CI gate must invoke the adapter, foundation, migration-runner,

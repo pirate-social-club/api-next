@@ -22,5 +22,6 @@ FROM api_next_app;
 REVOKE UPDATE, DELETE ON
   community_purchase_funding_transaction_claims,
   community_purchase_funding_transitions,
-  community_purchase_funding_receipts
+  community_purchase_funding_receipts,
+  community_purchase_funding_reconciliation_operator_actions
 FROM api_next_app;
