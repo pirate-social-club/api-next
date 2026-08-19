@@ -79,7 +79,14 @@ hashless parked entries therefore never acquire attempt rows or RPC work.
 for each attempt generation and the append-only operator-action ledger used to
 record an authorized unpark of an escalated attempt. The reset and its audit
 record commit in one transaction; migration `0019` remains byte-for-byte
-immutable.
+immutable. The supported recovery invocation is the coordinator-only
+`makeControlPlaneCommunityPurchaseFundingOperatorStore` seam with the runtime
+role, calling `resetEscalatedAttempt({ operationId, actorId, reason })` only
+after the approved operator authorization check. It returns `reset` or
+`not-escalated`; the latter is the idempotent result for a concurrent or
+healthy-row retry. This seam is not an HTTP capability: do not expose it to
+end users or replace it with manual SQL. The non-empty actor and reason are
+stored with the generation in the append-only operator-action ledger.
 
 ## Applying migrations
 
