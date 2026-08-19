@@ -25,11 +25,19 @@
     "checkFresh": "passed",
     "checkBreaking": {
       "status": "passed",
+      "baselineCommit": "8272dbf329920a1069b81a182b472b37b2440d10",
+      "reason": "The immutable 0.6.0 artifact is generated from the committed combined M3 and karaoke contract baseline."
+    },
+    "originIntegrationComparison": {
       "baselineCommit": "8fe19a151d06ab88488820b97d7d990afd4dfb36",
-      "reason": "The combined release integrates the accepted karaoke contract with the local M3 contract refresh."
+      "status": "accepted-pre-live-contract-change",
+      "differences": [
+        "dormant_unobserved added to the four community-purchase-funding response enums"
+      ],
+      "reason": "These are the ratified M3 lifecycle additions already released in immutable 0.5.0; karaoke introduces no additional breaking difference."
     },
     "focusedApiClientTests": "5 passed",
     "packageVerifier": "passed",
-    "repositoryCheck": "pending"
+    "repositoryCheck": "passed"
   }
 }
