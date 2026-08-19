@@ -30,7 +30,10 @@ function connectionForSchema(raw: string, schema: string): string {
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 }
 
-async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
+async function withSchema<A>(
+  use: (connection: string, admin: Client) => Promise<A>,
+  options: Readonly<{ readonly verificationRequired?: boolean }> = {},
+): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   const schema = schemaIdentifier();
   const admin = new Client({ connectionString });
@@ -55,7 +58,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
     ) VALUES ('listing_1', 'community_1', 7, 'finite', 2)`);
     await admin.query(`INSERT INTO community_commerce_eligibility_policy_versions (
       community_id, policy_version, verification_required
-    ) VALUES ('community_1', 7, FALSE)`);
+    ) VALUES ('community_1', 7, ${options.verificationRequired === true ? "TRUE" : "FALSE"})`);
     await admin.query(`INSERT INTO community_commerce_pricing_policy_versions (
       community_id, policy_version, amount_atomic
     ) VALUES ('community_1', 7, 12500000)`);
@@ -124,6 +127,19 @@ suite("community purchase funding producer repository", () => {
         plan_count: "1",
         snapshot_count: "1",
       });
+      await expect(
+        admin.query(
+          `UPDATE community_purchase_quotes
+              SET amount_atomic = amount_atomic + 1
+            WHERE quote_id = $1`,
+          [result.quoteId],
+        ),
+      ).rejects.toThrow("terms are immutable");
+      await expect(
+        admin.query(`DELETE FROM community_purchase_pricing_snapshots WHERE quote_id = $1`, [
+          result.quoteId,
+        ]),
+      ).rejects.toThrow("append-only");
     });
   });
 
@@ -207,44 +223,49 @@ suite("community purchase funding producer repository", () => {
   });
 
   test("requires a recent verification snapshot for the active policy revision", async () => {
-    await withSchema(async (connection, admin) => {
-      await admin.query(
-        `UPDATE community_commerce_eligibility_policy_versions
-            SET verification_required = TRUE
-          WHERE community_id = 'community_1' AND policy_version = 7`,
-      );
-      await admin.query(
-        `INSERT INTO community_purchase_verification_snapshots (
+    await withSchema(
+      async (connection, admin) => {
+        await admin.query(
+          `INSERT INTO community_purchase_verification_snapshots (
            snapshot_id, actor_id, community_id, policy_version, provider, verified_at, snapshot
          ) VALUES ('verification_source_1', 'user_1', 'community_1', 7, 'zkpassport',
                    clock_timestamp(), '{"source":"test"}'::jsonb)`,
-      );
-      const store = makeControlPlaneCommunityPurchaseFundingProducerStore(
-        makeDirectPostgresControlPlaneLayer(connection),
-      );
-      const result = await run(
-        produceCommunityPurchaseFundingQuote(
-          {
-            actorId: "user_1",
-            authenticatedWalletAddress: `0x${"22".repeat(20)}`,
-            communityId: "community_1",
-            listingId: "listing_1",
-          },
-          store,
-        ),
-      );
-      expect(result.replayed).toBe(false);
-      const rows = await admin.query<{
-        readonly policy_version: string;
-        readonly provider: string;
-      }>(
-        `SELECT policy_version, provider
+        );
+        const store = makeControlPlaneCommunityPurchaseFundingProducerStore(
+          makeDirectPostgresControlPlaneLayer(connection),
+        );
+        const result = await run(
+          produceCommunityPurchaseFundingQuote(
+            {
+              actorId: "user_1",
+              authenticatedWalletAddress: `0x${"22".repeat(20)}`,
+              communityId: "community_1",
+              listingId: "listing_1",
+            },
+            store,
+          ),
+        );
+        expect(result.replayed).toBe(false);
+        const rows = await admin.query<{
+          readonly policy_version: string;
+          readonly provider: string;
+        }>(
+          `SELECT policy_version, provider
            FROM community_purchase_verification_snapshots
           WHERE quote_id = $1`,
-        [result.quoteId],
-      );
-      expect(rows.rows[0]).toEqual({ policy_version: "7", provider: "zkpassport" });
-    });
+          [result.quoteId],
+        );
+        expect(rows.rows[0]).toEqual({ policy_version: "7", provider: "zkpassport" });
+        await expect(
+          admin.query(
+            `UPDATE community_commerce_pricing_policy_versions
+              SET amount_atomic = amount_atomic + 1
+            WHERE community_id = 'community_1' AND policy_version = 7`,
+          ),
+        ).rejects.toThrow("append-only");
+      },
+      { verificationRequired: true },
+    );
   });
 });
 
