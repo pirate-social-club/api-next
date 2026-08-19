@@ -522,11 +522,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       if (!authorized(context)) return new Response("Not found", { status: 404 });
       try {
         return json(context, await operation({} as DecodedRequest), 200, true);
-      } catch (error) {
-        console.error(
-          "self_callback_capture_control_failed",
-          error instanceof Error ? error.message.slice(0, 200) : "unknown",
-        );
+      } catch {
         return new Response("Internal error", { status: 500 });
       }
     };
