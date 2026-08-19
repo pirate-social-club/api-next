@@ -5,6 +5,7 @@ import {
   type HttpWorkerBindings,
   makeProductionIdentityRegistrationRateLimiter,
 } from "./composition.ts";
+import type { SelfCallbackCaptureNamespace } from "./self-callback-capture.ts";
 
 function toPem(label: "PRIVATE KEY" | "PUBLIC KEY", bytes: ArrayBuffer): string {
   const base64 = Buffer.from(bytes).toString("base64");
@@ -282,7 +283,7 @@ describe("HTTP production composition", () => {
     const namespace = {
       idFromName: () => "id",
       get: () => ({ fetch: async () => new Response() }),
-    };
+    } as unknown as SelfCallbackCaptureNamespace;
     await expect(
       createProductionHttpWorker({
         ...configured,

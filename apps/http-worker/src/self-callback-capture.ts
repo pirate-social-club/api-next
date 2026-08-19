@@ -1,11 +1,12 @@
+import type { DurableObjectId } from "@cloudflare/workers-types";
 import type {
   SelfCallbackCaptureReplay,
   SelfCallbackCaptureStatus,
 } from "./self-callback-capture-do.ts";
 
 export type SelfCallbackCaptureNamespace = {
-  readonly idFromName: (name: string) => unknown;
-  readonly get: (id: unknown) => {
+  readonly idFromName: (name: string) => DurableObjectId;
+  readonly get: (id: DurableObjectId) => {
     readonly fetch: (request: Request | string, init?: RequestInit) => Promise<Response>;
   };
 };
@@ -22,7 +23,7 @@ export type SelfCallbackCaptureService = {
 };
 
 const INSTANCE_NAME = "physical-ceremony-callback";
-const INTERNAL_ORIGIN = "https://self-callback-capture.invalid";
+const INTERNAL_ORIGIN = "https://self-callback-capture.local";
 
 const serviceResponse = async (response: Response): Promise<unknown> => {
   if (!response.ok) throw new Error("Self callback capture unavailable");
@@ -34,7 +35,7 @@ export const makeSelfCallbackCaptureService = (
 ): SelfCallbackCaptureService => {
   const stub = namespace.get(namespace.idFromName(INSTANCE_NAME));
   const request = (path: string, init?: RequestInit): Promise<Response> =>
-    stub.fetch(`${INTERNAL_ORIGIN}${path}`, init);
+    stub.fetch(new Request(`${INTERNAL_ORIGIN}${path}`, init));
   return {
     capture: async (providerId, rawBody, headers) => {
       const response = await request("/capture", {

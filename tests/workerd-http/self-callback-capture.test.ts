@@ -2,6 +2,7 @@
 
 import { env as testEnv } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { makeSelfCallbackCaptureService } from "../../apps/http-worker/src/self-callback-capture.ts";
 import type { SelfCallbackCaptureDO } from "../../apps/http-worker/src/self-callback-capture-do.ts";
 
 const env = testEnv as unknown as {
@@ -93,5 +94,20 @@ describe("Self callback capture Durable Object", () => {
     expect(response.status).toBe(400);
     const status = await stub.fetch("https://capture.test/status");
     expect((await json(status)).state).toBe("empty");
+  });
+
+  it("uses the application service seam without exposing replay bytes", async () => {
+    const service = makeSelfCallbackCaptureService(env.SELF_CALLBACK_CAPTURE);
+    const status = await service.status();
+    expect(status.state).toBe("empty");
+    const captured = await service.capture("self.pass", '{"ok":true}', {
+      "content-type": "application/json",
+    });
+    expect(captured.length).toBe(11);
+    const replay = await service.replay();
+    expect(replay.raw_body).toBe('{"ok":true}');
+    expect(replay.headers).toEqual({ "content-type": "application/json" });
+    expect(replay.digest).toMatch(/^[0-9a-f]{64}$/u);
+    await service.clear();
   });
 });
