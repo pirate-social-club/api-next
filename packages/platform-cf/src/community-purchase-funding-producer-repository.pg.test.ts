@@ -3,6 +3,7 @@ import {
   CommunityPurchaseFundingProducerRejected,
   produceCommunityPurchaseFundingQuote,
 } from "@pirate/application";
+import { communityPurchaseAtomicAmount } from "@pirate/domain";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
@@ -102,7 +103,7 @@ suite("community purchase funding producer repository", () => {
       );
       expect(result.replayed).toBe(false);
       expect(result.policyVersion).toBe(7);
-      expect(result.expected.amountAtomic).toBe(12_500_000n);
+      expect(result.expected.amountAtomic).toBe(communityPurchaseAtomicAmount(12_500_000n));
       expect(Date.parse(result.expiresAt) - Date.parse(result.quotedAt)).toBe(600_000);
 
       const rows = await admin.query<{
