@@ -78,6 +78,32 @@ donation, and commerce records. Importing it would make legacy API behavior a
 hidden production dependency and would make api-next accountable for values it
 cannot authorize or reconstruct.
 
+## Read-only evidence inventory (not an authority decision)
+
+The legacy repository is useful for locating the questions a ratified owner
+must answer, but these references do not authorize an import or runtime bridge:
+
+- [`STORY_CDR_PATHS.md`](../../../api/STORY_CDR_PATHS.md) maps the live listing,
+  purchase-quote, and purchase-settlement routes to their service entry points.
+- [`services/contracts/src/index.ts`](../../../api/services/contracts/src/index.ts)
+  defines the observed listing, quote, settlement, allocation, pricing, route,
+  donation, and expiry fields; in particular, the quote shape includes
+  `final_price_cents`, `allocation_snapshot`, settlement chain/token,
+  `funding_destination_address`, `pricing_policy_version`, `quoted_at`, and
+  `expires_at`.
+- [`services/api/tests/community-db-factory.test.ts`](../../../api/services/api/tests/community-db-factory.test.ts)
+  records legacy table surfaces including `purchase_quotes`, `purchases`,
+  `purchase_allocation_legs`, settlement effects/transactions/attempts,
+  `community_memberships`, and donation-partner data.
+- [`services/api/src/routes/communities-commerce.ts`](../../../api/services/api/src/routes/communities-commerce.ts)
+  confirms that the quote and settlement routes are authenticated community
+  routes, but route reachability is not proof that the legacy service is the
+  future owner.
+
+The ratification must therefore replace these observations with named target
+tables or a target service revision for every authority above, plus the
+snapshot/version and retention contract.
+
 ## Required ratification answers
 
 The human decision must name:
