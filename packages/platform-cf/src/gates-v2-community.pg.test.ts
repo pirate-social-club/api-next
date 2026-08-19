@@ -115,24 +115,6 @@ async function insertCompletedEvidence(
       ],
     });
     await admin.query({
-      text: `UPDATE proof_sessions
-                SET status = 'completed',
-                    completed_at = CURRENT_TIMESTAMP,
-                    completion_idempotency_key = 'complete-age',
-                    completion_result_hash = repeat('b', 64),
-                    terminal_at = CURRENT_TIMESTAMP
-              WHERE proof_session_id = 'proof-age'`,
-    });
-    await admin.query({
-      text: `INSERT INTO proof_session_completion_events (
-        completion_event_id, proof_session_id, actor_id, idempotency_key,
-        terminal_status, result_hash, terminal_at
-      ) SELECT 'completion-age', proof_session_id, actor_id, completion_idempotency_key,
-               status, completion_result_hash, terminal_at
-          FROM proof_sessions
-         WHERE proof_session_id = 'proof-age'`,
-    });
-    await admin.query({
       text: `INSERT INTO subject_keys (
         subject_key_id, issuer, method, scope_kind, issuer_rp_scope,
         issuer_rp_action_scope, subject_digest
@@ -171,12 +153,30 @@ async function insertCompletedEvidence(
         claim_id, assertion_value, assurance, observed_at, expires_at
       ) VALUES
         ('assertion-age', 'binding-age', 'receipt-age', 'subject-age', 'user-a',
-         'age.minimum', jsonb_build_object('minimum_age', $1), 'document_zk', clock_timestamp(), ${expiry}),
+         'age.minimum', jsonb_build_object('minimum_age', $1::text), 'document_zk', clock_timestamp(), ${expiry}),
         ('assertion-unique', 'binding-age', 'receipt-age', 'subject-age', 'user-a',
          'credential.subject_unique', '{"subject_unique": true}'::jsonb, 'document_zk', clock_timestamp(), ${expiry}),
         ('assertion-document', 'binding-age', 'receipt-age', 'subject-age', 'user-a',
          'document.valid', '{"valid": true}'::jsonb, 'document_zk', clock_timestamp(), ${expiry})`,
       values: [input.age],
+    });
+    await admin.query({
+      text: `UPDATE proof_sessions
+                SET status = 'completed',
+                    completed_at = CURRENT_TIMESTAMP,
+                    completion_idempotency_key = 'complete-age',
+                    completion_result_hash = repeat('b', 64),
+                    terminal_at = CURRENT_TIMESTAMP
+              WHERE proof_session_id = 'proof-age'`,
+    });
+    await admin.query({
+      text: `INSERT INTO proof_session_completion_events (
+        completion_event_id, proof_session_id, actor_id, idempotency_key,
+        terminal_status, result_hash, terminal_at
+      ) SELECT 'completion-age', proof_session_id, actor_id, completion_idempotency_key,
+               status, completion_result_hash, terminal_at
+          FROM proof_sessions
+         WHERE proof_session_id = 'proof-age'`,
     });
     await admin.query("COMMIT");
   } catch (error) {
