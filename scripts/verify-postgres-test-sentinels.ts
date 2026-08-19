@@ -91,6 +91,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-community-purchase-funding-suite-complete",
     contents: "api-next-control-plane-postgres-community-purchase-funding-suite-complete\n",
   },
+  {
+    name: "postgres community purchase commerce producer",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_COMMUNITY_PURCHASE_COMMERCE_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-community-purchase-commerce-suite-complete",
+    contents: "api-next-control-plane-postgres-community-purchase-commerce-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

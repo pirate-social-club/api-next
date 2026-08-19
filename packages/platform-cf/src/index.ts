@@ -33,6 +33,10 @@ export {
   makeLocalAlertSink,
 } from "./alerts";
 export {
+  type CommunityPurchaseCommerceStoreOptions,
+  makeControlPlaneCommunityPurchaseCommerceStore,
+} from "./community-purchase-commerce-repository";
+export {
   COMMUNITY_PURCHASE_CHAIN_RPC_MAX_RESPONSE_BYTES,
   COMMUNITY_PURCHASE_CHAIN_RPC_TIMEOUT_MS,
   type CommunityPurchaseFundingChainFetcher,
@@ -40,6 +44,7 @@ export {
   makeCommunityPurchaseFundingChainReader,
 } from "./community-purchase-funding-chain-reader";
 export {
+  createCommunityPurchaseFundingPlanInTransaction,
   makeControlPlaneCommunityPurchaseFundingAdmissionStore,
   makeControlPlaneCommunityPurchaseFundingAttemptStore,
   makeControlPlaneCommunityPurchaseFundingOperatorStore,

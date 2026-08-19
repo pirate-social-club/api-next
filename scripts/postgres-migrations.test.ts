@@ -41,6 +41,7 @@ describe("Postgres migration runner", () => {
       "0018_m3_funding_dormancy_and_retention.sql",
       "0019_m3_reconciliation_attempts.sql",
       "0020_m3_reconciliation_finalization.sql",
+      "0021_m3_community_purchase_commerce.sql",
     ]);
     expect(formatMigrationPlan(migrations)).toContain("0001_v1_product_slice.sql");
     expect(formatMigrationPlan(migrations)).toContain("0002_identity.sql");
@@ -70,7 +71,7 @@ describe("Postgres migration runner", () => {
     const output = await runPostgresMigrations({ dryRun: true });
     expect(output).toMatchObject({ dryRun: true });
     if (!output.dryRun) throw new Error("expected a dry-run result");
-    expect(output.plan).toHaveLength(20);
+    expect(output.plan).toHaveLength(21);
   });
 
   test("normalizes psql's system sslrootcert value for node pg", () => {
@@ -178,6 +179,13 @@ describe("Postgres migration runner", () => {
     await Bun.write(
       join(directory, "0020_m3_reconciliation_finalization.sql"),
       reconciliationFinalization,
+    );
+    const communityPurchaseCommerce = await Bun.file(
+      new URL("0021_m3_community_purchase_commerce.sql", source),
+    ).text();
+    await Bun.write(
+      join(directory, "0021_m3_community_purchase_commerce.sql"),
+      communityPurchaseCommerce,
     );
 
     await expect(loadPostgresMigrations(new URL(`file://${directory}/`))).rejects.toThrow(

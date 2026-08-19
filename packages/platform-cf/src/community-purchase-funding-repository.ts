@@ -6,6 +6,7 @@ import {
   type CommunityPurchaseFundingJournalRecord,
   type CommunityPurchaseFundingJournalStore,
   type CommunityPurchaseFundingParkedCount,
+  type CommunityPurchaseFundingPlanCreateOutcome,
   type CommunityPurchaseFundingPlanRecord,
   type CommunityPurchaseFundingPlanStore,
   type CommunityPurchaseFundingQueryStore,
@@ -514,92 +515,104 @@ function insertAdmissionRequest(
     .pipe(Effect.asVoid);
 }
 
+/**
+ * Inserts the immutable funding-plan boundary inside a caller-owned
+ * transaction. Commerce quote creation uses this instead of opening a second
+ * transaction, so quote, reservation, and plan commit or roll back together.
+ */
+export function createCommunityPurchaseFundingPlanInTransaction(
+  transaction: Transaction,
+  input: CreatePlanInput,
+): Effect.Effect<CommunityPurchaseFundingPlanCreateOutcome, RepositoryError> {
+  return Effect.gen(function* () {
+    const lockKeys = [
+      `cpf:plan:purchase:${input.purchaseId}`,
+      `cpf:plan:quote:${input.quoteId}`,
+    ].sort();
+    for (const key of lockKeys) yield* advisoryLock(transaction, key);
+    const existingResult = yield* transaction.execute<Row>({
+      label: "money.community-purchase-funding.plan.find-existing",
+      text: `SELECT ${PLAN_COLUMNS}
+               FROM community_purchase_funding_plans
+              WHERE quote_id = $1 OR purchase_id = $2
+              FOR UPDATE`,
+      values: [input.quoteId, input.purchaseId],
+      readonly: false,
+    });
+    if (existingResult.rows.length > 1) return { kind: "conflict" } as const;
+    const existingRow = existingResult.rows[0];
+    if (existingRow !== undefined) {
+      const existing = fundingPlanFromRow(existingRow);
+      if (existing === null || existing.status !== "active") {
+        return { kind: "conflict" } as const;
+      }
+      const expected = existing.plan.expected;
+      const exact =
+        existing.plan.quoteId === input.quoteId &&
+        existing.plan.communityId === input.communityId &&
+        requiredString(existingRow, "actor_id") === input.actorId &&
+        existing.plan.purchaseId === input.purchaseId &&
+        existing.plan.policyVersion === input.policyVersion &&
+        expected.sender === input.buyerWalletAddress &&
+        expected.chainId === input.buyerChainId &&
+        expected.tokenContract === input.tokenContract &&
+        expected.tokenDecimals === input.tokenDecimals &&
+        expected.recipient === input.treasuryAddress &&
+        expected.amountAtomic === input.amountAtomic &&
+        expected.requiredConfirmations === input.requiredConfirmations &&
+        Date.parse(existing.expiresAt) - Date.parse(existing.quotedAt) ===
+          input.quoteTtlSeconds * 1_000;
+      if (!exact) return { kind: "conflict" } as const;
+      return {
+        kind: "replayed",
+        plan: fundingPlanRecord(existing, input.actorId),
+      } as const;
+    }
+
+    const inserted = yield* transaction.execute<Row>({
+      label: "money.community-purchase-funding.plan.insert",
+      text: `INSERT INTO community_purchase_funding_plans (
+               quote_id, community_id, actor_id, buyer_wallet_address, buyer_chain_id,
+               purchase_id, policy_version, chain_id, token_contract, token_decimals,
+               treasury_address, amount_atomic, required_confirmations, quoted_at,
+               expires_at, status
+             ) VALUES (
+               $1, $2, $3, $4, $5, $6, $7, $5, $8, $9, $10, $11, $12,
+               statement_timestamp(),
+               statement_timestamp() + ($13 * INTERVAL '1 second'), 'active'
+             )
+             RETURNING ${PLAN_COLUMNS}`,
+      values: [
+        input.quoteId,
+        input.communityId,
+        input.actorId,
+        input.buyerWalletAddress,
+        input.buyerChainId,
+        input.purchaseId,
+        input.policyVersion,
+        input.tokenContract,
+        input.tokenDecimals,
+        input.treasuryAddress,
+        input.amountAtomic.toString(),
+        input.requiredConfirmations,
+        input.quoteTtlSeconds,
+      ],
+      readonly: false,
+    });
+    const row = yield* oneRow(inserted.rows);
+    const record = row === null ? null : fundingPlanFromRow(row);
+    if (record === null) return yield* Effect.fail(storageFailure("invalid-row"));
+    return { kind: "inserted", plan: fundingPlanRecord(record, input.actorId) } as const;
+  });
+}
+
 export function makeControlPlaneCommunityPurchaseFundingRepository() {
   const createPlan = Effect.fn("CommunityPurchaseFundingRepository.createPlan")(function* (
     input: CreatePlanInput,
   ) {
     const db = yield* ControlPlaneDb;
     return yield* db.withTransaction((transaction) =>
-      Effect.gen(function* () {
-        const lockKeys = [
-          `cpf:plan:purchase:${input.purchaseId}`,
-          `cpf:plan:quote:${input.quoteId}`,
-        ].sort();
-        for (const key of lockKeys) yield* advisoryLock(transaction, key);
-        const existingResult = yield* transaction.execute<Row>({
-          label: "money.community-purchase-funding.plan.find-existing",
-          text: `SELECT ${PLAN_COLUMNS}
-                   FROM community_purchase_funding_plans
-                  WHERE quote_id = $1 OR purchase_id = $2
-                  FOR UPDATE`,
-          values: [input.quoteId, input.purchaseId],
-          readonly: false,
-        });
-        if (existingResult.rows.length > 1) return { kind: "conflict" } as const;
-        const existingRow = existingResult.rows[0];
-        if (existingRow !== undefined) {
-          const existing = fundingPlanFromRow(existingRow);
-          if (existing === null || existing.status !== "active") {
-            return { kind: "conflict" } as const;
-          }
-          const expected = existing.plan.expected;
-          const exact =
-            existing.plan.quoteId === input.quoteId &&
-            existing.plan.communityId === input.communityId &&
-            requiredString(existingRow, "actor_id") === input.actorId &&
-            existing.plan.purchaseId === input.purchaseId &&
-            existing.plan.policyVersion === input.policyVersion &&
-            expected.sender === input.buyerWalletAddress &&
-            expected.chainId === input.buyerChainId &&
-            expected.tokenContract === input.tokenContract &&
-            expected.tokenDecimals === input.tokenDecimals &&
-            expected.recipient === input.treasuryAddress &&
-            expected.amountAtomic === input.amountAtomic &&
-            expected.requiredConfirmations === input.requiredConfirmations &&
-            Date.parse(existing.expiresAt) - Date.parse(existing.quotedAt) ===
-              input.quoteTtlSeconds * 1_000;
-          if (!exact) return { kind: "conflict" } as const;
-          return {
-            kind: "replayed",
-            plan: fundingPlanRecord(existing, input.actorId),
-          } as const;
-        }
-
-        const inserted = yield* transaction.execute<Row>({
-          label: "money.community-purchase-funding.plan.insert",
-          text: `INSERT INTO community_purchase_funding_plans (
-                   quote_id, community_id, actor_id, buyer_wallet_address, buyer_chain_id,
-                   purchase_id, policy_version, chain_id, token_contract, token_decimals,
-                   treasury_address, amount_atomic, required_confirmations, quoted_at,
-                   expires_at, status
-                 ) VALUES (
-                   $1, $2, $3, $4, $5, $6, $7, $5, $8, $9, $10, $11, $12,
-                   statement_timestamp(),
-                   statement_timestamp() + ($13 * INTERVAL '1 second'), 'active'
-                 )
-                 RETURNING ${PLAN_COLUMNS}`,
-          values: [
-            input.quoteId,
-            input.communityId,
-            input.actorId,
-            input.buyerWalletAddress,
-            input.buyerChainId,
-            input.purchaseId,
-            input.policyVersion,
-            input.tokenContract,
-            input.tokenDecimals,
-            input.treasuryAddress,
-            input.amountAtomic.toString(),
-            input.requiredConfirmations,
-            input.quoteTtlSeconds,
-          ],
-          readonly: false,
-        });
-        const row = yield* oneRow(inserted.rows);
-        const record = row === null ? null : fundingPlanFromRow(row);
-        if (record === null) return yield* Effect.fail(storageFailure("invalid-row"));
-        return { kind: "inserted", plan: fundingPlanRecord(record, input.actorId) } as const;
-      }),
+      createCommunityPurchaseFundingPlanInTransaction(transaction, input),
     );
   });
 
