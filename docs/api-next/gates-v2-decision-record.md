@@ -444,9 +444,10 @@ missing claims, future observations, and expired evidence remain actionable
 join records the decision and inserts membership in one transaction only when
 the outcome is `pass`.
 
-The current PostgreSQL vertical pins the core five cases. A follow-up test
-tranche still owes explicit database-level assertions for policy/hash mismatch,
-decision-insert rollback, gated-path replay predicate, witness JSON read-back,
-and the invariant that no gated membership exists without its committed
-enforce/pass decision. Those are test-coverage obligations, not permission to
-change the lifecycle above.
+The PostgreSQL acceptance tranche is now closed in `e09b732`: the seven-case
+gates suite covers the five core cases plus policy-pointer mismatch, both
+transaction rollback directions, explicit gated replay, witness JSON read-back,
+and the no-membership-without-enforce/pass invariant. The full disposable
+PostgreSQL inventory passes 95/95 across 16 files. This is local acceptance
+evidence only; it does not authorize staging, deployment, or migration
+application.
