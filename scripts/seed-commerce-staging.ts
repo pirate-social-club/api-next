@@ -249,7 +249,8 @@ export async function seedCommerceStaging(
             const listing = requireOne(
               (yield* transaction.execute<ListingRow>({
                 label: "commerce.seed.staging.listing.verify",
-                text: `SELECT active, policy_version, availability_mode, available_quantity
+                text: `SELECT active, policy_version::int AS policy_version,
+                               availability_mode, available_quantity
                             FROM community_commerce_listings
                            WHERE listing_id = $1 AND community_id = $2`,
                 values: [input.listingId, input.communityId],
@@ -346,7 +347,7 @@ export async function seedCommerceStaging(
             const route = requireOne(
               (yield* transaction.execute<RouteRow>({
                 label: "commerce.seed.staging.route.verify",
-                text: `SELECT chain_id, token_contract, token_decimals,
+                text: `SELECT chain_id::int AS chain_id, token_contract, token_decimals,
                                  treasury_address, required_confirmations
                             FROM community_commerce_money_route_policy_versions
                            WHERE community_id = $1 AND policy_version = $2`,
