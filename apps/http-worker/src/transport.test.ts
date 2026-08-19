@@ -7,6 +7,7 @@ import {
   BadRequest,
   Conflict,
   endpoint,
+  GateUnsatisfied,
   VerificationStartInProgress,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
@@ -874,6 +875,55 @@ describe("contracts-generated HTTP worker", () => {
     expect(conflictResponse.headers.get("retry-after")).toBeNull();
     expect(await conflictResponse.json()).toMatchObject({
       error: { code: "conflict", retryable: false },
+    });
+  });
+
+  it("exposes actionable gates-v2 eligibility and terminal join denial on the wire", async () => {
+    const eligibilityResponse = await protectedWorker("GetJoinEligibility", () => ({
+      community: "community_1",
+      membership_mode: "gated" as const,
+      human_verification_lane: null,
+      joinable_now: false,
+      status: "gate_failed" as const,
+      membership_gate_summaries: [],
+      missing_capabilities: ["age_over_18" as const],
+      suggested_verification_provider: "zkpassport" as const,
+      suggested_verification_intent: "community_join" as const,
+      failure_reason: "missing_verification" as const,
+      gate_evaluation: {
+        outcome: "needs_evidence",
+        claim_ids: ["age.minimum"],
+        reasons: ["required_claim_missing"],
+      },
+    })).request("http://worker.test/communities/community_1/join-eligibility", {
+      headers: { authorization: "Bearer test" },
+    });
+
+    expect(eligibilityResponse.status).toBe(200);
+    expect(await eligibilityResponse.json()).toMatchObject({
+      status: "gate_failed",
+      joinable_now: false,
+      missing_capabilities: ["age_over_18"],
+      suggested_verification_provider: "zkpassport",
+      suggested_verification_intent: "community_join",
+      failure_reason: "missing_verification",
+      gate_evaluation: { outcome: "needs_evidence", claim_ids: ["age.minimum"] },
+    });
+
+    const joinResponse = await protectedWorker("JoinCommunity", () => {
+      throw new GateUnsatisfied({
+        message: "Community membership gates are not satisfied",
+        details: { reason: "missing_verification" },
+      });
+    }).request("http://worker.test/communities/community_1/join", {
+      method: "POST",
+      headers: { authorization: "Bearer test", "content-type": "application/json" },
+      body: "{}",
+    });
+
+    expect(joinResponse.status).toBe(403);
+    expect(await joinResponse.json()).toMatchObject({
+      error: { code: "gate_unsatisfied", retryable: false },
     });
   });
 
