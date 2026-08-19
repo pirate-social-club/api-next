@@ -8,7 +8,8 @@ import { sha256 } from "./api-client-provenance.ts";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("../", import.meta.url)));
 const packageRoot = join(repositoryRoot, "packages", "api-client");
-const packageName = "pirate-api-client-0.5.0.tgz";
+const currentVersion = "0.6.0";
+const packageName = `pirate-api-client-${currentVersion}.tgz`;
 
 interface ReleaseLedger {
   readonly schemaVersion: 1;
@@ -104,8 +105,8 @@ async function main(): Promise<void> {
       readonly peerDependencies?: unknown;
       readonly exports?: Record<string, unknown>;
     };
-    if (packedPackage.name !== "@pirate/api-client" || packedPackage.version !== "0.5.0") {
-      throw new Error("Packed package identity/version is not @pirate/api-client@0.5.0");
+    if (packedPackage.name !== "@pirate/api-client" || packedPackage.version !== currentVersion) {
+      throw new Error(`Packed package identity/version is not @pirate/api-client@${currentVersion}`);
     }
     await verifyReleaseLedger(packedPackage.version);
     for (const field of ["dependencies", "devDependencies", "peerDependencies"] as const) {
