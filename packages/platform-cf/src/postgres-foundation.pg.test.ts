@@ -116,6 +116,12 @@ const reconciliationFinalizationMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const communityPurchaseCommerceMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0021_m3_community_purchase_commerce.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -220,6 +226,11 @@ const reconciliationFinalizationMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0020_m3_reconciliation_finalization.sql"] ?? "",
   sql: reconciliationFinalizationMigrationSql,
 };
+const communityPurchaseCommerceMigration: PostgresMigration = {
+  version: "0021_m3_community_purchase_commerce.sql",
+  checksum: checksumManifest.migrations["0021_m3_community_purchase_commerce.sql"] ?? "",
+  sql: communityPurchaseCommerceMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -241,6 +252,7 @@ const migrations: readonly PostgresMigration[] = [
   fundingDormancyAndRetentionMigration,
   reconciliationAttemptsMigration,
   reconciliationFinalizationMigration,
+  communityPurchaseCommerceMigration,
 ];
 
 function checksum(value: string): string {
@@ -413,6 +425,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(reconciliationFinalizationMigrationSql)).toBe(
         reconciliationFinalizationMigration.checksum,
       );
+      expect(checksum(communityPurchaseCommerceMigrationSql)).toBe(
+        communityPurchaseCommerceMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -443,10 +458,25 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "assertions",
         "comments",
         "communities",
+        "community_commerce_allocation_policy_versions",
+        "community_commerce_donation_partners",
+        "community_commerce_donation_policy_versions",
+        "community_commerce_eligibility_policy_versions",
+        "community_commerce_listings",
+        "community_commerce_money_route_policy_versions",
+        "community_commerce_operator_ledger",
+        "community_commerce_policy_revisions",
+        "community_commerce_pricing_policy_versions",
+        "community_commerce_settlement_policy_versions",
         "community_feed_projection",
         "community_follows",
         "community_memberships",
         "community_policy_current",
+        "community_purchase_allocation_snapshots",
+        "community_purchase_availability_reservations",
+        "community_purchase_correction_events",
+        "community_purchase_donation_snapshots",
+        "community_purchase_eligibility_snapshots",
         "community_purchase_funding_journal",
         "community_purchase_funding_plans",
         "community_purchase_funding_receipts",
@@ -455,6 +485,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_purchase_funding_requests",
         "community_purchase_funding_transaction_claims",
         "community_purchase_funding_transitions",
+        "community_purchase_intents",
+        "community_purchase_pricing_snapshots",
+        "community_purchase_quotes",
+        "community_purchase_route_snapshots",
+        "community_purchase_settlement_snapshots",
+        "community_purchase_verification_snapshots",
         "decision_records",
         "evidence_receipts",
         "home_feed_projection",

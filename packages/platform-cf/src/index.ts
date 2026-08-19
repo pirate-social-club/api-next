@@ -44,6 +44,7 @@ export {
   makeControlPlaneCommunityPurchaseFundingAttemptStore,
   makeControlPlaneCommunityPurchaseFundingOperatorStore,
   makeControlPlaneCommunityPurchaseFundingPlanStore,
+  makeControlPlaneCommunityPurchaseFundingProducerStore,
   makeControlPlaneCommunityPurchaseFundingQueryStore,
   makeControlPlaneCommunityPurchaseFundingRepository,
   makeControlPlaneCommunityPurchaseFundingStore,

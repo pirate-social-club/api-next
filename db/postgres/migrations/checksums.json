@@ -20,6 +20,7 @@
     "0017_identity_credential_delete_guard.sql": "c66ac7d2076b9db3f25f31a5a96fddf7569e1aaf4bfc6ba931e5d2400d5a8aaa",
     "0018_m3_funding_dormancy_and_retention.sql": "c19f6ec203846697d3a46f959b329e1e97fc3e4c603f653038017ab42074ec40",
     "0019_m3_reconciliation_attempts.sql": "d7813cbab52d4bd14cc9d6eee7ac52e3715969fbc1f1edd6c79b75425aeb9434",
-    "0020_m3_reconciliation_finalization.sql": "673c4f09fa1c5c24d00550394bc6299ce457cd24b69629cdf26e91a39ca7a85f"
+    "0020_m3_reconciliation_finalization.sql": "673c4f09fa1c5c24d00550394bc6299ce457cd24b69629cdf26e91a39ca7a85f",
+    "0021_m3_community_purchase_commerce.sql": "499a462bb6ff90b5a3ec3911726902242c9eb61126d8c69f1b542795b0a1defb"
   }
 }

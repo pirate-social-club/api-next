@@ -8,7 +8,10 @@ import {
   type CommunityPurchaseFundingParkedCount,
   type CommunityPurchaseFundingPlanRecord,
   type CommunityPurchaseFundingPlanStore,
+  CommunityPurchaseFundingProducerStorageFailed,
+  type CommunityPurchaseFundingProducerStore,
   type CommunityPurchaseFundingQueryStore,
+  type CommunityPurchaseFundingQuoteRecord,
   type CommunityPurchaseFundingReconciliationAttemptStore,
   type CommunityPurchaseFundingReconciliationOperatorStore,
   CommunityPurchaseFundingStorageFailed,
@@ -40,7 +43,10 @@ import { Effect, type Layer } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
-type RepositoryError = CommunityPurchaseFundingStorageFailed | ControlPlaneError;
+type RepositoryError =
+  | CommunityPurchaseFundingStorageFailed
+  | CommunityPurchaseFundingProducerStorageFailed
+  | ControlPlaneError;
 type BeginInput = Parameters<CommunityPurchaseFundingJournalStore["begin"]>[0];
 type AcquireLeaseInput = Parameters<CommunityPurchaseFundingJournalStore["acquireLease"]>[0];
 type WasTransitionCommittedInput = Parameters<
@@ -67,6 +73,9 @@ type ResetEscalatedAttemptInput = Parameters<
   CommunityPurchaseFundingReconciliationOperatorStore["resetEscalatedAttempt"]
 >[0];
 type CreatePlanInput = Parameters<CommunityPurchaseFundingPlanStore["createPlan"]>[0];
+type CreateQuoteAndPlanInput = Parameters<
+  CommunityPurchaseFundingProducerStore["createQuoteAndPlan"]
+>[0];
 
 const JOURNAL_COLUMNS = `
   operation_id, community_id, actor_id, quote_id, purchase_id, policy_version,
@@ -82,6 +91,12 @@ function storageFailure(
   return new CommunityPurchaseFundingStorageFailed({ reason });
 }
 
+function producerStorageFailure(
+  reason: CommunityPurchaseFundingProducerStorageFailed["reason"],
+): CommunityPurchaseFundingProducerStorageFailed {
+  return new CommunityPurchaseFundingProducerStorageFailed({ reason });
+}
+
 function mapRepositoryError(error: RepositoryError): CommunityPurchaseFundingStorageFailed {
   if (error._tag === "CommunityPurchaseFundingStorageFailed") return error;
   if (error._tag === "ControlPlaneTransactionOutcomeUnknown") {
@@ -94,6 +109,22 @@ function mapRepositoryError(error: RepositoryError): CommunityPurchaseFundingSto
     return storageFailure("constraint");
   }
   return storageFailure("unavailable");
+}
+
+function mapProducerRepositoryError(
+  error: RepositoryError,
+): CommunityPurchaseFundingProducerStorageFailed {
+  if (error._tag === "CommunityPurchaseFundingProducerStorageFailed") return error;
+  if (error._tag === "ControlPlaneTransactionOutcomeUnknown") {
+    return producerStorageFailure("outcome-unknown");
+  }
+  if (error._tag === "ControlPlaneOperationTimedOut" && error.outcomeCertainty === "unknown") {
+    return producerStorageFailure("outcome-unknown");
+  }
+  if (error._tag === "ControlPlaneStatementFailed" && error.sqlState === "23505") {
+    return producerStorageFailure("constraint");
+  }
+  return producerStorageFailure("unavailable");
 }
 
 function requiredString(row: Row, field: string): string | null {
@@ -401,6 +432,62 @@ function address(row: Row, field: string): EvmAddress | null {
   return normalizeCommunityPurchaseEvmAddress(row[field]);
 }
 
+function producerQuoteFromRow(row: Row): CommunityPurchaseFundingQuoteRecord | null {
+  const quoteId = requiredString(row, "quote_id");
+  const purchaseId = requiredString(row, "purchase_id");
+  const communityId = requiredString(row, "community_id");
+  const actorId = requiredString(row, "actor_id");
+  const listingId = requiredString(row, "listing_id");
+  const policyVersion = integer(row, "policy_version");
+  const buyerWallet = address(row, "buyer_wallet_address");
+  const chainId = integer(row, "chain_id");
+  const tokenContract = address(row, "token_contract");
+  const tokenDecimals = integer(row, "token_decimals");
+  const treasuryAddress = address(row, "treasury_address");
+  const amountAtomic = bigintString(row, "amount_atomic");
+  const requiredConfirmations = integer(row, "required_confirmations");
+  const quotedAt = timestamp(row, "quoted_at");
+  const expiresAt = timestamp(row, "expires_at");
+  if (
+    quoteId === null ||
+    purchaseId === null ||
+    communityId === null ||
+    actorId === null ||
+    listingId === null ||
+    policyVersion === null ||
+    buyerWallet === null ||
+    chainId === null ||
+    tokenContract === null ||
+    tokenDecimals !== 6 ||
+    treasuryAddress === null ||
+    amountAtomic === null ||
+    requiredConfirmations === null ||
+    quotedAt === null ||
+    expiresAt === null
+  ) {
+    return null;
+  }
+  return {
+    quoteId,
+    purchaseId,
+    communityId,
+    actorId,
+    listingId,
+    policyVersion,
+    expected: {
+      chainId,
+      tokenContract,
+      tokenDecimals: 6,
+      sender: buyerWallet,
+      recipient: treasuryAddress,
+      amountAtomic: communityPurchaseAtomicAmount(amountAtomic),
+      requiredConfirmations,
+    },
+    quotedAt,
+    expiresAt,
+  };
+}
+
 type FundingPlanRow = Readonly<{
   readonly plan: CommunityPurchaseFundingPlan;
   readonly status: "active" | "bound" | "cancelled";
@@ -515,6 +602,423 @@ function insertAdmissionRequest(
 }
 
 export function makeControlPlaneCommunityPurchaseFundingRepository() {
+  const createQuoteAndPlan = Effect.fn("CommunityPurchaseFundingRepository.createQuoteAndPlan")(
+    function* (input: CreateQuoteAndPlanInput) {
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        Effect.gen(function* () {
+          const listingResult = yield* transaction.execute<Row>({
+            label: "money.community-purchase-funding.producer.lock-listing",
+            text: `SELECT listing_id, community_id, policy_version, availability_mode,
+                         available_quantity
+                    FROM community_commerce_listings
+                   WHERE listing_id = $1 AND community_id = $2 AND active = TRUE
+                   FOR UPDATE`,
+            values: [input.listingId, input.communityId],
+            readonly: false,
+          });
+          const listing = yield* oneRow(listingResult.rows);
+          if (listing === null) return { kind: "not-found" } as const;
+          const policyVersion = integer(listing, "policy_version");
+          const availabilityMode = requiredString(listing, "availability_mode");
+          const availableQuantity = integer(listing, "available_quantity");
+          if (
+            policyVersion === null ||
+            (availabilityMode !== "unbounded" && availabilityMode !== "finite") ||
+            (availabilityMode === "finite" && (availableQuantity === null || availableQuantity < 0))
+          ) {
+            return yield* Effect.fail(producerStorageFailure("invalid-row"));
+          }
+
+          // Expiry is lazy and database-clock based. Since the listing row is
+          // locked, releasing expired holds and checking finite availability is
+          // one serializable decision for this quote.
+          yield* transaction.execute({
+            label: "money.community-purchase-funding.producer.expire-reservations",
+            text: `WITH expired_intents AS (
+                   UPDATE community_purchase_intents
+                      SET status = 'expired'
+                    WHERE community_id = $1
+                      AND listing_id = $2
+                      AND status = 'reserved'
+                      AND expires_at <= clock_timestamp()
+                    RETURNING purchase_id
+                 ), expired_reservations AS (
+                   UPDATE community_purchase_availability_reservations AS reservation
+                      SET state = 'expired', transitioned_at = clock_timestamp()
+                     FROM expired_intents
+                    WHERE reservation.purchase_id = expired_intents.purchase_id
+                      AND reservation.state = 'held'
+                    RETURNING reservation.purchase_id
+                 )
+                 UPDATE community_commerce_listings AS listing
+                    SET available_quantity = listing.available_quantity +
+                      (SELECT count(*)::integer FROM expired_reservations)
+                  WHERE listing.listing_id = $2
+                    AND listing.availability_mode = 'finite'`,
+            values: [input.communityId, input.listingId],
+            readonly: false,
+          });
+
+          const existingResult = yield* transaction.execute<Row>({
+            label: "money.community-purchase-funding.producer.find-replay",
+            text: `SELECT quote_id, purchase_id, community_id, actor_id, listing_id,
+                        policy_version, buyer_wallet_address, chain_id, token_contract,
+                        token_decimals, treasury_address, amount_atomic, required_confirmations,
+                        quoted_at, expires_at
+                   FROM community_purchase_quotes AS quote
+                   JOIN community_purchase_intents AS intent
+                     ON intent.purchase_id = quote.purchase_id
+                  WHERE quote.actor_id = $1 AND quote.community_id = $2
+                    AND quote.listing_id = $3
+                    AND quote.status = 'active' AND intent.status = 'reserved'
+                  FOR UPDATE`,
+            values: [input.actorId, input.communityId, input.listingId],
+            readonly: false,
+          });
+          const existingRow = yield* oneRow(existingResult.rows);
+          if (existingRow !== null) {
+            const existing = producerQuoteFromRow(existingRow);
+            if (existing === null) return yield* Effect.fail(producerStorageFailure("invalid-row"));
+            if (existing.expected.sender !== input.buyerWalletAddress) {
+              return { kind: "conflict" } as const;
+            }
+            return { kind: "replayed", quote: existing } as const;
+          }
+
+          const sourceResult = yield* transaction.execute<Row>({
+            label: "money.community-purchase-funding.producer.load-policy",
+            text: `SELECT revision.policy_version, eligibility.verification_required,
+                        pricing.amount_atomic, route.chain_id, route.token_contract,
+                        route.token_decimals, route.treasury_address,
+                        route.required_confirmations, allocation.allocation_mode,
+                        settlement.settlement_mode, donation.policy_mode,
+                        donation.partner_id, donation.share_bps
+                   FROM community_commerce_policy_revisions AS revision
+                   JOIN community_commerce_eligibility_policy_versions AS eligibility
+                     ON eligibility.community_id = revision.community_id
+                    AND eligibility.policy_version = revision.policy_version
+                   JOIN community_commerce_pricing_policy_versions AS pricing
+                     ON pricing.community_id = revision.community_id
+                    AND pricing.policy_version = revision.policy_version
+                   JOIN community_commerce_money_route_policy_versions AS route
+                     ON route.community_id = revision.community_id
+                    AND route.policy_version = revision.policy_version
+                   JOIN community_commerce_allocation_policy_versions AS allocation
+                     ON allocation.community_id = revision.community_id
+                    AND allocation.policy_version = revision.policy_version
+                   JOIN community_commerce_settlement_policy_versions AS settlement
+                     ON settlement.community_id = revision.community_id
+                    AND settlement.policy_version = revision.policy_version
+                   JOIN community_commerce_donation_policy_versions AS donation
+                     ON donation.community_id = revision.community_id
+                    AND donation.policy_version = revision.policy_version
+                  WHERE revision.community_id = $1 AND revision.policy_version = $2
+                    AND revision.effective_at <= clock_timestamp()
+                    AND revision.superseded_at IS NULL`,
+            values: [input.communityId, policyVersion],
+            readonly: true,
+          });
+          const source = yield* oneRow(sourceResult.rows);
+          if (source === null) return { kind: "not-found" } as const;
+          const sourcePolicyVersion = integer(source, "policy_version");
+          const amountAtomic = bigintString(source, "amount_atomic");
+          const chainId = integer(source, "chain_id");
+          const tokenContract = address(source, "token_contract");
+          const tokenDecimals = integer(source, "token_decimals");
+          const treasuryAddress = address(source, "treasury_address");
+          const requiredConfirmations = integer(source, "required_confirmations");
+          const verificationRequired = source.verification_required === true;
+          if (
+            sourcePolicyVersion === null ||
+            sourcePolicyVersion !== policyVersion ||
+            amountAtomic === null ||
+            chainId === null ||
+            tokenContract === null ||
+            tokenDecimals !== 6 ||
+            treasuryAddress === null ||
+            requiredConfirmations === null ||
+            source.allocation_mode !== "single_unit" ||
+            (source.settlement_mode !== "delivery_only_story_settlement" &&
+              source.settlement_mode !== "royalty_native_story_payment")
+          ) {
+            return yield* Effect.fail(producerStorageFailure("invalid-row"));
+          }
+
+          const member = yield* transaction.execute<Row>({
+            label: "money.community-purchase-funding.producer.check-membership",
+            text: `SELECT 1 AS member
+                    FROM community_memberships
+                   WHERE community_id = $1 AND user_id = $2 AND status = 'member'
+                   LIMIT 1`,
+            values: [input.communityId, input.actorId],
+            readonly: true,
+          });
+          if (member.rows.length !== 1) return { kind: "not-found" } as const;
+
+          let verification: Row | null = null;
+          if (verificationRequired) {
+            const verificationResult = yield* transaction.execute<Row>({
+              label: "money.community-purchase-funding.producer.check-verification",
+              text: `SELECT snapshot_id, provider, verified_at, snapshot
+                     FROM community_purchase_verification_snapshots
+                    WHERE actor_id = $1
+                      AND provider = 'zkpassport'
+                      AND verified_at IS NOT NULL
+                      AND verified_at >= clock_timestamp() - INTERVAL '24 hours'
+                    ORDER BY verified_at DESC, snapshot_id DESC
+                    LIMIT 1`,
+              values: [input.actorId],
+              readonly: true,
+            });
+            verification = yield* oneRow(verificationResult.rows);
+            if (verification === null) return { kind: "not-found" } as const;
+          }
+
+          if (availabilityMode === "finite") {
+            const quantityResult = yield* transaction.execute<Row>({
+              label: "money.community-purchase-funding.producer.check-availability",
+              text: `SELECT available_quantity
+                     FROM community_commerce_listings
+                    WHERE listing_id = $1
+                    FOR UPDATE`,
+              values: [input.listingId],
+              readonly: false,
+            });
+            const currentQuantityRow = yield* oneRow(quantityResult.rows);
+            const currentQuantity =
+              currentQuantityRow === null
+                ? null
+                : integer(currentQuantityRow, "available_quantity");
+            if (currentQuantity === null)
+              return yield* Effect.fail(producerStorageFailure("invalid-row"));
+            if (currentQuantity < 1) return { kind: "conflict" } as const;
+          }
+
+          const quoteId = `quote_${crypto.randomUUID()}`;
+          const purchaseId = `purchase_${crypto.randomUUID()}`;
+          const snapshotIds = {
+            eligibility: `eligibility_${crypto.randomUUID()}`,
+            pricing: `pricing_${crypto.randomUUID()}`,
+            verification: `verification_${crypto.randomUUID()}`,
+            route: `route_${crypto.randomUUID()}`,
+            allocation: `allocation_${crypto.randomUUID()}`,
+            settlement: `settlement_${crypto.randomUUID()}`,
+            donation: `donation_${crypto.randomUUID()}`,
+          } as const;
+          const intent = yield* transaction.execute<Row>({
+            label: "money.community-purchase-funding.producer.insert-intent",
+            text: `INSERT INTO community_purchase_intents (
+                   purchase_id, actor_id, community_id, listing_id, status, expires_at
+                 ) VALUES ($1, $2, $3, $4, 'reserved', clock_timestamp() + INTERVAL '600 seconds')
+                 RETURNING created_at, expires_at`,
+            values: [purchaseId, input.actorId, input.communityId, input.listingId],
+            readonly: false,
+          });
+          const intentRow = yield* oneRow(intent.rows);
+          const intentQuotedAt = intentRow === null ? null : timestamp(intentRow, "created_at");
+          const intentExpiresAt = intentRow === null ? null : timestamp(intentRow, "expires_at");
+          if (intentQuotedAt === null || intentExpiresAt === null) {
+            return yield* Effect.fail(producerStorageFailure("invalid-row"));
+          }
+          yield* transaction.execute({
+            label: "money.community-purchase-funding.producer.insert-reservation",
+            text: `INSERT INTO community_purchase_availability_reservations (
+                   purchase_id, listing_id, state, expires_at
+                 ) VALUES ($1, $2, 'held', $3)`,
+            values: [purchaseId, input.listingId, intentExpiresAt],
+            readonly: false,
+          });
+          yield* transaction.execute({
+            label: "money.community-purchase-funding.producer.consume-availability",
+            text: `UPDATE community_commerce_listings
+                    SET available_quantity = CASE
+                      WHEN availability_mode = 'finite' THEN available_quantity - 1
+                      ELSE available_quantity END
+                  WHERE listing_id = $1`,
+            values: [input.listingId],
+            readonly: false,
+          });
+          const quoted = yield* transaction.execute<Row>({
+            label: "money.community-purchase-funding.producer.insert-quote",
+            text: `INSERT INTO community_purchase_quotes (
+                   quote_id, purchase_id, community_id, actor_id, listing_id, policy_version,
+                   buyer_wallet_address, buyer_chain_id, chain_id, token_contract, token_decimals,
+                   treasury_address, amount_atomic, required_confirmations, quoted_at, expires_at
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $12, $13, $14, $15)
+                 RETURNING quote_id, purchase_id, community_id, actor_id, listing_id,
+                   policy_version, buyer_wallet_address, chain_id, token_contract, token_decimals,
+                   treasury_address, amount_atomic, required_confirmations, quoted_at, expires_at`,
+            values: [
+              quoteId,
+              purchaseId,
+              input.communityId,
+              input.actorId,
+              input.listingId,
+              policyVersion,
+              input.buyerWalletAddress,
+              chainId,
+              tokenContract,
+              tokenDecimals,
+              treasuryAddress,
+              amountAtomic.toString(),
+              requiredConfirmations,
+              intentQuotedAt,
+              intentExpiresAt,
+            ],
+            readonly: false,
+          });
+          const quoteRow = yield* oneRow(quoted.rows);
+          const quote = quoteRow === null ? null : producerQuoteFromRow(quoteRow);
+          if (quote === null) return yield* Effect.fail(producerStorageFailure("invalid-row"));
+
+          const snapshotValues = [
+            [snapshotIds.eligibility, quoteId, policyVersion, { verificationRequired }],
+            [
+              snapshotIds.pricing,
+              quoteId,
+              policyVersion,
+              { amountAtomic: amountAtomic.toString() },
+            ],
+            [
+              snapshotIds.route,
+              quoteId,
+              policyVersion,
+              {
+                chainId,
+                tokenContract,
+                tokenDecimals,
+                treasuryAddress,
+                requiredConfirmations,
+              },
+            ],
+            [
+              snapshotIds.allocation,
+              quoteId,
+              policyVersion,
+              {
+                mode: source.allocation_mode,
+                availabilityMode,
+              },
+            ],
+            [snapshotIds.settlement, quoteId, policyVersion, { mode: source.settlement_mode }],
+            [
+              snapshotIds.donation,
+              quoteId,
+              policyVersion,
+              {
+                mode: source.policy_mode,
+                partnerId: source.partner_id ?? null,
+                shareBps: integer(source, "share_bps"),
+              },
+            ],
+          ] as const;
+          for (const [
+            snapshotId,
+            snapshotQuoteId,
+            snapshotPolicyVersion,
+            snapshot,
+          ] of snapshotValues) {
+            const table = snapshotId.startsWith("eligibility_")
+              ? "community_purchase_eligibility_snapshots"
+              : snapshotId.startsWith("pricing_")
+                ? "community_purchase_pricing_snapshots"
+                : snapshotId.startsWith("route_")
+                  ? "community_purchase_route_snapshots"
+                  : snapshotId.startsWith("allocation_")
+                    ? "community_purchase_allocation_snapshots"
+                    : snapshotId.startsWith("settlement_")
+                      ? "community_purchase_settlement_snapshots"
+                      : "community_purchase_donation_snapshots";
+            yield* transaction.execute({
+              label: `money.community-purchase-funding.producer.insert-${table}`,
+              text: `INSERT INTO ${table} (snapshot_id, quote_id, policy_version, snapshot)
+                   VALUES ($1, $2, $3, $4::jsonb)`,
+              values: [
+                snapshotId,
+                snapshotQuoteId,
+                snapshotPolicyVersion,
+                JSON.stringify(snapshot),
+              ],
+              readonly: false,
+            });
+          }
+          if (verification !== null) {
+            yield* transaction.execute({
+              label: "money.community-purchase-funding.producer.insert-verification-snapshot",
+              text: `INSERT INTO community_purchase_verification_snapshots (
+                     snapshot_id, quote_id, actor_id, provider, verified_at, snapshot
+                   ) VALUES ($1, $2, $3, $4, $5, $6::jsonb)`,
+              values: [
+                snapshotIds.verification,
+                quote.quoteId,
+                input.actorId,
+                requiredString(verification, "provider"),
+                verification.verified_at,
+                JSON.stringify(verification.snapshot ?? {}),
+              ],
+              readonly: false,
+            });
+          }
+          yield* transaction.execute({
+            label: "money.community-purchase-funding.producer.bind-snapshot-identities",
+            text: `UPDATE community_purchase_quotes
+                    SET eligibility_snapshot_id = $2,
+                        pricing_snapshot_id = $3,
+                        verification_snapshot_id = $4,
+                        route_snapshot_id = $5,
+                        allocation_snapshot_id = $6,
+                        settlement_snapshot_id = $7,
+                        donation_snapshot_id = $8
+                  WHERE quote_id = $1`,
+            values: [
+              quote.quoteId,
+              snapshotIds.eligibility,
+              snapshotIds.pricing,
+              verification === null ? null : snapshotIds.verification,
+              snapshotIds.route,
+              snapshotIds.allocation,
+              snapshotIds.settlement,
+              snapshotIds.donation,
+            ],
+            readonly: false,
+          });
+
+          const planInserted = yield* transaction.execute({
+            label: "money.community-purchase-funding.producer.insert-plan",
+            text: `INSERT INTO community_purchase_funding_plans (
+                   quote_id, community_id, actor_id, buyer_wallet_address, buyer_chain_id,
+                   purchase_id, policy_version, chain_id, token_contract, token_decimals,
+                   treasury_address, amount_atomic, required_confirmations, quoted_at,
+                   expires_at, status
+                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'active')`,
+            values: [
+              quote.quoteId,
+              quote.communityId,
+              quote.actorId,
+              quote.expected.sender,
+              quote.expected.chainId,
+              quote.purchaseId,
+              quote.policyVersion,
+              quote.expected.chainId,
+              quote.expected.tokenContract,
+              quote.expected.tokenDecimals,
+              quote.expected.recipient,
+              quote.expected.amountAtomic.toString(),
+              quote.expected.requiredConfirmations,
+              quote.quotedAt,
+              quote.expiresAt,
+            ],
+            readonly: false,
+          });
+          if (planInserted.rowCount !== 1)
+            return yield* Effect.fail(producerStorageFailure("invalid-row"));
+          return { kind: "created", quote } as const;
+        }),
+      );
+    },
+  );
+
   const createPlan = Effect.fn("CommunityPurchaseFundingRepository.createPlan")(function* (
     input: CreatePlanInput,
   ) {
@@ -697,6 +1201,48 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
         }
         if (existing !== null) return { kind: "operation_conflict" } as const;
 
+        // Producer-created plans carry a commerce reservation. Legacy plans
+        // created through the narrow internal port do not, so preserve their
+        // existing admission behavior while consuming the new reservation
+        // atomically when one is present.
+        const intentResult = yield* transaction.execute<Row>({
+          label: "money.community-purchase-funding.admission.lock-commerce-intent",
+          text: `SELECT status, expires_at
+                   FROM community_purchase_intents
+                  WHERE purchase_id = $1
+                  FOR UPDATE`,
+          values: [planRecord.plan.purchaseId],
+          readonly: false,
+        });
+        const intentRow = yield* oneRow(intentResult.rows);
+        if (intentRow !== null) {
+          const intentExpiresAt = timestamp(intentRow, "expires_at");
+          if (requiredString(intentRow, "status") !== "reserved" || intentExpiresAt === null) {
+            return { kind: "plan_expired" } as const;
+          }
+          const consumedIntent = yield* transaction.execute({
+            label: "money.community-purchase-funding.admission.consume-intent",
+            text: `UPDATE community_purchase_intents
+                      SET status = 'consumed'
+                    WHERE purchase_id = $1 AND status = 'reserved'
+                      AND expires_at > clock_timestamp()`,
+            values: [planRecord.plan.purchaseId],
+            readonly: false,
+          });
+          if (consumedIntent.rowCount !== 1) return { kind: "plan_expired" } as const;
+          const consumedReservation = yield* transaction.execute({
+            label: "money.community-purchase-funding.admission.consume-reservation",
+            text: `UPDATE community_purchase_availability_reservations
+                      SET state = 'consumed', transitioned_at = clock_timestamp()
+                    WHERE purchase_id = $1 AND state = 'held'`,
+            values: [planRecord.plan.purchaseId],
+            readonly: false,
+          });
+          if (consumedReservation.rowCount !== 1) {
+            return { kind: "operation_conflict" } as const;
+          }
+        }
+
         const snapshot = createCommunityPurchaseFunding(planRecord.plan);
         const entry = journalEntryFromCommunityPurchaseFunding(snapshot);
         yield* insertJournal(transaction, input.actorId, entry);
@@ -709,6 +1255,16 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
           readonly: false,
         });
         if (bound.rowCount !== 1) return { kind: "operation_conflict" } as const;
+        if (intentRow !== null) {
+          yield* transaction.execute({
+            label: "money.community-purchase-funding.admission.bind-commerce-quote",
+            text: `UPDATE community_purchase_quotes
+                      SET status = 'bound'
+                    WHERE quote_id = $1 AND status = 'active'`,
+            values: [input.quoteId],
+            readonly: false,
+          });
+        }
         yield* insertAdmissionRequest(transaction, input, operationId, entry);
         return { kind: "inserted", record: { entry } } as const;
       }),
@@ -1397,6 +1953,7 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
   );
 
   return {
+    createQuoteAndPlan,
     createPlan,
     begin,
     beginFromPlan,
@@ -1487,6 +2044,15 @@ export function makeControlPlaneCommunityPurchaseFundingPlanStore(
   const provide = <A>(effect: Effect.Effect<A, RepositoryError, ControlPlaneDb>) =>
     Effect.provide(runtime)(effect).pipe(Effect.mapError(mapRepositoryError));
   return { createPlan: (input) => provide(repository.createPlan(input)) };
+}
+
+export function makeControlPlaneCommunityPurchaseFundingProducerStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): CommunityPurchaseFundingProducerStore {
+  const repository = makeControlPlaneCommunityPurchaseFundingRepository();
+  const provide = <A>(effect: Effect.Effect<A, RepositoryError, ControlPlaneDb>) =>
+    Effect.provide(runtime)(effect).pipe(Effect.mapError(mapProducerRepositoryError));
+  return { createQuoteAndPlan: (input) => provide(repository.createQuoteAndPlan(input)) };
 }
 
 export function makeControlPlaneCommunityPurchaseFundingStore(
