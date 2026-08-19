@@ -374,6 +374,7 @@ export function makeJwksSessionProofVerifier(
           headers: {
             accept: "application/json",
             authorization: `Basic ${btoa(`${privyApi.appId}:${privyApi.appSecret}`)}`,
+            "privy-app-id": privyApi.appId,
           },
           signal: controller.signal,
         },

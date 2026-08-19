@@ -234,10 +234,12 @@ describe("workerd Privy linked-wallet lookup", () => {
   it("attaches the single provider-linked wallet when the token carries no claim", async () => {
     const material = await keyMaterial();
     let authorization: string | undefined;
+    let appIdHeader: string | undefined;
     const fetcher: SessionProofFetcher = async (input, init) => {
       if (input.includes("/api/v1/users/")) {
         const headers = init?.headers as Record<string, string> | undefined;
         authorization = headers?.authorization;
+        appIdHeader = headers?.["privy-app-id"];
         return userResponse([embeddedAccount, solanaAccount]);
       }
       return jwksResponse(material.jwk);
@@ -250,6 +252,7 @@ describe("workerd Privy linked-wallet lookup", () => {
       walletAddress: embeddedWallet,
     });
     expect(authorization).toBe(`Basic ${btoa("privy-test:test-secret")}`);
+    expect(appIdHeader).toBe("privy-test");
   });
 
   it("resolves a requested wallet only when the provider attests it", async () => {
