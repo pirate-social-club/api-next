@@ -106,7 +106,9 @@ async function main(): Promise<void> {
       readonly exports?: Record<string, unknown>;
     };
     if (packedPackage.name !== "@pirate/api-client" || packedPackage.version !== currentVersion) {
-      throw new Error(`Packed package identity/version is not @pirate/api-client@${currentVersion}`);
+      throw new Error(
+        `Packed package identity/version is not @pirate/api-client@${currentVersion}`,
+      );
     }
     await verifyReleaseLedger(packedPackage.version);
     for (const field of ["dependencies", "devDependencies", "peerDependencies"] as const) {

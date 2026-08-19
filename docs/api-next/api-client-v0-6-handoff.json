@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.6.0",
+  "releaseType": "m3-karaoke-contract-integration",
+  "wireContract": "wire-v2",
+  "sourceCommit": "8272dbf329920a1069b81a182b472b37b2440d10",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.6.0.tgz",
+    "sha256": "b1dec4c662d76f55ade8d3984e6a4bee6001356a86b0b64797a182375ffa1dfe",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@66386b2a56fb10b4667cc286b1bc28b5bd20b2c21f964d46fd0956785a47d3e9",
+    "openapiSha256": "66386b2a56fb10b4667cc286b1bc28b5bd20b2c21f964d46fd0956785a47d3e9",
+    "clientSha256": "881a3607b7cd8815b12d643fec85ef438403d0741bff2421d17372c3e8a63417"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "8fe19a151d06ab88488820b97d7d990afd4dfb36",
+      "reason": "The combined release integrates the accepted karaoke contract with the local M3 contract refresh."
+    },
+    "focusedApiClientTests": "5 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "pending"
+  }
+}
