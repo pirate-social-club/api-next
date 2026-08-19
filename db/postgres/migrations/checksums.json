@@ -21,6 +21,6 @@
     "0018_m3_funding_dormancy_and_retention.sql": "c19f6ec203846697d3a46f959b329e1e97fc3e4c603f653038017ab42074ec40",
     "0019_m3_reconciliation_attempts.sql": "d7813cbab52d4bd14cc9d6eee7ac52e3715969fbc1f1edd6c79b75425aeb9434",
     "0020_m3_reconciliation_finalization.sql": "673c4f09fa1c5c24d00550394bc6299ce457cd24b69629cdf26e91a39ca7a85f",
-    "0021_m3_community_purchase_commerce.sql": "71e80e942176391fbdcb0d38dec4b0377641e20dd9c0ffa8987ae34b1564861f"
+    "0021_m3_community_purchase_commerce.sql": "1342c73b093b0f5411d50abd56f351ea3d933e98965a4cc3228acd17fcee7a85"
   }
 }

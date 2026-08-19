@@ -770,13 +770,15 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
               text: `SELECT snapshot_id, policy_version, provider, verified_at, snapshot
                      FROM community_purchase_verification_snapshots
                     WHERE actor_id = $1
-                      AND policy_version = $2
+                      AND community_id = $2
+                      AND policy_version = $3
                       AND provider = 'zkpassport'
                       AND verified_at IS NOT NULL
                       AND verified_at >= clock_timestamp() - INTERVAL '24 hours'
+                      AND verified_at <= clock_timestamp()
                     ORDER BY verified_at DESC, snapshot_id DESC
                     LIMIT 1`,
-              values: [input.actorId, policyVersion],
+              values: [input.actorId, input.communityId, policyVersion],
               readonly: true,
             });
             verification = yield* oneRow(verificationResult.rows);
@@ -955,12 +957,14 @@ export function makeControlPlaneCommunityPurchaseFundingRepository() {
             yield* transaction.execute({
               label: "money.community-purchase-funding.producer.insert-verification-snapshot",
               text: `INSERT INTO community_purchase_verification_snapshots (
-                     snapshot_id, quote_id, actor_id, policy_version, provider, verified_at, snapshot
-                   ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)`,
+                     snapshot_id, quote_id, actor_id, community_id, policy_version,
+                     provider, verified_at, snapshot
+                   ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)`,
               values: [
                 snapshotIds.verification,
                 quote.quoteId,
                 input.actorId,
+                input.communityId,
                 policyVersion,
                 requiredString(verification, "provider"),
                 verification.verified_at,

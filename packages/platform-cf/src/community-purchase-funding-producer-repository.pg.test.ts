@@ -215,8 +215,8 @@ suite("community purchase funding producer repository", () => {
       );
       await admin.query(
         `INSERT INTO community_purchase_verification_snapshots (
-           snapshot_id, actor_id, policy_version, provider, verified_at, snapshot
-         ) VALUES ('verification_source_1', 'user_1', 7, 'zkpassport',
+           snapshot_id, actor_id, community_id, policy_version, provider, verified_at, snapshot
+         ) VALUES ('verification_source_1', 'user_1', 'community_1', 7, 'zkpassport',
                    clock_timestamp(), '{"source":"test"}'::jsonb)`,
       );
       const store = makeControlPlaneCommunityPurchaseFundingProducerStore(

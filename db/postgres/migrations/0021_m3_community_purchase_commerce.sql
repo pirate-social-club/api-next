@@ -214,10 +214,13 @@ CREATE TABLE community_purchase_verification_snapshots (
     snapshot_id text PRIMARY KEY,
     quote_id text UNIQUE REFERENCES community_purchase_quotes (quote_id),
     actor_id text NOT NULL REFERENCES users (user_id),
+    community_id text NOT NULL,
     policy_version bigint NOT NULL,
     provider text NOT NULL,
-    verified_at timestamp with time zone,
-    snapshot jsonb NOT NULL
+    verified_at timestamp with time zone NOT NULL,
+    snapshot jsonb NOT NULL,
+    FOREIGN KEY (community_id, policy_version)
+      REFERENCES community_commerce_policy_revisions (community_id, policy_version)
 );
 
 CREATE TABLE community_purchase_route_snapshots (
