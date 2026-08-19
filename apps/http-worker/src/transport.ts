@@ -608,7 +608,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
 
         const result = await handler(requestWithEdgeIp);
         const sessionResult =
-          binding.name === "SessionExchange" && isSessionExchangeResult(result)
+          (binding.name === "SessionExchange" || binding.name === "RegisterIdentity") &&
+          isSessionExchangeResult(result)
             ? result
             : undefined;
         const body = sessionResult

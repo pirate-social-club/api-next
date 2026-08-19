@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { SessionExchangeServices } from "@pirate/application/use-cases/session-exchange";
+import type { IdentityRegistrationHandlerServices } from "@pirate/application/use-cases/identity-registration-handler";
 import {
   Auth,
   AuthError,
@@ -128,6 +129,33 @@ const protectedWorker = (name: string, handler: EndpointHandler, corsOrigin?: st
     },
   });
 
+const registrationServices: IdentityRegistrationHandlerServices = {
+  providerAppId: "privy-staging",
+  proofVerifier: sessionServices.proofVerifier,
+  registration: {
+    candidates: {
+      next: () =>
+        Effect.succeed({
+          credentialId: "credential-registration",
+          userId: "canonical-user",
+          handleId: "handle-registration",
+          handleLabel: "generated-registration.pirate",
+          createdAt: "2026-08-19T00:00:00.000Z",
+        }),
+    },
+    store: {
+      registerCredential: () =>
+        Effect.succeed({ kind: "created", canonicalUserId: "canonical-user" }),
+    },
+  },
+  identityStore: sessionServices.identityStore,
+  tokenMinter: sessionServices.tokenMinter,
+  rateLimiter: {
+    checkIp: () => Effect.succeed(undefined),
+    checkApplication: () => Effect.succeed(undefined),
+  },
+};
+
 describe("contracts-generated HTTP worker", () => {
   it("serves the health contract without a product handler", async () => {
     const response = await createHttpWorker().request("http://worker.test/health");
@@ -155,6 +183,30 @@ describe("contracts-generated HTTP worker", () => {
       "__Host-pirate_session=token-for-canonical-user; HttpOnly; Path=/; Secure; SameSite=Lax; Max-Age=3600",
     );
     expect(response.headers.get("set-cookie")).not.toContain("access_token");
+  });
+
+  it("installs registration only with trusted edge metadata and sets a host-only session", async () => {
+    const app = createHttpWorker({
+      config: { corsOrigin: "https://solid.test" },
+      identityRegistration: registrationServices,
+    });
+    const response = await app.request("http://worker.test/auth/register", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "CF-Connecting-IP": "203.0.113.8",
+      },
+      body: JSON.stringify({ privy_access_token: "privy-proof" }),
+    });
+    expect(response.status).toBe(201);
+    expect(response.headers.get("set-cookie")).toContain("__Host-pirate_session=");
+
+    const missingIp = await app.request("http://worker.test/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ privy_access_token: "privy-proof" }),
+    });
+    expect(missingIp.status).toBe(400);
   });
 
   it("requires exact Origin for browser session exchange", async () => {
