@@ -13,6 +13,10 @@ import {
   makeCommunityPurchaseFundingDormancySweeper,
   makeCommunityPurchaseFundingReconciler,
 } from "./community-purchase-funding-query.ts";
+import type {
+  CommunityPurchaseFundingAttemptState,
+  CommunityPurchaseFundingReconciliationAttemptStore,
+} from "./community-purchase-funding-reconciliation.ts";
 
 const store: CommunityPurchaseFundingQueryStore = {
   loadForActor: () => Effect.succeed(null),
@@ -55,6 +59,48 @@ describe("community purchase funding queries", () => {
           { operationId: "operation_2" as never, transactionHash: second },
         ]),
     };
+    const attempts: CommunityPurchaseFundingReconciliationAttemptStore = {
+      recordAttemptStart: (input) =>
+        Effect.succeed({
+          kind: "reserved",
+          state: {
+            operationId: input.operationId,
+            generation: 1,
+            lastAttemptAt: new Date().toISOString(),
+            nextAttemptAt: null,
+            lastFailureClass: null,
+            consecutiveFailures: 0,
+            escalatedAt: null,
+          } satisfies CommunityPurchaseFundingAttemptState,
+        }),
+      recordAttemptSuccess: (input) =>
+        Effect.succeed({
+          kind: "finalized",
+          state: {
+            operationId: input.operationId,
+            generation: input.generation,
+            lastAttemptAt: new Date().toISOString(),
+            nextAttemptAt: null,
+            lastFailureClass: null,
+            consecutiveFailures: 0,
+            escalatedAt: null,
+          } satisfies CommunityPurchaseFundingAttemptState,
+        }),
+      recordAttemptFailure: (input) =>
+        Effect.succeed({
+          kind: "finalized",
+          state: {
+            operationId: input.operationId,
+            generation: input.generation,
+            lastAttemptAt: new Date().toISOString(),
+            nextAttemptAt: new Date(Date.now() + input.retryDelayMs).toISOString(),
+            lastFailureClass: input.failureClass,
+            consecutiveFailures: 1,
+            escalatedAt: null,
+          } satisfies CommunityPurchaseFundingAttemptState,
+        }),
+    };
+    const alerts = { emit: () => Effect.void };
     const observation: CommunityPurchaseFundingObservationUseCase = {
       observe: (input) => {
         visited.push(input.operationId);
@@ -67,7 +113,9 @@ describe("community purchase funding queries", () => {
     const result = await Effect.runPromise(
       makeCommunityPurchaseFundingReconciler(
         queryStore,
+        attempts,
         observation,
+        alerts,
       )({
         limit: 10,
         ownerId: "job_1",
@@ -76,14 +124,7 @@ describe("community purchase funding queries", () => {
     );
 
     expect(visited).toEqual(["operation_1", "operation_2"]);
-    expect(result).toMatchObject({ selected: 2, processed: 1 });
-    expect(result.failures).toEqual([
-      {
-        operationId: "operation_1" as never,
-        errorTag: "CommunityPurchaseFundingChainReadFailed",
-        reason: "unavailable",
-      },
-    ]);
+    expect(result).toMatchObject({ selected: 2, processed: 1, failed: 1, skipped: 0 });
   });
 
   test("uses database candidate time when moving planned funding to dormancy", async () => {

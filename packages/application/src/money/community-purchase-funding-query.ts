@@ -5,7 +5,6 @@ import type {
   CommunityPurchaseFundingJournalRecord,
   CommunityPurchaseFundingStorageFailed,
 } from "./community-purchase-funding.ts";
-import type { CommunityPurchaseFundingObservationUseCase } from "./community-purchase-funding-observation.ts";
 
 export type CommunityPurchaseFundingReconcilable = Readonly<{
   readonly operationId: CommunityPurchaseOperationId;
@@ -17,6 +16,12 @@ export type CommunityPurchaseFundingDormancyCandidate = Readonly<{
   readonly expectedVersion: number;
   /** Database time captured by the candidate-selection statement. */
   readonly databaseNowMs: number;
+}>;
+
+export type CommunityPurchaseFundingParkedCount = Readonly<{
+  readonly failureTag: "ambiguous" | "legacy";
+  readonly failureReason: string;
+  readonly operations: number;
 }>;
 
 export interface CommunityPurchaseFundingQueryStore {
@@ -38,6 +43,11 @@ export interface CommunityPurchaseFundingQueryStore {
     readonly submissionWindowMs: number;
   }) => Effect.Effect<
     readonly CommunityPurchaseFundingDormancyCandidate[],
+    CommunityPurchaseFundingStorageFailed
+  >;
+  /** Bounded operator visibility for parked entries; never an RPC candidate. */
+  readonly parkedCounts?: () => Effect.Effect<
+    readonly CommunityPurchaseFundingParkedCount[],
     CommunityPurchaseFundingStorageFailed
   >;
 }
@@ -79,51 +89,7 @@ export const listReconcilableCommunityPurchaseFunding = Effect.fn(
   return yield* store.listReconcilable({ limit });
 });
 
-/** Bounded scheduled composition; it reuses the exact request-path observer. */
-export function makeCommunityPurchaseFundingReconciler(
-  store: CommunityPurchaseFundingQueryStore,
-  observation: CommunityPurchaseFundingObservationUseCase,
-) {
-  return Effect.fn("reconcileCommunityPurchaseFunding")(function* (input: {
-    readonly limit: number;
-    readonly ownerId: string;
-    readonly leaseMs: number;
-  }) {
-    if (input.ownerId.length === 0 || input.ownerId.trim() !== input.ownerId) {
-      return yield* new CommunityPurchaseFundingQueryRejected({ reason: "invalid-input" });
-    }
-    const candidates = yield* listReconcilableCommunityPurchaseFunding(input.limit, store);
-    let processed = 0;
-    const failures: Array<{
-      readonly operationId: CommunityPurchaseOperationId;
-      readonly errorTag: string;
-      readonly reason: string;
-    }> = [];
-    for (const candidate of candidates) {
-      yield* observation
-        .observe({
-          operationId: candidate.operationId,
-          transactionHash: candidate.transactionHash,
-          ownerId: `${input.ownerId}:${candidate.operationId}`,
-          leaseMs: input.leaseMs,
-          source: "reconciler",
-        })
-        .pipe(
-          Effect.tap(() => Effect.sync(() => (processed += 1))),
-          Effect.catch((error) =>
-            Effect.sync(() => {
-              failures.push({
-                operationId: candidate.operationId,
-                errorTag: error._tag,
-                reason: error.reason,
-              });
-            }),
-          ),
-        );
-    }
-    return { selected: candidates.length, processed, failures };
-  });
-}
+export { makeCommunityPurchaseFundingReconciler } from "./community-purchase-funding-reconciliation.ts";
 
 /** Moves only database-clock-expired, never-observed operations out of hot scheduling. */
 export function makeCommunityPurchaseFundingDormancySweeper(
