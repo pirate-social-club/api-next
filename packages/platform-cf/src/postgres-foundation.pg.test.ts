@@ -122,6 +122,12 @@ const communityPurchaseCommerceMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const communityPurchaseImmutabilityMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0022_m3_community_purchase_immutability.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -231,6 +237,11 @@ const communityPurchaseCommerceMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0021_m3_community_purchase_commerce.sql"] ?? "",
   sql: communityPurchaseCommerceMigrationSql,
 };
+const communityPurchaseImmutabilityMigration: PostgresMigration = {
+  version: "0022_m3_community_purchase_immutability.sql",
+  checksum: checksumManifest.migrations["0022_m3_community_purchase_immutability.sql"] ?? "",
+  sql: communityPurchaseImmutabilityMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -253,6 +264,7 @@ const migrations: readonly PostgresMigration[] = [
   reconciliationAttemptsMigration,
   reconciliationFinalizationMigration,
   communityPurchaseCommerceMigration,
+  communityPurchaseImmutabilityMigration,
 ];
 
 function checksum(value: string): string {
@@ -428,6 +440,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(communityPurchaseCommerceMigrationSql)).toBe(
         communityPurchaseCommerceMigration.checksum,
       );
+      expect(checksum(communityPurchaseImmutabilityMigrationSql)).toBe(
+        communityPurchaseImmutabilityMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -599,9 +614,24 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "assertion_revalidation_events_append_only",
         "assertions_append_only",
         "assertions_validate_binding",
+        "community_commerce_allocation_policy_append_only",
+        "community_commerce_donation_policy_append_only",
+        "community_commerce_eligibility_policy_append_only",
+        "community_commerce_operator_ledger_append_only",
+        "community_commerce_pricing_policy_append_only",
+        "community_commerce_route_policy_append_only",
+        "community_commerce_settlement_policy_append_only",
+        "community_purchase_allocation_snapshot_append_only",
+        "community_purchase_correction_event_append_only",
+        "community_purchase_donation_snapshot_append_only",
+        "community_purchase_eligibility_snapshot_append_only",
         "community_purchase_funding_claims_append_only",
         "community_purchase_funding_receipts_append_only",
         "community_purchase_funding_transitions_append_only",
+        "community_purchase_pricing_snapshot_append_only",
+        "community_purchase_route_snapshot_append_only",
+        "community_purchase_settlement_snapshot_append_only",
+        "community_purchase_verification_snapshot_append_only",
         "decision_records_append_only",
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",
