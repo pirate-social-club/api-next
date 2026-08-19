@@ -2,6 +2,7 @@ export * from "./money/community-purchase-funding.ts";
 export * from "./money/community-purchase-funding-admission.ts";
 export * from "./money/community-purchase-funding-observation.ts";
 export * from "./money/community-purchase-funding-plan.ts";
+export * from "./money/community-purchase-funding-producer.ts";
 export * from "./money/community-purchase-funding-query.ts";
 export * from "./money/community-purchase-funding-reconciliation.ts";
 export * from "./ports.ts";
