@@ -2,6 +2,7 @@ import {
   makeCommunityPurchaseFundingInterpreter,
   makeCommunityPurchaseFundingObservationUseCase,
 } from "@pirate/application/use-cases/community-purchase-funding-observation";
+import { makeRandomIdentityRegistrationCandidateSource } from "@pirate/application/use-cases/identity-registration";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
 import { makePublicProfileHandler } from "@pirate/application/use-cases/public-profile";
 import {
@@ -25,7 +26,10 @@ import {
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
-import { makeControlPlaneIdentityStore } from "@pirate/platform-cf/identity-repository";
+import {
+  makeControlPlaneIdentityRegistrationStore,
+  makeControlPlaneIdentityStore,
+} from "@pirate/platform-cf/identity-repository";
 import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
@@ -95,9 +99,8 @@ export interface HttpWorkerBindings {
 type WorkerConfig = HttpWorkerConfigValue;
 
 /**
- * Builds the only production registration limiter adapter. The registration
- * route remains uninstalled until its account-resolution/store seam lands, but
- * no composition path may substitute an in-memory or allow-all limiter.
+ * Builds the only production registration limiter adapter. No composition
+ * path may substitute an in-memory or allow-all limiter.
  */
 export function makeProductionIdentityRegistrationRateLimiter(
   bindings: HttpWorkerBindings,
@@ -383,16 +386,28 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     defaultScope: config.PIRATE_APP_JWT_SCOPE,
     defaultTtlSeconds: config.PIRATE_APP_JWT_TTL_SECONDS,
   });
+  const proofVerifier = makeJwksSessionProofVerifier({
+    privy: {
+      jwksUrl: config.PRIVY_JWKS_URL,
+      issuer: config.PRIVY_JWT_ISSUER,
+      audience: config.PRIVY_JWT_AUDIENCE,
+    },
+  });
+  const tokenMinter = makeRs256SessionTokenMinter(sessionCrypto);
   const sessionExchange = {
-    proofVerifier: makeJwksSessionProofVerifier({
-      privy: {
-        jwksUrl: config.PRIVY_JWKS_URL,
-        issuer: config.PRIVY_JWT_ISSUER,
-        audience: config.PRIVY_JWT_AUDIENCE,
-      },
-    }),
+    proofVerifier,
     identityStore: makeSessionIdentityStore(identityStore),
-    tokenMinter: makeRs256SessionTokenMinter(sessionCrypto),
+    tokenMinter,
+  };
+  const identityRegistration = {
+    providerAppId: config.PRIVY_APP_ID,
+    proofVerifier,
+    registration: {
+      candidates: makeRandomIdentityRegistrationCandidateSource(),
+      store: makeControlPlaneIdentityRegistrationStore(controlPlane),
+    },
+    tokenMinter,
+    rateLimiter: makeProductionIdentityRegistrationRateLimiter(bindings, config.API_NEXT_ENV),
   };
   const tokenVerifier = makeRs256SessionTokenVerifier(sessionCrypto, identityStore);
   const authenticate = ({
@@ -427,6 +442,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
       GetPublicProfileByHandle: publicProfile,
     },
     sessionExchange,
+    identityRegistration,
     profile,
     authenticate,
     authorize: ({ input }) =>

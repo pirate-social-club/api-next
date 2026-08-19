@@ -27,6 +27,12 @@ async function bindings(): Promise<HttpWorkerBindings> {
     CONTROL_PLANE: { connectionString: "postgres://test.invalid/api_next" },
     API_NEXT_ENV: "development",
     CORS_ORIGIN: "https://solid.test",
+    REGISTRATION_IP_LIMITER: {
+      getByName: () => ({ check: async () => ({ allowed: true }) }),
+    },
+    REGISTRATION_APPLICATION_LIMITER: {
+      getByName: () => ({ check: async () => ({ allowed: true }) }),
+    },
     PIRATE_APP_JWT_PRIVATE_KEY: toPem(
       "PRIVATE KEY",
       (await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer,
@@ -94,6 +100,16 @@ describe("HTTP production composition", () => {
       keys: [{ alg: "RS256", use: "sig", key_ops: ["verify"] }],
     });
 
+    const registration = await worker.request("https://worker.test/auth/register", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ privy_access_token: "not-reached" }),
+    });
+    expect(registration.status).toBe(400);
+    expect(await registration.json()).toMatchObject({
+      error: { code: "bad_request" },
+    });
+
     const currentUser = await worker.request("https://worker.test/users/me");
     expect(currentUser.status).toBe(401);
     expect(await currentUser.json()).toMatchObject({ error: { code: "auth_error" } });
@@ -142,6 +158,18 @@ describe("HTTP production composition", () => {
     const { PRIVY_JWT_ISSUER: _omitted, ...incomplete } = complete;
     await expect(createProductionHttpWorker(incomplete)).rejects.toThrow(
       "HTTP worker configuration is incomplete or invalid",
+    );
+  });
+
+  test("fails closed when registration Durable Object bindings are absent", async () => {
+    const complete = await bindings();
+    const {
+      REGISTRATION_IP_LIMITER: _ip,
+      REGISTRATION_APPLICATION_LIMITER: _application,
+      ...withoutLimiters
+    } = complete;
+    await expect(createProductionHttpWorker(withoutLimiters)).rejects.toThrow(
+      "Registration Durable Object limiter bindings are incomplete",
     );
   });
 

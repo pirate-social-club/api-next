@@ -1,12 +1,8 @@
 import { createHash } from "node:crypto";
 
-import { ControlPlaneDb } from "@pirate/application";
 import { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
-import { makeControlPlaneIdentityRepository } from "@pirate/platform-cf/identity-repository";
-import { makeDirectPostgresControlPlaneLayer } from "@pirate/platform-cf/postgres";
-import { Effect, Schema } from "effect";
+import { Schema } from "effect";
 
-const RUNTIME_DSN_ENV = "CONTROL_PLANE_POSTGRES_RUNTIME_URL" as const;
 const ENVIRONMENT_ENV = "API_NEXT_ENV" as const;
 
 const BootstrapInput = Schema.Struct({
@@ -18,21 +14,12 @@ type BootstrapInput = Schema.Schema.Type<typeof BootstrapInput>;
 
 export type StagingIdentityBootstrapResult = {
   readonly environment: "staging";
-  readonly mode: "dry-run" | "apply";
-  readonly action: "validated" | "applied";
+  readonly mode: "dry-run";
+  readonly action: "validated";
   readonly user_id_sha256: string;
 };
 
-export type StagingIdentityBootstrapWriter = {
-  readonly upsertAccount: (input: {
-    readonly userId: string;
-    readonly account: unknown;
-  }) => Effect.Effect<void, unknown>;
-};
-
 export type StagingIdentityBootstrapOptions = {
-  /** Tests may provide a no-environment writer; production uses the reviewed repository below. */
-  readonly repository?: StagingIdentityBootstrapWriter;
   /** Tests may provide input without reading a process stream. */
   readonly inputText?: string;
   /** Tests may provide a controlled environment snapshot. */
@@ -40,12 +27,7 @@ export type StagingIdentityBootstrapOptions = {
 };
 
 export class StagingIdentityBootstrapError extends Error {
-  readonly code:
-    | "not-staging"
-    | "invalid-options"
-    | "missing-runtime-dsn"
-    | "invalid-input"
-    | "apply-failed";
+  readonly code: "not-staging" | "invalid-options" | "invalid-input";
 
   constructor(code: StagingIdentityBootstrapError["code"], message: string) {
     super(message);
@@ -193,51 +175,19 @@ export async function runStagingIdentityBootstrap(
   const environment = environmentOf(options);
   assertStagingEnvironment(environment);
   const parsed = parseOptions(args);
+  if (parsed.apply) {
+    throw new StagingIdentityBootstrapError(
+      "invalid-options",
+      "Identity bootstrap apply is retired; provision accounts through /auth/register.",
+    );
+  }
   const input = parseInput(await readInput(parsed.inputPath, options.inputText));
   const digest = identifierDigest(input.user_id);
 
-  if (!parsed.apply) {
-    return {
-      environment: "staging",
-      mode: "dry-run",
-      action: "validated",
-      user_id_sha256: digest,
-    };
-  }
-
-  const runtimeDsn = environment[RUNTIME_DSN_ENV]?.trim();
-  if (runtimeDsn === undefined || runtimeDsn.length === 0) {
-    throw new StagingIdentityBootstrapError(
-      "missing-runtime-dsn",
-      `${RUNTIME_DSN_ENV} is required for --apply and is never printed.`,
-    );
-  }
-
-  try {
-    if (options.repository !== undefined) {
-      await Effect.runPromise(
-        options.repository.upsertAccount({ userId: input.user_id, account: input.account }),
-      );
-    } else {
-      const repository = makeControlPlaneIdentityRepository();
-      const write = repository.upsertAccount({ userId: input.user_id, account: input.account });
-      const program = Effect.gen(function* () {
-        yield* ControlPlaneDb;
-        yield* write;
-      }).pipe(Effect.provide(makeDirectPostgresControlPlaneLayer(runtimeDsn)));
-      await Effect.runPromise(Effect.scoped(program));
-    }
-  } catch {
-    throw new StagingIdentityBootstrapError(
-      "apply-failed",
-      "Identity bootstrap apply failed; inspect the database through the approved operational runbook.",
-    );
-  }
-
   return {
     environment: "staging",
-    mode: "apply",
-    action: "applied",
+    mode: "dry-run",
+    action: "validated",
     user_id_sha256: digest,
   };
 }

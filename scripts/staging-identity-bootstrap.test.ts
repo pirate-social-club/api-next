@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
 import { runStagingIdentityBootstrap } from "./staging-identity-bootstrap";
 
 const account = (userId: string) => ({
@@ -53,25 +52,8 @@ const account = (userId: string) => ({
   },
 });
 
-function fakeRepository() {
-  let writes = 0;
-  const repository = {
-    upsertAccount: () => {
-      writes += 1;
-      return Effect.succeed(undefined);
-    },
-  };
-  return {
-    repository,
-    get writes() {
-      return writes;
-    },
-  };
-}
-
 const environment = {
   API_NEXT_ENV: "staging",
-  CONTROL_PLANE_POSTGRES_RUNTIME_URL: "postgres://runtime.test/staging",
 };
 
 const serialized = (userId = "usr_captain", accountUserId = userId) =>
@@ -109,33 +91,27 @@ describe("staging identity bootstrap", () => {
   });
 
   test("defaults to a no-write dry run and emits only a digest", async () => {
-    const fake = fakeRepository();
     const result = await runStagingIdentityBootstrap([], {
       environment,
       inputText: serialized(),
-      repository: fake.repository,
     });
     expect(result).toMatchObject({ environment: "staging", mode: "dry-run", action: "validated" });
     expect(result.user_id_sha256).toHaveLength(64);
-    expect(fake.writes).toBe(0);
   });
 
-  test("requires explicit confirmation and applies only in staging", async () => {
-    const fake = fakeRepository();
+  test("retires the apply mode instead of bypassing registration", async () => {
     await expect(
       runStagingIdentityBootstrap(["--apply"], {
         environment,
         inputText: serialized(),
-        repository: fake.repository,
       }),
     ).rejects.toMatchObject({ code: "invalid-options" });
 
-    const result = await runStagingIdentityBootstrap(["--apply", "--confirm-staging"], {
-      environment,
-      inputText: serialized(),
-      repository: fake.repository,
-    });
-    expect(result).toMatchObject({ environment: "staging", mode: "apply", action: "applied" });
-    expect(fake.writes).toBe(1);
+    await expect(
+      runStagingIdentityBootstrap(["--apply", "--confirm-staging"], {
+        environment,
+        inputText: serialized(),
+      }),
+    ).rejects.toMatchObject({ code: "invalid-options" });
   });
 });

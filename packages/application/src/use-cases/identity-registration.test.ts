@@ -8,6 +8,7 @@ import {
   type IdentityRegistrationServices,
   IdentityRegistrationStoreFailure,
   MAX_IDENTITY_REGISTRATION_ATTEMPTS,
+  makeRandomIdentityRegistrationCandidateSource,
   makeUnverifiedIdentityAccount,
   registerIdentity,
 } from "./identity-registration.ts";
@@ -28,6 +29,22 @@ const failureOf = <A, E>(exit: Exit.Exit<A, E>): E => {
 };
 
 describe("identity registration use case", () => {
+  test("generates opaque random candidates without provider-derived fields", async () => {
+    const source = makeRandomIdentityRegistrationCandidateSource();
+    const first = await Effect.runPromise(source.next());
+    const second = await Effect.runPromise(source.next());
+
+    expect(first).toMatchObject({
+      credentialId: expect.stringMatching(/^cred_[0-9a-f-]{36}$/u),
+      userId: expect.stringMatching(/^usr_[0-9a-f-]{36}$/u),
+      handleId: expect.stringMatching(/^hndl_[0-9a-f-]{36}$/u),
+      handleLabel: expect.stringMatching(/^new-[a-z0-9]+\.pirate$/u),
+    });
+    expect(first.credentialId).not.toBe(second.credentialId);
+    expect(first.userId).not.toBe(second.userId);
+    expect(first.handleId).not.toBe(second.handleId);
+  });
+
   test("creates an account with no verification capabilities", async () => {
     const seenAccounts: unknown[] = [];
     const services: IdentityRegistrationServices = {

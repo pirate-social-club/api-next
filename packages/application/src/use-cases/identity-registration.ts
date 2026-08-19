@@ -49,6 +49,28 @@ export interface IdentityRegistrationCandidateSource {
   readonly next: () => Effect.Effect<IdentityRegistrationCandidate, unknown>;
 }
 
+/**
+ * Creates the opaque account/handle candidates used by the production
+ * registration composition. The provider subject never participates in these
+ * identifiers; each retry gets a fresh cryptographically random candidate.
+ */
+export function makeRandomIdentityRegistrationCandidateSource(): IdentityRegistrationCandidateSource {
+  return {
+    next: () =>
+      Effect.sync(() => {
+        const random = crypto.randomUUID();
+        const handleStem = `new-${random.replaceAll("-", "").slice(0, 20)}`;
+        return {
+          credentialId: `cred_${random}`,
+          userId: `usr_${random}`,
+          handleId: `hndl_${random}`,
+          handleLabel: `${handleStem}.pirate`,
+          createdAt: new Date().toISOString(),
+        };
+      }),
+  };
+}
+
 export interface IdentityRegistrationServices {
   readonly store: IdentityRegistrationStore;
   readonly candidates: IdentityRegistrationCandidateSource;
