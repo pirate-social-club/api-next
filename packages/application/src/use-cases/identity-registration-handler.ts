@@ -14,25 +14,25 @@ import {
   type IdentityRegistrationServices,
   registerIdentity,
 } from "./identity-registration.ts";
-import {
-  type SessionAccount,
-  type SessionExchangeHandlerResult,
-  type SessionProofVerifier,
-  type SessionTokenMinter,
+import type {
+  SessionAccount,
+  SessionExchangeHandlerResult,
+  SessionProofVerifier,
+  SessionTokenMinter,
 } from "./session-exchange.ts";
 
-export class RegistrationLimiterRejected extends Data.TaggedError(
-  "RegistrationLimiterRejected",
-)<{ readonly retryAfterSeconds?: number }> {}
+export class RegistrationLimiterRejected extends Data.TaggedError("RegistrationLimiterRejected")<{
+  readonly retryAfterSeconds?: number;
+}> {}
 
 export class RegistrationLimiterUnavailable extends Data.TaggedError(
   "RegistrationLimiterUnavailable",
 ) {}
 
 export interface IdentityRegistrationRateLimiter {
-  readonly checkIp: (
-    input: { readonly ip: string },
-  ) => Effect.Effect<void, RegistrationLimiterRejected | RegistrationLimiterUnavailable>;
+  readonly checkIp: (input: {
+    readonly ip: string;
+  }) => Effect.Effect<void, RegistrationLimiterRejected | RegistrationLimiterUnavailable>;
   readonly checkApplication: () => Effect.Effect<
     void,
     RegistrationLimiterRejected | RegistrationLimiterUnavailable
@@ -52,12 +52,7 @@ export interface IdentityRegistrationHandlerServices {
   readonly rateLimiter: IdentityRegistrationRateLimiter;
 }
 
-type RegistrationFailure =
-  | AuthError
-  | BadRequest
-  | Conflict
-  | InternalError
-  | RateLimited;
+type RegistrationFailure = AuthError | BadRequest | Conflict | InternalError | RateLimited;
 
 type RegistrationRequest = {
   readonly privy_access_token: string;
@@ -114,8 +109,7 @@ const safeFailure = (error: unknown): RegistrationFailure => {
   return new InternalError({ message: "Registration failed" });
 };
 
-const validMintedToken = (value: string): boolean =>
-  value.length > 0 && value === value.trim();
+const validMintedToken = (value: string): boolean => value.length > 0 && value === value.trim();
 
 const validSessionTtl = (value: number | undefined): value is number =>
   value !== undefined && Number.isSafeInteger(value) && value > 0 && value <= 86_400;
@@ -144,34 +138,30 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
     return yield* Effect.fail(safeFailure(error));
   }
 
-  yield* services.rateLimiter
-    .checkIp({ ip: input.edgeClientIp })
-    .pipe(
-      Effect.mapError((error) =>
-        error instanceof RegistrationLimiterRejected
-          ? new RateLimited({
-              message: "Registration rate limit exceeded",
-              ...(error.retryAfterSeconds === undefined
-                ? {}
-                : { details: { retry_after_seconds: error.retryAfterSeconds } }),
-            })
-          : new InternalError({ message: "Registration is temporarily unavailable" }),
-      ),
-    );
-  yield* services.rateLimiter
-    .checkApplication()
-    .pipe(
-      Effect.mapError((error) =>
-        error instanceof RegistrationLimiterRejected
-          ? new RateLimited({
-              message: "Registration rate limit exceeded",
-              ...(error.retryAfterSeconds === undefined
-                ? {}
-                : { details: { retry_after_seconds: error.retryAfterSeconds } }),
-            })
-          : new InternalError({ message: "Registration is temporarily unavailable" }),
-      ),
-    );
+  yield* services.rateLimiter.checkIp({ ip: input.edgeClientIp }).pipe(
+    Effect.mapError((error) =>
+      error instanceof RegistrationLimiterRejected
+        ? new RateLimited({
+            message: "Registration rate limit exceeded",
+            ...(error.retryAfterSeconds === undefined
+              ? {}
+              : { details: { retry_after_seconds: error.retryAfterSeconds } }),
+          })
+        : new InternalError({ message: "Registration is temporarily unavailable" }),
+    ),
+  );
+  yield* services.rateLimiter.checkApplication().pipe(
+    Effect.mapError((error) =>
+      error instanceof RegistrationLimiterRejected
+        ? new RateLimited({
+            message: "Registration rate limit exceeded",
+            ...(error.retryAfterSeconds === undefined
+              ? {}
+              : { details: { retry_after_seconds: error.retryAfterSeconds } }),
+          })
+        : new InternalError({ message: "Registration is temporarily unavailable" }),
+    ),
+  );
 
   const verified = yield* services.proofVerifier
     .verifyPrivy({
@@ -179,9 +169,7 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
       identityToken: null,
       walletAddress: null,
     })
-    .pipe(
-      Effect.mapError(() => new AuthError({ message: "Authentication failed" })),
-    );
+    .pipe(Effect.mapError(() => new AuthError({ message: "Authentication failed" })));
   if (verified.classification !== "user") {
     return yield* new AuthError({ message: "Authentication failed" });
   }

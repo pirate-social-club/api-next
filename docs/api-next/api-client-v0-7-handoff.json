@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.7.0",
+  "releaseType": "registration-contract-seam",
+  "wireContract": "wire-v2",
+  "sourceCommit": "89aeb331b797bc9075aae5c46239f2673d5118c8",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.7.0.tgz",
+    "sha256": "041351995e54024e840c4c73b6457daed9e825ae953fcfef6a6dd408da24eeff",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@ee8d3d08a8d4b73d449581b96a2fcb24b89fabee3a48bc0e5077ba1b3a793765",
+    "openapiSha256": "ee8d3d08a8d4b73d449581b96a2fcb24b89fabee3a48bc0e5077ba1b3a793765",
+    "clientSha256": "7ed8944a3d346711cd0696b31efa1aa3e6ac3efea09da6f59a087712ce48377b"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "89aeb331b797bc9075aae5c46239f2673d5118c8",
+      "reason": "Registration is a new operation; the production route remains uninstalled until both mandatory limiters are supplied."
+    },
+    "focusedRegistrationTests": "7 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed",
+    "transportBoundaryTests": "31 passed"
+  }
+}
