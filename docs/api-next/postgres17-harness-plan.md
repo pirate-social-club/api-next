@@ -28,6 +28,21 @@ docker run --rm --name api-next-pg17 \
   -p 5432:5432 postgres:17
 ```
 
+Some VPN/firewall setups block Docker bridge or published-port traffic. In
+that environment the container can be healthy while connections to the
+published port are reset and PostgreSQL logs no client connection. Use host
+networking as a local harness workaround and omit `-p`:
+
+```bash
+docker run --rm --network host --name api-next-pg17 \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=postgres postgres:17
+```
+
+Keep the URL below pointed at `127.0.0.1:5432` and record the network mode in
+the test evidence. This workaround changes only local harness connectivity;
+it is not a staging or production topology recommendation.
+
 Wait for `pg_isready` from the container, then run the future real-Postgres
 test with an explicit URL such as:
 
