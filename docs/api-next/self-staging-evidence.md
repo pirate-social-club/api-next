@@ -177,6 +177,29 @@ The following are redaction rules for all future evidence:
 
 ## Current gates
 
+### Callback capture readiness — 2026-08-19
+
+The selected mechanism for the still-open byte-identical public callback case
+is the reviewed staging-only `SelfCallbackCaptureDO` seam from
+`api-next/m3-self-callback-replay@342e754d5e3f6c3f57cc7ff5a1284671273e18d`.
+The final ceremony-ready staging deployment is
+`pirate-http-worker-staging` version
+`cfbc8712-45ba-4aba-9f52-2d4d93854947` on
+`api-next-staging.pirate.sc`. `SELF_PASS_ENABLED=true` and
+`SELF_PASS_MOCK_PASSPORT=false` remain staging-only. Production has no capture
+binding or enable flag.
+
+The one-slot capture is bounded to a 1 MiB raw body and 32 KiB callback header
+map. It stores exact UTF-8 bytes internally, exposes only digest/byte-length
+metadata, replays server-side once, and has an explicit clear operation. The
+bearer credential is Infisical staging secret
+`SELF_CALLBACK_CAPTURE_ACCESS_TOKEN`; its value is omitted from all evidence.
+Before the physical ceremony, protected status returned `state=empty` with no
+digest/body; unauthenticated status returned 404. No synthetic callback was
+sent, so the slot remains available for the fresh physical session. The
+temporary diagnostic used during the DO-hostname probe emitted only a bounded
+generic error message and no callback data.
+
 1. Keep Self enabled only in staging; production must remain disabled.
 2. Run one fresh physical real-document Session A. Record only redacted session,
    receipt, assertion, subject binding, provenance, pinned `pirate-social`
