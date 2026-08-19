@@ -14,6 +14,7 @@ import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
 import {
   makeControlPlaneCommunityPurchaseFundingAdmissionStore,
+  makeControlPlaneCommunityPurchaseFundingAttemptStore,
   makeControlPlaneCommunityPurchaseFundingPlanStore,
   makeControlPlaneCommunityPurchaseFundingQueryStore,
   makeControlPlaneCommunityPurchaseFundingStore,
@@ -763,8 +764,93 @@ suite("Postgres 17 community-purchase funding journal", () => {
     completedTestCount += 1;
   });
 
+  test("serializes concurrent attempt claims and fences stale finalizers", async () => {
+    await withSchema(async (connection, admin) => {
+      const { begun } = await begin(connection, { nonce: "nonce_attempt_claim" });
+      const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const firstGeneration = await run(
+        attempts.recordAttemptStart({
+          operationId: begun.entry.state.operationId,
+          reservationMs: 60_000,
+        }),
+      );
+      expect(firstGeneration.kind).toBe("reserved");
+      if (firstGeneration.kind !== "reserved") throw new Error("first claim was unavailable");
+      const [loser, unavailable] = await Promise.all([
+        run(
+          attempts.recordAttemptStart({
+            operationId: begun.entry.state.operationId,
+            reservationMs: 60_000,
+          }),
+        ),
+        run(
+          attempts.recordAttemptStart({
+            operationId: begun.entry.state.operationId,
+            reservationMs: 60_000,
+          }),
+        ),
+      ]);
+      expect([loser.kind, unavailable.kind]).toEqual(["unavailable", "unavailable"]);
+
+      const stale = await run(
+        attempts.recordAttemptSuccess({
+          operationId: begun.entry.state.operationId,
+          generation: firstGeneration.state.generation - 1,
+        }),
+      );
+      expect(stale).toEqual({ kind: "stale" });
+      const row = await admin.query(
+        `SELECT generation, consecutive_failures, next_attempt_at
+           FROM community_purchase_funding_reconciliation_attempts
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      expect(row.rows[0]?.generation).toBe(String(firstGeneration.state.generation));
+      expect(row.rows[0]?.consecutive_failures).toBe(0);
+      expect(row.rows[0]?.next_attempt_at).not.toBeNull();
+    });
+    completedTestCount += 1;
+  });
+
+  test("selects only due hash-bearing candidates and excludes the reserved one", async () => {
+    await withSchema(async (connection, admin) => {
+      const { begun } = await begin(connection, { nonce: "nonce_due_selection" });
+      const operationId = begun.entry.state.operationId;
+      const transactionHash = `0x${"ab".repeat(32)}` as `0x${string}`;
+      const observationId = `0x${"cd".repeat(32)}`;
+      await admin.query(
+        `UPDATE community_purchase_funding_journal
+            SET state = 'confirming', version = 2,
+                snapshot = jsonb_set(jsonb_set(snapshot, '{state}', '"confirming"'), '{version}', '2'),
+                funding_receipt_status = 'reverted',
+                funding_transaction_hash = $2,
+                funding_observation_id = $3,
+                updated_at = clock_timestamp()
+          WHERE operation_id = $1`,
+        [operationId, transactionHash, observationId],
+      );
+      const query = makeControlPlaneCommunityPurchaseFundingQueryStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      expect(await run(query.listReconcilable({ limit: 10 }))).toEqual([
+        { operationId, transactionHash },
+      ]);
+      const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const reserved = await run(
+        attempts.recordAttemptStart({ operationId, reservationMs: 60_000 }),
+      );
+      expect(reserved.kind).toBe("reserved");
+      expect(await run(query.listReconcilable({ limit: 10 }))).toEqual([]);
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 13) {
+    if (connectionString !== undefined && completedTestCount === 15) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

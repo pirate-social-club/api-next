@@ -54,6 +54,7 @@ export * from "./handles/policy.ts";
 export * from "./money/community-purchase-funding.ts";
 export * from "./money/failure-fence.ts";
 export * from "./money/interpreter-contract.ts";
+export * from "./money/reconciliation-backoff.ts";
 export * from "./money/state-machine.ts";
 export * from "./rewards/capacity-freshness.ts";
 export * from "./rewards/payout-fairness.ts";

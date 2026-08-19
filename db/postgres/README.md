@@ -70,6 +70,11 @@ hash, permits late evidence to resume observation, and makes the M3 canonical
 journal, request, and plan rows non-deletable under the indefinite retention
 policy.
 
+`0019_m3_reconciliation_attempts.sql` adds durable retry scheduling for funding
+operations that have transaction identity. Conditional claims advance a
+generation fence, and success/failure finalizers require that generation;
+hashless parked entries therefore never acquire attempt rows or RPC work.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every
@@ -89,7 +94,7 @@ Before an authorized M3 staging migration, run `bun run db:preflight:m3` with
 both `CONTROL_PLANE_POSTGRES_ADMIN_URL` and
 `CONTROL_PLANE_POSTGRES_RUNTIME_URL`. It performs read-only checks of the exact
 checksummed ledger prefix, M3 row counts, the physical runtime principal, and
-per-table privileges without printing either credential. After applying 0018
+per-table privileges without printing either credential. After applying 0019
 and its reviewed grants, rerun with `--require-ready`.
 
 The real-Postgres CI gate must invoke the adapter, foundation, migration-runner,
