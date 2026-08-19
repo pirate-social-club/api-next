@@ -1,10 +1,16 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
+  type Alert,
   admitCommunityPurchaseFunding,
+  type CommunityPurchaseFundingChainReader,
+  CommunityPurchaseFundingChainReadFailed,
   makeCommunityPurchaseFundingExpiryUseCase,
   makeCommunityPurchaseFundingInterpreter,
+  makeCommunityPurchaseFundingObservationUseCase,
+  makeCommunityPurchaseFundingReconciler,
 } from "@pirate/application";
 import {
+  COMMUNITY_PURCHASE_RECONCILIATION_BACKOFF,
   type CommunityPurchaseFundingEvidence,
   type CommunityPurchaseFundingPlan,
   communityPurchaseAtomicAmount,
@@ -14,6 +20,7 @@ import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
 import {
   makeControlPlaneCommunityPurchaseFundingAdmissionStore,
+  makeControlPlaneCommunityPurchaseFundingAttemptStore,
   makeControlPlaneCommunityPurchaseFundingExpiryStore,
   makeControlPlaneCommunityPurchaseFundingQueryStore,
   makeControlPlaneCommunityPurchaseFundingStore,
@@ -44,6 +51,7 @@ const OBSERVATION_2 = `0x${"88".repeat(32)}` as const;
 const OBSERVATION_3 = `0x${"99".repeat(32)}` as const;
 const HEAD_HASH_2 = `0x${"aa".repeat(32)}` as const;
 const HEAD_HASH_3 = `0x${"bb".repeat(32)}` as const;
+const POISON_HASH = `0x${"ee".repeat(32)}` as const;
 
 function schemaIdentifier(): string {
   return `api_next_money_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -141,6 +149,36 @@ function queryFor(connection: string) {
   return makeControlPlaneCommunityPurchaseFundingQueryStore(
     makeDirectPostgresControlPlaneLayer(connection),
   );
+}
+
+function attemptsFor(connection: string) {
+  return makeControlPlaneCommunityPurchaseFundingAttemptStore(
+    makeDirectPostgresControlPlaneLayer(connection),
+  );
+}
+
+function reconcilerFor(connection: string, reader: CommunityPurchaseFundingChainReader) {
+  const runtime = makeDirectPostgresControlPlaneLayer(connection);
+  const interpreter = makeCommunityPurchaseFundingInterpreter(
+    makeControlPlaneCommunityPurchaseFundingStore(runtime),
+  );
+  const observation = makeCommunityPurchaseFundingObservationUseCase(interpreter, reader);
+  const alerts: Alert[] = [];
+  const reconcile = makeCommunityPurchaseFundingReconciler(
+    makeControlPlaneCommunityPurchaseFundingQueryStore(runtime),
+    makeControlPlaneCommunityPurchaseFundingAttemptStore(runtime),
+    observation,
+    {
+      emit: (alert: Alert): Effect.Effect<void> =>
+        Effect.sync(() => {
+          alerts.push(alert);
+        }),
+    },
+    { ...COMMUNITY_PURCHASE_RECONCILIATION_BACKOFF, jitterPercent: 0 },
+  );
+  const runTick = (limit: number) =>
+    run(reconcile({ limit, ownerId: "job_1", leaseMs: 30_000, at: 1_700 }));
+  return { alerts, runTick };
 }
 
 function run<A, E>(effect: Effect.Effect<A, E, never>): Promise<A> {
@@ -974,8 +1012,294 @@ suite("Postgres 17 community-purchase funding journal", () => {
     completedTestCount += 1;
   });
 
+  test("backoff-aware selection skips reserved entries and admits them when due", async () => {
+    await withSchema(async (connection, admin) => {
+      const { interpreter, begun } = await begin(connection);
+      const operationId = begun.entry.state.operationId;
+      const lease = await run(
+        interpreter.acquireLease({ operationId, ownerId: "worker_1", leaseMs: 60_000 }),
+      );
+      await run(
+        interpreter.transition({
+          lease,
+          source: "request",
+          expectedVersion: 1,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 1,
+            at: 1_001,
+            evidence: { ...evidence(), observedHeadBlockNumber: 123 },
+          },
+        }),
+      );
+      const attempts = attemptsFor(connection);
+      await run(attempts.recordAttemptStart({ operationId, reservationMs: 60_000 }));
+      expect(await run(queryFor(connection).listReconcilable({ limit: 10 }))).toEqual([]);
+      await admin.query(
+        `UPDATE community_purchase_funding_reconciliation_attempts
+            SET next_attempt_at = clock_timestamp() - INTERVAL '1 second'
+          WHERE operation_id = $1`,
+        [operationId],
+      );
+      const due = await run(queryFor(connection).listReconcilable({ limit: 10 }));
+      expect(due.map((candidate) => candidate.operationId)).toEqual([operationId]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("records consecutive failures, escalates at the ceiling, and resets on success", async () => {
+    await withSchema(async (connection) => {
+      const { interpreter, begun } = await begin(connection);
+      const operationId = begun.entry.state.operationId;
+      const lease = await run(
+        interpreter.acquireLease({ operationId, ownerId: "worker_1", leaseMs: 60_000 }),
+      );
+      await run(
+        interpreter.transition({
+          lease,
+          source: "request",
+          expectedVersion: 1,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 1,
+            at: 1_001,
+            evidence: { ...evidence(), observedHeadBlockNumber: 123 },
+          },
+        }),
+      );
+      const attempts = attemptsFor(connection);
+      const reservation = await run(attempts.recordAttemptStart({ operationId, reservationMs: 1 }));
+      if (reservation.kind !== "reserved") throw new Error("expected reservation");
+      for (const expected of [1, 2, 3]) {
+        const recorded = await run(
+          attempts.recordAttemptFailure({
+            operationId,
+            generation: reservation.state.generation,
+            failureClass: "chain_timeout",
+            retryDelayMs: 1,
+            escalationThreshold: 3,
+          }),
+        );
+        if (recorded.kind !== "finalized") throw new Error("expected finalized");
+        expect(recorded.state.consecutiveFailures).toBe(expected);
+        expect(recorded.state.lastFailureClass).toBe("chain_timeout");
+        expect(recorded.state.escalatedAt === null).toBe(expected < 3);
+      }
+      expect(await run(queryFor(connection).listReconcilable({ limit: 10 }))).toEqual([]);
+      const finalized = await run(
+        attempts.recordAttemptSuccess({ operationId, generation: reservation.state.generation }),
+      );
+      expect(finalized.kind).toBe("finalized");
+      const due = await run(queryFor(connection).listReconcilable({ limit: 10 }));
+      expect(due.map((candidate) => candidate.operationId)).toEqual([operationId]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("admits exactly one concurrent claim and fences stale finalizers", async () => {
+    await withSchema(async (connection, admin) => {
+      const { interpreter, begun } = await begin(connection);
+      const operationId = begun.entry.state.operationId;
+      const lease = await run(
+        interpreter.acquireLease({ operationId, ownerId: "worker_1", leaseMs: 60_000 }),
+      );
+      await run(
+        interpreter.transition({
+          lease,
+          source: "request",
+          expectedVersion: 1,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 1,
+            at: 1_001,
+            evidence: { ...evidence(), observedHeadBlockNumber: 123 },
+          },
+        }),
+      );
+      const attempts = attemptsFor(connection);
+      const claims = await Promise.all([
+        run(attempts.recordAttemptStart({ operationId, reservationMs: 60_000 })),
+        run(attempts.recordAttemptStart({ operationId, reservationMs: 60_000 })),
+      ]);
+      expect(claims.map((claim) => claim.kind).sort()).toEqual(["reserved", "unavailable"]);
+      const first = claims.find((claim) => claim.kind === "reserved");
+      if (first?.kind !== "reserved") throw new Error("expected one reservation");
+      expect(first.state.generation).toBe(1);
+
+      await admin.query(
+        `UPDATE community_purchase_funding_reconciliation_attempts
+            SET next_attempt_at = clock_timestamp() - INTERVAL '1 second'
+          WHERE operation_id = $1`,
+        [operationId],
+      );
+      const second = await run(attempts.recordAttemptStart({ operationId, reservationMs: 60_000 }));
+      if (second.kind !== "reserved") throw new Error("expected second reservation");
+      expect(second.state.generation).toBe(2);
+
+      const staleFailure = await run(
+        attempts.recordAttemptFailure({
+          operationId,
+          generation: first.state.generation,
+          failureClass: "chain_timeout",
+          retryDelayMs: 1,
+          escalationThreshold: 3,
+        }),
+      );
+      expect(staleFailure.kind).toBe("stale");
+      const staleSuccess = await run(
+        attempts.recordAttemptSuccess({ operationId, generation: first.state.generation }),
+      );
+      expect(staleSuccess.kind).toBe("stale");
+      const current = await run(
+        attempts.recordAttemptFailure({
+          operationId,
+          generation: second.state.generation,
+          failureClass: "chain_timeout",
+          retryDelayMs: 1,
+          escalationThreshold: 3,
+        }),
+      );
+      if (current.kind !== "finalized") throw new Error("expected finalized");
+      const row = await admin.query(
+        `SELECT generation, consecutive_failures, last_failure_class
+           FROM community_purchase_funding_reconciliation_attempts
+          WHERE operation_id = $1`,
+        [operationId],
+      );
+      expect(row.rows[0]).toEqual({
+        generation: "2",
+        consecutive_failures: 1,
+        last_failure_class: "chain_timeout",
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("cross-tick backoff lets healthy candidates progress past a poisoned entry", async () => {
+    await withSchema(async (connection, admin) => {
+      const reader: CommunityPurchaseFundingChainReader = {
+        read: (input) =>
+          input.transactionHash === POISON_HASH
+            ? Effect.fail(new CommunityPurchaseFundingChainReadFailed({ reason: "not-found" }))
+            : Effect.succeed({ ...evidence(), transactionHash: input.transactionHash }),
+      };
+      const first = await begin(connection);
+      const poisonedId = first.begun.entry.state.operationId;
+      const firstLease = await run(
+        first.interpreter.acquireLease({
+          operationId: poisonedId,
+          ownerId: "worker_1",
+          leaseMs: 60_000,
+        }),
+      );
+      await run(
+        first.interpreter.transition({
+          lease: firstLease,
+          source: "request",
+          expectedVersion: 1,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 1,
+            at: 1_001,
+            evidence: {
+              ...evidence(),
+              transactionHash: POISON_HASH,
+              observedHeadBlockNumber: 123,
+            },
+          },
+        }),
+      );
+      const second = await begin(connection, {
+        nonce: "nonce_2",
+        fundingPlan: plan("quote_2", "purchase_2"),
+      });
+      const healthyId = second.begun.entry.state.operationId;
+      const secondLease = await run(
+        second.interpreter.acquireLease({
+          operationId: healthyId,
+          ownerId: "worker_1",
+          leaseMs: 60_000,
+        }),
+      );
+      await run(
+        second.interpreter.transition({
+          lease: secondLease,
+          source: "request",
+          expectedVersion: 1,
+          event: {
+            type: "funding_evidence_observed",
+            expectedVersion: 1,
+            at: 1_001,
+            evidence: { ...evidence(), observedHeadBlockNumber: 123 },
+          },
+        }),
+      );
+
+      const { runTick } = reconcilerFor(connection, reader);
+      expect(await runTick(1)).toEqual({ selected: 1, processed: 0, failed: 1, skipped: 0 });
+      expect(await runTick(1)).toEqual({ selected: 1, processed: 1, failed: 0, skipped: 0 });
+      const healthyJournal = await admin.query(
+        `SELECT state FROM community_purchase_funding_journal WHERE operation_id = $1`,
+        [healthyId],
+      );
+      expect(healthyJournal.rows[0]).toEqual({ state: "confirmed" });
+      expect(await runTick(1)).toEqual({ selected: 0, processed: 0, failed: 0, skipped: 0 });
+      await admin.query(
+        `UPDATE community_purchase_funding_reconciliation_attempts
+            SET next_attempt_at = clock_timestamp() - INTERVAL '1 second'
+          WHERE operation_id = $1`,
+        [poisonedId],
+      );
+      expect(await runTick(1)).toEqual({ selected: 1, processed: 0, failed: 1, skipped: 0 });
+      const poisonedAttempts = await admin.query(
+        `SELECT consecutive_failures, last_failure_class, escalated_at
+           FROM community_purchase_funding_reconciliation_attempts
+          WHERE operation_id = $1`,
+        [poisonedId],
+      );
+      expect(poisonedAttempts.rows[0]).toEqual({
+        consecutive_failures: 2,
+        last_failure_class: "transaction_not_found",
+        escalated_at: null,
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("parked hashless entries receive no attempt rows and appear in parked counts", async () => {
+    await withSchema(async (connection, admin) => {
+      await insertAdmissionPlan(admin, { shortLived: true });
+      const admitted = await admit(connection);
+      const parkedId = admitted.entry.state.operationId;
+      await Bun.sleep(2_100);
+      const expired = await run(
+        expiryFor(connection)({
+          operationId: parkedId,
+          ownerId: "worker_1",
+          leaseMs: 30_000,
+          source: "reconciler",
+        }),
+      );
+      expect(expired.kind).toBe("expired");
+      const attemptRows = await admin.query(
+        "SELECT count(*) FROM community_purchase_funding_reconciliation_attempts",
+      );
+      expect(attemptRows.rows[0]?.count).toBe("0");
+      const counts = await run(queryFor(connection).parkedCounts());
+      expect(counts).toEqual([
+        {
+          failureTag: "legacy",
+          failureReason: "planned_observation_window_expired",
+          operations: 1,
+        },
+      ]);
+      expect(await run(queryFor(connection).listReconcilable({ limit: 10 }))).toEqual([]);
+    });
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 17) {
+    if (connectionString !== undefined && completedTestCount === 22) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

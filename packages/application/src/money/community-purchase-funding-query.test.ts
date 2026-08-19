@@ -10,6 +10,7 @@ import {
 const store: CommunityPurchaseFundingQueryStore = {
   loadForActor: () => Effect.succeed(null),
   listReconcilable: () => Effect.succeed([]),
+  parkedCounts: () => Effect.succeed([]),
 };
 
 describe("community purchase funding queries", () => {

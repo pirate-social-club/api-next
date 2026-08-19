@@ -18,6 +18,7 @@
     "0015_identity_credentials.sql": "c903d74fdc282b1ab3b0c0be3d46758ba1c50f30282c0d02976b52c43b92966f",
     "0016_identity_credential_invariants.sql": "b9d94049c5e796b567f9d11e8b210d147561fd3b0e38abaea60a5c73fe436220",
     "0017_identity_credential_delete_guard.sql": "c66ac7d2076b9db3f25f31a5a96fddf7569e1aaf4bfc6ba931e5d2400d5a8aaa",
-    "0018_m3_planned_observation_expiry.sql": "495dc90593d275a7ddb194771532192586303306b1e6cd278d2bc34c465ce4be"
+    "0018_m3_planned_observation_expiry.sql": "495dc90593d275a7ddb194771532192586303306b1e6cd278d2bc34c465ce4be",
+    "0019_m3_reconciliation_attempts.sql": "076cbd5000cb84449cf153385cd45321e7bab957df9ff8b16d40b3ade34a34d0"
   }
 }

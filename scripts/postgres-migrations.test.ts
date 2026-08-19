@@ -39,6 +39,7 @@ describe("Postgres migration runner", () => {
       "0016_identity_credential_invariants.sql",
       "0017_identity_credential_delete_guard.sql",
       "0018_m3_planned_observation_expiry.sql",
+      "0019_m3_reconciliation_attempts.sql",
     ]);
     expect(formatMigrationPlan(migrations)).toContain("0001_v1_product_slice.sql");
     expect(formatMigrationPlan(migrations)).toContain("0002_identity.sql");
@@ -62,13 +63,14 @@ describe("Postgres migration runner", () => {
     expect(formatMigrationPlan(migrations)).toContain("0016_identity_credential_invariants.sql");
     expect(formatMigrationPlan(migrations)).toContain("0017_identity_credential_delete_guard.sql");
     expect(formatMigrationPlan(migrations)).toContain("0018_m3_planned_observation_expiry.sql");
+    expect(formatMigrationPlan(migrations)).toContain("0019_m3_reconciliation_attempts.sql");
   });
 
   test("dry-run does not require an administrative URL or open a connection", async () => {
     const output = await runPostgresMigrations({ dryRun: true });
     expect(output).toMatchObject({ dryRun: true });
     if (!output.dryRun) throw new Error("expected a dry-run result");
-    expect(output.plan).toHaveLength(18);
+    expect(output.plan).toHaveLength(19);
   });
 
   test("normalizes psql's system sslrootcert value for node pg", () => {
@@ -166,6 +168,10 @@ describe("Postgres migration runner", () => {
       join(directory, "0018_m3_planned_observation_expiry.sql"),
       plannedObservationExpiry,
     );
+    const reconciliationAttempts = await Bun.file(
+      new URL("0019_m3_reconciliation_attempts.sql", source),
+    ).text();
+    await Bun.write(join(directory, "0019_m3_reconciliation_attempts.sql"), reconciliationAttempts);
 
     await expect(loadPostgresMigrations(new URL(`file://${directory}/`))).rejects.toThrow(
       "checksum mismatch: 0001_v1_product_slice.sql",

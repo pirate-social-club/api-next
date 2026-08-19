@@ -4,11 +4,17 @@ import type {
   CommunityPurchaseFundingJournalRecord,
   CommunityPurchaseFundingStorageFailed,
 } from "./community-purchase-funding.ts";
-import type { CommunityPurchaseFundingObservationUseCase } from "./community-purchase-funding-observation.ts";
 
 export type CommunityPurchaseFundingReconcilable = Readonly<{
   readonly operationId: CommunityPurchaseOperationId;
   readonly transactionHash: Bytes32;
+}>;
+
+/** Bounded non-paging operator report over parked legacy-ambiguous entries. */
+export type CommunityPurchaseFundingParkedCount = Readonly<{
+  readonly failureTag: "ambiguous" | "legacy";
+  readonly failureReason: string;
+  readonly operations: number;
 }>;
 
 export interface CommunityPurchaseFundingQueryStore {
@@ -23,6 +29,10 @@ export interface CommunityPurchaseFundingQueryStore {
     readonly limit: number;
   }) => Effect.Effect<
     readonly CommunityPurchaseFundingReconcilable[],
+    CommunityPurchaseFundingStorageFailed
+  >;
+  readonly parkedCounts: () => Effect.Effect<
+    readonly CommunityPurchaseFundingParkedCount[],
     CommunityPurchaseFundingStorageFailed
   >;
 }
@@ -64,33 +74,9 @@ export const listReconcilableCommunityPurchaseFunding = Effect.fn(
   return yield* store.listReconcilable({ limit });
 });
 
-/** Bounded scheduled composition; it reuses the exact request-path observer. */
-export function makeCommunityPurchaseFundingReconciler(
-  store: CommunityPurchaseFundingQueryStore,
-  observation: CommunityPurchaseFundingObservationUseCase,
-) {
-  return Effect.fn("reconcileCommunityPurchaseFunding")(function* (input: {
-    readonly limit: number;
-    readonly ownerId: string;
-    readonly leaseMs: number;
-    readonly at: number;
-  }) {
-    if (input.ownerId.length === 0 || input.ownerId.trim() !== input.ownerId) {
-      return yield* new CommunityPurchaseFundingQueryRejected({ reason: "invalid-input" });
-    }
-    const candidates = yield* listReconcilableCommunityPurchaseFunding(input.limit, store);
-    let processed = 0;
-    for (const candidate of candidates) {
-      yield* observation.observe({
-        operationId: candidate.operationId,
-        transactionHash: candidate.transactionHash,
-        ownerId: `${input.ownerId}:${candidate.operationId}`,
-        leaseMs: input.leaseMs,
-        source: "reconciler",
-        at: input.at,
-      });
-      processed += 1;
-    }
-    return { selected: candidates.length, processed };
-  });
-}
+/** Bounded parked-entry counts for operator visibility; never pages. */
+export const parkedCommunityPurchaseFundingCounts = Effect.fn(
+  "parkedCommunityPurchaseFundingCounts",
+)(function* (store: CommunityPurchaseFundingQueryStore) {
+  return yield* store.parkedCounts();
+});
