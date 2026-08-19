@@ -174,7 +174,7 @@ suite("Postgres 17 community repository", () => {
     completedTestCount += 1;
   }, 30_000);
 
-  test("does not turn a gated compatibility default into an implicit join", async () => {
+  test("fails closed when a gated community has no pinned policy", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
       await admin.query({
@@ -191,7 +191,7 @@ suite("Postgres 17 community repository", () => {
             body: {},
           }),
         ),
-      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "membership-required" });
+      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "invalid-row" });
       const memberships = await admin.query({
         text: "SELECT COUNT(*)::int AS count FROM community_memberships WHERE community_id = $1",
         values: ["community-gated"],

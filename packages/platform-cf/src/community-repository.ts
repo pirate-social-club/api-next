@@ -13,6 +13,13 @@ import {
   type UnfollowDocument,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import {
+  CURATED_AGE_GATE_SUMMARY,
+  GatesV2CommunityDataInvalid,
+  gateEvaluationDetails,
+  loadCuratedAgeEvaluation,
+  persistEnforceDecision,
+} from "./gates-v2-community.ts";
 
 type CommunityRow = {
   readonly community_id: unknown;
@@ -110,6 +117,15 @@ const viewerMembershipStatus = (value: unknown): "member" | "not_member" | "bann
 
 const generatedId = (kind: "membership" | "follow"): string =>
   `${kind}_${globalThis.crypto.randomUUID()}`;
+
+type JoinTransactionOutcome =
+  | { readonly kind: "joined"; readonly document: JoinDocument }
+  | { readonly kind: "gated-rejected"; readonly reason: "membership-required" | "invalid-row" };
+
+const joined = (document: JoinDocument): JoinTransactionOutcome => ({
+  kind: "joined",
+  document,
+});
 
 const row = <T>(rows: readonly T[]): T | undefined => rows[0];
 
@@ -334,14 +350,56 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         };
       }
       if (mode === "gated") {
+        const evaluation = yield* loadCuratedAgeEvaluation(db, {
+          communityId: input.communityId,
+          userId: input.userId,
+        }).pipe(
+          Effect.mapError((error) =>
+            error instanceof GatesV2CommunityDataInvalid ? invalid("eligibility") : error,
+          ),
+        );
+        const gateEvaluation = gateEvaluationDetails(evaluation);
+        if (evaluation.outcome === "indeterminate") {
+          return yield* Effect.fail(invalid("eligibility"));
+        }
+        if (evaluation.outcome === "pass") {
+          return {
+            community: id,
+            membership_mode: mode,
+            human_verification_lane: verification,
+            joinable_now: true,
+            status: "joinable" as const,
+            membership_gate_summaries: [CURATED_AGE_GATE_SUMMARY],
+            gate_evaluation: gateEvaluation,
+          };
+        }
+        if (evaluation.outcome === "needs_evidence") {
+          return {
+            community: id,
+            membership_mode: mode,
+            human_verification_lane: verification,
+            joinable_now: false,
+            status: "gate_failed" as const,
+            membership_gate_summaries: [CURATED_AGE_GATE_SUMMARY],
+            missing_capabilities: ["age_over_18" as const],
+            suggested_verification_provider: "zkpassport" as const,
+            suggested_verification_intent: "community_join" as const,
+            failure_reason: "missing_verification" as const,
+            gate_evaluation: gateEvaluation,
+          };
+        }
         return {
           community: id,
           membership_mode: mode,
           human_verification_lane: verification,
           joinable_now: false,
           status: "gate_failed" as const,
-          membership_gate_summaries: [],
-          failure_reason: "unsupported" as const,
+          membership_gate_summaries: [CURATED_AGE_GATE_SUMMARY],
+          failure_reason:
+            evaluation.reason === "age_below_threshold"
+              ? ("minimum_age_mismatch" as const)
+              : ("unsupported" as const),
+          gate_evaluation: gateEvaluation,
         };
       }
       return {
@@ -360,7 +418,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         return yield* Effect.fail(invalid("join"));
       }
       const db = yield* ControlPlaneDb;
-      return yield* db.withTransaction((transaction) =>
+      const result = yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
           const communityResult = yield* transaction.execute<JoinCommunityRow>({
             label: "community.memberships.join-community",
@@ -426,7 +484,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
                 readonly: false,
               });
             }
-            return { community: communityId, status: "joined" as const };
+            return joined({ community: communityId, status: "joined" as const });
           }
           if (existingStatus === "pending") {
             if (
@@ -445,12 +503,38 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             }
             // A pending request never activates a follow. An explicit prior
             // follow remains active until the user explicitly unfollows.
-            return { community: communityId, status: "requested" as const };
+            return joined({ community: communityId, status: "requested" as const });
           }
-          if (existingStatus === "banned" || mode === "gated") {
+          if (existingStatus === "banned") {
             return yield* Effect.fail(
               new CommunityRepositoryError({ operation: "join", reason: "membership-required" }),
             );
+          }
+
+          if (mode === "gated") {
+            const evaluation = yield* loadCuratedAgeEvaluation(transaction, {
+              communityId: input.communityId,
+              userId: input.actor.userId,
+            }).pipe(
+              Effect.mapError((error) =>
+                error instanceof GatesV2CommunityDataInvalid ? invalid("join") : error,
+              ),
+            );
+            yield* persistEnforceDecision(transaction, {
+              communityId: input.communityId,
+              userId: input.actor.userId,
+              requestId: `join-${globalThis.crypto.randomUUID()}`,
+              evaluation,
+            });
+            if (evaluation.outcome !== "pass") {
+              return {
+                kind: "gated-rejected" as const,
+                reason:
+                  evaluation.outcome === "indeterminate"
+                    ? ("invalid-row" as const)
+                    : ("membership-required" as const),
+              };
+            }
           }
 
           const status = mode === "request" ? "pending" : "member";
@@ -503,12 +587,18 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
               readonly: false,
             });
           }
-          return {
+          return joined({
             community: communityId,
             status: status === "member" ? ("joined" as const) : ("requested" as const),
-          };
+          });
         }),
       );
+      if (result.kind === "gated-rejected") {
+        return yield* Effect.fail(
+          new CommunityRepositoryError({ operation: "join", reason: result.reason }),
+        );
+      }
+      return result.document;
     });
 
   const follow: CommunityRepository["follow"] = (input) =>
