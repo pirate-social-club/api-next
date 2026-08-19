@@ -14,6 +14,7 @@ import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-
 import type { VerificationIntentResolver } from "@pirate/application/use-cases/verification-start";
 import { makeCommunityPurchaseFundingChainReader } from "@pirate/platform-cf/community-purchase-funding-chain-reader";
 import {
+  makeControlPlaneCommunityPurchaseFundingProducerStore,
   makeControlPlaneCommunityPurchaseFundingQueryStore,
   makeControlPlaneCommunityPurchaseFundingStore,
 } from "@pirate/platform-cf/community-purchase-funding-repository";
@@ -52,7 +53,10 @@ import { makeStaticVerificationIntentResolver } from "@pirate/platform-cf/verifi
 import { makePlatformVerificationProviderRegistry } from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
 import { Effect, Redacted, Schema } from "effect";
-import { makeCommunityPurchaseFundingObservationHandlers } from "./community-purchase-funding-handlers.ts";
+import {
+  makeCommunityPurchaseFundingObservationHandlers,
+  makeCommunityPurchaseFundingQuoteHandlers,
+} from "./community-purchase-funding-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
@@ -268,6 +272,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const feedStore = makeControlPlaneFeedStore(controlPlane);
   const fundingJournal = makeControlPlaneCommunityPurchaseFundingStore(controlPlane);
+  const fundingProducer = makeControlPlaneCommunityPurchaseFundingProducerStore(controlPlane);
   const fundingInterpreter = makeCommunityPurchaseFundingInterpreter(fundingJournal);
   const fundingQuery = makeControlPlaneCommunityPurchaseFundingQueryStore(controlPlane);
   const fundingObservation = makeCommunityPurchaseFundingObservationUseCase(
@@ -279,10 +284,13 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
       ),
     }),
   );
-  const fundingHandlers = makeCommunityPurchaseFundingObservationHandlers({
-    observation: fundingObservation,
-    query: fundingQuery,
-  });
+  const fundingHandlers = {
+    ...makeCommunityPurchaseFundingObservationHandlers({
+      observation: fundingObservation,
+      query: fundingQuery,
+    }),
+    ...makeCommunityPurchaseFundingQuoteHandlers({ producer: fundingProducer }),
+  };
   const callbackCredentialHeaderNames = callbackCredentialHeaders(
     config.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
   );

@@ -31,6 +31,47 @@ const StatusResponse = Schema.Struct({
   version: Schema.Int,
 });
 
+const FundingResponse = Schema.Struct({
+  chain_id: Schema.Int,
+  token_contract: Address,
+  token_decimals: Schema.Literal(6),
+  sender: Address,
+  recipient: Address,
+  amount_atomic: AtomicAmount,
+  required_confirmations: Schema.Int,
+});
+
+const QuoteResponse = Schema.Struct({
+  quote_id: Schema.NonEmptyString,
+  community_id: Schema.NonEmptyString,
+  listing_id: Schema.NonEmptyString,
+  policy_version: Schema.Int,
+  quoted_at: Schema.NonEmptyString,
+  expires_at: Schema.NonEmptyString,
+  replayed: Schema.Boolean,
+  funding: FundingResponse,
+});
+
+/**
+ * Creates a server-owned quote and immutable funding plan. The request carries
+ * intent only; actor and wallet come from the authenticated session and all
+ * economic terms are derived by the target-owned producer.
+ */
+export const CreateCommunityPurchaseFundingQuote = endpoint({
+  method: "POST",
+  path: "/money/community-purchase-funding/quotes",
+  auth: Auth.user(),
+  request: {
+    body: Schema.Struct({
+      community_id: Schema.NonEmptyString,
+      listing_id: Schema.NonEmptyString,
+    }),
+  },
+  response: QuoteResponse,
+  successStatus: [200, 201],
+  errors: [AuthError, BadRequest, Conflict, NotFound, ProviderUnavailable, InternalError],
+});
+
 export const BeginCommunityPurchaseFunding = endpoint({
   method: "POST",
   path: "/money/community-purchase-funding",
@@ -46,15 +87,7 @@ export const BeginCommunityPurchaseFunding = endpoint({
     status: FundingStatus,
     version: Schema.Int,
     replayed: Schema.Boolean,
-    funding: Schema.Struct({
-      chain_id: Schema.Int,
-      token_contract: Address,
-      token_decimals: Schema.Literal(6),
-      sender: Address,
-      recipient: Address,
-      amount_atomic: AtomicAmount,
-      required_confirmations: Schema.Int,
-    }),
+    funding: FundingResponse,
   }),
   successStatus: [200, 201],
   errors: [AuthError, BadRequest, Conflict, InternalError],

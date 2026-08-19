@@ -121,6 +121,18 @@ describe("HTTP production composition", () => {
     });
     expect(begin.status).toBe(404);
 
+    const quote = await worker.request(
+      "https://worker.test/money/community-purchase-funding/quotes",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ community_id: "community-a", listing_id: "listing-a" }),
+      },
+    );
+    // The quote route is installed, but remains protected by the wallet-auth
+    // session boundary before it can reach the control-plane producer.
+    expect(quote.status).toBe(401);
+
     for (const fundingRequest of [
       new Request("https://worker.test/money/community-purchase-funding/operation-a"),
       new Request("https://worker.test/money/community-purchase-funding/operation-a/observations", {
