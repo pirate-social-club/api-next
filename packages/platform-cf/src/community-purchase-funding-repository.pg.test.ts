@@ -803,13 +803,23 @@ suite("Postgres 17 community-purchase funding journal", () => {
       if (winner.kind !== "reserved") throw new Error("concurrent claim winner was unavailable");
       expect(winner.state.generation).toBe(firstGeneration.state.generation + 1);
 
-      const stale = await run(
+      const staleSuccess = await run(
         attempts.recordAttemptSuccess({
           operationId: begun.entry.state.operationId,
           generation: firstGeneration.state.generation,
         }),
       );
-      expect(stale).toEqual({ kind: "stale" });
+      expect(staleSuccess).toEqual({ kind: "stale" });
+      const staleFailure = await run(
+        attempts.recordAttemptFailure({
+          operationId: begun.entry.state.operationId,
+          generation: firstGeneration.state.generation,
+          failureClass: "chain_timeout",
+          retryDelayMs: 1_000,
+          escalationThreshold: 3,
+        }),
+      );
+      expect(staleFailure).toEqual({ kind: "stale" });
       const row = await admin.query(
         `SELECT generation, consecutive_failures, next_attempt_at
            FROM community_purchase_funding_reconciliation_attempts
