@@ -94,7 +94,7 @@ must answer, but these references do not authorize an import or runtime bridge:
 - [`services/api/tests/community-db-factory.test.ts`](../../../api/services/api/tests/community-db-factory.test.ts)
   records legacy table surfaces including `purchase_quotes`, `purchases`,
   `purchase_allocation_legs`, settlement effects/transactions/attempts,
-  `community_memberships`, and donation-partner data.
+  donation-partner data, and a community-membership lookup index.
 - [`services/api/src/routes/communities-commerce.ts`](../../../api/services/api/src/routes/communities-commerce.ts)
   confirms that the quote and settlement routes are authenticated community
   routes, but route reachability is not proof that the legacy service is the
