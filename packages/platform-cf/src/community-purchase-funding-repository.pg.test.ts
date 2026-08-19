@@ -15,6 +15,7 @@ import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
 import {
   makeControlPlaneCommunityPurchaseFundingAdmissionStore,
   makeControlPlaneCommunityPurchaseFundingAttemptStore,
+  makeControlPlaneCommunityPurchaseFundingOperatorStore,
   makeControlPlaneCommunityPurchaseFundingPlanStore,
   makeControlPlaneCommunityPurchaseFundingQueryStore,
   makeControlPlaneCommunityPurchaseFundingStore,
@@ -206,6 +207,26 @@ async function begin(
     }),
   );
   return { interpreter, begun };
+}
+
+async function markReconcilable(
+  admin: Client,
+  operationId: string,
+  transactionHash: string,
+  observationId: string,
+  state: "confirming" | "reconciliation_required" = "confirming",
+) {
+  await admin.query(
+    `UPDATE community_purchase_funding_journal
+        SET state = $4, version = 2,
+            snapshot = jsonb_set(jsonb_set(snapshot, '{state}', to_jsonb($4::text)), '{version}', '2'),
+            funding_receipt_status = 'reverted',
+            funding_transaction_hash = $2,
+            funding_observation_id = $3,
+            updated_at = clock_timestamp()
+      WHERE operation_id = $1`,
+    [operationId, transactionHash, observationId, state],
+  );
 }
 
 suite("Postgres 17 community-purchase funding journal", () => {
@@ -767,6 +788,19 @@ suite("Postgres 17 community-purchase funding journal", () => {
   test("serializes concurrent attempt claims and fences stale finalizers", async () => {
     await withSchema(async (connection, admin) => {
       const { begun } = await begin(connection, { nonce: "nonce_attempt_claim" });
+      const transactionHash = `0x${"ab".repeat(32)}`;
+      const observationId = `0x${"cd".repeat(32)}`;
+      await admin.query(
+        `UPDATE community_purchase_funding_journal
+            SET state = 'confirming', version = 2,
+                snapshot = jsonb_set(jsonb_set(snapshot, '{state}', '"confirming"'), '{version}', '2'),
+                funding_receipt_status = 'reverted',
+                funding_transaction_hash = $2,
+                funding_observation_id = $3,
+                updated_at = clock_timestamp()
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId, transactionHash, observationId],
+      );
       const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(
         makeDirectPostgresControlPlaneLayer(connection),
       );
@@ -833,6 +867,549 @@ suite("Postgres 17 community-purchase funding journal", () => {
     completedTestCount += 1;
   });
 
+  test("consumes same-generation success and failure finalizers exactly once", async () => {
+    await withSchema(async (connection, admin) => {
+      const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const successCase = await begin(connection, { nonce: "nonce_duplicate_success" });
+      await markReconcilable(
+        admin,
+        successCase.begun.entry.state.operationId,
+        `0x${"ab".repeat(32)}`,
+        `0x${"cd".repeat(32)}`,
+      );
+      const successClaim = await run(
+        attempts.recordAttemptStart({
+          operationId: successCase.begun.entry.state.operationId,
+          reservationMs: 60_000,
+        }),
+      );
+      expect(successClaim.kind).toBe("reserved");
+      if (successClaim.kind !== "reserved") throw new Error("success claim unavailable");
+      expect(
+        await run(
+          attempts.recordAttemptSuccess({
+            operationId: successCase.begun.entry.state.operationId,
+            generation: successClaim.state.generation,
+          }),
+        ),
+      ).toMatchObject({ kind: "finalized" });
+      expect(
+        await run(
+          attempts.recordAttemptSuccess({
+            operationId: successCase.begun.entry.state.operationId,
+            generation: successClaim.state.generation,
+          }),
+        ),
+      ).toEqual({ kind: "stale" });
+      expect(
+        await run(
+          attempts.recordAttemptFailure({
+            operationId: successCase.begun.entry.state.operationId,
+            generation: successClaim.state.generation,
+            failureClass: "chain_timeout",
+            retryDelayMs: 1_000,
+            escalationThreshold: 12,
+          }),
+        ),
+      ).toEqual({ kind: "stale" });
+
+      const failureCase = await begin(connection, {
+        nonce: "nonce_duplicate_failure",
+        fundingPlan: plan("quote_duplicate_failure", "purchase_duplicate_failure"),
+      });
+      await markReconcilable(
+        admin,
+        failureCase.begun.entry.state.operationId,
+        `0x${"ef".repeat(32)}`,
+        `0x${"12".repeat(32)}`,
+      );
+      const failureClaim = await run(
+        attempts.recordAttemptStart({
+          operationId: failureCase.begun.entry.state.operationId,
+          reservationMs: 60_000,
+        }),
+      );
+      expect(failureClaim.kind).toBe("reserved");
+      if (failureClaim.kind !== "reserved") throw new Error("failure claim unavailable");
+      expect(
+        await run(
+          attempts.recordAttemptFailure({
+            operationId: failureCase.begun.entry.state.operationId,
+            generation: failureClaim.state.generation,
+            failureClass: "chain_timeout",
+            retryDelayMs: 1_000,
+            escalationThreshold: 12,
+          }),
+        ),
+      ).toMatchObject({ kind: "finalized" });
+      expect(
+        await run(
+          attempts.recordAttemptFailure({
+            operationId: failureCase.begun.entry.state.operationId,
+            generation: failureClaim.state.generation,
+            failureClass: "chain_timeout",
+            retryDelayMs: 1_000,
+            escalationThreshold: 12,
+          }),
+        ),
+      ).toEqual({ kind: "stale" });
+      const rows = await admin.query(
+        `SELECT finalized_generation, consecutive_failures
+           FROM community_purchase_funding_reconciliation_attempts
+          WHERE operation_id IN ($1, $2)
+          ORDER BY operation_id`,
+        [successCase.begun.entry.state.operationId, failureCase.begun.entry.state.operationId],
+      );
+      expect(rows.rows).toHaveLength(2);
+      expect(rows.rows.map((row) => row.finalized_generation)).toEqual(["1", "1"]);
+      expect(rows.rows.map((row) => row.consecutive_failures)).toEqual([0, 1]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("serializes concurrent success and failure finalizers for one claim", async () => {
+    await withSchema(async (connection, admin) => {
+      const { begun } = await begin(connection, { nonce: "nonce_success_failure_race" });
+      await markReconcilable(
+        admin,
+        begun.entry.state.operationId,
+        `0x${"34".repeat(32)}`,
+        `0x${"56".repeat(32)}`,
+      );
+      const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const claim = await run(
+        attempts.recordAttemptStart({
+          operationId: begun.entry.state.operationId,
+          reservationMs: 60_000,
+        }),
+      );
+      expect(claim.kind).toBe("reserved");
+      if (claim.kind !== "reserved") throw new Error("claim unavailable");
+      const [success, failure] = await Promise.all([
+        run(
+          attempts.recordAttemptSuccess({
+            operationId: begun.entry.state.operationId,
+            generation: claim.state.generation,
+          }),
+        ),
+        run(
+          attempts.recordAttemptFailure({
+            operationId: begun.entry.state.operationId,
+            generation: claim.state.generation,
+            failureClass: "chain_timeout",
+            retryDelayMs: 1_000,
+            escalationThreshold: 12,
+          }),
+        ),
+      ]);
+      expect([success.kind, failure.kind].sort()).toEqual(["finalized", "stale"]);
+      const row = await admin.query(
+        `SELECT generation, finalized_generation, consecutive_failures
+           FROM community_purchase_funding_reconciliation_attempts
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      expect(row.rows[0]?.generation).toBe("1");
+      expect(row.rows[0]?.finalized_generation).toBe("1");
+      expect([0, 1]).toContain(Number(row.rows[0]?.consecutive_failures));
+    });
+    completedTestCount += 1;
+  });
+
+  test("escalates exactly at twelve failures and excludes the row from claims", async () => {
+    await withSchema(async (connection, admin) => {
+      const { begun } = await begin(connection, { nonce: "nonce_escalation_threshold" });
+      await markReconcilable(
+        admin,
+        begun.entry.state.operationId,
+        `0x${"78".repeat(32)}`,
+        `0x${"9a".repeat(32)}`,
+      );
+      const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      for (let count = 1; count <= 12; count += 1) {
+        const claim = await run(
+          attempts.recordAttemptStart({
+            operationId: begun.entry.state.operationId,
+            reservationMs: 60_000,
+          }),
+        );
+        expect(claim.kind).toBe("reserved");
+        if (claim.kind !== "reserved") throw new Error(`claim ${count} unavailable`);
+        const failure = await run(
+          attempts.recordAttemptFailure({
+            operationId: begun.entry.state.operationId,
+            generation: claim.state.generation,
+            failureClass: "chain_timeout",
+            retryDelayMs: 1,
+            escalationThreshold: 12,
+          }),
+        );
+        expect(failure.kind).toBe("finalized");
+        if (failure.kind !== "finalized") throw new Error(`failure ${count} stale`);
+        if (count < 12) {
+          await admin.query(
+            `UPDATE community_purchase_funding_reconciliation_attempts
+                SET next_attempt_at = clock_timestamp() - INTERVAL '1 second'
+              WHERE operation_id = $1`,
+            [begun.entry.state.operationId],
+          );
+        }
+      }
+      const query = makeControlPlaneCommunityPurchaseFundingQueryStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      expect(await run(query.listReconcilable({ limit: 10 }))).toEqual([]);
+      expect(
+        await run(
+          attempts.recordAttemptStart({
+            operationId: begun.entry.state.operationId,
+            reservationMs: 60_000,
+          }),
+        ),
+      ).toEqual({ kind: "unavailable" });
+      const row = await admin.query(
+        `SELECT generation, finalized_generation, consecutive_failures, escalated_at
+           FROM community_purchase_funding_reconciliation_attempts
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      expect(row.rows[0]?.generation).toBe("12");
+      expect(row.rows[0]?.finalized_generation).toBe("12");
+      expect(row.rows[0]?.consecutive_failures).toBe(12);
+      expect(row.rows[0]?.escalated_at).not.toBeNull();
+    });
+    completedTestCount += 1;
+  });
+
+  test("success finalization resets failure metadata for a new claim", async () => {
+    await withSchema(async (connection, admin) => {
+      const { begun } = await begin(connection, { nonce: "nonce_success_reset" });
+      await markReconcilable(
+        admin,
+        begun.entry.state.operationId,
+        `0x${"bc".repeat(32)}`,
+        `0x${"de".repeat(32)}`,
+      );
+      const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const first = await run(
+        attempts.recordAttemptStart({
+          operationId: begun.entry.state.operationId,
+          reservationMs: 60_000,
+        }),
+      );
+      expect(first.kind).toBe("reserved");
+      if (first.kind !== "reserved") throw new Error("first claim unavailable");
+      expect(
+        await run(
+          attempts.recordAttemptFailure({
+            operationId: begun.entry.state.operationId,
+            generation: first.state.generation,
+            failureClass: "chain_timeout",
+            retryDelayMs: 1,
+            escalationThreshold: 12,
+          }),
+        ),
+      ).toMatchObject({ kind: "finalized" });
+      await admin.query(
+        `UPDATE community_purchase_funding_reconciliation_attempts
+            SET next_attempt_at = clock_timestamp() - INTERVAL '1 second'
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      const second = await run(
+        attempts.recordAttemptStart({
+          operationId: begun.entry.state.operationId,
+          reservationMs: 60_000,
+        }),
+      );
+      expect(second.kind).toBe("reserved");
+      if (second.kind !== "reserved") throw new Error("second claim unavailable");
+      const success = await run(
+        attempts.recordAttemptSuccess({
+          operationId: begun.entry.state.operationId,
+          generation: second.state.generation,
+        }),
+      );
+      expect(success).toMatchObject({ kind: "finalized" });
+      const row = await admin.query(
+        `SELECT generation, finalized_generation, consecutive_failures, escalated_at,
+                last_failure_class, next_attempt_at
+           FROM community_purchase_funding_reconciliation_attempts
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      expect(row.rows[0]).toMatchObject({
+        generation: "2",
+        finalized_generation: "2",
+        consecutive_failures: 0,
+        escalated_at: null,
+        last_failure_class: null,
+        next_attempt_at: null,
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("parks hashless entries and excludes them from parked reconciliation claims", async () => {
+    await withSchema(async (connection, admin) => {
+      const { begun } = await begin(connection, { nonce: "nonce_parked_counts" });
+      await markReconcilable(
+        admin,
+        begun.entry.state.operationId,
+        `0x${"ab".repeat(32)}`,
+        `0x${"cd".repeat(32)}`,
+      );
+      await admin.query(
+        `UPDATE community_purchase_funding_journal
+            SET state = 'reconciliation_required', version = 3,
+                snapshot = jsonb_set(
+                  jsonb_set(
+                    jsonb_set(snapshot, '{state}', '"reconciliation_required"'),
+                    '{version}', '3'
+                  ),
+                  '{failure}', '{"_tag":"ambiguous","mayRebroadcast":false,"mayRetry":false,"disposition":"reconciliation_required"}'
+                ),
+                failure_tag = 'ambiguous', failure_reason = 'missing-claim',
+                funding_transaction_hash = NULL, funding_observation_id = NULL,
+                updated_at = clock_timestamp()
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const query = makeControlPlaneCommunityPurchaseFundingQueryStore(layer);
+      const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(layer);
+      expect(await run(query.parkedCounts?.() ?? Effect.succeed([]))).toEqual([
+        { failureTag: "ambiguous", failureReason: "missing-claim", operations: 1 },
+      ]);
+      expect(
+        await run(
+          attempts.recordAttemptStart({
+            operationId: begun.entry.state.operationId,
+            reservationMs: 60_000,
+          }),
+        ),
+      ).toEqual({ kind: "unavailable" });
+      const row = await admin.query(
+        `SELECT count(*) FROM community_purchase_funding_reconciliation_attempts
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      expect(row.rows[0]?.count).toBe("0");
+    });
+    completedTestCount += 1;
+  });
+
+  test("allows later candidates through on the next pass while a poisoned head backs off", async () => {
+    await withSchema(async (connection, admin) => {
+      const first = await begin(connection, {
+        nonce: "nonce_cross_tick_a",
+        fundingPlan: plan("quote_cross_tick_a", "purchase_cross_tick_a"),
+      });
+      const second = await begin(connection, {
+        nonce: "nonce_cross_tick_b",
+        fundingPlan: plan("quote_cross_tick_b", "purchase_cross_tick_b"),
+      });
+      await markReconcilable(
+        admin,
+        first.begun.entry.state.operationId,
+        `0x${"f0".repeat(32)}`,
+        `0x${"f1".repeat(32)}`,
+      );
+      await markReconcilable(
+        admin,
+        second.begun.entry.state.operationId,
+        `0x${"f2".repeat(32)}`,
+        `0x${"f3".repeat(32)}`,
+      );
+      await admin.query(
+        `UPDATE community_purchase_funding_journal
+            SET updated_at = clock_timestamp() - INTERVAL '1 minute'
+          WHERE operation_id = $1`,
+        [first.begun.entry.state.operationId],
+      );
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const query = makeControlPlaneCommunityPurchaseFundingQueryStore(layer);
+      const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(layer);
+      expect(await run(query.listReconcilable({ limit: 1 }))).toEqual([
+        {
+          operationId: first.begun.entry.state.operationId,
+          transactionHash: `0x${"f0".repeat(32)}`,
+        },
+      ]);
+      const claim = await run(
+        attempts.recordAttemptStart({
+          operationId: first.begun.entry.state.operationId,
+          reservationMs: 60_000,
+        }),
+      );
+      expect(claim.kind).toBe("reserved");
+      if (claim.kind !== "reserved") throw new Error("head claim unavailable");
+      expect(
+        await run(
+          attempts.recordAttemptFailure({
+            operationId: first.begun.entry.state.operationId,
+            generation: claim.state.generation,
+            failureClass: "chain_unavailable",
+            retryDelayMs: 60 * 60 * 1_000,
+            escalationThreshold: 12,
+          }),
+        ),
+      ).toMatchObject({ kind: "finalized" });
+      expect(await run(query.listReconcilable({ limit: 1 }))).toEqual([
+        {
+          operationId: second.begun.entry.state.operationId,
+          transactionHash: `0x${"f2".repeat(32)}`,
+        },
+      ]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects terminal and hashless operations at the claim boundary", async () => {
+    await withSchema(async (connection, admin) => {
+      const hashless = await begin(connection, { nonce: "nonce_hashless_claim" });
+      const terminal = await begin(connection, { nonce: "nonce_terminal_claim" });
+      await markReconcilable(
+        admin,
+        terminal.begun.entry.state.operationId,
+        `0x${"f4".repeat(32)}`,
+        `0x${"f5".repeat(32)}`,
+      );
+      await admin.query(
+        `UPDATE community_purchase_funding_journal
+            SET state = 'confirmed',
+                snapshot = jsonb_set(snapshot, '{state}', '"confirmed"'),
+                updated_at = clock_timestamp()
+          WHERE operation_id = $1`,
+        [terminal.begun.entry.state.operationId],
+      );
+      const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      for (const operationId of [
+        hashless.begun.entry.state.operationId,
+        terminal.begun.entry.state.operationId,
+      ]) {
+        expect(
+          await run(attempts.recordAttemptStart({ operationId, reservationMs: 60_000 })),
+        ).toEqual({ kind: "unavailable" });
+      }
+      const row = await admin.query(
+        `SELECT count(*) FROM community_purchase_funding_reconciliation_attempts
+          WHERE operation_id IN ($1, $2)`,
+        [hashless.begun.entry.state.operationId, terminal.begun.entry.state.operationId],
+      );
+      expect(row.rows[0]?.count).toBe("0");
+    });
+    completedTestCount += 1;
+  });
+
+  test("operator unpark resets once, records audit, and preserves claim fencing", async () => {
+    await withSchema(async (connection, admin) => {
+      const { begun } = await begin(connection, { nonce: "nonce_operator_unpark" });
+      await markReconcilable(
+        admin,
+        begun.entry.state.operationId,
+        `0x${"f6".repeat(32)}`,
+        `0x${"f7".repeat(32)}`,
+      );
+      await admin.query(
+        `INSERT INTO community_purchase_funding_reconciliation_attempts (
+             operation_id, generation, finalized_generation, last_attempt_at,
+             next_attempt_at, last_failure_class, consecutive_failures, escalated_at
+           ) VALUES ($1, 7, 7, clock_timestamp(), clock_timestamp(), 'chain_timeout', 12, clock_timestamp())`,
+        [begun.entry.state.operationId],
+      );
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const operator = makeControlPlaneCommunityPurchaseFundingOperatorStore(layer);
+      const attempts = makeControlPlaneCommunityPurchaseFundingAttemptStore(layer);
+      const [first, second] = await Promise.all([
+        run(
+          operator.resetEscalatedAttempt({
+            operationId: begun.entry.state.operationId,
+            actorId: "operator-a",
+            reason: "reviewed chain provider recovery",
+          }),
+        ),
+        run(
+          operator.resetEscalatedAttempt({
+            operationId: begun.entry.state.operationId,
+            actorId: "operator-b",
+            reason: "concurrent duplicate reset",
+          }),
+        ),
+      ]);
+      expect([first.kind, second.kind].sort()).toEqual(["not-escalated", "reset"]);
+      const row = await admin.query(
+        `SELECT generation, finalized_generation, consecutive_failures,
+                escalated_at, last_failure_class, next_attempt_at
+           FROM community_purchase_funding_reconciliation_attempts
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      expect(row.rows[0]).toMatchObject({
+        generation: "7",
+        finalized_generation: "7",
+        consecutive_failures: 0,
+        escalated_at: null,
+        last_failure_class: null,
+      });
+      expect(row.rows[0]?.next_attempt_at).not.toBeNull();
+      const audit = await admin.query(
+        `SELECT actor_id, action, reason, generation
+           FROM community_purchase_funding_reconciliation_operator_actions
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      expect(audit.rows).toEqual([
+        {
+          actor_id: first.kind === "reset" ? "operator-a" : "operator-b",
+          action: "unpark_escalated",
+          reason:
+            first.kind === "reset"
+              ? "reviewed chain provider recovery"
+              : "concurrent duplicate reset",
+          generation: "7",
+        },
+      ]);
+      const nextClaim = await run(
+        attempts.recordAttemptStart({
+          operationId: begun.entry.state.operationId,
+          reservationMs: 60_000,
+        }),
+      );
+      expect(nextClaim.kind).toBe("reserved");
+      if (nextClaim.kind !== "reserved") throw new Error("unparked claim unavailable");
+      expect(nextClaim.state.generation).toBe(8);
+      expect(
+        await run(
+          attempts.recordAttemptSuccess({
+            operationId: begun.entry.state.operationId,
+            generation: nextClaim.state.generation,
+          }),
+        ),
+      ).toMatchObject({ kind: "finalized" });
+      expect(
+        await run(
+          operator.resetEscalatedAttempt({
+            operationId: begun.entry.state.operationId,
+            actorId: "operator-c",
+            reason: "healthy row cannot be reset",
+          }),
+        ),
+      ).toEqual({ kind: "not-escalated" });
+    });
+    completedTestCount += 1;
+  });
+
   test("selects only due hash-bearing candidates and excludes the reserved one", async () => {
     await withSchema(async (connection, admin) => {
       const { begun } = await begin(connection, { nonce: "nonce_due_selection" });
@@ -869,7 +1446,7 @@ suite("Postgres 17 community-purchase funding journal", () => {
   });
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 15) {
+    if (connectionString !== undefined && completedTestCount === 24) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

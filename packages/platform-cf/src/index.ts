@@ -42,6 +42,7 @@ export {
 export {
   makeControlPlaneCommunityPurchaseFundingAdmissionStore,
   makeControlPlaneCommunityPurchaseFundingAttemptStore,
+  makeControlPlaneCommunityPurchaseFundingOperatorStore,
   makeControlPlaneCommunityPurchaseFundingPlanStore,
   makeControlPlaneCommunityPurchaseFundingQueryStore,
   makeControlPlaneCommunityPurchaseFundingRepository,

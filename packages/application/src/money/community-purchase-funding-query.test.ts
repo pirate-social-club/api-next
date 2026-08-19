@@ -66,6 +66,7 @@ describe("community purchase funding queries", () => {
           state: {
             operationId: input.operationId,
             generation: 1,
+            finalizedGeneration: null,
             lastAttemptAt: new Date().toISOString(),
             nextAttemptAt: null,
             lastFailureClass: null,
@@ -79,6 +80,7 @@ describe("community purchase funding queries", () => {
           state: {
             operationId: input.operationId,
             generation: input.generation,
+            finalizedGeneration: input.generation,
             lastAttemptAt: new Date().toISOString(),
             nextAttemptAt: null,
             lastFailureClass: null,
@@ -92,6 +94,7 @@ describe("community purchase funding queries", () => {
           state: {
             operationId: input.operationId,
             generation: input.generation,
+            finalizedGeneration: input.generation,
             lastAttemptAt: new Date().toISOString(),
             nextAttemptAt: new Date(Date.now() + input.retryDelayMs).toISOString(),
             lastFailureClass: input.failureClass,

@@ -28,6 +28,7 @@ function state(
   return {
     operationId,
     generation,
+    finalizedGeneration: null,
     lastAttemptAt: "2026-08-19T00:00:00.000Z",
     nextAttemptAt: null,
     lastFailureClass: null,

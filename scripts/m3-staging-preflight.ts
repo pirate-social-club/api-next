@@ -14,6 +14,7 @@ const M3_TABLES = [
   "community_purchase_funding_transitions",
   "community_purchase_funding_receipts",
   "community_purchase_funding_reconciliation_attempts",
+  "community_purchase_funding_reconciliation_operator_actions",
 ] as const;
 
 const MUTABLE_TABLES = new Set<string>([
@@ -95,6 +96,8 @@ export async function runM3StagingPreflight(input: {
               FROM community_purchase_funding_receipts
             UNION ALL SELECT 'community_purchase_funding_reconciliation_attempts', count(*)::text
               FROM community_purchase_funding_reconciliation_attempts
+            UNION ALL SELECT 'community_purchase_funding_reconciliation_operator_actions', count(*)::text
+              FROM community_purchase_funding_reconciliation_operator_actions
             ORDER BY table_name
           `,
           values: [],
@@ -160,6 +163,7 @@ export async function runM3StagingPreflight(input: {
         has0014: applied.has("0014_m3_community_purchase_funding_plans.sql"),
         has0018: applied.has("0018_m3_funding_dormancy_and_retention.sql"),
         has0019: applied.has("0019_m3_reconciliation_attempts.sql"),
+        has0020: applied.has("0020_m3_reconciliation_finalization.sql"),
       },
       rowCounts: Object.fromEntries(
         adminResult.counts.map(({ table_name, row_count }) => [table_name, Number(row_count)]),
@@ -172,7 +176,7 @@ export async function runM3StagingPreflight(input: {
         violations,
       },
     };
-    if (input.requireReady && (!result.ledger.has0019 || !result.runtime.ready)) {
+    if (input.requireReady && (!result.ledger.has0020 || !result.runtime.ready)) {
       throw new Error("M3 staging readiness requirements are not satisfied");
     }
     return result;
