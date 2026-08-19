@@ -342,7 +342,7 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
       return yield* Effect.fail(invalid());
     }
     const encodedAccount = yield* Effect.try({
-      try: () => JSON.stringify(input.account),
+      try: () => JSON.stringify(document),
       catch: () => invalid(),
     });
     const db = yield* ControlPlaneDb;
