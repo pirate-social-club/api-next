@@ -15,6 +15,7 @@
   ],
   "vars": {
     "API_NEXT_ENV": "development",
+    "COMMUNITY_PURCHASE_FUNDING_CHAIN_ID": "8453",
     "CORS_ORIGIN": "http://localhost:5173",
     "SELF_PASS_ENABLED": "false",
     "SELF_PASS_APP_NAME": "Pirate",
@@ -32,7 +33,8 @@
       "PIRATE_APP_JWT_PRIVATE_KEY",
       "PIRATE_APP_JWT_PUBLIC_KEY",
       "PRIVY_APP_ID",
-      "PRIVY_APP_SECRET"
+      "PRIVY_APP_SECRET",
+      "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
     ]
   },
   "env": {
@@ -55,6 +57,7 @@
       ],
       "vars": {
         "API_NEXT_ENV": "staging",
+        "COMMUNITY_PURCHASE_FUNDING_CHAIN_ID": "8453",
         "CORS_ORIGIN": "https://staging.pirate.sc,https://web-next-staging.pirate.sc",
         "PIRATE_API_PUBLIC_ORIGIN": "https://api-next-staging.pirate.sc",
         "SELF_PASS_ENABLED": "true",
@@ -86,7 +89,8 @@
           "PRIVY_APP_SECRET",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
-          "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID"
+          "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID",
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
         ]
       }
     },
@@ -102,6 +106,7 @@
       ],
       "vars": {
         "API_NEXT_ENV": "production",
+        "COMMUNITY_PURCHASE_FUNDING_CHAIN_ID": "8453",
         "CORS_ORIGIN": "https://pirate.app,https://pirate.sc",
         "SELF_PASS_ENABLED": "false",
         "SELF_PASS_APP_NAME": "Pirate",
@@ -119,7 +124,8 @@
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PIRATE_APP_JWT_PUBLIC_KEY",
           "PRIVY_APP_ID",
-          "PRIVY_APP_SECRET"
+          "PRIVY_APP_SECRET",
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
         ]
       }
     }

@@ -10,7 +10,8 @@
   "env": {
     "production": {
       "vars": {
-        "API_NEXT_ENV": "production"
+        "API_NEXT_ENV": "production",
+        "COMMUNITY_PURCHASE_FUNDING_CHAIN_ID": "8453"
       }
     },
     "staging": {

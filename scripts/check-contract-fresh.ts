@@ -23,8 +23,18 @@ export { registry };
 `,
   ],
 ] as const;
+const forbiddenGeneratedValues = [
+  "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+  process.env.COMMUNITY_PURCHASE_FUNDING_RPC_URL ?? "",
+].filter((value) => value !== "");
 let stale = false;
 for (const [url, value] of expected) {
+  for (const forbidden of forbiddenGeneratedValues) {
+    if (value.includes(forbidden)) {
+      console.error(`Generated contract contains money-path configuration: ${url.pathname}`);
+      stale = true;
+    }
+  }
   const actual = await readFile(url, "utf8").catch(() => "");
   if (actual !== value) {
     console.error(`Generated contract is stale: ${url.pathname}. Run bun run generate:contracts`);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as BunRuntime from "bun";
+import { loadConfigFrom, MoneyPathConfig } from "./index.ts";
 
 // Port of the old API's tests/production-money-path-invariant.test.ts
 // (read-only source: api/services/api). The incident history that motivates
@@ -37,9 +38,13 @@ type MoneyPath =
       assertFailsClosed: (env: Record<string, string>) => unknown;
     };
 
-// Empty until M3. Entries take the old shapes verbatim; when the first
-// money flow lands, its chain id joins here with posture mainnet_required.
-const MONEY_PATHS: MoneyPath[] = [];
+const MONEY_PATHS: MoneyPath[] = [
+  {
+    chainIdVar: "COMMUNITY_PURCHASE_FUNDING_CHAIN_ID",
+    label: "community purchase funding",
+    posture: "mainnet_required",
+  },
+];
 
 const productionVars = await (async (): Promise<Record<string, string>> => {
   const config = BunRuntime.JSONC.parse(await BunRuntime.file(WRANGLER_CONFIG_PATH).text()) as {
@@ -70,6 +75,14 @@ describe("production money-path invariant", () => {
         `${path.label} is missing from production`,
       ).toBeDefined();
     }
+  });
+
+  test("missing production RPC credentials provably fail the real resolver closed", () => {
+    // Credential-bearing RPC URLs are Worker secrets, never checked-in vars.
+    // Resolving only the real production manifest must fail rather than choose
+    // a public endpoint or silently disable settlement evidence.
+    expect(() => loadConfigFrom(MoneyPathConfig, productionVars)).toThrow();
+    expect(productionVars.COMMUNITY_PURCHASE_FUNDING_RPC_URL).toBeUndefined();
   });
 
   for (const path of MONEY_PATHS.filter((entry) => entry.posture === "mainnet_required")) {

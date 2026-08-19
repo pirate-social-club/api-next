@@ -17,7 +17,11 @@
     }
   ],
   "vars": {
-    "API_NEXT_ENV": "development"
+    "API_NEXT_ENV": "development",
+    "COMMUNITY_PURCHASE_FUNDING_CHAIN_ID": "8453"
+  },
+  "secrets": {
+    "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
   },
   "env": {
     "staging": {
@@ -42,9 +46,13 @@
         }
       ],
       "vars": {
-        "API_NEXT_ENV": "staging"
+        "API_NEXT_ENV": "staging",
+        "COMMUNITY_PURCHASE_FUNDING_CHAIN_ID": "8453"
         // Staging uses the local alert sink. If external delivery is enabled,
         // inject endpoint URLs and tokens from the staging secret environment.
+      },
+      "secrets": {
+        "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
       }
     },
     "production": {
@@ -70,7 +78,11 @@
         }
       ],
       "vars": {
-        "API_NEXT_ENV": "production"
+        "API_NEXT_ENV": "production",
+        "COMMUNITY_PURCHASE_FUNDING_CHAIN_ID": "8453"
+      },
+      "secrets": {
+        "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
       }
     }
   },

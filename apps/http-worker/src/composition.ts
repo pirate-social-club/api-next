@@ -41,6 +41,8 @@ import { makeVerificationHandlers } from "./verification-handlers.ts";
 
 export interface HttpWorkerBindings {
   readonly CONTROL_PLANE?: unknown;
+  readonly COMMUNITY_PURCHASE_FUNDING_CHAIN_ID?: string;
+  readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
   readonly API_NEXT_ENV?: string;
   readonly CORS_ORIGIN?: string;
   readonly PIRATE_API_PUBLIC_ORIGIN?: string;
@@ -78,6 +80,8 @@ type WorkerConfig = HttpWorkerConfigValue;
 
 function configSource(bindings: HttpWorkerBindings): Record<string, string | undefined> {
   return {
+    COMMUNITY_PURCHASE_FUNDING_CHAIN_ID: bindings.COMMUNITY_PURCHASE_FUNDING_CHAIN_ID,
+    COMMUNITY_PURCHASE_FUNDING_RPC_URL: bindings.COMMUNITY_PURCHASE_FUNDING_RPC_URL,
     API_NEXT_ENV: bindings.API_NEXT_ENV,
     CORS_ORIGIN: bindings.CORS_ORIGIN,
     PIRATE_API_PUBLIC_ORIGIN: bindings.PIRATE_API_PUBLIC_ORIGIN,

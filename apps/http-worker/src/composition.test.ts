@@ -20,6 +20,8 @@ async function bindings(): Promise<HttpWorkerBindings> {
   )) as CryptoKeyPair;
   return {
     CONTROL_PLANE: { connectionString: "postgres://test.invalid/api_next" },
+    COMMUNITY_PURCHASE_FUNDING_CHAIN_ID: "8453",
+    COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.example.invalid",
     API_NEXT_ENV: "development",
     CORS_ORIGIN: "https://solid.test",
     PIRATE_APP_JWT_PRIVATE_KEY: toPem(

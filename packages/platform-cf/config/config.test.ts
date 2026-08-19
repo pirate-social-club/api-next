@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { Config } from "effect";
-import { AppEnv, HttpWorkerConfig, loadConfig, loadConfigFrom, secret } from "./index.ts";
+import {
+  AppEnv,
+  HttpWorkerConfig,
+  loadConfig,
+  loadConfigFrom,
+  MoneyPathConfig,
+  secret,
+} from "./index.ts";
 
 describe("config system (000 §9)", () => {
   test("fail-at-startup: a missing required variable throws at load", () => {
@@ -35,6 +42,26 @@ describe("config system (000 §9)", () => {
     delete process.env.API_NEXT_TEST_SECRET;
   });
 
+  test("money-path RPC is required, URL-validated, and redacted", () => {
+    expect(() =>
+      loadConfigFrom(MoneyPathConfig, {
+        COMMUNITY_PURCHASE_FUNDING_CHAIN_ID: "8453",
+      }),
+    ).toThrow();
+    expect(() =>
+      loadConfigFrom(MoneyPathConfig, {
+        COMMUNITY_PURCHASE_FUNDING_CHAIN_ID: "8453",
+        COMMUNITY_PURCHASE_FUNDING_RPC_URL: "not a URL",
+      }),
+    ).toThrow();
+    const configured = loadConfigFrom(MoneyPathConfig, {
+      COMMUNITY_PURCHASE_FUNDING_CHAIN_ID: "8453",
+      COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://credential@rpc.example.invalid/path",
+    });
+    expect(configured.COMMUNITY_PURCHASE_FUNDING_CHAIN_ID).toBe(8453);
+    expect(String(configured.COMMUNITY_PURCHASE_FUNDING_RPC_URL)).toBe("<redacted>");
+  });
+
   test("HTTP composition fails before route construction when required config is absent", () => {
     expect(() =>
       loadConfigFrom(HttpWorkerConfig, {
@@ -48,6 +75,8 @@ describe("config system (000 §9)", () => {
     const configured = loadConfigFrom(HttpWorkerConfig, {
       API_NEXT_ENV: "development",
       CORS_ORIGIN: "https://pirate.app",
+      COMMUNITY_PURCHASE_FUNDING_CHAIN_ID: "8453",
+      COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.example.invalid",
       PIRATE_APP_JWT_PRIVATE_KEY: "private",
       PIRATE_APP_JWT_PUBLIC_KEY: "public",
       PIRATE_APP_JWT_ISSUER: "api-next-session-test",

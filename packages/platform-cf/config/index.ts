@@ -44,19 +44,23 @@ export function loadConfig<A>(config: Config.Config<A>): A {
   );
 }
 
-/**
- * The money-path configuration group (000 §9): chain ids, RPC URLs, USDC
- * addresses, treasury/floor thresholds. Deliberately empty until M3 —
- * each money flow declares its member here when it lands, which is the
- * in-code half of the money-path ratchet the invariant test enforces.
- */
-export const MoneyPathConfig = Config.all({});
-
 /** Secrets are redacted so they never surface in logs or error text. */
 export const secret = (name: string): Config.Config<RedactedType<string>> =>
   // Config.redacted does not read from the default env provider in this RC;
   // wrap explicitly until the pinned Effect bump fixes it.
   Config.string(name).pipe(Config.map((value: string) => Redacted.make(value)));
+
+const MoneyPathConfigFields = {
+  COMMUNITY_PURCHASE_FUNDING_CHAIN_ID: Config.int("COMMUNITY_PURCHASE_FUNDING_CHAIN_ID"),
+  // RPC URLs commonly contain provider credentials. Parse first, then redact
+  // the normalized URL; there is deliberately no public or local default.
+  COMMUNITY_PURCHASE_FUNDING_RPC_URL: Config.url("COMMUNITY_PURCHASE_FUNDING_RPC_URL").pipe(
+    Config.map((value: URL) => Redacted.make(value.href)),
+  ),
+} as const;
+
+/** Required money-path configuration, kept separate and enumerated (000 §9). */
+export const MoneyPathConfig = Config.all(MoneyPathConfigFields);
 
 /**
  * Configuration required before the HTTP application layer is constructed.
@@ -64,6 +68,7 @@ export const secret = (name: string): Config.Config<RedactedType<string>> =>
  * variable and is checked by the composition root alongside this group.
  */
 export const HttpWorkerConfig = Config.all({
+  ...MoneyPathConfigFields,
   API_NEXT_ENV: AppEnv,
   CORS_ORIGIN: Config.nonEmptyString("CORS_ORIGIN"),
   PIRATE_API_PUBLIC_ORIGIN: Config.string("PIRATE_API_PUBLIC_ORIGIN").pipe(Config.withDefault("")),
