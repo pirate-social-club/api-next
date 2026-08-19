@@ -189,3 +189,32 @@ on old service folder names.
 PoW remains outside this tranche. The schema supports atomic grant consumption
 with a content write, but burn safety is not a product guarantee until the
 protected-action use case performs both in one transaction.
+
+## Gates-v2 staging re-verification — 2026-08-19
+
+This section records the current gates-v2 staging state and supersedes older
+verified-state bullets above where they conflict.
+
+- The dedicated PlanetScale `api_next` schema is at
+  `0022_m3_community_purchase_immutability.sql` with 22 checksum-verified
+  migrations. M3 funding tables were empty before application traffic.
+- Runtime grant preflight passes: M3 append-only rows cannot be updated or
+  deleted, policy/operator tables are read-only, and purchase lifecycle writes
+  plus enforce decision inserts remain available.
+- `staging-gates-v2-age18` is an active gated staging-only fixture. The pinned
+  `curated-age-v1` policy is seeded and pointed by `community_policy_current`;
+  its policy hash is recorded in the control-plane task register. Decision
+  records were zero before any join attempt.
+- The first deployment was Self-disabled at version
+  `1a5d966e-4e4a-4f6a-a7f2-afff9fdd5061`. After health, preview, and
+  unauthenticated-boundary checks passed, Self was enabled only in staging at
+  version `b3a7be94-b56c-4996-891a-a4cd737694d1`. `SELF_PASS_MOCK_PASSPORT`
+  remains false.
+- Post-enable probes: `/health` returned 200, unauthenticated verification
+  start returned 401, and malformed `self.pass` callback input returned 400.
+- Infisical staging has no funding RPC. The Worker currently uses the explicit
+  fail-closed staging sentinel `https://rpc.invalid/`; replace it with an
+  authorized real staging RPC before money-flow verification or launch.
+
+Pending: one fresh physical-document Self ceremony, redacted accepted/replay/
+rejected/unbound-callback evidence, and real ZKPassport proof verification.

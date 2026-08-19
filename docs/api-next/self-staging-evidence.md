@@ -244,3 +244,33 @@ For historical reference, the original sequence was:
 PoW remains outside this tranche. The schema supports atomic grant consumption
 with a content write, but burn safety is not a product guarantee until the
 protected-action use case performs both in one transaction.
+
+## Gates-v2 staging re-verification — 2026-08-19
+
+The current staging target is the dedicated `api_next` schema in the authorized
+`pirate-staging` instance, reached only through the staging runtime/migrator
+credentials. The ledger contains all 22 repository migrations through
+`0022_m3_community_purchase_immutability.sql`, with checksum verification
+passing. The runtime grant preflight passes after narrowing M3 append-only,
+policy, operator, and snapshot permissions; no M3 funding rows existed before
+traffic.
+
+The staging-only fixture `staging-gates-v2-age18` is active and gated. The
+committed seed procedure installed `curated-age-v1` and its current-policy
+pointer. The pinned policy hash is
+`6c2c4bfa0b842cc8afea19d0df3f576fa5d1779162b235d922be6cb3f39f11a0`. The
+decision-record count was zero before any join attempt.
+
+The first HTTP deployment used Self-disabled configuration at version
+`1a5d966e-4e4a-4f6a-a7f2-afff9fdd5061`. After baseline checks, Self was enabled
+only in staging at version `b3a7be94-b56c-4996-891a-a4cd737694d1` on
+`api-next-staging.pirate.sc`. `/health` returned 200; the gated community
+preview returned 200; unauthenticated join eligibility and verification-session
+start returned 401; malformed `self.pass` callback input returned 400. No
+physical-document ceremony or real ZKPassport proof has been run in this
+tranche.
+
+The current staging Infisical set has no funding RPC. The Worker therefore has
+the explicit invalid HTTPS sentinel `https://rpc.invalid/`, which preserves a
+fail-closed money path without selecting an unknown provider. Replace it with
+an authorized real staging RPC before testing purchases or launching.
