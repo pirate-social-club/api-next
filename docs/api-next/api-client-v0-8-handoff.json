@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.8.0",
+  "releaseType": "funding-quote-producer-contract",
+  "wireContract": "wire-v2",
+  "sourceCommit": "393d950713b35b8d1e4e98b44b3423f4f867b393",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.8.0.tgz",
+    "sha256": "445de8775b83c1103d5131641ba0eff3372657670ae1711819465d3514a8bc33",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@69787a0760cbb0071e6fcb62356247eeff1904fc135625ffc9cff9e373e4f3e1",
+    "openapiSha256": "69787a0760cbb0071e6fcb62356247eeff1904fc135625ffc9cff9e373e4f3e1",
+    "clientSha256": "b7a4fa1324f18e0a6e71465d3608d640d6eef2546ab63d73ef91a2815d785373"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "393d950713b35b8d1e4e98b44b3423f4f867b393",
+      "reason": "The funding quote producer is a new additive operation; the private begin admission route remains uninstalled in production composition."
+    },
+    "focusedFundingQuoteTests": "17 passed, 54 assertions",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}
