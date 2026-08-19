@@ -778,7 +778,13 @@ suite("Postgres 17 community-purchase funding journal", () => {
       );
       expect(firstGeneration.kind).toBe("reserved");
       if (firstGeneration.kind !== "reserved") throw new Error("first claim was unavailable");
-      const [loser, unavailable] = await Promise.all([
+      await admin.query(
+        `UPDATE community_purchase_funding_reconciliation_attempts
+            SET next_attempt_at = clock_timestamp() - INTERVAL '1 second'
+          WHERE operation_id = $1`,
+        [begun.entry.state.operationId],
+      );
+      const [claimA, claimB] = await Promise.all([
         run(
           attempts.recordAttemptStart({
             operationId: begun.entry.state.operationId,
@@ -792,12 +798,15 @@ suite("Postgres 17 community-purchase funding journal", () => {
           }),
         ),
       ]);
-      expect([loser.kind, unavailable.kind]).toEqual(["unavailable", "unavailable"]);
+      expect([claimA.kind, claimB.kind].sort()).toEqual(["reserved", "unavailable"]);
+      const winner = claimA.kind === "reserved" ? claimA : claimB;
+      if (winner.kind !== "reserved") throw new Error("concurrent claim winner was unavailable");
+      expect(winner.state.generation).toBe(firstGeneration.state.generation + 1);
 
       const stale = await run(
         attempts.recordAttemptSuccess({
           operationId: begun.entry.state.operationId,
-          generation: firstGeneration.state.generation - 1,
+          generation: firstGeneration.state.generation,
         }),
       );
       expect(stale).toEqual({ kind: "stale" });
@@ -807,7 +816,7 @@ suite("Postgres 17 community-purchase funding journal", () => {
           WHERE operation_id = $1`,
         [begun.entry.state.operationId],
       );
-      expect(row.rows[0]?.generation).toBe(String(firstGeneration.state.generation));
+      expect(row.rows[0]?.generation).toBe(String(winner.state.generation));
       expect(row.rows[0]?.consecutive_failures).toBe(0);
       expect(row.rows[0]?.next_attempt_at).not.toBeNull();
     });
