@@ -1285,8 +1285,8 @@ suite("Postgres 17 community-purchase funding journal", () => {
       );
       await admin.query(
         `UPDATE community_purchase_funding_journal
-            SET state = 'confirmed',
-                snapshot = jsonb_set(snapshot, '{state}', '"confirmed"'),
+            SET state = 'confirmed', version = 3,
+                snapshot = jsonb_set(jsonb_set(snapshot, '{state}', '"confirmed"'), '{version}', '3'),
                 updated_at = clock_timestamp()
           WHERE operation_id = $1`,
         [terminal.begun.entry.state.operationId],
