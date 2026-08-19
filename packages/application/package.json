@@ -28,6 +28,7 @@
     "./use-cases/public-profile": "./src/use-cases/public-profile.ts",
     "./use-cases/session-authentication": "./src/use-cases/session-authentication.ts",
     "./use-cases/session-exchange": "./src/use-cases/session-exchange.ts",
+    "./use-cases/identity-registration-handler": "./src/use-cases/identity-registration-handler.ts",
     "./use-cases/verification-callback": "./src/use-cases/verification-callback.ts",
     "./use-cases/verification-completion": "./src/use-cases/verification-completion.ts",
     "./use-cases/verification-start": "./src/use-cases/verification-start.ts"

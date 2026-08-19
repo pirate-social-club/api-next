@@ -5,6 +5,10 @@ import {
   type SessionExchangeServices,
 } from "@pirate/application/use-cases/session-exchange";
 import {
+  makeIdentityRegistrationHandler,
+  type IdentityRegistrationHandlerServices,
+} from "@pirate/application/use-cases/identity-registration-handler";
+import {
   AuthError,
   BadRequest,
   type EndpointDefinition,
@@ -36,6 +40,8 @@ export interface DecodedRequest {
   readonly params: unknown;
   readonly query: unknown;
   readonly principal: Principal | null;
+  /** Trusted Cloudflare edge address, present only when CF-Connecting-IP exists. */
+  readonly edgeClientIp?: string;
 }
 
 const endpointResultTag = Symbol("endpoint-result");
@@ -90,6 +96,8 @@ export interface HttpWorkerOptions {
   readonly handlers?: Readonly<Record<string, EndpointHandler>>;
   /** Application use cases are installed by generated route name. */
   readonly sessionExchange?: SessionExchangeServices;
+  /** Registration is installed only with both mandatory global limiters. */
+  readonly identityRegistration?: IdentityRegistrationHandlerServices;
   /** Profile projection is installed by the generated GetMyProfile binding. */
   readonly profile?: EndpointHandler;
   /** Karaoke routes are installed only when their storage/use-case port is provided. */
@@ -502,6 +510,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         options.handlers?.[binding.name] ??
         karaokeHandlers?.[binding.name] ??
         (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
+        (binding.name === "RegisterIdentity" && options.identityRegistration !== undefined
+          ? makeIdentityRegistrationHandler(options.identityRegistration)
+          : undefined) ??
         (binding.name === "SessionLogout" ? () => ({ status: "ok" }) : undefined) ??
         (binding.name === "GetMyProfile" ? options.profile : undefined);
       if (handler === undefined) {
@@ -582,14 +593,20 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
 
         // Authentication deliberately precedes every request-schema decode.
         const input = await decodeInput(binding.endpoint, context, principal);
+        const requestWithEdgeIp = {
+          ...input,
+          ...(context.req.header("CF-Connecting-IP") === undefined
+            ? {}
+            : { edgeClientIp: context.req.header("CF-Connecting-IP") }),
+        };
         if (
           !isPublic(binding.endpoint) &&
           (!isOptionalUser(binding.endpoint) || principal !== null)
         ) {
-          await options.authorize?.({ endpoint: binding.endpoint, input });
+          await options.authorize?.({ endpoint: binding.endpoint, input: requestWithEdgeIp });
         }
 
-        const result = await handler(input);
+        const result = await handler(requestWithEdgeIp);
         const sessionResult =
           binding.name === "SessionExchange" && isSessionExchangeResult(result)
             ? result

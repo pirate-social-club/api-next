@@ -5,3 +5,4 @@ export * from "./money/community-purchase-funding-plan.ts";
 export * from "./money/community-purchase-funding-query.ts";
 export * from "./ports.ts";
 export * from "./use-cases/identity-registration.ts";
+export * from "./use-cases/identity-registration-handler.ts";

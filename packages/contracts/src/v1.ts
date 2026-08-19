@@ -799,6 +799,17 @@ export const SessionExchange = endpoint({
   errors: [AuthError, BadRequest, InternalError, RateLimited],
 });
 
+/** Public account-provisioning proof boundary; no identity metadata is accepted. */
+export const RegisterIdentity = endpoint({
+  method: "POST",
+  path: "/auth/register",
+  auth: Auth.public(),
+  request: { body: Schema.Struct({ privy_access_token: Schema.String }) },
+  response: SessionExchangeResponse,
+  successStatus: 201,
+  errors: [AuthError, BadRequest, RateLimited, Conflict, InternalError],
+});
+
 /** Same-origin browser logout; the transport clears the exact cookie tuple. */
 export const SessionLogout = endpoint({
   method: "POST",
