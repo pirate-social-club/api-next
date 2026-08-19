@@ -1,7 +1,7 @@
 # Community-purchase plan-producer decision record
 
 Status: **fully ratified for Option A; coordinator-owned producer implementation
-gate open; staging and production admission remain separately unauthorized**
+checkpointed; staging and production admission remain separately unauthorized**
 (2026-08-19).
 
 Authority: [M3 completion charter](../../../docs/specs/api-next/005-m3-completion-charter.md),
@@ -17,8 +17,8 @@ terms from target-owned policy, and persist one immutable plan before `begin`
 is exposed. Browser input may identify the purchase intent, but it may not
 author or override the quote.
 
-The owner selection is recorded below. It does not authorize plan-producer code,
-legacy-quote import, staging seed, migration, deployment, or admission exposure.
+The owner selection is recorded below. It does not authorize legacy-quote import,
+staging seed, migration application, deployment, or admission exposure.
 
 ## Ratified owner selection — 2026-08-19
 
@@ -30,9 +30,9 @@ versioned policy snapshots. The slice writes the existing
 
 This selection stays inside the two-system clean-break boundary and does not
 amend the M3 charter. The field-level source/table contract and five product
-parameters below are ratified as well. The producer implementation gate is
-open; migration, staging seed, deployment, and production admission remain
-separately unauthorized.
+parameters below are ratified as well. The producer implementation is
+checkpointed locally in api-next `b221452`; migration application, staging
+seed, deployment, and production admission remain separately unauthorized.
 
 ## Non-negotiable boundary
 
@@ -94,13 +94,16 @@ cannot authorize or reconstruct.
 
 ## Target-owned source/table proposal (Option A answer set)
 
-This is a proposed PostgreSQL design, not an applied schema. The authoritative
-runtime store is `api-next/db/postgres`; the similarly named
+This is the ratified PostgreSQL design and its local implementation; it is not
+an applied staging or production schema. The authoritative runtime store is
+`api-next/db/postgres`; the similarly named
 `db/community-shard` commerce migrations are compatibility fixtures from the
 old template and are not a source of runtime authority. Existing target tables
 that remain in scope are `communities`, `community_memberships`, `users`, and
-`community_purchase_funding_plans`. The commerce tables below require a new
-forward-only migration after schema review; no migration number is assumed.
+`community_purchase_funding_plans`. The local implementation is migration
+`0021_m3_community_purchase_commerce.sql`, with an atomic checksum entry; it
+remains unapplied outside local test schemas pending separate staging
+authorization and preflight.
 
 ### Shared revision and quote identities
 
