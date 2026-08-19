@@ -31,7 +31,7 @@ versioned policy snapshots. The slice writes the existing
 This selection stays inside the two-system clean-break boundary and does not
 amend the M3 charter. The field-level source/table contract and five product
 parameters below are ratified as well. The producer implementation is
-checkpointed locally in api-next `b221452`; migration application, staging
+checkpointed locally in api-next `a02c74a`; migration application, staging
 seed, deployment, and production admission remain separately unauthorized.
 
 ## Non-negotiable boundary
