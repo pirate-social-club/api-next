@@ -219,7 +219,51 @@ suite("Gates v2 curated age community vertical", () => {
     completedTestCount += 1;
   }, 30_000);
 
-  test("loads evidence, persists an array witness, and joins atomically", async () => {
+  test("rejects a current policy pointer that does not match the pinned policy", async () => {
+    await withSchema(async (connection, admin) => {
+      await prepareCommunity(connection, "community-policy-mismatch");
+      await admin.query({
+        text: `INSERT INTO policy_versions (
+                 policy_version_id, community_id, policy_key, revision, policy_hash,
+                 policy, compiled_plan, compiler_version, uniqueness_model,
+                 created_by_user_id, published_at, policy_purpose
+               ) VALUES (
+                 'curated-age-v2', $1, 'curated-age', 2, repeat('d', 64),
+                 '{"policy_version_id":"curated-age-v2"}'::jsonb,
+                 '{"kind":"curated_age"}'::jsonb, 'gates-v2-curated-age-v1',
+                 '{"kind":"none"}'::jsonb, NULL, clock_timestamp(), 'access'
+               )`,
+        values: ["community-policy-mismatch"],
+      });
+      await admin.query({
+        text: `UPDATE community_policy_current
+                  SET policy_version_id = 'curated-age-v2'
+                WHERE community_id = $1 AND policy_key = 'curated-age'`,
+        values: ["community-policy-mismatch"],
+      });
+
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "community-policy-mismatch",
+            actor: { userId: "user-a", kind: "user" },
+            body: {},
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "CommunityRepositoryError", reason: "invalid-row" });
+
+      const state = await admin.query({
+        text: `SELECT
+                 (SELECT COUNT(*)::int FROM decision_records WHERE community_id = $1) AS decisions,
+                 (SELECT COUNT(*)::int FROM community_memberships WHERE community_id = $1) AS memberships`,
+        values: ["community-policy-mismatch"],
+      });
+      expect(state.rows[0]).toEqual({ decisions: 0, memberships: 0 });
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test("loads evidence, persists an array witness, joins atomically, and replays by membership predicate", async () => {
     await withSchema(async (connection, admin) => {
       await prepareCommunity(connection, "community-pass");
       await insertCompletedEvidence(admin, { age: "18" });
@@ -251,7 +295,8 @@ suite("Gates v2 curated age community vertical", () => {
       const rows = await admin.query({
         text: `SELECT policy_version_id, policy_hash, evaluation_mode, outcome,
                       jsonb_typeof(winning_witness) AS witness_type,
-                      jsonb_array_length(winning_witness) AS witness_count
+                      jsonb_array_length(winning_witness) AS witness_count,
+                      winning_witness
                  FROM decision_records
                 WHERE community_id = $1 AND user_id = $2`,
         values: ["community-pass", "user-a"],
@@ -264,6 +309,14 @@ suite("Gates v2 curated age community vertical", () => {
           outcome: "pass",
           witness_type: "array",
           witness_count: 1,
+          winning_witness: [
+            {
+              assertion_ids: ["assertion-age", "assertion-document", "assertion-unique"],
+              evidence_receipt_ids: ["receipt-age"],
+              subject_key_id: "subject-age",
+              binding_group_id: "binding-age",
+            },
+          ],
         }),
       ]);
 
@@ -290,7 +343,7 @@ suite("Gates v2 curated age community vertical", () => {
     completedTestCount += 1;
   }, 30_000);
 
-  test("keeps underage evidence terminal for the request", async () => {
+  test("keeps underage evidence terminal and never creates membership without enforce/pass", async () => {
     await withSchema(async (connection, admin) => {
       await prepareCommunity(connection, "community-underage");
       await insertCompletedEvidence(admin, { age: "17" });
@@ -315,6 +368,52 @@ suite("Gates v2 curated age community vertical", () => {
         values: ["community-underage"],
       });
       expect(membership.rows[0]?.count).toBe(0);
+      const invariant = await admin.query({
+        text: `SELECT COUNT(*)::int AS count
+                 FROM community_memberships AS membership
+                 LEFT JOIN decision_records AS decision
+                   ON decision.community_id = membership.community_id
+                  AND decision.user_id = membership.user_id
+                  AND decision.evaluation_mode = 'enforce'
+                  AND decision.outcome = 'pass'
+                WHERE membership.community_id = $1
+                  AND decision.decision_record_id IS NULL`,
+        values: ["community-underage"],
+      });
+      expect(invariant.rows[0]?.count).toBe(0);
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test("rolls back membership when decision persistence fails", async () => {
+    await withSchema(async (connection, admin) => {
+      await prepareCommunity(connection, "community-decision-rollback");
+      await insertCompletedEvidence(admin, { age: "18" });
+      await admin.query(`CREATE FUNCTION reject_gates_decision_insert()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$ BEGIN RAISE EXCEPTION 'test decision insert failure'; END; $$`);
+      await admin.query(`CREATE TRIGGER reject_gates_decision_insert
+        BEFORE INSERT ON decision_records
+        FOR EACH ROW EXECUTE FUNCTION reject_gates_decision_insert()`);
+
+      await expect(
+        runStore(connection, (store) =>
+          store.join({
+            communityId: "community-decision-rollback",
+            actor: { userId: "user-a", kind: "user" },
+            body: {},
+          }),
+        ),
+      ).rejects.toBeDefined();
+
+      const state = await admin.query({
+        text: `SELECT
+                 (SELECT COUNT(*)::int FROM decision_records WHERE community_id = $1) AS decisions,
+                 (SELECT COUNT(*)::int FROM community_memberships WHERE community_id = $1) AS memberships`,
+        values: ["community-decision-rollback"],
+      });
+      expect(state.rows[0]).toEqual({ decisions: 0, memberships: 0 });
     });
     completedTestCount += 1;
   }, 30_000);
