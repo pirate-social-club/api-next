@@ -61,8 +61,16 @@ export type IdentityRegistrationInput = {
 };
 
 export type IdentityRegistrationOutcome =
-  | { readonly kind: "created"; readonly canonicalUserId: string }
-  | { readonly kind: "already_registered"; readonly canonicalUserId: string }
+  | {
+      readonly kind: "created";
+      readonly canonicalUserId: string;
+      readonly account: IdentityAccountDocument;
+    }
+  | {
+      readonly kind: "already_registered";
+      readonly canonicalUserId: string;
+      readonly account: IdentityAccountDocument;
+    }
   | { readonly kind: "tombstoned" }
   | {
       readonly kind: "candidate_collision";
@@ -90,6 +98,7 @@ type CredentialRow = {
   readonly canonical_user_id: unknown;
   readonly status: unknown;
   readonly user_status: unknown;
+  readonly account: unknown;
 };
 
 class IdentityRegistrationRace extends Data.TaggedError("IdentityRegistrationRace")<{
@@ -114,7 +123,20 @@ const credentialOutcome = (
   if (row.status !== "active" || row.user_status !== "active" || !validId(row.canonical_user_id)) {
     return Effect.fail(invalid());
   }
-  return Effect.succeed({ kind: "already_registered", canonicalUserId: row.canonical_user_id });
+  return Effect.try({
+    try: () => Schema.decodeUnknownSync(IdentityAccountDocument)(row.account),
+    catch: () => invalid(),
+  }).pipe(
+    Effect.flatMap((account) =>
+      account.user.user_id !== row.canonical_user_id
+        ? Effect.fail(invalid())
+        : Effect.succeed({
+            kind: "already_registered" as const,
+            canonicalUserId: row.canonical_user_id,
+            account,
+          }),
+    ),
+  );
 };
 
 const persistedPirateLabel = (
@@ -329,7 +351,7 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
       db.execute<CredentialRow>({
         label: "identity.credentials.read",
         text: `SELECT credential.canonical_user_id, credential.status,
-                        account.status AS user_status
+                        account.status AS user_status, account.account
                  FROM identity_credentials AS credential
                  LEFT JOIN users AS account
                    ON account.user_id = credential.canonical_user_id
@@ -348,7 +370,7 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
         const existing = yield* transaction.execute<CredentialRow>({
           label: "identity.registration.lock-credential",
           text: `SELECT credential.canonical_user_id, credential.status,
-                          account.status AS user_status
+                          account.status AS user_status, account.account
                    FROM identity_credentials AS credential
                    LEFT JOIN users AS account
                      ON account.user_id = credential.canonical_user_id
@@ -412,7 +434,11 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
         if (insertedCredential.rowCount !== 1) {
           return yield* Effect.fail(new IdentityRegistrationRace({ reason: "provider_subject" }));
         }
-        return { kind: "created", canonicalUserId: input.userId } as const;
+        return {
+          kind: "created",
+          canonicalUserId: input.userId,
+          account: document,
+        } as const;
       }),
     );
     const attempted = yield* registrationAttempt.pipe(Effect.result);

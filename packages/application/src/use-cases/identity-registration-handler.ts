@@ -7,6 +7,7 @@ import {
   RegisterIdentity,
 } from "@pirate/contracts";
 import { Data, Effect, Schema } from "effect";
+import { projectIdentityAccount } from "./identity-account.ts";
 import {
   IdentityCredentialTombstoned,
   IdentityRegistrationExhausted,
@@ -43,11 +44,6 @@ export interface IdentityRegistrationHandlerServices {
   readonly providerAppId: string;
   readonly proofVerifier: SessionProofVerifier;
   readonly registration: IdentityRegistrationServices;
-  readonly identityStore: {
-    readonly resolve: (input: {
-      readonly sourceUserId: string;
-    }) => Effect.Effect<SessionAccount | null, unknown>;
-  };
   readonly tokenMinter: SessionTokenMinter;
   readonly rateLimiter: IdentityRegistrationRateLimiter;
 }
@@ -176,12 +172,16 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
     { providerAppId: services.providerAppId, providerSubject: verified.sourceUserId },
     services.registration,
   ).pipe(Effect.mapError(safeFailure));
-  const account = yield* services.identityStore
-    .resolve({ sourceUserId: verified.sourceUserId })
-    .pipe(Effect.mapError(() => new InternalError({ message: "Registration failed" })));
-  if (account === null || account.canonicalUserId !== registration.canonicalUserId) {
-    return yield* new InternalError({ message: "Registration failed" });
-  }
+  const account = yield* Effect.try({
+    try: () => ({
+      canonicalUserId: registration.canonicalUserId,
+      ...projectIdentityAccount({
+        userId: registration.canonicalUserId,
+        account: registration.account,
+      }),
+    }),
+    catch: () => new InternalError({ message: "Registration failed" }),
+  });
 
   const ttlSeconds = services.tokenMinter.ttlSeconds ?? 3_600;
   if (!validSessionTtl(ttlSeconds) || !validScope(services.tokenMinter.scope)) {

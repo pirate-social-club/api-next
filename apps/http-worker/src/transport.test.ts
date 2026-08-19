@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { makeUnverifiedIdentityAccount } from "@pirate/application/use-cases/identity-registration";
 import type { IdentityRegistrationHandlerServices } from "@pirate/application/use-cases/identity-registration-handler";
 import type { SessionExchangeServices } from "@pirate/application/use-cases/session-exchange";
 import {
@@ -145,10 +146,19 @@ const registrationServices: IdentityRegistrationHandlerServices = {
     },
     store: {
       registerCredential: () =>
-        Effect.succeed({ kind: "created", canonicalUserId: "canonical-user" }),
+        Effect.succeed({
+          kind: "created",
+          canonicalUserId: "canonical-user",
+          account: makeUnverifiedIdentityAccount({
+            credentialId: "credential-registration",
+            userId: "canonical-user",
+            handleId: "handle-registration",
+            handleLabel: "generated-registration.pirate",
+            createdAt: "2026-08-19T00:00:00.000Z",
+          }),
+        }),
     },
   },
-  identityStore: sessionServices.identityStore,
   tokenMinter: sessionServices.tokenMinter,
   rateLimiter: {
     checkIp: () => Effect.succeed(undefined),

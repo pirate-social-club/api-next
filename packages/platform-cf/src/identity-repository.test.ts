@@ -157,7 +157,11 @@ describe("identity credential registration", () => {
         .registerCredential(input)
         .pipe(Effect.provideService(ControlPlaneDb, fake.db)),
     );
-    expect(result).toEqual({ kind: "created", canonicalUserId: "user-new" });
+    expect(result).toEqual({
+      kind: "created",
+      canonicalUserId: "user-new",
+      account: input.account,
+    });
     expect(fake.labels).toEqual([
       "identity.registration.lock-credential",
       "identity.registration.insert-user",
@@ -178,6 +182,31 @@ describe("identity credential registration", () => {
         .pipe(Effect.provideService(ControlPlaneDb, fake.db)),
     );
     expect(result).toEqual({ kind: "tombstoned" });
+    expect(fake.labels).toEqual(["identity.registration.lock-credential"]);
+  });
+
+  test("returns the persisted account for an active existing credential", async () => {
+    const fake = registrationDb(() => ({
+      rows: [
+        {
+          canonical_user_id: "user-new",
+          status: "active",
+          user_status: "active",
+          account: input.account,
+        },
+      ],
+      rowCount: 1,
+    }));
+    const result = await Effect.runPromise(
+      makeControlPlaneIdentityRepository()
+        .registerCredential(input)
+        .pipe(Effect.provideService(ControlPlaneDb, fake.db)),
+    );
+    expect(result).toEqual({
+      kind: "already_registered",
+      canonicalUserId: "user-new",
+      account: input.account,
+    });
     expect(fake.labels).toEqual(["identity.registration.lock-credential"]);
   });
 

@@ -12,8 +12,16 @@ export type IdentityRegistrationCandidate = {
 };
 
 export type IdentityRegistrationStoreOutcome =
-  | { readonly kind: "created"; readonly canonicalUserId: string }
-  | { readonly kind: "already_registered"; readonly canonicalUserId: string }
+  | {
+      readonly kind: "created";
+      readonly canonicalUserId: string;
+      readonly account: IdentityAccountDocument;
+    }
+  | {
+      readonly kind: "already_registered";
+      readonly canonicalUserId: string;
+      readonly account: IdentityAccountDocument;
+    }
   | { readonly kind: "tombstoned" }
   | {
       readonly kind: "candidate_collision";
@@ -148,7 +156,12 @@ export const registerIdentity = Effect.fn("registerIdentity")(function* (
   input: { readonly providerAppId: string; readonly providerSubject: string },
   services: IdentityRegistrationServices,
 ): Effect.fn.Return<
-  { readonly status: "created" | "already_registered"; readonly canonicalUserId: string },
+  {
+    readonly status: "created" | "already_registered";
+    readonly canonicalUserId: string;
+    /** The account document returned by the same transactional registration seam. */
+    readonly account: IdentityAccountDocument;
+  },
   IdentityRegistrationFailed | IdentityRegistrationExhausted | IdentityCredentialTombstoned
 > {
   if (!validIdentifier(input.providerAppId) || !validIdentifier(input.providerSubject)) {
@@ -174,7 +187,11 @@ export const registerIdentity = Effect.fn("registerIdentity")(function* (
       .pipe(Effect.mapError((error) => new IdentityRegistrationFailed({ reason: error.reason })));
 
     if (outcome.kind === "created" || outcome.kind === "already_registered") {
-      return { status: outcome.kind, canonicalUserId: outcome.canonicalUserId };
+      return {
+        status: outcome.kind,
+        canonicalUserId: outcome.canonicalUserId,
+        account: outcome.account,
+      };
     }
     if (outcome.kind === "tombstoned") return yield* new IdentityCredentialTombstoned();
   }

@@ -8,6 +8,7 @@ import {
 import { RateLimited, toErrorBody } from "@pirate/contracts";
 import { Cause, Effect, Exit, Result } from "effect";
 import { describe, expect, it } from "vitest";
+import { makeUnverifiedIdentityAccount } from "../../packages/application/src/use-cases/identity-registration.ts";
 import { makeDurableObjectIdentityRegistrationRateLimiter } from "../../packages/platform-cf/src/registration-rate-limiter.ts";
 import type {
   RegistrationApplicationRateLimiterDO,
@@ -100,11 +101,15 @@ describe("registration Durable Object limiters", () => {
             Effect.succeed({
               kind: "created" as const,
               canonicalUserId: `user-${applicationName}`,
+              account: makeUnverifiedIdentityAccount({
+                credentialId: `credential-${applicationName}`,
+                userId: `user-${applicationName}`,
+                handleId: `handle-${applicationName}`,
+                handleLabel: "workerd-registration.pirate",
+                createdAt: new Date().toISOString(),
+              }),
             }),
         },
-      },
-      identityStore: {
-        resolve: () => Effect.succeed({ canonicalUserId: `user-${applicationName}` } as never),
       },
       tokenMinter: {
         scope: "api-next-browser-session",

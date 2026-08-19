@@ -35,7 +35,11 @@ describe("identity registration use case", () => {
       store: {
         registerCredential: (input) => {
           seenAccounts.push(input.account);
-          return Effect.succeed({ kind: "created", canonicalUserId: input.userId });
+          return Effect.succeed({
+            kind: "created",
+            canonicalUserId: input.userId,
+            account: input.account,
+          });
         },
       },
     };
@@ -45,7 +49,11 @@ describe("identity registration use case", () => {
         services,
       ),
     );
-    expect(result).toEqual({ status: "created", canonicalUserId: "user-one" });
+    expect(result).toEqual({
+      status: "created",
+      canonicalUserId: "user-one",
+      account: makeUnverifiedIdentityAccount(candidate("one")),
+    });
     expect(seenAccounts).toEqual([makeUnverifiedIdentityAccount(candidate("one"))]);
     expect(seenAccounts[0]).toMatchObject({
       user: {
@@ -115,7 +123,11 @@ describe("identity registration use case", () => {
           store: {
             registerCredential: () => {
               invalidStoreCalls += 1;
-              return Effect.succeed({ kind: "created", canonicalUserId: "impossible" });
+              return Effect.succeed({
+                kind: "created",
+                canonicalUserId: "impossible",
+                account: makeUnverifiedIdentityAccount(candidate("invalid")),
+              });
             },
           },
         },

@@ -4,6 +4,7 @@ import { Cause, Effect, Exit, Result } from "effect";
 import {
   type IdentityRegistrationCandidate,
   IdentityRegistrationStoreFailure,
+  makeUnverifiedIdentityAccount,
 } from "./identity-registration.ts";
 import {
   type IdentityRegistrationHandlerServices,
@@ -11,7 +12,6 @@ import {
   RegistrationLimiterUnavailable,
   registerIdentityRequest,
 } from "./identity-registration-handler.ts";
-import type { SessionAccount } from "./session-exchange.ts";
 
 const candidate: IdentityRegistrationCandidate = {
   credentialId: "credential-1",
@@ -21,13 +21,7 @@ const candidate: IdentityRegistrationCandidate = {
   createdAt: "2026-08-19T00:00:00.000Z",
 };
 
-const account = {
-  canonicalUserId: "user-1",
-  user: {},
-  profile: {},
-  onboarding: {},
-  wallet_attachments: [],
-} as unknown as SessionAccount;
+const registrationAccount = makeUnverifiedIdentityAccount(candidate);
 
 const failureOf = <A, E>(exit: Exit.Exit<A, E>): E => {
   if (!Exit.isFailure(exit)) throw new Error("expected failure");
@@ -48,10 +42,14 @@ function services(
     registration: {
       candidates: { next: () => Effect.succeed(candidate) },
       store: {
-        registerCredential: () => Effect.succeed({ kind: "created", canonicalUserId: "user-1" }),
+        registerCredential: () =>
+          Effect.succeed({
+            kind: "created",
+            canonicalUserId: "user-1",
+            account: registrationAccount,
+          }),
       },
     },
-    identityStore: { resolve: () => Effect.succeed(account) },
     tokenMinter: {
       scope: "api-next-browser-session",
       ttlSeconds: 3_600,
@@ -85,7 +83,11 @@ describe("identity registration HTTP use case", () => {
             candidates: { next: () => Effect.succeed(candidate) },
             store: {
               registerCredential: () =>
-                Effect.succeed({ kind: "already_registered", canonicalUserId: "user-1" }),
+                Effect.succeed({
+                  kind: "already_registered",
+                  canonicalUserId: "user-1",
+                  account: registrationAccount,
+                }),
             },
           },
         }),
@@ -139,7 +141,11 @@ describe("identity registration HTTP use case", () => {
             store: {
               registerCredential: () => {
                 registrationCalls += 1;
-                return Effect.succeed({ kind: "created", canonicalUserId: "user-1" });
+                return Effect.succeed({
+                  kind: "created",
+                  canonicalUserId: "user-1",
+                  account: registrationAccount,
+                });
               },
             },
           },
