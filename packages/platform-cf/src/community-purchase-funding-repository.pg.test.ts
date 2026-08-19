@@ -1446,7 +1446,7 @@ suite("Postgres 17 community-purchase funding journal", () => {
   });
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 24) {
+    if (connectionString !== undefined && completedTestCount === 23) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });
