@@ -19,6 +19,7 @@ import {
 import { Effect } from "effect";
 import { createHttpWorker, type Principal } from "../../apps/http-worker/src/transport.ts";
 
+export { SelfCallbackCaptureDO } from "../../apps/http-worker/src/self-callback-capture-do.ts";
 export {
   RegistrationApplicationRateLimiterDO,
   RegistrationIpRateLimiterDO,

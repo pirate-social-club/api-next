@@ -35,6 +35,39 @@ explicitly authorized mechanisms:
    disabled before the next deployment. This requires its own code review,
    secret/access-control decision, and deployment authorization.
 
+## Authorized capture implementation
+
+The selected mechanism is the reviewed staging capture seam. It is a single
+Durable Object instance named `physical-ceremony-callback`, enabled only by the
+staging Worker configuration. The body is bounded to 1 MiB, callback headers
+are bounded to 32 KiB, and the first capture is immutable until an operator
+clears it. The DO stores the raw UTF-8 bytes internally so replay can preserve
+the exact callback payload; it never returns those bytes from the operator
+status endpoint.
+
+The control routes are absent in production and return the same redacted 404
+for missing or incorrect credentials in staging:
+
+```text
+GET  /internal/self-callback-capture/status
+POST /internal/self-callback-capture/replay
+POST /internal/self-callback-capture/clear
+```
+
+Each request requires `Authorization: Bearer <staging capture token>`. The
+token is stored only as the Infisical staging secret
+`SELF_CALLBACK_CAPTURE_ACCESS_TOKEN`; never paste it into a shell transcript,
+chat, browser console, or evidence file. `status` returns only state, provider
+id, digest, byte length, capture time, and replayed state. `replay` runs the
+captured callback server-side and returns only the normal callback
+acknowledgment. It does not return the raw body. `clear` is used after the
+ceremony and after evidence review.
+
+Before the physical session, verify the protected status endpoint reports
+`state=empty`; do not send a synthetic callback to the deployed endpoint,
+because that would consume the one-shot capture. The DO unit test is the dry
+run for bounded capture, metadata-only status, one-shot replay, and clearing.
+
 If neither mechanism is available, run the physical ceremony for the other
 evidence (accepted result, session binding, receipt, assertion, provenance,
 scope, and `credential.subject_unique`) but record byte-identical callback
@@ -62,14 +95,15 @@ ceremony must be rerun with a fresh session.
 
 1. Verify staging-only configuration (`SELF_PASS_ENABLED=true`,
    `SELF_PASS_MOCK_PASSPORT=false`) and a clean, pinned deployment.
-2. Prepare the chosen capture/retry mechanism and perform a dry run using a
-   non-sensitive test callback. Confirm that it emits digest/length only.
+2. Deploy the selected capture mechanism and verify the protected status
+   endpoint reports empty. The dry run is the repository workerd test; do not
+   consume the staging slot with a synthetic callback.
 3. Start one fresh physical-document session. Do not reuse a session from a
    different deployment or configuration.
 4. Complete the ceremony and record the redacted accepted evidence.
-5. Exercise the exact callback replay through the chosen mechanism. Confirm
-   the same raw-body digest/length and the idempotent response; record no raw
-   body.
+5. Read the captured digest/length metadata, then invoke the protected replay
+   control. Confirm the same digest/length and the idempotent response; record
+   no raw body.
 6. Run the rejected-bound-proof and unbound-garbage cases with fresh sessions
    as separate tests. Verify the durable attempt/lease invariants.
 7. Disable/remove any capture instrumentation, remove temporary evidence, and

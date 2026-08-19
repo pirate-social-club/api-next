@@ -24,6 +24,7 @@ import {
   VerificationStartNewIntentRequired,
 } from "@pirate/contracts";
 import { Effect } from "effect";
+import type { SelfCallbackCaptureService } from "./self-callback-capture.ts";
 import {
   type DecodedRequest,
   type EndpointHandler,
@@ -35,6 +36,8 @@ export interface VerificationHandlerServices {
   readonly start: StartVerificationServices;
   readonly completion: VerificationCompletionServices;
   readonly callback?: VerificationCallbackServices;
+  /** Optional staging-only one-shot callback capture; never enabled in production. */
+  readonly callback_capture?: SelfCallbackCaptureService;
   /** Deployment-specific credential headers stripped in addition to platform defaults. */
   readonly callback_credential_headers?: readonly string[];
 }
@@ -189,22 +192,66 @@ function completeHandler(request: DecodedRequest, services: VerificationHandlerS
   );
 }
 
-function callbackHandler(request: DecodedRequest, services: VerificationHandlerServices) {
+async function callbackHandler(
+  request: DecodedRequest,
+  services: VerificationHandlerServices,
+  skipCapture = false,
+) {
   const path = request.params as Readonly<{ providerId: string }>;
   const callback = services.callback ?? services.completion;
+  const headers = stripVerificationCallbackCredentialHeaders(
+    request.headers as Readonly<Record<string, string>>,
+    services.callback_credential_headers,
+  );
+  if (!skipCapture && services.callback_capture !== undefined) {
+    try {
+      await services.callback_capture.capture(path.providerId, request.body as string, headers);
+    } catch {
+      throw new InternalError({ message: "Verification operation failed" });
+    }
+  }
   return Effect.runPromise(
     handleVerificationCallback(
       {
         provider_id: path.providerId,
         raw_body: request.body,
-        headers: stripVerificationCallbackCredentialHeaders(
-          request.headers as Readonly<Record<string, string>>,
-          services.callback_credential_headers,
-        ),
+        headers,
       },
       callback,
     ).pipe(Effect.map(callbackResponse), Effect.mapError(wireFailure)),
   );
+}
+
+export type VerificationCallbackCaptureRoutes = Readonly<{
+  readonly status: EndpointHandler;
+  readonly replay: EndpointHandler;
+  readonly clear: EndpointHandler;
+}>;
+
+/** Internal staging controls; the transport adds the bearer gate. */
+export function makeVerificationCallbackCaptureRoutes(
+  services: VerificationHandlerServices,
+  capture: SelfCallbackCaptureService,
+): VerificationCallbackCaptureRoutes {
+  const callbackServices = services;
+  return {
+    status: () => capture.status(),
+    clear: () => capture.clear(),
+    replay: async () => {
+      const replay = await capture.replay();
+      return callbackHandler(
+        {
+          body: replay.raw_body,
+          headers: replay.headers,
+          params: { providerId: replay.provider_id },
+          query: undefined,
+          principal: null,
+        },
+        callbackServices,
+        true,
+      );
+    },
+  };
 }
 
 export function makeVerificationHandlers(

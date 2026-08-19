@@ -17,6 +17,7 @@ export {
   createProductionHttpWorker,
   type HttpWorkerBindings,
 } from "./composition.ts";
+export { SelfCallbackCaptureDO } from "./self-callback-capture-do.ts";
 export { createHttpWorker, withEndpointResult } from "./transport.ts";
 
 let cachedProductionApp: ReturnType<typeof createProductionHttpWorker> | undefined;

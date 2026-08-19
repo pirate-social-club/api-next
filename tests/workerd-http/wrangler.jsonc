@@ -18,6 +18,10 @@
       {
         "name": "REGISTRATION_APPLICATION_LIMITER",
         "class_name": "RegistrationApplicationRateLimiterDO"
+      },
+      {
+        "name": "SELF_CALLBACK_CAPTURE",
+        "class_name": "SelfCallbackCaptureDO"
       }
     ]
   },
@@ -28,6 +32,10 @@
         "RegistrationIpRateLimiterDO",
         "RegistrationApplicationRateLimiterDO"
       ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["SelfCallbackCaptureDO"]
     }
   ]
 }

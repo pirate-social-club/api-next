@@ -1000,4 +1000,53 @@ describe("contracts-generated HTTP worker", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBeNull();
   });
+
+  it("keeps callback capture controls bearer-gated and metadata-only", async () => {
+    const worker = createHttpWorker({
+      callbackCapture: {
+        accessToken: "capture-secret",
+        status: async () => ({
+          state: "captured",
+          provider_id: "self.pass",
+          digest: "a".repeat(64),
+          length: 12,
+          captured_at: "2026-08-19T00:00:00.000Z",
+          replayed: false,
+        }),
+        replay: async () => ({ result: true, status: "pending", id: "session-safe" }),
+        clear: async () => ({ cleared: true }),
+      },
+    });
+
+    const unauthorized = await worker.request(
+      "http://worker.test/internal/self-callback-capture/status",
+    );
+    expect(unauthorized.status).toBe(404);
+
+    const status = await worker.request(
+      "http://worker.test/internal/self-callback-capture/status",
+      { headers: { authorization: "Bearer capture-secret" } },
+    );
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({
+      state: "captured",
+      digest: "a".repeat(64),
+      length: 12,
+    });
+    expect(status.headers.get("cache-control")).toBe("no-store");
+
+    const replay = await worker.request(
+      "http://worker.test/internal/self-callback-capture/replay",
+      { method: "POST", headers: { authorization: "Bearer capture-secret" } },
+    );
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toEqual({ result: true, status: "pending", id: "session-safe" });
+
+    const clear = await worker.request("http://worker.test/internal/self-callback-capture/clear", {
+      method: "POST",
+      headers: { authorization: "Bearer capture-secret" },
+    });
+    expect(clear.status).toBe(200);
+    expect(await clear.json()).toEqual({ cleared: true });
+  });
 });

@@ -106,6 +106,13 @@ export interface HttpWorkerOptions {
   readonly authenticate?: (args: AuthenticationArgs) => Principal | Promise<Principal>;
   /** Runs after decoding and receives only the frozen request shape. */
   readonly authorize?: (args: AuthorizationArgs) => void | Promise<void>;
+  /** Staging-only, bearer-gated controls for the one-shot Self callback capture. */
+  readonly callbackCapture?: {
+    readonly accessToken: string;
+    readonly status: EndpointHandler;
+    readonly replay: EndpointHandler;
+    readonly clear: EndpointHandler;
+  };
 }
 
 type HttpWorkerEnv = {
@@ -503,6 +510,32 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       allowMethods: ["GET", "POST", "OPTIONS"],
     }),
   );
+
+  if (options.callbackCapture !== undefined) {
+    const capture = options.callbackCapture;
+    const authorized = (context: HttpContext): boolean =>
+      context.req.header("authorization") === `Bearer ${capture.accessToken}`;
+    const internalResponse = async (
+      context: HttpContext,
+      operation: EndpointHandler,
+    ): Promise<Response> => {
+      if (!authorized(context)) return new Response("Not found", { status: 404 });
+      try {
+        return json(context, await operation({} as DecodedRequest), 200, true);
+      } catch {
+        return new Response("Internal error", { status: 500 });
+      }
+    };
+    app.get("/internal/self-callback-capture/status", (context) =>
+      internalResponse(context, capture.status),
+    );
+    app.post("/internal/self-callback-capture/replay", (context) =>
+      internalResponse(context, capture.replay),
+    );
+    app.post("/internal/self-callback-capture/clear", (context) =>
+      internalResponse(context, capture.clear),
+    );
+  }
 
   for (const binding of routeTable) {
     app.on(binding.method, binding.path, async (context) => {

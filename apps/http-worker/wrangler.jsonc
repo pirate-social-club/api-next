@@ -32,6 +32,10 @@
         "RegistrationIpRateLimiterDO",
         "RegistrationApplicationRateLimiterDO"
       ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["SelfCallbackCaptureDO"]
     }
   ],
   "vars": {
@@ -71,10 +75,14 @@
             "name": "REGISTRATION_IP_LIMITER",
             "class_name": "RegistrationIpRateLimiterDO"
           },
-          {
-            "name": "REGISTRATION_APPLICATION_LIMITER",
-            "class_name": "RegistrationApplicationRateLimiterDO"
-          }
+        {
+          "name": "REGISTRATION_APPLICATION_LIMITER",
+          "class_name": "RegistrationApplicationRateLimiterDO"
+        },
+        {
+          "name": "SELF_CALLBACK_CAPTURE",
+          "class_name": "SelfCallbackCaptureDO"
+        }
         ]
       },
       "routes": [
@@ -102,6 +110,7 @@
         "SELF_PASS_ENABLED": "true",
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
+        "SELF_CALLBACK_CAPTURE_ENABLED": "true",
         "ZKPASSPORT_ENABLED": "true",
         "ZKPASSPORT_DOMAIN": "web-next-staging.pirate.sc",
         "ZKPASSPORT_NAME": "Pirate",
@@ -129,7 +138,8 @@
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID",
-          "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "SELF_CALLBACK_CAPTURE_ACCESS_TOKEN"
         ]
       }
     },

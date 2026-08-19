@@ -276,4 +276,32 @@ describe("HTTP production composition", () => {
       }),
     ).resolves.toBeDefined();
   });
+
+  test("keeps callback capture staging-only and fail-closed", async () => {
+    const configured = await bindings();
+    const namespace = {
+      idFromName: () => "id",
+      get: () => ({ fetch: async () => new Response() }),
+    };
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        SELF_CALLBACK_CAPTURE_ENABLED: "true",
+        SELF_CALLBACK_CAPTURE_ACCESS_TOKEN: "capture-token-which-is-long-enough-123456",
+        SELF_CALLBACK_CAPTURE: namespace,
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+
+    await expect(
+      createProductionHttpWorker({
+        ...configured,
+        API_NEXT_ENV: "staging",
+        SELF_PASS_ENABLED: "true",
+        PIRATE_API_PUBLIC_ORIGIN: "https://api-next-staging.test",
+        SELF_CALLBACK_CAPTURE_ENABLED: "true",
+        SELF_CALLBACK_CAPTURE_ACCESS_TOKEN: "too-short",
+        SELF_CALLBACK_CAPTURE: namespace,
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
 });

@@ -58,8 +58,16 @@ import {
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
+import {
+  makeSelfCallbackCaptureService,
+  type SelfCallbackCaptureNamespace,
+} from "./self-callback-capture.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
-import { makeVerificationHandlers } from "./verification-handlers.ts";
+import {
+  makeVerificationCallbackCaptureRoutes,
+  makeVerificationHandlers,
+  type VerificationHandlerServices,
+} from "./verification-handlers.ts";
 
 export interface HttpWorkerBindings {
   readonly CONTROL_PLANE?: unknown;
@@ -71,6 +79,9 @@ export interface HttpWorkerBindings {
   readonly SELF_PASS_ENABLED?: string;
   readonly SELF_PASS_APP_NAME?: string;
   readonly SELF_PASS_MOCK_PASSPORT?: string;
+  readonly SELF_CALLBACK_CAPTURE_ENABLED?: string;
+  readonly SELF_CALLBACK_CAPTURE_ACCESS_TOKEN?: string;
+  readonly SELF_CALLBACK_CAPTURE?: SelfCallbackCaptureNamespace;
   readonly ZKPASSPORT_ENABLED?: string;
   readonly ZKPASSPORT_DOMAIN?: string;
   readonly ZKPASSPORT_NAME?: string;
@@ -129,6 +140,8 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     SELF_PASS_ENABLED: bindings.SELF_PASS_ENABLED,
     SELF_PASS_APP_NAME: bindings.SELF_PASS_APP_NAME,
     SELF_PASS_MOCK_PASSPORT: bindings.SELF_PASS_MOCK_PASSPORT,
+    SELF_CALLBACK_CAPTURE_ENABLED: bindings.SELF_CALLBACK_CAPTURE_ENABLED,
+    SELF_CALLBACK_CAPTURE_ACCESS_TOKEN: bindings.SELF_CALLBACK_CAPTURE_ACCESS_TOKEN,
     ZKPASSPORT_ENABLED: bindings.ZKPASSPORT_ENABLED,
     ZKPASSPORT_DOMAIN: bindings.ZKPASSPORT_DOMAIN,
     ZKPASSPORT_NAME: bindings.ZKPASSPORT_NAME,
@@ -365,7 +378,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     verificationRegistry.list(),
     config.API_NEXT_ENV,
   );
-  const verificationHandlers = makeVerificationHandlers({
+  const verificationServices: VerificationHandlerServices = {
     start: {
       intents: verificationIntents,
       registry: verificationRegistry,
@@ -377,6 +390,25 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
       hasher: makeSha256VerificationCompletionHasher(),
     },
     callback_credential_headers: callbackCredentialHeaderNames,
+  };
+  const captureToken = Redacted.value(config.SELF_CALLBACK_CAPTURE_ACCESS_TOKEN);
+  const captureEnabled = config.SELF_CALLBACK_CAPTURE_ENABLED;
+  if (
+    captureEnabled &&
+    (config.API_NEXT_ENV !== "staging" ||
+      bindings.SELF_CALLBACK_CAPTURE === undefined ||
+      captureToken.length < 32 ||
+      captureToken.trim() !== captureToken)
+  ) {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  }
+  const callbackCapture =
+    captureEnabled && bindings.SELF_CALLBACK_CAPTURE !== undefined
+      ? makeSelfCallbackCaptureService(bindings.SELF_CALLBACK_CAPTURE)
+      : undefined;
+  const verificationHandlers = makeVerificationHandlers({
+    ...verificationServices,
+    ...(callbackCapture === undefined ? {} : { callback_capture: callbackCapture }),
   });
   const productHandlers = makeProductHandlers({
     communityStore,
@@ -442,6 +474,13 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const profile: EndpointHandler = ({ principal: session }) =>
     Effect.runPromise(getMyProfile({ userId: session?.subject ?? "" }, { identityStore }));
   const publicProfile = makePublicProfileHandler({ publicProfileStore });
+  const callbackCaptureRoutes =
+    callbackCapture === undefined
+      ? undefined
+      : makeVerificationCallbackCaptureRoutes(
+          { ...verificationServices, callback_capture: callbackCapture },
+          callbackCapture,
+        );
 
   return createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
@@ -455,6 +494,14 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     sessionExchange,
     identityRegistration,
     profile,
+    ...(callbackCaptureRoutes === undefined
+      ? {}
+      : {
+          callbackCapture: {
+            accessToken: captureToken,
+            ...callbackCaptureRoutes,
+          },
+        }),
     authenticate,
     authorize: ({ input }) =>
       Effect.runPromise(

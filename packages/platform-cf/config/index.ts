@@ -74,6 +74,12 @@ export const HttpWorkerConfig = Config.all({
   SELF_PASS_MOCK_PASSPORT: Config.boolean("SELF_PASS_MOCK_PASSPORT").pipe(
     Config.withDefault(false),
   ),
+  SELF_CALLBACK_CAPTURE_ENABLED: Config.boolean("SELF_CALLBACK_CAPTURE_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
+  SELF_CALLBACK_CAPTURE_ACCESS_TOKEN: secret("SELF_CALLBACK_CAPTURE_ACCESS_TOKEN").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
   ZKPASSPORT_ENABLED: Config.boolean("ZKPASSPORT_ENABLED").pipe(Config.withDefault(false)),
   ZKPASSPORT_DOMAIN: Config.string("ZKPASSPORT_DOMAIN").pipe(Config.withDefault("")),
   ZKPASSPORT_NAME: Config.string("ZKPASSPORT_NAME").pipe(Config.withDefault("Pirate")),
