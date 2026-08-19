@@ -507,6 +507,8 @@ export async function main(args: readonly string[] = Bun.argv.slice(2)): Promise
   const result = await seedCommerceStaging({
     connectionString,
     communityId: process.env.STAGING_COMMERCE_COMMUNITY_ID?.trim() ?? "staging-community-purchase",
+    // The actor is the raw session subject (for example `did:privy:…`), never
+    // the `usr_`-prefixed public id returned by `/users/me`.
     actorId: process.env.STAGING_COMMERCE_ACTOR_ID?.trim() ?? "staging-commerce-actor",
     listingId: process.env.STAGING_COMMERCE_LISTING_ID?.trim() ?? "staging-listing-1",
     membershipId:
