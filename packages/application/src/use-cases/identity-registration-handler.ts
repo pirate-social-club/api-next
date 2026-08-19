@@ -143,7 +143,7 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
             message: "Registration rate limit exceeded",
             ...(error.retryAfterSeconds === undefined
               ? {}
-              : { details: { retry_after_seconds: error.retryAfterSeconds } }),
+              : { retry_after_seconds: error.retryAfterSeconds }),
           })
         : new InternalError({ message: "Registration is temporarily unavailable" }),
     ),
@@ -155,7 +155,7 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
             message: "Registration rate limit exceeded",
             ...(error.retryAfterSeconds === undefined
               ? {}
-              : { details: { retry_after_seconds: error.retryAfterSeconds } }),
+              : { retry_after_seconds: error.retryAfterSeconds }),
           })
         : new InternalError({ message: "Registration is temporarily unavailable" }),
     ),

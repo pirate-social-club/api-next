@@ -32,6 +32,10 @@ const alias = {
   "@pirate/domain": new URL("../../packages/domain/src/index.ts", import.meta.url).pathname,
   "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)
     .pathname,
+  "@pirate/platform-cf/registration-rate-limiter": new URL(
+    "../../packages/platform-cf/src/registration-rate-limiter.ts",
+    import.meta.url,
+  ).pathname,
 };
 
 export default defineConfig({

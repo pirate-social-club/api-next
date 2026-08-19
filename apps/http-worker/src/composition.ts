@@ -31,6 +31,10 @@ import {
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
 import { makeControlPlanePublicProfileStore } from "@pirate/platform-cf/public-profile-repository";
+import {
+  makeDurableObjectIdentityRegistrationRateLimiter,
+  type RegistrationRateLimiterNamespaces,
+} from "@pirate/platform-cf/registration-rate-limiter";
 import { makeSessionCrypto } from "@pirate/platform-cf/session-crypto";
 import { makeJwksSessionProofVerifier } from "@pirate/platform-cf/session-proof";
 import {
@@ -52,6 +56,8 @@ import { makeVerificationHandlers } from "./verification-handlers.ts";
 
 export interface HttpWorkerBindings {
   readonly CONTROL_PLANE?: unknown;
+  readonly REGISTRATION_IP_LIMITER?: RegistrationRateLimiterNamespaces["ip"];
+  readonly REGISTRATION_APPLICATION_LIMITER?: RegistrationRateLimiterNamespaces["application"];
   readonly API_NEXT_ENV?: string;
   readonly CORS_ORIGIN?: string;
   readonly PIRATE_API_PUBLIC_ORIGIN?: string;
@@ -87,6 +93,27 @@ export interface HttpWorkerBindings {
 }
 
 type WorkerConfig = HttpWorkerConfigValue;
+
+/**
+ * Builds the only production registration limiter adapter. The registration
+ * route remains uninstalled until its account-resolution/store seam lands, but
+ * no composition path may substitute an in-memory or allow-all limiter.
+ */
+export function makeProductionIdentityRegistrationRateLimiter(
+  bindings: HttpWorkerBindings,
+  environment: WorkerConfig["API_NEXT_ENV"],
+) {
+  const ip = bindings.REGISTRATION_IP_LIMITER;
+  const application = bindings.REGISTRATION_APPLICATION_LIMITER;
+  if (ip === undefined || application === undefined) {
+    throw new Error("Registration Durable Object limiter bindings are incomplete");
+  }
+  const namespaces: RegistrationRateLimiterNamespaces = { ip, application };
+  return makeDurableObjectIdentityRegistrationRateLimiter({
+    namespaces,
+    applicationName: `api-next:${environment}`,
+  });
+}
 
 function configSource(bindings: HttpWorkerBindings): Record<string, string | undefined> {
   return {

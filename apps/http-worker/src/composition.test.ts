@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
+import { Effect } from "effect";
+import {
+  createProductionHttpWorker,
+  type HttpWorkerBindings,
+  makeProductionIdentityRegistrationRateLimiter,
+} from "./composition.ts";
 
 function toPem(label: "PRIVATE KEY" | "PUBLIC KEY", bytes: ArrayBuffer): string {
   const base64 = Buffer.from(bytes).toString("base64");
@@ -45,6 +50,35 @@ async function bindings(): Promise<HttpWorkerBindings> {
 }
 
 describe("HTTP production composition", () => {
+  test("requires both Durable Object registration limiter bindings", () => {
+    expect(() =>
+      makeProductionIdentityRegistrationRateLimiter({} as HttpWorkerBindings, "development"),
+    ).toThrow("Registration Durable Object limiter bindings are incomplete");
+  });
+
+  test("builds the limiter adapter from both named Durable Object bindings", async () => {
+    const calls: string[] = [];
+    const binding = {
+      getByName: (name: string) => ({
+        check: async () => {
+          calls.push(name);
+          return { allowed: true };
+        },
+      }),
+    };
+    const limiter = makeProductionIdentityRegistrationRateLimiter(
+      {
+        REGISTRATION_IP_LIMITER: binding,
+        REGISTRATION_APPLICATION_LIMITER: binding,
+      },
+      "staging",
+    );
+    await Effect.runPromise(limiter.checkIp({ ip: "198.51.100.8" }));
+    await Effect.runPromise(limiter.checkApplication());
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toBe("application:api-next:staging");
+  });
+
   test("constructs the real application seams before serving health", async () => {
     const worker = await createProductionHttpWorker(await bindings());
     const response = await worker.request("https://worker.test/health");

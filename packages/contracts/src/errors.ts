@@ -83,7 +83,9 @@ export class GateFailed extends Data.TaggedError("GateFailed")<GateFailedArgs> {
   readonly retryable = false as const;
 }
 
-export class RateLimited extends Data.TaggedError("RateLimited")<WireArgs> {
+export class RateLimited extends Data.TaggedError("RateLimited")<
+  WireArgs & { readonly retry_after_seconds?: number }
+> {
   readonly status = 429 as const;
   readonly code = "rate_limited" as const;
   readonly retryable = true as const;
@@ -299,7 +301,7 @@ export function toErrorBody(
         },
         ...requestIdField,
       },
-      ...(error.code === "verification_start_in_progress" &&
+      ...((error.code === "verification_start_in_progress" || error.code === "rate_limited") &&
       typeof (error as { readonly retry_after_seconds?: unknown }).retry_after_seconds ===
         "number" &&
       Number.isSafeInteger(

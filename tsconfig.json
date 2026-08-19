@@ -37,6 +37,12 @@
       "@pirate/platform-cf/verification-start-repository": [
         "./packages/platform-cf/src/verification-start-repository.ts"
       ],
+      "@pirate/platform-cf/registration-rate-limiter": [
+        "./packages/platform-cf/src/registration-rate-limiter.ts"
+      ],
+      "@pirate/platform-cf/registration-rate-limiter-do": [
+        "./packages/platform-cf/src/registration-rate-limiter-do.ts"
+      ],
       "@pirate/platform-cf/*": ["./packages/platform-cf/src/*"],
       "@pirate/testing": ["./packages/testing/src/index.ts"],
       "@pirate/testing/verification": ["./packages/testing/src/verification/index.ts"]

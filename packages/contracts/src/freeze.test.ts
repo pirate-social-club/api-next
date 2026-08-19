@@ -26,6 +26,9 @@ describe("wire-error catalog", () => {
     // payment_required is explicitly retryable in api-next v2.
     expect(toErrorBody(new PaymentRequired({ message: "pay" })).body.error.retryable).toBe(true);
     expect(toErrorBody(new RateLimited({ message: "slow" })).body.error.retryable).toBe(true);
+    expect(
+      toErrorBody(new RateLimited({ message: "slow", retry_after_seconds: 7 })).headers,
+    ).toEqual({ "Retry-After": "7" });
     expect(toErrorBody(new RetryableConflict({ message: "again" })).body).toMatchObject({
       error: { code: "conflict", retryable: true, message: "again" },
     });

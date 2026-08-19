@@ -19,6 +19,11 @@ import {
 import { Effect } from "effect";
 import { createHttpWorker, type Principal } from "../../apps/http-worker/src/transport.ts";
 
+export {
+  RegistrationApplicationRateLimiterDO,
+  RegistrationIpRateLimiterDO,
+} from "../../packages/platform-cf/src/registration-rate-limiter-do.ts";
+
 function toBase64(bytes: ArrayBufferLike): string {
   let binary = "";
   for (const byte of new Uint8Array(bytes)) binary += String.fromCharCode(byte);

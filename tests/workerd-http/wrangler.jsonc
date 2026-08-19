@@ -3,6 +3,31 @@
   "main": "./entry.ts",
   "compatibility_date": "2026-08-01",
   "vars": {
-    "CORS_ORIGIN": "https://solid.test"
-  }
+    "CORS_ORIGIN": "https://solid.test",
+    "REGISTRATION_IP_LIMIT": "5",
+    "REGISTRATION_IP_WINDOW_SECONDS": "900",
+    "REGISTRATION_APPLICATION_LIMIT": "100",
+    "REGISTRATION_APPLICATION_WINDOW_SECONDS": "60"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REGISTRATION_IP_LIMITER",
+        "class_name": "RegistrationIpRateLimiterDO"
+      },
+      {
+        "name": "REGISTRATION_APPLICATION_LIMITER",
+        "class_name": "RegistrationApplicationRateLimiterDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "RegistrationIpRateLimiterDO",
+        "RegistrationApplicationRateLimiterDO"
+      ]
+    }
+  ]
 }

@@ -14,6 +14,8 @@
     "./public-community-threads-repository": "./src/public-community-threads-repository.ts",
     "./identity-repository": "./src/identity-repository.ts",
     "./public-profile-repository": "./src/public-profile-repository.ts",
+    "./registration-rate-limiter": "./src/registration-rate-limiter.ts",
+    "./registration-rate-limiter-do": "./src/registration-rate-limiter-do.ts",
     "./postgres": "./src/postgres.ts",
     "./session-crypto": "./src/session-crypto.ts",
     "./session-proof": "./src/session-proof.ts",

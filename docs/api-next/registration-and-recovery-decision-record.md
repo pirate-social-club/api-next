@@ -95,6 +95,25 @@ rate. Before a launch or campaign expected to create a signup spike, the owner m
 review capacity and choose an explicitly sharded globally coordinated design rather
 than weakening the limit or silently falling back to per-colocation counters.
 
+### Ratified threshold amendment — 2026-08-19
+
+The initial fixed-window policy is configuration, not a constant in the Durable
+Object bodies:
+
+- the per-IP bucket allows 5 registrations per 15-minute window, keyed by the
+  exact trusted IP;
+- the per-application bucket allows 100 registrations per 1-minute window,
+  acting as a short global circuit breaker rather than an ordinary throttle;
+- exhaustion is a hard stop and returns `RateLimited` with `Retry-After` equal
+  to the remaining whole seconds in the current window (at least 1 second).
+
+The values are repeated in each Worker environment's Wrangler vars so staging
+can calibrate them without a code change. Fixed windows accept rollover bursts,
+CGNAT false positives, and bounded retry self-lockout. IPv6 `/64` folding is
+deliberately deferred: the application-wide 100-per-minute ceiling is the
+required backstop against routed IPv6 address rotation, and it must not be
+removed while exact-IP accounting remains the policy.
+
 At the public Worker edge, the client IP comes exclusively from `CF-Connecting-IP`.
 `X-Forwarded-For`, `X-Real-IP`, request bodies, query parameters, and arbitrary caller
 headers are never accepted as substitutes. A registration request without trusted edge

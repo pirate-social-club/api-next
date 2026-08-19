@@ -8,6 +8,10 @@
 import type { ExecutionContext } from "@cloudflare/workers-types";
 import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
 
+export {
+  RegistrationApplicationRateLimiterDO,
+  RegistrationIpRateLimiterDO,
+} from "@pirate/platform-cf/registration-rate-limiter-do";
 export { makeCommunityPurchaseFundingHandlers } from "./community-purchase-funding-handlers.ts";
 export {
   createProductionHttpWorker,
