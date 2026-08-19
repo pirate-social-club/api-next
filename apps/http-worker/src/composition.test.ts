@@ -114,12 +114,14 @@ describe("HTTP production composition", () => {
     expect(currentUser.status).toBe(401);
     expect(await currentUser.json()).toMatchObject({ error: { code: "auth_error" } });
 
+    const begin = await worker.request("https://worker.test/money/community-purchase-funding", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ quote_id: "quote-a", client_nonce: "nonce-a" }),
+    });
+    expect(begin.status).toBe(404);
+
     for (const fundingRequest of [
-      new Request("https://worker.test/money/community-purchase-funding", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ quote_id: "quote-a", client_nonce: "nonce-a" }),
-      }),
       new Request("https://worker.test/money/community-purchase-funding/operation-a"),
       new Request("https://worker.test/money/community-purchase-funding/operation-a/observations", {
         method: "POST",

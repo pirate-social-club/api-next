@@ -33,6 +33,12 @@ type FundingHandlers = Readonly<{
   readonly GetCommunityPurchaseFundingStatus: EndpointHandler;
 }>;
 
+type FundingObservationHandlers = Readonly<
+  Pick<FundingHandlers, "ObserveCommunityPurchaseFunding" | "GetCommunityPurchaseFundingStatus">
+>;
+
+type FundingObservationHandlerServices = Omit<CommunityPurchaseFundingHandlerServices, "admission">;
+
 function user(principal: Principal | null): { readonly actorId: string; readonly wallet: string } {
   if (principal === null || principal.kind !== "user") {
     throw new AuthError({ message: "Authentication required" });
@@ -140,6 +146,18 @@ export function makeCommunityPurchaseFundingHandlers(
         result.replayed ? 200 : 201,
       );
     },
+    ...makeCommunityPurchaseFundingObservationHandlers(services),
+  };
+}
+
+/**
+ * Production composition may expose observation and status only. Admission
+ * stays private until the target-owned commerce plan producer is ratified.
+ */
+export function makeCommunityPurchaseFundingObservationHandlers(
+  services: FundingObservationHandlerServices,
+): FundingObservationHandlers {
+  return {
     ObserveCommunityPurchaseFunding: async (request) => {
       const actorId = actor(request.principal);
       const path = request.params as { readonly operationRef: string };
