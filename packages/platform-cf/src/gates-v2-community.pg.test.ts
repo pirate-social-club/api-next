@@ -233,6 +233,11 @@ suite("Gates v2 curated age community vertical", () => {
         joinable_now: true,
         gate_evaluation: { outcome: "pass" },
       });
+      const previewDecisions = await admin.query({
+        text: "SELECT COUNT(*)::int AS count FROM decision_records WHERE community_id = $1 AND user_id = $2",
+        values: ["community-pass", "user-a"],
+      });
+      expect(previewDecisions.rows[0]?.count).toBe(0);
       await expect(
         runStore(connection, (store) =>
           store.join({
