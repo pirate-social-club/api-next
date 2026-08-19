@@ -99,9 +99,7 @@ const safeFailure = (error: unknown): RegistrationFailure => {
     });
   }
   if (error instanceof IdentityRegistrationFailed) {
-    return error.reason === "identity-conflict"
-      ? new InternalError({ message: "Registration failed" })
-      : new InternalError({ message: "Registration failed" });
+    return new InternalError({ message: "Registration failed" });
   }
   if (error instanceof IdentityRegistrationExhausted) {
     return new InternalError({ message: "Registration failed" });
