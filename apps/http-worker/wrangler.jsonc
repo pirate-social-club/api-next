@@ -111,7 +111,9 @@
         "PIRATE_API_PUBLIC_ORIGIN": "https://api-next-staging.pirate.sc",
         "SELF_PASS_ENABLED": "true",
         "SELF_PASS_APP_NAME": "Pirate",
-        "SELF_PASS_MOCK_PASSPORT": "false",
+        // Staging is the developer-document environment. A separately
+        // authorized live-document deployment is required for physical proof.
+        "SELF_PASS_MOCK_PASSPORT": "true",
         "ZKPASSPORT_ENABLED": "true",
         "ZKPASSPORT_DOMAIN": "web-next-staging.pirate.sc",
         "ZKPASSPORT_NAME": "Pirate",
