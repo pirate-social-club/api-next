@@ -393,9 +393,10 @@ constructs the pinned verifier and invokes its real verification path with a
 malformed proof to prove bundling and runtime compatibility. A successful
 cryptographic proof cannot be honestly fabricated as a timeless repository
 fixture, so positive-path acceptance requires a fresh external Self ceremony in
-staging after deployment is separately authorized. Self remains disabled in
-all checked-in Wrangler environments until that infrastructure and ceremony
-are explicitly authorized. The Self adapter also runs its provider-shaped
+staging after deployment is separately authorized. The current M3 configuration
+enables Self only in staging's developer/mock-document mode; production remains
+disabled and real-document physical evidence still requires a separate
+authorization and redeploy. The Self adapter also runs its provider-shaped
 translations and hostile cases through the shared transport harness. The SDK's
 named registry and verifier contract errors map to provider unavailability;
 unknown throws remain proof rejection rather than being silently upgraded to

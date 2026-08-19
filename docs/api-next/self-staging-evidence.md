@@ -1,14 +1,31 @@
 # Self staging incident and restart record
 
-Status: staging infrastructure is provisioned, the staging-only mock ceremony
-matrix has passed, and Self is restored to real-document mode in staging. The
-physical real-document ceremony remains pending. Updated 2026-08-18.
+Status: staging infrastructure is provisioned and currently uses the
+staging-only developer/mock-document mode. The physical real-document
+ceremony remains pending. Updated 2026-08-19.
 
 This is the durable, redacted record for the Self staging tranche. It preserves
 the earlier incident and containment history, then records the verified
 post-restart state. No secret value is recorded here.
 
-## Current verified staging state
+## Current M3 mode override — 2026-08-19
+
+The historical post-restart real-document deployment described below is not
+the current staging mode. Canonical api-next commit `a9bbd337` sets
+`SELF_PASS_MOCK_PASSPORT=true` in staging only, and was deployed to
+`pirate-http-worker-staging` as version
+`7d680db5-90f1-4628-9bb5-3adbbe1665a7`. Development and production remain
+`SELF_PASS_MOCK_PASSPORT=false`; production also remains
+`SELF_PASS_ENABLED=false`. Health returned 200, unauthenticated quote creation
+returned 401, and `begin` returned 404 after deployment.
+
+This mode is authorized for developer-document testing only. It is not
+physical-document evidence and does not close the M3 Self gate. The callback
+capture seam remains retired; a future physical ceremony requires a separate
+live-document deployment and capture-lane authorization. No production,
+ledger, proof-history, or money state changed.
+
+## Original verified staging state (historical)
 
 - Infisical is the new project `fac45f92-9450-42fb-8c2f-f20d043fdfab` in
   organization `d9615445-c0d4-445a-ad58-1d55d365635a`; the relevant secrets
@@ -54,11 +71,11 @@ unknown or malformed callback targets remained redacted 404/400 responses.
 
 ## Staging mock ceremony evidence
 
-The approved staging-only mock window was enabled by deployment configuration,
-never in production. Mock launches used `staging_https`, Celo Sepolia chain
-`11142220`, and fresh sessions after every configuration change. The window is
-now closed: the current staging deployment has
-`SELF_PASS_MOCK_PASSPORT=false`; production was not mutated.
+The approved staging-only mock window described in this historical section was
+enabled by deployment configuration, never in production. Mock launches used
+`staging_https`, Celo Sepolia chain `11142220`, and fresh sessions after every
+configuration change. The later real-document deployment and the current M3
+developer-mode override are recorded above; production was not mutated.
 
 The initial mock ceremony attempts exposed two integration defects before the
 passing run:
@@ -122,14 +139,14 @@ still required.
 
 ### Staging rollback
 
-- The reviewed post-window real-document deployment is
+- The reviewed post-window real-document deployment was
   `8eaf64fa-6cc1-4d48-bb33-213c46cdf775`. If a later staging deployment
   regresses, use Wrangler's explicit version rollback to that ID, then verify
-  `/health` returns 200 and the deployed staging binding keeps
-  `SELF_PASS_MOCK_PASSPORT=false`.
-- If mock mode is accidentally re-enabled, redeploy `main` with the checked-in
-  staging configuration. Do not reuse a session minted under the other mode;
-  create a fresh session after the redeploy.
+  `/health` returns 200. The current developer-mode staging binding should
+  keep `SELF_PASS_MOCK_PASSPORT=true`; a physical ceremony requires a fresh,
+  separately authorized live-document deployment instead.
+- Do not reuse a session minted under the other mode; create a fresh session
+  after any mode-changing redeploy.
 - These instructions target `pirate-http-worker-staging` only. Production
   remains outside this rollback and was not changed by the ceremony.
 

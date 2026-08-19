@@ -1,7 +1,8 @@
 # Self staging enablement handoff
 
 Status: staging infrastructure is provisioned and Self is enabled in staging
-only; the first real-document ceremony is pending. Updated 2026-08-18.
+only in developer/mock-document mode; the first real-document ceremony is
+pending. Updated 2026-08-19.
 
 This is the durable handoff for enabling the self-hosted Self Pass adapter in
 staging. It records observed external state, not assumptions. Secret values
@@ -11,8 +12,20 @@ are intentionally omitted.
 
 The interrupted staging attempt is recorded in
 [self-staging-evidence.md](self-staging-evidence.md), which preserves the
-credential exposure and containment history. The current verified state below
-supersedes the pre-provisioning inventory. The real ceremony has not begun.
+credential exposure and containment history. The historical verified state below
+supersedes the pre-provisioning inventory; the current mode is recorded above.
+The real ceremony has not begun.
+
+### Current M3 mode override
+
+For the current M3 staging state, api-next commit `a9bbd337` sets
+`SELF_PASS_MOCK_PASSPORT=true` in staging only and was deployed as Worker
+version `7d680db5-90f1-4628-9bb5-3adbbe1665a7`. Development and production use
+`SELF_PASS_MOCK_PASSPORT=false`; production remains
+`SELF_PASS_ENABLED=false`. This permits developer-document testing but does
+not count as physical-document evidence. The callback capture seam remains
+retired, and a live-document ceremony requires a separately authorized
+redeploy.
 
 ## Published code state
 
@@ -29,7 +42,7 @@ supersedes the pre-provisioning inventory. The real ceremony has not begun.
 - The migration checksum manifest SHA-256 is
   `dff403966354712b3648ac8db2290a5770a6fc3e6de8c36f56f64c5fa0a56e6a`.
 
-## Current verified staging state
+## Original verified staging state (historical)
 
 ### Infisical and authentication
 
@@ -61,8 +74,9 @@ supersedes the pre-provisioning inventory. The real ceremony has not begun.
 - The staging API hostname is `api-next-staging.pirate.sc`; it does not
   replace the existing `staging.pirate.sc` service.
 - The Self-disabled baseline was `734a588d-406c-4f2e-82fa-2c30e64ddfd7`.
-  Self is now enabled in staging only at current good version
-  `5704627a-be9d-499c-933a-ec76e685babf`.
+  The earlier live-document staging version was
+  `5704627a-be9d-499c-933a-ec76e685babf`; the current M3 developer-mode
+  version is recorded in the override above.
   Health returned 200, JWKS returned 200, public-profile returned 404 (DB
   path), and missing/invalid authentication returned 401.
 - After enablement, health returned 200, unauthenticated Self session start
@@ -208,8 +222,10 @@ verified-state bullets above where they conflict.
 - The first deployment was Self-disabled at version
   `1a5d966e-4e4a-4f6a-a7f2-afff9fdd5061`. After health, preview, and
   unauthenticated-boundary checks passed, Self was enabled only in staging at
-  version `b3a7be94-b56c-4996-891a-a4cd737694d1`. `SELF_PASS_MOCK_PASSPORT`
-  remains false.
+  version `b3a7be94-b56c-4996-891a-a4cd737694d1`.
+  `SELF_PASS_MOCK_PASSPORT` was false for that historical live-document pin;
+  the current M3 staging override sets it true for developer-document
+  testing.
 - Post-enable probes: `/health` returned 200, unauthenticated verification
   start returned 401, and malformed `self.pass` callback input returned 400.
 - Infisical staging has no funding RPC. The Worker currently uses the explicit
