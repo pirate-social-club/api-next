@@ -1,7 +1,7 @@
 # Community-purchase plan-producer decision record
 
-Status: Option A owner selection ratified; source/table answer set is a draft
-pending the second product review before implementation or production admission
+Status: **fully ratified for Option A; coordinator-owned producer implementation
+gate open; staging and production admission remain separately unauthorized**
 (2026-08-19).
 
 Authority: [M3 completion charter](../../../docs/specs/api-next/005-m3-completion-charter.md),
@@ -29,10 +29,10 @@ versioned policy snapshots. The slice writes the existing
 `community_purchase_funding_plans` boundary after deriving the complete quote.
 
 This selection stays inside the two-system clean-break boundary and does not
-amend the M3 charter. It selects ownership, not the still-pending field-level
-commerce contract: no producer code, migration, staging seed, deployment, or
-`begin` admission is authorized until the source/table proposal below is
-reviewed and the remaining product parameters are recorded.
+amend the M3 charter. The field-level source/table contract and five product
+parameters below are ratified as well. The producer implementation gate is
+open; migration, staging seed, deployment, and production admission remain
+separately unauthorized.
 
 ## Non-negotiable boundary
 
@@ -92,7 +92,7 @@ donation, and commerce records. Importing it would make legacy API behavior a
 hidden production dependency and would make api-next accountable for values it
 cannot authorize or reconstruct.
 
-## Target-owned source/table proposal (Option A answer-set draft)
+## Target-owned source/table proposal (Option A answer set)
 
 This is a proposed PostgreSQL design, not an applied schema. The authoritative
 runtime store is `api-next/db/postgres`; the similarly named
@@ -151,7 +151,7 @@ forward-only migration after schema review; no migration number is assumed.
   result. A different payload or actor for an existing identity is a conflict
   or enumeration-safe not-found outcome; it never overwrites a quote.
 
-### Authorization and remaining answer-set fields
+### Authorization and ratified answer-set fields
 
 The producer uses the authenticated Privy-session actor and normalized wallet,
 checks `community_memberships.status = 'member'` plus the captured eligibility
@@ -159,10 +159,47 @@ policy, and returns the same public failure for missing, foreign, or ineligible
 listing/quote identities. The plan port remains the only writer of the funding
 plan terms after the commerce slice derives them.
 
-The second product review still must name the exact TTL value, listing
-quantity/availability semantics, reservation duration and release policy,
-policy-revision issuance rules, verification-provider contract, and correction
-event authorization. Those are intentionally not invented by this draft.
+## Ratified source/table answer set — 2026-08-19
+
+The workspace human ratifies the following five parameters without changing the
+M3 charter, spec 004, or the existing plan-port bound:
+
+1. **Quote TTL:** `600` seconds. `quoted_at` and `expires_at` use PostgreSQL
+   time, and the reservation expires at the same `expires_at`. The value is
+   inside the existing `[1, 3_600]` plan-port validation bound.
+2. **Availability:** every listing declares `availability_mode` as
+   `unbounded` or `finite`. A finite listing owns a server-side count. Each
+   quote reserves exactly one unit; admission marks it `consumed`, correction
+   cancellation or failed admission marks it `released`, and expiry is a lazy
+   database-time state. Unbounded listings still write a reservation row for a
+   uniform audit trail. Partial holds are not supported.
+3. **Policy revisions:** revisions are append-only and issued only through an
+   operator-authorized coordinator path (a future community-admin surface is a
+   separate decision). A revision is effective immediately at database time;
+   M3 does not schedule future-effective revisions. Issued quotes retain their
+   captured revision; supersession is metadata only; every issuance writes the
+   operator ledger.
+4. **Verification:** the existing ratified zkPath, the integrated zkPassport
+   `0.14.2` verifier, is the provider. Immutable snapshots record provider and
+   policy revision and are owned by the quoting actor. A snapshot is valid for
+   at most 24 hours; required-but-missing or invalid verification rejects the
+   quote through the same enumeration-safe boundary, and pricing never trusts
+   a client-declared region.
+5. **Corrections:** only the operator/coordinator role may append a correction
+   event. It may cancel an unbound quote, release its unbound reservation, and
+   issue a superseding revision. It may not mutate an issued quote, bound plan,
+   consumed reservation, or M3 journal truth. Each append records operator ID,
+   kind, reason, PostgreSQL time, and affected IDs, is idempotent by
+   `(target_identity, kind)`, and is retained indefinitely.
+
+The following implementation invariants are part of this ratification:
+
+- quote, reservation, and funding-plan writes are all-or-nothing; a plan-port
+  failure rolls back the quote and reservation together;
+- bind and quote paths evaluate expiry as a PostgreSQL-time predicate, with
+  stored `expired` transitions only for audit and no new sweeper requirement;
+- reservations are never renewed or extended. A new quote is the only path
+  after expiry or release.
 
 ## Read-only legacy evidence (context only; not an authority decision)
 
@@ -192,33 +229,31 @@ they do not authorize an import, copy, or runtime bridge.
 
 ## Required ratification answers
 
-The human decision must name:
+The ratified record contains:
 
 - selected option and accountable product repository/owner (**Option A / api-next
-  is ratified; the source/table names above remain draft until the second
-  review**);
+  is fully ratified**);
 - authoritative source tables or service revision for each of the eight
-  authorities, including the snapshot/version identity;
+  authorities, including the snapshot/version identity (**ratified by the
+  source/table proposal above**);
 - authenticated actor/community authorization and enumeration-safe failure
   behavior;
 - the exact server-to-api-next plan payload, including `quoteId`, community,
   actor, purchase, policy version, buyer wallet/chain, token/decimals,
   treasury, atomic amount, required confirmations, and quote TTL;
 - quote expiry, replay/conflict, availability/reservation, and correction
-  rules, all using target-owned time and policy;
+  rules, all using target-owned time and policy (**ratified above**);
 - storage migration and retention/audit obligations; and
 - the evidence and staging tranche required before production admission.
 
-If the completed source/table answer set changes the M3 charter or money-flow
-specification, amend those documents before implementation. Until that answer
-set is reviewed and recorded, the existing plan port remains product-internal
-and `begin` remains unexposed in production.
+No spec amendment is triggered. The existing plan port remains product-internal
+until the producer tranche supplies it with target-owned terms; `begin` remains
+unexposed in production until the producer's implementation evidence passes.
 
 ## Post-ratification implementation gate
 
-Only after the completed source/table answer set is ratified may a
-coordinator-owned api-next tranche implement the producer and wire admission.
-Its minimum evidence is authenticated and
+The implementation gate is now open for a coordinator-owned api-next tranche to
+implement the producer and wire admission. Its minimum evidence is authenticated and
 authorized plan derivation, no browser-authored economics, missing/foreign
 enumeration safety, exact replay and conflict behavior, expiry, policy/source
 revision binding, and real-Postgres coverage through the existing narrow plan
