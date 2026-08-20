@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { ProofProviderManifest } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import {
+  makeOrderedVerificationIntentResolver,
   makeStaticVerificationIntentResolver,
   PLATFORM_AGE_18_VERIFICATION_INTENT_ID,
   PLATFORM_AGE_21_VERIFICATION_INTENT_ID,
@@ -29,6 +30,36 @@ const manifest: ProofProviderManifest = {
 };
 
 describe("static verification intent resolver", () => {
+  test("composes persisted and static intent sources without swallowing storage failures", async () => {
+    const calls: string[] = [];
+    const ordered = makeOrderedVerificationIntentResolver([
+      {
+        resolve: () => {
+          calls.push("persisted");
+          return Effect.succeed(null);
+        },
+      },
+      {
+        resolve: () => {
+          calls.push("static");
+          return Effect.succeed({ source: "static" });
+        },
+      },
+      {
+        resolve: () => {
+          calls.push("unreachable");
+          return Effect.succeed({ source: "wrong" });
+        },
+      },
+    ]);
+    await expect(
+      Effect.runPromise(
+        ordered.resolve({ actor_id: "actor", intent_id: "intent", provider_id: "provider" }),
+      ),
+    ).resolves.toEqual({ source: "static" });
+    expect(calls).toEqual(["persisted", "static"]);
+  });
+
   test("derives issuer and protocol from the provider manifest", async () => {
     const resolver = makeStaticVerificationIntentResolver([manifest], "test");
     const resolved = await Effect.runPromise(

@@ -10,6 +10,22 @@ export const PLATFORM_AGE_18_VERIFICATION_INTENT_ID = "platform.document.age-18"
 export const PLATFORM_AGE_21_VERIFICATION_INTENT_ID = "platform.document.age-21";
 export const PLATFORM_VERIFICATION_RP_SCOPE = "pirate-social";
 
+/** First non-null trusted intent wins; storage failures never fall through. */
+export function makeOrderedVerificationIntentResolver(
+  resolvers: readonly VerificationIntentResolver[],
+): VerificationIntentResolver {
+  return {
+    resolve: (input) =>
+      Effect.gen(function* () {
+        for (const resolver of resolvers) {
+          const resolved = yield* resolver.resolve(input);
+          if (resolved !== null && resolved !== undefined) return resolved;
+        }
+        return null;
+      }),
+  };
+}
+
 const AGE_18_REQUIREMENTS = Schema.decodeUnknownSync(VerificationRequirements)([
   { claim_id: "age.minimum", minimum_age: "18" },
   { claim_id: "credential.subject_unique" },
