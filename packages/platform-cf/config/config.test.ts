@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { Config } from "effect";
+import * as BunRuntime from "bun";
+import { Config, Redacted } from "effect";
 import { AppEnv, HttpWorkerConfig, loadConfig, loadConfigFrom, secret } from "./index.ts";
 
 describe("config system (000 §9)", () => {
@@ -64,7 +65,43 @@ describe("config system (000 §9)", () => {
       SELF_PASS_ENABLED: false,
       SELF_PASS_MOCK_PASSPORT: false,
       SELF_PASS_APP_NAME: "Pirate",
+      VERY_OAUTH_ENABLED: false,
+      VERY_OAUTH_AUTHORIZATION_ENDPOINT: "",
+      VERY_OAUTH_TOKEN_ENDPOINT: "",
+      VERY_OAUTH_USERINFO_ENDPOINT: "",
+      VERY_OAUTH_ISSUER: "",
+      VERY_OAUTH_JWKS_URL: "",
+      VERY_OAUTH_CLIENT_ID: "",
+      VERY_OAUTH_REDIRECT_URI: "",
       PIRATE_API_PUBLIC_ORIGIN: "",
     });
+    expect(Redacted.value(configured.VERY_OAUTH_CLIENT_SECRET)).toBe("");
+    expect(Redacted.value(configured.VERY_OAUTH_SEALING_KEY)).toBe("");
+  });
+
+  test("Wrangler keeps Very OAuth disabled and out of required secrets in every environment", async () => {
+    const config = BunRuntime.JSONC.parse(
+      await BunRuntime.file(
+        new URL("../../../apps/http-worker/wrangler.jsonc", import.meta.url),
+      ).text(),
+    ) as {
+      readonly vars?: Record<string, string>;
+      readonly secrets?: { readonly required?: readonly string[] };
+      readonly env?: Readonly<
+        Record<
+          string,
+          {
+            readonly vars?: Record<string, string>;
+            readonly secrets?: { readonly required?: readonly string[] };
+          }
+        >
+      >;
+    };
+    const environments = [config, ...Object.values(config.env ?? {})];
+    for (const environment of environments) {
+      expect(environment.vars?.VERY_OAUTH_ENABLED).toBe("false");
+      expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
+      expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
+    }
   });
 });

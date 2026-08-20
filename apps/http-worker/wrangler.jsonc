@@ -54,6 +54,7 @@
     "SELF_PASS_ENABLED": "false",
     "SELF_PASS_APP_NAME": "Pirate",
     "SELF_PASS_MOCK_PASSPORT": "false",
+    "VERY_OAUTH_ENABLED": "false",
     // Reviewed inventory: development currently has no additional internal
     // credential headers beyond the platform denylist.
     "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
@@ -114,6 +115,7 @@
         // Staging is the developer-document environment. A separately
         // authorized live-document deployment is required for physical proof.
         "SELF_PASS_MOCK_PASSPORT": "true",
+        "VERY_OAUTH_ENABLED": "false",
         "ZKPASSPORT_ENABLED": "true",
         "ZKPASSPORT_DOMAIN": "web-next-staging.pirate.sc",
         "ZKPASSPORT_NAME": "Pirate",
@@ -177,6 +179,7 @@
         "SELF_PASS_ENABLED": "false",
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
+        "VERY_OAUTH_ENABLED": "false",
         "PIRATE_APP_JWT_ISSUER": "api-next-session-production",
         "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-production",
         "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-production",

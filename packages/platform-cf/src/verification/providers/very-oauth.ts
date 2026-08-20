@@ -352,8 +352,11 @@ function unsealSession(
       const parts = value.split(".");
       if (parts.length !== 5 || `${parts[0]}.${parts[1]}.${parts[2]}` !== SESSION_PREFIX)
         throw new Error("invalid");
-      const iv = decodeBase64Url(parts[3]);
-      const ciphertext = decodeBase64Url(parts[4]);
+      const ivPart = parts[3];
+      const ciphertextPart = parts[4];
+      if (ivPart === undefined || ciphertextPart === undefined) throw new Error("invalid");
+      const iv = decodeBase64Url(ivPart);
+      const ciphertext = decodeBase64Url(ciphertextPart);
       if (
         iv === undefined ||
         ciphertext === undefined ||
@@ -519,19 +522,23 @@ function buildAssertion(
     binding_group_id: bindingGroupId,
     observed_at: observedAt,
   };
-  return requirement.claim_id === "human.personhood"
-    ? {
-        ...common,
-        claim_id: requirement.claim_id,
-        assurance: "provider_attested",
-        value: { personhood: true },
-      }
-    : {
-        ...common,
-        claim_id: requirement.claim_id,
-        assurance: "provider_attested",
-        value: { subject_unique: true },
-      };
+  if (requirement.claim_id === "human.personhood") {
+    return {
+      ...common,
+      claim_id: requirement.claim_id,
+      assurance: "provider_attested",
+      value: { personhood: true },
+    };
+  }
+  if (requirement.claim_id === "credential.subject_unique") {
+    return {
+      ...common,
+      claim_id: requirement.claim_id,
+      assurance: "provider_attested",
+      value: { subject_unique: true },
+    };
+  }
+  throw new Error("unsupported Very OAuth claim");
 }
 
 function evidenceBundle(
@@ -539,7 +546,8 @@ function evidenceBundle(
   subject: string,
   options: VeryOauthAdapterOptions,
 ): Effect.Effect<EvidenceBundle, VerificationProviderFailure> {
-  if (session.scope.kind !== "named") return Effect.fail(rejected("complete"));
+  const scope = session.scope;
+  if (scope.kind !== "named") return Effect.fail(rejected("complete"));
   const observed_at = options.clock.now();
   const receipt_id = options.identifiers.next("receipt");
   const subject_key_id = options.identifiers.next("subject");
@@ -584,9 +592,9 @@ function evidenceBundle(
           id: receipt_id,
           proof_session_id: session.id,
           provider_id: VERY_OAUTH_PROVIDER_ID,
-          issuer: session.scope.issuer,
+          issuer: scope.issuer,
           method: session.method,
-          scope: session.scope,
+          scope,
           provider_configuration: session.provider_configuration,
           protocol_version: session.protocol_version,
           environment: session.environment,
@@ -600,9 +608,9 @@ function evidenceBundle(
       subject_keys: [
         {
           id: subject_key_id,
-          issuer: session.scope.issuer,
+          issuer: scope.issuer,
           method: session.method,
-          scope: session.scope,
+          scope,
           subject_digest,
         },
       ],
@@ -660,7 +668,11 @@ function formBody(values: Readonly<Record<string, string>>): string {
 }
 
 export function makeVeryOauthFetchTransport(fetcher: typeof fetch = fetch): VeryOauthTransport {
-  const request = (input: RequestInfo | URL, init: RequestInit, operation: "start" | "complete") =>
+  const request = (
+    input: Parameters<typeof fetch>[0],
+    init: RequestInit,
+    operation: "start" | "complete",
+  ) =>
     Effect.tryPromise({
       try: async () => {
         const controller = new AbortController();
