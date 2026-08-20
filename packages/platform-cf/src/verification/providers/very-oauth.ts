@@ -9,6 +9,7 @@ import {
   VerificationProviderRejected,
   type VerificationProviderStartInput,
   VerificationProviderUnavailable,
+  VerificationProviderUnboundRejected,
 } from "@pirate/application/verification";
 import {
   type Assertion,
@@ -27,36 +28,38 @@ import { DateTime, Effect, Option, Schema } from "effect";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 
 export const VERY_OAUTH_PROVIDER_ID = "very.oauth" as const;
-export const VERY_OAUTH_PROTOCOL_VERSION = "very-oauth-v1" as const;
+export const VERY_OAUTH_PROTOCOL_VERSION = "oauth2-oidc-v1" as const;
 export const VERY_OAUTH_RP_SCOPE = "pirate-social" as const;
-export const VERY_OAUTH_CONFIGURATION_REFERENCE = "very.oauth.native" as const;
+export const VERY_OAUTH_CONFIGURATION_REFERENCE = "very-oauth" as const;
 export const VERY_OAUTH_CONFIGURATION_VERSION = "1" as const;
 export const VERY_OAUTH_EVIDENCE_KIND = "very.oauth.id-token-userinfo.v1" as const;
 export const VERY_OAUTH_HTTP_TIMEOUT_MS = 15_000 as const;
 export const VERY_OAUTH_SESSION_TTL_SECONDS = 300 as const;
+export const VERY_OAUTH_MAX_RESPONSE_BYTES = 1_048_576 as const;
+export const VERY_OAUTH_ISSUER = "https://connect.very.org" as const;
 const VERY_OAUTH_ID_TOKEN_CLOCK_SKEW_SECONDS = 60;
 
 const VERY_OAUTH_CLAIMS = [
-  "credential.subject_unique",
   "human.personhood",
+  "credential.subject_unique",
 ] as const satisfies readonly CanonicalClaimIdentifier[];
 
 export const VERY_OAUTH_MANIFEST: ProofProviderManifest = {
   provider_id: VERY_OAUTH_PROVIDER_ID,
   manifest_version: "1",
-  operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 15_000, callback_ms: 1000 },
+  operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 45_000, callback_ms: 1000 },
   callback_mode: "none",
   callback_header_allowlist: [],
   protocol_versions: [VERY_OAUTH_PROTOCOL_VERSION],
   environments: ["test", "development", "staging", "production"],
-  supported_methods: ["document"],
+  supported_methods: ["palm_oauth"],
   claim_ids: [...VERY_OAUTH_CLAIMS],
   claim_capabilities: VERY_OAUTH_CLAIMS.map((claim_id) => ({
     claim_id,
     request_modes: ["dynamic" as const],
   })),
   presentation_kinds: ["redirect"],
-  assurance_levels: ["personhood", "provider_attested"],
+  assurance_levels: ["provider_attested"],
   subject_key_scope_semantics: "issuer_rp_scope",
 };
 
@@ -146,10 +149,16 @@ export type VeryOauthAdapterOptions = Readonly<{
 
 const SealedSession = Schema.Struct({
   version: Schema.Literal(1),
+  proof_session_id: Schema.NonEmptyString,
+  actor_id: Schema.NonEmptyString,
+  intent_id: Schema.NonEmptyString,
+  request_hash: Sha256Hex,
+  redirect_uri: Schema.NonEmptyString,
+  issued_at: CanonicalIsoInstantSchema,
+  expires_at: CanonicalIsoInstantSchema,
   state: Schema.NonEmptyString,
   nonce: Schema.NonEmptyString,
   code_verifier: Schema.NonEmptyString,
-  issued_at: CanonicalIsoInstantSchema,
 });
 type SealedSession = Schema.Schema.Type<typeof SealedSession>;
 
@@ -161,11 +170,20 @@ const TokenResponse = Schema.Struct({
 const UserInfoResponse = Schema.Struct({ sub: Schema.NonEmptyString });
 
 const ClientSubmission = Schema.Struct({
-  kind: Schema.Literal("very-oauth"),
   code: Schema.NonEmptyString,
   state: Schema.NonEmptyString,
 });
 type ClientSubmission = Schema.Schema.Type<typeof ClientSubmission>;
+
+const StrictClientSubmission = Schema.Unknown.check(
+  Schema.makeFilter((value) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return "object";
+    const keys = Object.keys(value);
+    return keys.length === 2 && keys.every((key) => key === "code" || key === "state")
+      ? undefined
+      : "exactly code and state";
+  }),
+);
 
 const SESSION_AAD = "pirate-api-next/very.oauth/session/v1";
 const SESSION_PREFIX = "very.oauth.v1";
@@ -179,6 +197,13 @@ function invalid(operation: "plan" | "start" | "complete"): VerificationProvider
 
 function rejected(operation: "start" | "complete"): VerificationProviderRejected {
   return new VerificationProviderRejected({ provider_id: VERY_OAUTH_PROVIDER_ID, operation });
+}
+
+function unbound(): VerificationProviderUnboundRejected {
+  return new VerificationProviderUnboundRejected({
+    provider_id: VERY_OAUTH_PROVIDER_ID,
+    operation: "complete",
+  });
 }
 
 function unavailable(operation: "start" | "complete"): VerificationProviderUnavailable {
@@ -227,13 +252,14 @@ function exactClaims(
   return (
     requirements.length === VERY_OAUTH_CLAIMS.length &&
     JSON.stringify(claimIds(requirements)) === JSON.stringify(ids) &&
-    JSON.stringify(ids) === JSON.stringify(VERY_OAUTH_CLAIMS)
+    new Set(ids).size === VERY_OAUTH_CLAIMS.length &&
+    VERY_OAUTH_CLAIMS.every((claim) => ids.includes(claim))
   );
 }
 
 function requestSupported(value: VeryOauthPlanInput): boolean {
   return (
-    value.method === "document" &&
+    value.method === "palm_oauth" &&
     value.requested_requirements.length === VERY_OAUTH_CLAIMS.length &&
     exactClaims(value.requested_requirements, value.requested_claim_ids) &&
     value.subject_binding_intent !== "none" &&
@@ -257,7 +283,7 @@ function expectedScope(): SubjectScope {
   return {
     kind: "named",
     scope_semantics: "issuer_rp_scope",
-    issuer: VERY_OAUTH_PROVIDER_ID,
+    issuer: VERY_OAUTH_ISSUER,
     rp_scope: VERY_OAUTH_RP_SCOPE,
   };
 }
@@ -347,15 +373,17 @@ function unsealSession(
       if (Option.isNone(decoded)) throw new Error("invalid");
       return decoded.value;
     },
-    catch: () => rejected("complete"),
+    catch: () => unbound(),
   });
 }
 
 function decodeSubmission(
   value: unknown,
 ): Effect.Effect<ClientSubmission, VerificationProviderFailure> {
-  const decoded = Schema.decodeUnknownOption(ClientSubmission)(value);
-  return Option.isSome(decoded) ? Effect.succeed(decoded.value) : Effect.fail(rejected("complete"));
+  const strict = Schema.decodeUnknownOption(StrictClientSubmission)(value);
+  if (Option.isNone(strict)) return Effect.fail(unbound());
+  const decoded = Schema.decodeUnknownOption(ClientSubmission)(strict.value);
+  return Option.isSome(decoded) ? Effect.succeed(decoded.value) : Effect.fail(unbound());
 }
 
 function decodeTokenResponse(
@@ -378,10 +406,21 @@ function responseBody(
   if (response.status === 429 || response.status >= 500)
     return Effect.fail(unavailable("complete"));
   if (response.status < 200 || response.status >= 300) return Effect.fail(rejected("complete"));
+  try {
+    if (
+      new TextEncoder().encode(JSON.stringify(response.body)).byteLength >
+      VERY_OAUTH_MAX_RESPONSE_BYTES
+    ) {
+      return Effect.fail(invalid("complete"));
+    }
+  } catch {
+    return Effect.fail(invalid("complete"));
+  }
   return Effect.succeed(response.body);
 }
 
 function validHttpsUrl(value: string): boolean {
+  if (value.trim() !== value || value.length === 0) return false;
   try {
     const url = new URL(value);
     return (
@@ -392,11 +431,15 @@ function validHttpsUrl(value: string): boolean {
   }
 }
 
+function validConfigString(value: string): boolean {
+  return value.length > 0 && value.trim() === value;
+}
+
 function configurationValid(options: VeryOauthAdapterOptions): boolean {
   return (
     options.sealing_key.byteLength === 32 &&
-    options.client_id.length > 0 &&
-    options.client_secret.length > 0 &&
+    validConfigString(options.client_id) &&
+    validConfigString(options.client_secret) &&
     validHttpsUrl(options.authorization_endpoint) &&
     validHttpsUrl(options.token_endpoint) &&
     validHttpsUrl(options.userinfo_endpoint) &&
@@ -409,7 +452,7 @@ function configurationValid(options: VeryOauthAdapterOptions): boolean {
 function sessionMatches(session: ProofSession): boolean {
   return (
     session.provider_id === VERY_OAUTH_PROVIDER_ID &&
-    session.method === "document" &&
+    session.method === "palm_oauth" &&
     session.request_mode === "dynamic" &&
     sameConfiguration(session.provider_configuration, configRef()) &&
     sameScope(session.scope, expectedScope()) &&
@@ -419,12 +462,37 @@ function sessionMatches(session: ProofSession): boolean {
   );
 }
 
+function exactSessionExpiry(
+  issuedAt: CanonicalIsoInstant,
+  expiresAt: CanonicalIsoInstant,
+): boolean {
+  const issued = DateTime.make(issuedAt);
+  const expires = DateTime.make(expiresAt);
+  return (
+    Option.isSome(issued) &&
+    Option.isSome(expires) &&
+    DateTime.toEpochMillis(expires.value) - DateTime.toEpochMillis(issued.value) ===
+      VERY_OAUTH_SESSION_TTL_SECONDS * 1000
+  );
+}
+
 function liveSession(
   session: ProofSession,
   sealed: SealedSession,
   now: CanonicalIsoInstant,
+  redirectUri: string,
 ): boolean {
-  if (sealed.issued_at !== session.started_at) return false;
+  if (
+    sealed.proof_session_id !== session.id ||
+    sealed.actor_id !== session.actor_id ||
+    sealed.intent_id !== session.intent_id ||
+    sealed.request_hash !== session.request_hash ||
+    sealed.redirect_uri !== redirectUri ||
+    sealed.issued_at !== session.started_at ||
+    sealed.expires_at !== session.expires_at ||
+    !exactSessionExpiry(sealed.issued_at, sealed.expires_at)
+  )
+    return false;
   const sessionTime = DateTime.make(sealed.issued_at);
   const nowTime = DateTime.make(now);
   if (Option.isNone(sessionTime) || Option.isNone(nowTime)) return false;
@@ -432,7 +500,7 @@ function liveSession(
     DateTime.toEpochMillis(nowTime.value) >= DateTime.toEpochMillis(sessionTime.value) &&
     DateTime.toEpochMillis(nowTime.value) - DateTime.toEpochMillis(sessionTime.value) <=
       VERY_OAUTH_SESSION_TTL_SECONDS * 1000 &&
-    session.expires_at > now
+    sealed.expires_at > now
   );
 }
 
@@ -599,9 +667,17 @@ export function makeVeryOauthFetchTransport(fetcher: typeof fetch = fetch): Very
         const timeout = setTimeout(() => controller.abort(), VERY_OAUTH_HTTP_TIMEOUT_MS);
         try {
           const response = await fetcher(input, { ...init, signal: controller.signal });
+          const contentLength = response.headers.get("content-length");
+          if (contentLength !== null && Number(contentLength) > VERY_OAUTH_MAX_RESPONSE_BYTES) {
+            throw invalid(operation);
+          }
           let body: unknown;
+          const text = await response.text();
+          if (new TextEncoder().encode(text).byteLength > VERY_OAUTH_MAX_RESPONSE_BYTES) {
+            throw invalid(operation);
+          }
           try {
-            body = await response.json();
+            body = JSON.parse(text) as unknown;
           } catch {
             body = undefined;
           }
@@ -615,7 +691,8 @@ export function makeVeryOauthFetchTransport(fetcher: typeof fetch = fetch): Very
       catch: (error) =>
         error instanceof VerificationProviderRejected ||
         error instanceof VerificationProviderMisconfigured ||
-        error instanceof VerificationProviderUnavailable
+        error instanceof VerificationProviderUnavailable ||
+        error instanceof VerificationProviderInvalidResponse
           ? error
           : unavailable(operation),
     });
@@ -665,23 +742,37 @@ export function makeVeryOauthProvider(
       )
         return Effect.fail(rejected("start"));
       const issued_at = options.clock.now();
+      const expires_at = options.clock.expiresAt(issued_at);
+      if (!exactSessionExpiry(issued_at, expires_at)) return Effect.fail(rejected("start"));
+      const sessionId = options.identifiers.next("session");
       const state = randomString(options.randomness);
       const nonce = randomString(options.randomness);
       const code_verifier = randomString(options.randomness);
       return pkceChallenge(code_verifier).pipe(
         Effect.flatMap((code_challenge) =>
           sealSession(
-            { version: 1, state, nonce, code_verifier, issued_at },
+            {
+              version: 1,
+              proof_session_id: sessionId,
+              actor_id: input.actor_id,
+              intent_id: input.intent_id,
+              request_hash: input.request_hash,
+              redirect_uri: options.redirect_uri,
+              issued_at,
+              expires_at,
+              state,
+              nonce,
+              code_verifier,
+            },
             options.sealing_key,
             options.randomness,
           ).pipe(
             Effect.map((upstream_session_ref) => {
-              const sessionId = options.identifiers.next("session");
               const authorization = new URL(options.authorization_endpoint);
               authorization.searchParams.set("response_type", "code");
               authorization.searchParams.set("client_id", options.client_id);
               authorization.searchParams.set("redirect_uri", options.redirect_uri);
-              authorization.searchParams.set("scope", "openid profile");
+              authorization.searchParams.set("scope", "openid");
               authorization.searchParams.set("state", state);
               authorization.searchParams.set("nonce", nonce);
               authorization.searchParams.set("code_challenge", code_challenge);
@@ -705,7 +796,7 @@ export function makeVeryOauthProvider(
                 environment: input.environment,
                 status: "pending",
                 started_at,
-                expires_at: options.clock.expiresAt(started_at),
+                expires_at,
               };
               return {
                 session,
@@ -721,18 +812,18 @@ export function makeVeryOauthProvider(
       );
     },
     complete: (input: VerificationProviderCompleteInput) => {
+      if (!configured) return Effect.fail(misconfigured("complete"));
       if (
-        !configured ||
         !sessionMatches(input.session) ||
         input.session.status !== "pending" ||
         input.session.upstream_session_ref === undefined ||
         input.submission.channel !== "client_result"
       )
-        return Effect.fail(!configured ? misconfigured("complete") : rejected("complete"));
+        return Effect.fail(unbound());
       return unsealSession(input.session.upstream_session_ref, options.sealing_key).pipe(
         Effect.filterOrFail(
-          (sealed) => liveSession(input.session, sealed, options.clock.now()),
-          () => rejected("complete"),
+          (sealed) => liveSession(input.session, sealed, options.clock.now(), options.redirect_uri),
+          () => unbound(),
         ),
         Effect.flatMap((sealed) =>
           decodeSubmission(input.submission.payload).pipe(
@@ -741,7 +832,7 @@ export function makeVeryOauthProvider(
         ),
         Effect.filterOrFail(
           ({ sealed, submission }) => submission.state === sealed.state,
-          () => rejected("complete"),
+          () => unbound(),
         ),
         Effect.flatMap(({ sealed, submission }) =>
           options.transport
