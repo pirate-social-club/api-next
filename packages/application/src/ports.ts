@@ -1,7 +1,9 @@
 import type {
   CastPostVote,
   ClearPostVote,
+  CommitCommunityCreationIntent,
   CreateCommentReply,
+  CreateCommunityCreationIntent,
   CreatePost,
   FollowCommunity,
   GetCommunityPreview,
@@ -12,6 +14,7 @@ import type {
   GetPublicProfileByHandle,
   JoinCommunity,
   UnfollowCommunity,
+  UpdateCommunityCreationIntent,
 } from "@pirate/contracts";
 import { Context, Data, type Effect, type Schema } from "effect";
 
@@ -379,6 +382,72 @@ export interface CommunityStoreService {
 export class CommunityStore extends Context.Service<CommunityStore, CommunityStoreService>()(
   "CommunityStore",
 ) {}
+
+// --- Server-owned community creation intents (specs 006/010).
+
+export type CommunityCreationIntentDocument = Schema.Schema.Type<
+  typeof CreateCommunityCreationIntent.response
+>;
+export type CreateCommunityCreationIntentBody = Schema.Schema.Type<
+  (typeof CreateCommunityCreationIntent.request)["body"]
+>;
+export type UpdateCommunityCreationIntentBody = Schema.Schema.Type<
+  (typeof UpdateCommunityCreationIntent.request)["body"]
+>;
+export type CommitCommunityCreationIntentBody = Schema.Schema.Type<
+  (typeof CommitCommunityCreationIntent.request)["body"]
+>;
+
+export type CommunityCreationRepositoryOperation = "create" | "get" | "update" | "commit";
+export type CommunityCreationRepositoryReason =
+  | "not-found"
+  | "idempotency-conflict"
+  | "revision-conflict"
+  | "constraint"
+  | "invalid-row";
+
+export class CommunityCreationRepositoryError extends Data.TaggedError(
+  "CommunityCreationRepositoryError",
+)<{
+  readonly operation: CommunityCreationRepositoryOperation;
+  readonly reason: CommunityCreationRepositoryReason;
+}> {}
+
+export type CommunityCreationRepositoryFailure =
+  | CommunityCreationRepositoryError
+  | ControlPlaneError;
+
+export interface CommunityCreationStoreService {
+  readonly create: (input: {
+    readonly actor: M2Actor;
+    readonly body: CreateCommunityCreationIntentBody;
+    readonly requestHash: string;
+  }) => Effect.Effect<CommunityCreationIntentDocument, CommunityCreationRepositoryFailure>;
+
+  readonly get: (input: {
+    readonly intentId: string;
+    readonly actor: M2Actor;
+  }) => Effect.Effect<CommunityCreationIntentDocument | null, CommunityCreationRepositoryFailure>;
+
+  readonly update: (input: {
+    readonly intentId: string;
+    readonly actor: M2Actor;
+    readonly body: UpdateCommunityCreationIntentBody;
+    readonly requestHash: string;
+  }) => Effect.Effect<CommunityCreationIntentDocument, CommunityCreationRepositoryFailure>;
+
+  readonly commit: (input: {
+    readonly intentId: string;
+    readonly actor: M2Actor;
+    readonly body: CommitCommunityCreationIntentBody;
+    readonly requestHash: string;
+  }) => Effect.Effect<CommunityCreationIntentDocument, CommunityCreationRepositoryFailure>;
+}
+
+export class CommunityCreationStore extends Context.Service<
+  CommunityCreationStore,
+  CommunityCreationStoreService
+>()("CommunityCreationStore") {}
 
 export interface ContentStoreService {
   /** Resolve the globally unique public post ID before scoped access. */
