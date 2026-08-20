@@ -1,10 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ControlPlaneResult, ControlPlaneStatement } from "@pirate/application";
 import { VerificationStartStorageFailed } from "@pirate/application/use-cases/verification-start";
-import {
-  CURATED_HUMAN_MEMBERSHIP_POLICY,
-  HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-} from "@pirate/domain";
+import { communityJoinActionPayloadHash, communityJoinIntentBindingHash } from "@pirate/domain";
 import { Effect } from "effect";
 import { makeCommunityJoinIntentResolver } from "./community-join-intent-resolver.ts";
 
@@ -17,10 +14,13 @@ function exactRow(overrides: Record<string, unknown> = {}) {
     community_id: "community-a",
     action_kind: "community_join",
     action_scope: "community-a",
-    action_payload_hash: CURATED_HUMAN_MEMBERSHIP_POLICY.policy_hash,
-    intent_binding_hash: HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+    action_payload_hash: communityJoinActionPayloadHash("community-a"),
+    intent_binding_hash: communityJoinIntentBindingHash({
+      actorId: "user-a",
+      communityId: "community-a",
+    }),
     status: "open",
-    active: true,
+    start_authorized: true,
     ...overrides,
   };
 }
@@ -51,6 +51,7 @@ describe("community join verification intent resolver", () => {
       readonly: true,
     });
     expect(statements[0]?.values.slice(0, 2)).toEqual([INTENT_ID, "user-a"]);
+    expect(statements[0]?.values).toHaveLength(20);
   });
 
   test("rejects absent, altered, foreign, and expired persisted intents", async () => {
@@ -93,7 +94,7 @@ describe("community join verification intent resolver", () => {
       { action_payload_hash: "0".repeat(64) },
       { intent_binding_hash: "0".repeat(64) },
       { status: "expired" },
-      { active: false },
+      { start_authorized: false },
     ]) {
       await expect(
         Effect.runPromise(
@@ -108,7 +109,7 @@ describe("community join verification intent resolver", () => {
   });
 
   test("fails closed for ambiguous or malformed storage and configuration", async () => {
-    for (const rows of [[exactRow(), exactRow()], [exactRow({ active: "true" })]]) {
+    for (const rows of [[exactRow(), exactRow()], [exactRow({ start_authorized: "true" })]]) {
       await expect(
         Effect.runPromise(
           resolverWith(rows).resolver.resolve({

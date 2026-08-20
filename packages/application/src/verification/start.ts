@@ -136,6 +136,16 @@ function decodeIntent(input: unknown) {
     : Effect.succeed(decoded.value);
 }
 
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Readonly<Record<string, unknown>>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",")}}`;
+}
+
 /**
  * Start one provider-neutral ceremony from a server-resolved intent. The
  * actor and canonical requirements never come from provider callback data.
@@ -202,6 +212,16 @@ export const startVerification = Effect.fn("startVerification")(function* (
   }
 
   const reservation = reservationOutcome.reservation;
+  const revalidatedPlanInput = yield* services.intents.resolve(input).pipe(
+    Effect.flatMap(decodeIntent),
+    Effect.tapError(() =>
+      services.store.release(reservation).pipe(Effect.catch(() => Effect.succeed(undefined))),
+    ),
+  );
+  if (canonicalJson(revalidatedPlanInput) !== canonicalJson(planInput)) {
+    yield* services.store.release(reservation).pipe(Effect.catch(() => Effect.succeed(undefined)));
+    return yield* new VerificationStartRejected({ reason: "intent_unavailable" });
+  }
   const started = yield* provider
     .start(startInput)
     .pipe(

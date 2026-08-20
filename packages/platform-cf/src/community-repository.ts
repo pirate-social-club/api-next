@@ -14,10 +14,17 @@ import {
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 import {
+  CommunityJoinIntentDataInvalid,
+  resolveOrIssueCommunityJoinIntent,
+} from "./community-join-intent-store.ts";
+import {
+  type CommunityGateEvaluation,
   CURATED_AGE_GATE_SUMMARY,
+  CURATED_HUMAN_GATE_SUMMARY,
   GatesV2CommunityDataInvalid,
   gateEvaluationDetails,
   loadCuratedAgeEvaluation,
+  loadCuratedHumanMembershipEvaluation,
   persistEnforceDecision,
 } from "./gates-v2-community.ts";
 import { PLATFORM_AGE_18_VERIFICATION_INTENT_ID } from "./verification-intent-resolver.ts";
@@ -289,7 +296,8 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         member_count: memberCount,
         follower_count: followerCount,
         moderators: [],
-        membership_gate_summaries: [],
+        membership_gate_summaries:
+          mode === "gated" && verification === "very" ? [CURATED_HUMAN_GATE_SUMMARY] : [],
         rules: [],
         created,
         ...(input.viewerUserId === undefined
@@ -335,14 +343,16 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
 
       const status = parseMembershipStatus(community.status);
       if (status === null) return yield* Effect.fail(invalid("eligibility"));
+      const humanGate = mode === "gated" && verification === "very";
       if (status === "banned") {
         return {
           community: id,
           membership_mode: mode,
           human_verification_lane: verification,
+          ...(humanGate ? { preferred_verification_provider: "very.oauth" as const } : {}),
           joinable_now: false,
           status: "banned" as const,
-          membership_gate_summaries: [],
+          membership_gate_summaries: humanGate ? [CURATED_HUMAN_GATE_SUMMARY] : [],
           failure_reason: "banned" as const,
           next_action: { kind: "blocked" as const, reason: "banned" as const },
         };
@@ -352,9 +362,10 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
           community: id,
           membership_mode: mode,
           human_verification_lane: verification,
+          ...(humanGate ? { preferred_verification_provider: "very.oauth" as const } : {}),
           joinable_now: false,
           status: "already_joined" as const,
-          membership_gate_summaries: [],
+          membership_gate_summaries: humanGate ? [CURATED_HUMAN_GATE_SUMMARY] : [],
           next_action: { kind: "none" as const, reason: "already_joined" as const },
         };
       }
@@ -363,9 +374,10 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
           community: id,
           membership_mode: mode,
           human_verification_lane: verification,
+          ...(humanGate ? { preferred_verification_provider: "very.oauth" as const } : {}),
           joinable_now: false,
           status: "pending_request" as const,
-          membership_gate_summaries: [],
+          membership_gate_summaries: humanGate ? [CURATED_HUMAN_GATE_SUMMARY] : [],
           next_action: {
             kind: "wait" as const,
             reason_code: "membership_pending" as const,
@@ -373,6 +385,168 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         };
       }
       if (mode === "gated") {
+        if (verification === "very") {
+          return yield* db.withTransaction((transaction) =>
+            Effect.gen(function* () {
+              const lockedCommunity = yield* transaction.execute<JoinCommunityRow>({
+                label: "community.memberships.lock-human-eligibility-community",
+                text: `SELECT community_id, membership_mode, human_verification_lane
+                         FROM communities
+                        WHERE community_id = $1
+                          AND status = 'active'
+                        FOR UPDATE`,
+                values: [input.communityId],
+                readonly: false,
+              });
+              if (lockedCommunity.rows.length !== 1) {
+                return yield* Effect.fail(invalid("eligibility"));
+              }
+              const locked = lockedCommunity.rows[0];
+              if (
+                locked === undefined ||
+                locked.community_id !== input.communityId ||
+                locked.membership_mode !== "gated" ||
+                locked.human_verification_lane !== "very"
+              ) {
+                return yield* Effect.fail(invalid("eligibility"));
+              }
+              const membership = yield* transaction.execute<MembershipRow>({
+                label: "community.memberships.lock-human-eligibility-membership",
+                text: `SELECT status
+                         FROM community_memberships
+                        WHERE community_id = $1
+                          AND user_id = $2
+                        FOR UPDATE`,
+                values: [input.communityId, input.userId],
+                readonly: false,
+              });
+              if (membership.rows.length > 1) {
+                return yield* Effect.fail(invalid("eligibility"));
+              }
+              const lockedStatus =
+                membership.rows[0] === undefined
+                  ? "missing"
+                  : parseMembershipStatus(membership.rows[0].status);
+              if (lockedStatus === null) return yield* Effect.fail(invalid("eligibility"));
+              if (lockedStatus === "banned") {
+                return {
+                  community: id,
+                  membership_mode: mode,
+                  human_verification_lane: verification,
+                  preferred_verification_provider: "very.oauth" as const,
+                  joinable_now: false,
+                  status: "banned" as const,
+                  membership_gate_summaries: [CURATED_HUMAN_GATE_SUMMARY],
+                  failure_reason: "banned" as const,
+                  next_action: { kind: "blocked" as const, reason: "banned" as const },
+                };
+              }
+              if (lockedStatus === "member") {
+                return {
+                  community: id,
+                  membership_mode: mode,
+                  human_verification_lane: verification,
+                  preferred_verification_provider: "very.oauth" as const,
+                  joinable_now: false,
+                  status: "already_joined" as const,
+                  membership_gate_summaries: [CURATED_HUMAN_GATE_SUMMARY],
+                  next_action: { kind: "none" as const, reason: "already_joined" as const },
+                };
+              }
+              if (lockedStatus === "pending") {
+                return {
+                  community: id,
+                  membership_mode: mode,
+                  human_verification_lane: verification,
+                  preferred_verification_provider: "very.oauth" as const,
+                  joinable_now: false,
+                  status: "pending_request" as const,
+                  membership_gate_summaries: [CURATED_HUMAN_GATE_SUMMARY],
+                  next_action: {
+                    kind: "wait" as const,
+                    reason_code: "membership_pending" as const,
+                  },
+                };
+              }
+
+              const evaluation = yield* loadCuratedHumanMembershipEvaluation(transaction, {
+                communityId: input.communityId,
+                userId: input.userId,
+                lock: true,
+              }).pipe(
+                Effect.mapError((error) =>
+                  error instanceof GatesV2CommunityDataInvalid ? invalid("eligibility") : error,
+                ),
+              );
+              const gateEvaluation = gateEvaluationDetails(evaluation);
+              if (evaluation.outcome === "indeterminate") {
+                return yield* Effect.fail(invalid("eligibility"));
+              }
+              if (evaluation.outcome === "pass") {
+                return {
+                  community: id,
+                  membership_mode: mode,
+                  human_verification_lane: verification,
+                  preferred_verification_provider: "very.oauth" as const,
+                  joinable_now: true,
+                  status: "joinable" as const,
+                  membership_gate_summaries: [CURATED_HUMAN_GATE_SUMMARY],
+                  gate_evaluation: gateEvaluation,
+                  next_action: { kind: "join" as const },
+                };
+              }
+              if (evaluation.outcome === "needs_evidence") {
+                const action = yield* resolveOrIssueCommunityJoinIntent(transaction, {
+                  communityId: input.communityId,
+                  userId: input.userId,
+                }).pipe(
+                  Effect.mapError((error) =>
+                    error instanceof CommunityJoinIntentDataInvalid
+                      ? invalid("eligibility")
+                      : error,
+                  ),
+                );
+                return {
+                  community: id,
+                  membership_mode: mode,
+                  human_verification_lane: verification,
+                  preferred_verification_provider: "very.oauth" as const,
+                  joinable_now: false,
+                  status: "verification_required" as const,
+                  membership_gate_summaries: [CURATED_HUMAN_GATE_SUMMARY],
+                  missing_capabilities: ["human_verification" as const],
+                  suggested_verification_provider: "very.oauth" as const,
+                  suggested_verification_intent: "community_join" as const,
+                  failure_reason: "missing_verification" as const,
+                  gate_evaluation: gateEvaluation,
+                  next_action:
+                    action.kind === "wait"
+                      ? ({
+                          kind: "wait" as const,
+                          reason_code: "verification_pending" as const,
+                        } as const)
+                      : ({
+                          kind: "start_verification" as const,
+                          provider_id: "very.oauth" as const,
+                          intent_id: action.intentId,
+                        } as const),
+                };
+              }
+              return {
+                community: id,
+                membership_mode: mode,
+                human_verification_lane: verification,
+                preferred_verification_provider: "very.oauth" as const,
+                joinable_now: false,
+                status: "gate_failed" as const,
+                membership_gate_summaries: [CURATED_HUMAN_GATE_SUMMARY],
+                failure_reason: "unsupported" as const,
+                gate_evaluation: gateEvaluation,
+                next_action: { kind: "blocked" as const, reason: "gate_failed" as const },
+              };
+            }),
+          );
+        }
         const evaluation = yield* loadCuratedAgeEvaluation(db, {
           communityId: input.communityId,
           userId: input.userId,
@@ -456,7 +630,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         Effect.gen(function* () {
           const communityResult = yield* transaction.execute<JoinCommunityRow>({
             label: "community.memberships.join-community",
-            text: `SELECT community_id, membership_mode
+            text: `SELECT community_id, membership_mode, human_verification_lane
                      FROM communities
                     WHERE community_id = $1
                       AND status = 'active'
@@ -469,12 +643,21 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
           const communityId =
             community === undefined ? null : asPersistedId(community.community_id);
           const mode = community === undefined ? null : membershipMode(community.membership_mode);
+          const verification =
+            community === undefined
+              ? undefined
+              : verificationLane(community.human_verification_lane);
           if (community === undefined) {
             return yield* Effect.fail(
               new CommunityRepositoryError({ operation: "join", reason: "not-found" }),
             );
           }
-          if (communityId === null || mode === null || communityId !== input.communityId) {
+          if (
+            communityId === null ||
+            mode === null ||
+            verification === undefined ||
+            communityId !== input.communityId
+          ) {
             return yield* Effect.fail(invalid("join"));
           }
 
@@ -546,14 +729,27 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
           }
 
           if (mode === "gated") {
-            const evaluation = yield* loadCuratedAgeEvaluation(transaction, {
-              communityId: input.communityId,
-              userId: input.actor.userId,
-            }).pipe(
-              Effect.mapError((error) =>
-                error instanceof GatesV2CommunityDataInvalid ? invalid("join") : error,
-              ),
-            );
+            let evaluation: CommunityGateEvaluation;
+            if (verification === "very") {
+              evaluation = yield* loadCuratedHumanMembershipEvaluation(transaction, {
+                communityId: input.communityId,
+                userId: input.actor.userId,
+                lock: true,
+              }).pipe(
+                Effect.mapError((error) =>
+                  error instanceof GatesV2CommunityDataInvalid ? invalid("join") : error,
+                ),
+              );
+            } else {
+              evaluation = yield* loadCuratedAgeEvaluation(transaction, {
+                communityId: input.communityId,
+                userId: input.actor.userId,
+              }).pipe(
+                Effect.mapError((error) =>
+                  error instanceof GatesV2CommunityDataInvalid ? invalid("join") : error,
+                ),
+              );
+            }
             yield* persistEnforceDecision(transaction, {
               communityId: input.communityId,
               userId: input.actor.userId,

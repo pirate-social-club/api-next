@@ -12,6 +12,7 @@ export * from "./bookings/attendance.ts";
 export * from "./bookings/settlement.ts";
 export * from "./community/creation-intent.ts";
 export * from "./community/gate-policy-compiler.ts";
+export * from "./community/join-intent-binding.ts";
 export * from "./gates/country-codes.ts";
 export * from "./gates/erc721.ts";
 export * from "./gates/identity-evidence.ts";

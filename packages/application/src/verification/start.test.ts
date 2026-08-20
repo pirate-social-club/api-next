@@ -105,6 +105,7 @@ function adapter(
 async function services(input: {
   readonly plan?: VerificationProviderPlanResult;
   readonly intent?: unknown;
+  readonly intentResolutions?: readonly unknown[];
   readonly commit?: Exclude<VerificationSessionStartFinalizeOutcome["kind"], "created" | "stale">;
   readonly finalize?: Exclude<
     VerificationSessionStartFinalizeOutcome["kind"],
@@ -119,15 +120,28 @@ async function services(input: {
   );
   const commits: ProviderSessionStart[] = [];
   let releases = 0;
+  let resolveCalls = 0;
   return {
     commits,
+    get resolveCalls() {
+      return resolveCalls;
+    },
     get releases() {
       return releases;
     },
     value: {
       registry,
       intents: {
-        resolve: () => Effect.succeed(Object.hasOwn(input, "intent") ? input.intent : PLAN_INPUT),
+        resolve: () => {
+          const resolution =
+            input.intentResolutions !== undefined && resolveCalls < input.intentResolutions.length
+              ? input.intentResolutions[resolveCalls]
+              : Object.hasOwn(input, "intent")
+                ? input.intent
+                : PLAN_INPUT;
+          resolveCalls += 1;
+          return Effect.succeed(resolution);
+        },
       },
       store: {
         reserve: () => {
@@ -293,6 +307,47 @@ describe("verification start use case", () => {
     expect(failureOf(inFlightExit)).toEqual(
       new VerificationStartRejected({ reason: "in_flight", retry_after_seconds: 3 }),
     );
+  });
+
+  test("revalidates the intent after reservation and before the provider side effect", async () => {
+    const startCalls = { value: 0 };
+    const unavailable = await services({
+      intentResolutions: [PLAN_INPUT, null],
+      startCalls,
+    });
+    const unavailableExit = await Effect.runPromiseExit(
+      startVerification(
+        { actor_id: "user-1", intent_id: "intent-1", provider_id: MANIFEST.provider_id },
+        unavailable.value,
+      ),
+    );
+    expect(failureOf(unavailableExit)).toEqual(
+      new VerificationStartRejected({ reason: "intent_unavailable" }),
+    );
+    expect(unavailable.resolveCalls).toBe(2);
+    expect(unavailable.releases).toBe(1);
+    expect(startCalls.value).toBe(0);
+    expect(unavailable.commits).toEqual([]);
+
+    const changed = await services({
+      intentResolutions: [
+        PLAN_INPUT,
+        { ...PLAN_INPUT, requested_requirements: [{ claim_id: "human.personhood" }] },
+      ],
+      startCalls,
+    });
+    const changedExit = await Effect.runPromiseExit(
+      startVerification(
+        { actor_id: "user-1", intent_id: "intent-1", provider_id: MANIFEST.provider_id },
+        changed.value,
+      ),
+    );
+    expect(failureOf(changedExit)).toEqual(
+      new VerificationStartRejected({ reason: "intent_unavailable" }),
+    );
+    expect(changed.releases).toBe(1);
+    expect(startCalls.value).toBe(0);
+    expect(changed.commits).toEqual([]);
   });
 
   test("allows a released provider failure to retry and persist the next success", async () => {
