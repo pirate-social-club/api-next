@@ -20,7 +20,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 9;
+const foundationTestCount = 10;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -145,6 +145,12 @@ const communityCreationStorageIdentityMigrationSql = await Bun.file(
 ).text();
 const textModerationFoundationMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0026_text_moderation_foundation.sql", import.meta.url),
+).text();
+const communityRoutesAndCreationRequirementsMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0027_community_routes_and_creation_requirements.sql",
+    import.meta.url,
+  ),
 ).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
@@ -280,6 +286,12 @@ const textModerationFoundationMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0026_text_moderation_foundation.sql"] ?? "",
   sql: textModerationFoundationMigrationSql,
 };
+const communityRoutesAndCreationRequirementsMigration: PostgresMigration = {
+  version: "0027_community_routes_and_creation_requirements.sql",
+  checksum:
+    checksumManifest.migrations["0027_community_routes_and_creation_requirements.sql"] ?? "",
+  sql: communityRoutesAndCreationRequirementsMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -307,6 +319,7 @@ const migrations: readonly PostgresMigration[] = [
   communityCreationPreflightTransitionMigration,
   communityCreationStorageIdentityMigration,
   textModerationFoundationMigration,
+  communityRoutesAndCreationRequirementsMigration,
 ];
 
 function checksum(value: string): string {
@@ -498,6 +511,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(textModerationFoundationMigrationSql)).toBe(
         textModerationFoundationMigration.checksum,
       );
+      expect(checksum(communityRoutesAndCreationRequirementsMigrationSql)).toBe(
+        communityRoutesAndCreationRequirementsMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -528,6 +544,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "assertions",
         "comments",
         "communities",
+        "community_canonical_route_bindings",
         "community_commerce_allocation_policy_versions",
         "community_commerce_donation_partners",
         "community_commerce_donation_policy_versions",
@@ -538,9 +555,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_commerce_policy_revisions",
         "community_commerce_pricing_policy_versions",
         "community_commerce_settlement_policy_versions",
+        "community_creation_ceremony_attempts",
+        "community_creation_ceremony_results",
         "community_creation_intent_revisions",
         "community_creation_intents",
         "community_creation_quota_approvals",
+        "community_creation_requirement_states",
         "community_creation_subject_claims",
         "community_feed_projection",
         "community_follows",
@@ -566,6 +586,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_purchase_route_snapshots",
         "community_purchase_settlement_snapshots",
         "community_purchase_verification_snapshots",
+        "community_route_app_host_health",
+        "community_route_ownership_evidence",
         "decision_records",
         "evidence_receipts",
         "home_feed_projection",
@@ -687,6 +709,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_commerce_pricing_policy_append_only",
         "community_commerce_route_policy_append_only",
         "community_commerce_settlement_policy_append_only",
+        "community_creation_ceremony_attempt_append_only",
+        "community_creation_ceremony_result_append_only",
         "community_creation_intent_revision_append_only",
         "community_creation_quota_approval_append_only",
         "community_creation_subject_claim_append_only",
@@ -702,6 +726,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_purchase_route_snapshot_append_only",
         "community_purchase_settlement_snapshot_append_only",
         "community_purchase_verification_snapshot_append_only",
+        "community_route_ownership_evidence_append_only",
         "decision_records_append_only",
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",
@@ -852,6 +877,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         { column_name: "human_verification_lane", ordinal_position: 8 },
         { column_name: "route_slug", ordinal_position: 9 },
         { column_name: "description", ordinal_position: 10 },
+        { column_name: "canonical_route_binding_id", ordinal_position: 11 },
       ]);
     });
     completedTestCount += 1;
@@ -2411,6 +2437,460 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(submissionColumns.rows.map((row) => row.column_name)).not.toContain("title");
       expect(submissionColumns.rows.map((row) => row.column_name)).not.toContain("body");
+    });
+    completedTestCount += 1;
+  });
+
+  test("enforces canonical routes and independently fenced creation requirements", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      await applyMigrations(scopedConnectionString, migrations);
+      const routeGrammar = await admin.query<{
+        readonly hns_blacklisted: boolean;
+        readonly hns_consecutive_hyphen: boolean;
+        readonly hns_too_long: boolean;
+        readonly hns_underscore: boolean;
+        readonly spaces_ace: boolean;
+        readonly spaces_consecutive_hyphen: boolean;
+        readonly spaces_too_long: boolean;
+        readonly spaces_underscore: boolean;
+        readonly unicode_display: boolean;
+        readonly whitespace_display: boolean;
+      }>(
+        `SELECT
+           is_community_route_root_label('hns', 'test') AS hns_blacklisted,
+           is_community_route_root_label('hns', 'one--two') AS hns_consecutive_hyphen,
+           is_community_route_root_label('hns', repeat('a', 64)) AS hns_too_long,
+           is_community_route_root_label('hns', 'tame_impala') AS hns_underscore,
+           is_community_route_root_label('spaces', 'xn--t77hga') AS spaces_ace,
+           is_community_route_root_label('spaces', 'one--two') AS spaces_consecutive_hyphen,
+           is_community_route_root_label('spaces', repeat('a', 63)) AS spaces_too_long,
+           is_community_route_root_label('spaces', 'tame_impala') AS spaces_underscore,
+           is_community_route_root_label_display('🔥') AS unicode_display,
+           is_community_route_root_label_display(' music ') AS whitespace_display`,
+      );
+      expect(routeGrammar.rows[0]).toEqual({
+        hns_blacklisted: false,
+        hns_consecutive_hyphen: true,
+        hns_too_long: false,
+        hns_underscore: true,
+        spaces_ace: true,
+        spaces_consecutive_hyphen: false,
+        spaces_too_long: false,
+        spaces_underscore: false,
+        unicode_display: true,
+        whitespace_display: false,
+      });
+      await admin.query(
+        `INSERT INTO users (user_id, status, account)
+         VALUES ('route-creator', 'active', '{}'::jsonb),
+                ('other-route-creator', 'active', '{}'::jsonb)`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_intents (
+           intent_id, actor_id, create_idempotency_key, create_request_hash,
+           revision, status, draft, canonical_policy_revision,
+           canonical_policy_hash, verification_requirement_hash,
+           verification_provider_id, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version, expires_at
+         ) VALUES (
+           'route-intent', 'route-creator', 'route-create-key', repeat('0', 64),
+           1, 'verification_required',
+           '{"name":"Jazleeuw","slug":"legacy-only","description":null,"policy":{}}'::jsonb,
+           1, repeat('1', 64), repeat('2', 64), 'very.oauth', 'dynamic',
+           'very-oauth', '1', clock_timestamp() + interval '1 day'
+         ), (
+           'null-route-intent', 'route-creator', 'null-route-create-key', repeat('d', 64),
+           1, 'verification_required',
+           '{"name":"Null route","slug":"legacy-null","description":null,"policy":{}}'::jsonb,
+           1, repeat('1', 64), repeat('2', 64), 'very.oauth', 'dynamic',
+           'very-oauth', '1', clock_timestamp() + interval '1 day'
+         )`,
+      );
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO community_creation_requirement_states (
+           intent_id, actor_id, requirement_kind, status, requirement_hash,
+           provider_id, provider_binding_hash, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version,
+           route_family, route_root_label, route_root_label_display,
+           route_path_segment
+         ) VALUES (
+           'null-route-intent', 'route-creator', 'namespace_ownership', 'unmet',
+           repeat('4', 64), 'hns.owner.v1', repeat('5', 64), 'dynamic',
+           'hns-owner', '1', 'hns', NULL, NULL, NULL
+         )`,
+        [],
+      );
+      await admin.query(
+        `INSERT INTO community_creation_requirement_states (
+           intent_id, actor_id, requirement_kind, status, requirement_hash,
+           provider_id, provider_binding_hash, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version,
+           route_family, route_root_label, route_root_label_display,
+           route_path_segment
+         ) VALUES (
+           'route-intent', 'route-creator', 'human_identity', 'unmet', repeat('2', 64),
+           'very.oauth', repeat('3', 64), 'dynamic', 'very-oauth', '1',
+           NULL, NULL, NULL, NULL
+         ), (
+           'route-intent', 'route-creator', 'namespace_ownership', 'unmet', repeat('4', 64),
+           'hns.owner.v1', repeat('5', 64), 'dynamic', 'hns-owner', '1',
+           'hns', 'xn--mnchen-3ya', 'münchen', 'app.xn--mnchen-3ya'
+         )`,
+      );
+
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `INSERT INTO community_creation_ceremony_attempts (
+           ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_kind, provider_configuration_ref,
+           provider_configuration_version, route_family, route_root_label,
+           route_root_label_display, route_path_segment,
+           reservation_request_hash, reservation_request, expires_at
+         ) VALUES (
+           'ceremony-mismatch', 'route-creator', 'route-intent',
+           'namespace_ownership', 1, repeat('4', 64), 'hns.owner.v1', repeat('5', 64),
+           'dynamic', 'hns-owner', '1', 'hns', 'other', 'other', 'app.other',
+           repeat('6', 64), '{}'::jsonb, clock_timestamp() + interval '10 minutes'
+         )`,
+        [],
+      );
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_creation_ceremony_attempts (
+           ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_kind, provider_configuration_ref,
+           provider_configuration_version, route_family, route_root_label,
+           route_root_label_display, route_path_segment,
+           reservation_request_hash, reservation_request, expires_at
+         ) VALUES (
+           'ceremony-route-1', 'route-creator', 'route-intent',
+           'namespace_ownership', 1, repeat('4', 64), 'hns.owner.v1', repeat('5', 64),
+           'dynamic', 'hns-owner', '1', 'hns', 'xn--mnchen-3ya', 'münchen',
+           'app.xn--mnchen-3ya', repeat('6', 64),
+           '{"requirement":"namespace_ownership"}'::jsonb,
+           clock_timestamp() + interval '10 minutes'
+         )`,
+      );
+      await admin.query(
+        `UPDATE community_creation_requirement_states
+            SET status = 'pending', generation = 1,
+                current_ceremony_intent_id = 'ceremony-route-1',
+                updated_at = clock_timestamp()
+          WHERE intent_id = 'route-intent'
+            AND requirement_kind = 'namespace_ownership'`,
+      );
+      await admin.query("COMMIT");
+
+      await expectPostgresFailure(
+        admin,
+        "23503",
+        `INSERT INTO proof_sessions (
+           proof_session_id, actor_id, intent_id, request_hash, provider_id,
+           method, issuer, scope_kind, request_mode, protocol_version,
+           environment, status, requested_requirements, requested_claim_ids,
+           subject_binding_intent, started_at, expires_at,
+           provider_configuration_kind, provider_configuration_ref,
+           provider_configuration_version, creation_ceremony_intent_id
+         ) VALUES (
+           'cross-actor-route-proof', 'other-route-creator', 'ceremony-route-1',
+           repeat('e', 64), 'hns.owner.v1', 'document', 'hns.owner.v1', 'none',
+           'dynamic', '1', 'test', 'pending',
+           '[{"claim_id":"namespace.ownership"}]'::jsonb,
+           '["namespace.ownership"]'::jsonb, 'establish',
+           clock_timestamp(), clock_timestamp() + interval '10 minutes',
+           'dynamic', 'hns-owner', '1', 'ceremony-route-1'
+         )`,
+        [],
+      );
+
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `UPDATE community_creation_ceremony_attempts
+            SET expires_at = expires_at + interval '1 minute'
+          WHERE ceremony_intent_id = 'ceremony-route-1'`,
+        [],
+      );
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_creation_ceremony_results (
+           ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_version, callback_idempotency_key,
+           callback_request_hash, outcome_status, result_hash, evidence_ref,
+           evidence_digest, provider_identity_digest, terminal_at, satisfied_at
+         ) VALUES (
+           'ceremony-route-1', 'route-creator', 'route-intent',
+           'namespace_ownership', 1, repeat('4', 64), 'hns.owner.v1', repeat('5', 64),
+           '1', 'callback-route-1', repeat('7', 64), 'satisfied', repeat('8', 64),
+           'route-evidence-1', repeat('9', 64), repeat('a', 64),
+           '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z'
+         )`,
+      );
+      await admin.query(
+        `UPDATE community_creation_requirement_states
+            SET status = 'satisfied', satisfied_at = '2026-08-20T00:00:00.000Z',
+                updated_at = clock_timestamp()
+          WHERE intent_id = 'route-intent'
+            AND requirement_kind = 'namespace_ownership'`,
+      );
+      await admin.query("COMMIT");
+
+      const independentRequirements = await admin.query<{
+        readonly requirement_kind: string;
+        readonly status: string;
+      }>(
+        `SELECT requirement_kind, status
+           FROM community_creation_requirement_states
+          WHERE intent_id = 'route-intent'
+          ORDER BY requirement_kind`,
+      );
+      expect(independentRequirements.rows).toEqual([
+        { requirement_kind: "human_identity", status: "unmet" },
+        { requirement_kind: "namespace_ownership", status: "satisfied" },
+      ]);
+
+      await admin.query(
+        `INSERT INTO community_route_ownership_evidence (
+           evidence_ref, creation_ceremony_intent_id, verified_by_actor_id,
+           family, root_label, root_label_display, path_segment,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_version,
+           provider_identity_digest, evidence_digest, binding_generation,
+           verified_at
+         ) VALUES (
+           'route-evidence-1', 'ceremony-route-1', 'route-creator', 'hns',
+           'xn--mnchen-3ya', 'münchen', 'app.xn--mnchen-3ya', repeat('4', 64),
+           'hns.owner.v1',
+           repeat('5', 64), '1', repeat('a', 64), repeat('9', 64), 1,
+           '2026-08-20T00:00:00.000Z'
+         )`,
+      );
+
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug
+         ) VALUES (
+           'route-community', 'Jazleeuw', 'active', 'route-creator',
+           clock_timestamp(), clock_timestamp(), 'legacy-only'
+         ), (
+           'unbound-community', 'Unbound', 'hidden', 'route-creator',
+           clock_timestamp(), clock_timestamp(), 'still-not-authority'
+         ), (
+           'archived-community', 'Archived', 'archived', 'route-creator',
+           clock_timestamp(), clock_timestamp(), NULL
+         )`,
+      );
+      const unbound = await admin.query<{ readonly count: string }>(
+        `SELECT count(*)::text AS count
+           FROM community_canonical_route_bindings
+          WHERE community_id = 'unbound-community'`,
+      );
+      expect(unbound.rows[0]?.count).toBe("0");
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_canonical_route_bindings (
+           route_binding_id, community_id, family, root_label,
+           root_label_display, ownership_status, route_lifecycle_status,
+           binding_generation, verified_evidence_ref
+         ) VALUES (
+           'route-binding-1', 'route-community', 'hns', 'xn--mnchen-3ya', 'münchen',
+           'verified', 'active', 1, 'route-evidence-1'
+         )`,
+      );
+      await admin.query(
+        `UPDATE communities
+            SET canonical_route_binding_id = 'route-binding-1'
+          WHERE community_id = 'route-community'`,
+      );
+      await admin.query("COMMIT");
+
+      const canonical = await admin.query<{
+        readonly path_segment: string;
+        readonly href: string;
+        readonly route_lifecycle_status: string;
+      }>(
+        `SELECT path_segment, href, route_lifecycle_status
+           FROM community_canonical_route_bindings
+          WHERE route_binding_id = 'route-binding-1'`,
+      );
+      expect(canonical.rows[0]).toEqual({
+        path_segment: "app.xn--mnchen-3ya",
+        href: "/c/app.xn--mnchen-3ya",
+        route_lifecycle_status: "active",
+      });
+
+      // Expansion deliberately leaves the legacy active row shape available;
+      // the cutover migration makes active canonical references mandatory.
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug
+         ) VALUES (
+           'same-root-hns', 'Same root HNS', 'hidden', 'route-creator',
+           clock_timestamp(), clock_timestamp(), 'same-root-hns'
+         ), (
+           'same-root-spaces', 'Same root Spaces', 'hidden', 'route-creator',
+           clock_timestamp(), clock_timestamp(), 'same-root-spaces'
+         ), (
+           'same-root-hns-collision', 'Same root HNS collision', 'hidden',
+           'route-creator', clock_timestamp(), clock_timestamp(),
+           'same-root-hns-collision'
+         )`,
+      );
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_canonical_route_bindings (
+           route_binding_id, community_id, family, root_label,
+           root_label_display, ownership_status, route_lifecycle_status
+         ) VALUES (
+           'same-root-hns-binding', 'same-root-hns', 'hns', 'xn--4v8h', '🔥',
+           'pending', 'suspended'
+         ), (
+           'same-root-spaces-binding', 'same-root-spaces', 'spaces', 'xn--4v8h', '🔥',
+           'pending', 'suspended'
+         )`,
+      );
+      await admin.query(
+        `UPDATE communities
+            SET canonical_route_binding_id = CASE community_id
+              WHEN 'same-root-hns' THEN 'same-root-hns-binding'
+              WHEN 'same-root-spaces' THEN 'same-root-spaces-binding'
+            END
+          WHERE community_id IN ('same-root-hns', 'same-root-spaces')`,
+      );
+      await admin.query("COMMIT");
+      const sameRoot = await admin.query<{ readonly path_segment: string }>(
+        `SELECT path_segment
+           FROM community_canonical_route_bindings
+          WHERE root_label = 'xn--4v8h'
+          ORDER BY family`,
+      );
+      expect(sameRoot.rows).toEqual([
+        { path_segment: "app.xn--4v8h" },
+        { path_segment: "@xn--4v8h" },
+      ]);
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO community_canonical_route_bindings (
+           route_binding_id, community_id, family, root_label,
+           root_label_display, ownership_status, route_lifecycle_status
+         ) VALUES (
+           'same-root-hns-collision-binding', 'same-root-hns-collision', 'hns',
+           'xn--4v8h', '🔥', 'pending', 'suspended'
+         )`,
+        [],
+      );
+
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `UPDATE community_canonical_route_bindings
+            SET root_label = 'replacement'
+          WHERE route_binding_id = 'route-binding-1'`,
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `UPDATE communities
+            SET canonical_route_binding_id = NULL
+          WHERE community_id = 'route-community'`,
+        [],
+      );
+
+      await admin.query(
+        `INSERT INTO community_route_app_host_health (
+           route_binding_id, health_status, health_generation
+         ) VALUES ('route-binding-1', 'unhealthy', 1)`,
+      );
+      const stillActive = await admin.query<{ readonly route_lifecycle_status: string }>(
+        `SELECT route_lifecycle_status
+           FROM community_canonical_route_bindings
+          WHERE route_binding_id = 'route-binding-1'`,
+      );
+      expect(stillActive.rows[0]?.route_lifecycle_status).toBe("active");
+
+      await admin.query(
+        `UPDATE community_canonical_route_bindings
+            SET ownership_status = 'expired', route_lifecycle_status = 'suspended',
+                binding_generation = 2, updated_at = clock_timestamp()
+          WHERE route_binding_id = 'route-binding-1'`,
+      );
+      // The BEFORE trigger fails closed before PostgreSQL reaches NOT NULL.
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `INSERT INTO community_route_ownership_evidence (
+           evidence_ref, creation_ceremony_intent_id, verified_by_actor_id,
+           family, root_label, root_label_display, path_segment,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_version, provider_identity_digest,
+           evidence_digest, binding_generation, verified_at
+         ) VALUES (
+           'unfenced-route-evidence', NULL, 'route-creator', 'hns',
+           'xn--mnchen-3ya', 'münchen', 'app.xn--mnchen-3ya', repeat('4', 64),
+           'hns.owner.v1', repeat('5', 64), '1', repeat('a', 64),
+           repeat('b', 64), 3, '2026-08-20T01:00:00.000Z'
+         )`,
+        [],
+      );
+
+      await admin.query(
+        `UPDATE community_creation_requirement_states
+            SET status = 'unmet', provider_binding_hash = repeat('c', 64),
+                provider_configuration_version = '2',
+                current_ceremony_intent_id = NULL, satisfied_at = NULL,
+                updated_at = clock_timestamp()
+          WHERE intent_id = 'route-intent'
+            AND requirement_kind = 'namespace_ownership'`,
+      );
+      const invalidated = await admin.query<{
+        readonly status: string;
+        readonly generation: string;
+        readonly current_ceremony_intent_id: string | null;
+      }>(
+        `SELECT status, generation::text, current_ceremony_intent_id
+           FROM community_creation_requirement_states
+          WHERE intent_id = 'route-intent'
+            AND requirement_kind = 'namespace_ownership'`,
+      );
+      expect(invalidated.rows[0]).toEqual({
+        status: "unmet",
+        generation: "1",
+        current_ceremony_intent_id: null,
+      });
+      // Reuse the immutable result's exact evidence_ref so every result field
+      // matches; the BEFORE trigger must reject only because generation one is
+      // no longer the requirement state's current satisfied ceremony. It runs
+      // before the duplicate primary-key check.
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `INSERT INTO community_route_ownership_evidence (
+           evidence_ref, creation_ceremony_intent_id, verified_by_actor_id,
+           family, root_label, root_label_display, path_segment,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_version, provider_identity_digest,
+           evidence_digest, binding_generation, verified_at
+         ) VALUES (
+           'route-evidence-1', 'ceremony-route-1', 'route-creator', 'hns',
+           'xn--mnchen-3ya', 'münchen', 'app.xn--mnchen-3ya', repeat('4', 64),
+           'hns.owner.v1', repeat('5', 64), '1', repeat('a', 64),
+           repeat('9', 64), 1, '2026-08-20T00:00:00.000Z'
+         )`,
+        [],
+      );
     });
     completedTestCount += 1;
   });
