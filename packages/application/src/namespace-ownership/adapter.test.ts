@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import {
+  NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES,
   NamespaceOwnershipProviderCompleteResult,
   NamespaceOwnershipProviderManifest,
   NamespaceOwnershipProviderPlanInput,
   NamespaceOwnershipProviderStartInput,
+  NamespaceOwnershipSession,
 } from "./adapter.ts";
 
 const route = {
@@ -54,6 +56,37 @@ describe("namespace ownership provider boundary", () => {
         route: { ...route, app_host: route.path_segment },
       }),
     ).toThrow();
+  });
+
+  test("bounds the upstream session reference by UTF-8 bytes", () => {
+    const base = {
+      actor_id: "user-1",
+      creation_intent_id: "creation-1",
+      ceremony_intent_id: "ceremony-1",
+      requirement_hash: "a".repeat(64),
+      generation: 1,
+      request_hash: "b".repeat(64),
+      provider_id: "test.hns-owner",
+      provider_binding_hash: "e".repeat(64),
+      provider_configuration: { kind: "dynamic", reference: "hns-verifier", version: "1" },
+      protocol_version: "hns-owner-txt-v1",
+      environment: "staging",
+      route,
+      expires_at: "2026-08-20T13:00:00.000Z",
+    };
+
+    expect(
+      Schema.is(NamespaceOwnershipSession)({
+        ...base,
+        upstream_session_ref: "r".repeat(NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES),
+      }),
+    ).toBeTrue();
+    expect(
+      Schema.is(NamespaceOwnershipSession)({
+        ...base,
+        upstream_session_ref: "🚀".repeat(NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES / 2),
+      }),
+    ).toBeFalse();
   });
 
   test("returns only pending or digest-bound verified evidence", () => {

@@ -43,6 +43,15 @@ const BoundedEvidenceReference = CanonicalNonEmptyString.check(
   ),
 );
 
+export const NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES = 16_384 as const;
+const BoundedUpstreamSessionReference = CanonicalNonEmptyString.check(
+  Schema.makeFilter((value) =>
+    new TextEncoder().encode(value).length <= NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES
+      ? undefined
+      : "Expected a bounded upstream namespace session reference",
+  ),
+);
+
 export const NamespaceOwnershipSubmissionChannel = Schema.Literals([
   "client_result",
   "provider_callback",
@@ -122,7 +131,7 @@ export const NamespaceOwnershipSession = Schema.Struct({
   protocol_version: CanonicalNonEmptyString,
   environment: CanonicalNonEmptyString,
   route: NamespaceOwnershipRoute,
-  upstream_session_ref: CanonicalNonEmptyString,
+  upstream_session_ref: BoundedUpstreamSessionReference,
   expires_at: CanonicalIsoInstant,
 });
 export type NamespaceOwnershipSession = Schema.Schema.Type<typeof NamespaceOwnershipSession>;

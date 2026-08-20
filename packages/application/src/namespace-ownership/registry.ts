@@ -133,6 +133,27 @@ function compatibleSession(
   );
 }
 
+function immutableManifest(manifest: Manifest): Manifest {
+  const supported_families = Object.freeze([
+    ...manifest.supported_families,
+  ]) as Manifest["supported_families"];
+  const protocol_versions = Object.freeze([
+    ...manifest.protocol_versions,
+  ]) as Manifest["protocol_versions"];
+  const environments = Object.freeze([...manifest.environments]) as Manifest["environments"];
+  const submission_channels = Object.freeze([
+    ...manifest.submission_channels,
+  ]) as Manifest["submission_channels"];
+  return Object.freeze({
+    ...manifest,
+    supported_families,
+    protocol_versions,
+    environments,
+    submission_channels,
+    operation_deadlines: Object.freeze({ ...manifest.operation_deadlines }),
+  });
+}
+
 function guardAdapter(
   adapter: NamespaceOwnershipProviderAdapter,
   manifest: Manifest,
@@ -243,13 +264,17 @@ function guardAdapter(
         Effect.mapError((error) => safeFailure(manifest.provider_id, "complete", error)),
         Effect.catchDefect(() => Effect.fail(invalidResponse(manifest.provider_id, "complete"))),
         Effect.flatMap((result) => {
+          const currentTime = now();
           const decoded = Schema.decodeUnknownOption(
             NamespaceOwnershipProviderCompleteResult,
             exactParseOptions,
           )(result);
           if (
             Option.isNone(decoded) ||
-            (decoded.value.status === "verified" && Date.parse(decoded.value.verified_at) > now())
+            (decoded.value.status === "verified" &&
+              (Date.parse(decoded.value.verified_at) > currentTime ||
+                (decoded.value.expires_at !== null &&
+                  Date.parse(decoded.value.expires_at) <= currentTime)))
           ) {
             return Effect.fail(invalidResponse(manifest.provider_id, "complete"));
           }
@@ -299,7 +324,7 @@ export function makeNamespaceOwnershipProviderRegistry(
           provider_id: providerHint(adapter.manifest),
         });
       }
-      const manifest = decoded.value;
+      const manifest = immutableManifest(decoded.value);
       if (providers.has(manifest.provider_id)) {
         return yield* new NamespaceOwnershipProviderDuplicate({
           family: manifest.supported_families[0],
@@ -320,8 +345,9 @@ export function makeNamespaceOwnershipProviderRegistry(
       for (const family of manifest.supported_families) byFamily.set(family, guarded);
     }
 
+    const manifestList = Object.freeze([...manifests]);
     return {
-      list: () => [...manifests],
+      list: () => manifestList,
       resolve: (family) => {
         const adapter = byFamily.get(family);
         return adapter === undefined

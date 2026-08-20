@@ -1,14 +1,22 @@
 import { describe, expect, test } from "bun:test";
+import {
+  PROVIDER_PRESENTATION_PAYLOAD_MAX_BYTES,
+  PROVIDER_PRESENTATION_SESSION_ID_MAX_BYTES,
+  PROVIDER_PRESENTATION_URL_MAX_BYTES,
+  type ProviderPresentation,
+} from "@pirate/contracts";
 import { Effect } from "effect";
 import type {
   NamespaceOwnershipProviderAdapter,
   NamespaceOwnershipProviderCompleteResult,
 } from "./adapter.ts";
+import { NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES } from "./adapter.ts";
 import {
   makeNamespaceOwnershipProviderRegistry,
   NamespaceOwnershipProviderDuplicate,
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderUnknown,
 } from "./index.ts";
 
 const now = Date.parse("2026-08-20T12:00:00.000Z");
@@ -48,6 +56,7 @@ const session = {
 function adapter(
   options: Readonly<{
     providerId?: string;
+    startPresentation?: ProviderPresentation;
     startSession?: typeof session;
     completeResult?: NamespaceOwnershipProviderCompleteResult;
   }> = {},
@@ -72,7 +81,7 @@ function adapter(
     start: () =>
       Effect.succeed({
         session: options.startSession ?? { ...session, provider_id: providerId },
-        presentation: {
+        presentation: options.startPresentation ?? {
           kind: "poll" as const,
           session_id: "upstream-hns-1",
           poll_url: "/verification/namespace/upstream-hns-1",
@@ -99,6 +108,54 @@ describe("namespace ownership provider registry", () => {
     });
   });
 
+  test("snapshots and freezes manifest authorization state", async () => {
+    const source = adapter();
+    const registry = await Effect.runPromise(
+      makeNamespaceOwnershipProviderRegistry([source], { now: () => now }),
+    );
+    const mutableSource = source.manifest as unknown as {
+      environments: string[];
+      operation_deadlines: { plan_ms: number };
+      supported_families: string[];
+    };
+    mutableSource.environments.push("production");
+    mutableSource.supported_families.push("spaces");
+    mutableSource.operation_deadlines.plan_ms = 1;
+
+    const listed = registry.list();
+    const mutableListed = listed[0] as unknown as {
+      environments: string[];
+      operation_deadlines: { plan_ms: number };
+      supported_families: string[];
+    };
+    expect(() => mutableListed.environments.push("production")).toThrow();
+    expect(() => mutableListed.supported_families.push("spaces")).toThrow();
+    expect(() => {
+      mutableListed.operation_deadlines.plan_ms = 1;
+    }).toThrow();
+    expect(() =>
+      (listed as unknown as Array<(typeof listed)[number]>).push(
+        listed[0] as (typeof listed)[number],
+      ),
+    ).toThrow();
+    expect(listed[0]).toMatchObject({
+      supported_families: ["hns"],
+      environments: ["staging"],
+      operation_deadlines: { plan_ms: 1_000 },
+    });
+    const listedManifest = listed[0];
+    if (listedManifest === undefined) throw new Error("expected the registered manifest");
+
+    await expect(Effect.runPromise(registry.resolve("spaces"))).rejects.toBeInstanceOf(
+      NamespaceOwnershipProviderUnknown,
+    );
+    const provider = await Effect.runPromise(registry.resolve("hns"));
+    expect(provider.manifest).toBe(listedManifest);
+    await expect(
+      Effect.runPromise(provider.plan({ route, environment: "production" })),
+    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderRejected);
+  });
+
   test("rejects provider session substitution and presentation mismatch", async () => {
     const substituted = adapter({ startSession: { ...session, actor_id: "user-2" } });
     const registry = await Effect.runPromise(
@@ -106,6 +163,61 @@ describe("namespace ownership provider registry", () => {
     );
     const provider = await Effect.runPromise(registry.resolve("hns"));
 
+    await expect(Effect.runPromise(provider.start(startInput))).rejects.toBeInstanceOf(
+      NamespaceOwnershipProviderInvalidResponse,
+    );
+  });
+
+  test("rejects oversized provider presentation and upstream reference fields", async () => {
+    const oversizedUrl = "u".repeat(PROVIDER_PRESENTATION_URL_MAX_BYTES + 1);
+    const invalidPresentations: readonly ProviderPresentation[] = [
+      { kind: "redirect", session_id: "upstream-hns-1", url: oversizedUrl },
+      { kind: "deeplink", session_id: "upstream-hns-1", uri: oversizedUrl },
+      { kind: "poll", session_id: "upstream-hns-1", poll_url: oversizedUrl },
+      {
+        kind: "embedded_sdk",
+        session_id: "upstream-hns-1",
+        protocol: "hns-owner-v1",
+        version: "1",
+        payload: {
+          value: "x".repeat(PROVIDER_PRESENTATION_PAYLOAD_MAX_BYTES),
+        },
+      },
+      {
+        kind: "none",
+        session_id: "s".repeat(PROVIDER_PRESENTATION_SESSION_ID_MAX_BYTES + 1),
+      },
+    ];
+
+    for (const startPresentation of invalidPresentations) {
+      const registry = await Effect.runPromise(
+        makeNamespaceOwnershipProviderRegistry([adapter({ startPresentation })], {
+          now: () => now,
+        }),
+      );
+      const provider = await Effect.runPromise(registry.resolve("hns"));
+      await expect(Effect.runPromise(provider.start(startInput))).rejects.toBeInstanceOf(
+        NamespaceOwnershipProviderInvalidResponse,
+      );
+    }
+
+    const oversizedReference = "r".repeat(NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES + 1);
+    const registry = await Effect.runPromise(
+      makeNamespaceOwnershipProviderRegistry(
+        [
+          adapter({
+            startSession: { ...session, upstream_session_ref: oversizedReference },
+            startPresentation: {
+              kind: "poll",
+              session_id: oversizedReference,
+              poll_url: "/verification/namespace/oversized",
+            },
+          }),
+        ],
+        { now: () => now },
+      ),
+    );
+    const provider = await Effect.runPromise(registry.resolve("hns"));
     await expect(Effect.runPromise(provider.start(startInput))).rejects.toBeInstanceOf(
       NamespaceOwnershipProviderInvalidResponse,
     );
@@ -192,5 +304,47 @@ describe("namespace ownership provider registry", () => {
         }),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
+
+    for (const expiresAt of ["2026-08-20T11:59:59.999Z", "2026-08-20T12:00:00.000Z"]) {
+      const stale = await Effect.runPromise(
+        makeNamespaceOwnershipProviderRegistry(
+          [
+            adapter({
+              completeResult: {
+                ...verified,
+                verified_at: "2026-08-20T11:00:00.000Z",
+                expires_at: expiresAt,
+              },
+            }),
+          ],
+          { now: () => now },
+        ),
+      );
+      const staleProvider = await Effect.runPromise(stale.resolve("hns"));
+      await expect(
+        Effect.runPromise(
+          staleProvider.complete({
+            session,
+            submission: { channel: "poll_result", payload: {} },
+          }),
+        ),
+      ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
+    }
+
+    const noExpiryResult = { ...verified, expires_at: null };
+    const noExpiry = await Effect.runPromise(
+      makeNamespaceOwnershipProviderRegistry([adapter({ completeResult: noExpiryResult })], {
+        now: () => now,
+      }),
+    );
+    const noExpiryProvider = await Effect.runPromise(noExpiry.resolve("hns"));
+    await expect(
+      Effect.runPromise(
+        noExpiryProvider.complete({
+          session,
+          submission: { channel: "poll_result", payload: {} },
+        }),
+      ),
+    ).resolves.toEqual(noExpiryResult);
   });
 });
