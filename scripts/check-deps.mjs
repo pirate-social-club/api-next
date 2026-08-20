@@ -265,6 +265,20 @@ const GATES_V2_EXPORTS = {
     "evaluateCuratedAge18",
     "policyCanonicalPreimage",
   ],
+  "./human-membership-evaluator.ts": [
+    "CURATED_HUMAN_MEMBERSHIP_POLICY",
+    "CURATED_HUMAN_MEMBERSHIP_POLICY_CANONICAL_PREIMAGE",
+    "CuratedHumanMembershipEvaluation",
+    "CuratedHumanMembershipEvaluatorInput",
+    "CuratedHumanMembershipFail",
+    "CuratedHumanMembershipIndeterminate",
+    "CuratedHumanMembershipNeedsEvidence",
+    "CuratedHumanMembershipPass",
+    "CuratedHumanMembershipPolicy",
+    "HumanMembershipRequiredClaim",
+    "evaluateCuratedHumanMembership",
+    "humanMembershipPolicyCanonicalPreimage",
+  ],
 };
 
 function isTestFile(file) {

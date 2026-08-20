@@ -28,3 +28,19 @@ export {
   evaluateCuratedAge18,
   policyCanonicalPreimage,
 } from "./evaluator.ts";
+export type {
+  CuratedHumanMembershipEvaluation,
+  CuratedHumanMembershipEvaluatorInput,
+  CuratedHumanMembershipFail,
+  CuratedHumanMembershipIndeterminate,
+  CuratedHumanMembershipNeedsEvidence,
+  CuratedHumanMembershipPass,
+  CuratedHumanMembershipPolicy,
+  HumanMembershipRequiredClaim,
+} from "./human-membership-evaluator.ts";
+export {
+  CURATED_HUMAN_MEMBERSHIP_POLICY,
+  CURATED_HUMAN_MEMBERSHIP_POLICY_CANONICAL_PREIMAGE,
+  evaluateCuratedHumanMembership,
+  humanMembershipPolicyCanonicalPreimage,
+} from "./human-membership-evaluator.ts";
