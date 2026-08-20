@@ -91,7 +91,9 @@ suite("Postgres 17 community creation repository", () => {
       };
       const create = () =>
         Effect.runPromise(store.create({ actor, body: createBody, requestHash: "a".repeat(64) }));
-      const created = await create();
+      const createdResult = await create();
+      expect(createdResult.outcome).toBe("fresh");
+      const created = createdResult.document;
       expect(created).toMatchObject({
         intent_id: "intent-1",
         revision: 1,
@@ -102,7 +104,7 @@ suite("Postgres 17 community creation repository", () => {
           intent_id: "intent-1",
         },
       });
-      await expect(create()).resolves.toEqual(created);
+      await expect(create()).resolves.toEqual({ document: created, outcome: "replayed" });
       await expect(
         Effect.runPromise(store.create({ actor, body: createBody, requestHash: "b".repeat(64) })),
       ).rejects.toMatchObject({
@@ -184,7 +186,7 @@ suite("Postgres 17 community creation repository", () => {
         values: [actor.userId],
       });
       const unsupportedStore = storeFor(connection, 86_400, "unsupported-intent");
-      const unsupported = await Effect.runPromise(
+      const unsupportedResult = await Effect.runPromise(
         unsupportedStore.create({
           actor,
           requestHash: "f".repeat(64),
@@ -208,13 +210,16 @@ suite("Postgres 17 community creation repository", () => {
           },
         }),
       );
-      expect(unsupported).toMatchObject({
-        status: "gate_unsupported",
-        next_action: { kind: "blocked", reason: "gate_unsupported" },
+      expect(unsupportedResult).toMatchObject({
+        outcome: "fresh",
+        document: {
+          status: "gate_unsupported",
+          next_action: { kind: "blocked", reason: "gate_unsupported" },
+        },
       });
 
       const expiringStore = storeFor(connection, 1, "expiring-intent");
-      const expiring = await Effect.runPromise(
+      const expiringResult = await Effect.runPromise(
         expiringStore.create({
           actor,
           requestHash: "0".repeat(64),
@@ -229,6 +234,7 @@ suite("Postgres 17 community creation repository", () => {
           },
         }),
       );
+      const expiring = expiringResult.document;
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       const expired = await Effect.runPromise(
         expiringStore.get({ actor, intentId: expiring.intent_id }),
@@ -274,13 +280,15 @@ suite("Postgres 17 community creation repository", () => {
         Effect.runPromise(firstStore.create({ actor, body, requestHash: "1".repeat(64) })),
         Effect.runPromise(secondStore.create({ actor, body, requestHash: "1".repeat(64) })),
       ]);
-      expect(secondCreate).toEqual(firstCreate);
+      expect([firstCreate.outcome, secondCreate.outcome].sort()).toEqual(["fresh", "replayed"]);
+      expect(secondCreate.document).toEqual(firstCreate.document);
+      const created = firstCreate.document;
 
       const outcomes = await Promise.allSettled([
         Effect.runPromise(
           firstStore.update({
             actor,
-            intentId: firstCreate.intent_id,
+            intentId: created.intent_id,
             requestHash: "2".repeat(64),
             body: {
               idempotency_key: "race-update-a",
@@ -292,7 +300,7 @@ suite("Postgres 17 community creation repository", () => {
         Effect.runPromise(
           secondStore.update({
             actor,
-            intentId: firstCreate.intent_id,
+            intentId: created.intent_id,
             requestHash: "3".repeat(64),
             body: {
               idempotency_key: "race-update-b",

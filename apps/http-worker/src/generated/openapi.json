@@ -397,6 +397,562 @@
           }
         },
         "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "intent_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "revision": {
+                      "type": "integer"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "draft",
+                        "verification_required",
+                        "commit_ready",
+                        "committed",
+                        "quota_exceeded",
+                        "gate_unsupported",
+                        "expired",
+                        "cancelled"
+                      ]
+                    },
+                    "draft": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "slug": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "description": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "policy": {
+                          "type": "object",
+                          "properties": {
+                            "version": {
+                              "type": "number",
+                              "enum": [
+                                1
+                              ]
+                            },
+                            "accessPaths": {
+                              "type": "array",
+                              "prefixItems": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "id": {
+                                      "type": "string",
+                                      "allOf": [
+                                        {
+                                          "minLength": 1
+                                        }
+                                      ]
+                                    },
+                                    "operator": {
+                                      "type": "string",
+                                      "enum": [
+                                        "and"
+                                      ]
+                                    },
+                                    "requirements": {
+                                      "type": "array",
+                                      "items": {
+                                        "anyOf": [
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "requirement": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "human-verification"
+                                                ]
+                                              }
+                                            },
+                                            "required": [
+                                              "requirement"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "requirement": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "age-minimum"
+                                                ]
+                                              },
+                                              "minimumAge": {
+                                                "type": "number",
+                                                "enum": [
+                                                  18
+                                                ]
+                                              }
+                                            },
+                                            "required": [
+                                              "requirement",
+                                              "minimumAge"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "requirement": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "nationality-allowed"
+                                                ]
+                                              },
+                                              "allowedCountries": {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                  {
+                                                    "type": "string",
+                                                    "allOf": [
+                                                      {
+                                                        "minLength": 1
+                                                      }
+                                                    ]
+                                                  }
+                                                ],
+                                                "minItems": 1,
+                                                "items": {
+                                                  "type": "string",
+                                                  "allOf": [
+                                                    {
+                                                      "minLength": 1
+                                                    }
+                                                  ]
+                                                }
+                                              }
+                                            },
+                                            "required": [
+                                              "requirement",
+                                              "allowedCountries"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "requirement": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "gender-marker"
+                                                ]
+                                              },
+                                              "allowedMarkers": {
+                                                "type": "array",
+                                                "prefixItems": [
+                                                  {
+                                                    "type": "string",
+                                                    "enum": [
+                                                      "M",
+                                                      "F"
+                                                    ]
+                                                  }
+                                                ],
+                                                "minItems": 1,
+                                                "items": {
+                                                  "type": "string",
+                                                  "enum": [
+                                                    "M",
+                                                    "F"
+                                                  ]
+                                                }
+                                              }
+                                            },
+                                            "required": [
+                                              "requirement",
+                                              "allowedMarkers"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "requirement": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "erc721-collection"
+                                                ]
+                                              },
+                                              "contractAddress": {
+                                                "type": "string",
+                                                "allOf": [
+                                                  {
+                                                    "minLength": 1
+                                                  }
+                                                ]
+                                              },
+                                              "minCount": {
+                                                "type": "integer"
+                                              }
+                                            },
+                                            "required": [
+                                              "requirement",
+                                              "contractAddress",
+                                              "minCount"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "requirement": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "inventory-match"
+                                                ]
+                                              },
+                                              "category": {
+                                                "type": "string",
+                                                "allOf": [
+                                                  {
+                                                    "minLength": 1
+                                                  }
+                                                ]
+                                              },
+                                              "subject": {
+                                                "type": "string",
+                                                "allOf": [
+                                                  {
+                                                    "minLength": 1
+                                                  }
+                                                ]
+                                              },
+                                              "minQuantity": {
+                                                "type": "integer"
+                                              }
+                                            },
+                                            "required": [
+                                              "requirement",
+                                              "category",
+                                              "subject",
+                                              "minQuantity"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "requirement": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "asset-ownership"
+                                                ]
+                                              },
+                                              "assetId": {
+                                                "type": "string",
+                                                "allOf": [
+                                                  {
+                                                    "minLength": 1
+                                                  }
+                                                ]
+                                              },
+                                              "minAmount": {
+                                                "type": "string",
+                                                "allOf": [
+                                                  {
+                                                    "minLength": 1
+                                                  }
+                                                ]
+                                              }
+                                            },
+                                            "required": [
+                                              "requirement",
+                                              "assetId",
+                                              "minAmount"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "requirement": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "reputation-score"
+                                                ]
+                                              },
+                                              "provider": {
+                                                "type": "string",
+                                                "enum": [
+                                                  "passport"
+                                                ]
+                                              },
+                                              "minimumScore": {
+                                                "type": "integer"
+                                              }
+                                            },
+                                            "required": [
+                                              "requirement",
+                                              "provider",
+                                              "minimumScore"
+                                            ],
+                                            "additionalProperties": false
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  },
+                                  "required": [
+                                    "id",
+                                    "operator",
+                                    "requirements"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ],
+                              "maxItems": 1,
+                              "minItems": 1
+                            }
+                          },
+                          "required": [
+                            "version",
+                            "accessPaths"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "slug",
+                        "description",
+                        "policy"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "canonical_policy_revision": {
+                      "type": "integer"
+                    },
+                    "canonical_policy_hash": {
+                      "type": "string"
+                    },
+                    "verification_requirement_hash": {
+                      "type": "string"
+                    },
+                    "next_action": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "start_verification"
+                              ]
+                            },
+                            "provider_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "provider_id",
+                            "intent_id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "commit"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "wait"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "verification_pending",
+                                "membership_pending",
+                                "operation_pending",
+                                "reconciliation_pending"
+                              ]
+                            },
+                            "retry_after_seconds": {
+                              "anyOf": [
+                                {
+                                  "type": "integer"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "blocked"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "quota_exceeded",
+                                "gate_unsupported"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "none"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "committed",
+                                "expired",
+                                "cancelled"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string"
+                    },
+                    "committed_resource": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "community_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "community_id",
+                            "href"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "intent_id",
+                    "revision",
+                    "status",
+                    "draft",
+                    "canonical_policy_revision",
+                    "canonical_policy_hash",
+                    "verification_requirement_hash",
+                    "next_action",
+                    "expires_at",
+                    "committed_resource"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
           "201": {
             "description": "Success",
             "content": {

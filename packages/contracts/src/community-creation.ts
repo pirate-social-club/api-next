@@ -199,7 +199,7 @@ export const CreateCommunityCreationIntent = endpoint({
     }),
   },
   response: CommunityCreationIntent,
-  successStatus: 201,
+  successStatus: [200, 201],
   errors: [AuthError, BadRequest, Conflict, InternalError],
 });
 

@@ -53,19 +53,22 @@ function services(
 ): CommunityCreationServices {
   return {
     communityCreationStore: {
-      create: () => Effect.succeed(document),
+      create: () => Effect.succeed({ document, outcome: "fresh" }),
       get: () => Effect.succeed(document),
       update: () => Effect.succeed({ ...document, revision: 2 }),
       commit: () =>
         Effect.succeed({
-          ...document,
-          revision: 2,
-          status: "committed" as const,
-          next_action: { kind: "none" as const, reason: "committed" as const },
-          committed_resource: {
-            community_id: "community-jazleeuw",
-            href: "/communities/community-jazleeuw",
+          document: {
+            ...document,
+            revision: 2,
+            status: "committed" as const,
+            next_action: { kind: "none" as const, reason: "committed" as const },
+            committed_resource: {
+              community_id: "community-jazleeuw",
+              href: "/communities/community-jazleeuw",
+            },
           },
+          outcome: "fresh_created" as const,
         }),
       ...overrides,
     },
@@ -78,7 +81,7 @@ describe("community creation intent application use cases", () => {
     const scoped = services({
       create: ({ requestHash }) => {
         receivedHash = requestHash;
-        return Effect.succeed(document);
+        return Effect.succeed({ document, outcome: "fresh" });
       },
     });
 
@@ -89,7 +92,7 @@ describe("community creation intent application use cases", () => {
           scoped,
         ),
       ),
-    ).resolves.toEqual(document);
+    ).resolves.toEqual({ document, outcome: "fresh" });
     expect(receivedHash).toMatch(/^[0-9a-f]{64}$/u);
 
     await expect(

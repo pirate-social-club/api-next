@@ -56,6 +56,7 @@ describe("community creation contracts", () => {
   test("freezes resumable create, read, update, and commit endpoint shapes", () => {
     expect(CreateCommunityCreationIntent.method).toBe("POST");
     expect(CreateCommunityCreationIntent.path).toBe("/community-creation-intents");
+    expect(CreateCommunityCreationIntent.successStatus).toEqual([200, 201]);
     expect(GetCommunityCreationIntent.path).toBe("/community-creation-intents/:intentId");
     expect(UpdateCommunityCreationIntent.method).toBe("PATCH");
     expect(CommitCommunityCreationIntent.successStatus).toEqual([200, 201]);

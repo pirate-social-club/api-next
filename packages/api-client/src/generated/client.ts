@@ -410,7 +410,7 @@ const RESPONSE_SCHEMAS: Record<string, JsonSchema> = {
 };
 const SUCCESS_STATUSES: Record<string, readonly number[]> = {
   "get_health": [200],
-  "post_communityCreationIntents": [201],
+  "post_communityCreationIntents": [200,201],
   "get_communityCreationIntentsIntentId": [200],
   "patch_communityCreationIntentsIntentId": [200],
   "post_communityCreationIntentsIntentIdCommit": [200,201],

@@ -1,4 +1,5 @@
 import {
+  type CommitCommunityCreationIntentResult,
   type CommunityCreationIntentDocument,
   CommunityCreationRepositoryError,
   type CommunityCreationRepositoryFailure,
@@ -7,6 +8,7 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
+  type CreateCommunityCreationIntentResult,
 } from "@pirate/application";
 import { VerificationCompletionStorageFailed } from "@pirate/application/verification";
 import {
@@ -721,7 +723,7 @@ interface CommunityCreationRepository {
   readonly create: (
     input: Parameters<CommunityCreationStoreService["create"]>[0],
   ) => Effect.Effect<
-    CommunityCreationIntentDocument,
+    CreateCommunityCreationIntentResult,
     CommunityCreationRepositoryFailure,
     ControlPlaneDb
   >;
@@ -742,7 +744,7 @@ interface CommunityCreationRepository {
   readonly commit: (
     input: Parameters<CommunityCreationStoreService["commit"]>[0],
   ) => Effect.Effect<
-    CommunityCreationIntentDocument,
+    CommitCommunityCreationIntentResult,
     CommunityCreationRepositoryFailure,
     ControlPlaneDb
   >;
@@ -783,7 +785,7 @@ export function makeControlPlaneCommunityCreationRepository(
             idempotencyKey: body.idempotency_key,
             requestHash: input.requestHash,
           });
-          if (replay !== null) return replay;
+          if (replay !== null) return { document: replay, outcome: "replayed" as const };
 
           const inserted = yield* transaction.execute<Row>({
             label: "community.creation.create.insert-intent",
@@ -830,7 +832,7 @@ export function makeControlPlaneCommunityCreationRepository(
             idempotencyKey: body.idempotency_key,
             requestHash: input.requestHash,
           });
-          return document;
+          return { document, outcome: "fresh" as const };
         }),
       );
     });
@@ -1033,7 +1035,7 @@ export function makeControlPlaneCommunityCreationRepository(
             idempotencyKey: body.idempotency_key,
             requestHash: input.requestHash,
           });
-          if (replay !== null) return replay;
+          if (replay !== null) return { document: replay, outcome: "replayed" as const };
           const row = yield* loadLockedIntent(
             transaction,
             input.actor.userId,
@@ -1253,7 +1255,10 @@ export function makeControlPlaneCommunityCreationRepository(
                 idempotencyKey: body.idempotency_key,
                 requestHash: input.requestHash,
               });
-              return quotaExceeded.value;
+              return {
+                document: quotaExceeded.value,
+                outcome: "fresh_not_created" as const,
+              };
             }
             approvalId = asString(approval.approval_id);
             const approvedSlot = asPositiveInteger(approval.slot_number);
@@ -1454,7 +1459,7 @@ export function makeControlPlaneCommunityCreationRepository(
             idempotencyKey: body.idempotency_key,
             requestHash: input.requestHash,
           });
-          return stored;
+          return { document: stored, outcome: "fresh_created" as const };
         }),
       );
     });

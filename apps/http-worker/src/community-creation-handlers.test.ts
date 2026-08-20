@@ -46,17 +46,41 @@ const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
   ...overrides,
 });
 
-function services(observed: {
-  commit?: unknown;
-  create?: unknown;
-  get?: unknown;
-  update?: unknown;
-}): CommunityCreationServices {
+function services(
+  observed: {
+    commit?: unknown;
+    create?: unknown;
+    get?: unknown;
+    update?: unknown;
+  },
+  options: Readonly<{
+    createOutcome?: "fresh" | "replayed";
+    commitOutcome?: "fresh_created" | "fresh_not_created" | "replayed";
+  }> = {},
+): CommunityCreationServices {
+  const commitOutcome = options.commitOutcome ?? "fresh_created";
+  const committedDocument = {
+    ...document,
+    revision: 3,
+    status: "committed" as const,
+    next_action: { kind: "none" as const, reason: "committed" as const },
+    committed_resource: {
+      community_id: "community-1",
+      href: "/communities/community-1",
+    },
+  };
+  const quotaDocument = {
+    ...document,
+    revision: 3,
+    status: "quota_exceeded" as const,
+    next_action: { kind: "blocked" as const, reason: "quota_exceeded" as const },
+    committed_resource: null,
+  };
   return {
     communityCreationStore: {
       create: (input) => {
         observed.create = input;
-        return Effect.succeed(document);
+        return Effect.succeed({ document, outcome: options.createOutcome ?? "fresh" });
       },
       get: (input) => {
         observed.get = input;
@@ -69,14 +93,8 @@ function services(observed: {
       commit: (input) => {
         observed.commit = input;
         return Effect.succeed({
-          ...document,
-          revision: 3,
-          status: "committed" as const,
-          next_action: { kind: "none" as const, reason: "committed" as const },
-          committed_resource: {
-            community_id: "community-1",
-            href: "/communities/community-1",
-          },
+          document: commitOutcome === "fresh_not_created" ? quotaDocument : committedDocument,
+          outcome: commitOutcome,
         });
       },
     },
@@ -170,6 +188,34 @@ describe("community creation HTTP handlers", () => {
         ),
       ).rejects.toBeInstanceOf(AuthError);
     }
+  });
+
+  test("uses 201 only for fresh resource creation and 200 for replay or no-create", async () => {
+    const createReplay = makeCommunityCreationHandlers(services({}, { createOutcome: "replayed" }));
+    await expect(
+      createReplay.CreateCommunityCreationIntent(
+        request({ body: { idempotency_key: "create-1", draft } }),
+      ),
+    ).resolves.toMatchObject({ status: 200, body: document });
+
+    const commitReplay = makeCommunityCreationHandlers(services({}, { commitOutcome: "replayed" }));
+    await expect(
+      commitReplay.CommitCommunityCreationIntent(
+        request({ body: { idempotency_key: "commit-1", expected_revision: 2 } }),
+      ),
+    ).resolves.toMatchObject({ status: 200, body: { status: "committed" } });
+
+    const quota = makeCommunityCreationHandlers(
+      services({}, { commitOutcome: "fresh_not_created" }),
+    );
+    await expect(
+      quota.CommitCommunityCreationIntent(
+        request({ body: { idempotency_key: "commit-quota", expected_revision: 2 } }),
+      ),
+    ).resolves.toMatchObject({
+      status: 200,
+      body: { status: "quota_exceeded", committed_resource: null },
+    });
   });
 
   test("installs create/get/update/commit on generated routes", async () => {

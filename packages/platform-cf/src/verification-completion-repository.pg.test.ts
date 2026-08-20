@@ -888,30 +888,32 @@ suite("Postgres 17 verification completion repository", () => {
         next_community_id: () => "community-jazleeuw",
         next_subject_claim_id: () => "creation-claim-jazleeuw",
       });
-      const created = await Effect.runPromise(
-        creationStore.create({
-          actor: { kind: "user", userId: "user-a" },
-          requestHash: "a".repeat(64),
-          body: {
-            idempotency_key: "create-community-1",
-            draft: {
-              name: "Jazleeuw",
-              slug: "jazleeuw",
-              description: "Verified people",
-              policy: {
-                version: 1,
-                accessPaths: [
-                  {
-                    id: "verified-people",
-                    operator: "and",
-                    requirements: [{ requirement: "human-verification" }],
-                  },
-                ],
+      const created = (
+        await Effect.runPromise(
+          creationStore.create({
+            actor: { kind: "user", userId: "user-a" },
+            requestHash: "a".repeat(64),
+            body: {
+              idempotency_key: "create-community-1",
+              draft: {
+                name: "Jazleeuw",
+                slug: "jazleeuw",
+                description: "Verified people",
+                policy: {
+                  version: 1,
+                  accessPaths: [
+                    {
+                      id: "verified-people",
+                      operator: "and",
+                      requirements: [{ requirement: "human-verification" }],
+                    },
+                  ],
+                },
               },
             },
-          },
-        }),
-      );
+          }),
+        )
+      ).document;
       expect(created.status).toBe("verification_required");
 
       const session = communityCreationProofSession(created.intent_id);
@@ -982,7 +984,9 @@ suite("Postgres 17 verification completion repository", () => {
         requestHash: "1".repeat(64),
         body: { idempotency_key: "commit-community-1", expected_revision: 2 },
       };
-      const committed = await Effect.runPromise(creationStore.commit(commitRequest));
+      const committedResult = await Effect.runPromise(creationStore.commit(commitRequest));
+      expect(committedResult.outcome).toBe("fresh_created");
+      const committed = committedResult.document;
       expect(committed).toMatchObject({
         revision: 3,
         status: "committed",
@@ -992,9 +996,10 @@ suite("Postgres 17 verification completion repository", () => {
           href: "/communities/community-jazleeuw",
         },
       });
-      await expect(Effect.runPromise(creationStore.commit(commitRequest))).resolves.toEqual(
-        committed,
-      );
+      await expect(Effect.runPromise(creationStore.commit(commitRequest))).resolves.toEqual({
+        document: committed,
+        outcome: "replayed",
+      });
       await expect(
         Effect.runPromise(creationStore.commit({ ...commitRequest, requestHash: "2".repeat(64) })),
       ).rejects.toMatchObject({
@@ -1085,20 +1090,22 @@ suite("Postgres 17 verification completion repository", () => {
         next_community_id: () => "community-should-not-exist",
         next_subject_claim_id: () => "creation-claim-should-not-exist",
       });
-      const second = await Effect.runPromise(
-        secondStore.create({
-          actor: { kind: "user", userId: "user-a" },
-          requestHash: "3".repeat(64),
-          body: {
-            idempotency_key: "create-community-2",
-            draft: {
-              ...created.draft,
-              name: "Second community",
-              slug: "second-community",
+      const second = (
+        await Effect.runPromise(
+          secondStore.create({
+            actor: { kind: "user", userId: "user-a" },
+            requestHash: "3".repeat(64),
+            body: {
+              idempotency_key: "create-community-2",
+              draft: {
+                ...created.draft,
+                name: "Second community",
+                slug: "second-community",
+              },
             },
-          },
-        }),
-      );
+          }),
+        )
+      ).document;
       const secondEvidence = await cloneCompletedCreationEvidence(admin, {
         sourceSessionId: "community-creation-proof",
         sessionId: "community-creation-proof-2",
@@ -1122,10 +1129,13 @@ suite("Postgres 17 verification completion repository", () => {
         }),
       );
       expect(quotaExceeded).toMatchObject({
-        revision: 3,
-        status: "quota_exceeded",
-        next_action: { kind: "blocked", reason: "quota_exceeded" },
-        committed_resource: null,
+        outcome: "fresh_not_created",
+        document: {
+          revision: 3,
+          status: "quota_exceeded",
+          next_action: { kind: "blocked", reason: "quota_exceeded" },
+          committed_resource: null,
+        },
       });
       expect(
         (
@@ -1140,20 +1150,22 @@ suite("Postgres 17 verification completion repository", () => {
         next_community_id: () => "community-approved",
         next_subject_claim_id: () => "creation-claim-approved",
       });
-      const third = await Effect.runPromise(
-        thirdStore.create({
-          actor: { kind: "user", userId: "user-a" },
-          requestHash: "5".repeat(64),
-          body: {
-            idempotency_key: "create-community-3",
-            draft: {
-              ...created.draft,
-              name: "Approved community",
-              slug: "approved-community",
+      const third = (
+        await Effect.runPromise(
+          thirdStore.create({
+            actor: { kind: "user", userId: "user-a" },
+            requestHash: "5".repeat(64),
+            body: {
+              idempotency_key: "create-community-3",
+              draft: {
+                ...created.draft,
+                name: "Approved community",
+                slug: "approved-community",
+              },
             },
-          },
-        }),
-      );
+          }),
+        )
+      ).document;
       const thirdEvidence = await cloneCompletedCreationEvidence(admin, {
         sourceSessionId: "community-creation-proof",
         sessionId: "community-creation-proof-3",
@@ -1195,8 +1207,11 @@ suite("Postgres 17 verification completion repository", () => {
         }),
       );
       expect(approved).toMatchObject({
-        status: "committed",
-        committed_resource: { community_id: "community-approved" },
+        outcome: "fresh_created",
+        document: {
+          status: "committed",
+          committed_resource: { community_id: "community-approved" },
+        },
       });
       expect(
         (
@@ -1235,7 +1250,7 @@ suite("Postgres 17 verification completion repository", () => {
                 },
               },
             }),
-          ),
+          ).then((result) => result.document),
         ),
       );
       for (const [index, intent] of raceIntents.entries()) {
@@ -1273,7 +1288,11 @@ suite("Postgres 17 verification completion repository", () => {
           ),
         ),
       );
-      expect(raceResults.map((result) => result.status).sort()).toEqual([
+      expect(raceResults.map((result) => result.outcome).sort()).toEqual([
+        "fresh_created",
+        "fresh_not_created",
+      ]);
+      expect(raceResults.map((result) => result.document.status).sort()).toEqual([
         "committed",
         "quota_exceeded",
       ]);
@@ -1295,20 +1314,22 @@ suite("Postgres 17 verification completion repository", () => {
         next_community_id: () => "community-jazleeuw",
         next_subject_claim_id: () => "creation-claim-rollback",
       });
-      const rollbackIntent = await Effect.runPromise(
-        rollbackStore.create({
-          actor: { kind: "user", userId: "user-a" },
-          requestHash: "b".repeat(64),
-          body: {
-            idempotency_key: "create-community-rollback",
-            draft: {
-              ...created.draft,
-              name: "Rollback community",
-              slug: "rollback-community",
+      const rollbackIntent = (
+        await Effect.runPromise(
+          rollbackStore.create({
+            actor: { kind: "user", userId: "user-a" },
+            requestHash: "b".repeat(64),
+            body: {
+              idempotency_key: "create-community-rollback",
+              draft: {
+                ...created.draft,
+                name: "Rollback community",
+                slug: "rollback-community",
+              },
             },
-          },
-        }),
-      );
+          }),
+        )
+      ).document;
       const rollbackEvidence = await cloneCompletedCreationEvidence(admin, {
         sourceSessionId: "community-creation-proof",
         sessionId: "community-creation-proof-rollback",
@@ -1367,30 +1388,32 @@ suite("Postgres 17 verification completion repository", () => {
         next_community_id: () => "community-lock-order",
         next_subject_claim_id: () => "creation-claim-lock-order",
       });
-      const created = await Effect.runPromise(
-        creationStore.create({
-          actor: { kind: "user", userId: "user-a" },
-          requestHash: "3".repeat(64),
-          body: {
-            idempotency_key: "create-community-lock-order",
-            draft: {
-              name: "Lock order",
-              slug: "lock-order",
-              description: null,
-              policy: {
-                version: 1,
-                accessPaths: [
-                  {
-                    id: "verified-people",
-                    operator: "and",
-                    requirements: [{ requirement: "human-verification" }],
-                  },
-                ],
+      const created = (
+        await Effect.runPromise(
+          creationStore.create({
+            actor: { kind: "user", userId: "user-a" },
+            requestHash: "3".repeat(64),
+            body: {
+              idempotency_key: "create-community-lock-order",
+              draft: {
+                name: "Lock order",
+                slug: "lock-order",
+                description: null,
+                policy: {
+                  version: 1,
+                  accessPaths: [
+                    {
+                      id: "verified-people",
+                      operator: "and",
+                      requirements: [{ requirement: "human-verification" }],
+                    },
+                  ],
+                },
               },
             },
-          },
-        }),
-      );
+          }),
+        )
+      ).document;
       const session = {
         ...communityCreationProofSession(created.intent_id),
         id: "community-creation-proof-lock-order",
@@ -1437,8 +1460,11 @@ suite("Postgres 17 verification completion repository", () => {
         result_hash: "5".repeat(64),
       });
       await expect(communityCommit).resolves.toMatchObject({
-        status: "committed",
-        committed_resource: { community_id: "community-lock-order" },
+        outcome: "fresh_created",
+        document: {
+          status: "committed",
+          committed_resource: { community_id: "community-lock-order" },
+        },
       });
     });
     completedTestCount += 1;

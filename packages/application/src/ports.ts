@@ -417,12 +417,22 @@ export type CommunityCreationRepositoryFailure =
   | CommunityCreationRepositoryError
   | ControlPlaneError;
 
+export type CreateCommunityCreationIntentResult = Readonly<{
+  readonly document: CommunityCreationIntentDocument;
+  readonly outcome: "fresh" | "replayed";
+}>;
+
+export type CommitCommunityCreationIntentResult = Readonly<{
+  readonly document: CommunityCreationIntentDocument;
+  readonly outcome: "fresh_created" | "fresh_not_created" | "replayed";
+}>;
+
 export interface CommunityCreationStoreService {
   readonly create: (input: {
     readonly actor: M2Actor;
     readonly body: CreateCommunityCreationIntentBody;
     readonly requestHash: string;
-  }) => Effect.Effect<CommunityCreationIntentDocument, CommunityCreationRepositoryFailure>;
+  }) => Effect.Effect<CreateCommunityCreationIntentResult, CommunityCreationRepositoryFailure>;
 
   readonly get: (input: {
     readonly intentId: string;
@@ -441,7 +451,7 @@ export interface CommunityCreationStoreService {
     readonly actor: M2Actor;
     readonly body: CommitCommunityCreationIntentBody;
     readonly requestHash: string;
-  }) => Effect.Effect<CommunityCreationIntentDocument, CommunityCreationRepositoryFailure>;
+  }) => Effect.Effect<CommitCommunityCreationIntentResult, CommunityCreationRepositoryFailure>;
 }
 
 export class CommunityCreationStore extends Context.Service<

@@ -46,7 +46,7 @@ export function makeCommunityCreationHandlers(
           services,
         ),
       );
-      return withEndpointResult(result, 201);
+      return withEndpointResult(result.document, result.outcome === "fresh" ? 201 : 200);
     },
     CommitCommunityCreationIntent: async (request) => {
       const result = await Effect.runPromise(
@@ -59,7 +59,7 @@ export function makeCommunityCreationHandlers(
           services,
         ),
       );
-      return withEndpointResult(result, 201);
+      return withEndpointResult(result.document, result.outcome === "fresh_created" ? 201 : 200);
     },
     GetCommunityCreationIntent: async (request) =>
       await Effect.runPromise(
