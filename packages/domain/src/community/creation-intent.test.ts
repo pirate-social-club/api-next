@@ -106,6 +106,25 @@ describe("community creation intent state machine", () => {
     }
   });
 
+  test("makes a quota race lost at commit a durable terminal outcome", () => {
+    const ready = { ...state("commit_ready"), revision: 5 };
+    const blocked = transition(ready, {
+      type: "commit_quota_exceeded",
+      expected_revision: 5,
+    });
+    expect(blocked).toMatchObject({ revision: 6, status: "quota_exceeded" });
+    expect(creationNextAction(blocked)).toEqual({
+      kind: "blocked",
+      reason: "quota_exceeded",
+    });
+    expect(
+      transitionCommunityCreationIntent(state(), {
+        type: "commit_quota_exceeded",
+        expected_revision: 1,
+      }),
+    ).toEqual({ kind: "rejected", reason: "invalid_event" });
+  });
+
   test("draft revisions return to preflight and fence stale writers", () => {
     const verification = transition(state(), {
       type: "preflight_completed",

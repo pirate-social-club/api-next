@@ -73,6 +73,11 @@ export type CommunityCreationIntentEvent =
       readonly resource: CommittedCommunityResource;
     }>
   | Readonly<{
+      /** A quota race may be lost after preflight but before the commit lock. */
+      readonly type: "commit_quota_exceeded";
+      readonly expected_revision: number;
+    }>
+  | Readonly<{
       readonly type: "expired" | "cancelled";
       readonly expected_revision: number;
     }>;
@@ -234,6 +239,16 @@ export function transitionCommunityCreationIntent(
       status: "committed",
       committed_resource: event.resource,
     });
+  }
+
+  if (event.type === "commit_quota_exceeded") {
+    return state.status === "commit_ready"
+      ? accepted({
+          ...state,
+          revision: state.revision + 1,
+          status: "quota_exceeded",
+        })
+      : rejected("invalid_event");
   }
 
   return accepted({
