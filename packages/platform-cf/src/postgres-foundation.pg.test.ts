@@ -20,7 +20,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 8;
+const foundationTestCount = 9;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -142,6 +142,9 @@ const communityCreationStorageIdentityMigrationSql = await Bun.file(
     "../../../db/postgres/migrations/0025_community_creation_storage_identity.sql",
     import.meta.url,
   ),
+).text();
+const textModerationFoundationMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0026_text_moderation_foundation.sql", import.meta.url),
 ).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
@@ -272,6 +275,11 @@ const communityCreationStorageIdentityMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0025_community_creation_storage_identity.sql"] ?? "",
   sql: communityCreationStorageIdentityMigrationSql,
 };
+const textModerationFoundationMigration: PostgresMigration = {
+  version: "0026_text_moderation_foundation.sql",
+  checksum: checksumManifest.migrations["0026_text_moderation_foundation.sql"] ?? "",
+  sql: textModerationFoundationMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -298,6 +306,7 @@ const migrations: readonly PostgresMigration[] = [
   communityCreationIntentsMigration,
   communityCreationPreflightTransitionMigration,
   communityCreationStorageIdentityMigration,
+  textModerationFoundationMigration,
 ];
 
 function checksum(value: string): string {
@@ -401,6 +410,7 @@ async function withSchema<A>(
   try {
     return await use(admin, scopedConnectionString, schema);
   } finally {
+    await admin.query("ROLLBACK");
     await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
     await admin.end();
   }
@@ -484,6 +494,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(communityCreationStorageIdentityMigrationSql)).toBe(
         communityCreationStorageIdentityMigration.checksum,
+      );
+      expect(checksum(textModerationFoundationMigrationSql)).toBe(
+        textModerationFoundationMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
@@ -572,6 +585,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "schema_migrations",
         "subject_key_binding_events",
         "subject_keys",
+        "text_content_held_revisions",
+        "text_content_submissions",
+        "text_moderation_cases",
+        "text_moderation_evidence",
+        "text_moderation_policy_current",
+        "text_moderation_policy_revisions",
         "used_action_grants",
         "users",
         "verification_completion_attempts",
@@ -694,6 +713,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "reward_uniqueness_authorities_append_only",
         "subject_key_binding_events_append_only",
         "subject_keys_append_only",
+        "text_content_held_revisions_append_only",
+        "text_moderation_evidence_append_only",
+        "text_moderation_policy_revisions_append_only",
         "used_action_grants_append_only",
       ]);
 
@@ -2077,6 +2099,318 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "SELECT revision, status FROM community_creation_intents WHERE intent_id = 'creation-a'",
       );
       expect(current.rows).toEqual([{ revision: 4, status: "quota_exceeded" }]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("enforces durable text moderation policy, submission, review, and projection invariants", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      await applyMigrations(scopedConnectionString, migrations);
+
+      const policy = await admin.query<{
+        readonly policy_hash: string;
+        readonly policy_preimage: string;
+        readonly model_identifier: string;
+        readonly timeout_ms: number;
+        readonly sexual_minors_block_threshold: string;
+      }>(
+        `SELECT policy_hash, policy_preimage, model_identifier, timeout_ms,
+                sexual_minors_block_threshold::text
+           FROM text_moderation_policy_revisions
+          WHERE policy_revision_id = 'text-moderation-policy-v1'`,
+      );
+      expect(policy.rows).toHaveLength(1);
+      const persistedPolicy = policy.rows[0];
+      if (persistedPolicy === undefined) throw new Error("missing text moderation policy");
+      expect(persistedPolicy).toMatchObject({
+        model_identifier: "omni-moderation-latest",
+        timeout_ms: 10000,
+        sexual_minors_block_threshold: "0.95",
+      });
+      expect(checksum(persistedPolicy.policy_preimage)).toBe(persistedPolicy.policy_hash);
+
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, created_by_user_id, created_at, updated_at
+         ) VALUES ('text-community', 'Text', 'text-author', now(), now())`,
+      );
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO posts (
+           community_id, post_id, author_user_id, post_type, status, visibility,
+           title, body, created_at, updated_at
+         ) VALUES (
+           'text-community', 'text-post-1', 'text-author', 'text', 'published', 'public',
+           'Title', 'Body', now(), now()
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO text_moderation_evidence (
+           evidence_ref, provider_id, requested_model_identifier,
+           response_model_identifier, outcome, normalized_categories, normalized_scores,
+           response_sha256
+         ) VALUES (
+           'text-evidence-1', 'openai', 'omni-moderation-latest',
+           'omni-moderation-latest', 'evaluated', '{}'::jsonb, '{}'::jsonb, repeat('e', 64)
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO text_content_submissions (
+           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           request_hash, status, moderation_decision, public_reason_code,
+           policy_revision_id, policy_hash,
+           input_sha256, internal_reason_codes, evidence_ref, published_post_id
+         ) VALUES (
+           'text-community', 'text-submission-1', 'text-author', 'text_post', 'text-key-1',
+           repeat('a', 64), 'published', 'allow', NULL, 'text-moderation-policy-v1',
+           'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
+           repeat('b', 64), '[]'::jsonb, 'text-evidence-1', 'text-post-1'
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO home_feed_projection (
+           community_id, feed_item_id, post_id, rank_score, projected_at
+         ) VALUES ('text-community', 'feed-text-post-1', 'text-post-1', 0, now())`,
+      );
+      await admin.query("COMMIT");
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO home_feed_projection (
+           community_id, feed_item_id, post_id, rank_score, projected_at
+         ) VALUES ('text-community', 'duplicate-feed-item', 'text-post-1', 0, now())`,
+        [],
+      );
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO text_content_submissions (
+           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           request_hash, status, moderation_decision, public_reason_code,
+           policy_revision_id, policy_hash,
+           input_sha256, internal_reason_codes, review_ref
+         ) VALUES (
+           'text-community', 'text-submission-2', 'text-author', 'text_post', 'text-key-2',
+           repeat('c', 64), 'manual_review', 'manual_review', 'moderation_unavailable',
+           'text-moderation-policy-v1',
+           'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
+           repeat('d', 64), '["provider_timeout"]'::jsonb, 'text-case-2'
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO text_content_held_revisions (
+           community_id, held_revision_id, submission_id, title, body, content_sha256
+         ) VALUES (
+           'text-community', 'text-held-2', 'text-submission-2', 'Held', 'Body', repeat('f', 64)
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO text_moderation_cases (community_id, case_id, submission_id)
+         VALUES ('text-community', 'text-case-2', 'text-submission-2')`,
+      );
+      await admin.query("COMMIT");
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO posts (
+           community_id, post_id, author_user_id, post_type, status, visibility,
+           title, body, created_at, updated_at
+         ) VALUES (
+           'text-community', 'text-post-2', 'text-author', 'text', 'published', 'public',
+           'Held', 'Body', now(), now()
+         )`,
+      );
+      await admin.query(
+        `UPDATE text_moderation_cases
+            SET status = 'approved', resolved_by_user_id = 'moderator-1',
+                updated_at = clock_timestamp() + interval '1 millisecond'
+          WHERE case_id = 'text-case-2'`,
+      );
+      await admin.query(
+        `UPDATE text_content_submissions
+            SET status = 'published', public_reason_code = NULL,
+                published_post_id = 'text-post-2', review_ref = NULL,
+                updated_at = clock_timestamp() + interval '1 millisecond'
+          WHERE submission_id = 'text-submission-2'`,
+      );
+      await admin.query(
+        `INSERT INTO home_feed_projection (
+           community_id, feed_item_id, post_id, rank_score, projected_at
+         ) VALUES ('text-community', 'feed-text-post-2', 'text-post-2', 0, now())`,
+      );
+      await admin.query("COMMIT");
+
+      const approved = await admin.query<{
+        readonly status: string;
+        readonly moderation_decision: string;
+      }>(
+        `SELECT status, moderation_decision
+           FROM text_content_submissions
+          WHERE submission_id = 'text-submission-2'`,
+      );
+      expect(approved.rows).toEqual([
+        { status: "published", moderation_decision: "manual_review" },
+      ]);
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `UPDATE text_moderation_cases
+            SET status = 'dismissed', updated_at = clock_timestamp() + interval '2 milliseconds'
+          WHERE case_id = 'text-case-2'`,
+        [],
+      );
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO text_content_submissions (
+           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           request_hash, status, moderation_decision, public_reason_code,
+           policy_revision_id, policy_hash, input_sha256, internal_reason_codes, review_ref
+         ) VALUES (
+           'text-community', 'text-submission-missing-review', 'text-author', 'text_post',
+           'text-key-missing-review', repeat('3', 64), 'manual_review', 'manual_review',
+           'review_required', 'text-moderation-policy-v1',
+           'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
+           repeat('4', 64), '["hate"]'::jsonb, 'text-case-missing'
+         )`,
+      );
+      try {
+        await admin.query("COMMIT");
+        throw new Error("expected incomplete review transaction to fail");
+      } catch (error) {
+        expect(error).toMatchObject({ code: "P0001" });
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO text_content_submissions (
+           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           request_hash, status, moderation_decision, public_reason_code,
+           policy_revision_id, policy_hash, input_sha256, internal_reason_codes
+         ) VALUES (
+           'text-community', 'text-submission-unknown-reason', 'text-author', 'text_post',
+           'text-key-unknown-reason', repeat('5', 64), 'blocked', 'blocked',
+           'policy_violation', 'text-moderation-policy-v1',
+           'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
+           repeat('6', 64), '["free_form"]'::jsonb
+         )`,
+        [],
+      );
+
+      await admin.query(
+        `INSERT INTO text_content_submissions (
+           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           request_hash, status, moderation_decision, public_reason_code,
+           policy_revision_id, policy_hash, input_sha256, internal_reason_codes
+         ) VALUES (
+           'text-community', 'text-submission-blocked', 'text-author', 'text_post',
+           'text-key-blocked', repeat('7', 64), 'blocked', 'blocked',
+           'policy_violation', 'text-moderation-policy-v1',
+           'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
+           repeat('8', 64), '["sexual_minors"]'::jsonb
+         )`,
+      );
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `INSERT INTO text_content_held_revisions (
+           community_id, held_revision_id, submission_id, title, content_sha256
+         ) VALUES (
+           'text-community', 'text-held-blocked', 'text-submission-blocked',
+           'must not persist', repeat('9', 64)
+         )`,
+        [],
+      );
+
+      await admin.query(
+        `INSERT INTO posts (
+           community_id, post_id, author_user_id, post_type, status, visibility,
+           body, created_at, updated_at
+         ) VALUES (
+           'text-community', 'image-processing', 'other-author', 'image', 'processing',
+           'public', 'not a published text post', now(), now()
+         )`,
+      );
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `INSERT INTO text_content_submissions (
+           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           request_hash, status, moderation_decision, public_reason_code,
+           policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
+           published_post_id
+         ) VALUES (
+           'text-community', 'text-submission-bad-post', 'text-author', 'text_post',
+           'text-key-bad-post', repeat('a', 64), 'published', 'allow', NULL,
+           'text-moderation-policy-v1',
+           'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
+           repeat('b', 64), '[]'::jsonb, 'image-processing'
+         )`,
+        [],
+      );
+
+      await admin.query(
+        `INSERT INTO posts (
+           community_id, post_id, author_user_id, post_type, status, visibility,
+           title, body, created_at, updated_at
+         ) VALUES (
+           'text-community', 'text-post-without-feed', 'text-author', 'text', 'published',
+           'public', 'Missing projection', 'Body', now(), now()
+         )`,
+      );
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `INSERT INTO text_content_submissions (
+           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           request_hash, status, moderation_decision, public_reason_code,
+           policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
+           published_post_id
+         ) VALUES (
+           'text-community', 'text-submission-no-feed', 'text-author', 'text_post',
+           'text-key-no-feed', repeat('0', 64), 'published', 'allow', NULL,
+           'text-moderation-policy-v1',
+           'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
+           repeat('1', 64), '[]'::jsonb, 'text-post-without-feed'
+         )`,
+        [],
+      );
+
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO text_content_submissions (
+           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           request_hash, status, moderation_decision, public_reason_code,
+           policy_revision_id, policy_hash,
+           input_sha256, internal_reason_codes
+         ) VALUES (
+           'text-community', 'text-submission-invalid', 'text-author', 'text_post',
+           'text-key-invalid', repeat('1', 64), 'blocked', 'blocked', NULL,
+           'text-moderation-policy-v1',
+           'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
+           repeat('2', 64), '["sexual_minors"]'::jsonb
+         )`,
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        "DELETE FROM text_moderation_evidence WHERE evidence_ref = 'text-evidence-1'",
+        [],
+      );
+
+      const submissionColumns = await admin.query<{ readonly column_name: string }>(
+        `SELECT column_name
+           FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'text_content_submissions'`,
+      );
+      expect(submissionColumns.rows.map((row) => row.column_name)).not.toContain("title");
+      expect(submissionColumns.rows.map((row) => row.column_name)).not.toContain("body");
     });
     completedTestCount += 1;
   });

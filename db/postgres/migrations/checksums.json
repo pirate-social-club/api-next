@@ -25,6 +25,7 @@
     "0022_m3_community_purchase_immutability.sql": "98cf64d09d6f1e4d7b476bc012e9e02bca20a8a083b0376fd80dca5fef89cbb8",
     "0023_community_creation_intents.sql": "e3e045fb07a89325212bab96bef59370d2a3d414b443157963498fb3b8eeaea1",
     "0024_community_creation_preflight_transition.sql": "8f258b91b338efdca83e687e71189459709e4dfd4e649079092660ad1de08a39",
-    "0025_community_creation_storage_identity.sql": "5e08dc481492e40cd6bd9fcda916221f257cd379c20d02af4231b136209be53d"
+    "0025_community_creation_storage_identity.sql": "5e08dc481492e40cd6bd9fcda916221f257cd379c20d02af4231b136209be53d",
+    "0026_text_moderation_foundation.sql": "08fe7eba04014d148a515f9a4c6074fd727ec58358678f1434d05c9a8bd0f703"
   }
 }

@@ -107,6 +107,12 @@ and evaluator identity. It fails closed if an older partial provider binding
 exists; such a row requires an explicit reviewed backfill rather than inferred
 security semantics.
 
+`0026_text_moderation_foundation.sql` seeds the reference-compatible immutable
+text-moderation policy revision and adds normalized provider evidence,
+reload-safe content submissions, held canonical revisions, automatic review
+cases, guarded approval transitions, and one feed projection per published
+post. Raw provider payloads and blocked content have no storage column.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every
