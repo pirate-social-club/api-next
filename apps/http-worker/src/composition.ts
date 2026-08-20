@@ -13,6 +13,7 @@ import {
 import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-exchange";
 import type { VerificationIntentResolver } from "@pirate/application/use-cases/verification-start";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
+import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
 import { makeCommunityPurchaseFundingChainReader } from "@pirate/platform-cf/community-purchase-funding-chain-reader";
 import {
   makeControlPlaneCommunityPurchaseFundingProducerStore,
@@ -60,6 +61,7 @@ import {
 } from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
 import { Effect, Redacted, Schema } from "effect";
+import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
 import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
@@ -305,6 +307,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
   const publicProfileStore = makeControlPlanePublicProfileStore(controlPlane, identityStore);
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
+  const communityCreationStore = makeControlPlaneCommunityCreationStore(controlPlane);
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const feedStore = makeControlPlaneFeedStore(controlPlane);
   const fundingJournal = makeControlPlaneCommunityPurchaseFundingStore(controlPlane);
@@ -440,6 +443,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     feedStore,
     identityStore,
   });
+  const communityCreationHandlers = makeCommunityCreationHandlers({ communityCreationStore });
   const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
     publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),
@@ -503,6 +507,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     config: { corsOrigin: config.CORS_ORIGIN },
     handlers: {
       ...productHandlers,
+      ...communityCreationHandlers,
       ...verificationHandlers,
       ...fundingHandlers,
       GetJwks: () => sessionCrypto.jwks(),
