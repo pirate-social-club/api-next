@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./config": "./config/index.ts",
     "./community-repository": "./src/community-repository.ts",
+    "./community-creation-intent-resolver": "./src/community-creation-intent-resolver.ts",
     "./community-purchase-funding-repository": "./src/community-purchase-funding-repository.ts",
     "./community-purchase-funding-chain-reader": "./src/community-purchase-funding-chain-reader.ts",
     "./content-repository": "./src/content-repository.ts",
