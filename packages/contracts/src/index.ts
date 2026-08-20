@@ -2,6 +2,7 @@ export * from "./auth.ts";
 export * from "./codegen.ts";
 export * from "./community-creation.ts";
 export * from "./community-purchase-funding.ts";
+export * from "./community-routes.ts";
 export * from "./endpoint.ts";
 export * from "./errors.ts";
 export * from "./karaoke.ts";
