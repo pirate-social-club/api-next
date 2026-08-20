@@ -10,6 +10,7 @@ import {
   VERY_OAUTH_ISSUER,
   VERY_OAUTH_SESSION_TTL_SECONDS,
   type VeryOauthIdTokenVerifier,
+  type VeryOauthJwksFetch,
   type VeryOauthTransport,
 } from "./providers/very-oauth.ts";
 import {
@@ -55,6 +56,7 @@ export interface PlatformVerificationProviderOptions {
     readonly redirect_uri: string;
     readonly sealing_key: Uint8Array;
     readonly transport?: VeryOauthTransport;
+    readonly jwks_fetch?: VeryOauthJwksFetch;
     readonly id_token_verifier?: VeryOauthIdTokenVerifier;
   }>;
   readonly callback_credential_headers?: readonly string[];
@@ -173,6 +175,7 @@ function veryOauthAdapter(config: NonNullable<PlatformVerificationProviderOption
     ...(config.id_token_verifier === undefined
       ? {}
       : { id_token_verifier: config.id_token_verifier }),
+    ...(config.jwks_fetch === undefined ? {} : { jwks_fetch: config.jwks_fetch }),
     clock: {
       now: () => new Date().toISOString(),
       expiresAt: (now) =>
