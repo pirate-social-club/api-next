@@ -117,6 +117,47 @@ const requestShape = (endpoint: EndpointDefinition): EndpointRequest | undefined
   return endpoint.request;
 };
 
+const invalidPath = (): BadRequest =>
+  new BadRequest({ message: "Invalid path request", details: { location: "path" } });
+
+/**
+ * Hono decodes path parameters before exposing them. Exact namespace routes
+ * also need the request-target spelling so encoded aliases cannot share one
+ * application identity under different cache/security keys.
+ */
+const enforceExactRawPathParameters = (
+  endpoint: EndpointDefinition,
+  context: HttpContext,
+): void => {
+  const exactParameters = requestShape(endpoint)?.exactRawPathParameters;
+  if (exactParameters === undefined || exactParameters.length === 0) return;
+
+  let rawSegments: readonly string[];
+  try {
+    rawSegments = new URL(context.req.raw.url).pathname.split("/");
+  } catch {
+    throw invalidPath();
+  }
+  const templateSegments = endpoint.path.split("/");
+  if (rawSegments.length !== templateSegments.length) throw invalidPath();
+
+  const rawByName = new Map<string, string>();
+  for (const name of exactParameters) {
+    const index = templateSegments.indexOf(`:${name}`);
+    if (index < 0) {
+      throw new InternalError({ message: "Endpoint has invalid exact path metadata" });
+    }
+    const raw = rawSegments[index];
+    if (raw === undefined || raw.length === 0 || raw.includes("%")) throw invalidPath();
+    rawByName.set(name, raw);
+  }
+
+  const decoded = context.req.param() as Readonly<Record<string, string>>;
+  for (const [name, raw] of rawByName) {
+    if (decoded[name] !== raw) throw invalidPath();
+  }
+};
+
 const decode = (
   schema: Schema.Schema<unknown> | undefined,
   value: unknown,
@@ -511,6 +552,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
 
   for (const binding of routeTable) {
     app.on(binding.method, binding.path, async (context) => {
+      enforceExactRawPathParameters(binding.endpoint, context);
       const handler =
         options.handlers?.[binding.name] ??
         karaokeHandlers?.[binding.name] ??

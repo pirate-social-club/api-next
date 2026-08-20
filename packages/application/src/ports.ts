@@ -527,7 +527,7 @@ export type PublicCommunityThreadsRepositoryFailure =
 export interface PublicCommunityThreadsStoreService {
   readonly listPublicCommunityThreads: (input: {
     readonly communityRef: string;
-    /** One safe decoded/NFKC/lowercase candidate, or null when only ID lookup is safe. */
+    /** One exact legacy slug candidate, or null when only exact-ID lookup is safe. */
     readonly slugCandidate: string | null;
     readonly query: PublicCommunityThreadsQuery;
   }) => Effect.Effect<

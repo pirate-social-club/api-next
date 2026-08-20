@@ -45,38 +45,21 @@ const validBoundedText = (value: unknown, maxLength: number): boolean =>
     !hasControlCharacter(value));
 
 /**
- * Decode exactly one route candidate for the persisted canonical slug lookup.
- * The original route value remains available to the repository for the
- * exact-ID lookup, so lower-casing never changes ID precedence.
+ * Accept exactly one legacy slug candidate without manufacturing aliases.
+ * Canonical HNS/Spaces binding lookup replaces this candidate in its own
+ * cutover slice; public reads never share the write codec's normalization.
  */
 export const normalizePublicCommunityRef = (value: string): string => {
   if (
     value.length === 0 ||
-    value.length > MAX_COMMUNITY_REF_LENGTH ||
+    value.length > MAX_SLUG_LENGTH ||
+    value !== value.trim() ||
     hasControlCharacter(value) ||
-    value.includes("\u0000")
+    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)
   ) {
     throw new BadRequest({ message: "Invalid community reference" });
   }
-
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(value);
-  } catch {
-    throw new BadRequest({ message: "Invalid community reference" });
-  }
-
-  const candidate = decoded.normalize("NFKC").toLowerCase();
-  if (
-    candidate.length === 0 ||
-    candidate.length > MAX_SLUG_LENGTH ||
-    candidate !== candidate.trim() ||
-    hasControlCharacter(candidate) ||
-    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(candidate)
-  ) {
-    throw new BadRequest({ message: "Invalid community reference" });
-  }
-  return candidate;
+  return value;
 };
 
 const mapFailure = (error: unknown): BadRequest | InternalError =>

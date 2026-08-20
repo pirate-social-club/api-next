@@ -1148,7 +1148,11 @@ export const GetPublicCommunityThreads = endpoint({
   method: "GET",
   path: "/public-communities/:communityRef/feed",
   auth: Auth.public(),
-  request: { path: PathPublicCommunity, query: PublicCommunityThreadsQuery },
+  request: {
+    path: PathPublicCommunity,
+    exactRawPathParameters: ["communityRef"],
+    query: PublicCommunityThreadsQuery,
+  },
   response: PublicCommunityThreadsResponse,
   successStatus: 200,
   errors: [BadRequest, InternalError, NotFound],

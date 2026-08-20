@@ -29,13 +29,21 @@ const emptyDocument: PublicCommunityThreadsDocument = {
 };
 
 describe("public community threads use case", () => {
-  test("normalizes one safe decoded slug candidate without changing the raw ref", () => {
-    expect(normalizePublicCommunityRef("Alpha%2DCommunity")).toBe("alpha-community");
-    expect(() => normalizePublicCommunityRef("alpha%2Fcommunity")).toThrow(BadRequest);
-    expect(() => normalizePublicCommunityRef("%E0%A4%A")).toThrow(BadRequest);
+  test("accepts one exact slug candidate and rejects aliases rather than rewriting", () => {
+    expect(normalizePublicCommunityRef("alpha-community")).toBe("alpha-community");
+    for (const alias of [
+      "Alpha-Community",
+      "Alpha%2DCommunity",
+      "ｍｕｓｉｃ",
+      "ⓜⓤⓢⓘⓒ",
+      "alpha%2Fcommunity",
+      "%E0%A4%A",
+    ]) {
+      expect(() => normalizePublicCommunityRef(alias), alias).toThrow(BadRequest);
+    }
   });
 
-  test("passes the exact query contract and normalized candidate to storage", async () => {
+  test("passes the exact query contract and unmodified candidate to storage", async () => {
     let observed: unknown;
     const store: PublicCommunityThreadsStoreService = {
       listPublicCommunityThreads: (input) => {
@@ -48,7 +56,7 @@ describe("public community threads use case", () => {
       Effect.runPromise(
         getPublicCommunityThreads(
           {
-            communityRef: "Alpha%2DCommunity",
+            communityRef: "alpha-community",
             query: { surface: "threads", sort: "new", locale: "ka" },
           },
           { publicCommunityThreadsStore: store },
@@ -56,7 +64,7 @@ describe("public community threads use case", () => {
       ),
     ).resolves.toEqual(emptyDocument);
     expect(observed).toEqual({
-      communityRef: "Alpha%2DCommunity",
+      communityRef: "alpha-community",
       slugCandidate: "alpha-community",
       query: { surface: "threads", sort: "new", locale: "ka" },
     });

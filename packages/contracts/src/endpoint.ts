@@ -33,6 +33,12 @@ export interface EndpointRequest {
   /** Schema for the subset of incoming headers exposed to the handler. */
   readonly headers?: Schema.Schema<unknown>;
   readonly path?: Schema.Schema<unknown>;
+  /**
+   * Path parameters whose raw request-target segment must byte-match the
+   * framework-decoded value. This rejects percent-encoded aliases before a
+   * handler or cache can treat them as another spelling of one authority.
+   */
+  readonly exactRawPathParameters?: readonly string[];
   readonly query?: Schema.Schema<unknown>;
 }
 

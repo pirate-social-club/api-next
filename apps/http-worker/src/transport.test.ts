@@ -22,6 +22,22 @@ import {
 } from "./transport.ts";
 
 const feed = { items: [], top_communities: [], next_cursor: null };
+const publicCommunityThreads = {
+  community: {
+    id: "community-a",
+    object: "community_preview" as const,
+    route_slug: "alpha-community",
+    display_name: "Alpha Community",
+    membership_mode: "open" as const,
+    human_verification_lane: null,
+    moderators: [],
+    membership_gate_summaries: [],
+    rules: [],
+    created: 1,
+  },
+  items: [],
+  next_cursor: null,
+};
 const vote = { post: "post_1", value: 1 as const };
 const clearedVote = { post: "post_1", value: null };
 const post = {
@@ -516,6 +532,43 @@ describe("contracts-generated HTTP worker", () => {
     expect(response.status).toBe(200);
     expect(received).toEqual({ body: undefined, params: undefined, query: {}, principal: null });
     expect(JSON.stringify(await response.json())).not.toContain("must-not-cross-boundary");
+  });
+
+  it("rejects encoded aliases for exact path parameters before the handler", async () => {
+    let calls = 0;
+    const app = createHttpWorker({
+      handlers: {
+        GetPublicCommunityThreads: () => {
+          calls += 1;
+          return publicCommunityThreads;
+        },
+      },
+    });
+
+    const exact = await app.request(
+      "http://worker.test/public-communities/alpha-community/feed?surface=threads&sort=new&locale=en%2DUS",
+    );
+    expect(exact.status).toBe(200);
+    expect(calls).toBe(1);
+
+    for (const alias of [
+      "Alpha%2DCommunity",
+      "%40music",
+      "%6Dusic",
+      "%256Dusic",
+      "alpha%2Fcommunity",
+      "alpha%5Ccommunity",
+      "alpha%2Ecommunity",
+      "alpha%25community",
+      "ｍｕｓｉｃ",
+      "ⓜⓤⓢⓘⓒ",
+    ]) {
+      const response = await app.request(
+        `http://worker.test/public-communities/${alias}/feed?surface=threads&sort=new`,
+      );
+      expect(response.status, alias).toBe(400);
+    }
+    expect(calls).toBe(1);
   });
 
   it("preserves raw-text body Unicode and whitespace and exposes only declared headers", async () => {

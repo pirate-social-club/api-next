@@ -6,7 +6,7 @@ import type { DecodedRequest } from "./transport.ts";
 
 const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
   body: undefined,
-  params: { communityRef: "Alpha%2DCommunity" },
+  params: { communityRef: "alpha-community" },
   query: { surface: "threads", sort: "new", locale: "ka" },
   principal: null,
   ...overrides,
@@ -26,7 +26,7 @@ describe("public community threads handler", () => {
 
     await expect(handler(request())).rejects.toBeInstanceOf(NotFound);
     expect(observed).toEqual({
-      communityRef: "Alpha%2DCommunity",
+      communityRef: "alpha-community",
       slugCandidate: "alpha-community",
       query: { surface: "threads", sort: "new", locale: "ka" },
     });
