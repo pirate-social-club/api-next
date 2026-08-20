@@ -12,6 +12,7 @@ import {
   VERY_OAUTH_CONFIGURATION_REFERENCE,
   VERY_OAUTH_CONFIGURATION_VERSION,
   VERY_OAUTH_HTTP_TIMEOUT_MS,
+  VERY_OAUTH_ISSUER,
   VERY_OAUTH_MANIFEST,
   VERY_OAUTH_PROTOCOL_VERSION,
   VERY_OAUTH_PROVIDER_ID,
@@ -22,7 +23,7 @@ import {
 
 const NOW = "2099-08-20T12:00:00.000Z";
 const EXPIRES = "2099-08-20T12:05:00.000Z";
-const HASH = "766ffe27fd8139dfb2411ba7ede1d77d97472d0c2cc9123658b4c594e7ea3fcd";
+const HASH = "d628ee9079970681ece2757f9a269054129a0382f66fad34102cddcd7dbc9cc5";
 const DIGEST = "b".repeat(64);
 const KEY = new Uint8Array(32).fill(7);
 const SUBJECT = "very-subject-1";
@@ -34,7 +35,7 @@ const DETERMINISTIC_STATE = btoa(String.fromCharCode(...new Uint8Array(32).fill(
 const SCOPE = {
   kind: "named" as const,
   scope_semantics: "issuer_rp_scope" as const,
-  issuer: VERY_OAUTH_PROVIDER_ID,
+  issuer: VERY_OAUTH_ISSUER,
   rp_scope: VERY_OAUTH_RP_SCOPE,
 };
 
@@ -54,7 +55,7 @@ const START_INPUT: VerificationProviderStartInput = {
   actor_id: "actor-1",
   intent_id: "intent-1",
   request_hash: HASH,
-  method: "document",
+  method: "palm_oauth",
   scope: SCOPE,
   request_mode: "dynamic",
   provider_configuration: CONFIGURATION,
@@ -117,7 +118,7 @@ function options(overrides: Partial<VeryOauthAdapterOptions> = {}) {
     authorization_endpoint: "https://connect.very.example/authorize",
     token_endpoint: "https://api.very.example/oauth2/token",
     userinfo_endpoint: "https://api.very.example/oauth2/userinfo",
-    issuer: "https://connect.very.example",
+    issuer: VERY_OAUTH_ISSUER,
     jwks_url: "https://connect.very.example/.well-known/jwks.json",
     client_id: "pirate-client",
     client_secret: "client-secret",
@@ -173,7 +174,6 @@ async function started(adapter: ReturnType<typeof provider>["adapter"]) {
 function completion(
   session: ProofSession,
   payload: unknown = {
-    kind: "very-oauth",
     code: "one-time-code",
     state: new URL("https://connect.very.example").searchParams.get("state") ?? "",
   },
@@ -194,7 +194,7 @@ describe("Very OAuth provider-local contract", () => {
         startInput: START_INPUT,
         submission: {
           channel: "client_result",
-          payload: { kind: "very-oauth", code: "one-time-code", state: DETERMINISTIC_STATE },
+          payload: { code: "one-time-code", state: DETERMINISTIC_STATE },
         },
         operation: "complete",
         expected: "success",
@@ -205,11 +205,11 @@ describe("Very OAuth provider-local contract", () => {
 
   test("advertises only the v1 personhood and subject-unique dynamic redirect contract", async () => {
     expect(VERY_OAUTH_MANIFEST.claim_ids).toEqual([
-      "credential.subject_unique",
       "human.personhood",
+      "credential.subject_unique",
     ]);
     expect(VERY_OAUTH_MANIFEST.claim_ids).not.toContain("human.unique");
-    expect(VERY_OAUTH_MANIFEST.supported_methods).toEqual(["document"]);
+    expect(VERY_OAUTH_MANIFEST.supported_methods).toEqual(["palm_oauth"]);
     expect(await Effect.runPromise(provider().adapter.plan(planInput()))).toEqual({
       status: "supported",
       request_mode: "dynamic",
@@ -252,6 +252,7 @@ describe("Very OAuth provider-local contract", () => {
     expect(url.searchParams.get("state")).toHaveLength(43);
     expect(url.searchParams.get("nonce")).toHaveLength(43);
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(url.searchParams.get("scope")).toBe("openid");
     expect(url.searchParams.get("code_challenge")).toHaveLength(43);
     expect(url.searchParams.has("code")).toBe(false);
     expect(url.searchParams.has("code_verifier")).toBe(false);
@@ -264,9 +265,7 @@ describe("Very OAuth provider-local contract", () => {
     if (start.presentation.kind !== "redirect") throw new Error("expected redirect");
     const state = new URL(start.presentation.url).searchParams.get("state");
     const result = await Effect.runPromise(
-      adapter.complete(
-        completion(start.session, { kind: "very-oauth", code: "one-time-code", state }),
-      ),
+      adapter.complete(completion(start.session, { code: "one-time-code", state })),
     );
     expect(calls.token).toHaveLength(1);
     expect(calls.token[0]?.url).toBe(value.token_endpoint);
@@ -307,34 +306,70 @@ describe("Very OAuth provider-local contract", () => {
       await failureTag(
         adapter.complete(
           completion(start.session, {
-            kind: "very-oauth",
             code: "one-time-code",
             state: "wrong-state",
           }),
         ),
       ),
-    ).toBe("VerificationProviderRejected");
+    ).toBe("VerificationProviderUnboundRejected");
+    expect(calls.token).toHaveLength(0);
+  });
+
+  test("rejects a sealed-ref transplant across proof sessions before exchange", async () => {
+    const { adapter, calls } = provider();
+    const first = await started(adapter);
+    const second = await started(adapter);
+    if (first.presentation.kind !== "redirect") throw new Error("expected redirect");
+    const transplanted = {
+      ...second.session,
+      upstream_session_ref: first.session.upstream_session_ref,
+    };
+    const state = new URL(first.presentation.url).searchParams.get("state");
+    expect(
+      await failureTag(adapter.complete(completion(transplanted, { code: "code", state }))),
+    ).toBe("VerificationProviderUnboundRejected");
+    expect(calls.token).toHaveLength(0);
+  });
+
+  test("rejects excess client callback fields before exchange", async () => {
+    const { adapter, calls } = provider();
+    const start = await started(adapter);
+    if (start.presentation.kind !== "redirect") throw new Error("expected redirect");
+    const state = new URL(start.presentation.url).searchParams.get("state");
+    expect(
+      await failureTag(
+        adapter.complete(completion(start.session, { code: "code", state, extra: "rejected" })),
+      ),
+    ).toBe("VerificationProviderUnboundRejected");
     expect(calls.token).toHaveLength(0);
   });
 
   test("rejects stale sessions before any upstream request", async () => {
-    const { calls, value } = provider({
-      clock: { now: () => "2099-08-20T12:05:01.000Z", expiresAt: () => EXPIRES },
-    });
+    let now = NOW;
+    const { calls, value } = provider({ clock: { now: () => now, expiresAt: () => EXPIRES } });
     const adapter = makeVeryOauthProvider(value);
     const start = await started(adapter);
+    now = "2099-08-20T12:05:01.000Z";
     expect(
       await failureTag(
         adapter.complete(
           completion(start.session, {
-            kind: "very-oauth",
             code: "one-time-code",
             state: "ignored",
           }),
         ),
       ),
-    ).toBe("VerificationProviderRejected");
+    ).toBe("VerificationProviderUnboundRejected");
     expect(calls.token).toHaveLength(0);
+  });
+
+  test("rejects a non-300-second expiry at launch", async () => {
+    const configured = provider({
+      clock: { now: () => NOW, expiresAt: () => "2099-08-20T12:04:59.999Z" },
+    });
+    expect(await failureTag(configured.adapter.start(START_INPUT))).toBe(
+      "VerificationProviderRejected",
+    );
   });
 
   test("fails closed for malformed token, issuer/audience/nonce/sub, UserInfo mismatch, and upstream statuses", async () => {
@@ -408,9 +443,7 @@ describe("Very OAuth provider-local contract", () => {
       if (start.presentation.kind !== "redirect") throw new Error("expected redirect");
       const state = new URL(start.presentation.url).searchParams.get("state");
       expect(
-        await failureTag(
-          adapter.complete(completion(start.session, { kind: "very-oauth", code: "code", state })),
-        ),
+        await failureTag(adapter.complete(completion(start.session, { code: "code", state }))),
       ).toBe(expected);
     }
   });
@@ -425,11 +458,29 @@ describe("Very OAuth provider-local contract", () => {
     const failure = await Effect.runPromiseExit(good.adapter.complete(completion(tampered)));
     expect(Exit.isFailure(failure)).toBe(true);
     expect(await failureTag(good.adapter.complete(completion(tampered)))).toBe(
-      "VerificationProviderRejected",
+      "VerificationProviderUnboundRejected",
     );
     const bad = provider({ sealing_key: new Uint8Array(31) });
     expect(await failureTag(bad.adapter.start(START_INPUT))).toBe(
       "VerificationProviderMisconfigured",
     );
+  });
+
+  test("keeps callback secrets out of failure text", async () => {
+    const { adapter } = provider();
+    const start = await started(adapter);
+    const failure = await Effect.runPromiseExit(
+      adapter.complete(
+        completion(start.session, {
+          code: "authorization-code-secret",
+          state: "wrong-state",
+          extra: "client-verifier-secret",
+        }),
+      ),
+    );
+    const text = String(failure);
+    expect(text).not.toContain("authorization-code-secret");
+    expect(text).not.toContain("client-verifier-secret");
+    expect(text).not.toContain("client-secret");
   });
 });
