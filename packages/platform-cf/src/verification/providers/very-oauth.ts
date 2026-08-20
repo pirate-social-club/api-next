@@ -25,7 +25,13 @@ import {
   type VerificationRequirement,
 } from "@pirate/domain/verification";
 import { DateTime, Effect, Option, Schema } from "effect";
-import { createRemoteJWKSet, jwtVerify } from "jose";
+import {
+  createRemoteJWKSet,
+  customFetch,
+  type FetchImplementation,
+  errors as JoseErrors,
+  jwtVerify,
+} from "jose";
 
 export const VERY_OAUTH_PROVIDER_ID = "very.oauth" as const;
 export const VERY_OAUTH_PROTOCOL_VERSION = "oauth2-oidc-v1" as const;
@@ -36,6 +42,9 @@ export const VERY_OAUTH_EVIDENCE_KIND = "very.oauth.id-token-userinfo.v1" as con
 export const VERY_OAUTH_HTTP_TIMEOUT_MS = 15_000 as const;
 export const VERY_OAUTH_SESSION_TTL_SECONDS = 300 as const;
 export const VERY_OAUTH_MAX_RESPONSE_BYTES = 1_048_576 as const;
+export const VERY_OAUTH_MAX_SEALED_SESSION_REF_CHARS = 16_384 as const;
+export const VERY_OAUTH_MAX_CALLBACK_CODE_CHARS = 4_096 as const;
+export const VERY_OAUTH_MAX_CALLBACK_STATE_CHARS = 512 as const;
 export const VERY_OAUTH_ISSUER = "https://connect.very.org" as const;
 const VERY_OAUTH_ID_TOKEN_CLOCK_SKEW_SECONDS = 60;
 
@@ -47,7 +56,7 @@ const VERY_OAUTH_CLAIMS = [
 export const VERY_OAUTH_MANIFEST: ProofProviderManifest = {
   provider_id: VERY_OAUTH_PROVIDER_ID,
   manifest_version: "1",
-  operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 45_000, callback_ms: 1000 },
+  operation_deadlines: { plan_ms: 1000, start_ms: 5000, complete_ms: 50_000, callback_ms: 1000 },
   callback_mode: "none",
   callback_header_allowlist: [],
   protocol_versions: [VERY_OAUTH_PROTOCOL_VERSION],
@@ -128,6 +137,8 @@ export type VeryOauthIdTokenVerifier = (
   }>,
 ) => Effect.Effect<VeryOauthIdTokenClaims, VerificationProviderFailure>;
 
+export type VeryOauthJwksFetch = (url: string, options: RequestInit) => Promise<Response>;
+
 export type VeryOauthAdapterOptions = Readonly<{
   readonly authorization_endpoint: string;
   readonly token_endpoint: string;
@@ -144,6 +155,7 @@ export type VeryOauthAdapterOptions = Readonly<{
   readonly identifiers: VeryOauthIdentifiers;
   readonly randomness: VeryOauthRandomness;
   readonly digest: VeryOauthDigest;
+  readonly jwks_fetch?: VeryOauthJwksFetch;
   readonly id_token_verifier?: VeryOauthIdTokenVerifier;
 }>;
 
@@ -306,8 +318,13 @@ function decodeBase64Url(value: string): Uint8Array | undefined {
   }
 }
 
-function randomString(randomness: VeryOauthRandomness): string {
-  return encodeBase64Url(randomness.bytes(32));
+function randomString(randomness: VeryOauthRandomness): string | undefined {
+  try {
+    const bytes = randomness.bytes(32);
+    return bytes.byteLength === 32 ? encodeBase64Url(bytes) : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function pkceChallenge(verifier: string): Effect.Effect<string, VerificationProviderFailure> {
@@ -329,6 +346,7 @@ function sealSession(
     try: async () => {
       const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
       const iv = randomness.bytes(12);
+      if (iv.byteLength !== 12) throw new Error("invalid randomness");
       const plaintext = new TextEncoder().encode(JSON.stringify(session));
       const ciphertext = new Uint8Array(
         await crypto.subtle.encrypt(
@@ -349,6 +367,8 @@ function unsealSession(
 ): Effect.Effect<SealedSession, VerificationProviderFailure> {
   return Effect.tryPromise({
     try: async () => {
+      if (value.length === 0 || value.length > VERY_OAUTH_MAX_SEALED_SESSION_REF_CHARS)
+        throw new Error("invalid");
       const parts = value.split(".");
       if (parts.length !== 5 || `${parts[0]}.${parts[1]}.${parts[2]}` !== SESSION_PREFIX)
         throw new Error("invalid");
@@ -385,6 +405,14 @@ function decodeSubmission(
 ): Effect.Effect<ClientSubmission, VerificationProviderFailure> {
   const strict = Schema.decodeUnknownOption(StrictClientSubmission)(value);
   if (Option.isNone(strict)) return Effect.fail(unbound());
+  const candidate = strict.value as { readonly code?: unknown; readonly state?: unknown };
+  if (
+    typeof candidate.code !== "string" ||
+    typeof candidate.state !== "string" ||
+    candidate.code.length > VERY_OAUTH_MAX_CALLBACK_CODE_CHARS ||
+    candidate.state.length > VERY_OAUTH_MAX_CALLBACK_STATE_CHARS
+  )
+    return Effect.fail(unbound());
   const decoded = Schema.decodeUnknownOption(ClientSubmission)(strict.value);
   return Option.isSome(decoded) ? Effect.succeed(decoded.value) : Effect.fail(unbound());
 }
@@ -422,6 +450,47 @@ function responseBody(
   return Effect.succeed(response.body);
 }
 
+async function readBoundedResponseBytes(
+  response: Response,
+  operation: "start" | "complete",
+): Promise<Uint8Array> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const declared = Number(contentLength);
+    if (!Number.isSafeInteger(declared) || declared < 0 || declared > VERY_OAUTH_MAX_RESPONSE_BYTES)
+      throw invalid(operation);
+  }
+  if (response.body === null) {
+    const bytes = new TextEncoder().encode(await response.text());
+    if (bytes.byteLength > VERY_OAUTH_MAX_RESPONSE_BYTES) throw invalid(operation);
+    return bytes;
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      total += part.value.byteLength;
+      if (total > VERY_OAUTH_MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw invalid(operation);
+      }
+      chunks.push(part.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 function validHttpsUrl(value: string): boolean {
   if (value.trim() !== value || value.length === 0) return false;
   try {
@@ -446,7 +515,7 @@ function configurationValid(options: VeryOauthAdapterOptions): boolean {
     validHttpsUrl(options.authorization_endpoint) &&
     validHttpsUrl(options.token_endpoint) &&
     validHttpsUrl(options.userinfo_endpoint) &&
-    validHttpsUrl(options.issuer) &&
+    options.issuer === VERY_OAUTH_ISSUER &&
     validHttpsUrl(options.jwks_url) &&
     validHttpsUrl(options.redirect_uri)
   );
@@ -620,13 +689,45 @@ function evidenceBundle(
   });
 }
 
+function boundedJwksFetch(options: VeryOauthAdapterOptions): FetchImplementation {
+  const fetcher: VeryOauthJwksFetch = options.jwks_fetch ?? ((url, init) => fetch(url, init));
+  return async (url, init) => {
+    try {
+      const response = await fetcher(url, init);
+      const bytes = await readBoundedResponseBytes(response, "complete");
+      if (response.status === 429 || response.status >= 500) {
+        throw unavailable("complete");
+      }
+      if (response.status !== 200) throw invalid("complete");
+      try {
+        JSON.parse(new TextDecoder().decode(bytes));
+      } catch {
+        throw invalid("complete");
+      }
+      return new Response(bytes, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    } catch (error) {
+      if (
+        error instanceof VerificationProviderUnavailable ||
+        error instanceof VerificationProviderInvalidResponse
+      )
+        throw error;
+      throw unavailable("complete");
+    }
+  };
+}
+
 function defaultIdTokenVerifier(options: VeryOauthAdapterOptions): VeryOauthIdTokenVerifier {
-  return ({ id_token, issuer, audience, jwks_url, nonce }) =>
+  const jwks = createRemoteJWKSet(new URL(options.jwks_url), {
+    timeoutDuration: VERY_OAUTH_HTTP_TIMEOUT_MS,
+    [customFetch]: boundedJwksFetch(options),
+  });
+  return ({ id_token, issuer, audience, nonce }) =>
     Effect.tryPromise({
       try: async () => {
-        const jwks = createRemoteJWKSet(new URL(jwks_url), {
-          timeoutDuration: VERY_OAUTH_HTTP_TIMEOUT_MS,
-        });
         const current = DateTime.make(options.clock.now());
         if (Option.isNone(current)) throw new Error("invalid");
         const currentMillis = DateTime.toEpochMillis(current.value);
@@ -657,7 +758,20 @@ function defaultIdTokenVerifier(options: VeryOauthAdapterOptions): VeryOauthIdTo
           throw new Error("invalid");
         return { issuer, audience, subject: payload.sub, nonce };
       },
-      catch: () => rejected("complete"),
+      catch: (error) => {
+        if (
+          error instanceof VerificationProviderUnavailable ||
+          error instanceof VerificationProviderInvalidResponse
+        )
+          return error;
+        if (
+          error instanceof JoseErrors.JWKInvalid ||
+          error instanceof JoseErrors.JWKSInvalid ||
+          error instanceof JoseErrors.JWKSMultipleMatchingKeys
+        )
+          return invalid("complete");
+        return rejected("complete");
+      },
     });
 }
 
@@ -679,17 +793,10 @@ export function makeVeryOauthFetchTransport(fetcher: typeof fetch = fetch): Very
         const timeout = setTimeout(() => controller.abort(), VERY_OAUTH_HTTP_TIMEOUT_MS);
         try {
           const response = await fetcher(input, { ...init, signal: controller.signal });
-          const contentLength = response.headers.get("content-length");
-          if (contentLength !== null && Number(contentLength) > VERY_OAUTH_MAX_RESPONSE_BYTES) {
-            throw invalid(operation);
-          }
+          const bytes = await readBoundedResponseBytes(response, operation);
           let body: unknown;
-          const text = await response.text();
-          if (new TextEncoder().encode(text).byteLength > VERY_OAUTH_MAX_RESPONSE_BYTES) {
-            throw invalid(operation);
-          }
           try {
-            body = JSON.parse(text) as unknown;
+            body = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
           } catch {
             body = undefined;
           }
@@ -760,6 +867,8 @@ export function makeVeryOauthProvider(
       const state = randomString(options.randomness);
       const nonce = randomString(options.randomness);
       const code_verifier = randomString(options.randomness);
+      if (state === undefined || nonce === undefined || code_verifier === undefined)
+        return Effect.fail(rejected("start"));
       return pkceChallenge(code_verifier).pipe(
         Effect.flatMap((code_challenge) =>
           sealSession(

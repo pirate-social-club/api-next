@@ -7,17 +7,24 @@ import type {
 import type { ProofSession, VerificationRequirements } from "@pirate/domain/verification";
 import { runProviderTransportConformance } from "@pirate/testing/verification";
 import { Cause, Effect, Exit, Result } from "effect";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
+  makeVeryOauthFetchTransport,
   makeVeryOauthProvider,
   VERY_OAUTH_CONFIGURATION_REFERENCE,
   VERY_OAUTH_CONFIGURATION_VERSION,
   VERY_OAUTH_HTTP_TIMEOUT_MS,
   VERY_OAUTH_ISSUER,
   VERY_OAUTH_MANIFEST,
+  VERY_OAUTH_MAX_CALLBACK_CODE_CHARS,
+  VERY_OAUTH_MAX_CALLBACK_STATE_CHARS,
+  VERY_OAUTH_MAX_RESPONSE_BYTES,
+  VERY_OAUTH_MAX_SEALED_SESSION_REF_CHARS,
   VERY_OAUTH_PROTOCOL_VERSION,
   VERY_OAUTH_PROVIDER_ID,
   VERY_OAUTH_RP_SCOPE,
   type VeryOauthAdapterOptions,
+  type VeryOauthJwksFetch,
   type VeryOauthTransport,
 } from "./very-oauth.ts";
 
@@ -115,7 +122,7 @@ function transportWith(
 function options(overrides: Partial<VeryOauthAdapterOptions> = {}) {
   const calls: Calls = { token: [], userInfo: [] };
   const base: VeryOauthAdapterOptions = {
-    authorization_endpoint: "https://connect.very.example/authorize",
+    authorization_endpoint: "https://connect.very.org/oauth/authorize",
     token_endpoint: "https://api.very.example/oauth2/token",
     userinfo_endpoint: "https://api.very.example/oauth2/userinfo",
     issuer: VERY_OAUTH_ISSUER,
@@ -179,6 +186,42 @@ function completion(
   },
 ): VerificationProviderCompleteInput {
   return { session, submission: { channel: "client_result", payload } };
+}
+
+async function signedFixture() {
+  const { privateKey, publicKey } = await generateKeyPair("RS256");
+  const jwk = await exportJWK(publicKey);
+  jwk.kid = "very-test-key";
+  return { privateKey, jwks: { keys: [jwk] } };
+}
+
+async function signedToken(
+  privateKey: CryptoKey,
+  overrides: Readonly<{
+    iat?: number;
+    exp?: number;
+    nonce: string;
+    issuer?: string;
+    audience?: string;
+  }>,
+) {
+  const now = Math.floor(Date.parse(NOW) / 1_000);
+  const token = await new SignJWT({ sub: SUBJECT, nonce: overrides.nonce })
+    .setProtectedHeader({ alg: "RS256", kid: "very-test-key" })
+    .setIssuer(overrides.issuer ?? VERY_OAUTH_ISSUER)
+    .setAudience(overrides.audience ?? "pirate-client")
+    .setIssuedAt(overrides.iat ?? now)
+    .setExpirationTime(overrides.exp ?? now + 60)
+    .sign(privateKey);
+  return token;
+}
+
+function localJwksFetch(jwks: unknown): VeryOauthJwksFetch {
+  return async () =>
+    new Response(JSON.stringify(jwks), {
+      status: 200,
+      headers: { "content-type": "application/jwk-set+json" },
+    });
 }
 
 describe("Very OAuth provider-local contract", () => {
@@ -297,6 +340,248 @@ describe("Very OAuth provider-local contract", () => {
     expect(JSON.stringify(result)).not.toContain("one-time-code");
     expect(JSON.stringify(result)).not.toContain("access-token-secret");
     expect(JSON.stringify(result)).not.toContain("client-secret");
+  });
+
+  test("verifies a signed JWT through one cached local JWKS fetch", async () => {
+    const keyFixture = await signedFixture();
+    const calls: Calls = { token: [], userInfo: [] };
+    let jwksCalls = 0;
+    let idToken = "";
+    const configured = options({
+      id_token_verifier: undefined,
+      jwks_fetch: async () => {
+        jwksCalls += 1;
+        return new Response(JSON.stringify(keyFixture.jwks), { status: 200 });
+      },
+      transport: transportWith(calls, {
+        token: (input) => {
+          calls.token.push({ url: input.url, body: input.body, timeout_ms: input.timeout_ms });
+          return Effect.succeed({
+            status: 200,
+            body: { access_token: "access-token-secret", id_token: idToken },
+          });
+        },
+      }),
+    });
+    const adapter = makeVeryOauthProvider(configured.value);
+    const start = await started(adapter);
+    if (start.presentation.kind !== "redirect") throw new Error("expected redirect");
+    const url = new URL(start.presentation.url);
+    idToken = await signedToken(keyFixture.privateKey, {
+      nonce: url.searchParams.get("nonce") ?? "",
+    });
+    const state = url.searchParams.get("state");
+    const result = await Effect.runPromise(
+      adapter.complete(completion(start.session, { code: "code", state })),
+    );
+    expect(result.assertions).toHaveLength(2);
+    const second = await started(adapter);
+    if (second.presentation.kind !== "redirect") throw new Error("expected redirect");
+    const secondUrl = new URL(second.presentation.url);
+    idToken = await signedToken(keyFixture.privateKey, {
+      nonce: secondUrl.searchParams.get("nonce") ?? "",
+    });
+    await Effect.runPromise(
+      adapter.complete(
+        completion(second.session, {
+          code: "code-two",
+          state: secondUrl.searchParams.get("state"),
+        }),
+      ),
+    );
+    expect(jwksCalls).toBe(1);
+  });
+
+  test("classifies signed-token claim and signature failures as rejected", async () => {
+    const cases = [
+      "wrong issuer",
+      "wrong audience",
+      "wrong nonce",
+      "future iat",
+      "expired",
+      "wrong signature",
+    ];
+    for (const name of cases) {
+      const keyFixture = await signedFixture();
+      const calls: Calls = { token: [], userInfo: [] };
+      let idToken = "";
+      const configured = options({
+        id_token_verifier: undefined,
+        jwks_fetch: localJwksFetch(keyFixture.jwks),
+        transport: transportWith(calls, {
+          token: (input) => {
+            calls.token.push({ url: input.url, body: input.body, timeout_ms: input.timeout_ms });
+            return Effect.succeed({
+              status: 200,
+              body: { access_token: "access-token-secret", id_token: idToken },
+            });
+          },
+        }),
+      });
+      const adapter = makeVeryOauthProvider(configured.value);
+      const start = await started(adapter);
+      if (start.presentation.kind !== "redirect") throw new Error("expected redirect");
+      const url = new URL(start.presentation.url);
+      const nonce = url.searchParams.get("nonce") ?? "";
+      const now = Math.floor(Date.parse(NOW) / 1_000);
+      idToken = await signedToken(keyFixture.privateKey, {
+        nonce: name === "wrong nonce" ? "wrong" : nonce,
+        iat: name === "future iat" ? now + 120 : now,
+        exp: name === "expired" ? now - 1 : now + 60,
+        issuer: name === "wrong issuer" ? "https://wrong.example" : VERY_OAUTH_ISSUER,
+        audience: name === "wrong audience" ? "wrong-client" : "pirate-client",
+      });
+      if (name === "wrong signature") idToken = `${idToken.slice(0, -1)}x`;
+      const state = url.searchParams.get("state");
+      const failure = await failureTag(
+        adapter.complete(completion(start.session, { code: "code", state })),
+      );
+      expect(failure).toBe("VerificationProviderRejected");
+    }
+  });
+
+  test("classifies JWKS outage, timeout, malformed, and oversized responses safely", async () => {
+    const cases: Array<readonly [string, VeryOauthJwksFetch, string]> = [
+      [
+        "outage",
+        async () => Promise.reject(new Error("network outage")),
+        "VerificationProviderUnavailable",
+      ],
+      [
+        "timeout",
+        async () => Promise.reject(new DOMException("TimeoutError", "TimeoutError")),
+        "VerificationProviderUnavailable",
+      ],
+      [
+        "provider 5xx",
+        async () => new Response("upstream", { status: 503 }),
+        "VerificationProviderUnavailable",
+      ],
+      [
+        "malformed",
+        async () => new Response("not-json", { status: 200 }),
+        "VerificationProviderInvalidResponse",
+      ],
+      [
+        "oversized",
+        async () =>
+          new Response(
+            JSON.stringify({ keys: [{ k: "x".repeat(VERY_OAUTH_MAX_RESPONSE_BYTES) }] }),
+            { status: 200 },
+          ),
+        "VerificationProviderInvalidResponse",
+      ],
+    ];
+    for (const [, jwks_fetch, expected] of cases) {
+      const keyFixture = await signedFixture();
+      let idToken = "";
+      const configured = options({
+        id_token_verifier: undefined,
+        jwks_fetch,
+        transport: transportWith(
+          { token: [], userInfo: [] },
+          {
+            token: () =>
+              Effect.succeed({ status: 200, body: { access_token: "access", id_token: idToken } }),
+          },
+        ),
+      });
+      const adapter = makeVeryOauthProvider(configured.value);
+      const start = await started(adapter);
+      if (start.presentation.kind !== "redirect") throw new Error("expected redirect");
+      const url = new URL(start.presentation.url);
+      idToken = await signedToken(keyFixture.privateKey, {
+        nonce: url.searchParams.get("nonce") ?? "",
+      });
+      expect(
+        await failureTag(
+          adapter.complete(
+            completion(start.session, { code: "code", state: url.searchParams.get("state") }),
+          ),
+        ),
+      ).toBe(expected);
+    }
+  });
+
+  test("bounds streamed token and UserInfo bodies before parsing", async () => {
+    const oversized = JSON.stringify({ value: "x".repeat(VERY_OAUTH_MAX_RESPONSE_BYTES) });
+    const transport = makeVeryOauthFetchTransport(
+      async () => new Response(oversized, { status: 200 }),
+    );
+    expect(
+      await failureTag(
+        transport.token({
+          url: "https://api.very.org/token",
+          body: "code=one",
+          headers: { accept: "application/json" },
+          timeout_ms: VERY_OAUTH_HTTP_TIMEOUT_MS,
+        }),
+      ),
+    ).toBe("VerificationProviderInvalidResponse");
+    expect(
+      await failureTag(
+        transport.userInfo({
+          url: "https://api.very.org/userinfo",
+          access_token: "access",
+          timeout_ms: VERY_OAUTH_HTTP_TIMEOUT_MS,
+        }),
+      ),
+    ).toBe("VerificationProviderInvalidResponse");
+  });
+
+  test("rejects incorrect entropy and oversized callback/session fields before exchange", async () => {
+    const wrongStateEntropy = provider({
+      randomness: { bytes: (length) => new Uint8Array(length - 1) },
+    });
+    expect(await failureTag(wrongStateEntropy.adapter.start(START_INPUT))).toBe(
+      "VerificationProviderRejected",
+    );
+    const wrongIvEntropy = provider({
+      randomness: {
+        bytes: (length) => new Uint8Array(length === 12 ? 11 : length),
+      },
+    });
+    expect(await failureTag(wrongIvEntropy.adapter.start(START_INPUT))).toBe(
+      "VerificationProviderInvalidResponse",
+    );
+
+    const { adapter, calls } = provider();
+    const start = await started(adapter);
+    if (start.presentation.kind !== "redirect") throw new Error("expected redirect");
+    const url = new URL(start.presentation.url);
+    const state = url.searchParams.get("state");
+    expect(
+      await failureTag(
+        adapter.complete({
+          session: {
+            ...start.session,
+            upstream_session_ref: "r".repeat(VERY_OAUTH_MAX_SEALED_SESSION_REF_CHARS + 1),
+          },
+          submission: { channel: "client_result", payload: { code: "code", state } },
+        }),
+      ),
+    ).toBe("VerificationProviderUnboundRejected");
+    expect(
+      await failureTag(
+        adapter.complete(
+          completion(start.session, {
+            code: "c".repeat(VERY_OAUTH_MAX_CALLBACK_CODE_CHARS + 1),
+            state,
+          }),
+        ),
+      ),
+    ).toBe("VerificationProviderUnboundRejected");
+    expect(
+      await failureTag(
+        adapter.complete(
+          completion(start.session, {
+            code: "code",
+            state: "s".repeat(VERY_OAUTH_MAX_CALLBACK_STATE_CHARS + 1),
+          }),
+        ),
+      ),
+    ).toBe("VerificationProviderUnboundRejected");
+    expect(calls.token).toHaveLength(0);
   });
 
   test("rejects state mismatch before consuming the authorization code", async () => {
