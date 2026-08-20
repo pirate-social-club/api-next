@@ -193,6 +193,62 @@ function loadSession(
   });
 }
 
+/**
+ * Community-creation completion and commit both touch the actor, intent, and
+ * proof session. Acquire those rows in the same order before completion locks
+ * its session so the two transactions cannot form an intent/session cycle.
+ * Generic verification sessions have no matching creation intent and pass
+ * through without taking these additional locks.
+ */
+function prelockCommunityCreationCompletion(
+  transaction: Transaction,
+  input: Readonly<{ readonly actorId: string; readonly proofSessionId: string }>,
+): Effect.Effect<void, VerificationCompletionStorageFailed | ControlPlaneError> {
+  return Effect.gen(function* () {
+    const candidateResult = yield* transaction.execute<Row>({
+      label: "verification.completion.prelock-creation-candidate",
+      text: `SELECT intent.intent_id
+               FROM proof_sessions AS session
+               JOIN community_creation_intents AS intent
+                 ON intent.intent_id = session.intent_id
+                AND intent.actor_id = session.actor_id
+              WHERE session.proof_session_id = $1
+                AND session.actor_id = $2`,
+      values: [input.proofSessionId, input.actorId],
+      readonly: false,
+    });
+    const candidate = yield* oneRow(candidateResult.rows);
+    if (candidate === null) return;
+    const intentId = stringField(candidate, "intent_id");
+    if (intentId === null) return yield* Effect.fail(storageFailure());
+
+    const actorResult = yield* transaction.execute<Row>({
+      label: "verification.completion.prelock-creation-actor",
+      text: "SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE",
+      values: [input.actorId],
+      readonly: false,
+    });
+    const actor = yield* oneRow(actorResult.rows);
+    if (actor === null || stringField(actor, "user_id") !== input.actorId) {
+      return yield* Effect.fail(storageFailure());
+    }
+
+    const intentResult = yield* transaction.execute<Row>({
+      label: "verification.completion.prelock-creation-intent",
+      text: `SELECT intent_id
+               FROM community_creation_intents
+              WHERE intent_id = $1 AND actor_id = $2
+              FOR UPDATE`,
+      values: [intentId, input.actorId],
+      readonly: false,
+    });
+    const intent = yield* oneRow(intentResult.rows);
+    if (intent === null || stringField(intent, "intent_id") !== intentId) {
+      return yield* Effect.fail(storageFailure());
+    }
+  });
+}
+
 function reserveAttemptInTransaction(
   transaction: Transaction,
   input: Parameters<VerificationCompletionStore["reserveAttempt"]>[0],
@@ -594,6 +650,10 @@ export function makeControlPlaneVerificationCompletionRepository() {
         const db = yield* ControlPlaneDb;
         yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            yield* prelockCommunityCreationCompletion(transaction, {
+              actorId: input.actor_id,
+              proofSessionId: input.proof_session_id,
+            });
             const stored = yield* loadSession(transaction, input.proof_session_id, true);
             if (
               stored === null ||
@@ -618,6 +678,10 @@ export function makeControlPlaneVerificationCompletionRepository() {
         return yield* db
           .withTransaction((transaction) =>
             Effect.gen(function* () {
+              yield* prelockCommunityCreationCompletion(transaction, {
+                actorId: input.actor_id,
+                proofSessionId: input.expected_session.id,
+              });
               const stored = yield* loadSession(transaction, input.expected_session.id, true);
               if (stored === null || stored.session.actor_id !== input.actor_id) {
                 return { kind: "rejected", reason: "unavailable" } as const;

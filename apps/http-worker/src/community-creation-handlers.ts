@@ -1,5 +1,6 @@
 import {
   type CommunityCreationServices,
+  commitCommunityCreationIntent,
   createCommunityCreationIntent,
   getCommunityCreationIntent,
   updateCommunityCreationIntent,
@@ -11,6 +12,7 @@ import { withEndpointResult } from "./transport.ts";
 
 export type CommunityCreationHandlers = Readonly<{
   readonly CreateCommunityCreationIntent: EndpointHandler;
+  readonly CommitCommunityCreationIntent: EndpointHandler;
   readonly GetCommunityCreationIntent: EndpointHandler;
   readonly UpdateCommunityCreationIntent: EndpointHandler;
 }>;
@@ -32,10 +34,7 @@ function intentId(request: DecodedRequest): string {
   return (request.params as { readonly intentId: string }).intentId;
 }
 
-/**
- * Installs only draft lifecycle operations. Commit remains absent until the
- * evidence, policy, community, and subject-quota writes share one transaction.
- */
+/** Installs the complete evidence-bound community-creation lifecycle. */
 export function makeCommunityCreationHandlers(
   services: CommunityCreationServices,
 ): CommunityCreationHandlers {
@@ -44,6 +43,19 @@ export function makeCommunityCreationHandlers(
       const result = await Effect.runPromise(
         createCommunityCreationIntent(
           { actor: actor(request.principal), body: request.body },
+          services,
+        ),
+      );
+      return withEndpointResult(result, 201);
+    },
+    CommitCommunityCreationIntent: async (request) => {
+      const result = await Effect.runPromise(
+        commitCommunityCreationIntent(
+          {
+            actor: actor(request.principal),
+            intentId: intentId(request),
+            body: request.body,
+          },
           services,
         ),
       );

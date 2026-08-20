@@ -47,6 +47,7 @@ const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
 });
 
 function services(observed: {
+  commit?: unknown;
   create?: unknown;
   get?: unknown;
   update?: unknown;
@@ -65,14 +66,26 @@ function services(observed: {
         observed.update = input;
         return Effect.succeed({ ...document, revision: 2 });
       },
-      commit: () => Effect.die("commit must not be installed"),
+      commit: (input) => {
+        observed.commit = input;
+        return Effect.succeed({
+          ...document,
+          revision: 3,
+          status: "committed" as const,
+          next_action: { kind: "none" as const, reason: "committed" as const },
+          committed_resource: {
+            community_id: "community-1",
+            href: "/communities/community-1",
+          },
+        });
+      },
     },
   };
 }
 
 describe("community creation HTTP handlers", () => {
   test("maps create, get, and update to actor-scoped application use cases", async () => {
-    const observed: { create?: unknown; get?: unknown; update?: unknown } = {};
+    const observed: { commit?: unknown; create?: unknown; get?: unknown; update?: unknown } = {};
     const handlers = makeCommunityCreationHandlers(services(observed));
     const principal = {
       kind: "admin" as const,
@@ -108,6 +121,20 @@ describe("community creation HTTP handlers", () => {
       body: updateBody,
       requestHash: expect.stringMatching(/^[0-9a-f]{64}$/u),
     });
+
+    const commitBody = { idempotency_key: "commit-1", expected_revision: 2 };
+    await expect(
+      handlers.CommitCommunityCreationIntent(request({ principal, body: commitBody })),
+    ).resolves.toMatchObject({
+      status: 201,
+      body: { status: "committed", committed_resource: { community_id: "community-1" } },
+    });
+    expect(observed.commit).toMatchObject({
+      actor: { userId: "admin-1", kind: "admin", scopes: ["community:write"] },
+      intentId: "intent-1",
+      body: commitBody,
+      requestHash: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
   });
 
   test("fails closed for signed-out, device, and delegated-agent principals", async () => {
@@ -134,10 +161,18 @@ describe("community creation HTTP handlers", () => {
           }),
         ),
       ).rejects.toBeInstanceOf(AuthError);
+      await expect(
+        handlers.CommitCommunityCreationIntent(
+          request({
+            principal,
+            body: { idempotency_key: "commit-1", expected_revision: 2 },
+          }),
+        ),
+      ).rejects.toBeInstanceOf(AuthError);
     }
   });
 
-  test("installs create/get/update on generated routes while commit remains absent", async () => {
+  test("installs create/get/update/commit on generated routes", async () => {
     const worker = createHttpWorker({
       config: { corsOrigin: "https://solid.test" },
       handlers: makeCommunityCreationHandlers(services({})),
@@ -187,8 +222,11 @@ describe("community creation HTTP handlers", () => {
         body: JSON.stringify({ idempotency_key: "commit-1", expected_revision: 2 }),
       },
     );
-    expect(commit.status).toBe(404);
-    expect(await commit.json()).toMatchObject({ error: { code: "not_found" } });
+    expect(commit.status).toBe(201);
+    expect(await commit.json()).toMatchObject({
+      status: "committed",
+      committed_resource: { community_id: "community-1" },
+    });
 
     const preflight = await worker.request(
       "http://worker.test/community-creation-intents/intent-1",

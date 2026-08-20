@@ -35,7 +35,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-verification-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-verification-suite-complete\n";
 let completedTestCount = 0;
-const foundationTestCount = 9;
+const foundationTestCount = 10;
 // Keep ordinary pending-session fixtures valid independently of the day the
 // CI database runs. Expiry-specific tests override this value with an
 // intentionally past or database-relative timestamp below.
@@ -342,6 +342,163 @@ function veryEvidenceBundle(session: ProofSession, evidenceHash: string): Eviden
       },
     ],
   };
+}
+
+async function cloneCompletedCreationEvidence(
+  admin: Client,
+  input: Readonly<{
+    readonly sourceSessionId: string;
+    readonly sessionId: string;
+    readonly intentId: string;
+    readonly suffix: string;
+  }>,
+): Promise<{ readonly idempotencyKey: string; readonly resultHash: string }> {
+  const idempotencyKey = `complete-${input.suffix}`;
+  const eventId = `completion-${input.suffix}`;
+  const receiptId = `receipt-${input.suffix}`;
+  const bindingId = `binding-${input.suffix}`;
+  const clonedEvidenceHash = createHash("sha256").update(input.suffix).digest("hex");
+  await admin.query("BEGIN");
+  try {
+    await admin.query({
+      text: `INSERT INTO proof_sessions (
+        proof_session_id, actor_id, intent_id, request_hash, provider_id,
+        method, issuer, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
+        request_mode, protocol_version, environment, status, upstream_session_ref,
+        requested_requirements, requested_claim_ids, started_at, completed_at,
+        expires_at, subject_binding_intent, completion_idempotency_key,
+        completion_result_hash, terminal_at, provider_configuration_kind,
+        provider_configuration_ref, provider_configuration_version
+      ) SELECT $1, actor_id, $2, request_hash, provider_id,
+               method, issuer, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
+               request_mode, protocol_version, environment, 'pending',
+               upstream_session_ref || '-' || $3, requested_requirements,
+               requested_claim_ids, started_at, NULL, expires_at,
+               subject_binding_intent, NULL, NULL, NULL,
+               provider_configuration_kind, provider_configuration_ref,
+               provider_configuration_version
+          FROM proof_sessions
+         WHERE proof_session_id = $4`,
+      values: [input.sessionId, input.intentId, input.suffix, input.sourceSessionId],
+    });
+    const source = await admin.query<{ result_hash: string; terminal_at: Date }>({
+      text: `SELECT completion_result_hash AS result_hash, terminal_at
+               FROM proof_sessions
+              WHERE proof_session_id = $1`,
+      values: [input.sourceSessionId],
+    });
+    const resultHash = source.rows[0]?.result_hash;
+    const terminalAt = source.rows[0]?.terminal_at;
+    if (resultHash === undefined || terminalAt === undefined) {
+      throw new Error("cloned completion fixture is incomplete");
+    }
+    await admin.query({
+      text: `UPDATE proof_sessions
+                SET status = 'completed', completion_idempotency_key = $1,
+                    completion_result_hash = $2, completed_at = $3, terminal_at = $3,
+                    updated_at = clock_timestamp()
+              WHERE proof_session_id = $4`,
+      values: [idempotencyKey, resultHash, terminalAt, input.sessionId],
+    });
+    await admin.query({
+      text: `INSERT INTO proof_session_completion_events (
+        completion_event_id, proof_session_id, actor_id, idempotency_key,
+        terminal_status, result_hash, terminal_at
+      ) VALUES ($1, $2, 'user-a', $3, 'completed', $4, $5)`,
+      values: [eventId, input.sessionId, idempotencyKey, resultHash, terminalAt],
+    });
+    await admin.query({
+      text: `INSERT INTO evidence_receipts (
+        evidence_receipt_id, proof_session_id, user_id, provider_id, issuer,
+        method, scope_kind, issuer_rp_scope, issuer_rp_action_scope,
+        protocol_version, environment, evidence_kind, evidence_hash,
+        receipt_metadata, observed_at, expires_at, provenance_kind,
+        subject_key_id, subject_binding_event_id, subject_binding_epoch,
+        provider_configuration_kind, provider_configuration_ref,
+        provider_configuration_version
+      ) SELECT $1, $2, user_id, provider_id, issuer, method, scope_kind,
+               issuer_rp_scope, issuer_rp_action_scope, protocol_version,
+               environment, evidence_kind, $4, receipt_metadata,
+               observed_at, expires_at, provenance_kind, subject_key_id,
+               subject_binding_event_id, subject_binding_epoch,
+               provider_configuration_kind, provider_configuration_ref,
+               provider_configuration_version
+          FROM evidence_receipts
+         WHERE proof_session_id = $3`,
+      values: [receiptId, input.sessionId, input.sourceSessionId, clonedEvidenceHash],
+    });
+    await admin.query({
+      text: `INSERT INTO assertion_bindings (
+        binding_group_id, user_id, binding_mode, subject_key_id,
+        evidence_receipt_id, subject_binding_event_id, subject_binding_epoch
+      ) SELECT DISTINCT $1, binding.user_id, binding.binding_mode,
+               binding.subject_key_id, binding.evidence_receipt_id,
+               binding.subject_binding_event_id, binding.subject_binding_epoch
+          FROM assertion_bindings AS binding
+          JOIN assertions AS assertion
+            ON assertion.binding_group_id = binding.binding_group_id
+          JOIN evidence_receipts AS receipt
+            ON receipt.evidence_receipt_id = assertion.evidence_receipt_id
+         WHERE receipt.proof_session_id = $2`,
+      values: [bindingId, input.sourceSessionId],
+    });
+    await admin.query({
+      text: `INSERT INTO assertions (
+        assertion_id, binding_group_id, evidence_receipt_id, subject_key_id,
+        user_id, claim_id, assertion_value, assurance, observed_at, expires_at
+      ) SELECT assertion.assertion_id || '-' || $1, $2, $3,
+               assertion.subject_key_id, assertion.user_id, assertion.claim_id,
+               assertion.assertion_value, assertion.assurance,
+               assertion.observed_at, assertion.expires_at
+          FROM assertions AS assertion
+          JOIN evidence_receipts AS receipt
+            ON receipt.evidence_receipt_id = assertion.evidence_receipt_id
+         WHERE receipt.proof_session_id = $4`,
+      values: [input.suffix, bindingId, receiptId, input.sourceSessionId],
+    });
+    await admin.query("COMMIT");
+    return { idempotencyKey, resultHash };
+  } catch (error) {
+    await admin.query("ROLLBACK");
+    throw error;
+  }
+}
+
+async function markCreationIntentCommitReady(
+  admin: Client,
+  intent: Readonly<Record<string, unknown>> & {
+    readonly intent_id: string;
+    readonly revision: number;
+  },
+  requestHash: string,
+): Promise<void> {
+  const snapshot = {
+    ...intent,
+    revision: intent.revision + 1,
+    status: "commit_ready",
+    next_action: { kind: "commit" },
+  };
+  await admin.query("BEGIN");
+  try {
+    const updated = await admin.query({
+      text: `UPDATE community_creation_intents
+                SET revision = $1, status = 'commit_ready', updated_at = clock_timestamp()
+              WHERE intent_id = $2 AND revision = $3 AND status = 'verification_required'`,
+      values: [snapshot.revision, intent.intent_id, intent.revision],
+    });
+    if (updated.rowCount !== 1) throw new Error("creation intent fixture did not advance");
+    await admin.query({
+      text: `INSERT INTO community_creation_intent_revisions (
+        intent_id, revision, actor_id, operation_kind, idempotency_key,
+        request_hash, status, state_snapshot
+      ) VALUES ($1, $2, 'user-a', 'verification', NULL, $3, 'commit_ready', $4::jsonb)`,
+      values: [intent.intent_id, snapshot.revision, requestHash, JSON.stringify(snapshot)],
+    });
+    await admin.query("COMMIT");
+  } catch (error) {
+    await admin.query("ROLLBACK");
+    throw error;
+  }
 }
 
 function storeFor(connection: string) {
@@ -728,6 +885,8 @@ suite("Postgres 17 verification completion repository", () => {
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
       const creationStore = makeControlPlaneCommunityCreationStore(runtime, {
         next_intent_id: () => "community-intent-1",
+        next_community_id: () => "community-jazleeuw",
+        next_subject_claim_id: () => "creation-claim-jazleeuw",
       });
       const created = await Effect.runPromise(
         creationStore.create({
@@ -816,6 +975,471 @@ suite("Postgres 17 verification completion repository", () => {
           WHERE intent_id = 'community-intent-1'
             AND operation_kind = 'verification') AS verification_revisions`);
       expect(counts.rows).toEqual([{ completion_events: 1, verification_revisions: 1 }]);
+
+      const commitRequest = {
+        actor: { kind: "user" as const, userId: "user-a" },
+        intentId: created.intent_id,
+        requestHash: "1".repeat(64),
+        body: { idempotency_key: "commit-community-1", expected_revision: 2 },
+      };
+      const committed = await Effect.runPromise(creationStore.commit(commitRequest));
+      expect(committed).toMatchObject({
+        revision: 3,
+        status: "committed",
+        next_action: { kind: "none", reason: "committed" },
+        committed_resource: {
+          community_id: "community-jazleeuw",
+          href: "/communities/community-jazleeuw",
+        },
+      });
+      await expect(Effect.runPromise(creationStore.commit(commitRequest))).resolves.toEqual(
+        committed,
+      );
+      await expect(
+        Effect.runPromise(creationStore.commit({ ...commitRequest, requestHash: "2".repeat(64) })),
+      ).rejects.toMatchObject({
+        _tag: "CommunityCreationRepositoryError",
+        reason: "idempotency-conflict",
+      });
+
+      const committedRows = await admin.query<{
+        description: string;
+        display_name: string;
+        route_slug: string;
+        membership_mode: string;
+        human_verification_lane: string;
+        policy_version_id: string;
+        policy_key: string;
+        provider_id: string;
+        issuer: string;
+        scope_kind: string;
+        issuer_rp_scope: string;
+        request_mode: string;
+        evaluator_id: string;
+        slot_number: number;
+        approval_id: string | null;
+      }>(
+        `SELECT community.description, community.display_name, community.route_slug,
+                community.membership_mode, community.human_verification_lane,
+                policy.policy_version_id, policy.policy_key,
+                binding.provider_id, binding.issuer, binding.scope_kind,
+                binding.issuer_rp_scope, binding.request_mode, binding.evaluator_id,
+                claim.slot_number, claim.approval_id
+           FROM communities AS community
+           JOIN policy_versions AS policy
+             ON policy.community_id = community.community_id
+           JOIN community_policy_current AS current_policy
+             ON current_policy.community_id = policy.community_id
+            AND current_policy.policy_key = policy.policy_key
+            AND current_policy.policy_version_id = policy.policy_version_id
+           JOIN community_policy_provider_bindings AS binding
+             ON binding.community_id = policy.community_id
+            AND binding.policy_key = policy.policy_key
+            AND binding.policy_version_id = policy.policy_version_id
+           JOIN community_creation_subject_claims AS claim
+             ON claim.community_id = community.community_id
+          WHERE community.community_id = 'community-jazleeuw'`,
+      );
+      expect(committedRows.rows).toEqual([
+        {
+          description: "Verified people",
+          display_name: "Jazleeuw",
+          route_slug: "jazleeuw",
+          membership_mode: "gated",
+          human_verification_lane: "very",
+          policy_version_id: "curated-human-membership-v1",
+          policy_key: "curated-human-membership",
+          provider_id: "very.oauth",
+          issuer: "https://connect.very.org",
+          scope_kind: "issuer_rp_scope",
+          issuer_rp_scope: "pirate-social",
+          request_mode: "dynamic",
+          evaluator_id: "curated-human-membership-v1",
+          slot_number: 1,
+          approval_id: null,
+        },
+      ]);
+      const derivedCounts = await admin.query<{
+        communities: number;
+        claims: number;
+        commits: number;
+        memberships: number;
+        follows: number;
+      }>(`SELECT
+        (SELECT COUNT(*)::integer FROM communities
+          WHERE community_id = 'community-jazleeuw') AS communities,
+        (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+          WHERE intent_id = 'community-intent-1') AS claims,
+        (SELECT COUNT(*)::integer FROM community_creation_intent_revisions
+          WHERE intent_id = 'community-intent-1' AND operation_kind = 'commit') AS commits,
+        (SELECT COUNT(*)::integer FROM community_memberships
+          WHERE community_id = 'community-jazleeuw') AS memberships,
+        (SELECT COUNT(*)::integer FROM community_follows
+          WHERE community_id = 'community-jazleeuw') AS follows`);
+      expect(derivedCounts.rows).toEqual([
+        { communities: 1, claims: 1, commits: 1, memberships: 0, follows: 0 },
+      ]);
+
+      const secondStore = makeControlPlaneCommunityCreationStore(runtime, {
+        next_intent_id: () => "community-intent-2",
+        next_community_id: () => "community-should-not-exist",
+        next_subject_claim_id: () => "creation-claim-should-not-exist",
+      });
+      const second = await Effect.runPromise(
+        secondStore.create({
+          actor: { kind: "user", userId: "user-a" },
+          requestHash: "3".repeat(64),
+          body: {
+            idempotency_key: "create-community-2",
+            draft: {
+              ...created.draft,
+              name: "Second community",
+              slug: "second-community",
+            },
+          },
+        }),
+      );
+      const secondEvidence = await cloneCompletedCreationEvidence(admin, {
+        sourceSessionId: "community-creation-proof",
+        sessionId: "community-creation-proof-2",
+        intentId: second.intent_id,
+        suffix: "community-2",
+      });
+      await markCreationIntentCommitReady(admin, second, secondEvidence.resultHash);
+      const secondReady = await Effect.runPromise(
+        secondStore.get({ actor: { kind: "user", userId: "user-a" }, intentId: second.intent_id }),
+      );
+      expect(secondReady).toMatchObject({ revision: 2, status: "commit_ready" });
+      const quotaExceeded = await Effect.runPromise(
+        secondStore.commit({
+          actor: { kind: "user", userId: "user-a" },
+          intentId: second.intent_id,
+          requestHash: "4".repeat(64),
+          body: {
+            idempotency_key: "commit-community-2",
+            expected_revision: secondReady?.revision ?? 0,
+          },
+        }),
+      );
+      expect(quotaExceeded).toMatchObject({
+        revision: 3,
+        status: "quota_exceeded",
+        next_action: { kind: "blocked", reason: "quota_exceeded" },
+        committed_resource: null,
+      });
+      expect(
+        (
+          await admin.query<{ count: string }>(
+            "SELECT count(*) FROM communities WHERE community_id = 'community-should-not-exist'",
+          )
+        ).rows[0]?.count,
+      ).toBe("0");
+
+      const thirdStore = makeControlPlaneCommunityCreationStore(runtime, {
+        next_intent_id: () => "community-intent-3",
+        next_community_id: () => "community-approved",
+        next_subject_claim_id: () => "creation-claim-approved",
+      });
+      const third = await Effect.runPromise(
+        thirdStore.create({
+          actor: { kind: "user", userId: "user-a" },
+          requestHash: "5".repeat(64),
+          body: {
+            idempotency_key: "create-community-3",
+            draft: {
+              ...created.draft,
+              name: "Approved community",
+              slug: "approved-community",
+            },
+          },
+        }),
+      );
+      const thirdEvidence = await cloneCompletedCreationEvidence(admin, {
+        sourceSessionId: "community-creation-proof",
+        sessionId: "community-creation-proof-3",
+        intentId: third.intent_id,
+        suffix: "community-3",
+      });
+      await markCreationIntentCommitReady(admin, third, thirdEvidence.resultHash);
+      const thirdReady = await Effect.runPromise(
+        thirdStore.get({ actor: { kind: "user", userId: "user-a" }, intentId: third.intent_id }),
+      );
+      expect(thirdReady).toMatchObject({ revision: 2, status: "commit_ready" });
+      const claimedSubject = await admin.query<{ subject_key_id: string }>(
+        `SELECT subject_key_id
+           FROM community_creation_subject_claims
+          WHERE community_id = 'community-jazleeuw'`,
+      );
+      const claimedSubjectKeyId = claimedSubject.rows[0]?.subject_key_id;
+      if (claimedSubjectKeyId === undefined) throw new Error("missing claimed subject fixture");
+      await admin.query(
+        `INSERT INTO community_creation_quota_approvals (
+          approval_id, subject_key_id, actor_id, slot_number,
+          approved_by_user_id, reason, expires_at
+        ) VALUES (
+          'approval-community-3', $1, 'user-a', 2,
+          'user-b', 'Operator-approved second community',
+          clock_timestamp() + interval '1 hour'
+        )`,
+        [claimedSubjectKeyId],
+      );
+      const approved = await Effect.runPromise(
+        thirdStore.commit({
+          actor: { kind: "user", userId: "user-a" },
+          intentId: third.intent_id,
+          requestHash: "6".repeat(64),
+          body: {
+            idempotency_key: "commit-community-3",
+            expected_revision: thirdReady?.revision ?? 0,
+          },
+        }),
+      );
+      expect(approved).toMatchObject({
+        status: "committed",
+        committed_resource: { community_id: "community-approved" },
+      });
+      expect(
+        (
+          await admin.query<{ slot_number: number; approval_id: string }>(
+            `SELECT slot_number, approval_id
+               FROM community_creation_subject_claims
+              WHERE community_id = 'community-approved'`,
+          )
+        ).rows,
+      ).toEqual([{ slot_number: 2, approval_id: "approval-community-3" }]);
+
+      const raceStores = [
+        makeControlPlaneCommunityCreationStore(runtime, {
+          next_intent_id: () => "community-intent-race-a",
+          next_community_id: () => "community-race-a",
+          next_subject_claim_id: () => "creation-claim-race-a",
+        }),
+        makeControlPlaneCommunityCreationStore(runtime, {
+          next_intent_id: () => "community-intent-race-b",
+          next_community_id: () => "community-race-b",
+          next_subject_claim_id: () => "creation-claim-race-b",
+        }),
+      ] as const;
+      const raceIntents = await Promise.all(
+        raceStores.map((store, index) =>
+          Effect.runPromise(
+            store.create({
+              actor: { kind: "user", userId: "user-a" },
+              requestHash: `${index === 0 ? "7" : "8"}`.repeat(64),
+              body: {
+                idempotency_key: `create-community-race-${index}`,
+                draft: {
+                  ...created.draft,
+                  name: `Race community ${index}`,
+                  slug: `race-community-${index}`,
+                },
+              },
+            }),
+          ),
+        ),
+      );
+      for (const [index, intent] of raceIntents.entries()) {
+        const cloned = await cloneCompletedCreationEvidence(admin, {
+          sourceSessionId: "community-creation-proof",
+          sessionId: `community-creation-proof-race-${index}`,
+          intentId: intent.intent_id,
+          suffix: `community-race-${index}`,
+        });
+        await markCreationIntentCommitReady(admin, intent, cloned.resultHash);
+      }
+      await admin.query(
+        `INSERT INTO community_creation_quota_approvals (
+          approval_id, subject_key_id, actor_id, slot_number,
+          approved_by_user_id, reason, expires_at
+        ) VALUES (
+          'approval-community-race', $1, 'user-a', 3,
+          'user-b', 'One additional concurrent slot',
+          clock_timestamp() + interval '1 hour'
+        )`,
+        [claimedSubjectKeyId],
+      );
+      const raceResults = await Promise.all(
+        raceStores.map((store, index) =>
+          Effect.runPromise(
+            store.commit({
+              actor: { kind: "user", userId: "user-a" },
+              intentId: raceIntents[index]?.intent_id ?? "",
+              requestHash: `${index === 0 ? "9" : "a"}`.repeat(64),
+              body: {
+                idempotency_key: `commit-community-race-${index}`,
+                expected_revision: 2,
+              },
+            }),
+          ),
+        ),
+      );
+      expect(raceResults.map((result) => result.status).sort()).toEqual([
+        "committed",
+        "quota_exceeded",
+      ]);
+      const raceCounts = await admin.query<{
+        communities: number;
+        slot_claims: number;
+      }>(
+        `SELECT
+        (SELECT COUNT(*)::integer FROM communities
+          WHERE community_id IN ('community-race-a', 'community-race-b')) AS communities,
+        (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+          WHERE subject_key_id = $1 AND slot_number = 3) AS slot_claims`,
+        [claimedSubjectKeyId],
+      );
+      expect(raceCounts.rows).toEqual([{ communities: 1, slot_claims: 1 }]);
+
+      const rollbackStore = makeControlPlaneCommunityCreationStore(runtime, {
+        next_intent_id: () => "community-intent-rollback",
+        next_community_id: () => "community-jazleeuw",
+        next_subject_claim_id: () => "creation-claim-rollback",
+      });
+      const rollbackIntent = await Effect.runPromise(
+        rollbackStore.create({
+          actor: { kind: "user", userId: "user-a" },
+          requestHash: "b".repeat(64),
+          body: {
+            idempotency_key: "create-community-rollback",
+            draft: {
+              ...created.draft,
+              name: "Rollback community",
+              slug: "rollback-community",
+            },
+          },
+        }),
+      );
+      const rollbackEvidence = await cloneCompletedCreationEvidence(admin, {
+        sourceSessionId: "community-creation-proof",
+        sessionId: "community-creation-proof-rollback",
+        intentId: rollbackIntent.intent_id,
+        suffix: "community-rollback",
+      });
+      await markCreationIntentCommitReady(admin, rollbackIntent, rollbackEvidence.resultHash);
+      await admin.query(
+        `INSERT INTO community_creation_quota_approvals (
+          approval_id, subject_key_id, actor_id, slot_number,
+          approved_by_user_id, reason, expires_at
+        ) VALUES (
+          'approval-community-rollback', $1, 'user-a', 4,
+          'user-b', 'Rollback fixture slot',
+          clock_timestamp() + interval '1 hour'
+        )`,
+        [claimedSubjectKeyId],
+      );
+      await expect(
+        Effect.runPromise(
+          rollbackStore.commit({
+            actor: { kind: "user", userId: "user-a" },
+            intentId: rollbackIntent.intent_id,
+            requestHash: "c".repeat(64),
+            body: { idempotency_key: "commit-community-rollback", expected_revision: 2 },
+          }),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "ControlPlaneStatementFailed",
+        constraint: "communities_pkey",
+      });
+      await expect(
+        Effect.runPromise(
+          rollbackStore.get({
+            actor: { kind: "user", userId: "user-a" },
+            intentId: rollbackIntent.intent_id,
+          }),
+        ),
+      ).resolves.toMatchObject({ revision: 2, status: "commit_ready" });
+      const rollbackCounts = await admin.query<{ claims: number; policies: number }>(`SELECT
+        (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+          WHERE intent_id = 'community-intent-rollback') AS claims,
+        (SELECT COUNT(*)::integer FROM policy_versions
+          WHERE community_id = 'community-jazleeuw'
+            AND created_by_user_id = 'user-a') AS policies`);
+      expect(rollbackCounts.rows).toEqual([{ claims: 0, policies: 1 }]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("serializes Very completion before creation commit without a lock-order cycle", async () => {
+    await withSchema(async (connection, admin) => {
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const creationStore = makeControlPlaneCommunityCreationStore(runtime, {
+        next_intent_id: () => "community-intent-lock-order",
+        next_community_id: () => "community-lock-order",
+        next_subject_claim_id: () => "creation-claim-lock-order",
+      });
+      const created = await Effect.runPromise(
+        creationStore.create({
+          actor: { kind: "user", userId: "user-a" },
+          requestHash: "3".repeat(64),
+          body: {
+            idempotency_key: "create-community-lock-order",
+            draft: {
+              name: "Lock order",
+              slug: "lock-order",
+              description: null,
+              policy: {
+                version: 1,
+                accessPaths: [
+                  {
+                    id: "verified-people",
+                    operator: "and",
+                    requirements: [{ requirement: "human-verification" }],
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      );
+      const session = {
+        ...communityCreationProofSession(created.intent_id),
+        id: "community-creation-proof-lock-order",
+        upstream_session_ref: "very-session-lock-order",
+      };
+      await insertSession(admin, session);
+      await admin.query(`CREATE FUNCTION delay_lock_order_receipt()
+        RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN
+          PERFORM pg_sleep(1);
+          RETURN NEW;
+        END;
+        $$`);
+      await admin.query(`CREATE TRIGGER delay_lock_order_receipt
+        BEFORE INSERT ON evidence_receipts
+        FOR EACH ROW
+        WHEN (NEW.proof_session_id = 'community-creation-proof-lock-order')
+        EXECUTE FUNCTION delay_lock_order_receipt()`);
+
+      const completionStore = storeFor(connection);
+      const completion = Effect.runPromise(
+        Effect.scoped(
+          completionStore.commit({
+            ...commitInput(session, "4".repeat(64), "5".repeat(64)),
+            bundle: veryEvidenceBundle(session, "4".repeat(64)),
+          }),
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const communityCommit = Effect.runPromise(
+        creationStore.commit({
+          actor: { kind: "user", userId: "user-a" },
+          intentId: created.intent_id,
+          requestHash: "6".repeat(64),
+          body: {
+            idempotency_key: "commit-community-lock-order",
+            expected_revision: 2,
+          },
+        }),
+      );
+
+      await expect(completion).resolves.toEqual({
+        kind: "committed",
+        result_hash: "5".repeat(64),
+      });
+      await expect(communityCommit).resolves.toMatchObject({
+        status: "committed",
+        committed_resource: { community_id: "community-lock-order" },
+      });
     });
     completedTestCount += 1;
   });

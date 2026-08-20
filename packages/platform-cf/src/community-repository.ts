@@ -24,6 +24,8 @@ import {
 type CommunityRow = {
   readonly community_id: unknown;
   readonly display_name: unknown;
+  readonly description?: unknown;
+  readonly route_slug?: unknown;
   readonly membership_mode: unknown;
   readonly human_verification_lane: unknown;
   readonly created_at: unknown;
@@ -56,6 +58,12 @@ const invalid = (
 ) => new CommunityRepositoryError({ operation, reason: "invalid-row" });
 
 const asString = (value: unknown): string | null => (typeof value === "string" ? value : null);
+
+const asNullableString = (value: unknown): string | null | undefined => {
+  if (value === null) return null;
+  if (value === undefined) return undefined;
+  return asString(value) ?? undefined;
+};
 
 const asPersistedId = (value: unknown): string | null => {
   const parsed = asString(value);
@@ -133,6 +141,8 @@ const communityLookup = (communityId: string, viewerUserId?: string) => ({
   label: "community.communities.get-preview",
   text: `SELECT c.community_id,
                 c.display_name,
+                c.description,
+                c.route_slug,
                 c.membership_mode,
                 c.human_verification_lane,
                 c.created_at,
@@ -235,6 +245,8 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
 
       const id = asPersistedId(community.community_id);
       const displayName = asString(community.display_name);
+      const description = asNullableString(community.description);
+      const routeSlug = asNullableString(community.route_slug);
       const mode = membershipMode(community.membership_mode);
       const created = asTimestamp(community.created_at);
       const memberCount = asCount(community.member_count);
@@ -244,6 +256,8 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         id === null ||
         id !== input.communityId ||
         displayName === null ||
+        (community.description !== undefined && description === undefined) ||
+        (community.route_slug !== undefined && routeSlug === undefined) ||
         mode === null ||
         created === null ||
         memberCount === null ||
@@ -267,6 +281,8 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         id,
         object: "community_preview" as const,
         display_name: displayName,
+        ...(description === undefined ? {} : { description }),
+        ...(routeSlug === undefined ? {} : { route_slug: routeSlug }),
         membership_mode: mode,
         human_verification_lane: verification,
         member_count: memberCount,

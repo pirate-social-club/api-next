@@ -50,6 +50,8 @@ function fakeDb(state: CommunityState): ControlPlaneDb["Service"] {
             {
               community_id: communityId,
               display_name: state.names.get(communityId ?? "") ?? communityId,
+              description: `Description for ${communityId}`,
+              route_slug: communityId,
               membership_mode: "open",
               human_verification_lane: null,
               created_at: "2026-01-01T00:00:00.000Z",
@@ -147,6 +149,8 @@ describe("community Postgres repository boundary", () => {
       run(repository.getPreview({ communityId: "community-a", viewerUserId: "user-a" })),
     ).resolves.toMatchObject({
       id: "community-a",
+      description: "Description for community-a",
+      route_slug: "community-a",
       viewer_membership_status: "not_member",
       member_count: 0,
       follower_count: 0,
