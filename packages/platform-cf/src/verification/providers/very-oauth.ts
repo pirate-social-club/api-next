@@ -474,7 +474,12 @@ async function readBoundedResponseBytes(
       if (part.done) break;
       total += part.value.byteLength;
       if (total > VERY_OAUTH_MAX_RESPONSE_BYTES) {
-        await reader.cancel();
+        try {
+          await reader.cancel();
+        } catch {
+          // Preserve the fail-closed size classification even if the upstream
+          // stream rejects cancellation after exceeding the byte ceiling.
+        }
         throw invalid(operation);
       }
       chunks.push(part.value);
@@ -781,7 +786,9 @@ function formBody(values: Readonly<Record<string, string>>): string {
   return body.toString();
 }
 
-export function makeVeryOauthFetchTransport(fetcher: typeof fetch = fetch): VeryOauthTransport {
+type VeryOauthFetch = (input: Parameters<typeof fetch>[0], init?: RequestInit) => Promise<Response>;
+
+export function makeVeryOauthFetchTransport(fetcher: VeryOauthFetch = fetch): VeryOauthTransport {
   const request = (
     input: Parameters<typeof fetch>[0],
     init: RequestInit,

@@ -6,7 +6,7 @@ import {
 } from "./provider-registry.ts";
 
 const VERY_OAUTH_OPTIONS = {
-  authorization_endpoint: "https://connect.very.org/oauth2/authorize",
+  authorization_endpoint: "https://connect.very.org/oauth/authorize",
   token_endpoint: "https://api.very.org/oauth2/token",
   userinfo_endpoint: "https://api.very.org/oauth2/userinfo",
   issuer: "https://connect.very.org",

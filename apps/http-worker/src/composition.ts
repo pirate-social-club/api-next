@@ -12,6 +12,7 @@ import {
 } from "@pirate/application/use-cases/session-authentication";
 import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-exchange";
 import type { VerificationIntentResolver } from "@pirate/application/use-cases/verification-start";
+import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
 import { makeCommunityPurchaseFundingChainReader } from "@pirate/platform-cf/community-purchase-funding-chain-reader";
 import {
   makeControlPlaneCommunityPurchaseFundingProducerStore,
@@ -49,7 +50,10 @@ import {
   makeControlPlaneVerificationCompletionStore,
   makeSha256VerificationCompletionHasher,
 } from "@pirate/platform-cf/verification-completion-repository";
-import { makeStaticVerificationIntentResolver } from "@pirate/platform-cf/verification-intent-resolver";
+import {
+  makeOrderedVerificationIntentResolver,
+  makeStaticVerificationIntentResolver,
+} from "@pirate/platform-cf/verification-intent-resolver";
 import {
   makePlatformVerificationProviderRegistry,
   validVeryOauthOptions,
@@ -413,10 +417,10 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     }),
   );
   const verificationCompletionStore = makeControlPlaneVerificationCompletionStore(controlPlane);
-  const verificationIntents: VerificationIntentResolver = makeStaticVerificationIntentResolver(
-    verificationRegistry.list(),
-    config.API_NEXT_ENV,
-  );
+  const verificationIntents: VerificationIntentResolver = makeOrderedVerificationIntentResolver([
+    makeControlPlaneCommunityCreationIntentResolver(controlPlane, config.API_NEXT_ENV),
+    makeStaticVerificationIntentResolver(verificationRegistry.list(), config.API_NEXT_ENV),
+  ]);
   const verificationHandlers = makeVerificationHandlers({
     start: {
       intents: verificationIntents,

@@ -59,7 +59,7 @@ function withVeryOauth(bindings: HttpWorkerBindings): HttpWorkerBindings {
   return {
     ...bindings,
     VERY_OAUTH_ENABLED: "true",
-    VERY_OAUTH_AUTHORIZATION_ENDPOINT: "https://connect.very.org/oauth2/authorize",
+    VERY_OAUTH_AUTHORIZATION_ENDPOINT: "https://connect.very.org/oauth/authorize",
     VERY_OAUTH_TOKEN_ENDPOINT: "https://api.very.org/oauth2/token",
     VERY_OAUTH_USERINFO_ENDPOINT: "https://api.very.org/oauth2/userinfo",
     VERY_OAUTH_ISSUER: "https://connect.very.org",

@@ -119,9 +119,12 @@ function transportWith(
   };
 }
 
-function options(overrides: Partial<VeryOauthAdapterOptions> = {}) {
+function options(
+  overrides: Partial<VeryOauthAdapterOptions> = {},
+  useDefaultIdTokenVerifier = false,
+) {
   const calls: Calls = { token: [], userInfo: [] };
-  const base: VeryOauthAdapterOptions = {
+  const base = {
     authorization_endpoint: "https://connect.very.org/oauth/authorize",
     token_endpoint: "https://api.very.example/oauth2/token",
     userinfo_endpoint: "https://api.very.example/oauth2/userinfo",
@@ -136,10 +139,18 @@ function options(overrides: Partial<VeryOauthAdapterOptions> = {}) {
     identifiers: identifiers(),
     randomness: randomness(),
     digest: { digest: () => Effect.succeed(DIGEST) },
-    id_token_verifier: ({ issuer, audience, nonce }) =>
-      Effect.succeed({ issuer, audience, subject: SUBJECT, nonce }),
+  } satisfies Omit<VeryOauthAdapterOptions, "id_token_verifier">;
+  const value: VeryOauthAdapterOptions = {
+    ...base,
+    ...(useDefaultIdTokenVerifier
+      ? {}
+      : {
+          id_token_verifier: ({ issuer, audience, nonce }) =>
+            Effect.succeed({ issuer, audience, subject: SUBJECT, nonce }),
+        }),
+    ...overrides,
   };
-  return { value: { ...base, ...overrides }, calls };
+  return { value, calls };
 }
 
 function provider(overrides: Partial<VeryOauthAdapterOptions> = {}) {
@@ -347,22 +358,24 @@ describe("Very OAuth provider-local contract", () => {
     const calls: Calls = { token: [], userInfo: [] };
     let jwksCalls = 0;
     let idToken = "";
-    const configured = options({
-      id_token_verifier: undefined,
-      jwks_fetch: async () => {
-        jwksCalls += 1;
-        return new Response(JSON.stringify(keyFixture.jwks), { status: 200 });
-      },
-      transport: transportWith(calls, {
-        token: (input) => {
-          calls.token.push({ url: input.url, body: input.body, timeout_ms: input.timeout_ms });
-          return Effect.succeed({
-            status: 200,
-            body: { access_token: "access-token-secret", id_token: idToken },
-          });
+    const configured = options(
+      {
+        jwks_fetch: async () => {
+          jwksCalls += 1;
+          return new Response(JSON.stringify(keyFixture.jwks), { status: 200 });
         },
-      }),
-    });
+        transport: transportWith(calls, {
+          token: (input) => {
+            calls.token.push({ url: input.url, body: input.body, timeout_ms: input.timeout_ms });
+            return Effect.succeed({
+              status: 200,
+              body: { access_token: "access-token-secret", id_token: idToken },
+            });
+          },
+        }),
+      },
+      true,
+    );
     const adapter = makeVeryOauthProvider(configured.value);
     const start = await started(adapter);
     if (start.presentation.kind !== "redirect") throw new Error("expected redirect");
@@ -405,33 +418,36 @@ describe("Very OAuth provider-local contract", () => {
       const keyFixture = await signedFixture();
       const calls: Calls = { token: [], userInfo: [] };
       let idToken = "";
-      const configured = options({
-        id_token_verifier: undefined,
-        jwks_fetch: localJwksFetch(keyFixture.jwks),
-        transport: transportWith(calls, {
-          token: (input) => {
-            calls.token.push({ url: input.url, body: input.body, timeout_ms: input.timeout_ms });
-            return Effect.succeed({
-              status: 200,
-              body: { access_token: "access-token-secret", id_token: idToken },
-            });
-          },
-        }),
-      });
+      const configured = options(
+        {
+          jwks_fetch: localJwksFetch(keyFixture.jwks),
+          transport: transportWith(calls, {
+            token: (input) => {
+              calls.token.push({ url: input.url, body: input.body, timeout_ms: input.timeout_ms });
+              return Effect.succeed({
+                status: 200,
+                body: { access_token: "access-token-secret", id_token: idToken },
+              });
+            },
+          }),
+        },
+        true,
+      );
       const adapter = makeVeryOauthProvider(configured.value);
       const start = await started(adapter);
       if (start.presentation.kind !== "redirect") throw new Error("expected redirect");
       const url = new URL(start.presentation.url);
       const nonce = url.searchParams.get("nonce") ?? "";
       const now = Math.floor(Date.parse(NOW) / 1_000);
-      idToken = await signedToken(keyFixture.privateKey, {
+      const signingKey =
+        name === "wrong signature" ? (await signedFixture()).privateKey : keyFixture.privateKey;
+      idToken = await signedToken(signingKey, {
         nonce: name === "wrong nonce" ? "wrong" : nonce,
         iat: name === "future iat" ? now + 120 : now,
         exp: name === "expired" ? now - 1 : now + 60,
         issuer: name === "wrong issuer" ? "https://wrong.example" : VERY_OAUTH_ISSUER,
         audience: name === "wrong audience" ? "wrong-client" : "pirate-client",
       });
-      if (name === "wrong signature") idToken = `${idToken.slice(0, -1)}x`;
       const state = url.searchParams.get("state");
       const failure = await failureTag(
         adapter.complete(completion(start.session, { code: "code", state })),
@@ -475,17 +491,22 @@ describe("Very OAuth provider-local contract", () => {
     for (const [, jwks_fetch, expected] of cases) {
       const keyFixture = await signedFixture();
       let idToken = "";
-      const configured = options({
-        id_token_verifier: undefined,
-        jwks_fetch,
-        transport: transportWith(
-          { token: [], userInfo: [] },
-          {
-            token: () =>
-              Effect.succeed({ status: 200, body: { access_token: "access", id_token: idToken } }),
-          },
-        ),
-      });
+      const configured = options(
+        {
+          jwks_fetch,
+          transport: transportWith(
+            { token: [], userInfo: [] },
+            {
+              token: () =>
+                Effect.succeed({
+                  status: 200,
+                  body: { access_token: "access", id_token: idToken },
+                }),
+            },
+          ),
+        },
+        true,
+      );
       const adapter = makeVeryOauthProvider(configured.value);
       const start = await started(adapter);
       if (start.presentation.kind !== "redirect") throw new Error("expected redirect");
@@ -523,6 +544,28 @@ describe("Very OAuth provider-local contract", () => {
         transport.userInfo({
           url: "https://api.very.org/userinfo",
           access_token: "access",
+          timeout_ms: VERY_OAUTH_HTTP_TIMEOUT_MS,
+        }),
+      ),
+    ).toBe("VerificationProviderInvalidResponse");
+  });
+
+  test("keeps oversized streamed responses invalid when cancellation rejects", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(VERY_OAUTH_MAX_RESPONSE_BYTES + 1));
+      },
+      cancel() {
+        throw new Error("upstream cancel failed");
+      },
+    });
+    const transport = makeVeryOauthFetchTransport(async () => new Response(body, { status: 200 }));
+    expect(
+      await failureTag(
+        transport.token({
+          url: "https://api.very.org/token",
+          body: "code=one",
+          headers: { accept: "application/json" },
           timeout_ms: VERY_OAUTH_HTTP_TIMEOUT_MS,
         }),
       ),
