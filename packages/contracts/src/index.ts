@@ -9,5 +9,6 @@ export * from "./money.ts";
 export * from "./openapi-diff.ts";
 export * from "./provider-presentation.ts";
 export * from "./registry.ts";
+export * from "./text-moderation.ts";
 export * from "./v1.ts";
 export * from "./verification.ts";
