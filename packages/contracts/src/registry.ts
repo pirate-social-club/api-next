@@ -9,6 +9,12 @@ export const Health = endpoint({
   response: Schema.Struct({ status: Schema.Literal("ok") }),
 });
 
+import {
+  CommitCommunityCreationIntent,
+  CreateCommunityCreationIntent,
+  GetCommunityCreationIntent,
+  UpdateCommunityCreationIntent,
+} from "./community-creation.ts";
 import * as money from "./community-purchase-funding.ts";
 import { CreateKaraokeAttempt, GetKaraokeAttempt, GetKaraokeLeaderboard } from "./karaoke.ts";
 /** Named registry; the client generator references these exports by name. */
@@ -17,6 +23,10 @@ import * as verification from "./verification.ts";
 
 export const registry = {
   Health,
+  CreateCommunityCreationIntent,
+  GetCommunityCreationIntent,
+  UpdateCommunityCreationIntent,
+  CommitCommunityCreationIntent,
   ...v1,
   ...verification,
   ...money,
