@@ -88,6 +88,14 @@ healthy-row retry. This seam is not an HTTP capability: do not expose it to
 end users or replace it with manual SQL. The non-empty actor and reason are
 stored with the generation in the append-only operator-action ledger.
 
+`0023_community_creation_intents.sql` adds the server-owned creation-intent
+projection, immutable revision ledger, pinned gate-provider binding, and the
+credential-subject quota ledger. The default quota consumes slot one; an
+additional slot must reference a distinct, immutable operator approval. The
+community, initial policy/current pointer, provider binding, subject claim,
+and committed intent revision are designed to commit in one transaction.
+Provider calls never run inside that transaction.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every

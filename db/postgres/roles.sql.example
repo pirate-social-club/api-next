@@ -23,5 +23,13 @@ REVOKE UPDATE, DELETE ON
   community_purchase_funding_transaction_claims,
   community_purchase_funding_transitions,
   community_purchase_funding_receipts,
-  community_purchase_funding_reconciliation_operator_actions
+  community_purchase_funding_reconciliation_operator_actions,
+  community_creation_intent_revisions,
+  community_policy_provider_bindings,
+  community_creation_quota_approvals,
+  community_creation_subject_claims
 FROM api_next_app;
+
+-- The current creation-intent projection advances through guarded revisions
+-- but is retained permanently with its immutable revision ledger.
+REVOKE DELETE ON community_creation_intents FROM api_next_app;

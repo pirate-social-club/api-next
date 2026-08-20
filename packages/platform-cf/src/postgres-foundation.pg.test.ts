@@ -20,7 +20,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 7;
+const foundationTestCount = 8;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -127,6 +127,9 @@ const communityPurchaseImmutabilityMigrationSql = await Bun.file(
     "../../../db/postgres/migrations/0022_m3_community_purchase_immutability.sql",
     import.meta.url,
   ),
+).text();
+const communityCreationIntentsMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0023_community_creation_intents.sql", import.meta.url),
 ).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
@@ -242,6 +245,11 @@ const communityPurchaseImmutabilityMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0022_m3_community_purchase_immutability.sql"] ?? "",
   sql: communityPurchaseImmutabilityMigrationSql,
 };
+const communityCreationIntentsMigration: PostgresMigration = {
+  version: "0023_community_creation_intents.sql",
+  checksum: checksumManifest.migrations["0023_community_creation_intents.sql"] ?? "",
+  sql: communityCreationIntentsMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -265,6 +273,7 @@ const migrations: readonly PostgresMigration[] = [
   reconciliationFinalizationMigration,
   communityPurchaseCommerceMigration,
   communityPurchaseImmutabilityMigration,
+  communityCreationIntentsMigration,
 ];
 
 function checksum(value: string): string {
@@ -443,6 +452,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(communityPurchaseImmutabilityMigrationSql)).toBe(
         communityPurchaseImmutabilityMigration.checksum,
       );
+      expect(checksum(communityCreationIntentsMigrationSql)).toBe(
+        communityCreationIntentsMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -483,10 +495,15 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_commerce_policy_revisions",
         "community_commerce_pricing_policy_versions",
         "community_commerce_settlement_policy_versions",
+        "community_creation_intent_revisions",
+        "community_creation_intents",
+        "community_creation_quota_approvals",
+        "community_creation_subject_claims",
         "community_feed_projection",
         "community_follows",
         "community_memberships",
         "community_policy_current",
+        "community_policy_provider_bindings",
         "community_purchase_allocation_snapshots",
         "community_purchase_availability_reservations",
         "community_purchase_correction_events",
@@ -621,6 +638,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_commerce_pricing_policy_append_only",
         "community_commerce_route_policy_append_only",
         "community_commerce_settlement_policy_append_only",
+        "community_creation_intent_revision_append_only",
+        "community_creation_quota_approval_append_only",
+        "community_creation_subject_claim_append_only",
+        "community_policy_provider_binding_append_only",
         "community_purchase_allocation_snapshot_append_only",
         "community_purchase_correction_event_append_only",
         "community_purchase_donation_snapshot_append_only",
@@ -1847,6 +1868,128 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(ownDelete.rowCount).toBe(1);
       expect(await readPost("community-a", "post-a")).toEqual([]);
       expect(await readPost("community-b", "post-b")).toEqual([{ body: "community B" }]);
+    });
+    completedTestCount += 1;
+  });
+
+  test("fences community creation revisions, idempotency, and terminal quota outcomes", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      await applyMigrations(scopedConnectionString, migrations);
+      await admin.query("INSERT INTO users (user_id) VALUES ('creator-a')");
+      await admin.query(
+        `INSERT INTO community_creation_intents (
+           intent_id, actor_id, create_idempotency_key, create_request_hash,
+           revision, status, draft, canonical_policy_revision, canonical_policy_hash,
+           verification_requirement_hash, verification_provider_id,
+           provider_configuration_kind, provider_configuration_ref,
+           provider_configuration_version, expires_at
+         ) VALUES (
+           'creation-a', 'creator-a', 'create-key-a', repeat('a', 64),
+           1, 'draft', '{"name":"Jazleeuw"}'::jsonb, 1, repeat('b', 64),
+           repeat('c', 64), 'very.oauth', 'dynamic', 'very-oauth', '1',
+           clock_timestamp() + interval '1 hour'
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_intent_revisions (
+           intent_id, revision, actor_id, operation_kind, idempotency_key,
+           request_hash, status, state_snapshot
+         ) VALUES (
+           'creation-a', 1, 'creator-a', 'create', 'create-key-a',
+           repeat('a', 64), 'draft', '{"status":"draft"}'::jsonb
+         )`,
+      );
+
+      await expectPostgresFailure(
+        admin,
+        "23505",
+        `INSERT INTO community_creation_intents (
+           intent_id, actor_id, create_idempotency_key, create_request_hash,
+           revision, status, draft, canonical_policy_revision, canonical_policy_hash,
+           verification_requirement_hash, verification_provider_id,
+           provider_configuration_kind, provider_configuration_ref,
+           provider_configuration_version, expires_at
+         ) VALUES (
+           'creation-b', 'creator-a', 'create-key-a', repeat('d', 64),
+           1, 'draft', '{}'::jsonb, 1, repeat('b', 64), repeat('c', 64),
+           'very.oauth', 'dynamic', 'very-oauth', '1',
+           clock_timestamp() + interval '1 hour'
+         )`,
+        [],
+      );
+
+      await admin.query(
+        `UPDATE community_creation_intents
+            SET revision = 2, status = 'verification_required', updated_at = clock_timestamp()
+          WHERE intent_id = 'creation-a'`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_intent_revisions (
+           intent_id, revision, actor_id, operation_kind, idempotency_key,
+           request_hash, status, state_snapshot
+         ) VALUES (
+           'creation-a', 2, 'creator-a', 'preflight', NULL,
+           repeat('e', 64), 'verification_required',
+           '{"status":"verification_required"}'::jsonb
+         )`,
+      );
+
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `UPDATE community_creation_intents
+            SET revision = 4, status = 'commit_ready', updated_at = clock_timestamp()
+          WHERE intent_id = 'creation-a'`,
+        [],
+      );
+      await admin.query(
+        `UPDATE community_creation_intents
+            SET revision = 3, status = 'commit_ready', updated_at = clock_timestamp()
+          WHERE intent_id = 'creation-a'`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_intent_revisions (
+           intent_id, revision, actor_id, operation_kind, idempotency_key,
+           request_hash, status, state_snapshot
+         ) VALUES (
+           'creation-a', 3, 'creator-a', 'verification', NULL,
+           repeat('f', 64), 'commit_ready', '{"status":"commit_ready"}'::jsonb
+         )`,
+      );
+      await admin.query(
+        `UPDATE community_creation_intents
+            SET revision = 4, status = 'quota_exceeded', updated_at = clock_timestamp()
+          WHERE intent_id = 'creation-a'`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_intent_revisions (
+           intent_id, revision, actor_id, operation_kind, idempotency_key,
+           request_hash, status, state_snapshot
+         ) VALUES (
+           'creation-a', 4, 'creator-a', 'commit', 'commit-key-a',
+           repeat('1', 64), 'quota_exceeded', '{"status":"quota_exceeded"}'::jsonb
+         )`,
+      );
+
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `UPDATE community_creation_intents
+            SET revision = 5, status = 'cancelled', updated_at = clock_timestamp()
+          WHERE intent_id = 'creation-a'`,
+        [],
+      );
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        "DELETE FROM community_creation_intent_revisions WHERE intent_id = 'creation-a'",
+        [],
+      );
+
+      const current = await admin.query<{ readonly revision: number; readonly status: string }>(
+        "SELECT revision, status FROM community_creation_intents WHERE intent_id = 'creation-a'",
+      );
+      expect(current.rows).toEqual([{ revision: 4, status: "quota_exceeded" }]);
     });
     completedTestCount += 1;
   });
