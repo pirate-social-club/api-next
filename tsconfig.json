@@ -20,7 +20,7 @@
         "ignoreEffectErrorsInTscExitCode": false
       }
     ],
-    "types": ["bun"],
+    "types": ["bun-types"],
     "paths": {
       "@pirate/contracts": ["./packages/contracts/src/index.ts"],
       "@pirate/api-client": ["./packages/api-client/src/index.ts"],
