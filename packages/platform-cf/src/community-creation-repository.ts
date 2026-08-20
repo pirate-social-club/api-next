@@ -8,6 +8,7 @@ import {
   type ControlPlaneError,
   type ControlPlaneTransaction,
 } from "@pirate/application";
+import { VerificationCompletionStorageFailed } from "@pirate/application/verification";
 import {
   CommunityCreationIntent as CommunityCreationIntentContract,
   CreateCommunityCreationIntent,
@@ -17,7 +18,15 @@ import {
   type CommunityCreationIntentState,
   compileCommunityGatePolicy,
   creationNextAction,
+  HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
   transitionCommunityCreationIntent,
+  VERY_OAUTH_CONFIGURATION_REFERENCE,
+  VERY_OAUTH_CONFIGURATION_VERSION,
+  VERY_OAUTH_ISSUER,
+  VERY_OAUTH_METHOD,
+  VERY_OAUTH_PROTOCOL_VERSION,
+  VERY_OAUTH_PROVIDER_ID,
+  VERY_OAUTH_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
 
@@ -27,6 +36,7 @@ export const COMMUNITY_CREATION_INTENT_TTL_SECONDS = 24 * 60 * 60;
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const UNRESOLVED_PROVIDER_ID = "unresolved";
 const UNRESOLVED_PROVIDER_CONFIGURATION = "unresolved";
+const VERY_OAUTH_EVIDENCE_KIND = "very.oauth.id-token-userinfo.v1";
 const TERMINAL_STATUSES = new Set([
   "committed",
   "quota_exceeded",
@@ -34,6 +44,30 @@ const TERMINAL_STATUSES = new Set([
   "expired",
   "cancelled",
 ]);
+
+const HUMAN_MEMBERSHIP_REQUIREMENTS = [
+  { claim_id: "credential.subject_unique" },
+  { claim_id: "human.personhood" },
+] as const;
+const HUMAN_MEMBERSHIP_CLAIM_IDS = ["credential.subject_unique", "human.personhood"] as const;
+
+export type CommunityCreationVerificationAdvanceOutcome =
+  | Readonly<{ readonly kind: "advanced"; readonly intent_id: string; readonly revision: number }>
+  | Readonly<{
+      readonly kind: "already_ready";
+      readonly intent_id: string;
+      readonly revision: number;
+    }>
+  | Readonly<{ readonly kind: "not_applicable" }>
+  | Readonly<{
+      readonly kind: "stale";
+      readonly reason:
+        | "intent_expired"
+        | "intent_terminal"
+        | "intent_not_verification_required"
+        | "session_binding_drift"
+        | "evidence_invalid";
+    }>;
 
 export type CommunityCreationRepositoryOptions = Readonly<{
   readonly intent_ttl_seconds?: number;
@@ -297,7 +331,7 @@ function insertRevision(
   input: Readonly<{
     readonly intent: CommunityCreationIntentDocument;
     readonly actorId: string;
-    readonly operation: "create" | "update" | "commit" | "expire";
+    readonly operation: "create" | "update" | "verification" | "commit" | "expire";
     readonly idempotencyKey?: string;
     readonly requestHash: string;
   }>,
@@ -319,6 +353,254 @@ function insertRevision(
       JSON.stringify(input.intent),
     ],
     readonly: false,
+  });
+}
+
+function verificationStorageFailure(): VerificationCompletionStorageFailed {
+  return new VerificationCompletionStorageFailed();
+}
+
+function exactCanonicalJson(value: unknown, expected: unknown): boolean {
+  return JSON.stringify(jsonValue(value)) === JSON.stringify(expected);
+}
+
+/**
+ * Settle a completed canonical Very ceremony against its creation intent.
+ *
+ * The helper deliberately preserves valid generic/stale evidence: only a
+ * storage or constraint failure aborts the surrounding completion transaction.
+ * Replays may call it again to repair a completion produced before the intent
+ * revision was appended.
+ */
+export function advanceCommunityCreationVerificationInTransaction(
+  transaction: ControlPlaneTransaction,
+  input: Readonly<{
+    readonly actor_id: string;
+    readonly proof_session_id: string;
+    readonly result_hash: string;
+  }>,
+): Effect.Effect<
+  CommunityCreationVerificationAdvanceOutcome,
+  VerificationCompletionStorageFailed | ControlPlaneError
+> {
+  return Effect.gen(function* () {
+    if (
+      !validId(input.actor_id) ||
+      !validId(input.proof_session_id) ||
+      !SHA256_HEX.test(input.result_hash)
+    ) {
+      return yield* Effect.fail(verificationStorageFailure());
+    }
+
+    const sessionResult = yield* transaction.execute<Row>({
+      label: "community.creation.verification.lock-session",
+      text: `SELECT proof_session_id, actor_id, intent_id, provider_id,
+                    provider_configuration_kind, provider_configuration_ref,
+                    provider_configuration_version, method, issuer, scope_kind,
+                    issuer_rp_scope, issuer_rp_action_scope, request_mode,
+                    requested_requirements, requested_claim_ids,
+                    subject_binding_intent, protocol_version, environment,
+                    status, expires_at, completed_at, terminal_at,
+                    completion_idempotency_key, completion_result_hash
+               FROM proof_sessions
+              WHERE proof_session_id = $1 AND actor_id = $2
+              FOR UPDATE`,
+      values: [input.proof_session_id, input.actor_id],
+      readonly: false,
+    });
+    const session = oneRow(sessionResult.rows);
+    if (session === undefined) return yield* Effect.fail(verificationStorageFailure());
+    if (session === null) return { kind: "not_applicable" } as const;
+
+    const intentId = asString(session.intent_id);
+    const completedAt = asTimestamp(session.completed_at);
+    const terminalAt = asTimestamp(session.terminal_at);
+    const sessionExpiresAt = asTimestamp(session.expires_at);
+    if (
+      intentId === null ||
+      session.proof_session_id !== input.proof_session_id ||
+      session.actor_id !== input.actor_id ||
+      session.status !== "completed" ||
+      session.completion_result_hash !== input.result_hash ||
+      asString(session.completion_idempotency_key) === null ||
+      completedAt === null ||
+      terminalAt === null ||
+      sessionExpiresAt === null ||
+      completedAt !== terminalAt ||
+      Date.parse(completedAt) >= Date.parse(sessionExpiresAt)
+    ) {
+      return { kind: "stale", reason: "session_binding_drift" } as const;
+    }
+
+    const intentResult = yield* transaction.execute<Row>({
+      label: "community.creation.verification.lock-intent",
+      text: `SELECT ${rowColumns()}, expires_at > clock_timestamp() AS active
+               FROM community_creation_intents
+              WHERE intent_id = $1 AND actor_id = $2
+              FOR UPDATE`,
+      values: [intentId, input.actor_id],
+      readonly: false,
+    });
+    const intentRow = oneRow(intentResult.rows);
+    if (intentRow === undefined) return yield* Effect.fail(verificationStorageFailure());
+    if (intentRow === null) return { kind: "not_applicable" } as const;
+    const document = documentFromRow(intentRow);
+    const providerId = asString(intentRow.verification_provider_id);
+    if (document === null || providerId === null) {
+      return yield* Effect.fail(verificationStorageFailure());
+    }
+    if (document.status === "commit_ready") {
+      return {
+        kind: "already_ready",
+        intent_id: document.intent_id,
+        revision: document.revision,
+      } as const;
+    }
+    if (TERMINAL_STATUSES.has(document.status)) {
+      return { kind: "stale", reason: "intent_terminal" } as const;
+    }
+    if (document.status !== "verification_required") {
+      return { kind: "stale", reason: "intent_not_verification_required" } as const;
+    }
+    if (intentRow.active !== true) {
+      return { kind: "stale", reason: "intent_expired" } as const;
+    }
+
+    const exactBinding =
+      document.verification_requirement_hash === HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
+      providerId === VERY_OAUTH_PROVIDER_ID &&
+      session.provider_id === providerId &&
+      intentRow.provider_configuration_kind === "dynamic" &&
+      intentRow.provider_configuration_ref === VERY_OAUTH_CONFIGURATION_REFERENCE &&
+      intentRow.provider_configuration_version === VERY_OAUTH_CONFIGURATION_VERSION &&
+      session.provider_configuration_kind === intentRow.provider_configuration_kind &&
+      session.provider_configuration_ref === intentRow.provider_configuration_ref &&
+      session.provider_configuration_version === intentRow.provider_configuration_version &&
+      session.method === VERY_OAUTH_METHOD &&
+      session.issuer === VERY_OAUTH_ISSUER &&
+      session.scope_kind === "issuer_rp_scope" &&
+      session.issuer_rp_scope === VERY_OAUTH_RP_SCOPE &&
+      session.issuer_rp_action_scope === null &&
+      session.request_mode === "dynamic" &&
+      exactCanonicalJson(session.requested_requirements, HUMAN_MEMBERSHIP_REQUIREMENTS) &&
+      exactCanonicalJson(session.requested_claim_ids, HUMAN_MEMBERSHIP_CLAIM_IDS) &&
+      session.subject_binding_intent === "establish" &&
+      session.protocol_version === VERY_OAUTH_PROTOCOL_VERSION &&
+      asString(session.environment) !== null;
+    if (!exactBinding) {
+      return { kind: "stale", reason: "session_binding_drift" } as const;
+    }
+
+    const evidenceResult = yield* transaction.execute<Row>({
+      label: "community.creation.verification.validate-evidence",
+      text: `SELECT (
+               COUNT(DISTINCT receipt.evidence_receipt_id) = 1
+               AND COUNT(assertion.assertion_id) = 2
+               AND COUNT(DISTINCT assertion.binding_group_id) = 1
+               AND COUNT(*) FILTER (
+                 WHERE assertion.claim_id = 'human.personhood'
+                   AND assertion.assertion_value = '{"personhood": true}'::jsonb
+                   AND assertion.assurance = 'provider_attested'
+               ) = 1
+               AND COUNT(*) FILTER (
+                 WHERE assertion.claim_id = 'credential.subject_unique'
+                   AND assertion.assertion_value = '{"subject_unique": true}'::jsonb
+                   AND assertion.assurance = 'provider_attested'
+               ) = 1
+               AND BOOL_AND(
+                 receipt.user_id = session.actor_id
+                 AND receipt.provider_id = session.provider_id
+                 AND receipt.provider_configuration_kind = session.provider_configuration_kind
+                 AND receipt.provider_configuration_ref = session.provider_configuration_ref
+                 AND receipt.provider_configuration_version = session.provider_configuration_version
+                 AND receipt.issuer = session.issuer
+                 AND receipt.method = session.method
+                 AND receipt.scope_kind = session.scope_kind
+                 AND receipt.issuer_rp_scope IS NOT DISTINCT FROM session.issuer_rp_scope
+                 AND receipt.issuer_rp_action_scope IS NOT DISTINCT FROM session.issuer_rp_action_scope
+                 AND receipt.protocol_version = session.protocol_version
+                 AND receipt.environment = session.environment
+                 AND receipt.provenance_kind = 'proof_session'
+                 AND receipt.evidence_kind = $2
+                 AND receipt.subject_key_id IS NOT NULL
+                 AND receipt.subject_binding_event_id IS NOT NULL
+                 AND receipt.subject_binding_epoch IS NOT NULL
+                 AND receipt.observed_at <= session.terminal_at
+                 AND (receipt.expires_at IS NULL OR receipt.expires_at > clock_timestamp())
+                 AND active_binding.subject_key_id = receipt.subject_key_id
+                 AND active_binding.binding_event_id = receipt.subject_binding_event_id
+                 AND active_binding.binding_epoch = receipt.subject_binding_epoch
+                 AND active_binding.user_id = session.actor_id
+                 AND assertion.user_id = session.actor_id
+                 AND assertion.evidence_receipt_id = receipt.evidence_receipt_id
+                 AND assertion.subject_key_id = receipt.subject_key_id
+                 AND assertion.observed_at <= session.terminal_at
+                 AND (assertion.expires_at IS NULL OR assertion.expires_at > clock_timestamp())
+                 AND assertion_binding.user_id = session.actor_id
+                 AND assertion_binding.binding_mode = 'same_subject'
+                 AND assertion_binding.subject_key_id = receipt.subject_key_id
+                 AND assertion_binding.evidence_receipt_id IS NULL
+                 AND assertion_binding.subject_binding_event_id = receipt.subject_binding_event_id
+                 AND assertion_binding.subject_binding_epoch = receipt.subject_binding_epoch
+               )
+             ) AS evidence_valid
+        FROM proof_sessions AS session
+        LEFT JOIN evidence_receipts AS receipt
+          ON receipt.proof_session_id = session.proof_session_id
+        LEFT JOIN assertions AS assertion
+          ON assertion.evidence_receipt_id = receipt.evidence_receipt_id
+        LEFT JOIN assertion_bindings AS assertion_binding
+          ON assertion_binding.binding_group_id = assertion.binding_group_id
+        LEFT JOIN active_subject_key_bindings AS active_binding
+          ON active_binding.subject_key_id = receipt.subject_key_id
+       WHERE session.proof_session_id = $1
+         AND session.actor_id = $3`,
+      values: [input.proof_session_id, VERY_OAUTH_EVIDENCE_KIND, input.actor_id],
+      readonly: false,
+    });
+    const evidenceRow = oneRow(evidenceResult.rows);
+    if (evidenceRow === undefined || evidenceRow === null) {
+      return yield* Effect.fail(verificationStorageFailure());
+    }
+    if (evidenceRow.evidence_valid !== true) {
+      return { kind: "stale", reason: "evidence_invalid" } as const;
+    }
+
+    const transitioned = transitionCommunityCreationIntent(
+      stateFromDocument(document, providerId),
+      { type: "verification_completed", expected_revision: document.revision },
+    );
+    if (transitioned.kind === "rejected") {
+      return yield* Effect.fail(verificationStorageFailure());
+    }
+    const next = Schema.decodeUnknownOption(CommunityCreationIntentContract)({
+      ...document,
+      revision: transitioned.state.revision,
+      status: transitioned.state.status,
+      next_action: creationNextAction(transitioned.state),
+    });
+    if (Option.isNone(next)) return yield* Effect.fail(verificationStorageFailure());
+    const updated = yield* transaction.execute({
+      label: "community.creation.verification.persist-intent",
+      text: `UPDATE community_creation_intents
+                SET revision = $1, status = 'commit_ready', updated_at = clock_timestamp()
+              WHERE intent_id = $2 AND actor_id = $3 AND revision = $4
+                AND status = 'verification_required'
+                AND expires_at > clock_timestamp()`,
+      values: [next.value.revision, intentId, input.actor_id, document.revision],
+      readonly: false,
+    });
+    if (updated.rowCount === 0) {
+      return { kind: "stale", reason: "intent_expired" } as const;
+    }
+    if (updated.rowCount !== 1) return yield* Effect.fail(verificationStorageFailure());
+    yield* insertRevision(transaction, {
+      intent: next.value,
+      actorId: input.actor_id,
+      operation: "verification",
+      requestHash: input.result_hash,
+    });
+    return { kind: "advanced", intent_id: intentId, revision: next.value.revision } as const;
   });
 }
 

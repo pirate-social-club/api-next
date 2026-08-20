@@ -91,6 +91,17 @@ export interface VerificationCompletionStore {
   ) => Effect.Effect<void, VerificationCompletionStorageFailed>;
 
   /**
+   * Repair provider-independent projections for an exact completed replay.
+   * This must not invoke the provider or append duplicate evidence.
+   */
+  readonly settleCompleted: (input: {
+    readonly actor_id: string;
+    readonly proof_session_id: string;
+    readonly idempotency_key: string;
+    readonly result_hash: Sha256HexValue;
+  }) => Effect.Effect<void, VerificationCompletionStorageFailed>;
+
+  /**
    * Implementations must lock the proof session and perform every write in one
    * local database transaction: resolve/create stable subject keys, advance
    * account-binding epochs, append receipts/bindings/assertions, transition the
@@ -225,7 +236,15 @@ export const completeVerification = Effect.fn("completeVerification")(function* 
   const input = yield* decodeInput(untrustedInput);
   const stored = yield* services.store.load({ proof_session_id: input.proof_session_id });
   const initialReplay = yield* terminalReplay(input, stored);
-  if (initialReplay !== null) return initialReplay;
+  if (initialReplay !== null) {
+    yield* services.store.settleCompleted({
+      actor_id: input.actor_id,
+      proof_session_id: initialReplay.proof_session_id,
+      idempotency_key: input.idempotency_key,
+      result_hash: initialReplay.result_hash,
+    });
+    return initialReplay;
+  }
   if (stored === null) return yield* new VerificationCompletionRejected({ reason: "unavailable" });
 
   const startedAt = services.now?.() ?? Date.now();
@@ -262,7 +281,15 @@ export const completeVerification = Effect.fn("completeVerification")(function* 
   if (attempt.kind === "unavailable") {
     const raced = yield* services.store.load({ proof_session_id: input.proof_session_id });
     const replay = yield* terminalReplay(input, raced);
-    if (replay !== null) return replay;
+    if (replay !== null) {
+      yield* services.store.settleCompleted({
+        actor_id: input.actor_id,
+        proof_session_id: replay.proof_session_id,
+        idempotency_key: input.idempotency_key,
+        result_hash: replay.result_hash,
+      });
+      return replay;
+    }
     return yield* new VerificationCompletionRejected({ reason: "unavailable" });
   }
   if (attempt.kind === "expired") {

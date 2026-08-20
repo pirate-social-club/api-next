@@ -28,6 +28,7 @@ function attemptMethods() {
     reserveAttempt: () => Effect.succeed({ kind: "acquired" as const, reservation: ATTEMPT }),
     releaseAttempt: () => Effect.void,
     consumeAttempt: () => Effect.void,
+    settleCompleted: () => Effect.void,
   };
 }
 

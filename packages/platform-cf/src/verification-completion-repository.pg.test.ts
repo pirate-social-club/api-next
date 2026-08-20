@@ -1,5 +1,14 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import {
+  VERY_OAUTH_CONFIGURATION_REFERENCE,
+  VERY_OAUTH_CONFIGURATION_VERSION,
+  VERY_OAUTH_ISSUER,
+  VERY_OAUTH_METHOD,
+  VERY_OAUTH_PROTOCOL_VERSION,
+  VERY_OAUTH_PROVIDER_ID,
+  VERY_OAUTH_RP_SCOPE,
+} from "@pirate/domain";
 import type {
   EvidenceBundle,
   ProofSession,
@@ -7,6 +16,7 @@ import type {
 } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { applyPostgresMigrations, type PostgresMigration } from "./postgres-migrations";
 import {
@@ -25,7 +35,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-verification-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-verification-suite-complete\n";
 let completedTestCount = 0;
-const foundationTestCount = 8;
+const foundationTestCount = 9;
 // Keep ordinary pending-session fixtures valid independently of the day the
 // CI database runs. Expiry-specific tests override this value with an
 // intentionally past or database-relative timestamp below.
@@ -44,6 +54,8 @@ const migrationFiles = [
   "0010_proof_session_provenance.sql",
   "0011_verification_start_reservations.sql",
   "0012_verification_completion_attempts.sql",
+  "0023_community_creation_intents.sql",
+  "0024_community_creation_preflight_transition.sql",
 ] as const;
 const migrations: readonly PostgresMigration[] = await Promise.all(
   migrationFiles.map(async (version) => {
@@ -233,6 +245,99 @@ function evidenceBundle(session: ProofSession, evidenceHash: string): EvidenceBu
         assurance: "document_zk",
         binding_group_id: "provider-binding",
         observed_at: "2026-08-17T00:20:00.000Z",
+      },
+    ],
+  };
+}
+
+function communityCreationProofSession(intentId: string): ProofSession {
+  return {
+    id: "community-creation-proof",
+    actor_id: "user-a",
+    intent_id: intentId,
+    request_hash: "c".repeat(64),
+    provider_id: VERY_OAUTH_PROVIDER_ID,
+    upstream_session_ref: "very-session-1",
+    method: VERY_OAUTH_METHOD,
+    scope: {
+      kind: "named",
+      scope_semantics: "issuer_rp_scope",
+      issuer: VERY_OAUTH_ISSUER,
+      rp_scope: VERY_OAUTH_RP_SCOPE,
+    },
+    request_mode: "dynamic",
+    provider_configuration: {
+      kind: "dynamic",
+      reference: VERY_OAUTH_CONFIGURATION_REFERENCE,
+      version: VERY_OAUTH_CONFIGURATION_VERSION,
+    },
+    requested_requirements: [
+      { claim_id: "credential.subject_unique" },
+      { claim_id: "human.personhood" },
+    ],
+    requested_claim_ids: ["credential.subject_unique", "human.personhood"],
+    subject_binding_intent: "establish",
+    protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+    environment: "test",
+    status: "pending",
+    started_at: "2026-01-01T00:00:00.000Z",
+    expires_at: defaultSessionExpiresAt,
+  };
+}
+
+function veryEvidenceBundle(session: ProofSession, evidenceHash: string): EvidenceBundle {
+  if (session.scope.kind !== "named") throw new Error("expected named Very scope");
+  return {
+    id: "very-bundle",
+    proof_session_id: session.id,
+    subject_keys: [
+      {
+        id: "very-subject",
+        issuer: session.scope.issuer,
+        method: session.method,
+        scope: session.scope,
+        subject_digest: "d".repeat(64),
+      },
+    ],
+    receipts: [
+      {
+        id: "very-receipt",
+        proof_session_id: session.id,
+        provider_id: session.provider_id,
+        issuer: session.scope.issuer,
+        method: session.method,
+        scope: session.scope,
+        provider_configuration: session.provider_configuration,
+        protocol_version: session.protocol_version,
+        environment: session.environment,
+        provenance_kind: "proof_session",
+        evidence_kind: "very.oauth.id-token-userinfo.v1",
+        evidence_hash: evidenceHash,
+        observed_at: "2026-01-01T00:00:30.000Z",
+        subject_key_id: "very-subject",
+      },
+    ],
+    binding_groups: [{ id: "very-binding", kind: "same_subject", subject_key_id: "very-subject" }],
+    assertions: [
+      {
+        id: "very-unique",
+        subject_key_id: "very-subject",
+        evidence_receipt_id: "very-receipt",
+        claim_id: "credential.subject_unique",
+        value: { subject_unique: true },
+        assurance: "provider_attested",
+        binding_group_id: "very-binding",
+        observed_at: "2026-01-01T00:00:30.000Z",
+      },
+      {
+        id: "very-personhood",
+        subject_key_id: "very-subject",
+        evidence_receipt_id: "very-receipt",
+        claim_id: "human.personhood",
+        value: { personhood: true },
+        assurance: "provider_attested",
+        binding_group_id: "very-binding",
+        observed_at: "2026-01-01T00:00:30.000Z",
       },
     ],
   };
@@ -613,6 +718,103 @@ suite("Postgres 17 verification completion repository", () => {
         "SELECT count(*) FROM evidence_receipts",
       );
       expect(receiptCount.rows[0]?.count).toBe("2");
+    });
+    completedTestCount += 1;
+  });
+
+  test("atomically advances a Very-backed creation intent and replays once", async () => {
+    await withSchema(async (connection, admin) => {
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const creationStore = makeControlPlaneCommunityCreationStore(runtime, {
+        next_intent_id: () => "community-intent-1",
+      });
+      const created = await Effect.runPromise(
+        creationStore.create({
+          actor: { kind: "user", userId: "user-a" },
+          requestHash: "a".repeat(64),
+          body: {
+            idempotency_key: "create-community-1",
+            draft: {
+              name: "Jazleeuw",
+              slug: "app.jazleeuw",
+              description: "Verified people",
+              policy: {
+                version: 1,
+                accessPaths: [
+                  {
+                    id: "verified-people",
+                    operator: "and",
+                    requirements: [{ requirement: "human-verification" }],
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      );
+      expect(created.status).toBe("verification_required");
+
+      const session = communityCreationProofSession(created.intent_id);
+      await insertSession(admin, session);
+      const completionStore = storeFor(connection);
+      const request = {
+        ...commitInput(session, "e".repeat(64), "f".repeat(64)),
+        bundle: veryEvidenceBundle(session, "e".repeat(64)),
+      };
+      expect(await Effect.runPromise(Effect.scoped(completionStore.commit(request)))).toEqual({
+        kind: "committed",
+        result_hash: "f".repeat(64),
+      });
+
+      const advanced = await admin.query<{
+        revision: number;
+        status: string;
+        operation_kind: string;
+        request_hash: string;
+      }>(
+        `SELECT intent.revision, intent.status, revision.operation_kind, revision.request_hash
+           FROM community_creation_intents AS intent
+           JOIN community_creation_intent_revisions AS revision
+             ON revision.intent_id = intent.intent_id
+            AND revision.revision = intent.revision
+          WHERE intent.intent_id = $1`,
+        [created.intent_id],
+      );
+      expect(advanced.rows).toEqual([
+        {
+          revision: 2,
+          status: "commit_ready",
+          operation_kind: "verification",
+          request_hash: "f".repeat(64),
+        },
+      ]);
+
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            completionStore.settleCompleted({
+              actor_id: session.actor_id,
+              proof_session_id: session.id,
+              idempotency_key: request.idempotency_key,
+              result_hash: request.result_hash,
+            }),
+          ),
+        ),
+      ).resolves.toBeUndefined();
+      expect(await Effect.runPromise(Effect.scoped(completionStore.commit(request)))).toEqual({
+        kind: "replay",
+        result_hash: "f".repeat(64),
+      });
+      const counts = await admin.query<{
+        completion_events: number;
+        verification_revisions: number;
+      }>(`SELECT
+        (SELECT COUNT(*)::integer FROM proof_session_completion_events
+          WHERE proof_session_id = 'community-creation-proof') AS completion_events,
+        (SELECT COUNT(*)::integer FROM community_creation_intent_revisions
+          WHERE intent_id = 'community-intent-1'
+            AND operation_kind = 'verification') AS verification_revisions`);
+      expect(counts.rows).toEqual([{ completion_events: 1, verification_revisions: 1 }]);
     });
     completedTestCount += 1;
   });

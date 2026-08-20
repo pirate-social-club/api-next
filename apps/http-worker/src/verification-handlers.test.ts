@@ -71,6 +71,7 @@ function terminalStore(): VerificationCompletionStore {
       }),
     releaseAttempt: () => Effect.void,
     consumeAttempt: () => Effect.void,
+    settleCompleted: () => Effect.void,
     load: () => Effect.succeed(stored),
     commit: () => Effect.die("terminal replay must not commit"),
   };

@@ -20,6 +20,7 @@ import {
   type SubjectKey,
 } from "@pirate/domain/verification";
 import { Data, Effect, type Layer, Option, Schema } from "effect";
+import { advanceCommunityCreationVerificationInTransaction } from "./community-creation-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
@@ -588,6 +589,29 @@ export function makeControlPlaneVerificationCompletionRepository() {
           settleAttemptInTransaction(transaction, reservation, "consumed"),
         );
       }),
+    settleCompleted: (input: Parameters<VerificationCompletionStore["settleCompleted"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const stored = yield* loadSession(transaction, input.proof_session_id, true);
+            if (
+              stored === null ||
+              stored.session.actor_id !== input.actor_id ||
+              stored.terminal?.status !== "completed" ||
+              stored.terminal.idempotency_key !== input.idempotency_key ||
+              stored.terminal.result_hash !== input.result_hash
+            ) {
+              return yield* Effect.fail(storageFailure());
+            }
+            yield* advanceCommunityCreationVerificationInTransaction(transaction, {
+              actor_id: input.actor_id,
+              proof_session_id: input.proof_session_id,
+              result_hash: input.result_hash,
+            });
+          }),
+        );
+      }),
     commit: (input: Parameters<VerificationCompletionStore["commit"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -603,12 +627,21 @@ export function makeControlPlaneVerificationCompletionRepository() {
                 const attemptFence =
                   attemptRow === null ? null : integerField(attemptRow, "fence_token");
                 const attemptState = attemptRow === null ? null : stringField(attemptRow, "state");
+                const exactReplay =
+                  stored.terminal.status === "completed" &&
+                  stored.terminal.idempotency_key === input.idempotency_key &&
+                  stored.terminal.result_hash === input.result_hash;
+                if (exactReplay) {
+                  yield* advanceCommunityCreationVerificationInTransaction(transaction, {
+                    actor_id: input.actor_id,
+                    proof_session_id: stored.session.id,
+                    result_hash: input.result_hash,
+                  });
+                }
                 if (attemptFence === input.attempt.fence_token && attemptState === "leased") {
                   yield* settleAttemptInTransaction(transaction, input.attempt, "consumed");
                 }
-                return stored.terminal.status === "completed" &&
-                  stored.terminal.idempotency_key === input.idempotency_key &&
-                  stored.terminal.result_hash === input.result_hash
+                return exactReplay
                   ? ({ kind: "replay", result_hash: stored.terminal.result_hash } as const)
                   : ({
                       kind: "rejected",
@@ -826,6 +859,11 @@ export function makeControlPlaneVerificationCompletionRepository() {
               if (updated.rowCount !== 1) {
                 return yield* Effect.fail(storageFailure());
               }
+              yield* advanceCommunityCreationVerificationInTransaction(transaction, {
+                actor_id: input.actor_id,
+                proof_session_id: stored.session.id,
+                result_hash: input.result_hash,
+              });
               yield* settleAttemptInTransaction(transaction, input.attempt, "consumed");
               yield* transaction.execute({
                 label: "verification.proof-session-completions.insert",
@@ -872,6 +910,7 @@ export function makeControlPlaneVerificationCompletionStore(
     reserveAttempt: (input) => provide(repository.reserveAttempt(input)),
     releaseAttempt: (reservation) => provide(repository.releaseAttempt(reservation)),
     consumeAttempt: (reservation) => provide(repository.consumeAttempt(reservation)),
+    settleCompleted: (input) => provide(repository.settleCompleted(input)),
     commit: (input) => provide(repository.commit(input)),
   };
 }

@@ -37,6 +37,7 @@ function attemptMethods() {
     reserveAttempt: () => Effect.succeed({ kind: "acquired" as const, reservation: ATTEMPT }),
     releaseAttempt: () => Effect.void,
     consumeAttempt: () => Effect.void,
+    settleCompleted: () => Effect.void,
   };
 }
 
@@ -325,10 +326,20 @@ describe("verification completion use case", () => {
       session: session({ status: "completed", completed_at: "2026-08-17T00:25:00.000Z" }),
       terminal: { status: "completed", idempotency_key: "callback-1", result_hash: RESULT_HASH },
     } satisfies StoredVerificationCompletion;
-    const calls = { complete: 0, commit: 0 };
+    const calls = { complete: 0, commit: 0, settle: 0 };
     const store: VerificationCompletionStore = {
       ...attemptMethods(),
       load: () => Effect.succeed(stored),
+      settleCompleted: (settlement) =>
+        Effect.sync(() => {
+          calls.settle += 1;
+          expect(settlement).toEqual({
+            actor_id: "user-1",
+            proof_session_id: "proof-session-1",
+            idempotency_key: "callback-1",
+            result_hash: RESULT_HASH,
+          });
+        }),
       commit: () => {
         calls.commit += 1;
         return Effect.die("commit must not run on replay");
@@ -339,7 +350,7 @@ describe("verification completion use case", () => {
       completeVerification(input(), servicesFor(stored, store, calls)),
     );
     expect(result.replayed).toBe(true);
-    expect(calls).toEqual({ complete: 0, commit: 0 });
+    expect(calls).toEqual({ complete: 0, commit: 0, settle: 1 });
   });
 
   test("recovers a same-key terminal replay that wins after the initial load", async () => {
@@ -348,11 +359,15 @@ describe("verification completion use case", () => {
       session: session({ status: "completed", completed_at: "2026-08-17T00:25:00.000Z" }),
       terminal: { status: "completed", idempotency_key: "callback-1", result_hash: RESULT_HASH },
     } satisfies StoredVerificationCompletion;
-    const calls = { complete: 0, load: 0 };
+    const calls = { complete: 0, load: 0, settle: 0 };
     const store: VerificationCompletionStore = {
       ...attemptMethods(),
       load: () => Effect.succeed(calls.load++ === 0 ? pending : completed),
       reserveAttempt: () => Effect.succeed({ kind: "unavailable" as const }),
+      settleCompleted: () =>
+        Effect.sync(() => {
+          calls.settle += 1;
+        }),
       commit: () => Effect.die("raced terminal replay must not commit"),
     };
 
@@ -360,7 +375,7 @@ describe("verification completion use case", () => {
       completeVerification(input(), servicesFor(pending, store, calls)),
     );
     expect(result).toMatchObject({ replayed: true, result_hash: RESULT_HASH });
-    expect(calls).toEqual({ complete: 0, load: 2 });
+    expect(calls).toEqual({ complete: 0, load: 2, settle: 1 });
   });
 
   test("rejects a terminal replay carrying a different idempotency key", async () => {
