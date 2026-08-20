@@ -132,7 +132,7 @@ describe("codegen pipeline", () => {
       'headers.set("content-type", bodyEncoding === "raw-text" ? "text/plain" : "application/json")',
     );
     expect(client).toContain(
-      'body: bodyEncoding === "raw-text" ? requestInput.body as string : JSON.stringify(requestInput.body)',
+      'body: bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body)',
     );
     expect(client).toContain(
       'request("post_echoMessage", "POST", "/echo/:message", input, options),',
@@ -140,6 +140,67 @@ describe("codegen pipeline", () => {
     expect(generateOpenApi([fixture]).paths["/echo/{message}"]?.post).toMatchObject({
       requestBody: { content: { "application/json": { schema: { type: "object" } } } },
     });
+  });
+
+  test("canonicalizes and fail-closes generated exact JSON bodies", () => {
+    const exact = endpoint({
+      method: "POST",
+      path: "/exact",
+      auth: Auth.user(),
+      request: {
+        body: Schema.Struct({ first: Schema.String, second: Schema.Int }),
+        bodyEncoding: "exact-json",
+      },
+      response: Schema.Struct({ ok: Schema.Boolean }),
+    });
+    const client = generateClient({ Exact: exact });
+    expect(client).toContain(
+      'request("post_exact", "POST", "/exact", input, options, "exact-json", ["first","second"])',
+    );
+    expect(client).toContain("serializeExactJsonBody(requestInput.body, exactJsonMembers)");
+
+    const transformed = endpoint({
+      method: "POST",
+      path: "/transformed",
+      auth: Auth.user(),
+      request: { body: Schema.NumberFromString, bodyEncoding: "exact-json" },
+      response: Schema.Struct({ ok: Schema.Boolean }),
+    });
+    const integerLike = endpoint({
+      method: "POST",
+      path: "/integer-like",
+      auth: Auth.user(),
+      request: { body: Schema.Int, bodyEncoding: "exact-json" },
+      response: Schema.Struct({ ok: Schema.Boolean }),
+    });
+    const integerIndexMember = endpoint({
+      method: "POST",
+      path: "/integer-index",
+      auth: Auth.user(),
+      request: {
+        body: Schema.Struct({ "0": Schema.String, value: Schema.String }),
+        bodyEncoding: "exact-json",
+      },
+      response: Schema.Struct({ ok: Schema.Boolean }),
+    });
+    expect(() => generateClient({ Transformed: transformed })).toThrow();
+    expect(() => generateClient({ IntegerLike: integerLike })).toThrow();
+    expect(() => generateClient({ IntegerIndex: integerIndexMember })).toThrow();
+  });
+
+  test("rejects a success/error status collision during OpenAPI generation", () => {
+    expect(() =>
+      generateOpenApi([
+        endpoint({
+          method: "POST",
+          path: "/collision",
+          auth: Auth.user(),
+          response: Schema.Struct({ ok: Schema.Boolean }),
+          successStatus: 400,
+          errors: [BadRequest],
+        }),
+      ]),
+    ).toThrow(/both success and error/);
   });
 });
 

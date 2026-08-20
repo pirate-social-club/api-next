@@ -151,6 +151,15 @@ export function generateOpenApi(
         : Array.isArray(endpoint.successStatus)
           ? endpoint.successStatus
           : [endpoint.successStatus];
+    const errorStatuses = new Set(
+      (endpoint.errors ?? []).map((Ctor) => (new Ctor({} as never) as ApiError).status),
+    );
+    const collidingStatus = successStatuses.find((status) => errorStatuses.has(status));
+    if (collidingStatus !== undefined) {
+      throw new Error(
+        `Endpoint ${endpoint.method} ${endpoint.path} declares status ${collidingStatus} as both success and error`,
+      );
+    }
     const successResponses = Object.fromEntries(
       successStatuses.map((status) => [
         String(status),
@@ -172,6 +181,9 @@ export function generateOpenApi(
                   schema: schemaToOpenApi(request.body),
                 },
               },
+              ...(request.maxBodyBytes === undefined
+                ? {}
+                : { "x-max-body-bytes": request.maxBodyBytes }),
             },
           }
         : {}),
@@ -349,6 +361,76 @@ function clientInputType(endpoint: EndpointDefinition): string {
   return fields.length === 0 ? "undefined" : `{ ${fields.join("; ")} }`;
 }
 
+type SchemaAstRecord = {
+  readonly _tag?: string;
+  readonly encoding?: unknown;
+  readonly propertySignatures?: readonly {
+    readonly name?: string;
+    readonly type?: SchemaAstRecord;
+  }[];
+  readonly indexSignatures?: readonly unknown[];
+  readonly types?: readonly SchemaAstRecord[];
+};
+
+const schemaAst = (schema: Schema.Schema<unknown>): SchemaAstRecord =>
+  (schema as Schema.Schema<unknown> & { readonly ast: SchemaAstRecord }).ast;
+
+const isExactJsonPropertyAst = (ast: SchemaAstRecord | undefined): boolean => {
+  if (ast === undefined || ast.encoding !== undefined) return false;
+  if (
+    ast._tag === "String" ||
+    ast._tag === "Number" ||
+    ast._tag === "Boolean" ||
+    ast._tag === "Literal" ||
+    ast._tag === "Null"
+  ) {
+    return true;
+  }
+  return ast._tag === "Union" && (ast.types ?? []).every((type) => type._tag === "Literal");
+};
+
+const isIntegerIndexProperty = (name: string): boolean =>
+  /^(?:0|[1-9][0-9]*)$/u.test(name) && Number(name) < 4_294_967_295;
+
+/**
+ * Exact JSON is intentionally fail-closed at code generation. Only a direct,
+ * required, closed Struct with scalar fields can be canonically reordered by
+ * the standalone client; transformed schemas must opt out rather than risk a
+ * different encode representation.
+ */
+function exactJsonBodyMembers(endpoint: EndpointDefinition): readonly string[] {
+  const body = requestSchemas(endpoint)?.body;
+  if (body === undefined)
+    throw new Error(`Exact JSON endpoint ${endpoint.path} has no body schema`);
+  const document = schemaToOpenApi(body);
+  const properties = isRecord(document.properties) ? document.properties : undefined;
+  const required = Array.isArray(document.required)
+    ? document.required.filter((name): name is string => typeof name === "string")
+    : [];
+  const ast = schemaAst(body);
+  const members = ast.propertySignatures?.map((property) => property.name ?? "") ?? [];
+  if (
+    document.type !== "object" ||
+    properties === undefined ||
+    document.additionalProperties !== false ||
+    ast._tag !== "Objects" ||
+    (ast.indexSignatures?.length ?? 0) !== 0 ||
+    members.length === 0 ||
+    members.some((member) => member === "") ||
+    members.some(isIntegerIndexProperty) ||
+    Object.keys(properties).length !== members.length ||
+    members.some((member) => !Object.hasOwn(properties, member)) ||
+    members.length !== required.length ||
+    members.some((member) => !required.includes(member)) ||
+    ast.propertySignatures?.some((property) => !isExactJsonPropertyAst(property.type)) === true
+  ) {
+    throw new Error(
+      `Exact JSON endpoint ${endpoint.path} requires a direct closed Struct of scalar fields`,
+    );
+  }
+  return members;
+}
+
 function clientErrorType(
   operationTypeName: string,
   errors: readonly ClientErrorDefinition[],
@@ -374,6 +456,10 @@ export function generateClient(registry: Record<string, EndpointDefinition>): st
     path: endpoint.path,
     responseSchema: schemaToOpenApi(endpoint.response),
     bodyEncoding: requestSchemas(endpoint)?.bodyEncoding ?? "json",
+    exactJsonMembers:
+      requestSchemas(endpoint)?.bodyEncoding === "exact-json"
+        ? exactJsonBodyMembers(endpoint)
+        : undefined,
     successStatuses:
       endpoint.successStatus === undefined
         ? [200]
@@ -390,8 +476,8 @@ export function generateClient(registry: Record<string, EndpointDefinition>): st
     .join("\n");
   const bodies = methods
     .map(
-      ({ operationId, method, path, bodyEncoding }) =>
-        `  ${operationId}: (input, options) => request(${JSON.stringify(operationId)}, ${JSON.stringify(method)}, ${JSON.stringify(path)}, input, options${bodyEncoding === "json" ? "" : `, ${JSON.stringify(bodyEncoding)}`}),`,
+      ({ operationId, method, path, bodyEncoding, exactJsonMembers }) =>
+        `  ${operationId}: (input, options) => request(${JSON.stringify(operationId)}, ${JSON.stringify(method)}, ${JSON.stringify(path)}, input, options${bodyEncoding === "json" ? "" : `, ${JSON.stringify(bodyEncoding)}${bodyEncoding === "exact-json" ? `, ${JSON.stringify(exactJsonMembers)}` : ""}`}),`,
     )
     .join("\n");
   const responseSchemas = methods
@@ -524,6 +610,29 @@ export class ApiClientUnexpectedError extends Error {
     this.requestId = body.request_id;
   }
 }
+function serializeExactJsonBody(value: unknown, members: readonly string[]): string {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new ApiClientProtocolError("Exact JSON request body must be a closed object");
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (
+    keys.length !== members.length ||
+    members.some((member) => !Object.prototype.hasOwnProperty.call(record, member)) ||
+    members.some((member) => record[member] === undefined)
+  ) {
+    throw new ApiClientProtocolError("Exact JSON request body has missing or excess members");
+  }
+  try {
+    const serialized = JSON.stringify(
+      Object.fromEntries(members.map((member) => [member, record[member]])),
+    );
+    if (serialized === undefined) throw new Error("body is not JSON serializable");
+    return serialized;
+  } catch {
+    throw new ApiClientProtocolError("Exact JSON request body is not JSON serializable");
+  }
+}
 
 const RESPONSE_SCHEMAS: Record<string, JsonSchema> = {
 ${responseSchemas}
@@ -619,7 +728,7 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
   const config: PirateApiClientOptions =
     typeof optionsOrFetch === "function" ? { fetchImpl: optionsOrFetch } : optionsOrFetch;
   const fetchImpl = config.fetchImpl ?? fetch;
-  const request = async <T>(operation: string, method: string, path: string, input: unknown, options?: PirateApiRequestOptions, bodyEncoding: "json" | "raw-text" = "json"): Promise<T> => {
+  const request = async <T>(operation: string, method: string, path: string, input: unknown, options?: PirateApiRequestOptions, bodyEncoding: "json" | "exact-json" | "raw-text" = "json", exactJsonMembers: readonly string[] = []): Promise<T> => {
     const requestInput = (input ?? {}) as { body?: unknown; headers?: Record<string, unknown>; path?: Record<string, unknown>; query?: Record<string, unknown> };
     const pathValue = Object.entries(requestInput.path ?? {}).reduce((urlPath, [key, value]) => urlPath.split(":" + key).join(encodeURIComponent(String(value))), path);
     const url = new URL(pathValue, baseUrl);
@@ -644,18 +753,19 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
       method,
       headers,
       ...(credentials === undefined ? {} : { credentials }),
-      ...(requestInput.body === undefined ? {} : { body: bodyEncoding === "raw-text" ? requestInput.body as string : JSON.stringify(requestInput.body) }),
+      ...(requestInput.body === undefined ? {} : { body: bodyEncoding === "raw-text" ? requestInput.body as string : bodyEncoding === "exact-json" ? serializeExactJsonBody(requestInput.body, exactJsonMembers) : JSON.stringify(requestInput.body) }),
       ...(signal === undefined ? {} : { signal }),
     });
     let payload: unknown;
     try { payload = await response.json(); } catch { throw new ApiClientProtocolError("API response was not valid JSON", response.status); }
-    if (!response.ok) {
+    const declaredSuccess = (SUCCESS_STATUSES[operation] ?? []).includes(response.status);
+    if (!declaredSuccess && !response.ok) {
       const body = parseWireError(payload, response.status);
-      const definition = ERROR_DEFINITIONS[operation]?.find((candidate) => candidate.status === response.status && candidate.code === body.error.code);
+      const definition = ERROR_DEFINITIONS[operation]?.find((candidate) => candidate.status === response.status && candidate.code === body.error.code && candidate.retryable === body.error.retryable);
       if (definition === undefined) throw new ApiClientUnexpectedError(response.status, body);
       throw new ApiClientError(definition, body, response.headers);
     }
-    if (!(SUCCESS_STATUSES[operation] ?? []).includes(response.status)) throw new ApiClientProtocolError("API returned an undeclared success status", response.status);
+    if (!declaredSuccess) throw new ApiClientProtocolError("API returned an undeclared success status", response.status);
     const error = schemaError(payload, RESPONSE_SCHEMAS[operation] ?? {}, "$", RESPONSE_SCHEMAS[operation] ?? {});
     if (error !== undefined) throw new ApiClientResponseValidationError(operation, response.status, error);
     return payload as T;

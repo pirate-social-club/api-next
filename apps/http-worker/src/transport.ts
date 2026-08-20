@@ -334,18 +334,27 @@ function enforceCookieCsrf(
 const invalidBody = (): BadRequest =>
   new BadRequest({ message: "Invalid body request", details: { location: "body" } });
 
-const readBoundedBodyText = async (context: HttpContext): Promise<string> => {
+const readBoundedBodyBytes = async (
+  context: HttpContext,
+  maxBodyBytes = MAX_REQUEST_BODY_BYTES,
+): Promise<Uint8Array> => {
+  if (
+    !Number.isSafeInteger(maxBodyBytes) ||
+    maxBodyBytes <= 0 ||
+    maxBodyBytes > MAX_REQUEST_BODY_BYTES
+  ) {
+    throw new InternalError({ message: "Invalid endpoint body limit" });
+  }
   const declaredLength = context.req.header("content-length");
   if (
     declaredLength !== undefined &&
-    (!/^(?:0|[1-9][0-9]*)$/u.test(declaredLength) ||
-      Number(declaredLength) > MAX_REQUEST_BODY_BYTES)
+    (!/^(?:0|[1-9][0-9]*)$/u.test(declaredLength) || Number(declaredLength) > maxBodyBytes)
   ) {
     throw invalidBody();
   }
 
   const body = context.req.raw.body;
-  if (body === null) return "";
+  if (body === null) return new Uint8Array();
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let length = 0;
@@ -354,7 +363,7 @@ const readBoundedBodyText = async (context: HttpContext): Promise<string> => {
       const next = await reader.read();
       if (next.done) break;
       length += next.value.byteLength;
-      if (length > MAX_REQUEST_BODY_BYTES) {
+      if (length > maxBodyBytes) {
         await reader.cancel();
         throw invalidBody();
       }
@@ -370,8 +379,22 @@ const readBoundedBodyText = async (context: HttpContext): Promise<string> => {
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
+  return bytes;
+};
+
+const readBoundedBodyText = async (
+  context: HttpContext,
+  maxBodyBytes = MAX_REQUEST_BODY_BYTES,
+  rejectBom = false,
+): Promise<string> => {
+  const bytes = await readBoundedBodyBytes(context, maxBodyBytes);
+  if (rejectBom && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    throw invalidBody();
+  }
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    // ignoreBOM preserves the raw U+FEFF for legacy raw-text callbacks; the
+    // exact-json caller rejects the corresponding UTF-8 prefix above.
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw invalidBody();
   }
@@ -379,7 +402,15 @@ const readBoundedBodyText = async (context: HttpContext): Promise<string> => {
 
 const decodeBody = async (context: HttpContext, request: EndpointRequest): Promise<unknown> => {
   if (request.body === undefined) return undefined;
-  const text = await readBoundedBodyText(context);
+  if (request.bodyEncoding === "exact-json") {
+    const mediaType = context.req.header("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+    if (mediaType !== "application/json") throw invalidBody();
+  }
+  const text = await readBoundedBodyText(
+    context,
+    request.maxBodyBytes,
+    request.bodyEncoding === "exact-json",
+  );
   const empty = request.bodyEncoding === "raw-text" ? text === "" : text.trim() === "";
   if (empty) {
     if (request.bodyRequired === false) return undefined;
@@ -392,7 +423,16 @@ const decodeBody = async (context: HttpContext, request: EndpointRequest): Promi
   } catch {
     throw invalidBody();
   }
-  return decode(request.body, value, "body");
+  const decoded = decode(request.body, value, "body");
+  if (request.bodyEncoding === "exact-json") {
+    try {
+      if (text !== JSON.stringify(decoded)) throw invalidBody();
+    } catch (error) {
+      if (error instanceof BadRequest) throw error;
+      throw invalidBody();
+    }
+  }
+  return decoded;
 };
 
 const decodeHeaders = (context: HttpContext, request: EndpointRequest): unknown => {

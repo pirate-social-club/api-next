@@ -15,7 +15,7 @@ import type { ApiError } from "./errors.ts";
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 /** Wire representation used when an endpoint carries a request body. */
-export type EndpointBodyEncoding = "json" | "raw-text";
+export type EndpointBodyEncoding = "json" | "exact-json" | "raw-text";
 
 /** Constructors from the wire-error catalog a handler may fail with. */
 export type ApiErrorCtor = new (args: never) => ApiError;
@@ -30,6 +30,8 @@ export interface EndpointRequest {
   readonly bodyRequired?: boolean;
   /** Defaults to JSON; raw-text bodies are passed to handlers byte-for-byte. */
   readonly bodyEncoding?: EndpointBodyEncoding;
+  /** Maximum request-body size in UTF-8 bytes; defaults to the transport cap. */
+  readonly maxBodyBytes?: number;
   /** Schema for the subset of incoming headers exposed to the handler. */
   readonly headers?: Schema.Schema<unknown>;
   readonly path?: Schema.Schema<unknown>;

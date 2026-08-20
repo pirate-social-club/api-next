@@ -17,6 +17,7 @@ import {
 } from "./community-creation.ts";
 import * as money from "./community-purchase-funding.ts";
 import { CreateKaraokeAttempt, GetKaraokeAttempt, GetKaraokeLeaderboard } from "./karaoke.ts";
+import { PollNamespaceOwnership, StartNamespaceOwnership } from "./namespace-ownership.ts";
 /** Named registry; the client generator references these exports by name. */
 import * as v1 from "./v1.ts";
 import * as verification from "./verification.ts";
@@ -30,6 +31,8 @@ export const registry = {
   ...v1,
   ...verification,
   ...money,
+  StartNamespaceOwnership,
+  PollNamespaceOwnership,
   CreateKaraokeAttempt,
   GetKaraokeAttempt,
   GetKaraokeLeaderboard,

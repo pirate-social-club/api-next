@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  ApiClientProtocolError,
   ApiClientResponseValidationError,
   ApiClientUnexpectedError,
   createPirateApiClient,
@@ -46,6 +47,19 @@ describe("generated api client", () => {
       },
     );
     await expect(client.get_health(undefined)).rejects.toBeInstanceOf(ApiClientUnexpectedError);
+
+    response = new Response(
+      JSON.stringify({
+        error: { code: "conflict", message: "retry", retryable: true },
+      }),
+      { status: 409 },
+    );
+    await expect(
+      client.post_moneyCommunityPurchaseFundingOperationRefObservations({
+        path: { operationRef: "operation-1" },
+        body: { transaction_hash: "hash-1" },
+      }),
+    ).rejects.toMatchObject({ declaredName: "RetryableConflict", retryable: true });
   });
 
   test("exposes the generated verification start retry metadata", async () => {
@@ -94,6 +108,110 @@ describe("generated api client", () => {
     expect(calls[0]?.headers.get("authorization")).toBe("Bearer request");
     expect(calls[0]?.headers.get("x-request")).toBe("request-value");
     expect(calls[0]?.signal).toBe(requestController.signal);
+  });
+
+  test("serializes namespace start input as the ratified exact JSON body", async () => {
+    let request: { readonly url: string; readonly init: RequestInit | undefined } | undefined;
+    const fetchImpl = Object.assign(
+      async (input: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
+        request = { url: String(input), init };
+        return new Response(
+          JSON.stringify({
+            creation_intent_id: "intent-1",
+            ceremony_intent_id: "ceremony-1",
+            generation: 1,
+            session_id: "session-1",
+            channel: "poll_result",
+            status: "pending",
+            expires_at: "2026-08-21T00:00:00.000Z",
+            replayed: false,
+          }),
+          { status: 201 },
+        );
+      },
+      { preconnect: fetch.preconnect },
+    );
+    const client = createPirateApiClient("https://api.example", fetchImpl);
+
+    await client.post_communityCreationIntentsIntentIdNamespaceOwnershipStart({
+      path: { intentId: "intent-1" },
+      body: {
+        idempotency_key: "start-1",
+        ceremony_intent_id: "ceremony-1",
+        expected_revision: 1,
+      },
+    });
+
+    expect(request?.url).toBe(
+      "https://api.example/community-creation-intents/intent-1/namespace-ownership/start",
+    );
+    expect(new Headers(request?.init?.headers).get("content-type")).toBe("application/json");
+    expect(request?.init?.body).toBe(
+      '{"ceremony_intent_id":"ceremony-1","expected_revision":1,"idempotency_key":"start-1"}',
+    );
+
+    const invalidInput = {
+      path: { intentId: "intent-1" },
+      body: {
+        ceremony_intent_id: "ceremony-1",
+        expected_revision: 1,
+        idempotency_key: "start-1",
+        extra: true,
+      },
+    } as Parameters<typeof client.post_communityCreationIntentsIntentIdNamespaceOwnershipStart>[0];
+    await expect(
+      client.post_communityCreationIntentsIntentIdNamespaceOwnershipStart(invalidInput),
+    ).rejects.toBeInstanceOf(ApiClientProtocolError);
+  });
+
+  test("treats declared 422 and 503 poll outcomes as successful typed responses", async () => {
+    let status = 422;
+    const fetchImpl = Object.assign(
+      async () =>
+        new Response(
+          JSON.stringify(
+            status === 422
+              ? {
+                  ceremony_intent_id: "ceremony-1",
+                  session_id: "session-1",
+                  revision: 1,
+                  status: "rejected",
+                  replayed: false,
+                  result_hash: "a".repeat(64),
+                  retry_after_seconds: null,
+                }
+              : {
+                  ceremony_intent_id: "ceremony-1",
+                  session_id: "session-1",
+                  revision: 1,
+                  status: "unavailable",
+                  replayed: false,
+                  result_hash: null,
+                  retry_after_seconds: 5,
+                },
+          ),
+          { status },
+        ),
+      { preconnect: fetch.preconnect },
+    );
+    const client = createPirateApiClient("https://api.example", fetchImpl);
+    const input = {
+      path: { intentId: "intent-1" },
+      body: {
+        ceremony_intent_id: "ceremony-1",
+        session_id: "session-1",
+        expected_revision: 1,
+        idempotency_key: "poll-1",
+        channel: "poll_result" as const,
+      },
+    };
+    await expect(
+      client.post_communityCreationIntentsIntentIdNamespaceOwnershipPoll(input),
+    ).resolves.toMatchObject({ status: "rejected" });
+    status = 503;
+    await expect(
+      client.post_communityCreationIntentsIntentIdNamespaceOwnershipPoll(input),
+    ).resolves.toMatchObject({ status: "unavailable" });
   });
 
   test("validates the public-profile response and preserves its declared errors", async () => {
