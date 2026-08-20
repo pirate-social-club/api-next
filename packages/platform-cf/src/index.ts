@@ -37,6 +37,12 @@ export {
   makeControlPlaneCommunityCreationIntentResolver,
 } from "./community-creation-intent-resolver";
 export {
+  COMMUNITY_CREATION_INTENT_TTL_SECONDS,
+  type CommunityCreationRepositoryOptions,
+  makeControlPlaneCommunityCreationRepository,
+  makeControlPlaneCommunityCreationStore,
+} from "./community-creation-repository";
+export {
   COMMUNITY_PURCHASE_CHAIN_RPC_MAX_RESPONSE_BYTES,
   COMMUNITY_PURCHASE_CHAIN_RPC_TIMEOUT_MS,
   type CommunityPurchaseFundingChainFetcher,
