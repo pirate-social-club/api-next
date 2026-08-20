@@ -1,3 +1,4 @@
+import { canonicalJson } from "../canonical-json.ts";
 import { CURATED_HUMAN_MEMBERSHIP_POLICY } from "../gates-v2/human-membership-evaluator.ts";
 import { sha256Hex } from "../gates-v2/sha256.ts";
 
@@ -68,20 +69,19 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = value as Readonly<Record<string, unknown>>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
-}
-
 function unsupportedCompilation(
   value: unknown,
 ): Extract<CommunityGateCompilation, { kind: "unsupported" }> {
-  const policyPreimage = canonicalJson(value);
+  let policyPreimage: string;
+  try {
+    policyPreimage = canonicalJson(value);
+  } catch {
+    policyPreimage = canonicalJson({
+      kind: "unsupported_non_json_input",
+      type: value === null ? "null" : typeof value,
+      version: 1,
+    });
+  }
   return {
     kind: "unsupported",
     canonical_policy_hash: sha256Hex(policyPreimage),

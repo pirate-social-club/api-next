@@ -64,6 +64,10 @@ describe("community gate policy compiler", () => {
 
   test("fails closed for every unsupported or ambiguous authoring shape", () => {
     const candidates = [
+      undefined,
+      () => undefined,
+      Symbol("unsupported"),
+      1n,
       null,
       {},
       { ...humanPolicy, surprise: true },
@@ -90,6 +94,9 @@ describe("community gate policy compiler", () => {
         ],
       },
     ];
+    const cyclic: { self?: unknown } = {};
+    cyclic.self = cyclic;
+    candidates.push(cyclic);
     for (const candidate of candidates) {
       expect(compileCommunityGatePolicy(candidate)).toMatchObject({
         kind: "unsupported",

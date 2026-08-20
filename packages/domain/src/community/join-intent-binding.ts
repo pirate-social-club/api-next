@@ -1,3 +1,4 @@
+import { canonicalJson } from "../canonical-json.ts";
 import { CURATED_HUMAN_MEMBERSHIP_POLICY } from "../gates-v2/human-membership-evaluator.ts";
 import { sha256Hex } from "../gates-v2/sha256.ts";
 import {
@@ -10,16 +11,6 @@ import {
   VERY_OAUTH_PROVIDER_ID,
   VERY_OAUTH_RP_SCOPE,
 } from "./gate-policy-compiler.ts";
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  const record = value as Readonly<Record<string, unknown>>;
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
-    .join(",")}}`;
-}
 
 export function communityJoinActionPayloadPreimage(communityId: string): string {
   return canonicalJson({ action_kind: "community_join", community_id: communityId, version: 1 });
