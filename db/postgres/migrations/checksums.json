@@ -23,6 +23,7 @@
     "0020_m3_reconciliation_finalization.sql": "673c4f09fa1c5c24d00550394bc6299ce457cd24b69629cdf26e91a39ca7a85f",
     "0021_m3_community_purchase_commerce.sql": "1342c73b093b0f5411d50abd56f351ea3d933e98965a4cc3228acd17fcee7a85",
     "0022_m3_community_purchase_immutability.sql": "98cf64d09d6f1e4d7b476bc012e9e02bca20a8a083b0376fd80dca5fef89cbb8",
-    "0023_community_creation_intents.sql": "e3e045fb07a89325212bab96bef59370d2a3d414b443157963498fb3b8eeaea1"
+    "0023_community_creation_intents.sql": "e3e045fb07a89325212bab96bef59370d2a3d414b443157963498fb3b8eeaea1",
+    "0024_community_creation_preflight_transition.sql": "8f258b91b338efdca83e687e71189459709e4dfd4e649079092660ad1de08a39"
   }
 }

@@ -96,6 +96,10 @@ community, initial policy/current pointer, provider binding, subject claim,
 and committed intent revision are designed to commit in one transaction.
 Provider calls never run inside that transaction.
 
+`0024_community_creation_preflight_transition.sql` aligns the storage guard
+with the pure reducer's atomic draft-save plus synchronous-preflight event, so
+one client idempotency key replays one final intent revision.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every

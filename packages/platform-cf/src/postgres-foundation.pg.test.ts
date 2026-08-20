@@ -131,6 +131,12 @@ const communityPurchaseImmutabilityMigrationSql = await Bun.file(
 const communityCreationIntentsMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0023_community_creation_intents.sql", import.meta.url),
 ).text();
+const communityCreationPreflightTransitionMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0024_community_creation_preflight_transition.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -250,6 +256,11 @@ const communityCreationIntentsMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0023_community_creation_intents.sql"] ?? "",
   sql: communityCreationIntentsMigrationSql,
 };
+const communityCreationPreflightTransitionMigration: PostgresMigration = {
+  version: "0024_community_creation_preflight_transition.sql",
+  checksum: checksumManifest.migrations["0024_community_creation_preflight_transition.sql"] ?? "",
+  sql: communityCreationPreflightTransitionMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -274,6 +285,7 @@ const migrations: readonly PostgresMigration[] = [
   communityPurchaseCommerceMigration,
   communityPurchaseImmutabilityMigration,
   communityCreationIntentsMigration,
+  communityCreationPreflightTransitionMigration,
 ];
 
 function checksum(value: string): string {
@@ -454,6 +466,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(communityCreationIntentsMigrationSql)).toBe(
         communityCreationIntentsMigration.checksum,
+      );
+      expect(checksum(communityCreationPreflightTransitionMigrationSql)).toBe(
+        communityCreationPreflightTransitionMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
