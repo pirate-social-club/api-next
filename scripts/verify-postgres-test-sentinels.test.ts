@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import {
@@ -34,6 +34,7 @@ async function sentinelSet(): Promise<{
     "public-community-threads",
     "verification",
     "verification-start",
+    "community-purchase-funding",
   ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),
@@ -68,5 +69,21 @@ describe("Postgres suite sentinel verification", () => {
     const sentinel = sentinels.find(({ name }) => name === "verification-start");
     await rm(sentinel?.path ?? "", { force: true });
     await expect(verifyPostgresTestSentinels(sentinels)).rejects.toThrow("verification-start");
+  });
+
+  test("keeps the gates-v2 suite and completion marker wired into Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain("packages/platform-cf/src/gates-v2-community.pg.test.ts");
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_GATES_V2_COMMUNITY_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-gates-v2-community-suite-complete",
+    );
+    expect(
+      workflow.match(/\/tmp\/api-next-control-plane-postgres-gates-v2-community-suite-complete/gu),
+    ).toHaveLength(2);
   });
 });

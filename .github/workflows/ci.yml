@@ -74,6 +74,7 @@ jobs:
           /tmp/api-next-control-plane-postgres-migration-suite-complete
           /tmp/api-next-control-plane-postgres-identity-suite-complete
           /tmp/api-next-control-plane-postgres-community-suite-complete
+          /tmp/api-next-control-plane-postgres-gates-v2-community-suite-complete
           /tmp/api-next-control-plane-postgres-feed-suite-complete
           /tmp/api-next-control-plane-postgres-content-suite-complete
           /tmp/api-next-control-plane-postgres-public-profile-suite-complete
@@ -90,6 +91,7 @@ jobs:
           CONTROL_PLANE_POSTGRES_MIGRATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-migration-suite-complete
           CONTROL_PLANE_POSTGRES_IDENTITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-identity-suite-complete
           CONTROL_PLANE_POSTGRES_COMMUNITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-suite-complete
+          CONTROL_PLANE_POSTGRES_GATES_V2_COMMUNITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-gates-v2-community-suite-complete
           CONTROL_PLANE_POSTGRES_FEED_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-feed-suite-complete
           CONTROL_PLANE_POSTGRES_CONTENT_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-content-suite-complete
           CONTROL_PLANE_POSTGRES_PUBLIC_PROFILE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-public-profile-suite-complete
@@ -104,6 +106,7 @@ jobs:
           packages/platform-cf/src/postgres-migrations-runner.pg.test.ts
           packages/platform-cf/src/identity.pg.test.ts
           packages/platform-cf/src/community-repository.pg.test.ts
+          packages/platform-cf/src/gates-v2-community.pg.test.ts
           packages/platform-cf/src/feed-repository.pg.test.ts
           packages/platform-cf/src/content-repository.pg.test.ts
           packages/platform-cf/src/public-profile.pg.test.ts
