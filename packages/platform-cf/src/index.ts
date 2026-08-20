@@ -95,6 +95,11 @@ export {
   type PlatformNamespaceOwnershipProviderOptions,
 } from "./namespace-ownership/provider-registry";
 export {
+  makeControlPlaneNamespaceOwnershipStartAuthorityResolver,
+  makeControlPlaneNamespaceOwnershipStartRepository,
+  makeControlPlaneNamespaceOwnershipStartStore,
+} from "./namespace-ownership-start-repository";
+export {
   CONTROL_PLANE_CONNECT_TIMEOUT_MS,
   CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
   CONTROL_PLANE_SLOW_STATEMENT_MS,

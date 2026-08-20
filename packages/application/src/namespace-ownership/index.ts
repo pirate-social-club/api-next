@@ -79,3 +79,23 @@ export {
   NamespaceOwnershipProviderRegistry,
   NamespaceOwnershipProviderUnknown,
 } from "./registry.ts";
+export type {
+  NamespaceOwnershipStartAuthority,
+  NamespaceOwnershipStartAuthorityResolver,
+  NamespaceOwnershipStartFailure,
+  NamespaceOwnershipStartFinalizeOutcome,
+  NamespaceOwnershipStartReplayInput,
+  NamespaceOwnershipStartReplayOutcome,
+  NamespaceOwnershipStartReservation,
+  NamespaceOwnershipStartReservationInput,
+  NamespaceOwnershipStartReservationOutcome,
+  NamespaceOwnershipStartResponse,
+  NamespaceOwnershipStartServices,
+  NamespaceOwnershipStartStore,
+} from "./start.ts";
+export {
+  NamespaceOwnershipStartRejected,
+  NamespaceOwnershipStartStorageFailed,
+  StartNamespaceOwnershipInput,
+  startNamespaceOwnership,
+} from "./start.ts";

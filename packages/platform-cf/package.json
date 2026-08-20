@@ -27,6 +27,7 @@
     "./verification-provider-registry": "./src/verification/provider-registry.ts",
     "./namespace-ownership-hns-owner": "./src/namespace-ownership/hns-owner.ts",
     "./namespace-ownership-provider-registry": "./src/namespace-ownership/provider-registry.ts",
+    "./namespace-ownership-start-repository": "./src/namespace-ownership-start-repository.ts",
     "./verification-intent-resolver": "./src/verification-intent-resolver.ts",
     "./verification-start-repository": "./src/verification-start-repository.ts"
   },

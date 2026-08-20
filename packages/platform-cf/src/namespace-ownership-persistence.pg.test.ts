@@ -1,5 +1,15 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import type {
+  NamespaceOwnershipProviderStartResult,
+  NamespaceOwnershipStartReservationInput,
+} from "@pirate/application";
+import { Effect } from "effect";
 import { Client } from "pg";
+import {
+  makeControlPlaneNamespaceOwnershipStartAuthorityResolver,
+  makeControlPlaneNamespaceOwnershipStartStore,
+} from "./namespace-ownership-start-repository";
+import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -8,7 +18,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const namespacePersistenceTestCount = 9;
+const namespacePersistenceTestCount = 11;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete";
@@ -334,7 +344,113 @@ async function insertNamespaceResult(
   );
 }
 
-async function withSchema<A>(use: (client: Client) => Promise<A>): Promise<A> {
+async function seedRepositoryStart(client: Client, suffix: string): Promise<void> {
+  await client.query("INSERT INTO users (user_id) VALUES ($1)", [`start_actor_${suffix}`]);
+  await client.query(
+    `INSERT INTO community_creation_intents (
+       intent_id, actor_id, create_idempotency_key, create_request_hash, revision, status,
+       draft, canonical_policy_revision, canonical_policy_hash, verification_requirement_hash,
+       verification_provider_id, provider_configuration_kind, provider_configuration_ref,
+       provider_configuration_version, expires_at
+     ) VALUES ($1, $2, $3, $4, 1, 'verification_required', '{}'::jsonb, 1, $4, $5,
+       'hns.owner.v1', 'managed', 'hns-owner', '1', clock_timestamp() + interval '1 day')`,
+    [`start_intent_${suffix}`, `start_actor_${suffix}`, `create_${suffix}`, SHA, SHA_B],
+  );
+  await client.query(
+    `INSERT INTO community_creation_requirement_states (
+       intent_id, actor_id, requirement_kind, status, requirement_hash, provider_id,
+       provider_binding_hash, provider_configuration_kind, provider_configuration_ref,
+       provider_configuration_version, route_family, route_root_label, route_root_label_display,
+       route_path_segment
+     ) VALUES ($1, $2, 'namespace_ownership', 'unmet', $3, 'hns.owner.v1', $4,
+       'managed', 'hns-owner', '1', 'hns', 'jazleeuw', 'jazleeuw', 'app.jazleeuw')`,
+    [`start_intent_${suffix}`, `start_actor_${suffix}`, SHA_B, SHA_C],
+  );
+  await client.query(
+    `INSERT INTO community_creation_ceremony_attempts (
+       ceremony_intent_id, actor_id, intent_id, requirement_kind, generation, requirement_hash,
+       provider_id, provider_binding_hash, provider_configuration_kind,
+       provider_configuration_ref, provider_configuration_version, route_family,
+       route_root_label, route_root_label_display, route_path_segment,
+       reservation_request_hash, reservation_request, expires_at
+     ) VALUES ($1, $2, $3, 'namespace_ownership', 1, $4, 'hns.owner.v1', $5,
+       'managed', 'hns-owner', '1', 'hns', 'jazleeuw', 'jazleeuw', 'app.jazleeuw',
+       $6, '{"requirement":"namespace_ownership"}'::jsonb,
+       clock_timestamp() + interval '1 hour')`,
+    [
+      `start_ceremony_${suffix}`,
+      `start_actor_${suffix}`,
+      `start_intent_${suffix}`,
+      SHA_B,
+      SHA_C,
+      SHA,
+    ],
+  );
+  await client.query(
+    `UPDATE community_creation_requirement_states
+        SET status = 'pending', generation = 1, current_ceremony_intent_id = $1,
+            updated_at = clock_timestamp()
+      WHERE intent_id = $2 AND requirement_kind = 'namespace_ownership'`,
+    [`start_ceremony_${suffix}`, `start_intent_${suffix}`],
+  );
+}
+
+function repositoryStartInput(
+  suffix: string,
+  overrides: Partial<NamespaceOwnershipStartReservationInput> = {},
+): NamespaceOwnershipStartReservationInput {
+  return {
+    provider_id: "hns.owner.v1",
+    start: {
+      actor_id: `start_actor_${suffix}`,
+      creation_intent_id: `start_intent_${suffix}`,
+      ceremony_intent_id: `start_ceremony_${suffix}`,
+      requirement_hash: SHA_B,
+      generation: 1,
+      request_hash: SHA,
+      provider_binding_hash: SHA_C,
+      provider_configuration: { kind: "managed", reference: "hns-owner", version: "1" },
+      protocol_version: "hns-txt-v1",
+      environment: "test",
+      route: {
+        family: "hns",
+        root_label: "jazleeuw",
+        root_label_display: "jazleeuw",
+        path_segment: "app.jazleeuw",
+        href: "/c/app.jazleeuw",
+        app_host: null,
+      },
+    },
+    expected_revision: 1,
+    client_idempotency_key: `start_key_${suffix}`,
+    reservation_id: `start_reservation_${suffix}`,
+    namespace_session_id: `start_session_${suffix}`,
+    ttl_ms: 6_000,
+    ...overrides,
+  };
+}
+
+function repositoryStartResult(
+  input: NamespaceOwnershipStartReservationInput,
+): NamespaceOwnershipProviderStartResult {
+  return {
+    session: {
+      ...input.start,
+      provider_id: input.provider_id,
+      upstream_session_ref: `upstream_${input.namespace_session_id}`,
+      expires_at: "2099-08-21T00:00:00.000Z",
+    },
+    presentation: {
+      kind: "poll",
+      session_id: `upstream_${input.namespace_session_id}`,
+      poll_url: "/provider/poll",
+    },
+  };
+}
+
+async function withSchema<A>(
+  use: (client: Client, scopedConnectionString: string) => Promise<A>,
+): Promise<A> {
   if (connectionString === undefined || runPostgresMigrations === undefined) {
     throw new Error("Postgres test configuration is unavailable");
   }
@@ -343,9 +459,10 @@ async function withSchema<A>(use: (client: Client) => Promise<A>): Promise<A> {
   await admin.connect();
   await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
   try {
-    await runPostgresMigrations({ connectionString: scopedConnection(connectionString, schema) });
+    const scoped = scopedConnection(connectionString, schema);
+    await runPostgresMigrations({ connectionString: scoped });
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
-    return await use(admin);
+    return await use(admin, scoped);
   } finally {
     await admin.query("ROLLBACK").catch(() => undefined);
     await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
@@ -958,6 +1075,155 @@ suite("Postgres namespace ownership persistence foundation", () => {
         client,
         `UPDATE namespace_ownership_sessions SET status = 'completed', terminal_at = clock_timestamp(), completed_at = clock_timestamp() WHERE namespace_session_id = 'namespace_session_fence'`,
       );
+    });
+    completedTestCount += 1;
+  });
+
+  test("runs namespace START reserve, finalize, and exact replay through the real repository", async () => {
+    await withSchema(async (client, scoped) => {
+      await seedRepositoryStart(client, "repository");
+      const store = makeControlPlaneNamespaceOwnershipStartStore(
+        makeDirectPostgresControlPlaneLayer(scoped),
+      );
+      const input = repositoryStartInput("repository");
+      const authority = makeControlPlaneNamespaceOwnershipStartAuthorityResolver(
+        makeDirectPostgresControlPlaneLayer(scoped),
+      );
+      expect(
+        await Effect.runPromise(
+          authority.resolve({
+            actor_id: input.start.actor_id,
+            creation_intent_id: input.start.creation_intent_id,
+            ceremony_intent_id: input.start.ceremony_intent_id,
+            expected_revision: input.expected_revision,
+          }),
+        ),
+      ).toEqual({
+        actor_id: input.start.actor_id,
+        creation_intent_id: input.start.creation_intent_id,
+        ceremony_intent_id: input.start.ceremony_intent_id,
+        expected_revision: input.expected_revision,
+        requirement_hash: input.start.requirement_hash,
+        generation: input.start.generation,
+        provider_id: input.provider_id,
+        provider_binding_hash: input.start.provider_binding_hash,
+        provider_configuration: input.start.provider_configuration,
+        route: input.start.route,
+      });
+      const replayInput = {
+        actor_id: input.start.actor_id,
+        creation_intent_id: input.start.creation_intent_id,
+        ceremony_intent_id: input.start.ceremony_intent_id,
+        expected_revision: input.expected_revision,
+        client_idempotency_key: input.client_idempotency_key,
+      };
+      expect(await Effect.runPromise(Effect.scoped(store.replay(replayInput)))).toEqual({
+        kind: "none",
+      });
+      const reserved = await Effect.runPromise(Effect.scoped(store.reserve(input)));
+      expect(reserved.kind).toBe("acquired");
+      if (reserved.kind !== "acquired") throw new Error("expected acquired reservation");
+      const providerResult = repositoryStartResult(input);
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            store.finalize(reserved.reservation, {
+              ...providerResult,
+              session: { ...providerResult.session, protocol_version: "substituted-v1" },
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "conflict" });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            store.finalize(reserved.reservation, {
+              ...providerResult,
+              session: { ...providerResult.session, environment: "production" },
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "conflict" });
+      const finalized = await Effect.runPromise(
+        Effect.scoped(store.finalize(reserved.reservation, providerResult)),
+      );
+      expect(finalized.kind).toBe("created");
+      const replayed = await Effect.runPromise(Effect.scoped(store.replay(replayInput)));
+      expect(replayed).toMatchObject({
+        kind: "replay",
+        namespace_session_id: input.namespace_session_id,
+      });
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT count(*)::int FROM namespace_ownership_sessions) AS namespace_sessions,
+               (SELECT count(*)::int FROM proof_sessions) AS proof_sessions,
+               (SELECT count(*)::int FROM namespace_ownership_completion_attempts) AS attempts,
+               (SELECT count(*)::int FROM namespace_ownership_evidence_snapshots) AS snapshots,
+               (SELECT count(*)::int FROM community_creation_ceremony_results) AS results`,
+          )
+        ).rows[0],
+      ).toEqual({
+        namespace_sessions: 1,
+        proof_sessions: 0,
+        attempts: 0,
+        snapshots: 0,
+        results: 0,
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("serializes concurrent START, expires by database time, and fences late finalizers", async () => {
+    await withSchema(async (client, scoped) => {
+      await seedRepositoryStart(client, "race");
+      const store = makeControlPlaneNamespaceOwnershipStartStore(
+        makeDirectPostgresControlPlaneLayer(scoped),
+      );
+      const firstInput = repositoryStartInput("race", { ttl_ms: 20 });
+      const secondInput = repositoryStartInput("race", {
+        reservation_id: "start_reservation_race_second",
+        namespace_session_id: "start_session_race_second",
+        ttl_ms: 20,
+      });
+      const outcomes = await Promise.all([
+        Effect.runPromise(Effect.scoped(store.reserve(firstInput))),
+        Effect.runPromise(Effect.scoped(store.reserve(secondInput))),
+      ]);
+      expect(outcomes.map(({ kind }) => kind).sort()).toEqual(["acquired", "in_flight"]);
+      const acquired = outcomes.find((outcome) => outcome.kind === "acquired");
+      if (acquired?.kind !== "acquired") throw new Error("expected one acquired reservation");
+      await client.query("SELECT pg_sleep(0.05)");
+      const replayInput = {
+        actor_id: firstInput.start.actor_id,
+        creation_intent_id: firstInput.start.creation_intent_id,
+        ceremony_intent_id: firstInput.start.ceremony_intent_id,
+        expected_revision: firstInput.expected_revision,
+        client_idempotency_key: firstInput.client_idempotency_key,
+      };
+      expect(await Effect.runPromise(Effect.scoped(store.replay(replayInput)))).toEqual({
+        kind: "none",
+      });
+      const reacquired = await Effect.runPromise(
+        Effect.scoped(store.reserve({ ...firstInput, ttl_ms: 6_000 })),
+      );
+      expect(reacquired).toMatchObject({ kind: "acquired", reservation: { fence_token: 2 } });
+      if (reacquired.kind !== "acquired") throw new Error("expected reacquired reservation");
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(store.finalize(acquired.reservation, repositoryStartResult(firstInput))),
+        ),
+      ).toEqual({ kind: "stale" });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(store.finalize(reacquired.reservation, repositoryStartResult(firstInput))),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        (await client.query("SELECT count(*)::int AS count FROM namespace_ownership_sessions"))
+          .rows[0]?.count,
+      ).toBe(1);
     });
     completedTestCount += 1;
   });
