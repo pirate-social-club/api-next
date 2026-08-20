@@ -84,7 +84,7 @@ suite("Postgres 17 community creation repository", () => {
         idempotency_key: "create-1",
         draft: {
           name: "Jazleeuw",
-          slug: "app.jazleeuw",
+          slug: "jazleeuw",
           description: "First draft",
           policy: humanPolicy,
         },

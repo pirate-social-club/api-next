@@ -19,6 +19,13 @@ const CanonicalIsoInstant = Schema.String.check(
       : "Expected a canonical ISO instant";
   }),
 );
+const CommunityRouteSlug = Schema.NonEmptyString.check(
+  Schema.makeFilter((value) =>
+    value.length <= 256 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)
+      ? undefined
+      : "Expected a lowercase hyphenated route slug of at most 256 characters",
+  ),
+);
 
 const CompiledGateRequirement = Schema.Union([
   Schema.Struct({ requirement: Schema.Literal("human-verification") }),
@@ -68,7 +75,7 @@ export type CompiledGatePolicy = Schema.Schema.Type<typeof CompiledGatePolicy>;
 
 export const CommunityCreationDraft = Schema.Struct({
   name: Schema.NonEmptyString,
-  slug: Schema.NonEmptyString,
+  slug: CommunityRouteSlug,
   description: Schema.NullOr(Schema.String),
   policy: CompiledGatePolicy,
 });

@@ -100,6 +100,13 @@ Provider calls never run inside that transaction.
 with the pure reducer's atomic draft-save plus synchronous-preflight event, so
 one client idempotency key replays one final intent revision.
 
+`0025_community_creation_storage_identity.sql` persists community descriptions,
+bounds local route slugs, scopes canonical policy-version ids by community,
+and completes the immutable provider binding with issuer/scope, request mode,
+and evaluator identity. It fails closed if an older partial provider binding
+exists; such a row requires an explicit reviewed backfill rather than inferred
+security semantics.
+
 ## Applying migrations
 
 The reviewed operational command is `bun run db:migrate`. It loads every

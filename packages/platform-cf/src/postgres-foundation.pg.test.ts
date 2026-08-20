@@ -137,6 +137,12 @@ const communityCreationPreflightTransitionMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const communityCreationStorageIdentityMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0025_community_creation_storage_identity.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -261,6 +267,11 @@ const communityCreationPreflightTransitionMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0024_community_creation_preflight_transition.sql"] ?? "",
   sql: communityCreationPreflightTransitionMigrationSql,
 };
+const communityCreationStorageIdentityMigration: PostgresMigration = {
+  version: "0025_community_creation_storage_identity.sql",
+  checksum: checksumManifest.migrations["0025_community_creation_storage_identity.sql"] ?? "",
+  sql: communityCreationStorageIdentityMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -286,6 +297,7 @@ const migrations: readonly PostgresMigration[] = [
   communityPurchaseImmutabilityMigration,
   communityCreationIntentsMigration,
   communityCreationPreflightTransitionMigration,
+  communityCreationStorageIdentityMigration,
 ];
 
 function checksum(value: string): string {
@@ -469,6 +481,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(communityCreationPreflightTransitionMigrationSql)).toBe(
         communityCreationPreflightTransitionMigration.checksum,
+      );
+      expect(checksum(communityCreationStorageIdentityMigrationSql)).toBe(
+        communityCreationStorageIdentityMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
@@ -814,6 +829,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         { column_name: "membership_mode", ordinal_position: 7 },
         { column_name: "human_verification_lane", ordinal_position: 8 },
         { column_name: "route_slug", ordinal_position: 9 },
+        { column_name: "description", ordinal_position: 10 },
       ]);
     });
     completedTestCount += 1;
@@ -1418,6 +1434,62 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           values: [policyKey, policyVersionId, now],
         });
       }
+      await admin.query({
+        text: `INSERT INTO communities (
+          community_id, display_name, created_by_user_id, created_at, updated_at,
+          route_slug, description
+        ) VALUES ('community-b', 'Community B', 'user-b', $1, $1, 'community-b', $2)`,
+        values: [now, "Second canonical policy installation"],
+      });
+      await admin.query({
+        text: `INSERT INTO policy_versions (
+          policy_version_id, community_id, policy_key, revision, policy_hash, policy,
+          compiled_plan, compiler_version, uniqueness_model, policy_purpose,
+          created_by_user_id, published_at
+        ) VALUES ('policy-access-v2', 'community-b', 'access', 1, $1,
+          '{}'::jsonb, '{}'::jsonb, 'v2', '{"kind":"none"}'::jsonb,
+          'access', 'user-b', $2)`,
+        values: ["7".repeat(64), now],
+      });
+      for (const [communityId, policyHash] of [
+        ["community-a", "5".repeat(64)],
+        ["community-b", "7".repeat(64)],
+      ] as const) {
+        await admin.query({
+          text: `INSERT INTO community_policy_provider_bindings (
+            community_id, policy_key, policy_version_id,
+            verification_requirement_hash, provider_id,
+            provider_configuration_kind, provider_configuration_ref,
+            provider_configuration_version, method, protocol_version, issuer,
+            scope_kind, issuer_rp_scope, issuer_rp_action_scope, request_mode,
+            evaluator_id
+          ) VALUES ($1, 'access', 'policy-access-v2', $2, 'very.oauth',
+            'dynamic', 'very-oauth', '1', 'palm_oauth', 'oauth2-oidc-v1',
+            'https://connect.very.org', 'issuer_rp_scope', 'pirate-social', NULL,
+            'dynamic', 'curated-human-membership-v1')`,
+          values: [communityId, policyHash],
+        });
+      }
+      expect(
+        (
+          await admin.query<{ count: string }>(
+            "SELECT count(*) FROM community_policy_provider_bindings WHERE policy_version_id = 'policy-access-v2'",
+          )
+        ).rows[0]?.count,
+      ).toBe("2");
+      expect(
+        (
+          await admin.query<{ description: string }>(
+            "SELECT description FROM communities WHERE community_id = 'community-b'",
+          )
+        ).rows,
+      ).toEqual([{ description: "Second canonical policy installation" }]);
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        "UPDATE communities SET route_slug = repeat('a', 257) WHERE community_id = 'community-b'",
+        [],
+      );
       expect(
         (
           await admin.query<{ count: string }>(

@@ -21,7 +21,7 @@ const policy = {
 };
 const draft = {
   name: "Jazleeuw",
-  slug: "app.jazleeuw",
+  slug: "jazleeuw",
   description: null,
   policy,
 };
@@ -65,7 +65,7 @@ describe("community creation contracts", () => {
         idempotency_key: "create-key-1",
         draft,
       }),
-    ).toMatchObject({ draft: { slug: "app.jazleeuw" } });
+    ).toMatchObject({ draft: { slug: "jazleeuw" } });
     expect(
       Schema.decodeUnknownSync(UpdateCommunityCreationIntent.request.body)({
         idempotency_key: "update-key-1",
@@ -79,6 +79,26 @@ describe("community creation contracts", () => {
         expected_revision: 2,
       }),
     ).toEqual({ idempotency_key: "commit-key-1", expected_revision: 2 });
+  });
+
+  test("accepts local route slugs and rejects hostnames or malformed segments", () => {
+    const decode = Schema.decodeUnknownSync(CreateCommunityCreationIntent.request.body);
+    for (const slug of ["jazleeuw", "techno-hippies", "a".repeat(256)]) {
+      expect(
+        decode({ idempotency_key: `create-${slug.length}`, draft: { ...draft, slug } }),
+      ).toBeDefined();
+    }
+    for (const slug of [
+      "app.jazleeuw",
+      "Jazleeuw",
+      "techno_hippies",
+      "-jazleeuw",
+      "a".repeat(257),
+    ]) {
+      expect(() =>
+        decode({ idempotency_key: `reject-${slug.length}`, draft: { ...draft, slug } }),
+      ).toThrow();
+    }
   });
 
   test("enforces the status, committed resource, and next-action invariants", () => {

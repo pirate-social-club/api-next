@@ -27,7 +27,7 @@ const completedAt = "2026-08-20T00:01:00.000Z";
 
 const draft = {
   name: "Jazleeuw",
-  slug: "app.jazleeuw",
+  slug: "jazleeuw",
   description: null,
   policy: {
     version: 1 as const,

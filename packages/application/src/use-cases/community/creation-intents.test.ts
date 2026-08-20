@@ -17,7 +17,7 @@ import {
 const actor = { userId: "user-alice", kind: "user" as const };
 const draft = {
   name: "Jazleeuw",
-  slug: "app.jazleeuw",
+  slug: "jazleeuw",
   description: "A community",
   policy: {
     version: 1 as const,

@@ -56,6 +56,7 @@ const migrationFiles = [
   "0012_verification_completion_attempts.sql",
   "0023_community_creation_intents.sql",
   "0024_community_creation_preflight_transition.sql",
+  "0025_community_creation_storage_identity.sql",
 ] as const;
 const migrations: readonly PostgresMigration[] = await Promise.all(
   migrationFiles.map(async (version) => {
@@ -736,7 +737,7 @@ suite("Postgres 17 verification completion repository", () => {
             idempotency_key: "create-community-1",
             draft: {
               name: "Jazleeuw",
-              slug: "app.jazleeuw",
+              slug: "jazleeuw",
               description: "Verified people",
               policy: {
                 version: 1,

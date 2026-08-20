@@ -7,7 +7,7 @@ import { createHttpWorker, type DecodedRequest, type Principal } from "./transpo
 
 const draft = {
   name: "Jazleeuw",
-  slug: "app.jazleeuw",
+  slug: "jazleeuw",
   description: "A community",
   policy: {
     version: 1 as const,
