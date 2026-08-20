@@ -20,7 +20,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 10;
+const foundationTestCount = 11;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -149,6 +149,12 @@ const textModerationFoundationMigrationSql = await Bun.file(
 const communityRoutesAndCreationRequirementsMigrationSql = await Bun.file(
   new URL(
     "../../../db/postgres/migrations/0027_community_routes_and_creation_requirements.sql",
+    import.meta.url,
+  ),
+).text();
+const communityCreationRequirementResultGuardMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0028_community_creation_requirement_result_guard.sql",
     import.meta.url,
   ),
 ).text();
@@ -292,6 +298,12 @@ const communityRoutesAndCreationRequirementsMigration: PostgresMigration = {
     checksumManifest.migrations["0027_community_routes_and_creation_requirements.sql"] ?? "",
   sql: communityRoutesAndCreationRequirementsMigrationSql,
 };
+const communityCreationRequirementResultGuardMigration: PostgresMigration = {
+  version: "0028_community_creation_requirement_result_guard.sql",
+  checksum:
+    checksumManifest.migrations["0028_community_creation_requirement_result_guard.sql"] ?? "",
+  sql: communityCreationRequirementResultGuardMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -320,6 +332,7 @@ const migrations: readonly PostgresMigration[] = [
   communityCreationStorageIdentityMigration,
   textModerationFoundationMigration,
   communityRoutesAndCreationRequirementsMigration,
+  communityCreationRequirementResultGuardMigration,
 ];
 
 function checksum(value: string): string {
@@ -513,6 +526,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(communityRoutesAndCreationRequirementsMigrationSql)).toBe(
         communityRoutesAndCreationRequirementsMigration.checksum,
+      );
+      expect(checksum(communityCreationRequirementResultGuardMigrationSql)).toBe(
+        communityCreationRequirementResultGuardMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
@@ -2437,6 +2453,214 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(submissionColumns.rows.map((row) => row.column_name)).not.toContain("title");
       expect(submissionColumns.rows.map((row) => row.column_name)).not.toContain("body");
+    });
+    completedTestCount += 1;
+  });
+
+  test("requires terminal creation requirements to have a matching ceremony result", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      await applyMigrations(scopedConnectionString, migrations);
+      await admin.query(
+        `INSERT INTO users (user_id, status, account)
+         VALUES ('requirement-order-actor', 'active', '{}'::jsonb)`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_intents (
+           intent_id, actor_id, create_idempotency_key, create_request_hash,
+           revision, status, draft, canonical_policy_revision,
+           canonical_policy_hash, verification_requirement_hash,
+           verification_provider_id, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version, expires_at
+         ) VALUES (
+           'requirement-order-intent', 'requirement-order-actor',
+           'requirement-order-create-key', repeat('0', 64), 1,
+           'verification_required',
+           '{"name":"Requirement order","slug":"requirement-order","description":null,"policy":{}}'::jsonb,
+           1, repeat('1', 64), repeat('2', 64), 'very.oauth', 'dynamic',
+           'very-oauth', '1', clock_timestamp() + interval '1 day'
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_requirement_states (
+           intent_id, actor_id, requirement_kind, status, requirement_hash,
+           provider_id, provider_binding_hash, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version
+         ) VALUES (
+           'requirement-order-intent', 'requirement-order-actor',
+           'human_identity', 'unmet', repeat('2', 64), 'very.oauth',
+           repeat('3', 64), 'dynamic', 'very-oauth', '1'
+         )`,
+      );
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_creation_ceremony_attempts (
+           ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_kind, provider_configuration_ref,
+           provider_configuration_version, reservation_request_hash,
+           reservation_request, expires_at
+         ) VALUES (
+           'terminal-gap-no-result', 'requirement-order-actor',
+           'requirement-order-intent', 'human_identity', 1, repeat('2', 64),
+           'very.oauth', repeat('3', 64), 'dynamic', 'very-oauth', '1',
+           repeat('4', 64), '{}'::jsonb, clock_timestamp() + interval '10 minutes'
+         )`,
+      );
+      await admin.query(
+        `UPDATE community_creation_requirement_states
+            SET status = 'pending', generation = 1,
+                current_ceremony_intent_id = 'terminal-gap-no-result',
+                updated_at = clock_timestamp()
+          WHERE intent_id = 'requirement-order-intent'
+            AND requirement_kind = 'human_identity'`,
+      );
+      await admin.query(
+        `UPDATE community_creation_requirement_states
+            SET status = 'failed', updated_at = clock_timestamp()
+          WHERE intent_id = 'requirement-order-intent'
+            AND requirement_kind = 'human_identity'`,
+      );
+      const absentResult = await admin.query<{ readonly count: string }>(
+        `SELECT count(*)::text AS count
+           FROM community_creation_ceremony_results
+          WHERE ceremony_intent_id = 'terminal-gap-no-result'`,
+      );
+      expect(absentResult.rows[0]?.count).toBe("0");
+      await expectPostgresFailure(admin, "P0001", "COMMIT", []);
+
+      const rolledBackState = await admin.query<{
+        readonly current_ceremony_intent_id: string | null;
+        readonly generation: string;
+        readonly status: string;
+      }>(
+        `SELECT status, generation::text, current_ceremony_intent_id
+           FROM community_creation_requirement_states
+          WHERE intent_id = 'requirement-order-intent'
+            AND requirement_kind = 'human_identity'`,
+      );
+      expect(rolledBackState.rows[0]).toEqual({
+        status: "unmet",
+        generation: "0",
+        current_ceremony_intent_id: null,
+      });
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_creation_ceremony_attempts (
+           ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_kind, provider_configuration_ref,
+           provider_configuration_version, reservation_request_hash,
+           reservation_request, expires_at
+         ) VALUES (
+           'result-before-state', 'requirement-order-actor',
+           'requirement-order-intent', 'human_identity', 1, repeat('2', 64),
+           'very.oauth', repeat('3', 64), 'dynamic', 'very-oauth', '1',
+           repeat('5', 64), '{}'::jsonb, clock_timestamp() + interval '10 minutes'
+         )`,
+      );
+      await admin.query(
+        `UPDATE community_creation_requirement_states
+            SET status = 'pending', generation = 1,
+                current_ceremony_intent_id = 'result-before-state',
+                updated_at = clock_timestamp()
+          WHERE intent_id = 'requirement-order-intent'
+            AND requirement_kind = 'human_identity'`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_ceremony_results (
+           ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_version, callback_idempotency_key,
+           callback_request_hash, outcome_status, result_hash, terminal_at
+         ) VALUES (
+           'result-before-state', 'requirement-order-actor',
+           'requirement-order-intent', 'human_identity', 1, repeat('2', 64),
+           'very.oauth', repeat('3', 64), '1', 'result-before-state-callback',
+           repeat('6', 64), 'failed', repeat('7', 64), clock_timestamp()
+         )`,
+      );
+      await admin.query(
+        `UPDATE community_creation_requirement_states
+            SET status = 'failed', updated_at = clock_timestamp()
+          WHERE intent_id = 'requirement-order-intent'
+            AND requirement_kind = 'human_identity'`,
+      );
+      await admin.query("COMMIT");
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_creation_ceremony_attempts (
+           ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_kind, provider_configuration_ref,
+           provider_configuration_version, reservation_request_hash,
+           reservation_request, expires_at
+         ) VALUES (
+           'state-before-result', 'requirement-order-actor',
+           'requirement-order-intent', 'human_identity', 2, repeat('2', 64),
+           'very.oauth', repeat('3', 64), 'dynamic', 'very-oauth', '1',
+           repeat('8', 64), '{}'::jsonb, clock_timestamp() + interval '10 minutes'
+         )`,
+      );
+      await admin.query(
+        `UPDATE community_creation_requirement_states
+            SET status = 'pending', generation = 2,
+                current_ceremony_intent_id = 'state-before-result',
+                updated_at = clock_timestamp()
+          WHERE intent_id = 'requirement-order-intent'
+            AND requirement_kind = 'human_identity'`,
+      );
+      await admin.query(
+        `UPDATE community_creation_requirement_states
+            SET status = 'failed', updated_at = clock_timestamp()
+          WHERE intent_id = 'requirement-order-intent'
+            AND requirement_kind = 'human_identity'`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_ceremony_results (
+           ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_version, callback_idempotency_key,
+           callback_request_hash, outcome_status, result_hash, terminal_at
+         ) VALUES (
+           'state-before-result', 'requirement-order-actor',
+           'requirement-order-intent', 'human_identity', 2, repeat('2', 64),
+           'very.oauth', repeat('3', 64), '1', 'state-before-result-callback',
+           repeat('9', 64), 'failed', repeat('a', 64), clock_timestamp()
+         )`,
+      );
+      await admin.query("COMMIT");
+
+      const persisted = await admin.query<{
+        readonly ceremony_intent_id: string;
+        readonly generation: string;
+      }>(
+        `SELECT ceremony_intent_id, generation::text
+           FROM community_creation_ceremony_results
+          WHERE intent_id = 'requirement-order-intent'
+          ORDER BY generation`,
+      );
+      expect(persisted.rows).toEqual([
+        { ceremony_intent_id: "result-before-state", generation: "1" },
+        { ceremony_intent_id: "state-before-result", generation: "2" },
+      ]);
+      const finalState = await admin.query<{
+        readonly current_ceremony_intent_id: string | null;
+        readonly generation: string;
+        readonly status: string;
+      }>(
+        `SELECT status, generation::text, current_ceremony_intent_id
+           FROM community_creation_requirement_states
+          WHERE intent_id = 'requirement-order-intent'
+            AND requirement_kind = 'human_identity'`,
+      );
+      expect(finalState.rows[0]).toEqual({
+        status: "failed",
+        generation: "2",
+        current_ceremony_intent_id: "state-before-result",
+      });
     });
     completedTestCount += 1;
   });

@@ -27,6 +27,7 @@
     "0024_community_creation_preflight_transition.sql": "8f258b91b338efdca83e687e71189459709e4dfd4e649079092660ad1de08a39",
     "0025_community_creation_storage_identity.sql": "5e08dc481492e40cd6bd9fcda916221f257cd379c20d02af4231b136209be53d",
     "0026_text_moderation_foundation.sql": "08fe7eba04014d148a515f9a4c6074fd727ec58358678f1434d05c9a8bd0f703",
-    "0027_community_routes_and_creation_requirements.sql": "7cc43a77e074e5ac14669815d033a3677c82a75a261700a693477a82d58aaf11"
+    "0027_community_routes_and_creation_requirements.sql": "7cc43a77e074e5ac14669815d033a3677c82a75a261700a693477a82d58aaf11",
+    "0028_community_creation_requirement_result_guard.sql": "bb67fa0b7a8c4bcab14d500cbf46a990e4e78c8171956075cf433c15ef977ad8"
   }
 }
