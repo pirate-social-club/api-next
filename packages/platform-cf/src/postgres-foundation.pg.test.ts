@@ -158,6 +158,12 @@ const communityCreationRequirementResultGuardMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const namespaceOwnershipPersistenceMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0029_namespace_ownership_persistence.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -304,6 +310,11 @@ const communityCreationRequirementResultGuardMigration: PostgresMigration = {
     checksumManifest.migrations["0028_community_creation_requirement_result_guard.sql"] ?? "",
   sql: communityCreationRequirementResultGuardMigrationSql,
 };
+const namespaceOwnershipPersistenceMigration: PostgresMigration = {
+  version: "0029_namespace_ownership_persistence.sql",
+  checksum: checksumManifest.migrations["0029_namespace_ownership_persistence.sql"] ?? "",
+  sql: namespaceOwnershipPersistenceMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -333,6 +344,7 @@ const migrations: readonly PostgresMigration[] = [
   textModerationFoundationMigration,
   communityRoutesAndCreationRequirementsMigration,
   communityCreationRequirementResultGuardMigration,
+  namespaceOwnershipPersistenceMigration,
 ];
 
 function checksum(value: string): string {
@@ -530,6 +542,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(communityCreationRequirementResultGuardMigrationSql)).toBe(
         communityCreationRequirementResultGuardMigration.checksum,
       );
+      expect(checksum(namespaceOwnershipPersistenceMigrationSql)).toBe(
+        namespaceOwnershipPersistenceMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -610,6 +625,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "identity_credentials",
         "moderation_actions",
         "moderation_reports",
+        "namespace_ownership_completion_attempts",
+        "namespace_ownership_evidence_snapshots",
+        "namespace_ownership_sessions",
+        "namespace_ownership_start_reservations",
         "observations",
         "policy_versions",
         "post_votes",
@@ -746,6 +765,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "decision_records_append_only",
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",
+        "namespace_ownership_evidence_snapshot_append_only",
         "observations_append_only",
         "policy_versions_append_only",
         "proof_session_completion_events_append_only",
@@ -2842,6 +2862,91 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         [],
       );
 
+      const routeTerminalAt = (
+        await admin.query<{ readonly value: string }>(
+          "SELECT (clock_timestamp() - interval '10 seconds')::text AS value",
+        )
+      ).rows[0]?.value;
+      if (routeTerminalAt === undefined) throw new Error("route terminal time was unavailable");
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO namespace_ownership_start_reservations (
+           reservation_id, namespace_session_id, actor_id, creation_intent_id,
+           ceremony_intent_id, generation, requirement_hash, expected_revision,
+           client_idempotency_key, request_hash, provider_id, provider_binding_hash,
+           provider_configuration_kind, provider_configuration_ref, provider_configuration_version,
+           protocol_version, environment, route_family, route_root_label, route_root_label_display,
+           route_path_segment, route_href, state, fence_token, lease_expires_at
+         ) VALUES (
+           'route-start-reservation', 'route-namespace-session', 'route-creator', 'route-intent',
+           'ceremony-route-1', 1, repeat('4', 64), 1, 'route-start-key', repeat('e', 64),
+           'hns.owner.v1', repeat('5', 64), 'dynamic', 'hns-owner', '1', 'hns-txt-v1', 'test',
+           'hns', 'xn--mnchen-3ya', 'münchen', 'app.xn--mnchen-3ya',
+           '/c/app.xn--mnchen-3ya', 'acquired', 1, clock_timestamp() + interval '30 minutes')`,
+      );
+      await admin.query(
+        `INSERT INTO namespace_ownership_sessions (
+           namespace_session_id, actor_id, creation_intent_id, ceremony_intent_id,
+           start_reservation_id, start_fence_token, expected_revision, generation,
+           requirement_hash, request_hash, provider_id, provider_binding_hash,
+           provider_configuration_kind, provider_configuration_ref, provider_configuration_version,
+           protocol_version, environment, route_family, route_root_label, route_root_label_display,
+           route_path_segment, route_href, upstream_session_ref, presentation_kind,
+           presentation_payload, status, started_at, expires_at
+         ) VALUES (
+           'route-namespace-session', 'route-creator', 'route-intent', 'ceremony-route-1',
+           'route-start-reservation', 1, 1, 1, repeat('4', 64), repeat('e', 64),
+           'hns.owner.v1', repeat('5', 64), 'dynamic', 'hns-owner', '1', 'hns-txt-v1', 'test',
+           'hns', 'xn--mnchen-3ya', 'münchen', 'app.xn--mnchen-3ya',
+           '/c/app.xn--mnchen-3ya', 'upstream-route', 'poll', '{"session_id":"route"}'::jsonb,
+           'pending', clock_timestamp() - interval '1 minute', clock_timestamp() + interval '1 hour')`,
+      );
+      await admin.query(
+        `UPDATE namespace_ownership_start_reservations
+            SET state = 'finalized', updated_at = clock_timestamp()
+          WHERE reservation_id = 'route-start-reservation'`,
+      );
+      await admin.query(
+        `INSERT INTO namespace_ownership_completion_attempts (
+           completion_attempt_id, namespace_session_id, actor_id, idempotency_key,
+           completion_request_hash, evidence_ref, submission_channel, state, fence_token,
+           lease_expires_at
+         ) VALUES (
+           'route-completion-attempt', 'route-namespace-session', 'route-creator',
+           'callback-route-1', repeat('7', 64), 'route-evidence-1', 'poll_result',
+           'leased', 1, clock_timestamp() + interval '30 minutes')`,
+      );
+      await admin.query(
+        `INSERT INTO namespace_ownership_evidence_snapshots (
+           evidence_ref, completion_attempt_id, namespace_session_id, actor_id,
+           creation_intent_id, ceremony_intent_id, generation, requirement_hash, request_hash,
+           provider_id, provider_binding_hash, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version, protocol_version,
+           environment, family, root_label, root_label_display, path_segment, href, upstream_session_ref,
+           fence_token, ownership_source, challenge_name, challenge_value_sha256, root_exists,
+           root_control_verified, expiry_horizon_sufficient, chain_network, chain_anchor_height,
+           chain_anchor_block_hash, chain_anchor_median_time, expiry_height, observed_at, expires_at,
+           provider_evidence_ref, observation_sha256, provider_identity_digest, evidence_digest,
+           observation, raw_response_bytes
+         ) VALUES (
+           'route-evidence-1', 'route-completion-attempt', 'route-namespace-session',
+           'route-creator', 'route-intent', 'ceremony-route-1', 1, repeat('4', 64), repeat('e', 64),
+           'hns.owner.v1', repeat('5', 64), 'dynamic', 'hns-owner', '1', 'hns-txt-v1', 'test',
+           'hns', 'xn--mnchen-3ya', 'münchen', 'app.xn--mnchen-3ya', '/c/app.xn--mnchen-3ya',
+           'upstream-route', 1, 'owner_authoritative_dns_txt', '_pirate.xn--mnchen-3ya', repeat('6', 64),
+           TRUE, TRUE, TRUE, 'hns-testnet', 10, repeat('b', 64), 100, 20,
+           clock_timestamp() - interval '1 minute', clock_timestamp() + interval '1 hour',
+           'provider-evidence-route', repeat('7', 64), repeat('a', 64), repeat('9', 64),
+           '{"status":"verified"}'::jsonb, decode('01', 'hex'))`,
+      );
+      await admin.query(
+        `UPDATE namespace_ownership_completion_attempts
+            SET state = 'consumed', updated_at = clock_timestamp()
+          WHERE completion_attempt_id = 'route-completion-attempt'`,
+      );
+      await admin.query("COMMIT");
+
       await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO community_creation_ceremony_results (
@@ -2849,21 +2954,31 @@ suite("Postgres 17 product and gates v2 foundation", () => {
            requirement_hash, provider_id, provider_binding_hash,
            provider_configuration_version, callback_idempotency_key,
            callback_request_hash, outcome_status, result_hash, evidence_ref,
-           evidence_digest, provider_identity_digest, terminal_at, satisfied_at
+           evidence_digest, provider_identity_digest, terminal_at, satisfied_at,
+           namespace_session_id, completion_attempt_id, submission_channel
          ) VALUES (
            'ceremony-route-1', 'route-creator', 'route-intent',
            'namespace_ownership', 1, repeat('4', 64), 'hns.owner.v1', repeat('5', 64),
            '1', 'callback-route-1', repeat('7', 64), 'satisfied', repeat('8', 64),
            'route-evidence-1', repeat('9', 64), repeat('a', 64),
-           '2026-08-20T00:00:00.000Z', '2026-08-20T00:00:00.000Z'
+           $1, $1, 'route-namespace-session', 'route-completion-attempt', 'poll_result'
          )`,
+        [routeTerminalAt],
       );
       await admin.query(
         `UPDATE community_creation_requirement_states
-            SET status = 'satisfied', satisfied_at = '2026-08-20T00:00:00.000Z',
+            SET status = 'satisfied', satisfied_at = $1,
                 updated_at = clock_timestamp()
           WHERE intent_id = 'route-intent'
             AND requirement_kind = 'namespace_ownership'`,
+        [routeTerminalAt],
+      );
+      await admin.query(
+        `UPDATE namespace_ownership_sessions
+            SET status = 'completed', terminal_at = $1, completed_at = $1,
+                updated_at = clock_timestamp()
+          WHERE namespace_session_id = 'route-namespace-session'`,
+        [routeTerminalAt],
       );
       await admin.query("COMMIT");
 
@@ -2894,8 +3009,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
            'xn--mnchen-3ya', 'münchen', 'app.xn--mnchen-3ya', repeat('4', 64),
            'hns.owner.v1',
            repeat('5', 64), '1', repeat('a', 64), repeat('9', 64), 1,
-           '2026-08-20T00:00:00.000Z'
+           $1
          )`,
+        [routeTerminalAt],
       );
 
       await admin.query(

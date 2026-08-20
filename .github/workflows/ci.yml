@@ -71,6 +71,7 @@ jobs:
           rm -f
           /tmp/api-next-control-plane-postgres-adapter-suite-complete
           /tmp/api-next-control-plane-postgres-foundation-suite-complete
+          /tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete
           /tmp/api-next-control-plane-postgres-migration-suite-complete
           /tmp/api-next-control-plane-postgres-identity-suite-complete
           /tmp/api-next-control-plane-postgres-community-suite-complete
@@ -88,6 +89,7 @@ jobs:
           CONTROL_PLANE_POSTGRES_TEST_REQUIRED: "1"
           CONTROL_PLANE_POSTGRES_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-adapter-suite-complete
           CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-foundation-suite-complete
+          CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete
           CONTROL_PLANE_POSTGRES_MIGRATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-migration-suite-complete
           CONTROL_PLANE_POSTGRES_IDENTITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-identity-suite-complete
           CONTROL_PLANE_POSTGRES_COMMUNITY_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-suite-complete
@@ -103,6 +105,7 @@ jobs:
           timeout 180s bun test
           packages/platform-cf/src/postgres.pg.test.ts
           packages/platform-cf/src/postgres-foundation.pg.test.ts
+          packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts
           packages/platform-cf/src/postgres-migrations-runner.pg.test.ts
           packages/platform-cf/src/identity.pg.test.ts
           packages/platform-cf/src/community-repository.pg.test.ts

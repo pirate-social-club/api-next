@@ -22,6 +22,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-foundation-suite-complete\n",
   },
   {
+    name: "postgres namespace ownership persistence",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete",
+    contents: "api-next-control-plane-postgres-namespace-ownership-suite-complete\n",
+  },
+  {
     name: "postgres migration runner",
     path:
       process.env.CONTROL_PLANE_POSTGRES_MIGRATION_TEST_SENTINEL ??
