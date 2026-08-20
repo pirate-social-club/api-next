@@ -14,6 +14,7 @@ export * from "./canonical-json.ts";
 export * from "./community/canonical-route.ts";
 export * from "./community/creation-intent.ts";
 export * from "./community/creation-requirement.ts";
+export * from "./community/creation-requirements.ts";
 export * from "./community/gate-policy-compiler.ts";
 export * from "./community/join-intent-binding.ts";
 export * from "./content/text-moderation.ts";
