@@ -7,29 +7,31 @@ import {
 } from "./community-routes.ts";
 
 describe("community route contracts", () => {
-  test("accepts only exact v1 HNS and Spaces route requests", () => {
-    expect(decodeCommunityRouteRequestV1({ family: "hns", root_label: "jazleeuw" })).toEqual({
-      family: "hns",
-      root_label: "jazleeuw",
-    });
-    expect(decodeCommunityRouteRequestV1({ family: "spaces", root_label: "music" })).toEqual({
-      family: "spaces",
-      root_label: "music",
-    });
+  test("accepts bounded Unicode, emoji, compatibility, and ACE route requests", () => {
+    for (const request of [
+      { family: "hns", root_label: "jazleeuw" },
+      { family: "hns", root_label: "münchen" },
+      { family: "hns", root_label: "MÜNCHEN" },
+      { family: "hns", root_label: "münchen" },
+      { family: "hns", root_label: "xn--mnchen-3ya" },
+      { family: "spaces", root_label: "🔥" },
+      { family: "spaces", root_label: "ｆｏｏ" },
+    ] as const) {
+      expect(decodeCommunityRouteRequestV1(request)).toEqual(request);
+    }
+
     for (const root_label of [
       "",
-      "Jazleeuw",
       "@music",
       "app.jazleeuw",
       "jazleeuw.",
-      "two--hyphens",
-      "-leading",
-      "trailing-",
+      " jazleeuw",
+      "jazleeuw ",
       "with/slash",
       "with\\slash",
       "percent%2Eescape",
-      "müsic",
-      "a".repeat(64),
+      "control\u0000value",
+      "a".repeat(256),
     ]) {
       expect(
         () => decodeCommunityRouteRequestV1({ family: "hns", root_label }),
@@ -48,20 +50,22 @@ describe("community route contracts", () => {
     ).toThrow();
   });
 
-  test("accepts only internally consistent derived canonical routes", () => {
+  test("accepts only structurally consistent family-specific canonical routes", () => {
     expect(
       decodeCommunityCanonicalRouteV1({
         family: "hns",
-        root_label: "jazleeuw",
-        path_segment: "app.jazleeuw",
-        href: "/c/app.jazleeuw",
+        root_label: "xn--mnchen-3ya",
+        root_label_display: "münchen",
+        path_segment: "app.xn--mnchen-3ya",
+        href: "/c/app.xn--mnchen-3ya",
         app_host: null,
       }),
-    ).toMatchObject({ family: "hns", app_host: null });
+    ).toMatchObject({ family: "hns", root_label_display: "münchen", app_host: null });
     expect(
       decodeCommunityCanonicalRouteV1({
         family: "hns",
         root_label: "technohippies",
+        root_label_display: "technohippies",
         path_segment: "app.technohippies",
         href: "/c/app.technohippies",
         app_host: "app.technohippies",
@@ -70,38 +74,85 @@ describe("community route contracts", () => {
     expect(
       decodeCommunityCanonicalRouteV1({
         family: "spaces",
-        root_label: "music",
-        path_segment: "@music",
-        href: "/c/@music",
+        root_label: "xn--4v8h",
+        root_label_display: "🔥",
+        path_segment: "@xn--4v8h",
+        href: "/c/@xn--4v8h",
         app_host: null,
       }),
-    ).toMatchObject({ family: "spaces", app_host: null });
+    ).toMatchObject({ family: "spaces", root_label_display: "🔥", app_host: null });
+    expect(
+      decodeCommunityCanonicalRouteV1({
+        family: "hns",
+        root_label: "xn--58d",
+        root_label_display: "Ꭰ",
+        path_segment: "app.xn--58d",
+        href: "/c/app.xn--58d",
+        app_host: null,
+      }),
+    ).toMatchObject({ family: "hns", root_label_display: "Ꭰ" });
 
     for (const invalid of [
       {
         family: "hns",
-        root_label: "jazleeuw",
+        root_label: "xn--mnchen-3ya",
+        root_label_display: "münchen",
         path_segment: "app.forged",
-        href: "/c/app.jazleeuw",
+        href: "/c/app.xn--mnchen-3ya",
         app_host: null,
       },
       {
         family: "hns",
-        root_label: "jazleeuw",
-        path_segment: "app.jazleeuw",
-        href: "/c/opaque-id",
+        root_label: "test",
+        root_label_display: "test",
+        path_segment: "app.test",
+        href: "/c/app.test",
         app_host: null,
       },
       {
         family: "hns",
-        root_label: "jazleeuw",
-        path_segment: "app.jazleeuw",
-        href: "/c/app.jazleeuw",
-        app_host: "app.forged",
+        root_label: "xn--mnchen-3ya",
+        root_label_display: "wrong",
+        path_segment: "app.xn--mnchen-3ya",
+        href: "/c/app.xn--mnchen-3ya",
+        app_host: null,
+      },
+      {
+        family: "hns",
+        root_label: "xn--1",
+        root_label_display: "xn--1",
+        path_segment: "app.xn--1",
+        href: "/c/app.xn--1",
+        app_host: null,
+      },
+      {
+        family: "spaces",
+        root_label: "xn--123-pretty-valid-space-ok",
+        root_label_display: "xn--123-pretty-valid-space-ok",
+        path_segment: "@xn--123-pretty-valid-space-ok",
+        href: "/c/@xn--123-pretty-valid-space-ok",
+        app_host: null,
+      },
+      {
+        family: "hns",
+        root_label: "xn--mnchen-3ya",
+        root_label_display: "MÜNCHEN",
+        path_segment: "app.xn--mnchen-3ya",
+        href: "/c/app.xn--mnchen-3ya",
+        app_host: null,
+      },
+      {
+        family: "spaces",
+        root_label: "tame_impala",
+        root_label_display: "tame_impala",
+        path_segment: "@tame_impala",
+        href: "/c/@tame_impala",
+        app_host: null,
       },
       {
         family: "spaces",
         root_label: "music",
+        root_label_display: "music",
         path_segment: "@music",
         href: "/c/@music",
         app_host: "app.music",
@@ -113,6 +164,7 @@ describe("community route contracts", () => {
       decodeCommunityCanonicalRouteV1({
         family: "spaces",
         root_label: "music",
+        root_label_display: "music",
         path_segment: "@music",
         href: "/c/@music",
         app_host: null,

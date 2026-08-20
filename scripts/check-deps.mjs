@@ -15,6 +15,7 @@ const INTERNAL = {
   "packages/contracts": "@pirate/contracts",
   "packages/api-client": "@pirate/api-client",
   "packages/domain": "@pirate/domain",
+  "packages/route-label-codec": "@pirate/route-label-codec",
   "packages/application": "@pirate/application",
   "packages/platform-cf": "@pirate/platform-cf",
   "packages/testing": "@pirate/testing",
@@ -25,9 +26,10 @@ const INTERNAL = {
 };
 
 const ALLOWED = {
-  "@pirate/contracts": [],
+  "@pirate/contracts": ["@pirate/route-label-codec"],
   "@pirate/api-client": [],
-  "@pirate/domain": [],
+  "@pirate/domain": ["@pirate/route-label-codec"],
+  "@pirate/route-label-codec": [],
   "@pirate/application": ["@pirate/contracts", "@pirate/domain"],
   "@pirate/platform-cf": [
     "@pirate/application",

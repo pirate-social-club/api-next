@@ -15,6 +15,7 @@ describe("canonical community routes", () => {
       value: {
         family: "hns",
         root_label: "jazleeuw",
+        root_label_display: "jazleeuw",
         path_segment: "app.jazleeuw",
         href: "/c/app.jazleeuw",
       },
@@ -24,36 +25,84 @@ describe("canonical community routes", () => {
       value: {
         family: "spaces",
         root_label: "music",
+        root_label_display: "music",
         path_segment: "@music",
         href: "/c/@music",
       },
     });
   });
 
-  test("rejects rather than normalizes non-canonical roots", () => {
-    for (const root of ["a", "alpha-2", "a".repeat(63)]) {
-      expect(validCommunityRouteRoot(root), root).toBe(true);
+  test("canonicalizes the pinned Unicode, compatibility, ACE, and emoji vectors", () => {
+    for (const input of ["münchen", "MÜNCHEN", "münchen", "xn--mnchen-3ya"]) {
+      expect(deriveCommunityRoute({ family: "hns", root_label: input }), input).toEqual({
+        kind: "accepted",
+        value: {
+          family: "hns",
+          root_label: "xn--mnchen-3ya",
+          root_label_display: "münchen",
+          path_segment: "app.xn--mnchen-3ya",
+          href: "/c/app.xn--mnchen-3ya",
+        },
+      });
     }
+
+    for (const [input, root_label, root_label_display] of [
+      ["🔥", "xn--4v8h", "🔥"],
+      ["☠", "xn--h4h", "☠"],
+      ["☠️", "xn--h4h", "☠"],
+      ["🇵🇸", "xn--t77hga", "🇵🇸"],
+      ["ｆｏｏ", "foo", "foo"],
+      ["foo\u200bbar", "foobar", "foobar"],
+    ] as const) {
+      expect(deriveCommunityRoute({ family: "spaces", root_label: input }), input).toMatchObject({
+        kind: "accepted",
+        value: { root_label, root_label_display },
+      });
+    }
+  });
+
+  test("applies HNS and Spaces protocol rules independently after conversion", () => {
+    expect(validCommunityRouteRoot("hns", "tame_impala")).toBe(true);
+    expect(validCommunityRouteRoot("hns", "one--two")).toBe(true);
+    expect(validCommunityRouteRoot("spaces", "tame_impala")).toBe(false);
+    expect(validCommunityRouteRoot("spaces", "one--two")).toBe(false);
+    expect(validCommunityRouteRoot("hns", "a".repeat(63))).toBe(true);
+    expect(validCommunityRouteRoot("hns", "a".repeat(64))).toBe(false);
+    expect(validCommunityRouteRoot("spaces", "a".repeat(62))).toBe(true);
+    expect(validCommunityRouteRoot("spaces", "a".repeat(63))).toBe(false);
+
+    for (const root of ["example", "invalid", "local", "localhost", "test"]) {
+      expect(validCommunityRouteRoot("hns", root), root).toBe(false);
+    }
+  });
+
+  test("rejects malformed ACE and unsupported or structural write input", () => {
     const invalid = [
       "",
-      "Jazleeuw",
       "@music",
       "app.jazleeuw",
       "jazleeuw.",
       " jazleeuw",
       "jazleeuw ",
-      "two--hyphens",
-      "-leading",
-      "trailing-",
       "slash/root",
       "back\\slash",
       "percent%2Eescape",
-      "müsic",
-      "a".repeat(64),
+      "foo。bar",
+      "foo．bar",
+      "foo｡bar",
+      "control\u0000value",
+      "🏴‍☠️",
+      "xn--",
+      "xn--0",
+      "xn--1",
+      "xn--238746723487",
+      "xn--123-pretty-valid-space-ok",
+      "xn--e-xbb",
+      "a".repeat(256),
+      "🔥".repeat(64),
     ];
     for (const root of invalid) {
-      expect(validCommunityRouteRoot(root), root).toBe(false);
-      expect(deriveCommunityRoute({ family: "hns", root_label: root })).toEqual({
+      expect(deriveCommunityRoute({ family: "hns", root_label: root }), root).toEqual({
         kind: "rejected",
         reason: "invalid_root_label",
       });
@@ -64,14 +113,20 @@ describe("canonical community routes", () => {
     });
   });
 
-  test("parses only exact canonical public path segments", () => {
-    expect(parseCommunityRoutePathSegment("app.jazleeuw")).toMatchObject({
+  test("parses only exact canonical ACE public path segments", () => {
+    expect(parseCommunityRoutePathSegment("app.xn--mnchen-3ya")).toEqual({
       kind: "accepted",
-      value: { family: "hns", root_label: "jazleeuw" },
+      value: {
+        family: "hns",
+        root_label: "xn--mnchen-3ya",
+        root_label_display: "münchen",
+        path_segment: "app.xn--mnchen-3ya",
+        href: "/c/app.xn--mnchen-3ya",
+      },
     });
-    expect(parseCommunityRoutePathSegment("@music")).toMatchObject({
+    expect(parseCommunityRoutePathSegment("@xn--4v8h")).toMatchObject({
       kind: "accepted",
-      value: { family: "spaces", root_label: "music" },
+      value: { family: "spaces", root_label: "xn--4v8h", root_label_display: "🔥" },
     });
     for (const candidate of [
       "jazleeuw",
@@ -79,11 +134,17 @@ describe("canonical community routes", () => {
       "app.",
       "@",
       "APP.jazleeuw",
+      "app.MUSIC",
+      "app.ｍｕｓｉｃ",
+      "app.ⓜⓤⓢⓘⓒ",
+      "app.münchen",
       "app.jazleeuw.extra",
       "app.jazleeuw/threads",
       "@Music",
       "@müsic",
       "%40music",
+      "@%6Dusic",
+      "@%256Dusic",
       "community_opaque_id",
     ]) {
       expect(parseCommunityRoutePathSegment(candidate), candidate).toEqual({
@@ -99,26 +160,36 @@ describe("canonical community routes", () => {
     expect(canonicalRouteView(result.value, false).app_host).toBeNull();
     expect(canonicalRouteView(result.value, true).app_host).toBe("app.technohippies");
 
+    const underscored = deriveCommunityRoute({ family: "hns", root_label: "tame_impala" });
+    if (underscored.kind !== "accepted") throw new Error("expected accepted HNS route");
+    expect(canonicalRouteView(underscored.value, false).app_host).toBeNull();
+
     const spaces = deriveCommunityRoute({ family: "spaces", root_label: "music" });
     if (spaces.kind !== "accepted") throw new Error("expected accepted Spaces route");
     expect(canonicalRouteView(spaces.value, true).app_host).toBeNull();
   });
 
-  test("pins the namespace requirement preimage and hash to route identity only", () => {
-    const request = { family: "hns", root_label: "jazleeuw" } as const;
-    expect(communityNamespaceRequirementPreimage(request)).toEqual({
+  test("pins equivalent writes to one namespace requirement preimage and hash", () => {
+    const unicode = { family: "hns", root_label: "münchen" } as const;
+    const ace = { family: "hns", root_label: "xn--mnchen-3ya" } as const;
+    const preimage = communityNamespaceRequirementPreimage(unicode);
+    expect(preimage).toEqual(communityNamespaceRequirementPreimage(ace));
+    expect(preimage).toEqual({
       kind: "accepted",
       value:
-        '{"family":"hns","path_segment":"app.jazleeuw","root_label":"jazleeuw","version":"community-namespace-requirement-v1"}',
+        '{"family":"hns","path_segment":"app.xn--mnchen-3ya","root_label":"xn--mnchen-3ya","route_label_codec_version":"route-label-codec-v1","version":"community-namespace-requirement-v1"}',
     });
-    expect(communityNamespaceRequirementHash(request)).toEqual({
+    expect(communityNamespaceRequirementHash(unicode)).toEqual(
+      communityNamespaceRequirementHash(ace),
+    );
+    expect(communityNamespaceRequirementHash(unicode)).toEqual({
       kind: "accepted",
-      value: "30ecf317e335f95b655217a3f5825457f507be668e09d3d9f6c376098129ae96",
+      value: "d1ae3a838a17a59138cd8dee634a646b81b1e59c7987ea724aafaecf4379e284",
     });
 
     expect(
       communityNamespaceRequirementHash({ family: "hns", root_label: "technohippies" }),
-    ).not.toEqual(communityNamespaceRequirementHash(request));
+    ).not.toEqual(communityNamespaceRequirementHash(unicode));
     expect(communityNamespaceRequirementHash({ family: "hns", root_label: "app.forged" })).toEqual({
       kind: "rejected",
       reason: "invalid_root_label",

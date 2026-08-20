@@ -16,6 +16,7 @@ const dependencyRoots = [
   "packages/contracts",
   "packages/api-client",
   "packages/domain",
+  "packages/route-label-codec",
   "packages/application",
   "packages/platform-cf",
   "packages/testing",

@@ -1,3 +1,9 @@
+import {
+  canonicalRouteLabelMatchesV1,
+  parseCanonicalRouteLabelV1,
+  validRouteLabelDisplayV1,
+  validRouteLabelInputV1,
+} from "@pirate/route-label-codec";
 import { Schema } from "effect";
 
 export const CommunityRouteFamilyV1 = Schema.Literals(["hns", "spaces"]);
@@ -5,9 +11,9 @@ export type CommunityRouteFamilyV1 = Schema.Schema.Type<typeof CommunityRouteFam
 
 export const CommunityRouteRootLabelV1 = Schema.String.check(
   Schema.makeFilter((value) =>
-    value.length >= 1 && value.length <= 63 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)
+    validRouteLabelInputV1(value)
       ? undefined
-      : "Expected a canonical lowercase ASCII namespace root of 1–63 bytes",
+      : "Expected a bounded route-root input without route syntax or edge whitespace",
   ),
 );
 export type CommunityRouteRootLabelV1 = Schema.Schema.Type<typeof CommunityRouteRootLabelV1>;
@@ -18,6 +24,28 @@ export const CommunityRouteRequestV1 = Schema.Struct({
 });
 export type CommunityRouteRequestV1 = Schema.Schema.Type<typeof CommunityRouteRequestV1>;
 
+const HnsCanonicalRootLabelV1 = Schema.String.check(
+  Schema.makeFilter((value) =>
+    parseCanonicalRouteLabelV1("hns", value).kind === "accepted"
+      ? undefined
+      : "Expected a canonical HNS ASCII root within 63 bytes",
+  ),
+);
+
+const SpacesCanonicalRootLabelV1 = Schema.String.check(
+  Schema.makeFilter((value) =>
+    parseCanonicalRouteLabelV1("spaces", value).kind === "accepted"
+      ? undefined
+      : "Expected a canonical Spaces ASCII root within 62 bytes",
+  ),
+);
+
+const CommunityRouteRootLabelDisplayV1 = Schema.String.check(
+  Schema.makeFilter((value) =>
+    validRouteLabelDisplayV1(value) ? undefined : "Expected a bounded NFC route-root display value",
+  ),
+);
+
 const SameOriginCommunityHref = Schema.String.check(
   Schema.makeFilter((value) =>
     value.startsWith("/c/") ? undefined : "Expected a same-origin canonical community path",
@@ -26,14 +54,16 @@ const SameOriginCommunityHref = Schema.String.check(
 
 const HnsCanonicalRouteV1 = Schema.Struct({
   family: Schema.Literal("hns"),
-  root_label: CommunityRouteRootLabelV1,
+  root_label: HnsCanonicalRootLabelV1,
+  root_label_display: CommunityRouteRootLabelDisplayV1,
   path_segment: Schema.String,
   href: SameOriginCommunityHref,
   app_host: Schema.NullOr(Schema.String),
 }).check(
   Schema.makeFilter((route) => {
     const expected = `app.${route.root_label}`;
-    return route.path_segment === expected &&
+    return canonicalRouteLabelMatchesV1("hns", route.root_label, route.root_label_display) &&
+      route.path_segment === expected &&
       route.href === `/c/${expected}` &&
       (route.app_host === null || route.app_host === expected)
       ? undefined
@@ -43,14 +73,17 @@ const HnsCanonicalRouteV1 = Schema.Struct({
 
 const SpacesCanonicalRouteV1 = Schema.Struct({
   family: Schema.Literal("spaces"),
-  root_label: CommunityRouteRootLabelV1,
+  root_label: SpacesCanonicalRootLabelV1,
+  root_label_display: CommunityRouteRootLabelDisplayV1,
   path_segment: Schema.String,
   href: SameOriginCommunityHref,
   app_host: Schema.Null,
 }).check(
   Schema.makeFilter((route) => {
     const expected = `@${route.root_label}`;
-    return route.path_segment === expected && route.href === `/c/${expected}`
+    return canonicalRouteLabelMatchesV1("spaces", route.root_label, route.root_label_display) &&
+      route.path_segment === expected &&
+      route.href === `/c/${expected}`
       ? undefined
       : "Spaces canonical route fields must be server-derived from the root";
   }),

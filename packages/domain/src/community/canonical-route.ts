@@ -1,10 +1,20 @@
+import {
+  HNS_ROUTE_ROOT_MAX_BYTES,
+  normalizeRouteLabelV1,
+  parseCanonicalRouteLabelV1,
+  ROUTE_LABEL_CODEC_VERSION,
+  ROUTE_LABEL_INPUT_MAX_BYTES,
+  SPACES_ROUTE_ROOT_MAX_BYTES,
+} from "@pirate/route-label-codec";
 import { canonicalJson } from "../canonical-json.ts";
 import { sha256Hex } from "../gates-v2/sha256.ts";
 
 export const COMMUNITY_NAMESPACE_REQUIREMENT_VERSION =
   "community-namespace-requirement-v1" as const;
-export const COMMUNITY_ROUTE_ROOT_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
-export const COMMUNITY_ROUTE_ROOT_MAX_BYTES = 63;
+export const COMMUNITY_ROUTE_LABEL_CODEC_VERSION = ROUTE_LABEL_CODEC_VERSION;
+export const COMMUNITY_ROUTE_INPUT_MAX_BYTES = ROUTE_LABEL_INPUT_MAX_BYTES;
+export const COMMUNITY_HNS_ROUTE_ROOT_MAX_BYTES = HNS_ROUTE_ROOT_MAX_BYTES;
+export const COMMUNITY_SPACES_ROUTE_ROOT_MAX_BYTES = SPACES_ROUTE_ROOT_MAX_BYTES;
 
 export type CommunityRouteFamily = "hns" | "spaces";
 
@@ -16,6 +26,7 @@ export type CommunityRouteRequest = Readonly<{
 export type CommunityRouteIdentity = Readonly<{
   readonly family: CommunityRouteFamily;
   readonly root_label: string;
+  readonly root_label_display: string;
   readonly path_segment: string;
   readonly href: string;
 }>;
@@ -41,45 +52,57 @@ function rejected<T>(reason: CommunityRouteRejection): CommunityRouteResult<T> {
   return { kind: "rejected", reason };
 }
 
-export function validCommunityRouteRoot(value: string): boolean {
-  return (
-    value.length > 0 &&
-    value.length <= COMMUNITY_ROUTE_ROOT_MAX_BYTES &&
-    COMMUNITY_ROUTE_ROOT_PATTERN.test(value)
-  );
+function canonicalIdentityFromAce(
+  family: CommunityRouteFamily,
+  rootLabel: string,
+): CommunityRouteResult<CommunityRouteIdentity> {
+  const canonical = parseCanonicalRouteLabelV1(family, rootLabel);
+  if (canonical.kind === "rejected") return rejected(canonical.reason);
+
+  const pathSegment = family === "hns" ? `app.${rootLabel}` : `@${rootLabel}`;
+  return accepted({
+    family,
+    root_label: rootLabel,
+    root_label_display: canonical.value.root_label_display,
+    path_segment: pathSegment,
+    href: `/c/${pathSegment}`,
+  });
 }
 
+/** Validates the exact canonical ACE authority used by storage and reads. */
+export function validCommunityRouteRoot(family: CommunityRouteFamily, value: string): boolean {
+  return parseCanonicalRouteLabelV1(family, value).kind === "accepted";
+}
+
+/** Canonicalizes a mutation/preflight request through route-label-codec-v1. */
 export function deriveCommunityRoute(
   input: Readonly<{ readonly family: unknown; readonly root_label: unknown }>,
 ): CommunityRouteResult<CommunityRouteIdentity> {
   if (input.family !== "hns" && input.family !== "spaces") {
     return rejected("invalid_family");
   }
-  if (typeof input.root_label !== "string" || !validCommunityRouteRoot(input.root_label)) {
+  if (typeof input.root_label !== "string") {
     return rejected("invalid_root_label");
   }
-  const pathSegment = input.family === "hns" ? `app.${input.root_label}` : `@${input.root_label}`;
-  return accepted({
-    family: input.family,
-    root_label: input.root_label,
-    path_segment: pathSegment,
-    href: `/c/${pathSegment}`,
-  });
+
+  const canonical = normalizeRouteLabelV1(input.family, input.root_label);
+  return canonical.kind === "rejected"
+    ? rejected(canonical.reason)
+    : canonicalIdentityFromAce(input.family, canonical.value.root_label);
 }
 
+/** Parses an already-canonical public path without applying write normalization. */
 export function parseCommunityRoutePathSegment(
   pathSegment: string,
 ): CommunityRouteResult<CommunityRouteIdentity> {
   if (pathSegment.startsWith("app.")) {
-    const root = pathSegment.slice(4);
-    const route = deriveCommunityRoute({ family: "hns", root_label: root });
+    const route = canonicalIdentityFromAce("hns", pathSegment.slice(4));
     return route.kind === "accepted" && route.value.path_segment === pathSegment
       ? route
       : rejected("invalid_path_segment");
   }
   if (pathSegment.startsWith("@")) {
-    const root = pathSegment.slice(1);
-    const route = deriveCommunityRoute({ family: "spaces", root_label: root });
+    const route = canonicalIdentityFromAce("spaces", pathSegment.slice(1));
     return route.kind === "accepted" && route.value.path_segment === pathSegment
       ? route
       : rejected("invalid_path_segment");
@@ -106,6 +129,7 @@ export function communityNamespaceRequirementPreimage(
       family: result.value.family,
       path_segment: result.value.path_segment,
       root_label: result.value.root_label,
+      route_label_codec_version: COMMUNITY_ROUTE_LABEL_CODEC_VERSION,
       version: COMMUNITY_NAMESPACE_REQUIREMENT_VERSION,
     }),
   );

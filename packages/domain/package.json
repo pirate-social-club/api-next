@@ -7,5 +7,8 @@
     ".": "./src/index.ts",
     "./verification": "./src/verification/index.ts",
     "./gates-v2": "./src/gates-v2/index.ts"
+  },
+  "dependencies": {
+    "@pirate/route-label-codec": "workspace:*"
   }
 }
