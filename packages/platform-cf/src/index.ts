@@ -84,6 +84,17 @@ export {
   makeControlPlaneIdentityStore,
 } from "./identity-repository";
 export {
+  type HnsOwnerAdapterOptions,
+  type HnsOwnerTransport,
+  type HnsOwnerTransportFailure,
+  type HnsOwnerTransportStartResult,
+  makeHnsOwnerAdapter,
+} from "./namespace-ownership/hns-owner";
+export {
+  makePlatformNamespaceOwnershipProviderRegistry,
+  type PlatformNamespaceOwnershipProviderOptions,
+} from "./namespace-ownership/provider-registry";
+export {
   CONTROL_PLANE_CONNECT_TIMEOUT_MS,
   CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
   CONTROL_PLANE_SLOW_STATEMENT_MS,

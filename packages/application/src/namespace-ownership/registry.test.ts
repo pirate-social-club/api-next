@@ -261,10 +261,11 @@ describe("namespace ownership provider registry", () => {
   test("accepts only completion evidence observed within the live ceremony", async () => {
     const verified = {
       status: "verified" as const,
+      evidence_kind: "raw_provider_response_v1" as const,
       provider_evidence_ref: "hns-observation-1",
-      evidence_digest: "d".repeat(64),
-      provider_identity_digest: "e".repeat(64),
-      verified_at: "2026-08-20T12:00:00.000Z",
+      raw_response_bytes: new TextEncoder().encode('{"status":"verified"}'),
+      observation: { status: "verified" } as const,
+      observed_at: "2026-08-20T12:00:00.000Z",
       expires_at: "2026-09-20T12:00:00.000Z",
     };
     const accepted = await Effect.runPromise(
@@ -288,7 +289,7 @@ describe("namespace ownership provider registry", () => {
           adapter({
             completeResult: {
               ...verified,
-              verified_at: "2026-08-20T13:00:00.001Z",
+              observed_at: "2026-08-20T13:00:00.001Z",
             },
           }),
         ],
@@ -312,7 +313,7 @@ describe("namespace ownership provider registry", () => {
             adapter({
               completeResult: {
                 ...verified,
-                verified_at: "2026-08-20T11:00:00.000Z",
+                observed_at: "2026-08-20T11:00:00.000Z",
                 expires_at: expiresAt,
               },
             }),

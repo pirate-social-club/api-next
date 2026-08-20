@@ -31,24 +31,28 @@ const CanonicalIsoInstant = Schema.String.check(
   }),
 );
 
+function isControlFree(value: string): boolean {
+  return [...value].every((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint >= 0x20 && !(codePoint >= 0x7f && codePoint <= 0x9f);
+  });
+}
+
 const BoundedEvidenceReference = CanonicalNonEmptyString.check(
   Schema.makeFilter((value) =>
-    value.length <= 512 &&
-    [...value].every((character) => {
-      const codePoint = character.codePointAt(0) ?? 0;
-      return codePoint >= 0x20 && codePoint !== 0x7f;
-    })
+    new TextEncoder().encode(value).byteLength <= 512 && isControlFree(value)
       ? undefined
       : "Expected a bounded evidence reference without control characters",
   ),
 );
 
 export const NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES = 16_384 as const;
-const BoundedUpstreamSessionReference = CanonicalNonEmptyString.check(
+export const NamespaceOwnershipUpstreamSessionReference = CanonicalNonEmptyString.check(
   Schema.makeFilter((value) =>
-    new TextEncoder().encode(value).length <= NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES
+    new TextEncoder().encode(value).length <= NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES &&
+    isControlFree(value)
       ? undefined
-      : "Expected a bounded upstream namespace session reference",
+      : "Expected a bounded upstream namespace session reference without control characters",
   ),
 );
 
@@ -131,7 +135,7 @@ export const NamespaceOwnershipSession = Schema.Struct({
   protocol_version: CanonicalNonEmptyString,
   environment: CanonicalNonEmptyString,
   route: NamespaceOwnershipRoute,
-  upstream_session_ref: BoundedUpstreamSessionReference,
+  upstream_session_ref: NamespaceOwnershipUpstreamSessionReference,
   expires_at: CanonicalIsoInstant,
 });
 export type NamespaceOwnershipSession = Schema.Schema.Type<typeof NamespaceOwnershipSession>;
@@ -169,6 +173,15 @@ const BoundedSubmissionPayload = Schema.Json.check(
   ),
 );
 
+export const NAMESPACE_OWNERSHIP_RAW_RESPONSE_MAX_BYTES = 1_048_576 as const;
+const BoundedRawResponseBytes = Schema.Uint8Array.check(
+  Schema.makeFilter((value) =>
+    value.byteLength > 0 && value.byteLength <= NAMESPACE_OWNERSHIP_RAW_RESPONSE_MAX_BYTES
+      ? undefined
+      : "Expected non-empty provider response bytes no larger than 1 MiB",
+  ),
+);
+
 export const NamespaceOwnershipSubmission = Schema.Struct({
   channel: NamespaceOwnershipSubmissionChannel,
   payload: BoundedSubmissionPayload,
@@ -185,16 +198,23 @@ export type NamespaceOwnershipProviderCompleteInput = Schema.Schema.Type<
 
 export const NamespaceOwnershipProviderCompleteResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("pending") }),
+  /**
+   * Raw provider evidence is intentionally not an ownership envelope.  The
+   * completion reservation supplies `evidence_ref`; the application evidence
+   * builder computes every authoritative digest later from these exact bytes
+   * and provider-specific strict semantic facts.
+   */
   Schema.Struct({
     status: Schema.Literal("verified"),
+    evidence_kind: Schema.Literal("raw_provider_response_v1"),
     provider_evidence_ref: BoundedEvidenceReference,
-    evidence_digest: Sha256Hex,
-    provider_identity_digest: Sha256Hex,
-    verified_at: CanonicalIsoInstant,
+    raw_response_bytes: BoundedRawResponseBytes,
+    observation: BoundedSubmissionPayload,
+    observed_at: CanonicalIsoInstant,
     expires_at: Schema.NullOr(CanonicalIsoInstant),
   }).check(
     Schema.makeFilter((result) =>
-      result.expires_at === null || Date.parse(result.expires_at) > Date.parse(result.verified_at)
+      result.expires_at === null || Date.parse(result.expires_at) > Date.parse(result.observed_at)
         ? undefined
         : "Verified namespace evidence must expire after it was observed",
     ),

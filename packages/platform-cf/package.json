@@ -25,6 +25,8 @@
     "./session-tokens": "./src/session-tokens.ts",
     "./verification-completion-repository": "./src/verification-completion-repository.ts",
     "./verification-provider-registry": "./src/verification/provider-registry.ts",
+    "./namespace-ownership-hns-owner": "./src/namespace-ownership/hns-owner.ts",
+    "./namespace-ownership-provider-registry": "./src/namespace-ownership/provider-registry.ts",
     "./verification-intent-resolver": "./src/verification-intent-resolver.ts",
     "./verification-start-repository": "./src/verification-start-repository.ts"
   },

@@ -272,7 +272,7 @@ function guardAdapter(
           if (
             Option.isNone(decoded) ||
             (decoded.value.status === "verified" &&
-              (Date.parse(decoded.value.verified_at) > currentTime ||
+              (Date.parse(decoded.value.observed_at) > currentTime ||
                 (decoded.value.expires_at !== null &&
                   Date.parse(decoded.value.expires_at) <= currentTime)))
           ) {

@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./namespace-ownership": "./src/namespace-ownership/index.ts",
+    "./namespace-ownership-hns-evidence": "./src/namespace-ownership/hns-evidence.ts",
     "./money/community-purchase-funding-admission": "./src/money/community-purchase-funding-admission.ts",
     "./money/community-purchase-funding-producer": "./src/money/community-purchase-funding-producer.ts",
     "./use-cases/community-purchase-funding-admission": "./src/use-cases/community-purchase-funding-admission.ts",

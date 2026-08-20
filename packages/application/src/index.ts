@@ -5,6 +5,7 @@ export * from "./money/community-purchase-funding-plan.ts";
 export * from "./money/community-purchase-funding-producer.ts";
 export * from "./money/community-purchase-funding-query.ts";
 export * from "./money/community-purchase-funding-reconciliation.ts";
+export * from "./namespace-ownership/index.ts";
 export * from "./ports.ts";
 export * from "./use-cases/community/creation-requirement-projection.ts";
 export * from "./use-cases/identity-registration.ts";

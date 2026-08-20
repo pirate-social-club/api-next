@@ -89,20 +89,21 @@ describe("namespace ownership provider boundary", () => {
     ).toBeFalse();
   });
 
-  test("returns only pending or digest-bound verified evidence", () => {
+  test("returns only pending or bounded raw verified evidence", () => {
     expect(
       Schema.decodeUnknownSync(NamespaceOwnershipProviderCompleteResult)({ status: "pending" }),
     ).toEqual({ status: "pending" });
     expect(
       Schema.decodeUnknownSync(NamespaceOwnershipProviderCompleteResult)({
         status: "verified",
+        evidence_kind: "raw_provider_response_v1",
         provider_evidence_ref: "hns-observation-1",
-        evidence_digest: "c".repeat(64),
-        provider_identity_digest: "d".repeat(64),
-        verified_at: "2026-08-20T12:00:00.000Z",
+        raw_response_bytes: new TextEncoder().encode('{"status":"verified"}'),
+        observation: { status: "verified" },
+        observed_at: "2026-08-20T12:00:00.000Z",
         expires_at: "2026-09-20T12:00:00.000Z",
       }),
-    ).toMatchObject({ status: "verified", evidence_digest: "c".repeat(64) });
+    ).toMatchObject({ status: "verified", evidence_kind: "raw_provider_response_v1" });
     expect(() =>
       Schema.decodeUnknownSync(NamespaceOwnershipProviderCompleteResult)({
         status: "verified",
