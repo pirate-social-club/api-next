@@ -124,7 +124,12 @@ const decode = (
 ): unknown => {
   if (schema === undefined) return undefined;
   try {
-    return Schema.decodeUnknownSync(schema as unknown as Schema.ConstraintDecoder<unknown>)(value);
+    return Schema.decodeUnknownSync(schema as unknown as Schema.ConstraintDecoder<unknown>, {
+      // Request objects are closed wire contracts. Headers are the exception:
+      // the transport deliberately selects declared headers from a real HTTP
+      // header bag while allowing ordinary infrastructure headers to coexist.
+      onExcessProperty: location === "headers" ? "ignore" : "error",
+    })(value);
   } catch {
     throw new BadRequest({ message: `Invalid ${location} request`, details: { location } });
   }

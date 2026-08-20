@@ -466,6 +466,38 @@ describe("contracts-generated HTTP worker", () => {
     });
   });
 
+  it("rejects excess body and query members at the HTTP wire boundary", async () => {
+    let voteHandlerCalled = false;
+    const app = createHttpWorker({
+      handlers: {
+        CastPostVote: () => {
+          voteHandlerCalled = true;
+          return vote;
+        },
+        GetPublicHomeFeed: () => feed,
+      },
+      authenticate: () => ({ kind: "user", subject: "user_1" }),
+      authorize: () => undefined,
+    });
+
+    const bodyResponse = await app.request("http://worker.test/posts/post_1/vote", {
+      method: "POST",
+      headers: { authorization: "Bearer test", "content-type": "application/json" },
+      body: JSON.stringify({ value: 1, forged: true }),
+    });
+    const queryResponse = await app.request("http://worker.test/feed/home/public?forged=true");
+
+    expect(bodyResponse.status).toBe(400);
+    expect(await bodyResponse.json()).toMatchObject({
+      error: { code: "bad_request", details: { location: "body" } },
+    });
+    expect(queryResponse.status).toBe(400);
+    expect(await queryResponse.json()).toMatchObject({
+      error: { code: "bad_request", details: { location: "query" } },
+    });
+    expect(voteHandlerCalled).toBe(false);
+  });
+
   it("passes only decoded request data to handlers and authorizers", async () => {
     let received: unknown;
     const app = createHttpWorker({
