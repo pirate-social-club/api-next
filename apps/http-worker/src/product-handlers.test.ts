@@ -39,6 +39,7 @@ const eligibility = (communityId: string) => ({
   joinable_now: true,
   status: "joinable" as const,
   membership_gate_summaries: [],
+  next_action: { kind: "join" as const },
 });
 
 const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({

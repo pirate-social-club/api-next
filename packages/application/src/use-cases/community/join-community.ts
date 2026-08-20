@@ -56,10 +56,15 @@ export const joinCommunity = Effect.fn("joinCommunity")(function* (
       ),
     );
   if (eligibility === null) return yield* new NotFound({ message: "Community not found" });
-  if (eligibility.status === "gate_failed") {
+  if (eligibility.status === "verification_required" || eligibility.status === "gate_failed") {
     return yield* new GateUnsatisfied({
       message: "Community membership gates are not satisfied",
-      details: { reason: eligibility.failure_reason ?? "unsupported" },
+      details: {
+        reason:
+          eligibility.status === "verification_required"
+            ? "missing_verification"
+            : (eligibility.failure_reason ?? "unsupported"),
+      },
     });
   }
   if (eligibility.status === "banned") {

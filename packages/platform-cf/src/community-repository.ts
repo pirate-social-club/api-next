@@ -20,6 +20,7 @@ import {
   loadCuratedAgeEvaluation,
   persistEnforceDecision,
 } from "./gates-v2-community.ts";
+import { PLATFORM_AGE_18_VERIFICATION_INTENT_ID } from "./verification-intent-resolver.ts";
 
 type CommunityRow = {
   readonly community_id: unknown;
@@ -343,6 +344,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
           status: "banned" as const,
           membership_gate_summaries: [],
           failure_reason: "banned" as const,
+          next_action: { kind: "blocked" as const, reason: "banned" as const },
         };
       }
       if (status === "member") {
@@ -353,6 +355,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
           joinable_now: false,
           status: "already_joined" as const,
           membership_gate_summaries: [],
+          next_action: { kind: "none" as const, reason: "already_joined" as const },
         };
       }
       if (status === "pending") {
@@ -363,6 +366,10 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
           joinable_now: false,
           status: "pending_request" as const,
           membership_gate_summaries: [],
+          next_action: {
+            kind: "wait" as const,
+            reason_code: "membership_pending" as const,
+          },
         };
       }
       if (mode === "gated") {
@@ -387,6 +394,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             status: "joinable" as const,
             membership_gate_summaries: [CURATED_AGE_GATE_SUMMARY],
             gate_evaluation: gateEvaluation,
+            next_action: { kind: "join" as const },
           };
         }
         if (evaluation.outcome === "needs_evidence") {
@@ -402,6 +410,11 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
             suggested_verification_intent: "community_join" as const,
             failure_reason: "missing_verification" as const,
             gate_evaluation: gateEvaluation,
+            next_action: {
+              kind: "start_verification" as const,
+              provider_id: "zkpassport" as const,
+              intent_id: PLATFORM_AGE_18_VERIFICATION_INTENT_ID,
+            },
           };
         }
         return {
@@ -416,6 +429,7 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
               ? ("minimum_age_mismatch" as const)
               : ("unsupported" as const),
           gate_evaluation: gateEvaluation,
+          next_action: { kind: "blocked" as const, reason: "gate_failed" as const },
         };
       }
       return {
@@ -425,6 +439,10 @@ export function makeControlPlaneCommunityRepository(): CommunityRepository {
         joinable_now: true,
         status: mode === "request" ? ("requestable" as const) : ("joinable" as const),
         membership_gate_summaries: [],
+        next_action:
+          mode === "request"
+            ? ({ kind: "request_membership" as const } as const)
+            : ({ kind: "join" as const } as const),
       };
     });
 

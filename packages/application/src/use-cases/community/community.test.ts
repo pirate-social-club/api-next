@@ -34,15 +34,37 @@ const preview = (communityId: string): CommunityPreviewDocument => ({
 const eligibility = (
   communityId: string,
   status: JoinEligibilityDocument["status"] = "joinable",
-): JoinEligibilityDocument => ({
-  community: communityId,
-  membership_mode: status === "gate_failed" ? "gated" : "open",
-  human_verification_lane: null,
-  joinable_now: status === "joinable",
-  status,
-  membership_gate_summaries: [],
-  ...(status === "gate_failed" ? { failure_reason: "unsupported" as const } : {}),
-});
+): JoinEligibilityDocument => {
+  const next_action: JoinEligibilityDocument["next_action"] =
+    status === "already_joined"
+      ? { kind: "none", reason: "already_joined" }
+      : status === "banned"
+        ? { kind: "blocked", reason: "banned" }
+        : status === "gate_failed"
+          ? { kind: "blocked", reason: "gate_failed" }
+          : status === "pending_request"
+            ? { kind: "wait", reason_code: "membership_pending" }
+            : status === "requestable"
+              ? { kind: "request_membership" }
+              : status === "verification_required"
+                ? {
+                    kind: "start_verification",
+                    provider_id: "very.oauth",
+                    intent_id: "join-intent-1",
+                  }
+                : { kind: "join" };
+  return {
+    community: communityId,
+    membership_mode:
+      status === "gate_failed" || status === "verification_required" ? "gated" : "open",
+    human_verification_lane: null,
+    joinable_now: status === "joinable",
+    status,
+    membership_gate_summaries: [],
+    ...(status === "gate_failed" ? { failure_reason: "unsupported" as const } : {}),
+    next_action,
+  };
+};
 
 function services(overrides: Partial<CommunityStore["Service"]> = {}): CommunityServices {
   return {

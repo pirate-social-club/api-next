@@ -45,6 +45,16 @@ import {
 const JsonValue = Schema.Json;
 const JsonObject = Schema.Record(Schema.String, Schema.Json);
 
+const VerificationProviderId = Schema.NonEmptyString.check(
+  Schema.makeFilter((value) =>
+    value.length <= 128 &&
+    value === value.trim() &&
+    /^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/u.test(value)
+      ? undefined
+      : "Expected a canonical verification provider identifier",
+  ),
+);
+
 const PathCommunity = Schema.Struct({ communityId: Schema.String });
 const PathPublicCommunity = Schema.Struct({ communityRef: Schema.String });
 const PathPost = Schema.Struct({ postId: Schema.String });
@@ -354,6 +364,7 @@ const CommunityTextLocalization = Schema.Struct({
 const MembershipGateSummary = Schema.Struct({
   gate_id: Schema.optional(Schema.NullOr(Schema.String)),
   gate_type: Schema.Literals([
+    "human_verification",
     "nationality",
     "gender",
     "unique_human",
@@ -365,9 +376,7 @@ const MembershipGateSummary = Schema.Struct({
     "erc721_inventory_match",
     "asset_balance",
   ]),
-  accepted_providers: Schema.optional(
-    Schema.NullOr(Schema.Array(Schema.Literals(["self", "zkpassport", "very", "passport"]))),
-  ),
+  accepted_providers: Schema.optional(Schema.NullOr(Schema.Array(VerificationProviderId))),
   required_value: Schema.optional(Schema.NullOr(Schema.String)),
   required_values: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
   excluded_values: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
@@ -860,13 +869,38 @@ export const GetCommunityPreview = endpoint({
   errors: [AuthError, BadRequest, NotFound],
 });
 
+const JoinNextActionWaitReasonCode = Schema.Literals([
+  "verification_pending",
+  "membership_pending",
+  "operation_pending",
+  "reconciliation_pending",
+]);
+
+const JoinNextAction = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("start_verification"),
+    provider_id: VerificationProviderId,
+    intent_id: Schema.NonEmptyString,
+  }),
+  Schema.Struct({ kind: Schema.Literal("join") }),
+  Schema.Struct({ kind: Schema.Literal("request_membership") }),
+  Schema.Struct({
+    kind: Schema.Literal("wait"),
+    reason_code: JoinNextActionWaitReasonCode,
+    retry_after_seconds: Schema.optional(Schema.Number),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("blocked"),
+    reason: Schema.Literals(["banned", "gate_failed", "unsupported"]),
+  }),
+  Schema.Struct({ kind: Schema.Literal("none"), reason: Schema.Literal("already_joined") }),
+]);
+
 const JoinEligibility = Schema.Struct({
   community: Schema.String,
   membership_mode: Schema.Literals(["open", "request", "gated"]),
   human_verification_lane: Schema.NullOr(Schema.Literals(["very", "self"])),
-  preferred_verification_provider: Schema.optional(
-    Schema.NullOr(Schema.Literals(["self", "zkpassport", "very"])),
-  ),
+  preferred_verification_provider: Schema.optional(Schema.NullOr(VerificationProviderId)),
   joinable_now: Schema.Boolean,
   status: Schema.Literals([
     "joinable",
@@ -883,6 +917,7 @@ const JoinEligibility = Schema.Struct({
     Schema.Array(
       Schema.Literals([
         "unique_human",
+        "human_verification",
         "age_over_18",
         "minimum_age",
         "nationality",
@@ -892,9 +927,7 @@ const JoinEligibility = Schema.Struct({
       ]),
     ),
   ),
-  suggested_verification_provider: Schema.optional(
-    Schema.NullOr(Schema.Literals(["self", "zkpassport", "very", "passport"])),
-  ),
+  suggested_verification_provider: Schema.optional(Schema.NullOr(VerificationProviderId)),
   suggested_verification_intent: Schema.optional(
     Schema.NullOr(Schema.Literals(["community_join", "post_create", "comment_create"])),
   ),
@@ -929,6 +962,7 @@ const JoinEligibility = Schema.Struct({
   // GatePolicyEvaluation remains explicitly JSON-valued until its api-next
   // envelope is frozen; this is a bounded schema gap, not an open request.
   gate_evaluation: Schema.optional(Schema.NullOr(JsonObject)),
+  next_action: JoinNextAction,
 });
 
 export const GetJoinEligibility = endpoint({
@@ -938,7 +972,7 @@ export const GetJoinEligibility = endpoint({
   request: { path: PathCommunity },
   response: JoinEligibility,
   successStatus: 200,
-  errors: [AuthError, NotFound],
+  errors: [AuthError, NotFound, InternalError],
 });
 
 export const JoinCommunity = endpoint({

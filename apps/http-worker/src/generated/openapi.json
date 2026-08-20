@@ -11879,6 +11879,7 @@
                         "gate_type": {
                           "type": "string",
                           "enum": [
+                            "human_verification",
                             "nationality",
                             "gender",
                             "unique_human",
@@ -11899,11 +11900,10 @@
                                   "type": "array",
                                   "items": {
                                     "type": "string",
-                                    "enum": [
-                                      "self",
-                                      "zkpassport",
-                                      "very",
-                                      "passport"
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
                                     ]
                                   }
                                 },
@@ -15764,6 +15764,7 @@
                         "gate_type": {
                           "type": "string",
                           "enum": [
+                            "human_verification",
                             "nationality",
                             "gender",
                             "unique_human",
@@ -15784,11 +15785,10 @@
                                   "type": "array",
                                   "items": {
                                     "type": "string",
-                                    "enum": [
-                                      "self",
-                                      "zkpassport",
-                                      "very",
-                                      "passport"
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
                                     ]
                                   }
                                 },
@@ -16430,10 +16430,10 @@
                           "anyOf": [
                             {
                               "type": "string",
-                              "enum": [
-                                "self",
-                                "zkpassport",
-                                "very"
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
                               ]
                             },
                             {
@@ -16535,6 +16535,7 @@
                             "type": "string",
                             "enum": [
                               "unique_human",
+                              "human_verification",
                               "age_over_18",
                               "minimum_age",
                               "nationality",
@@ -16555,11 +16556,10 @@
                           "anyOf": [
                             {
                               "type": "string",
-                              "enum": [
-                                "self",
-                                "zkpassport",
-                                "very",
-                                "passport"
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
                               ]
                             },
                             {
@@ -16729,6 +16729,154 @@
                           "type": "null"
                         }
                       ]
+                    },
+                    "next_action": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "start_verification"
+                              ]
+                            },
+                            "provider_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "provider_id",
+                            "intent_id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "join"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "request_membership"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "wait"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "verification_pending",
+                                "membership_pending",
+                                "operation_pending",
+                                "reconciliation_pending"
+                              ]
+                            },
+                            "retry_after_seconds": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "blocked"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "banned",
+                                "gate_failed",
+                                "unsupported"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "none"
+                              ]
+                            },
+                            "reason": {
+                              "type": "string",
+                              "enum": [
+                                "already_joined"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "reason"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
                     }
                   },
                   "required": [
@@ -16737,7 +16885,8 @@
                     "human_verification_lane",
                     "joinable_now",
                     "status",
-                    "membership_gate_summaries"
+                    "membership_gate_summaries",
+                    "next_action"
                   ],
                   "additionalProperties": false,
                   "$defs": {
@@ -16779,6 +16928,7 @@
                         "gate_type": {
                           "type": "string",
                           "enum": [
+                            "human_verification",
                             "nationality",
                             "gender",
                             "unique_human",
@@ -16799,11 +16949,10 @@
                                   "type": "array",
                                   "items": {
                                     "type": "string",
-                                    "enum": [
-                                      "self",
-                                      "zkpassport",
-                                      "very",
-                                      "passport"
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
                                     ]
                                   }
                                 },
@@ -17200,6 +17349,59 @@
             "x-error-codes": [
               "not_found"
             ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
           }
         },
         "x-auth": {
@@ -17209,7 +17411,8 @@
         },
         "x-errors": [
           "AuthError",
-          "NotFound"
+          "NotFound",
+          "InternalError"
         ]
       }
     },
@@ -20940,6 +21143,7 @@
                         "gate_type": {
                           "type": "string",
                           "enum": [
+                            "human_verification",
                             "nationality",
                             "gender",
                             "unique_human",
@@ -20960,11 +21164,10 @@
                                   "type": "array",
                                   "items": {
                                     "type": "string",
-                                    "enum": [
-                                      "self",
-                                      "zkpassport",
-                                      "very",
-                                      "passport"
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
                                     ]
                                   }
                                 },
@@ -23119,6 +23322,7 @@
                         "gate_type": {
                           "type": "string",
                           "enum": [
+                            "human_verification",
                             "nationality",
                             "gender",
                             "unique_human",
@@ -23139,11 +23343,10 @@
                                   "type": "array",
                                   "items": {
                                     "type": "string",
-                                    "enum": [
-                                      "self",
-                                      "zkpassport",
-                                      "very",
-                                      "passport"
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
                                     ]
                                   }
                                 },
@@ -27040,6 +27243,7 @@
                         "gate_type": {
                           "type": "string",
                           "enum": [
+                            "human_verification",
                             "nationality",
                             "gender",
                             "unique_human",
@@ -27060,11 +27264,10 @@
                                   "type": "array",
                                   "items": {
                                     "type": "string",
-                                    "enum": [
-                                      "self",
-                                      "zkpassport",
-                                      "very",
-                                      "passport"
+                                    "allOf": [
+                                      {
+                                        "minLength": 1
+                                      }
                                     ]
                                   }
                                 },

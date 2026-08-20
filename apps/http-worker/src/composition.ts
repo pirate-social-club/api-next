@@ -14,6 +14,7 @@ import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-
 import type { VerificationIntentResolver } from "@pirate/application/use-cases/verification-start";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
 import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
+import { makeControlPlaneCommunityJoinIntentResolver } from "@pirate/platform-cf/community-join-intent-resolver";
 import { makeCommunityPurchaseFundingChainReader } from "@pirate/platform-cf/community-purchase-funding-chain-reader";
 import {
   makeControlPlaneCommunityPurchaseFundingProducerStore,
@@ -422,6 +423,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   const verificationCompletionStore = makeControlPlaneVerificationCompletionStore(controlPlane);
   const verificationIntents: VerificationIntentResolver = makeOrderedVerificationIntentResolver([
     makeControlPlaneCommunityCreationIntentResolver(controlPlane, config.API_NEXT_ENV),
+    makeControlPlaneCommunityJoinIntentResolver(controlPlane, config.API_NEXT_ENV),
     makeStaticVerificationIntentResolver(verificationRegistry.list(), config.API_NEXT_ENV),
   ]);
   const verificationHandlers = makeVerificationHandlers({

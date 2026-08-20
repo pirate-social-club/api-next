@@ -896,6 +896,11 @@ describe("contracts-generated HTTP worker", () => {
       joinable_now: false,
       status: "gate_failed" as const,
       membership_gate_summaries: [],
+      next_action: {
+        kind: "start_verification" as const,
+        provider_id: "zkpassport" as const,
+        intent_id: "platform.document.age-18",
+      },
       missing_capabilities: ["age_over_18" as const],
       suggested_verification_provider: "zkpassport" as const,
       suggested_verification_intent: "community_join" as const,
