@@ -153,6 +153,28 @@ describe("community creation intent state machine", () => {
     ).toEqual({ kind: "rejected", reason: "stale_revision" });
   });
 
+  test("persists synchronous draft save and preflight as one replayable revision", () => {
+    const changedRequirementHash = "d".repeat(64);
+    const transitioned = transition(
+      { ...state("commit_ready"), revision: 3 },
+      {
+        type: "draft_preflight_completed",
+        expected_revision: 3,
+        canonical_policy_revision: 2,
+        canonical_policy_hash: hashB,
+        verification_requirement_hash: changedRequirementHash,
+        outcome: "verification_required",
+      },
+    );
+    expect(transitioned).toMatchObject({
+      revision: 4,
+      status: "verification_required",
+      canonical_policy_revision: 2,
+      canonical_policy_hash: hashB,
+      verification_requirement_hash: changedRequirementHash,
+    });
+  });
+
   test("expires or cancels any nonterminal state and rejects terminal mutation", () => {
     for (const status of ["draft", "verification_required", "commit_ready"] as const) {
       const current = { ...state(status), revision: 7 };

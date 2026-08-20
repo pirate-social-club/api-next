@@ -55,6 +55,19 @@ export type CommunityCreationIntentEvent =
       readonly verification_requirement_hash: string;
     }>
   | Readonly<{
+      /** A synchronous save + capability/evidence preflight is one durable revision. */
+      readonly type: "draft_preflight_completed";
+      readonly expected_revision: number;
+      readonly canonical_policy_revision: number;
+      readonly canonical_policy_hash: string;
+      readonly verification_requirement_hash: string;
+      readonly outcome:
+        | "evidence_satisfied"
+        | "verification_required"
+        | "quota_exceeded"
+        | "gate_unsupported";
+    }>
+  | Readonly<{
       readonly type: "preflight_completed";
       readonly expected_revision: number;
       readonly outcome:
@@ -205,6 +218,27 @@ export function transitionCommunityCreationIntent(
       ...state,
       revision: state.revision + 1,
       status: "draft",
+      canonical_policy_revision: event.canonical_policy_revision,
+      canonical_policy_hash: event.canonical_policy_hash,
+      verification_requirement_hash: event.verification_requirement_hash,
+    });
+  }
+
+  if (event.type === "draft_preflight_completed") {
+    if (
+      !Number.isSafeInteger(event.canonical_policy_revision) ||
+      event.canonical_policy_revision !== state.canonical_policy_revision + 1 ||
+      !SHA256_HEX.test(event.canonical_policy_hash) ||
+      !SHA256_HEX.test(event.verification_requirement_hash)
+    ) {
+      return rejected("invalid_event");
+    }
+    const status: CommunityCreationStatus =
+      event.outcome === "evidence_satisfied" ? "commit_ready" : event.outcome;
+    return accepted({
+      ...state,
+      revision: state.revision + 1,
+      status,
       canonical_policy_revision: event.canonical_policy_revision,
       canonical_policy_hash: event.canonical_policy_hash,
       verification_requirement_hash: event.verification_requirement_hash,
