@@ -91,7 +91,11 @@ describe("community gate policy compiler", () => {
       },
     ];
     for (const candidate of candidates) {
-      expect(compileCommunityGatePolicy(candidate)).toEqual({ kind: "unsupported" });
+      expect(compileCommunityGatePolicy(candidate)).toMatchObject({
+        kind: "unsupported",
+        canonical_policy_hash: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        verification_requirement_hash: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      });
     }
   });
 });

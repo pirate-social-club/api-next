@@ -49,7 +49,12 @@ export type SupportedCommunityGateCompilation = Readonly<{
 
 export type CommunityGateCompilation =
   | SupportedCommunityGateCompilation
-  | Readonly<{ readonly kind: "unsupported" }>;
+  | Readonly<{
+      readonly kind: "unsupported";
+      /** Audit hashes for the rejected authoring shape; never an executable policy binding. */
+      readonly canonical_policy_hash: string;
+      readonly verification_requirement_hash: string;
+    }>;
 
 const EXACT_POLICY_KEYS = ["version", "accessPaths"];
 const EXACT_PATH_KEYS = ["id", "operator", "requirements"];
@@ -61,6 +66,29 @@ function exactKeys(value: object, expected: readonly string[]): boolean {
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  const record = value as Readonly<Record<string, unknown>>;
+  return `{${Object.keys(record)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`)
+    .join(",")}}`;
+}
+
+function unsupportedCompilation(
+  value: unknown,
+): Extract<CommunityGateCompilation, { kind: "unsupported" }> {
+  const policyPreimage = canonicalJson(value);
+  return {
+    kind: "unsupported",
+    canonical_policy_hash: sha256Hex(policyPreimage),
+    verification_requirement_hash: sha256Hex(
+      canonicalJson({ kind: "unsupported", policy_hash: sha256Hex(policyPreimage), version: 1 }),
+    ),
+  };
 }
 
 function supportedHumanPolicy(value: unknown): boolean {
@@ -109,7 +137,7 @@ function providerBinding(): CommunityGateProviderBinding {
 
 /** Resolves provider-neutral wizard policy into one pinned v1 evaluator/binding. */
 export function compileCommunityGatePolicy(value: unknown): CommunityGateCompilation {
-  if (!supportedHumanPolicy(value)) return { kind: "unsupported" };
+  if (!supportedHumanPolicy(value)) return unsupportedCompilation(value);
   const binding = providerBinding();
   return {
     kind: "supported",
