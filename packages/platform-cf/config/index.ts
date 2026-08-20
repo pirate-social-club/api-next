@@ -98,6 +98,26 @@ export const HttpWorkerConfig = Config.all({
     "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL",
   ).pipe(Config.withDefault("")),
   ZKPASSPORT_DEV_MODE: Config.boolean("ZKPASSPORT_DEV_MODE").pipe(Config.withDefault(false)),
+  VERY_OAUTH_ENABLED: Config.boolean("VERY_OAUTH_ENABLED").pipe(Config.withDefault(false)),
+  VERY_OAUTH_AUTHORIZATION_ENDPOINT: Config.string("VERY_OAUTH_AUTHORIZATION_ENDPOINT").pipe(
+    Config.withDefault(""),
+  ),
+  VERY_OAUTH_TOKEN_ENDPOINT: Config.string("VERY_OAUTH_TOKEN_ENDPOINT").pipe(
+    Config.withDefault(""),
+  ),
+  VERY_OAUTH_USERINFO_ENDPOINT: Config.string("VERY_OAUTH_USERINFO_ENDPOINT").pipe(
+    Config.withDefault(""),
+  ),
+  VERY_OAUTH_ISSUER: Config.string("VERY_OAUTH_ISSUER").pipe(Config.withDefault("")),
+  VERY_OAUTH_JWKS_URL: Config.string("VERY_OAUTH_JWKS_URL").pipe(Config.withDefault("")),
+  VERY_OAUTH_CLIENT_ID: Config.string("VERY_OAUTH_CLIENT_ID").pipe(Config.withDefault("")),
+  VERY_OAUTH_CLIENT_SECRET: secret("VERY_OAUTH_CLIENT_SECRET").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
+  VERY_OAUTH_REDIRECT_URI: Config.string("VERY_OAUTH_REDIRECT_URI").pipe(Config.withDefault("")),
+  VERY_OAUTH_SEALING_KEY: secret("VERY_OAUTH_SEALING_KEY").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
   VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: Config.string(
     "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS",
   ).pipe(Config.withDefault("")),

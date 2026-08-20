@@ -1,6 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import { makePlatformVerificationProviderRegistry } from "./provider-registry.ts";
+import {
+  makePlatformVerificationProviderRegistry,
+  validVeryOauthOptions,
+} from "./provider-registry.ts";
+
+const VERY_OAUTH_OPTIONS = {
+  authorization_endpoint: "https://connect.very.org/oauth2/authorize",
+  token_endpoint: "https://api.very.org/oauth2/token",
+  userinfo_endpoint: "https://api.very.org/oauth2/userinfo",
+  issuer: "https://connect.very.org",
+  jwks_url: "https://connect.very.org/.well-known/jwks.json",
+  client_id: "pirate-client",
+  client_secret: "client-secret",
+  redirect_uri: "https://api.pirate.test/verification/very/callback",
+  sealing_key: new Uint8Array(32).fill(7),
+} as const;
 
 describe("platform verification provider registry", () => {
   test("registers Self Pass only when explicitly configured", async () => {
@@ -105,5 +120,36 @@ describe("platform verification provider registry", () => {
       }),
     );
     expect(rotationReady.list()).toEqual([expect.objectContaining({ provider_id: "zkpassport" })]);
+  });
+
+  test("keeps Very OAuth disabled on invalid configuration and registers no route or transport call", async () => {
+    expect(validVeryOauthOptions(VERY_OAUTH_OPTIONS)).toBe(true);
+    expect(validVeryOauthOptions({ ...VERY_OAUTH_OPTIONS, client_secret: " client-secret" })).toBe(
+      false,
+    );
+    expect(validVeryOauthOptions({ ...VERY_OAUTH_OPTIONS, sealing_key: new Uint8Array(31) })).toBe(
+      false,
+    );
+    expect(validVeryOauthOptions({ ...VERY_OAUTH_OPTIONS, issuer: "https://wrong.example" })).toBe(
+      false,
+    );
+
+    const invalid = await Effect.runPromise(
+      makePlatformVerificationProviderRegistry({
+        very_oauth: { ...VERY_OAUTH_OPTIONS, client_id: " pirate-client" },
+      }),
+    );
+    expect(invalid.list()).toEqual([]);
+
+    const enabled = await Effect.runPromise(
+      makePlatformVerificationProviderRegistry({ very_oauth: VERY_OAUTH_OPTIONS }),
+    );
+    expect(enabled.list()).toEqual([
+      expect.objectContaining({
+        provider_id: "very.oauth",
+        supported_methods: ["palm_oauth"],
+        callback_mode: "none",
+      }),
+    ]);
   });
 });

@@ -50,7 +50,10 @@ import {
   makeSha256VerificationCompletionHasher,
 } from "@pirate/platform-cf/verification-completion-repository";
 import { makeStaticVerificationIntentResolver } from "@pirate/platform-cf/verification-intent-resolver";
-import { makePlatformVerificationProviderRegistry } from "@pirate/platform-cf/verification-provider-registry";
+import {
+  makePlatformVerificationProviderRegistry,
+  validVeryOauthOptions,
+} from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
 import { Effect, Redacted, Schema } from "effect";
 import {
@@ -83,6 +86,16 @@ export interface HttpWorkerBindings {
   readonly ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID?: string;
   readonly ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL?: string;
   readonly ZKPASSPORT_DEV_MODE?: string;
+  readonly VERY_OAUTH_ENABLED?: string;
+  readonly VERY_OAUTH_AUTHORIZATION_ENDPOINT?: string;
+  readonly VERY_OAUTH_TOKEN_ENDPOINT?: string;
+  readonly VERY_OAUTH_USERINFO_ENDPOINT?: string;
+  readonly VERY_OAUTH_ISSUER?: string;
+  readonly VERY_OAUTH_JWKS_URL?: string;
+  readonly VERY_OAUTH_CLIENT_ID?: string;
+  readonly VERY_OAUTH_CLIENT_SECRET?: string;
+  readonly VERY_OAUTH_REDIRECT_URI?: string;
+  readonly VERY_OAUTH_SEALING_KEY?: string;
   readonly VERIFICATION_CALLBACK_CREDENTIAL_HEADERS?: string;
   readonly PIRATE_APP_JWT_PRIVATE_KEY?: string;
   readonly PIRATE_APP_JWT_PUBLIC_KEY?: string;
@@ -146,6 +159,16 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL:
       bindings.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL,
     ZKPASSPORT_DEV_MODE: bindings.ZKPASSPORT_DEV_MODE,
+    VERY_OAUTH_ENABLED: bindings.VERY_OAUTH_ENABLED,
+    VERY_OAUTH_AUTHORIZATION_ENDPOINT: bindings.VERY_OAUTH_AUTHORIZATION_ENDPOINT,
+    VERY_OAUTH_TOKEN_ENDPOINT: bindings.VERY_OAUTH_TOKEN_ENDPOINT,
+    VERY_OAUTH_USERINFO_ENDPOINT: bindings.VERY_OAUTH_USERINFO_ENDPOINT,
+    VERY_OAUTH_ISSUER: bindings.VERY_OAUTH_ISSUER,
+    VERY_OAUTH_JWKS_URL: bindings.VERY_OAUTH_JWKS_URL,
+    VERY_OAUTH_CLIENT_ID: bindings.VERY_OAUTH_CLIENT_ID,
+    VERY_OAUTH_CLIENT_SECRET: bindings.VERY_OAUTH_CLIENT_SECRET,
+    VERY_OAUTH_REDIRECT_URI: bindings.VERY_OAUTH_REDIRECT_URI,
+    VERY_OAUTH_SEALING_KEY: bindings.VERY_OAUTH_SEALING_KEY,
     VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: bindings.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
     PIRATE_APP_JWT_PRIVATE_KEY: bindings.PIRATE_APP_JWT_PRIVATE_KEY,
     PIRATE_APP_JWT_PUBLIC_KEY: bindings.PIRATE_APP_JWT_PUBLIC_KEY,
@@ -228,6 +251,11 @@ function isSigningKeyId(value: string): boolean {
   return /^[A-Za-z0-9._-]{1,128}$/.test(value);
 }
 
+function decodeVeryOauthSealingKey(value: string): Uint8Array | undefined {
+  const bytes = new TextEncoder().encode(value);
+  return bytes.byteLength === 32 ? bytes : undefined;
+}
+
 function fundingRpcUrl(value: string, environment: WorkerConfig["API_NEXT_ENV"]): string {
   try {
     const parsed = new URL(value);
@@ -250,6 +278,10 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   );
   const zkPassportPreviousSigningSecret = Redacted.value(
     config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET,
+  );
+  const veryOauthClientSecret = Redacted.value(config.VERY_OAUTH_CLIENT_SECRET);
+  const veryOauthSealingKey = decodeVeryOauthSealingKey(
+    Redacted.value(config.VERY_OAUTH_SEALING_KEY),
   );
   const previousSigningFields = [
     zkPassportPreviousSigningSecret,
@@ -323,6 +355,25 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
   ) {
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
+  const veryOauthOptions = config.VERY_OAUTH_ENABLED
+    ? {
+        authorization_endpoint: config.VERY_OAUTH_AUTHORIZATION_ENDPOINT,
+        token_endpoint: config.VERY_OAUTH_TOKEN_ENDPOINT,
+        userinfo_endpoint: config.VERY_OAUTH_USERINFO_ENDPOINT,
+        issuer: config.VERY_OAUTH_ISSUER,
+        jwks_url: config.VERY_OAUTH_JWKS_URL,
+        client_id: config.VERY_OAUTH_CLIENT_ID,
+        client_secret: veryOauthClientSecret,
+        redirect_uri: config.VERY_OAUTH_REDIRECT_URI,
+        sealing_key: veryOauthSealingKey ?? new Uint8Array(),
+      }
+    : undefined;
+  if (
+    config.VERY_OAUTH_ENABLED &&
+    (veryOauthOptions === undefined || !validVeryOauthOptions(veryOauthOptions))
+  ) {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  }
   const verificationRegistry = await Effect.runPromise(
     makePlatformVerificationProviderRegistry({
       ...(config.SELF_PASS_ENABLED && selfPassOrigin !== undefined
@@ -357,6 +408,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
             },
           }
         : {}),
+      ...(veryOauthOptions === undefined ? {} : { very_oauth: veryOauthOptions }),
       callback_credential_headers: callbackCredentialHeaderNames,
     }),
   );

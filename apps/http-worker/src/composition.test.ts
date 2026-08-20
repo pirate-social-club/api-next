@@ -55,6 +55,22 @@ async function bindings(): Promise<HttpWorkerBindings> {
   };
 }
 
+function withVeryOauth(bindings: HttpWorkerBindings): HttpWorkerBindings {
+  return {
+    ...bindings,
+    VERY_OAUTH_ENABLED: "true",
+    VERY_OAUTH_AUTHORIZATION_ENDPOINT: "https://connect.very.org/oauth2/authorize",
+    VERY_OAUTH_TOKEN_ENDPOINT: "https://api.very.org/oauth2/token",
+    VERY_OAUTH_USERINFO_ENDPOINT: "https://api.very.org/oauth2/userinfo",
+    VERY_OAUTH_ISSUER: "https://connect.very.org",
+    VERY_OAUTH_JWKS_URL: "https://connect.very.org/.well-known/jwks.json",
+    VERY_OAUTH_CLIENT_ID: "pirate-client",
+    VERY_OAUTH_CLIENT_SECRET: "client-secret",
+    VERY_OAUTH_REDIRECT_URI: "https://api.pirate.test/verification/very/callback",
+    VERY_OAUTH_SEALING_KEY: "k".repeat(32),
+  };
+}
+
 describe("HTTP production composition", () => {
   test("requires both Durable Object registration limiter bindings", () => {
     expect(() =>
@@ -173,6 +189,31 @@ describe("HTTP production composition", () => {
     await expect(createProductionHttpWorker(incomplete)).rejects.toThrow(
       "HTTP worker configuration is incomplete or invalid",
     );
+  });
+
+  test("keeps Very OAuth disabled by default and fails closed when enabled incompletely", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker(configured);
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    await expect(
+      createProductionHttpWorker({ ...configured, VERY_OAUTH_ENABLED: "true" }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
+
+  test("constructs the enabled Very OAuth provider without making an upstream request", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker(withVeryOauth(configured));
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+  });
+
+  test("rejects whitespace-padded Very OAuth credentials before provider composition", async () => {
+    const configured = await bindings();
+    await expect(
+      createProductionHttpWorker({
+        ...withVeryOauth(configured),
+        VERY_OAUTH_CLIENT_SECRET: " client-secret",
+      }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
   });
 
   test("fails closed when registration Durable Object bindings are absent", async () => {
