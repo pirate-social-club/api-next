@@ -379,10 +379,11 @@ suite("Postgres 17 terminal text submission repository", () => {
         ),
       );
       const stored = await admin.query<{
+        readonly submission_id: string;
         readonly response_snapshot_bytes: unknown;
         readonly response_snapshot_sha256: string;
       }>(
-        `SELECT response_snapshot_bytes, response_snapshot_sha256
+        `SELECT submission_id, response_snapshot_bytes, response_snapshot_sha256
            FROM text_content_submissions
           WHERE actor_user_id = $1 AND surface = 'text_post' AND idempotency_key = $2`,
         [actor.userId, postBody.idempotency_key],
@@ -404,6 +405,28 @@ suite("Postgres 17 terminal text submission repository", () => {
       );
       expect(Array.from(snapshotBytes(second))).toEqual(Array.from(firstBytes));
       expect(moderationCalls).toBe(1);
+      const conflictResult = await Effect.runPromiseExit(
+        createTextPost(
+          {
+            communityId: "text-community",
+            actor,
+            body: { ...postBody, body: "different terminal text" } as CreatePostBody,
+          },
+          { textPostStore, textModeration },
+        ),
+      );
+      if (Exit.isSuccess(conflictResult))
+        throw new Error("expected same-key different-payload POST to conflict");
+      const conflictFailure = Cause.findError(conflictResult.cause);
+      expect(Result.isSuccess(conflictFailure) ? conflictFailure.success : undefined).toMatchObject(
+        {
+          _tag: "IdempotencyConflict",
+          details: {
+            reason_code: "idempotency_conflict",
+            submission_id: storedRow.submission_id,
+          },
+        },
+      );
       const count = await admin.query<{ readonly count: number }>(
         `SELECT count(*)::int AS count
            FROM text_content_submissions
