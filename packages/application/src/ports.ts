@@ -2,6 +2,7 @@ import type {
   CastPostVote,
   ClearPostVote,
   CommitCommunityCreationIntent,
+  PostDocument as ContractPostDocument,
   CreateCommentReply,
   CreateCommunityCreationIntent,
   CreatePost,
@@ -305,7 +306,13 @@ export type CreateCommentBody = Schema.Schema.Type<(typeof CreateCommentReply.re
 export type VoteBody = Schema.Schema.Type<(typeof CastPostVote.request)["body"]>;
 export type ClearVoteBody = Schema.Schema.Type<(typeof ClearPostVote.request)["body"]>;
 
-export type PostDocument = Schema.Schema.Type<typeof CreatePost.response>;
+/**
+ * The content repository still returns the internal post read model.  It is
+ * deliberately not derived from CreatePost.response: Order 4 changes that
+ * public command response to TextContentSubmissionV1 while Order 5 owns the
+ * runtime moderation/ledger mapping.
+ */
+export type PostDocument = ContractPostDocument;
 export type LocalizedPostDocument = Schema.Schema.Type<typeof GetPost.response>;
 export type CommentDocument = Schema.Schema.Type<typeof CreateCommentReply.response>;
 export type VoteDocument = Schema.Schema.Type<typeof CastPostVote.response>;

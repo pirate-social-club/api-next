@@ -135,6 +135,34 @@ describe("M2 content use cases", () => {
     expect(createCalls).toBe(0);
   });
 
+  test("rejects publish_mode during direct application decoding", async () => {
+    let createCalls = 0;
+    const result = await run(
+      createPost(
+        {
+          communityId: "community_1",
+          actor,
+          body: {
+            post_type: "text",
+            idempotency_key: "k",
+            body: "hello",
+            publish_mode: "async",
+          },
+        },
+        {
+          contentStore: fakeStore({
+            createPost: () => {
+              createCalls += 1;
+              return Effect.succeed(fakeDocument);
+            },
+          }),
+        },
+      ),
+    );
+    expect(failureOf(result)).toMatchObject({ _tag: "BadRequest" });
+    expect(createCalls).toBe(0);
+  });
+
   test("rejects delegated actors before content persistence", async () => {
     const result = await run(
       createPost(

@@ -1043,14 +1043,7 @@ export const CreatePost = endpoint({
   request: { path: PathCommunity, body: CreatePostRequest },
   response: TextContentSubmissionV1,
   successStatus: 201,
-  errors: [
-    AuthError,
-    BadRequest,
-    IdempotencyConflict,
-    MembershipRequired,
-    NotFound,
-    RateLimited,
-  ],
+  errors: [AuthError, BadRequest, IdempotencyConflict, MembershipRequired, NotFound, RateLimited],
 });
 
 export const GetTextContentSubmission = endpoint({

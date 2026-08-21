@@ -122,7 +122,6 @@ const directTextBody = (body: CreatePostBody): boolean =>
   body.source_community == null &&
   body.crosspost_source == null &&
   body.event == null &&
-  body.publish_mode == null &&
   body.listing_draft == null &&
   body.lyrics == null &&
   typeof body.body === "string" &&
