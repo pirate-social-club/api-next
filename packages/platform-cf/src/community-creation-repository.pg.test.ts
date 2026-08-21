@@ -6,6 +6,7 @@ import type { EvidenceBundle, ProofSession } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { prepareCommitReadyCommunity } from "./community-creation-repository.pg-fixture.ts";
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository.ts";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "./namespace-ownership-completion-repository.ts";
 import { makeControlPlaneNamespaceOwnershipStartStore } from "./namespace-ownership-start-repository.ts";
@@ -62,6 +63,27 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
     await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
     await admin.end();
   }
+}
+
+async function waitForBlockedStatements(
+  admin: Client,
+  queryFragment: string,
+  expectedCount: number,
+): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const result = await admin.query<{ blocked_count: number }>(
+      `SELECT COUNT(*)::integer AS blocked_count
+         FROM pg_stat_activity
+        WHERE state = 'active'
+          AND wait_event_type = 'Lock'
+          AND query LIKE $1`,
+      [`%${queryFragment}%`],
+    );
+    if ((result.rows[0]?.blocked_count ?? 0) >= expectedCount) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`expected ${expectedCount} blocked PostgreSQL statement(s)`);
 }
 
 function storeFor(
@@ -1036,10 +1058,274 @@ suite("Postgres 17 community creation repository", () => {
     });
     completedTestCount += 1;
   }, 30_000);
+
+  test("serializes distinct commit-ready claimants onto one canonical route", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      const actors = [
+        { kind: "user" as const, userId: "route-race-actor-a" },
+        { kind: "user" as const, userId: "route-race-actor-b" },
+      ] as const;
+      await admin.query(
+        `INSERT INTO users (user_id, status, account)
+         VALUES ($1, 'active', '{}'::jsonb), ($2, 'active', '{}'::jsonb)`,
+        actors.map((candidate) => candidate.userId),
+      );
+      const fixtures = [
+        await prepareCommitReadyCommunity({
+          connection,
+          actor: actors[0],
+          prefix: "route-race-a",
+          rootLabel: "route-race-shared",
+          subjectDigest: "1".repeat(64),
+          veryStartRequestHash: "3".repeat(64),
+          veryEvidenceHash: "5".repeat(64),
+        }),
+        await prepareCommitReadyCommunity({
+          connection,
+          actor: actors[1],
+          prefix: "route-race-b",
+          rootLabel: "route-race-shared",
+          subjectDigest: "2".repeat(64),
+          veryStartRequestHash: "4".repeat(64),
+          veryEvidenceHash: "6".repeat(64),
+        }),
+      ] as const;
+
+      const routeBlocker = new Client({ connectionString: connection });
+      await routeBlocker.connect();
+      const settleRouteClaims = () =>
+        Promise.allSettled(
+          fixtures.map((fixture) => Effect.runPromise(fixture.store.commit(fixture.commitInput))),
+        );
+      let pendingOutcomes: ReturnType<typeof settleRouteClaims> | undefined;
+      let outcomes: Awaited<ReturnType<typeof settleRouteClaims>> | undefined;
+      try {
+        await routeBlocker.query("SELECT pg_advisory_lock(hashtextextended($1, 19012027))", [
+          "app.route-race-shared",
+        ]);
+        pendingOutcomes = settleRouteClaims();
+        await waitForBlockedStatements(admin, "pg_advisory_xact_lock(hashtextextended", 2);
+        await routeBlocker.query("SELECT pg_advisory_unlock(hashtextextended($1, 19012027))", [
+          "app.route-race-shared",
+        ]);
+        outcomes = await pendingOutcomes;
+      } finally {
+        await routeBlocker
+          .query("SELECT pg_advisory_unlock(hashtextextended($1, 19012027))", [
+            "app.route-race-shared",
+          ])
+          .catch(() => undefined);
+        if (pendingOutcomes !== undefined) await pendingOutcomes;
+        await routeBlocker.end();
+      }
+      if (outcomes === undefined) throw new Error("expected the route claimant outcomes");
+      const fulfilled = outcomes.filter((outcome) => outcome.status === "fulfilled");
+      const rejected = outcomes.filter((outcome) => outcome.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(fulfilled[0]?.value).toMatchObject({
+        outcome: "fresh_created",
+        document: { status: "committed" },
+      });
+      expect(rejected[0]?.reason).toMatchObject({
+        _tag: "CommunityCreationRepositoryError",
+        operation: "commit",
+        reason: "constraint",
+      });
+
+      const winnerCommunityId = fulfilled[0]?.value.document.committed_resource?.community_id;
+      if (winnerCommunityId === undefined) throw new Error("expected one winning community");
+      const winner = fixtures.find((fixture) => fixture.communityId === winnerCommunityId);
+      const loser = fixtures.find((fixture) => fixture.communityId !== winnerCommunityId);
+      if (winner === undefined || loser === undefined) {
+        throw new Error("expected distinct winner and loser fixtures");
+      }
+      await expect(
+        Effect.runPromise(
+          loser.store.get({ actor: loser.actor, intentId: loser.document.intent_id }),
+        ),
+      ).resolves.toMatchObject({
+        revision: loser.ready.revision,
+        status: "commit_ready",
+        committed_resource: null,
+      });
+      const stored = await admin.query(
+        `SELECT
+          (SELECT COUNT(*)::integer FROM community_canonical_route_bindings
+            WHERE path_segment = 'app.route-race-shared') AS route_claims,
+          (SELECT COUNT(*)::integer FROM communities
+            WHERE community_id = $1) AS winner_communities,
+          (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+            WHERE community_id = $1) AS winner_claims,
+          (SELECT COUNT(*)::integer FROM policy_versions
+            WHERE community_id = $1) AS winner_policies,
+          (SELECT COUNT(*)::integer FROM community_policy_provider_bindings
+            WHERE community_id = $1) AS winner_provider_bindings,
+          (SELECT COUNT(*)::integer FROM community_policy_current
+            WHERE community_id = $1) AS winner_current_policies,
+          (SELECT COUNT(*)::integer FROM community_creation_intent_revisions
+            WHERE intent_id = $2 AND operation_kind = 'commit') AS winner_commit_revisions,
+          (SELECT COUNT(*)::integer FROM communities
+            WHERE community_id = $3) AS loser_communities,
+          (SELECT COUNT(*)::integer FROM community_canonical_route_bindings
+            WHERE route_binding_id = $4) AS loser_bindings,
+          (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+            WHERE community_id = $3) AS loser_claims,
+          (SELECT COUNT(*)::integer FROM policy_versions
+            WHERE community_id = $3) AS loser_policies,
+          (SELECT COUNT(*)::integer FROM community_policy_provider_bindings
+            WHERE community_id = $3) AS loser_provider_bindings,
+          (SELECT COUNT(*)::integer FROM community_policy_current
+            WHERE community_id = $3) AS loser_current_policies,
+          (SELECT COUNT(*)::integer FROM community_creation_intent_revisions
+            WHERE intent_id = $5 AND operation_kind = 'commit') AS loser_commit_revisions`,
+        [
+          winner.communityId,
+          winner.document.intent_id,
+          loser.communityId,
+          loser.routeBindingId,
+          loser.document.intent_id,
+        ],
+      );
+      expect(stored.rows).toEqual([
+        {
+          route_claims: 1,
+          winner_communities: 1,
+          winner_claims: 1,
+          winner_policies: 1,
+          winner_provider_bindings: 1,
+          winner_current_policies: 1,
+          winner_commit_revisions: 1,
+          loser_communities: 0,
+          loser_bindings: 0,
+          loser_claims: 0,
+          loser_policies: 0,
+          loser_provider_bindings: 0,
+          loser_current_policies: 0,
+          loser_commit_revisions: 0,
+        },
+      ]);
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test("rechecks operator approval expiry after waiting on the actor lock", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      const quotaActor = { kind: "user" as const, userId: "approval-expiry-actor" };
+      await admin.query(
+        `INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)`,
+        [quotaActor.userId],
+      );
+      const first = await prepareCommitReadyCommunity({
+        connection,
+        actor: quotaActor,
+        prefix: "approval-expiry-first",
+        rootLabel: "approval-expiry-first",
+        subjectDigest: "7".repeat(64),
+        veryStartRequestHash: "7".repeat(64),
+        veryEvidenceHash: "7".repeat(64),
+      });
+      await expect(Effect.runPromise(first.store.commit(first.commitInput))).resolves.toMatchObject(
+        {
+          outcome: "fresh_created",
+          document: { status: "committed" },
+        },
+      );
+      const second = await prepareCommitReadyCommunity({
+        connection,
+        actor: quotaActor,
+        prefix: "approval-expiry-second",
+        rootLabel: "approval-expiry-second",
+        subjectDigest: "7".repeat(64),
+        veryStartRequestHash: "8".repeat(64),
+        veryEvidenceHash: "8".repeat(64),
+      });
+      const subject = await admin.query<{ subject_key_id: string }>(
+        `SELECT subject_key_id
+           FROM community_creation_subject_claims
+          WHERE community_id = $1`,
+        [first.communityId],
+      );
+      const subjectKeyId = subject.rows[0]?.subject_key_id;
+      if (subjectKeyId === undefined) throw new Error("expected the first subject claim");
+      await admin.query(
+        `INSERT INTO community_creation_quota_approvals (
+           approval_id, subject_key_id, actor_id, slot_number,
+           approved_by_user_id, reason, expires_at
+         ) VALUES (
+           'approval-expiry-slot-two', $1, $2, 2, $2,
+           'Test approval expires while commit waits',
+           clock_timestamp() + interval '3 seconds'
+         )`,
+        [subjectKeyId, quotaActor.userId],
+      );
+
+      const blocker = new Client({ connectionString: connection });
+      await blocker.connect();
+      try {
+        await blocker.query("BEGIN");
+        await blocker.query("SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE", [
+          quotaActor.userId,
+        ]);
+        const pendingCommit = Effect.runPromise(second.store.commit(second.commitInput));
+        await waitForBlockedStatements(
+          admin,
+          "SELECT user_id FROM users WHERE user_id = $1 AND status = 'active' FOR UPDATE",
+          1,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 3_100));
+        await blocker.query("COMMIT");
+        await expect(pendingCommit).resolves.toMatchObject({
+          outcome: "fresh_not_created",
+          document: {
+            revision: second.ready.revision + 1,
+            status: "quota_exceeded",
+            committed_resource: null,
+          },
+        });
+      } finally {
+        await blocker.query("ROLLBACK").catch(() => undefined);
+        await blocker.end();
+      }
+
+      const stored = await admin.query(
+        `SELECT
+          (SELECT COUNT(*)::integer FROM communities
+            WHERE community_id = $1) AS communities,
+          (SELECT COUNT(*)::integer FROM community_canonical_route_bindings
+            WHERE route_binding_id = $2) AS bindings,
+          (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+            WHERE intent_id = $3) AS claims,
+          (SELECT COUNT(*)::integer FROM policy_versions
+            WHERE community_id = $1) AS policies,
+          (SELECT COUNT(*)::integer FROM community_policy_provider_bindings
+            WHERE community_id = $1) AS provider_bindings,
+          (SELECT COUNT(*)::integer FROM community_policy_current
+            WHERE community_id = $1) AS current_policies,
+          (SELECT COUNT(*)::integer FROM community_creation_intent_revisions
+            WHERE intent_id = $3 AND operation_kind = 'commit') AS commit_revisions`,
+        [second.communityId, second.routeBindingId, second.document.intent_id],
+      );
+      expect(stored.rows).toEqual([
+        {
+          communities: 0,
+          bindings: 0,
+          claims: 0,
+          policies: 0,
+          provider_bindings: 0,
+          current_policies: 0,
+          commit_revisions: 1,
+        },
+      ]);
+    });
+    completedTestCount += 1;
+  }, 30_000);
 });
 
 afterAll(async () => {
-  if (connectionString !== undefined && completedTestCount === 4) {
+  if (connectionString !== undefined && completedTestCount === 6) {
     await Bun.write(sentinelPath, sentinelContents);
   }
 });
