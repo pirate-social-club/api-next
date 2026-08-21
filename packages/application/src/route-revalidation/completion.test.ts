@@ -3,7 +3,6 @@ import { Effect, Option, Schema } from "effect";
 import {
   CompleteHnsRouteRevalidationInput,
   completeHnsRouteRevalidation,
-  type HnsRouteRevalidationCompletionAllocationOutcome,
   type HnsRouteRevalidationCompletionAttemptReservation,
   type HnsRouteRevalidationCompletionFinalizeOutcome,
   type HnsRouteRevalidationCompletionProviderResult,
@@ -143,7 +142,6 @@ function harness(
   syncThrow = false,
   releaseOutcome: HnsRouteRevalidationCompletionReleaseOutcome = { kind: "released" },
   reservationOutcome?: HnsRouteRevalidationCompletionReservationOutcome,
-  allocationOutcome?: HnsRouteRevalidationCompletionAllocationOutcome,
 ) {
   const events: string[] = [];
   const calls = { provider: 0, consume: 0, reject: 0, verify: 0 };
@@ -155,31 +153,27 @@ function harness(
       events.push("load");
       return Effect.succeed(initial);
     },
-    allocate: () =>
-      Effect.succeed(
-        allocationOutcome ?? {
-          kind: "acquired" as const,
-          allocation: {
-            route_revalidation_attempt_id: attempt.route_revalidation_attempt_id,
-            evidence_ref: attempt.evidence_ref,
-            attempt_number: 1,
-          },
-        },
-      ),
     reserve: (value) => {
       events.push("reserve");
       reserved = value;
       if (reservationOutcome !== undefined) return Effect.succeed(reservationOutcome);
-      return Effect.succeed({
+      return Effect.promise(async () => ({
         kind: "acquired" as const,
         reservation: {
           ...attempt,
-          route_revalidation_attempt_id: value.completion_attempt_id,
-          evidence_ref: value.evidence_ref,
-          attempt_number: value.attempt_number,
-          completion_request_hash: value.completion_request_hash,
+          completion_request_hash: await hnsRouteRevalidationCompletionHash({
+            route_revalidation_id: value.route_revalidation_id,
+            revalidation_session_id: value.revalidation_session_id,
+            route_revalidation_attempt_id: attempt.route_revalidation_attempt_id,
+            route_binding_id: attempt.route_binding_id,
+            expected_binding_generation: value.expected_binding_generation,
+            expected_verified_evidence_ref: value.expected_verified_evidence_ref,
+            attempt_number: attempt.attempt_number,
+            idempotency_key: value.idempotency_key,
+            evidence_ref: attempt.evidence_ref,
+          }),
         },
-      });
+      }));
     },
     release: () => {
       events.push("release");
@@ -332,6 +326,21 @@ test("reserves before provider and releases pending", async () => {
 });
 
 test("hashes the database-authoritative fresh attempt number and identity", async () => {
+  const h = harness({ status: "pending" }, stored(), undefined, undefined, false, {
+    kind: "released",
+  });
+  const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
+  expect(result.status).toBe("pending");
+  expect(h.reserved()).toMatchObject({
+    route_revalidation_id: input.route_revalidation_id,
+    revalidation_session_id: input.revalidation_session_id,
+    idempotency_key: input.idempotency_key,
+  });
+  expect(h.reserved()).not.toHaveProperty("completion_attempt_id");
+  expect(h.reserved()).not.toHaveProperty("attempt_number");
+});
+
+test("rejects a reservation whose fenced authority drifts before provider access", async () => {
   const h = harness(
     { status: "pending" },
     stored(),
@@ -339,23 +348,18 @@ test("hashes the database-authoritative fresh attempt number and identity", asyn
     undefined,
     false,
     { kind: "released" },
-    undefined,
     {
       kind: "acquired",
-      allocation: {
-        route_revalidation_attempt_id: "attempt-2",
-        evidence_ref: "evidence-2",
-        attempt_number: 2,
+      reservation: {
+        ...attempt,
+        route_binding_id: "other-binding",
       },
     },
   );
-  const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
-  expect(result.status).toBe("pending");
-  expect(h.reserved()).toMatchObject({
-    completion_attempt_id: "attempt-2",
-    evidence_ref: "evidence-2",
-    attempt_number: 2,
-  });
+  await expect(
+    Effect.runPromise(completeHnsRouteRevalidation(input, h.services)),
+  ).rejects.toMatchObject({ reason: "binding_conflict" });
+  expect(h.calls.provider).toBe(0);
 });
 
 for (const [kind, reason] of [
@@ -498,8 +502,9 @@ test("semantic contradictions consume without terminal result or evidence", asyn
     observation: observation({ challenge_value: "wrong" }),
     raw_response_bytes: verifiedBytes(observation({ challenge_value: "wrong" })),
   });
-  const exit = await Effect.runPromiseExit(completeHnsRouteRevalidation(input, h.services));
-  expect(exit._tag).toBe("Failure");
+  await expect(
+    Effect.runPromise(completeHnsRouteRevalidation(input, h.services)),
+  ).rejects.toMatchObject({ reason: "attempt_consumed" });
   expect(h.calls.consume).toBe(1);
   expect(h.calls.reject).toBe(0);
   expect(h.calls.verify).toBe(0);
