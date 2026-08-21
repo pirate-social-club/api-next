@@ -541,9 +541,12 @@ function replayOrConflict(
 function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletionStore {
   const load = (input: Parameters<HnsRouteRevalidationCompletionStore["load"]>[0]) =>
     loadStored(db, input).pipe(
-      Effect.mapError((error) =>
-        error instanceof HnsRouteRevalidationCompletionStorageFailed ? error : storageFailure(),
-      ),
+      Effect.mapError((error) => {
+        console.error("route completion load error", error);
+        return error instanceof HnsRouteRevalidationCompletionStorageFailed
+          ? error
+          : storageFailure();
+      }),
     );
 
   const reserve = (input: Parameters<HnsRouteRevalidationCompletionStore["reserve"]>[0]) =>
@@ -757,9 +760,12 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
         }),
       )
       .pipe(
-        Effect.mapError((error) =>
-          error instanceof HnsRouteRevalidationCompletionStorageFailed ? error : storageFailure(),
-        ),
+        Effect.mapError((error) => {
+          console.error("route completion reserve error", error);
+          return error instanceof HnsRouteRevalidationCompletionStorageFailed
+            ? error
+            : storageFailure();
+        }),
       );
 
   const release = (input: Parameters<HnsRouteRevalidationCompletionStore["release"]>[0]) =>

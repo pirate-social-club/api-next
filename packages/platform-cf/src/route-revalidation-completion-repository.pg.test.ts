@@ -635,6 +635,7 @@ suite("route revalidation completion repository", () => {
               completion_request_hash: terminal.reservation.completion_request_hash,
               result_hash: terminalResultHash,
               expired_result_hash: SHA_B,
+              stale_result_hash: SHA_C,
               attempt: terminal.reservation,
               status: "missing_root",
               observed_expires_at: null,
@@ -773,7 +774,12 @@ suite("route revalidation completion repository", () => {
       expect(await validate(exact, exactHash)).toBe(true);
       expect(await validate(exact.replace("[", "[ "), exactHash)).toBe(false);
       for (const alternate of ["1.0", "1.00", "1e0"]) {
-        const alternateDocument = exact.replace(',1,"idempotency_', `,${alternate},"idempotency_`);
+        const generationMember = `,${base.expected_binding_generation},${JSON.stringify(base.idempotency_key)},`;
+        const alternateDocument = exact.replace(
+          generationMember,
+          `,${alternate},${JSON.stringify(base.idempotency_key)},`,
+        );
+        expect(alternateDocument).not.toBe(exact);
         const alternateHash = createHash("sha256").update(alternateDocument).digest("hex");
         expect(await validate(alternateDocument, alternateHash)).toBe(false);
       }

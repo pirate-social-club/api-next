@@ -10154,9 +10154,19 @@ BEGIN
   IF session_record.revalidation_session_id IS NULL THEN
     RAISE EXCEPTION 'route revalidation attempt has no session';
   END IF;
-  SELECT count(*)::integer,
+  SELECT count(*) FILTER (WHERE state = 'consumed' AND NOT (
+           consumption_kind = 'challenge_mismatch'
+           AND result_hash IS NULL
+           AND terminal_result_document IS NULL
+           AND terminal_observed_expires_at IS NULL
+         ))::integer,
          COALESCE(bool_or(state = 'leased'), false),
-         COALESCE(bool_or(state = 'consumed' AND (
+         COALESCE(bool_or(state = 'consumed' AND NOT (
+           consumption_kind = 'challenge_mismatch'
+           AND result_hash IS NULL
+           AND terminal_result_document IS NULL
+           AND terminal_observed_expires_at IS NULL
+         ) AND (
            consumption_kind <> 'challenge_mismatch'
            OR result_hash IS NOT NULL OR terminal_result_document IS NOT NULL
            OR terminal_observed_expires_at IS NOT NULL
