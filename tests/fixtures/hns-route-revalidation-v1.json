@@ -44,8 +44,8 @@
   "observation_sha256": "a023461da89892bace7cb778607ec2bb18fb5dab4de445d743da49b255e91707",
   "requirement_hash": "1dee37cc02424e3347299d139aae7461dcb65a3bd0f3b4c55b0646822c8f7c3b",
   "start_request_hash": "e1507fb0e72e4025c2b27a70a4c4042344b641eda6c214ba50354773870550df",
-  "completion_request_hash": "dc0a55ed39829b2c4acd89a159adf568c8adafac67f026480068359bade7bfa1",
+  "completion_request_hash": "74ae07e4f9066708962530611f01b012c940715a79142c797156e5d06318fba9",
   "provider_identity_digest": "474b388bef49e72cd53340764a32e4d266d39d5a6a39465d9b860e9e0059cf62",
   "evidence_digest": "04538a231db9cd3c0bfeb6d392cb69aa9b67bc53f636c56f89fbeded66d2813d",
-  "result_hash": "44c04cd49bf5a14f467fc2b4f77769734ce9de800536e31c4fbaf260198a9142"
+  "result_hash": "0678079e1cab38f1d14bb23c1bb950193dced37771dc68f45e22ffd0e73fff44"
 }

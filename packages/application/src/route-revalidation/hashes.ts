@@ -100,7 +100,6 @@ export type HnsRouteRevalidationCompletionHashInput = Readonly<{
   readonly attempt_number: number;
   readonly idempotency_key: string;
   readonly evidence_ref: string;
-  readonly fence_token: number;
 }>;
 
 export type HnsRouteRevalidationProviderIdentityInput = Readonly<{
@@ -340,7 +339,6 @@ export function hnsRouteRevalidationCompletionPreimage(
     input.attempt_number,
     input.idempotency_key,
     input.evidence_ref,
-    input.fence_token,
     "poll_result",
   ]);
 }

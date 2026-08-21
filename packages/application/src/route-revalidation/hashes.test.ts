@@ -35,7 +35,6 @@ type FrozenVector = {
   readonly expected_verified_evidence_ref: string | null;
   readonly attempt_number: number;
   readonly idempotency_key: string;
-  readonly fence_token: number;
   readonly provider_id: string;
   readonly provider_binding_hash: string;
   readonly provider_configuration_kind: "managed" | "dynamic";
@@ -141,7 +140,6 @@ const completion = (): HnsRouteRevalidationCompletionHashInput => ({
   attempt_number: vector.attempt_number,
   idempotency_key: vector.idempotency_key,
   evidence_ref: vector.evidence_ref,
-  fence_token: vector.fence_token,
 });
 
 const providerIdentity = (): HnsRouteRevalidationProviderIdentityInput => ({
@@ -269,6 +267,24 @@ test("keeps all ordered-array preimages visible and exact", () => {
   );
   expect(hnsRouteRevalidationResultPreimage(result())).toContain(
     '"pirate-hns-route-revalidation-result-v1"',
+  );
+});
+
+test("keeps the execution fence out of completion identity", () => {
+  expect(hnsRouteRevalidationCompletionPreimage(completion())).toBe(
+    JSON.stringify([
+      "pirate-hns-route-revalidation-completion-request-v1",
+      vector.route_revalidation_id,
+      vector.revalidation_session_id,
+      vector.route_revalidation_attempt_id,
+      vector.route_binding_id,
+      vector.expected_binding_generation,
+      vector.expected_verified_evidence_ref,
+      vector.attempt_number,
+      vector.idempotency_key,
+      vector.evidence_ref,
+      "poll_result",
+    ]),
   );
 });
 
