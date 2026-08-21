@@ -20,7 +20,7 @@ export function selectBaselineSha(input: BaselineSelectionInput): string {
   return sha;
 }
 
-interface Deprecations {
+export interface Deprecations {
   readonly deprecatedOperations: readonly {
     readonly operationId: string;
     readonly reason: string;
@@ -34,6 +34,45 @@ interface Deprecations {
     readonly operationId: string;
     readonly reason: string;
   }[];
+}
+
+export function filterAllowedBreakingChanges(
+  oldDoc: OpenApiDocument,
+  newDoc: OpenApiDocument,
+  deprecations: Deprecations,
+): readonly string[] {
+  const declared = new Set(deprecations.deprecatedOperations.map((entry) => entry.operationId));
+  const cleanBreaks = new Set(
+    (deprecations.cleanBreakOperations ?? []).map((entry) => entry.operationId),
+  );
+
+  // Map "METHOD /path" of removed operations back to their old operation ids
+  // so a declared deprecation can retire exactly one entry.
+  const operationIds = new Map<string, string>();
+  for (const [route, methods] of Object.entries(oldDoc.paths)) {
+    for (const [method, operation] of Object.entries(methods)) {
+      const id = (operation as Record<string, unknown>).operationId;
+      if (typeof id === "string") operationIds.set(`${method.toUpperCase()} ${route}`, id);
+    }
+  }
+
+  const operationKey = (violation: string): string | undefined => {
+    const match = violation.match(
+      /^(?:operation removed: |operation id changed on |request |response status removed on |response |error code removed on )([A-Z]+ \/[^\s:]+)(?: status \d+)?(?::|$)/,
+    );
+    return match?.[1];
+  };
+
+  // A coordinator-recorded deprecation is an explicit contract transition:
+  // every break for that retired operation is reviewed as one unit. All
+  // operations without a matching entry remain fully gate-protected.
+  return diffBreaking(oldDoc, newDoc).filter((violation) => {
+    const key = operationKey(violation);
+    const operationId = key === undefined ? undefined : operationIds.get(key);
+    return (
+      key === undefined || (!declared.has(operationId ?? "") && !cleanBreaks.has(operationId ?? ""))
+    );
+  });
 }
 
 function readBaselineDocument(baseSha: string, documentPath: string): string | undefined {
@@ -99,38 +138,7 @@ async function main(): Promise<void> {
       "utf8",
     ),
   ) as Deprecations;
-  const declared = new Set(deprecations.deprecatedOperations.map((entry) => entry.operationId));
-  const cleanBreaks = new Set(
-    (deprecations.cleanBreakOperations ?? []).map((entry) => entry.operationId),
-  );
-
-  // Map "METHOD /path" of removed operations back to their old operation ids
-  // so a declared deprecation can retire exactly one entry.
-  const operationIds = new Map<string, string>();
-  for (const [route, methods] of Object.entries(oldDoc.paths)) {
-    for (const [method, operation] of Object.entries(methods)) {
-      const id = (operation as Record<string, unknown>).operationId;
-      if (typeof id === "string") operationIds.set(`${method.toUpperCase()} ${route}`, id);
-    }
-  }
-
-  const operationKey = (violation: string): string | undefined => {
-    const match = violation.match(
-      /^(?:operation removed: |operation id changed on |request |response status removed on |response |error code removed on )([A-Z]+ \/[^\s:]+)(?: status \d+)?(?::|$)/,
-    );
-    return match?.[1];
-  };
-
-  // A coordinator-recorded deprecation is an explicit contract transition:
-  // every break for that retired operation is reviewed as one unit. All
-  // operations without a matching entry remain fully gate-protected.
-  const breaks = diffBreaking(oldDoc, newDoc).filter((violation) => {
-    const key = operationKey(violation);
-    const operationId = key === undefined ? undefined : operationIds.get(key);
-    return (
-      key === undefined || (!declared.has(operationId ?? "") && !cleanBreaks.has(operationId ?? ""))
-    );
-  });
+  const breaks = filterAllowedBreakingChanges(oldDoc, newDoc, deprecations);
   if (breaks.length > 0) {
     console.error(
       "Breaking OpenAPI changes detected (000 §5: append-only within a major version):",

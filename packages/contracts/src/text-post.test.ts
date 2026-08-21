@@ -34,7 +34,9 @@ describe("text CreatePost contract", () => {
 
   test("removes publish_mode from every declared request branch and strict decoding rejects it", () => {
     const requestSchema = schemaToOpenApi(CreatePost.request?.body);
-    for (const branch of requestSchema.anyOf ?? []) {
+    const branches = Array.isArray(requestSchema.anyOf) ? requestSchema.anyOf : [];
+    expect(branches.length).toBeGreaterThan(0);
+    for (const branch of branches) {
       expect(
         Object.hasOwn((branch as Record<string, unknown>).properties ?? {}, "publish_mode"),
       ).toBe(false);

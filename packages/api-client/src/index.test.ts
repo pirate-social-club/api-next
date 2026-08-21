@@ -94,7 +94,7 @@ describe("generated api client", () => {
       review_ref: null,
       created_at: "2026-08-21T12:00:00.000Z",
       updated_at: "2026-08-21T12:00:00.000Z",
-    };
+    } as const;
     const responses = [201, 200].map(
       (status) => () => new Response(JSON.stringify(submission), { status }),
     );
