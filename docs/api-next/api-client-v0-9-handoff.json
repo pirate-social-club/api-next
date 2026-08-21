@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.9.0",
+  "releaseType": "text-content-submission-contract",
+  "wireContract": "wire-v2",
+  "sourceCommit": "c38683c",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.9.0.tgz",
+    "sha256": "81d57920669116ecce14fd66895293ca2ceb02a05dac62e29b711be73b2f843a",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@ba18394abde7d4dd0bfd2da5447bc03f6b070d59b4963e7679876cfbb7ea49b7",
+    "openapiSha256": "ba18394abde7d4dd0bfd2da5447bc03f6b070d59b4963e7679876cfbb7ea49b7",
+    "clientSha256": "bf964eb33516b8e48e9038f8de1bb1c9e524b9dc1c323ae70fd3ce6ef0878c22"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "0854f26",
+      "reason": "The ratified text submission contract is the accepted Order 4 clean break; runtime remains fail-closed until Order 5."
+    },
+    "focusedTextContractTests": "88 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}
