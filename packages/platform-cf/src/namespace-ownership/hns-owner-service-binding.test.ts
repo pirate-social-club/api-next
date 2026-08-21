@@ -4,6 +4,7 @@ import {
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
 } from "@pirate/application";
+import type { HnsRouteRevalidationSessionV1 } from "@pirate/application/route-revalidation";
 import type { HnsOwnerRouteRevalidationStartWireV1 } from "@pirate/application/route-revalidation/hashes";
 import { Effect } from "effect";
 import {
@@ -87,6 +88,39 @@ const routeWire: HnsOwnerRouteRevalidationStartWireV1 = {
     href: "/c/app.xn--pokmon-dva",
     app_host: null,
   },
+};
+const revalidationSession: HnsRouteRevalidationSessionV1 = {
+  authority: {
+    version: "pirate-hns-route-revalidation-authority-v1",
+    route_revalidation_id: routeWire.route_revalidation_id,
+    community_id: routeWire.community_id,
+    route_binding_id: routeWire.route_binding_id,
+    principal_kind: "system",
+    principal_id: routeWire.principal_id,
+    expected_binding_generation: routeWire.expected_binding_generation,
+    expected_verified_evidence_ref: routeWire.expected_verified_evidence_ref,
+    requirement_hash: routeWire.requirement_hash,
+    provider_id: "hns.owner.v1",
+    provider_binding_hash: routeWire.provider_binding_hash,
+    provider_configuration_kind: routeWire.provider_configuration.kind,
+    provider_configuration_reference: routeWire.provider_configuration.reference,
+    provider_configuration_version: routeWire.provider_configuration.version,
+    protocol_version: routeWire.protocol_version,
+    environment: routeWire.environment,
+    family: "hns",
+    root_label: routeWire.route.root_label,
+    root_label_display: routeWire.route.root_label_display,
+    path_segment: routeWire.route.path_segment,
+  },
+  revalidation_session_id: routeWire.revalidation_session_id,
+  start_request_hash: routeWire.start_request_hash,
+  upstream_session_ref: "upstream-1",
+  start_presentation:
+    startDocument.presentation as HnsRouteRevalidationSessionV1["start_presentation"],
+  status: "pending",
+  started_at: "2026-08-21T00:00:00.000Z",
+  expires_at: "2026-08-22T00:00:00.000Z",
+  terminal_at: null,
 };
 
 function response(
@@ -267,6 +301,38 @@ describe("HNS owner service-binding transport", () => {
         }),
       ),
     ).resolves.toEqual(bytes);
+  });
+
+  test("sends the creation-free route poll body and preserves exact response bytes", async () => {
+    const calls: Array<{ input: string | URL; init: RequestInit | undefined }> = [];
+    const bytes = new Uint8Array([0, 1, 2, 3]);
+    const transport = makeHnsOwnerRouteRevalidationTransport({
+      fetch: async (request, init) => {
+        calls.push({ input: request, init });
+        return response(bytes, 200, "application/octet-stream");
+      },
+    });
+    await expect(
+      Effect.runPromise(
+        transport.complete({
+          session: revalidationSession,
+          revalidation_session_id: revalidationSession.revalidation_session_id,
+        }),
+      ),
+    ).resolves.toEqual(bytes);
+    expect(String(calls[0]?.input)).toBe("https://hns-owner.internal/internal/hns-owner/v1/poll");
+    expect(calls[0]?.init?.headers).toEqual([
+      ["Content-Type", "application/json"],
+      ["Accept", "application/octet-stream"],
+      ["Pirate-Namespace-Session-Id", "revalidation-session-1"],
+    ]);
+    expect(new TextDecoder().decode(calls[0]?.init?.body as Uint8Array)).toBe(
+      JSON.stringify({
+        operation_kind: "route_revalidation",
+        session: revalidationSession,
+        payload: {},
+      }),
+    );
   });
 
   test("rejects a streamed START response over the byte ceiling", async () => {

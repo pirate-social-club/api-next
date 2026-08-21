@@ -4,6 +4,7 @@ import {
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
 } from "@pirate/application/namespace-ownership";
+import type { HnsRouteRevalidationSessionV1 } from "@pirate/application/route-revalidation";
 import type { HnsOwnerRouteRevalidationStartWireV1 } from "@pirate/application/route-revalidation/hashes";
 import { Effect } from "effect";
 import type { HnsOwnerTransport, HnsOwnerTransportFailure } from "./hns-owner.ts";
@@ -27,6 +28,12 @@ export type HnsOwnerRouteRevalidationTransport = Readonly<{
   readonly start: (
     input: Readonly<{
       readonly wire: HnsOwnerRouteRevalidationStartWireV1;
+      readonly revalidation_session_id: string;
+    }>,
+  ) => Effect.Effect<Uint8Array, HnsOwnerTransportFailure>;
+  readonly complete: (
+    input: Readonly<{
+      readonly session: HnsRouteRevalidationSessionV1;
       readonly revalidation_session_id: string;
     }>,
   ) => Effect.Effect<Uint8Array, HnsOwnerTransportFailure>;
@@ -304,6 +311,27 @@ export function makeHnsOwnerRouteRevalidationTransport(
         START_DEADLINE_MS,
         "start",
         START_RESPONSE_MAX_BYTES,
+      );
+    },
+    complete: ({ session, revalidation_session_id }) => {
+      const body = jsonBytes(
+        {
+          operation_kind: "route_revalidation",
+          session,
+          payload: {},
+        },
+        POLL_REQUEST_MAX_BYTES,
+        "complete",
+      );
+      return request(
+        binding,
+        POLL_URL,
+        body,
+        "application/octet-stream",
+        revalidation_session_id,
+        POLL_DEADLINE_MS,
+        "complete",
+        POLL_RESPONSE_MAX_BYTES,
       );
     },
   };
