@@ -3,8 +3,6 @@ import {
   type ControlPlaneError,
   type ControlPlaneResult,
   type ControlPlaneTransaction,
-} from "@pirate/application";
-import {
   type HnsRouteRevalidationCompletionAttempt,
   type HnsRouteRevalidationCompletionFinalizeOutcome,
   type HnsRouteRevalidationCompletionReleaseOutcome,
@@ -13,10 +11,10 @@ import {
   type HnsRouteRevalidationCompletionStore,
   type HnsRouteRevalidationSessionV1,
   type HnsRouteRevalidationStoredCompletion,
-  type HnsRouteRevalidationCompletionAttemptReservation as Reservation,
   hnsRouteRevalidationCompletionHash,
   hnsRouteRevalidationResultHash,
-} from "@pirate/application/route-revalidation";
+  type HnsRouteRevalidationCompletionAttemptReservation as Reservation,
+} from "@pirate/application";
 import { HnsTxtChallengeV1 } from "@pirate/contracts";
 import { ProviderConfigurationRef, Sha256Hex } from "@pirate/domain/verification";
 import { Effect, type Layer, Option, Schema } from "effect";
@@ -494,11 +492,7 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
         never
       >((transaction) =>
         Effect.gen(function* () {
-          if (
-            input.lease_ms <= 0 ||
-            input.lease_ms > 16_000 ||
-            input.max_consumed_attempts !== 3
-          )
+          if (input.lease_ms <= 0 || input.lease_ms > 16_000 || input.max_consumed_attempts !== 3)
             return { kind: "binding_conflict" } as const;
           const initial = yield* loadStored(transaction, input);
           if (initial === null) return { kind: "not_found" } as const;

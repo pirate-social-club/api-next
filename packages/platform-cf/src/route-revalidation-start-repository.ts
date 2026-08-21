@@ -3,8 +3,6 @@ import {
   type ControlPlaneError,
   type ControlPlaneResult,
   type ControlPlaneTransaction,
-} from "@pirate/application";
-import {
   type HnsRouteRevalidationSessionV1,
   type HnsRouteRevalidationStartAuthority,
   type HnsRouteRevalidationStartReplayOutcome,
@@ -14,7 +12,7 @@ import {
   HnsRouteRevalidationStartStorageFailed,
   type HnsRouteRevalidationStartStore,
   type HnsRouteRevalidationProviderStartResult as ProviderStartResult,
-} from "@pirate/application/route-revalidation/start";
+} from "@pirate/application";
 import { HnsTxtChallengeV1 } from "@pirate/contracts";
 import { ProviderConfigurationRef, Sha256Hex } from "@pirate/domain/verification";
 import { Effect, type Layer, Option, Schema } from "effect";
