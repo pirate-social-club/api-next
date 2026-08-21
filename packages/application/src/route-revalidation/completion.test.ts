@@ -494,6 +494,7 @@ test("maps database-time evidence expiry to a terminal expired result", async ()
   expect(result.result_hash).toMatch(/^[0-9a-f]{64}$/);
   expect(h.calls.reject).toBe(1);
   expect(h.calls.consume).toBe(0);
+  expect(h.rejected()?.observed_expires_at).toBe("2026-08-21T07:59:00.000Z");
 });
 
 test("semantic contradictions consume without terminal result or evidence", async () => {

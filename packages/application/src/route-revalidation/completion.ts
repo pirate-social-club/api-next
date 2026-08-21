@@ -308,6 +308,8 @@ export interface HnsRouteRevalidationCompletionStore {
       readonly expired_result_hash: string;
       readonly attempt: HnsRouteRevalidationCompletionAttemptReservation;
       readonly status: Exclude<HnsRouteRevalidationTerminalStatus, "verified">;
+      /** Provider observation expiry, required only for database_time_expired. */
+      readonly observed_expires_at: string | null;
     }>,
   ) => Effect.Effect<
     HnsRouteRevalidationCompletionFinalizeOutcome,
@@ -961,6 +963,7 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
       expired_result_hash: expiredResultHash,
       attempt,
       status,
+      observed_expires_at: null,
     });
     return yield* settleFinalize(stored, outcome, status, resultHash);
   }
@@ -988,6 +991,7 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
       expired_result_hash: expiredResultHash,
       attempt,
       status: "database_time_expired",
+      observed_expires_at: providerResult.value.observation.expires_at,
     });
     return yield* settleFinalize(stored, outcome, "database_time_expired", resultHash);
   }
