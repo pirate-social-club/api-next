@@ -217,6 +217,21 @@ describe("Very web provider", () => {
     expect(JSON.stringify(result)).not.toContain("opaque-proof");
   });
 
+  test("rejects terminal-session replay before any provider transport call", async () => {
+    const configured = options();
+    const adapter = makeVeryWebProvider(configured.value);
+    const start = await started(adapter);
+    const terminalSession = { ...start.session, status: "completed" as const };
+
+    expect(
+      await failureTag(
+        adapter.complete(complete(terminalSession, { mode: "widget", proof: "replayed-proof" })),
+      ),
+    ).toBe("VerificationProviderUnboundRejected");
+    expect(configured.calls.bridge).toHaveLength(0);
+    expect(configured.calls.verify).toHaveLength(0);
+  });
+
   test("decrypts the mobile bridge result on the server before verification", async () => {
     let bridgeBody: unknown = { status: "pending" };
     const calls: Calls = { create: [], bridge: [], verify: [] };
