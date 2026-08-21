@@ -13,7 +13,7 @@ try {
   ]);
   if (actual !== generated) {
     console.error(
-      "Postgres baseline is stale. Run bun run db:generate:baseline and review the migration-history gate.",
+      "Postgres baseline is stale. Run bun run db:generate:baseline; the generator verifies migration history before writing.",
     );
     process.exitCode = 1;
   }

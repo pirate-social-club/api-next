@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runPostgresMigrations } from "./postgres-migrations.ts";
@@ -7,6 +8,7 @@ const root = new URL("../", import.meta.url);
 const defaultOutput = new URL("db/postgres/schema.sql", root);
 const postgresImage = process.env.CONTROL_PLANE_POSTGRES_IMAGE?.trim() || "postgres:17";
 const localPassword = "postgres";
+const migrationsDirectory = new URL("../db/postgres/migrations/", import.meta.url);
 
 type CommandResult = {
   readonly exitCode: number;
@@ -57,6 +59,18 @@ async function checkedCommand(
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function migrationHistoryFingerprint(): Promise<string> {
+  const filenames = (await readdir(migrationsDirectory))
+    .filter((filename) => filename.endsWith(".sql"))
+    .sort();
+  const checksums = await readFile(new URL("checksums.json", migrationsDirectory));
+  return createHash("sha256")
+    .update(filenames.join("\n"))
+    .update("\0")
+    .update(checksums)
+    .digest("hex");
 }
 
 async function removeSocketDirectory(socketDirectory: string): Promise<void> {
@@ -230,6 +244,7 @@ export async function generatePostgresBaseline(
   outputPath: string | URL = defaultOutput,
 ): Promise<void> {
   const suppliedConnectionString = process.env.CONTROL_PLANE_POSTGRES_GENERATOR_URL?.trim();
+  const migrationFingerprintBefore = await migrationHistoryFingerprint();
   let container: string | undefined;
   let socketDirectory: string | undefined;
   let connectionString = suppliedConnectionString;
@@ -247,6 +262,12 @@ export async function generatePostgresBaseline(
       container === undefined
         ? await dumpSuppliedPostgres(connectionString)
         : await dumpLocalPostgres(container);
+    const migrationFingerprintAfter = await migrationHistoryFingerprint();
+    if (migrationFingerprintBefore !== migrationFingerprintAfter) {
+      throw new Error(
+        "Postgres migration history changed during baseline generation; no baseline was written. Rebase and regenerate.",
+      );
+    }
     await writeFile(outputPath, normalizeDump(dump));
   } finally {
     if (container !== undefined) {
