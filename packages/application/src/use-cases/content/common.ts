@@ -38,24 +38,51 @@ export const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(
     catch: () => new BadRequest({ message: "Invalid request body" }),
   });
 
-const canonicalValue = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(canonicalValue);
-  if (value !== null && typeof value === "object") {
-    const source = value as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(source)
-        .sort()
-        .map((key) => [key, canonicalValue(source[key])]),
-    );
+function hasLoneSurrogate(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (index + 1 >= value.length) return true;
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) return true;
   }
-  return value;
+  return false;
+}
+
+/** RFC 8785 JCS for decoded request JSON. */
+export const canonicalJson = (value: unknown): string => {
+  if (value === null) return "null";
+  if (typeof value === "string") {
+    if (hasLoneSurrogate(value)) throw new Error("lone surrogate");
+    return JSON.stringify(value);
+  }
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error("non-finite number");
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    return `{${Object.keys(source)
+      .sort()
+      .map((key) => {
+        const child = source[key];
+        if (child === undefined) throw new Error("undefined is not JSON");
+        return `${JSON.stringify(key)}:${canonicalJson(child)}`;
+      })
+      .join(",")}}`;
+  }
+  throw new Error("unsupported JSON value");
 };
 
-/** SHA-256 of the recursively key-sorted, already-decoded request body. */
+/** SHA-256 of the RFC 8785-canonical, already-decoded request body. */
 export const canonicalBodyHash = (value: unknown): Effect.Effect<string, InternalError> =>
   Effect.tryPromise({
     try: async () => {
-      const encoded = new TextEncoder().encode(JSON.stringify(canonicalValue(value)));
+      const encoded = new TextEncoder().encode(canonicalJson(value));
       const digest = await crypto.subtle.digest("SHA-256", encoded);
       return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
     },

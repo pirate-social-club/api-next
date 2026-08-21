@@ -2,22 +2,21 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
-  type CreatePostBody,
   type M2Actor,
-  TextPostRepositoryError,
   type TextPostFinalizeOutcome,
   type TextPostReplayOutcome,
-  type TextPostReserveOutcome,
+  TextPostRepositoryError,
   type TextPostReservation,
+  type TextPostReserveOutcome,
   type TextPostStore,
   type TextPostSubmissionDocument,
 } from "@pirate/application";
 import {
   canonicalTextModerationInput,
   publicTextPublicationResult,
+  type TextModerationEvaluationV1,
   textContentSubmissionInvariant,
   textModerationEvaluationInvariant,
-  type TextModerationEvaluationV1,
 } from "@pirate/domain";
 import { Effect, type Layer } from "effect";
 
@@ -29,10 +28,18 @@ type ReserveInput = Parameters<TextPostStore["Service"]["reserve"]>[0];
 type FinalizeInput = Parameters<TextPostStore["Service"]["finalize"]>[0];
 type GetInput = Parameters<TextPostStore["Service"]["getForAuthor"]>[0];
 type RepositoryService = {
-  readonly replay: (input: ReplayInput) => Effect.Effect<TextPostReplayOutcome, StoreFailure, ControlPlaneDb>;
-  readonly reserve: (input: ReserveInput) => Effect.Effect<TextPostReserveOutcome, StoreFailure, ControlPlaneDb>;
-  readonly finalize: (input: FinalizeInput) => Effect.Effect<TextPostFinalizeOutcome, StoreFailure, ControlPlaneDb>;
-  readonly getForAuthor: (input: GetInput) => Effect.Effect<TextPostSubmissionDocument | null, StoreFailure, ControlPlaneDb>;
+  readonly replay: (
+    input: ReplayInput,
+  ) => Effect.Effect<TextPostReplayOutcome, StoreFailure, ControlPlaneDb>;
+  readonly reserve: (
+    input: ReserveInput,
+  ) => Effect.Effect<TextPostReserveOutcome, StoreFailure, ControlPlaneDb>;
+  readonly finalize: (
+    input: FinalizeInput,
+  ) => Effect.Effect<TextPostFinalizeOutcome, StoreFailure, ControlPlaneDb>;
+  readonly getForAuthor: (
+    input: GetInput,
+  ) => Effect.Effect<TextPostSubmissionDocument | null, StoreFailure, ControlPlaneDb>;
 };
 
 const HASH = /^[0-9a-f]{64}$/u;
@@ -108,7 +115,9 @@ function currentSnapshot(row: Row): TextPostSubmissionDocument | null {
         : ({
             decision: "manual_review",
             reason_code:
-              publicReason === "moderation_unavailable" ? "moderation_unavailable" : "review_required",
+              publicReason === "moderation_unavailable"
+                ? "moderation_unavailable"
+                : "review_required",
           } as const);
   const snapshot: TextPostSubmissionDocument = {
     submission_id: submissionId,
@@ -129,7 +138,11 @@ function currentSnapshot(row: Row): TextPostSubmissionDocument | null {
 
 const finalByKey = (
   transaction: Transaction,
-  input: { readonly communityId: string; readonly actorUserId: string; readonly idempotencyKey: string },
+  input: {
+    readonly communityId: string;
+    readonly actorUserId: string;
+    readonly idempotencyKey: string;
+  },
   lock: boolean,
 ) =>
   transaction.execute<Row>({
@@ -197,6 +210,12 @@ const lockKey = (transaction: Transaction, value: string) =>
     readonly: false,
   });
 
+const idempotencyLockKey = (
+  communityId: string,
+  actorUserId: string,
+  idempotencyKey: string,
+): string => JSON.stringify([communityId, actorUserId, "text_post", idempotencyKey]);
+
 const authority = (
   transaction: Transaction,
   operation: "reserve" | "finalize",
@@ -217,7 +236,10 @@ const authority = (
       values: [communityId, actorUserId],
       readonly: false,
     });
-    if (membership.rows.length !== 1 || stringValue(membership.rows[0] as Row, "status") !== "member") {
+    if (
+      membership.rows.length !== 1 ||
+      stringValue(membership.rows[0] as Row, "status") !== "member"
+    ) {
       return yield* Effect.fail(failure(operation, "membership-required"));
     }
     const route = yield* transaction.execute<Row>({
@@ -286,7 +308,10 @@ const toReservation = (row: Row): TextPostReservation | null => {
 const replayRow = (
   row: Row,
   requestHash: string,
-): { readonly kind: "replay"; readonly snapshot: TextPostSubmissionDocument } | { readonly kind: "conflict"; readonly submissionId: string } | null => {
+):
+  | { readonly kind: "replay"; readonly snapshot: TextPostSubmissionDocument }
+  | { readonly kind: "conflict"; readonly submissionId: string }
+  | null => {
   const submissionId = stringValue(row, "submission_id");
   const storedHash = stringValue(row, "request_hash");
   if (!validId(submissionId) || !validHash(storedHash)) return null;
@@ -296,7 +321,11 @@ const replayRow = (
 };
 
 const actorInputValid = (actor: M2Actor, communityId: string, key: string, hash: string): boolean =>
-  actor.kind !== "agent" && validId(actor.userId) && validId(communityId) && validId(key) && validHash(hash);
+  actor.kind !== "agent" &&
+  validId(actor.userId) &&
+  validId(communityId) &&
+  validId(key) &&
+  validHash(hash);
 
 const makeId = (prefix: string): string => `${prefix}_${crypto.randomUUID()}`;
 
@@ -317,7 +346,13 @@ function responseSnapshot(input: {
       input.status === "published"
         ? { decision: "allow", reason_code: null }
         : input.status === "manual_review"
-          ? { decision: "manual_review", reason_code: input.reasonCode === "moderation_unavailable" ? "moderation_unavailable" : "review_required" }
+          ? {
+              decision: "manual_review",
+              reason_code:
+                input.reasonCode === "moderation_unavailable"
+                  ? "moderation_unavailable"
+                  : "review_required",
+            }
           : { decision: "blocked", reason_code: "policy_violation" },
     published_resource:
       input.status === "published" && input.postId !== null
@@ -332,15 +367,21 @@ function responseSnapshot(input: {
 export function makeControlPlaneTextPostRepository(): RepositoryService {
   const replay: RepositoryService["replay"] = (input) =>
     Effect.gen(function* () {
-      if (!actorInputValid(input.actor, input.communityId, input.idempotencyKey, input.requestHash)) {
+      if (
+        !actorInputValid(input.actor, input.communityId, input.idempotencyKey, input.requestHash)
+      ) {
         return yield* Effect.fail(failure("replay", "constraint"));
       }
       const db = yield* ControlPlaneDb;
-      const result = yield* finalByKey(db, {
-        communityId: input.communityId,
-        actorUserId: input.actor.userId,
-        idempotencyKey: input.idempotencyKey,
-      }, false);
+      const result = yield* finalByKey(
+        db,
+        {
+          communityId: input.communityId,
+          actorUserId: input.actor.userId,
+          idempotencyKey: input.idempotencyKey,
+        },
+        false,
+      );
       if (result.rows.length > 1) return yield* Effect.fail(failure("replay", "invalid-row"));
       if (result.rows.length === 0) return { kind: "none" as const };
       const rowResult = replayRow(result.rows[0] as Row, input.requestHash);
@@ -357,24 +398,38 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
         return yield* Effect.fail(failure("reserve", "constraint"));
       }
       const canonical = canonicalTextModerationInput(input.moderationInput);
-      if (canonical.kind !== "accepted") return yield* Effect.fail(failure("reserve", "constraint"));
+      if (canonical.kind !== "accepted")
+        return yield* Effect.fail(failure("reserve", "constraint"));
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
-          const lock = `${input.communityId}\u0000${input.actor.userId}\u0000text_post\u0000${input.idempotencyKey}`;
+          const lock = idempotencyLockKey(
+            input.communityId,
+            input.actor.userId,
+            input.idempotencyKey,
+          );
           yield* lockKey(transaction, lock);
-          const existing = yield* finalByKey(transaction, {
-            communityId: input.communityId,
-            actorUserId: input.actor.userId,
-            idempotencyKey: input.idempotencyKey,
-          }, true);
+          const existing = yield* finalByKey(
+            transaction,
+            {
+              communityId: input.communityId,
+              actorUserId: input.actor.userId,
+              idempotencyKey: input.idempotencyKey,
+            },
+            true,
+          );
           if (existing.rows.length > 1) return yield* failure("reserve", "invalid-row");
           if (existing.rows.length === 1) {
             const result = replayRow(existing.rows[0] as Row, input.requestHash);
             if (result === null) return yield* failure("reserve", "invalid-row");
             return result.kind === "replay" ? result : result;
           }
-          const authorityResult = yield* authority(transaction, "reserve", input.communityId, input.actor.userId);
+          const authorityResult = yield* authority(
+            transaction,
+            "reserve",
+            input.communityId,
+            input.actor.userId,
+          );
           const reservationInput: TextPostReservation = {
             submissionId: makeId("sub"),
             communityId: input.communityId,
@@ -402,12 +457,20 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 text: `UPDATE text_post_reservations
                            SET policy_revision_id = $2, policy_hash = $3
                          WHERE submission_id = $1`,
-                values: [existingReservation.submissionId, authorityResult.policyRevision, authorityResult.policyHash],
+                values: [
+                  existingReservation.submissionId,
+                  authorityResult.policyRevision,
+                  authorityResult.policyHash,
+                ],
                 readonly: false,
               });
               return {
                 kind: "reserved" as const,
-                reservation: { ...existingReservation, policyRevision: authorityResult.policyRevision, policyHash: authorityResult.policyHash },
+                reservation: {
+                  ...existingReservation,
+                  policyRevision: authorityResult.policyRevision,
+                  policyHash: authorityResult.policyHash,
+                },
               };
             }
             return { kind: "reserved" as const, reservation: existingReservation };
@@ -420,10 +483,22 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
              VALUES ($1, $2, $3, 'text_post', $4, $5, $6, $7, $8, $9, $10)
              RETURNING community_id, submission_id, actor_user_id, surface, idempotency_key,
                        request_hash, input_sha256, policy_revision_id, policy_hash`,
-            values: [input.communityId, reservationInput.submissionId, input.actor.userId, input.idempotencyKey, input.requestHash, canonical.sha256, input.moderationInput.title, input.moderationInput.body, authorityResult.policyRevision, authorityResult.policyHash],
+            values: [
+              input.communityId,
+              reservationInput.submissionId,
+              input.actor.userId,
+              input.idempotencyKey,
+              input.requestHash,
+              canonical.sha256,
+              input.moderationInput.title,
+              input.moderationInput.body,
+              authorityResult.policyRevision,
+              authorityResult.policyHash,
+            ],
             readonly: false,
           });
-          const reservation = inserted.rows.length === 1 ? toReservation(inserted.rows[0] as Row) : null;
+          const reservation =
+            inserted.rows.length === 1 ? toReservation(inserted.rows[0] as Row) : null;
           if (reservation === null) return yield* failure("reserve", "invalid-row");
           return { kind: "reserved" as const, reservation };
         }),
@@ -439,7 +514,8 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
         !validId(input.reservation.idempotencyKey) ||
         !validHash(input.reservation.requestHash) ||
         !validHash(input.reservation.inputSha256) ||
-        textModerationEvaluationInvariant(input.evaluation as TextModerationEvaluationV1) !== null ||
+        textModerationEvaluationInvariant(input.evaluation as TextModerationEvaluationV1) !==
+          null ||
         input.evaluation.surface !== "text_post" ||
         input.evaluation.policy_revision !== input.reservation.policyRevision ||
         input.evaluation.policy_hash !== input.reservation.policyHash ||
@@ -451,7 +527,14 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
-          yield* lockKey(transaction, `${input.reservation.communityId}\u0000${input.reservation.actorId}\u0000text_post\u0000${input.reservation.idempotencyKey}`);
+          yield* lockKey(
+            transaction,
+            idempotencyLockKey(
+              input.reservation.communityId,
+              input.reservation.actorId,
+              input.reservation.idempotencyKey,
+            ),
+          );
           const final = yield* finalById(transaction, input.reservation.submissionId);
           if (final.rows.length > 1) return yield* failure("finalize", "invalid-row");
           if (final.rows.length === 1) {
@@ -480,7 +563,12 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           if (persisted === null || persisted.requestHash !== input.reservation.requestHash) {
             return yield* failure("finalize", "invalid-row");
           }
-          const authorityResult = yield* authority(transaction, "finalize", persisted.communityId, persisted.actorId);
+          const authorityResult = yield* authority(
+            transaction,
+            "finalize",
+            persisted.communityId,
+            persisted.actorId,
+          );
           if (
             authorityResult.policyRevision !== persisted.policyRevision ||
             authorityResult.policyHash !== persisted.policyHash
@@ -508,7 +596,9 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           const postId = status === "published" ? makeId("post") : null;
           const reviewRef = status === "manual_review" ? makeId("review") : null;
           const heldId = status === "manual_review" ? makeId("held") : null;
-          const publicResult = publicTextPublicationResult(input.evaluation as TextModerationEvaluationV1);
+          const publicResult = publicTextPublicationResult(
+            input.evaluation as TextModerationEvaluationV1,
+          );
           if (publicResult === null) return yield* failure("finalize", "constraint");
           const snapshot = responseSnapshot({
             submissionId: persisted.submissionId,
@@ -519,7 +609,8 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             at,
           });
           const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
-          if (textContentSubmissionInvariant(snapshot) !== null) return yield* failure("finalize", "invalid-row");
+          if (textContentSubmissionInvariant(snapshot) !== null)
+            return yield* failure("finalize", "invalid-row");
           if (status === "published" && postId !== null) {
             yield* transaction.execute({
               label: "text-post.finalize.post",
@@ -528,7 +619,15 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                  title, body, created_at, updated_at, idempotency_key, idempotency_body_hash)
                SELECT $1, $2, $3, 'text', 'published', 'public', title, body, $4, $4, $5, $6
                  FROM text_post_reservations WHERE submission_id = $7`,
-              values: [persisted.communityId, postId, persisted.actorId, at, persisted.idempotencyKey, persisted.requestHash, persisted.submissionId],
+              values: [
+                persisted.communityId,
+                postId,
+                persisted.actorId,
+                at,
+                persisted.idempotencyKey,
+                persisted.requestHash,
+                persisted.submissionId,
+              ],
               readonly: false,
             });
             yield* transaction.execute({
@@ -550,7 +649,25 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256
               ) VALUES ($1, $2, $3, 'text_post', $4, $5, $6, $7, $8, $9, $10, $11,
                 $12::jsonb, $13, $14, NULL, $15, $16, $16, $17, encode(sha256($17), 'hex'))`,
-            values: [persisted.communityId, persisted.submissionId, persisted.actorId, persisted.idempotencyKey, persisted.requestHash, status, input.evaluation.decision, publicResult.reason_code, persisted.policyRevision, persisted.policyHash, persisted.inputSha256, JSON.stringify(input.evaluation.reason_codes), input.evaluation.evidence_ref, postId, reviewRef, at, bytes],
+            values: [
+              persisted.communityId,
+              persisted.submissionId,
+              persisted.actorId,
+              persisted.idempotencyKey,
+              persisted.requestHash,
+              status,
+              input.evaluation.decision,
+              publicResult.reason_code,
+              persisted.policyRevision,
+              persisted.policyHash,
+              persisted.inputSha256,
+              JSON.stringify(input.evaluation.reason_codes),
+              input.evaluation.evidence_ref,
+              postId,
+              reviewRef,
+              at,
+              bytes,
+            ],
             readonly: false,
           });
           if (status === "manual_review" && heldId !== null && reviewRef !== null) {
@@ -585,7 +702,11 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
 
   const getForAuthor: RepositoryService["getForAuthor"] = (input) =>
     Effect.gen(function* () {
-      if (!validId(input.submissionId) || input.actor.kind === "agent" || !validId(input.actor.userId)) {
+      if (
+        !validId(input.submissionId) ||
+        input.actor.kind === "agent" ||
+        !validId(input.actor.userId)
+      ) {
         return yield* Effect.fail(failure("get", "constraint"));
       }
       const db = yield* ControlPlaneDb;
@@ -607,7 +728,8 @@ export function makeControlPlaneTextSubmissionStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ): TextPostStore["Service"] {
   const repository = makeControlPlaneTextPostRepository();
-  const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) => Effect.provide(runtime)(effect);
+  const provide = <A, E>(effect: Effect.Effect<A, E, ControlPlaneDb>) =>
+    Effect.provide(runtime)(effect);
   return {
     replay: (input) => provide(repository.replay(input)),
     reserve: (input) => provide(repository.reserve(input)),
