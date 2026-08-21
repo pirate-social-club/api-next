@@ -857,14 +857,20 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
       });
   if (allocation.kind !== "acquired") {
     if (allocation.kind === "replay") {
-      const replayed = yield* terminalReplay(
-        input,
-        allocation.stored.terminal?.completion_request_hash ?? "",
+      if (
+        allocation.stored.terminal === null ||
+        allocation.stored.terminal.idempotency_key !== input.idempotency_key
+      ) {
+        return yield* new HnsRouteRevalidationCompletionRejected({
+          reason: "idempotency_conflict",
+        });
+      }
+      return response(
         allocation.stored,
-      );
-      return (
-        replayed ??
-        (yield* new HnsRouteRevalidationCompletionRejected({ reason: "binding_conflict" }))
+        allocation.stored.terminal.status,
+        true,
+        allocation.stored.terminal.result_hash,
+        null,
       );
     }
     if (allocation.kind === "expired")
