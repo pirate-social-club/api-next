@@ -3351,7 +3351,7 @@ BEGIN
       AND receipt.evidence_receipt_id = claim.evidence_receipt_id
       AND receipt.user_id = NEW.actor_id
       AND receipt.subject_key_id = claim.subject_key_id
-      AND receipt.evidence_kind = 'very.oauth.id-token-userinfo.v1'
+      AND receipt.evidence_kind = 'very.web.server-verified.v1'
       AND (receipt.expires_at IS NULL OR receipt.expires_at > guard_at)
       AND assertion.user_id = NEW.actor_id
       AND assertion.subject_key_id = claim.subject_key_id
