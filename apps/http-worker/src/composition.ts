@@ -2,6 +2,10 @@ import {
   makeCommunityPurchaseFundingInterpreter,
   makeCommunityPurchaseFundingObservationUseCase,
 } from "@pirate/application/use-cases/community-purchase-funding-observation";
+import {
+  type TextModeration,
+  TextModerationProviderError,
+} from "@pirate/application/use-cases/content/text-post";
 import { makeRandomIdentityRegistrationCandidateSource } from "@pirate/application/use-cases/identity-registration";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
 import { makePublicProfileHandler } from "@pirate/application/use-cases/public-profile";
@@ -60,6 +64,7 @@ import {
   makeRs256SessionTokenMinter,
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
+import { makeControlPlaneTextSubmissionStore } from "@pirate/platform-cf/text-submission-repository";
 import {
   makeControlPlaneVerificationCompletionStore,
   makeSha256VerificationCompletionHasher,
@@ -385,6 +390,12 @@ export async function createProductionHttpWorker(
     namespace_provider_bindings: namespaceBindings,
   });
   const contentStore = makeControlPlaneContentStore(controlPlane);
+  const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
+  // The runtime is installed even when no provider credentials are enabled.
+  // Unavailability is a durable manual-review result, never an allow fallback.
+  const textModeration: TextModeration["Service"] = {
+    evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
+  };
   const feedStore = makeControlPlaneFeedStore(controlPlane);
   const fundingJournal = makeControlPlaneCommunityPurchaseFundingStore(controlPlane);
   const fundingProducer = makeControlPlaneCommunityPurchaseFundingProducerStore(controlPlane);
@@ -517,6 +528,8 @@ export async function createProductionHttpWorker(
   const productHandlers = makeProductHandlers({
     communityStore,
     contentStore,
+    textPostStore,
+    textModeration,
     feedStore,
     identityStore,
   });

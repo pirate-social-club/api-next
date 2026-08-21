@@ -18,14 +18,12 @@ import {
   type M2Actor,
   type TextModeration,
   type TextModerationProviderError,
-  type TextPostFinalizeOutcome,
+  type TextPostCommitOutcome,
   type TextPostModerationEvaluation,
   type TextPostModerationInput,
   type TextPostReplayOutcome,
   TextPostRepositoryError,
   type TextPostRepositoryFailure,
-  type TextPostReservation,
-  type TextPostReserveOutcome,
   type TextPostStore,
   type TextPostSubmissionDocument,
 } from "../../ports.ts";
@@ -36,40 +34,81 @@ import {
   validPublicHumanDirectPost,
 } from "./common.ts";
 
+export {
+  type TextModeration,
+  TextModerationProviderError,
+  type TextPostModerationEvaluation,
+} from "../../ports.ts";
+
 const exactParseOptions = { onExcessProperty: "error" } as const;
 const MAX_POLICY_RETRIES = 3;
+
+const hasUnsupportedTextMetadata = (body: CreatePostBody): boolean => {
+  const disallowed = [
+    "agent_id",
+    "agent_action_proof",
+    "anonymous_scope",
+    "disclosed_qualifier_ids",
+    "parent_post_id",
+    "label_id",
+    "caption",
+    "link_url",
+    "media_refs",
+    "creator_relation",
+    "promotion_disclosure",
+    "asset_id",
+    "file_upload",
+    "song_artifact_bundle",
+    "song_mode",
+    "rights_basis",
+    "upstream_asset_refs",
+    "license_preset",
+    "commercial_rev_share_pct",
+    "royalty_allocations",
+    "lyrics",
+    "source_post",
+    "source_community",
+    "crosspost_source",
+    "event",
+    "listing_draft",
+    "age_gate_policy",
+    "access_mode",
+    "translation_policy",
+  ];
+  return disallowed.some((key) => {
+    const value = (body as Record<string, unknown>)[key];
+    return value !== undefined && value !== null && !(Array.isArray(value) && value.length === 0);
+  });
+};
+
 export class TextPostPolicyStale extends Data.TaggedError("TextPostPolicyStale")<{
   readonly attempts: number;
 }> {}
+
 export class TextPostRuntimeUnavailable extends Data.TaggedError("TextPostRuntimeUnavailable") {}
+
 export type TextPostCreateInput = Readonly<{
   readonly communityId: string;
   readonly actor: M2Actor;
   readonly body: unknown;
 }>;
+
 export type TextPostServices = Readonly<{
-  readonly store?: TextPostStore["Service"];
-  readonly textStore?: TextPostStore["Service"];
-  readonly moderation?: TextModeration["Service"];
   readonly textPostStore?: TextPostStore["Service"];
   readonly textModeration?: TextModeration["Service"];
 }>;
+
 export type GetTextContentSubmissionInput = Readonly<{
   readonly submissionId: string;
   readonly actor: M2Actor;
 }>;
-const runtimeServices = (services: TextPostServices) => {
-  const store = services.store ?? services.textPostStore ?? services.textStore;
-  const moderation = services.moderation ?? services.textModeration;
-  return store === undefined || moderation === undefined ? null : { store, moderation };
-};
-const storeService = (services: TextPostServices) =>
-  services.store ?? services.textPostStore ?? services.textStore ?? null;
+
 const idempotencyConflict = (submissionId: string): IdempotencyConflict =>
   new IdempotencyConflict({
     message: "The idempotency key was already used with a different request",
     details: { reason_code: "idempotency_conflict", submission_id: submissionId },
   });
+
 function mapStoreFailure(failure: TextPostRepositoryFailure) {
   if (!(failure instanceof TextPostRepositoryError))
     return new InternalError({ message: "Text submission operation failed" });
@@ -84,6 +123,7 @@ function mapStoreFailure(failure: TextPostRepositoryFailure) {
       return new InternalError({ message: "Text submission operation returned an invalid record" });
   }
 }
+
 const providerReason = (
   reason: TextModerationProviderError["reason"],
 ): "provider_unavailable" | "provider_timeout" | "provider_invalid" =>
@@ -92,36 +132,37 @@ const providerReason = (
     : reason === "timeout"
       ? "provider_timeout"
       : "provider_invalid";
-function fallbackEvaluation(
-  reservation: TextPostReservation,
+
+const fallbackEvaluation = (
   input: TextPostModerationInput,
+  inputSha256: string,
   reason: TextModerationProviderError["reason"] | "invalid-evaluation",
-): TextPostModerationEvaluation {
-  return {
-    version: "text-moderation-v1",
-    surface: input.surface,
-    decision: "manual_review",
-    reason_codes: [providerReason(reason === "invalid-evaluation" ? "invalid" : reason)],
-    policy_revision: reservation.policyRevision,
-    policy_hash: reservation.policyHash,
-    input_sha256: reservation.inputSha256,
-    evidence_ref: null,
-  };
-}
-function safeEvaluation(
+): TextPostModerationEvaluation => ({
+  version: "text-moderation-v1",
+  surface: input.surface,
+  decision: "manual_review",
+  reason_codes: [providerReason(reason === "invalid-evaluation" ? "invalid" : reason)],
+  // A provider failure did not evaluate a policy revision. The terminal
+  // repository binds it to the current revision inside its commit tx.
+  policy_revision: "",
+  policy_hash: "",
+  input_sha256: inputSha256,
+  evidence_ref: null,
+});
+
+const safeEvaluation = (
   evaluation: TextPostModerationEvaluation,
-  reservation: TextPostReservation,
   input: TextPostModerationInput,
-): TextPostModerationEvaluation {
+  inputSha256: string,
+): TextPostModerationEvaluation => {
   const valid =
     textModerationEvaluationInvariant(evaluation) === null &&
     evaluation.surface === input.surface &&
-    evaluation.policy_revision === reservation.policyRevision &&
-    evaluation.policy_hash === reservation.policyHash &&
-    evaluation.input_sha256 === reservation.inputSha256 &&
+    evaluation.input_sha256 === inputSha256 &&
     publicTextPublicationResult(evaluation) !== null;
-  return valid ? evaluation : fallbackEvaluation(reservation, input, "invalid-evaluation");
-}
+  return valid ? evaluation : fallbackEvaluation(input, inputSha256, "invalid-evaluation");
+};
+
 function normalizeTextInput(
   body: CreatePostBody,
 ): Effect.Effect<
@@ -140,12 +181,14 @@ function normalizeTextInput(
     return Effect.fail(new BadRequest({ message: "Text content is not canonical" }));
   return Effect.succeed({ input: normalized.input, inputSha256: canonical.sha256 });
 }
+
 const decodeTextPostBody = (input: unknown): Effect.Effect<CreatePostBody, BadRequest> =>
   Effect.try({
     try: () =>
       Schema.decodeUnknownSync(CreatePost.request.body, exactParseOptions)(input) as CreatePostBody,
     catch: () => new BadRequest({ message: "Invalid request body" }),
   });
+
 export const createTextPost = Effect.fn("createTextPost")(function* (
   input: TextPostCreateInput,
   services: TextPostServices,
@@ -159,57 +202,66 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
   | TextPostPolicyStale
   | TextPostRuntimeUnavailable
 > {
-  const runtime = runtimeServices(services);
-  if (runtime === null) return yield* new TextPostRuntimeUnavailable();
+  const store = services.textPostStore;
+  const moderation = services.textModeration;
+  if (store === undefined || moderation === undefined)
+    return yield* new TextPostRuntimeUnavailable();
   yield* validateIdentifier(input.communityId, "Invalid community identifier");
   yield* validateHumanDirectActor(input.actor);
   const body = yield* decodeTextPostBody(input.body);
-  if (!validPublicHumanDirectPost(body) || body.post_type !== "text")
+  if (
+    !validPublicHumanDirectPost(body) ||
+    hasUnsupportedTextMetadata(body) ||
+    body.post_type !== "text"
+  )
     return yield* new BadRequest({ message: "Only public human text posts are supported" });
   const text = yield* normalizeTextInput(body);
-  const requestHash = yield* canonicalBodyHash(body);
+  const requestHash = yield* canonicalBodyHash({
+    community_id: input.communityId,
+    body,
+  });
   const idempotencyKey = body.idempotency_key;
   if (idempotencyKey.trim().length === 0)
     return yield* new BadRequest({ message: "An idempotency key is required" });
+
   for (let attempt = 0; attempt < MAX_POLICY_RETRIES; attempt += 1) {
-    const replay: TextPostReplayOutcome = yield* runtime.store
+    const replay: TextPostReplayOutcome = yield* store
       .replay({ communityId: input.communityId, actor: input.actor, idempotencyKey, requestHash })
       .pipe(Effect.mapError(mapStoreFailure));
     if (replay.kind === "replay") return replay.snapshot;
     if (replay.kind === "conflict") return yield* idempotencyConflict(replay.submissionId);
-    const reserved: TextPostReserveOutcome = yield* runtime.store
-      .reserve({
+
+    // The provider is deliberately outside the repository transaction. A
+    // stale policy result is discarded by commitTerminal and evaluated again.
+    const evaluation = yield* moderation.evaluate(text.input).pipe(
+      Effect.map((result) => safeEvaluation(result, text.input, text.inputSha256)),
+      Effect.catchTag("TextModerationProviderError", (failure) =>
+        Effect.succeed(fallbackEvaluation(text.input, text.inputSha256, failure.reason)),
+      ),
+      Effect.catchDefect(() =>
+        Effect.succeed(fallbackEvaluation(text.input, text.inputSha256, "invalid-evaluation")),
+      ),
+    );
+    const committed: TextPostCommitOutcome = yield* store
+      .commitTerminal({
         communityId: input.communityId,
         actor: input.actor,
         body,
         moderationInput: text.input,
         idempotencyKey,
         requestHash,
+        operationId: `operation_${crypto.randomUUID()}`,
+        evaluation,
       })
       .pipe(Effect.mapError(mapStoreFailure));
-    if (reserved.kind === "replay") return reserved.snapshot;
-    if (reserved.kind === "conflict") return yield* idempotencyConflict(reserved.submissionId);
-    const reservation = reserved.reservation;
-    if (reservation.inputSha256 !== text.inputSha256)
-      return yield* new InternalError({ message: "Text submission input binding failed" });
-    const evaluation = yield* runtime.moderation.evaluate(text.input).pipe(
-      Effect.map((result) => safeEvaluation(result, reservation, text.input)),
-      Effect.catchTag("TextModerationProviderError", (failure) =>
-        Effect.succeed(fallbackEvaluation(reservation, text.input, failure.reason)),
-      ),
-      Effect.catchDefect(() =>
-        Effect.succeed(fallbackEvaluation(reservation, text.input, "invalid-evaluation")),
-      ),
-    );
-    const finalized: TextPostFinalizeOutcome = yield* runtime.store
-      .finalize({ reservation, body, evaluation })
-      .pipe(Effect.mapError(mapStoreFailure));
-    if (finalized.kind === "created" || finalized.kind === "replay") return finalized.snapshot;
-    if (finalized.kind === "conflict") return yield* idempotencyConflict(finalized.submissionId);
+    if (committed.kind === "created" || committed.kind === "replay") return committed.snapshot;
+    if (committed.kind === "conflict") return yield* idempotencyConflict(committed.submissionId);
   }
   return yield* new TextPostPolicyStale({ attempts: MAX_POLICY_RETRIES });
 });
+
 export const createModeratedTextPost = createTextPost;
+
 export const getTextContentSubmission = Effect.fn("getTextContentSubmission")(function* (
   input: GetTextContentSubmissionInput,
   services: TextPostServices,
@@ -217,8 +269,8 @@ export const getTextContentSubmission = Effect.fn("getTextContentSubmission")(fu
   TextPostSubmissionDocument,
   BadRequest | NotFound | InternalError | TextPostRuntimeUnavailable | MembershipRequired
 > {
-  const store = storeService(services);
-  if (store === null) return yield* new TextPostRuntimeUnavailable();
+  const store = services.textPostStore;
+  if (store === undefined) return yield* new TextPostRuntimeUnavailable();
   yield* validateIdentifier(input.submissionId, "Invalid submission identifier");
   yield* validateHumanDirectActor(input.actor);
   const submission = yield* store
@@ -227,4 +279,5 @@ export const getTextContentSubmission = Effect.fn("getTextContentSubmission")(fu
   if (submission === null) return yield* new NotFound({ message: "Text submission not found" });
   return submission;
 });
+
 export const getAuthorTextContentSubmission = getTextContentSubmission;

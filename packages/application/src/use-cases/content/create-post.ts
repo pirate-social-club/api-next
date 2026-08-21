@@ -14,10 +14,8 @@ export const createPost = Effect.fn("createPost")(function* (
   input: CreatePostInput,
   services: ContentUseCaseServices,
 ) {
-  const store = services.textPostStore ?? services.textStore;
-  const moderation = services.textModeration ?? services.moderation;
   return yield* createTextPost(input, {
-    ...(store === undefined ? {} : { store }),
-    ...(moderation === undefined ? {} : { moderation }),
+    ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
+    ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
   });
 });

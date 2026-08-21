@@ -26,6 +26,7 @@ import {
   createPost,
 } from "@pirate/application/use-cases/content/create-post";
 import { getPost } from "@pirate/application/use-cases/content/get-post";
+import { getTextContentSubmission } from "@pirate/application/use-cases/content/text-post";
 import {
   type CurrentUserServices,
   getCurrentUser,
@@ -41,12 +42,16 @@ type CommunityStoreService = CommunityServices["communityStore"];
 type FeedStoreService = FeedServices["feedStore"];
 type ContentServices = Parameters<typeof getPost>[1];
 type ContentStoreService = ContentServices["contentStore"];
+type TextPostStoreService = ContentServices["textPostStore"];
+type TextModerationService = ContentServices["textModeration"];
 type CommunityActor = Parameters<typeof joinCommunity>[0]["actor"];
 type HomeFeedQuery = Parameters<typeof getHomeFeed>[0]["query"];
 
 export interface ProductHandlerServices {
   readonly communityStore: CommunityStoreService;
   readonly contentStore: ContentStoreService;
+  readonly textPostStore?: TextPostStoreService;
+  readonly textModeration?: TextModerationService;
   readonly feedStore: FeedStoreService;
   readonly identityStore?: CurrentUserServices["identityStore"];
 }
@@ -59,6 +64,7 @@ export type ProductHandlers = Readonly<{
   readonly FollowCommunity: EndpointHandler;
   readonly UnfollowCommunity: EndpointHandler;
   readonly CreatePost: EndpointHandler;
+  readonly GetTextContentSubmission: EndpointHandler;
   readonly GetPost: EndpointHandler;
   readonly CreateCommentReply: EndpointHandler;
   readonly CastPostVote: EndpointHandler;
@@ -70,6 +76,7 @@ export type ProductHandlers = Readonly<{
 type CommunityPath = Readonly<{ readonly communityId: string }>;
 type PostPath = Readonly<{ readonly postId: string }>;
 type CommentPath = Readonly<{ readonly commentId: string }>;
+type SubmissionPath = Readonly<{ readonly submissionId: string }>;
 type LocaleQuery = Readonly<{ readonly locale?: string }>;
 type JoinBody = Schema.Schema.Type<(typeof JoinCommunity.request)["body"]>;
 
@@ -78,6 +85,9 @@ const communityPath = (request: DecodedRequest): CommunityPath => request.params
 const postPath = (request: DecodedRequest): PostPath => request.params as PostPath;
 
 const commentPath = (request: DecodedRequest): CommentPath => request.params as CommentPath;
+
+const submissionPath = (request: DecodedRequest): SubmissionPath =>
+  request.params as SubmissionPath;
 
 const localeQuery = (request: DecodedRequest): LocaleQuery => (request.query ?? {}) as LocaleQuery;
 
@@ -236,8 +246,25 @@ const post = async (request: DecodedRequest, services: ProductHandlerServices) =
 
 const createPostHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
   Effect.runPromise(
-    createPost(createPostInputFrom(request), { contentStore: services.contentStore }),
+    createPost(createPostInputFrom(request), {
+      contentStore: services.contentStore,
+      ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
+      ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
+    }),
   );
+
+const getTextContentSubmissionHandler = async (
+  request: DecodedRequest,
+  services: ProductHandlerServices,
+) => {
+  const { submissionId } = submissionPath(request);
+  return Effect.runPromise(
+    getTextContentSubmission(
+      { submissionId, actor: communityActor(request.principal) },
+      services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore },
+    ),
+  );
+};
 
 const createCommentReplyHandler = async (
   request: DecodedRequest,
@@ -280,6 +307,7 @@ export const makeProductHandlers = (services: ProductHandlerServices): ProductHa
   FollowCommunity: (request) => follow(request, services),
   UnfollowCommunity: (request) => unfollow(request, services),
   CreatePost: (request) => createPostHandler(request, services),
+  GetTextContentSubmission: (request) => getTextContentSubmissionHandler(request, services),
   GetPost: (request) => post(request, services),
   CreateCommentReply: (request) => createCommentReplyHandler(request, services),
   CastPostVote: (request) => castPostVoteHandler(request, services),

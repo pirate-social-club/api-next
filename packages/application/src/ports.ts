@@ -336,28 +336,12 @@ export type TextPostSubmissionDocument = ContractTextContentSubmissionV1;
 export type TextPostModerationInput = ContractTextModerationInputV1;
 export type TextPostModerationEvaluation = ContractTextModerationEvaluationV1;
 
-export type TextPostReservation = Readonly<{
-  readonly submissionId: string;
-  readonly communityId: string;
-  readonly actorId: string;
-  readonly idempotencyKey: string;
-  readonly requestHash: string;
-  readonly inputSha256: string;
-  readonly policyRevision: string;
-  readonly policyHash: string;
-}>;
-
 export type TextPostReplayOutcome =
   | { readonly kind: "none" }
   | { readonly kind: "replay"; readonly snapshot: TextPostSubmissionDocument }
   | { readonly kind: "conflict"; readonly submissionId: string };
 
-export type TextPostReserveOutcome =
-  | { readonly kind: "reserved"; readonly reservation: TextPostReservation }
-  | { readonly kind: "replay"; readonly snapshot: TextPostSubmissionDocument }
-  | { readonly kind: "conflict"; readonly submissionId: string };
-
-export type TextPostFinalizeOutcome =
+export type TextPostCommitOutcome =
   | { readonly kind: "created"; readonly snapshot: TextPostSubmissionDocument }
   | { readonly kind: "replay"; readonly snapshot: TextPostSubmissionDocument }
   | { readonly kind: "conflict"; readonly submissionId: string }
@@ -367,7 +351,7 @@ export type TextPostFinalizeOutcome =
       readonly policyHash: string;
     };
 
-export type TextPostRepositoryOperation = "replay" | "reserve" | "finalize" | "get";
+export type TextPostRepositoryOperation = "replay" | "commit" | "get";
 export type TextPostRepositoryReason =
   | "not-found"
   | "membership-required"
@@ -390,22 +374,21 @@ export interface TextPostStoreService {
     readonly requestHash: string;
   }) => Effect.Effect<TextPostReplayOutcome, TextPostRepositoryFailure>;
 
-  /** Reserve the immutable submission identity and current policy in a short transaction. */
-  readonly reserve: (input: {
+  /**
+   * Commit one terminal result. The provider has already run outside this
+   * transaction; this operation rechecks every authority and writes the
+   * submission plus any public/review effects atomically.
+   */
+  readonly commitTerminal: (input: {
     readonly communityId: string;
     readonly actor: M2Actor;
     readonly body: CreatePostBody;
     readonly moderationInput: TextPostModerationInput;
     readonly idempotencyKey: string;
     readonly requestHash: string;
-  }) => Effect.Effect<TextPostReserveOutcome, TextPostRepositoryFailure>;
-
-  /** Commit the provider result in a new transaction; never call a provider here. */
-  readonly finalize: (input: {
-    readonly reservation: TextPostReservation;
-    readonly body: CreatePostBody;
+    readonly operationId: string;
     readonly evaluation: TextPostModerationEvaluation;
-  }) => Effect.Effect<TextPostFinalizeOutcome, TextPostRepositoryFailure>;
+  }) => Effect.Effect<TextPostCommitOutcome, TextPostRepositoryFailure>;
 
   /** Author-scoped current submission state, distinct from immutable replay. */
   readonly getForAuthor: (input: {
