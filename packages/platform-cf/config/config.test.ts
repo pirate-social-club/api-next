@@ -106,6 +106,8 @@ describe("config system (000 §9)", () => {
         >
       >;
     };
+    const staging = config.env?.staging;
+    const production = config.env?.production;
     const environments = [config, ...Object.values(config.env ?? {})];
     for (const environment of environments) {
       expect(environment.vars?.VERY_OAUTH_ENABLED).toBe("false");
