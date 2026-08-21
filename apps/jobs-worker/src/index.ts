@@ -38,10 +38,31 @@ import {
 } from "effect";
 
 import { makeCommunityPurchaseFundingReconciliationJob } from "./community-purchase-funding";
+import {
+  type HnsRouteRevalidationBindings,
+  type HnsRouteRevalidationComposition,
+  makeHnsRouteRevalidationComposition,
+  makeHnsRouteRevalidationJob,
+} from "./hns-route-revalidation";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
 
 export { ScheduledCronLockDO } from "@pirate/platform-cf";
+export {
+  HNS_ROUTE_REVALIDATION_BATCH_LIMIT,
+  HNS_ROUTE_REVALIDATION_JOB,
+  HNS_ROUTE_REVALIDATION_LANE,
+  HNS_ROUTE_REVALIDATION_LEAD_SECONDS,
+  HNS_ROUTE_REVALIDATION_PRINCIPAL_ID,
+  HNS_ROUTE_REVALIDATION_SCHEDULE,
+  HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL,
+  HNS_ROUTE_REVALIDATION_TIMEOUT,
+  type HnsRouteRevalidationBindings,
+  type HnsRouteRevalidationComposition,
+  type HnsRouteRevalidationForce,
+  makeHnsRouteRevalidationComposition,
+  makeHnsRouteRevalidationJob,
+} from "./hns-route-revalidation";
 export {
   buildJobRegistry,
   defaultRetrySchedule,
@@ -67,7 +88,7 @@ export {
   makeCommunityCatalogIntegrityJob,
 } from "./routing-integrity";
 
-export interface JobsWorkerEnv extends AlertSinkBindings {
+export interface JobsWorkerEnv extends AlertSinkBindings, HnsRouteRevalidationBindings {
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly CONTROL_PLANE?: HyperdriveConnection;
   readonly API_NEXT_ENV?: string;
@@ -462,11 +483,28 @@ export async function handleScheduled<Failure = unknown, Requirements = never>(
   return Effect.runPromise(runScheduled(env, lane, jobsInput, now, options));
 }
 
-export function makeJobsWorkerDeclarations(sink: AlertSink, rpcUrl: string) {
-  return [
+export function makeJobsWorkerDeclarations(
+  sink: AlertSink,
+  rpcUrl: string,
+  hns: HnsRouteRevalidationComposition = { enabled: false },
+  environment: JobsWorkerConfigValue["API_NEXT_ENV"] = "development",
+) {
+  const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [
     makeCommunityCatalogIntegrityJob(sink),
     makeCommunityPurchaseFundingReconciliationJob(sink, rpcUrl),
   ];
+  if (hns.enabled) {
+    declarations.push(
+      makeHnsRouteRevalidationJob({
+        sink,
+        provider: hns.provider,
+        configuration: hns.configuration,
+        force: hns.force,
+        environment,
+      }),
+    );
+  }
+  return declarations;
 }
 
 export default {
@@ -475,13 +513,14 @@ export default {
       throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");
     }
     const config = loadJobsWorkerConfig(env);
+    const hns = makeHnsRouteRevalidationComposition(env);
     const rpcUrl = fundingRpcUrl(
       Redacted.value(config.COMMUNITY_PURCHASE_FUNDING_RPC_URL),
       config.API_NEXT_ENV,
     );
     const deliveryStub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alerts`);
     const sink = makeConfiguredAlertSink(env, makeAlertDeliveryLedger(deliveryStub));
-    const declarations = makeJobsWorkerDeclarations(sink, rpcUrl);
+    const declarations = makeJobsWorkerDeclarations(sink, rpcUrl, hns, config.API_NEXT_ENV);
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);

@@ -44,8 +44,17 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
+      "services": [
+        {
+          "binding": "HNS_OWNER_VERIFIER",
+          "service": "pirate-hns-owner-verifier-staging"
+        }
+      ],
       "vars": {
-        "API_NEXT_ENV": "staging"
+        "API_NEXT_ENV": "staging",
+        "HNS_OWNERSHIP_ENABLED": "true",
+        "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
+        "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1"
         // Staging uses the local alert sink. If external delivery is enabled,
         // inject endpoint URLs and tokens from the staging secret environment.
       },

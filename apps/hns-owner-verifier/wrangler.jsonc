@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pirate-hns-owner-verifier",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "head_sampling_rate": 1
+    }
+  },
+  "env": {
+    "staging": {
+      "name": "pirate-hns-owner-verifier-staging",
+      "workers_dev": false,
+      "observability": {
+        "enabled": true,
+        "logs": {
+          "head_sampling_rate": 1
+        }
+      },
+      "vars": {
+        "HNS_OWNERSHIP_SOURCE": "hns_parent_chain_txt",
+        "HNS_CHALLENGE_TTL_SECONDS": "3600",
+        "HNS_EVIDENCE_TTL_SECONDS": "2592000",
+        "HNS_PROVIDER_ENVIRONMENT": "staging",
+        "HNS_PROVIDER_CONFIGURATION_REFERENCE": "hns-owner-staging",
+        "HNS_PROVIDER_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "HNS_LEGACY_VERIFIER_URL": "https://verifier.pirate.sc/hns"
+      },
+      "secrets": {
+        "required": ["HNS_LEGACY_VERIFIER_BEARER"]
+      }
+    }
+  }
+}

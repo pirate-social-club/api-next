@@ -24,6 +24,7 @@ const dependencyRoots = [
   "packages/verifier-response-contract",
   "apps/http-worker",
   "apps/jobs-worker",
+  "apps/hns-owner-verifier",
 ] as const;
 
 afterEach(async () => {

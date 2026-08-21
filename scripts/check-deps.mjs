@@ -23,6 +23,7 @@ const INTERNAL = {
   "packages/verifier-response-contract": "@pirate/verifier-response-contract",
   "apps/http-worker": "@pirate/http-worker",
   "apps/jobs-worker": "@pirate/jobs-worker",
+  "apps/hns-owner-verifier": "@pirate/hns-owner-verifier",
 };
 
 const ALLOWED = {
@@ -52,6 +53,7 @@ const ALLOWED = {
     "@pirate/domain",
     "@pirate/platform-cf",
   ],
+  "@pirate/hns-owner-verifier": [],
 };
 
 const DOMAIN_EFFECT_ALLOWLIST = new Set([
