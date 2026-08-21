@@ -23,7 +23,7 @@ function evidence(): MutableEvidenceBundle {
   const scope = {
     kind: "named" as const,
     scope_semantics: "issuer_rp_scope" as const,
-    issuer: "https://connect.very.org",
+    issuer: "https://verify.very.org",
     rp_scope: "pirate-social",
   };
   return {
@@ -33,19 +33,19 @@ function evidence(): MutableEvidenceBundle {
       {
         id: "receipt-very-1",
         proof_session_id: "proof-session-very-1",
-        provider_id: "very.oauth",
-        issuer: "https://connect.very.org",
-        method: "palm_oauth",
+        provider_id: "very.web",
+        issuer: "https://verify.very.org",
+        method: "palm_web",
         scope,
         provider_configuration: {
-          kind: "managed",
-          reference: "very-oauth",
+          kind: "dynamic",
+          reference: "very-web",
           version: "1",
         },
-        protocol_version: "oauth2-oidc-v1",
+        protocol_version: "very-web-v1",
         environment: "test",
         provenance_kind: "proof_session",
-        evidence_kind: "very.oauth.id-token-userinfo.v1",
+        evidence_kind: "very.web.server-verified.v1",
         evidence_hash: "a".repeat(64),
         observed_at: observedAt,
         expires_at: expiresAt,
@@ -55,8 +55,8 @@ function evidence(): MutableEvidenceBundle {
     subject_keys: [
       {
         id: "subject-very-1",
-        issuer: "https://connect.very.org",
-        method: "palm_oauth",
+        issuer: "https://verify.very.org",
+        method: "palm_web",
         scope,
         subject_digest: "b".repeat(64),
       },

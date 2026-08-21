@@ -11,21 +11,6 @@ export const VERY_WEB_RP_SCOPE = "pirate-social" as const;
 export const VERY_WEB_CONFIGURATION_REFERENCE = "very-web" as const;
 export const VERY_WEB_CONFIGURATION_VERSION = "1" as const;
 
-/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
-export const VERY_OAUTH_PROVIDER_ID = VERY_WEB_PROVIDER_ID;
-/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
-export const VERY_OAUTH_ISSUER = VERY_WEB_ISSUER;
-/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
-export const VERY_OAUTH_METHOD = VERY_WEB_METHOD;
-/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
-export const VERY_OAUTH_PROTOCOL_VERSION = VERY_WEB_PROTOCOL_VERSION;
-/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
-export const VERY_OAUTH_RP_SCOPE = VERY_WEB_RP_SCOPE;
-/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
-export const VERY_OAUTH_CONFIGURATION_REFERENCE = VERY_WEB_CONFIGURATION_REFERENCE;
-/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
-export const VERY_OAUTH_CONFIGURATION_VERSION = VERY_WEB_CONFIGURATION_VERSION;
-
 export const HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_CANONICAL_PREIMAGE =
   '{"claims":[{"claim_id":"human.personhood"},{"claim_id":"credential.subject_unique"}],"method":"palm_web","provider_configuration":{"kind":"dynamic","reference":"very-web","version":"1"},"provider_id":"very.web","protocol_version":"very-web-v1","request_mode":"dynamic","scope":{"issuer":"https://verify.very.org","kind":"named","rp_scope":"pirate-social","scope_semantics":"issuer_rp_scope"},"subject_binding_intent":"establish","version":1}' as const;
 

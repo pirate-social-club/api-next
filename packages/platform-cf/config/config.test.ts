@@ -73,6 +73,11 @@ describe("config system (000 §9)", () => {
       VERY_OAUTH_JWKS_URL: "",
       VERY_OAUTH_CLIENT_ID: "",
       VERY_OAUTH_REDIRECT_URI: "",
+      VERY_WEB_ENABLED: false,
+      VERY_APP_ID: "",
+      VERY_API_URL: "",
+      VERY_VERIFY_URL: "",
+      VERY_BRIDGE_API_URL: "",
       HNS_OWNERSHIP_ENABLED: false,
       HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "",
       HNS_OWNERSHIP_CONFIGURATION_VERSION: "",
@@ -80,6 +85,7 @@ describe("config system (000 §9)", () => {
     });
     expect(Redacted.value(configured.VERY_OAUTH_CLIENT_SECRET)).toBe("");
     expect(Redacted.value(configured.VERY_OAUTH_SEALING_KEY)).toBe("");
+    expect(Redacted.value(configured.VERY_WEB_SEALING_KEY)).toBe("");
   });
 
   test("Wrangler keeps external ownership providers disabled in every environment", async () => {
@@ -106,6 +112,12 @@ describe("config system (000 §9)", () => {
       expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
+      expect(environment.secrets?.required ?? []).not.toContain("VERY_WEB_SEALING_KEY");
     }
+    // Development (the base block) and production rely on the config default,
+    // while staging carries an explicit false until separately authorized.
+    expect(config.vars?.VERY_WEB_ENABLED).toBeUndefined();
+    expect(staging?.vars?.VERY_WEB_ENABLED).toBe("false");
+    expect(production?.vars?.VERY_WEB_ENABLED).toBeUndefined();
   });
 });

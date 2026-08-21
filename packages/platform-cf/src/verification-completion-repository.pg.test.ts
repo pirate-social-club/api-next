@@ -1,13 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
-  VERY_OAUTH_CONFIGURATION_REFERENCE,
-  VERY_OAUTH_CONFIGURATION_VERSION,
-  VERY_OAUTH_ISSUER,
-  VERY_OAUTH_METHOD,
-  VERY_OAUTH_PROTOCOL_VERSION,
-  VERY_OAUTH_PROVIDER_ID,
-  VERY_OAUTH_RP_SCOPE,
+  VERY_WEB_CONFIGURATION_REFERENCE,
+  VERY_WEB_CONFIGURATION_VERSION,
+  VERY_WEB_ISSUER,
+  VERY_WEB_METHOD,
+  VERY_WEB_PROTOCOL_VERSION,
+  VERY_WEB_PROVIDER_ID,
+  VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import type {
   EvidenceBundle,
@@ -273,20 +273,20 @@ function communityCreationProofSession(intentId: string): ProofSession {
     actor_id: "user-a",
     intent_id: intentId,
     request_hash: "c".repeat(64),
-    provider_id: VERY_OAUTH_PROVIDER_ID,
+    provider_id: VERY_WEB_PROVIDER_ID,
     upstream_session_ref: "very-session-1",
-    method: VERY_OAUTH_METHOD,
+    method: VERY_WEB_METHOD,
     scope: {
       kind: "named",
       scope_semantics: "issuer_rp_scope",
-      issuer: VERY_OAUTH_ISSUER,
-      rp_scope: VERY_OAUTH_RP_SCOPE,
+      issuer: VERY_WEB_ISSUER,
+      rp_scope: VERY_WEB_RP_SCOPE,
     },
     request_mode: "dynamic",
     provider_configuration: {
       kind: "dynamic",
-      reference: VERY_OAUTH_CONFIGURATION_REFERENCE,
-      version: VERY_OAUTH_CONFIGURATION_VERSION,
+      reference: VERY_WEB_CONFIGURATION_REFERENCE,
+      version: VERY_WEB_CONFIGURATION_VERSION,
     },
     requested_requirements: [
       { claim_id: "credential.subject_unique" },
@@ -294,7 +294,7 @@ function communityCreationProofSession(intentId: string): ProofSession {
     ],
     requested_claim_ids: ["credential.subject_unique", "human.personhood"],
     subject_binding_intent: "establish",
-    protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
     environment: "test",
     status: "pending",
     started_at: "2026-01-01T00:00:00.000Z",
