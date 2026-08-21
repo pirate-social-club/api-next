@@ -240,6 +240,22 @@ export class NamespaceOwnershipProviderRejected extends Data.TaggedError(
   readonly operation: NamespaceOwnershipProviderOperation;
 }> {}
 
+/** Local input/session authority was not bound to the selected adapter. */
+export class NamespaceOwnershipProviderUnboundRejected extends Data.TaggedError(
+  "NamespaceOwnershipProviderUnboundRejected",
+)<{
+  readonly provider_id: string;
+  readonly operation: NamespaceOwnershipProviderOperation;
+}> {}
+
+/** Strictly decoded, authenticated evidence contradicted the bound ownership claim. */
+export class NamespaceOwnershipProviderObservationRejected extends Data.TaggedError(
+  "NamespaceOwnershipProviderObservationRejected",
+)<{
+  readonly provider_id: string;
+  readonly operation: "complete";
+}> {}
+
 export class NamespaceOwnershipProviderInvalidResponse extends Data.TaggedError(
   "NamespaceOwnershipProviderInvalidResponse",
 )<{
@@ -257,6 +273,8 @@ export class NamespaceOwnershipProviderMisconfigured extends Data.TaggedError(
 export type NamespaceOwnershipProviderFailure =
   | NamespaceOwnershipProviderUnavailable
   | NamespaceOwnershipProviderRejected
+  | NamespaceOwnershipProviderUnboundRejected
+  | NamespaceOwnershipProviderObservationRejected
   | NamespaceOwnershipProviderInvalidResponse
   | NamespaceOwnershipProviderMisconfigured;
 

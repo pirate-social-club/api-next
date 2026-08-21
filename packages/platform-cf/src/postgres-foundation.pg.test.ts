@@ -164,6 +164,12 @@ const namespaceOwnershipPersistenceMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const namespaceOwnershipCompletionExpiryMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0030_namespace_ownership_completion_expiry.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -315,6 +321,11 @@ const namespaceOwnershipPersistenceMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0029_namespace_ownership_persistence.sql"] ?? "",
   sql: namespaceOwnershipPersistenceMigrationSql,
 };
+const namespaceOwnershipCompletionExpiryMigration: PostgresMigration = {
+  version: "0030_namespace_ownership_completion_expiry.sql",
+  checksum: checksumManifest.migrations["0030_namespace_ownership_completion_expiry.sql"] ?? "",
+  sql: namespaceOwnershipCompletionExpiryMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -345,6 +356,7 @@ const migrations: readonly PostgresMigration[] = [
   communityRoutesAndCreationRequirementsMigration,
   communityCreationRequirementResultGuardMigration,
   namespaceOwnershipPersistenceMigration,
+  namespaceOwnershipCompletionExpiryMigration,
 ];
 
 function checksum(value: string): string {
@@ -2918,6 +2930,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
            'leased', 1, clock_timestamp() + interval '30 minutes')`,
       );
       await admin.query(
+        `UPDATE namespace_ownership_completion_attempts
+            SET state = 'consumed', consumption_kind = 'verified',
+                updated_at = clock_timestamp()
+          WHERE completion_attempt_id = 'route-completion-attempt'`,
+      );
+      await admin.query(
         `INSERT INTO namespace_ownership_evidence_snapshots (
            evidence_ref, completion_attempt_id, namespace_session_id, actor_id,
            creation_intent_id, ceremony_intent_id, generation, requirement_hash, request_hash,
@@ -2940,14 +2958,6 @@ suite("Postgres 17 product and gates v2 foundation", () => {
            'provider-evidence-route', repeat('7', 64), repeat('a', 64), repeat('9', 64),
            '{"status":"verified"}'::jsonb, decode('01', 'hex'))`,
       );
-      await admin.query(
-        `UPDATE namespace_ownership_completion_attempts
-            SET state = 'consumed', updated_at = clock_timestamp()
-          WHERE completion_attempt_id = 'route-completion-attempt'`,
-      );
-      await admin.query("COMMIT");
-
-      await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO community_creation_ceremony_results (
            ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,

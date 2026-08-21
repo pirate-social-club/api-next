@@ -15,7 +15,7 @@ import {
   makeNamespaceOwnershipProviderRegistry,
   NamespaceOwnershipProviderDuplicate,
   NamespaceOwnershipProviderInvalidResponse,
-  NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderUnboundRejected,
   NamespaceOwnershipProviderUnknown,
 } from "./index.ts";
 
@@ -153,7 +153,7 @@ describe("namespace ownership provider registry", () => {
     expect(provider.manifest).toBe(listedManifest);
     await expect(
       Effect.runPromise(provider.plan({ route, environment: "production" })),
-    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderRejected);
+    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderUnboundRejected);
   });
 
   test("rejects provider session substitution and presentation mismatch", async () => {
@@ -236,7 +236,7 @@ describe("namespace ownership provider registry", () => {
           submission: { channel: "client_result", payload: {} },
         }),
       ),
-    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderRejected);
+    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderUnboundRejected);
     await expect(
       Effect.runPromise(
         provider.complete({
@@ -244,7 +244,7 @@ describe("namespace ownership provider registry", () => {
           submission: { channel: "poll_result", payload: "x".repeat(1_048_577) },
         }),
       ),
-    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderRejected);
+    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderUnboundRejected);
   });
 
   test("rejects duplicate provider authority for one family", async () => {

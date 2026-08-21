@@ -95,6 +95,10 @@ export {
   type PlatformNamespaceOwnershipProviderOptions,
 } from "./namespace-ownership/provider-registry";
 export {
+  makeControlPlaneNamespaceOwnershipCompletionRepository,
+  makeControlPlaneNamespaceOwnershipCompletionStore,
+} from "./namespace-ownership-completion-repository";
+export {
   makeControlPlaneNamespaceOwnershipStartAuthorityResolver,
   makeControlPlaneNamespaceOwnershipStartRepository,
   makeControlPlaneNamespaceOwnershipStartStore,

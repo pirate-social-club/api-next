@@ -10,12 +10,14 @@ import {
   type NamespaceOwnershipProviderCompleteResult,
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderManifest,
+  NamespaceOwnershipProviderObservationRejected,
   type NamespaceOwnershipProviderPlanInput,
   type NamespaceOwnershipProviderPlanResult,
   NamespaceOwnershipProviderRejected,
   type NamespaceOwnershipProviderStartInput,
   type NamespaceOwnershipProviderStartResult,
   NamespaceOwnershipProviderUnavailable,
+  NamespaceOwnershipProviderUnboundRejected,
   type NamespaceOwnershipSession,
   NamespaceOwnershipUpstreamSessionReference,
 } from "@pirate/application";
@@ -46,6 +48,8 @@ export type HnsOwnerTransportStartResult = Readonly<{
 export type HnsOwnerTransportFailure =
   | NamespaceOwnershipProviderUnavailable
   | NamespaceOwnershipProviderRejected
+  | NamespaceOwnershipProviderUnboundRejected
+  | NamespaceOwnershipProviderObservationRejected
   | NamespaceOwnershipProviderInvalidResponse;
 
 export type HnsOwnerAdapterOptions = Readonly<{
@@ -73,8 +77,15 @@ function invalid(operation: "plan" | "start" | "complete") {
   });
 }
 
-function rejected(operation: "plan" | "start" | "complete") {
-  return new NamespaceOwnershipProviderRejected({
+function observationRejected() {
+  return new NamespaceOwnershipProviderObservationRejected({
+    provider_id: HNS_OWNER_PROVIDER_ID,
+    operation: "complete",
+  });
+}
+
+function unboundRejected(operation: "plan" | "start" | "complete") {
+  return new NamespaceOwnershipProviderUnboundRejected({
     provider_id: HNS_OWNER_PROVIDER_ID,
     operation,
   });
@@ -145,7 +156,7 @@ export function makeHnsOwnerAdapter(
       input: NamespaceOwnershipProviderPlanInput,
     ): Effect.Effect<NamespaceOwnershipProviderPlanResult, HnsOwnerTransportFailure> => {
       if (input.route.family !== "hns" || input.route.app_host !== null) {
-        return Effect.fail(rejected("plan"));
+        return Effect.fail(unboundRejected("plan"));
       }
       if (!environments.includes(input.environment)) {
         return Effect.succeed({ status: "unsupported" });
@@ -166,12 +177,13 @@ export function makeHnsOwnerAdapter(
         input.protocol_version !== HNS_OWNER_PROTOCOL_VERSION ||
         !sameConfiguration(input.provider_configuration, provider_configuration)
       ) {
-        return Effect.fail(rejected("start"));
+        return Effect.fail(unboundRejected("start"));
       }
       return options.transport.start(input).pipe(
         Effect.mapError((error) =>
           error instanceof NamespaceOwnershipProviderUnavailable ||
           error instanceof NamespaceOwnershipProviderRejected ||
+          error instanceof NamespaceOwnershipProviderUnboundRejected ||
           error instanceof NamespaceOwnershipProviderInvalidResponse
             ? error
             : invalid("start"),
@@ -214,7 +226,7 @@ export function makeHnsOwnerAdapter(
         !sessionMatchesConfiguration(input.session, provider_configuration, environments) ||
         Date.parse(input.session.expires_at) <= now()
       ) {
-        return Effect.fail(rejected("complete"));
+        return Effect.fail(unboundRejected("complete"));
       }
       return options.transport
         .poll({ session: input.session, payload: input.submission.payload })
@@ -222,6 +234,8 @@ export function makeHnsOwnerAdapter(
           Effect.mapError((error) =>
             error instanceof NamespaceOwnershipProviderUnavailable ||
             error instanceof NamespaceOwnershipProviderRejected ||
+            error instanceof NamespaceOwnershipProviderUnboundRejected ||
+            error instanceof NamespaceOwnershipProviderObservationRejected ||
             error instanceof NamespaceOwnershipProviderInvalidResponse
               ? error
               : invalid("complete"),
@@ -231,7 +245,8 @@ export function makeHnsOwnerAdapter(
               bytes,
             ): Effect.Effect<
               NamespaceOwnershipProviderCompleteResult,
-              NamespaceOwnershipProviderInvalidResponse
+              | NamespaceOwnershipProviderInvalidResponse
+              | NamespaceOwnershipProviderObservationRejected
             > => {
               let decoded: HnsOwnerRawResponse;
               try {
@@ -246,6 +261,13 @@ export function makeHnsOwnerAdapter(
                 result.challenge_name !== `_pirate.${input.session.route.root_label}` ||
                 result.challenge_value !==
                   hnsOwnerChallengeValue(input.session.upstream_session_ref) ||
+                result.root_exists !== true ||
+                result.root_control_verified !== true ||
+                result.expiry_horizon_sufficient !== true
+              ) {
+                return Effect.fail(observationRejected());
+              }
+              if (
                 !isCanonicalInstant(result.observed_at) ||
                 !isCanonicalInstant(result.expires_at) ||
                 Date.parse(result.observed_at) > now() ||

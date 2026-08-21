@@ -1,10 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import type {
+  NamespaceOwnershipCompletionAttemptReservation,
   NamespaceOwnershipProviderStartResult,
   NamespaceOwnershipStartReservationInput,
+  NamespaceOwnershipStoredCompletion,
 } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { makeControlPlaneNamespaceOwnershipCompletionStore } from "./namespace-ownership-completion-repository";
 import {
   makeControlPlaneNamespaceOwnershipStartAuthorityResolver,
   makeControlPlaneNamespaceOwnershipStartStore,
@@ -18,7 +21,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const namespacePersistenceTestCount = 11;
+const namespacePersistenceTestCount = 21;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete";
@@ -205,13 +208,19 @@ async function insertSession(
   return values;
 }
 
-async function insertAttempt(client: Client, suffix: string, fence = 1, state = "leased") {
+async function insertAttempt(
+  client: Client,
+  suffix: string,
+  fence = 1,
+  state = "leased",
+  leaseMilliseconds = 1_800_000,
+) {
   await client.query(
     `INSERT INTO namespace_ownership_completion_attempts (
        completion_attempt_id, namespace_session_id, actor_id, idempotency_key, evidence_ref,
        completion_request_hash, submission_channel, state, fence_token, lease_expires_at
      ) VALUES ($1, $2, $3, $4, $5, $6, 'poll_result', $7, $8,
-       clock_timestamp() + interval '30 minutes')`,
+       clock_timestamp() + $9::integer * interval '1 millisecond')`,
     [
       `completion_${suffix}`,
       `namespace_session_${suffix}`,
@@ -221,7 +230,21 @@ async function insertAttempt(client: Client, suffix: string, fence = 1, state = 
       SHA,
       state,
       fence,
+      leaseMilliseconds,
     ],
+  );
+}
+
+async function consumeAttempt(
+  client: Client,
+  suffix: string,
+  consumptionKind: "semantic_contradiction" | "verified" | "rejected" | "expired",
+) {
+  await client.query(
+    `UPDATE namespace_ownership_completion_attempts
+        SET state = 'consumed', consumption_kind = $1, updated_at = clock_timestamp()
+      WHERE completion_attempt_id = $2`,
+    [consumptionKind, `completion_${suffix}`],
   );
 }
 
@@ -344,6 +367,28 @@ async function insertNamespaceResult(
   );
 }
 
+async function finalizeVerifiedSnapshot(client: Client, suffix: string): Promise<void> {
+  await client.query("BEGIN");
+  await consumeAttempt(client, suffix, "verified");
+  await insertSnapshot(client, suffix);
+  const terminalAt = await databaseTerminalAt(client);
+  await insertNamespaceResult(client, suffix, "satisfied", terminalAt);
+  await client.query(
+    `UPDATE community_creation_requirement_states
+        SET status = 'satisfied', satisfied_at = $1, updated_at = clock_timestamp()
+      WHERE intent_id = $2 AND requirement_kind = 'namespace_ownership'`,
+    [terminalAt, `intent_${suffix}`],
+  );
+  await client.query(
+    `UPDATE namespace_ownership_sessions
+        SET status = 'completed', terminal_at = $1, completed_at = $1,
+            updated_at = clock_timestamp()
+      WHERE namespace_session_id = $2`,
+    [terminalAt, `namespace_session_${suffix}`],
+  );
+  await client.query("COMMIT");
+}
+
 async function seedRepositoryStart(client: Client, suffix: string): Promise<void> {
   await client.query("INSERT INTO users (user_id) VALUES ($1)", [`start_actor_${suffix}`]);
   await client.query(
@@ -432,13 +477,14 @@ function repositoryStartInput(
 
 function repositoryStartResult(
   input: NamespaceOwnershipStartReservationInput,
+  expiresAt = "2099-08-21T00:00:00.000Z",
 ): NamespaceOwnershipProviderStartResult {
   return {
     session: {
       ...input.start,
       provider_id: input.provider_id,
       upstream_session_ref: `upstream_${input.namespace_session_id}`,
-      expires_at: "2099-08-21T00:00:00.000Z",
+      expires_at: expiresAt,
     },
     presentation: {
       kind: "poll",
@@ -446,6 +492,121 @@ function repositoryStartResult(
       poll_url: "/provider/poll",
     },
   };
+}
+
+async function createRepositoryNamespaceSession(
+  client: Client,
+  scoped: string,
+  suffix: string,
+  options: Readonly<{ readonly ttl_ms?: number; readonly expires_at?: string }> = {},
+) {
+  await seedRepositoryStart(client, suffix);
+  const layer = makeDirectPostgresControlPlaneLayer(scoped);
+  const startStore = makeControlPlaneNamespaceOwnershipStartStore(layer);
+  const startInput = repositoryStartInput(suffix, { ttl_ms: options.ttl_ms ?? 6_000 });
+  const reserved = await Effect.runPromise(Effect.scoped(startStore.reserve(startInput)));
+  if (reserved.kind !== "acquired") throw new Error("expected namespace START reservation");
+  const finalized = await Effect.runPromise(
+    Effect.scoped(
+      startStore.finalize(
+        reserved.reservation,
+        repositoryStartResult(startInput, options.expires_at),
+      ),
+    ),
+  );
+  if (finalized.kind !== "created") throw new Error("expected namespace START finalization");
+  const completionStore = makeControlPlaneNamespaceOwnershipCompletionStore(layer);
+  const completionInput = {
+    actor_id: startInput.start.actor_id,
+    ceremony_intent_id: startInput.start.ceremony_intent_id,
+    session_id: startInput.namespace_session_id,
+    expected_revision: 1,
+    idempotency_key: `poll_${suffix}`,
+    completion_request_hash: SHA,
+    expired_result_hash: SHA_B,
+    completion_attempt_id: `completion_attempt_${suffix}`,
+    evidence_ref: `completion_evidence_${suffix}`,
+    lease_ms: 16_000,
+    max_consumed_attempts: 3,
+  } as const;
+  const stored = await Effect.runPromise(
+    Effect.scoped(
+      completionStore.load({
+        actor_id: completionInput.actor_id,
+        ceremony_intent_id: completionInput.ceremony_intent_id,
+        session_id: completionInput.session_id,
+      }),
+    ),
+  );
+  if (stored === null) throw new Error("expected namespace completion session");
+  return { completionStore, completionInput, startInput, stored };
+}
+
+function verifiedCompletionInput(
+  expected: NamespaceOwnershipStoredCompletion,
+  attempt: NamespaceOwnershipCompletionAttemptReservation,
+  request: Readonly<{
+    readonly idempotency_key: string;
+    readonly completion_request_hash: string;
+  }>,
+) {
+  const raw = Buffer.from(
+    JSON.stringify({ status: "verified", provider_evidence_ref: "provider-observation" }),
+    "utf8",
+  );
+  return {
+    actor_id: expected.session.actor_id,
+    expected,
+    idempotency_key: request.idempotency_key,
+    completion_request_hash: request.completion_request_hash,
+    result_hash: SHA_C,
+    expired_result_hash: SHA_B,
+    attempt,
+    verified: {
+      envelope: {
+        version: "pirate-hns-ownership-evidence-v1" as const,
+        actor_id: expected.session.actor_id,
+        creation_intent_id: expected.session.creation_intent_id,
+        requirement: "namespace_ownership" as const,
+        requirement_hash: expected.session.requirement_hash,
+        ceremony_intent_id: expected.session.ceremony_intent_id,
+        generation: expected.session.generation,
+        request_hash: expected.session.request_hash,
+        provider_id: expected.session.provider_id,
+        provider_binding_hash: expected.session.provider_binding_hash,
+        provider_configuration_kind: expected.session.provider_configuration.kind,
+        provider_configuration_reference: expected.session.provider_configuration.reference,
+        provider_configuration_version: expected.session.provider_configuration.version,
+        protocol_version: expected.session.protocol_version,
+        environment: expected.session.environment,
+        family: "hns" as const,
+        root_label: expected.session.route.root_label,
+        root_label_display: expected.session.route.root_label_display,
+        path_segment: expected.session.route.path_segment,
+        upstream_session_ref: expected.session.upstream_session_ref,
+        ownership_source: "owner_authoritative_dns_txt" as const,
+        challenge_name: `_pirate.${expected.session.route.root_label}`,
+        challenge_value_sha256: SHA,
+        root_exists: true as const,
+        root_control_verified: true as const,
+        expiry_horizon_sufficient: true as const,
+        chain_network: "regtest",
+        chain_anchor_height: 123,
+        chain_anchor_block_hash: SHA_B,
+        chain_anchor_median_time: 456,
+        expiry_height: 789,
+        observed_at: "2026-08-20T00:00:00.000Z",
+        expires_at: "2099-08-21T00:00:00.000Z",
+        evidence_ref: attempt.evidence_ref,
+        provider_evidence_ref: "provider-observation",
+        observation_sha256: SHA,
+        provider_identity_digest: SHA_B,
+        evidence_digest: SHA_C,
+      },
+      observation: { status: "verified", provider_evidence_ref: "provider-observation" },
+      raw_response_bytes: raw,
+    },
+  } as const;
 }
 
 async function withSchema<A>(
@@ -476,14 +637,10 @@ suite("Postgres namespace ownership persistence foundation", () => {
       await seed(client, "valid");
       await insertSession(client, "valid");
       await insertAttempt(client, "valid");
-      await insertSnapshot(client, "valid");
-      await client.query(
-        `UPDATE namespace_ownership_completion_attempts
-            SET state = 'consumed', updated_at = clock_timestamp()
-          WHERE completion_attempt_id = 'completion_valid'`,
-      );
-      const terminalAt = await databaseTerminalAt(client);
       await client.query("BEGIN");
+      await consumeAttempt(client, "valid", "verified");
+      await insertSnapshot(client, "valid");
+      const terminalAt = await databaseTerminalAt(client);
       await client.query(
         `INSERT INTO community_creation_ceremony_results (
            ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
@@ -526,14 +683,10 @@ suite("Postgres namespace ownership persistence foundation", () => {
       await seed(client, "deferred");
       await insertSession(client, "deferred");
       await insertAttempt(client, "deferred");
-      await insertSnapshot(client, "deferred");
-      await client.query(
-        `UPDATE namespace_ownership_completion_attempts
-            SET state = 'consumed', updated_at = clock_timestamp()
-          WHERE completion_attempt_id = 'completion_deferred'`,
-      );
-      const deferredTerminalAt = await databaseTerminalAt(client);
       await client.query("BEGIN");
+      await consumeAttempt(client, "deferred", "verified");
+      await insertSnapshot(client, "deferred");
+      const deferredTerminalAt = await databaseTerminalAt(client);
       await client.query(
         `UPDATE community_creation_requirement_states
             SET status = 'satisfied', satisfied_at = $1, updated_at = clock_timestamp()
@@ -579,6 +732,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
       await insertAttempt(client, "pending-failed");
       const terminalAt = await databaseTerminalAt(client);
       await client.query("BEGIN");
+      await consumeAttempt(client, "pending-failed", "rejected");
       await insertNamespaceResult(client, "pending-failed", "failed", terminalAt);
       await client.query(
         `UPDATE community_creation_requirement_states
@@ -592,27 +746,31 @@ suite("Postgres namespace ownership persistence foundation", () => {
       await seed(client, "pending-expired");
       await insertSession(client, "pending-expired");
       await insertAttempt(client, "pending-expired");
-      const terminalAt = await databaseTerminalAt(client);
       await client.query("BEGIN");
-      await insertNamespaceResult(client, "pending-expired", "expired", terminalAt);
-      await client.query(
-        `UPDATE community_creation_requirement_states
-            SET status = 'expired', satisfied_at = NULL, updated_at = clock_timestamp()
-          WHERE intent_id = 'intent_pending-expired' AND requirement_kind = 'namespace_ownership'`,
-      );
-      await failure(client, "COMMIT");
+      expect(
+        (
+          await client.query(
+            `UPDATE namespace_ownership_completion_attempts
+            SET state = 'consumed', consumption_kind = 'expired',
+                updated_at = clock_timestamp()
+          WHERE completion_attempt_id = 'completion_pending-expired'`,
+          )
+        ).rowCount,
+      ).toBe(0);
+      await client.query("ROLLBACK");
     });
 
     await withSchema(async (client) => {
       await seed(client, "terminal-expiry");
       await insertSession(client, "terminal-expiry");
       await insertAttempt(client, "terminal-expiry");
+      await client.query("BEGIN");
+      await consumeAttempt(client, "terminal-expiry", "verified");
       await insertSnapshot(client, "terminal-expiry", {
         expires: new Date(Date.now() + 100).toISOString(),
       });
       await client.query("SELECT pg_sleep(0.2)");
       const terminalAt = await databaseTerminalAt(client);
-      await client.query("BEGIN");
       await insertNamespaceResult(client, "terminal-expiry", "satisfied", terminalAt);
       await client.query(
         `UPDATE community_creation_requirement_states
@@ -639,6 +797,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
       await insertAttempt(client, "orphan");
       const terminalAt = await databaseTerminalAt(client);
       await client.query("BEGIN");
+      await consumeAttempt(client, "orphan", "verified");
       await client.query(
         `INSERT INTO community_creation_ceremony_results (
            ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
@@ -942,6 +1101,8 @@ suite("Postgres namespace ownership persistence foundation", () => {
       await seed(client, "bounds");
       await insertSession(client, "bounds");
       await insertAttempt(client, "bounds");
+      await client.query("BEGIN");
+      await consumeAttempt(client, "bounds", "verified");
       await failure(
         client,
         `INSERT INTO namespace_ownership_evidence_snapshots (
@@ -964,9 +1125,12 @@ suite("Postgres namespace ownership persistence foundation", () => {
         'provider-evidence', $6, $7, $8, '{"status":"verified"}'::jsonb, ''::bytea)`,
         [SHA_B, SHA, SHA_C, SHA, SHA_C, SHA, SHA_B, SHA_C],
       );
+      await client.query("ROLLBACK");
       await seed(client, "raw-one-megabyte");
       await insertSession(client, "raw-one-megabyte");
       await insertAttempt(client, "raw-one-megabyte");
+      await client.query("BEGIN");
+      await consumeAttempt(client, "raw-one-megabyte", "verified");
       await insertSnapshot(client, "raw-one-megabyte", {
         raw: Buffer.alloc(1024 * 1024, 0x78),
       });
@@ -978,27 +1142,37 @@ suite("Postgres namespace ownership persistence foundation", () => {
       expect(exactRaw).toBeInstanceOf(Buffer);
       expect(exactRaw?.length).toBe(1024 * 1024);
       expect(Array.from(exactRaw ?? []).slice(0, 4)).toEqual([0x78, 0x78, 0x78, 0x78]);
+      await client.query("ROLLBACK");
       await seed(client, "raw-too-large");
       await insertSession(client, "raw-too-large");
       await insertAttempt(client, "raw-too-large");
+      await client.query("BEGIN");
+      await consumeAttempt(client, "raw-too-large", "verified");
       await insertSnapshot(client, "raw-too-large", {
         raw: Buffer.alloc(1024 * 1024 + 1, 0x78),
         expectFailure: true,
       });
+      await client.query("ROLLBACK");
       await seed(client, "future-observation");
       await insertSession(client, "future-observation");
       await insertAttempt(client, "future-observation");
+      await client.query("BEGIN");
+      await consumeAttempt(client, "future-observation", "verified");
       await insertSnapshot(client, "future-observation", {
         observed: new Date(Date.now() + 60_000).toISOString(),
         expectFailure: true,
       });
+      await client.query("ROLLBACK");
       await seed(client, "expired-snapshot");
       await insertSession(client, "expired-snapshot");
       await insertAttempt(client, "expired-snapshot");
+      await client.query("BEGIN");
+      await consumeAttempt(client, "expired-snapshot", "verified");
       await insertSnapshot(client, "expired-snapshot", {
         expires: new Date(Date.now() - 1_000).toISOString(),
         expectFailure: true,
       });
+      await client.query("ROLLBACK");
       await seed(client, "expired-session");
       await insertSession(client, "expired-session", {
         startedAt: new Date(Date.now() - 120_000).toISOString(),
@@ -1018,11 +1192,11 @@ suite("Postgres namespace ownership persistence foundation", () => {
       await seed(client, "one");
       await insertSession(client, "one");
       await insertAttempt(client, "one");
-      await insertSnapshot(client, "one");
+      await finalizeVerifiedSnapshot(client, "one");
       await seed(client, "two");
       await insertSession(client, "two");
       await insertAttempt(client, "two");
-      await insertSnapshot(client, "two");
+      await finalizeVerifiedSnapshot(client, "two");
       expect(
         (
           await client.query(
@@ -1064,6 +1238,9 @@ suite("Postgres namespace ownership persistence foundation", () => {
       await client.query(
         "UPDATE namespace_ownership_completion_attempts SET state = 'released' WHERE completion_attempt_id = 'completion_fence'",
       );
+      await expect(
+        insertNamespaceResult(client, "fence", "satisfied", await databaseTerminalAt(client)),
+      ).rejects.toMatchObject({ code: "P0001" });
       await client.query(
         "UPDATE namespace_ownership_completion_attempts SET state = 'leased', fence_token = 2, lease_expires_at = clock_timestamp() + interval '30 minutes' WHERE completion_attempt_id = 'completion_fence'",
       );
@@ -1075,6 +1252,88 @@ suite("Postgres namespace ownership persistence foundation", () => {
         client,
         `UPDATE namespace_ownership_sessions SET status = 'completed', terminal_at = clock_timestamp(), completed_at = clock_timestamp() WHERE namespace_session_id = 'namespace_session_fence'`,
       );
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects consumed attempts without a kind and verified consumption after lease expiry", async () => {
+    await withSchema(async (client) => {
+      await seed(client, "expired-consume");
+      await insertSession(client, "expired-consume");
+      await insertAttempt(client, "expired-consume", 1, "leased", 100);
+      await failure(
+        client,
+        `UPDATE namespace_ownership_completion_attempts
+            SET updated_at = '2000-01-01T00:00:00.000Z'::timestamptz
+          WHERE completion_attempt_id = 'completion_expired-consume'`,
+      );
+      await failure(
+        client,
+        `UPDATE namespace_ownership_completion_attempts
+            SET state = 'consumed', consumption_kind = NULL,
+                updated_at = clock_timestamp()
+          WHERE completion_attempt_id = 'completion_expired-consume'`,
+      );
+      await client.query("SELECT pg_sleep(0.2)");
+      expect(
+        (
+          await client.query(
+            `UPDATE namespace_ownership_completion_attempts
+            SET state = 'consumed', consumption_kind = 'verified',
+                updated_at = '2000-01-01T00:00:00.000Z'::timestamptz
+          WHERE completion_attempt_id = 'completion_expired-consume'`,
+          )
+        ).rowCount,
+      ).toBe(0);
+      expect(
+        (
+          await client.query(
+            `SELECT state, consumption_kind
+               FROM namespace_ownership_completion_attempts
+              WHERE completion_attempt_id = 'completion_expired-consume'`,
+          )
+        ).rows[0],
+      ).toEqual({ state: "leased", consumption_kind: null });
+    });
+    completedTestCount += 1;
+  });
+
+  test("keeps post-CAS verified writes valid after the lease wall clock passes", async () => {
+    await withSchema(async (client) => {
+      await seed(client, "post-cas");
+      await insertSession(client, "post-cas");
+      await insertAttempt(client, "post-cas", 1, "leased", 500);
+      await client.query("BEGIN");
+      await consumeAttempt(client, "post-cas", "verified");
+      await client.query("SELECT pg_sleep(0.6)");
+      await insertSnapshot(client, "post-cas");
+      const terminalAt = await databaseTerminalAt(client);
+      await insertNamespaceResult(client, "post-cas", "satisfied", terminalAt);
+      await client.query(
+        `UPDATE community_creation_requirement_states
+            SET status = 'satisfied', satisfied_at = $1, updated_at = clock_timestamp()
+          WHERE intent_id = 'intent_post-cas' AND requirement_kind = 'namespace_ownership'`,
+        [terminalAt],
+      );
+      await client.query(
+        `UPDATE namespace_ownership_sessions
+            SET status = 'completed', terminal_at = $1, completed_at = $1,
+                updated_at = clock_timestamp()
+          WHERE namespace_session_id = 'namespace_session_post-cas'`,
+        [terminalAt],
+      );
+      await client.query("COMMIT");
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT consumption_kind FROM namespace_ownership_completion_attempts)
+                 AS consumption_kind,
+               (SELECT count(*)::int FROM namespace_ownership_evidence_snapshots) AS snapshots,
+               (SELECT count(*)::int FROM community_creation_ceremony_results) AS results`,
+          )
+        ).rows[0],
+      ).toEqual({ consumption_kind: "verified", snapshots: 1, results: 1 });
     });
     completedTestCount += 1;
   });
@@ -1224,6 +1483,453 @@ suite("Postgres namespace ownership persistence foundation", () => {
         (await client.query("SELECT count(*)::int AS count FROM namespace_ownership_sessions"))
           .rows[0]?.count,
       ).toBe(1);
+    });
+    completedTestCount += 1;
+  });
+
+  test("reserves, releases, and reacquires one completion attempt with a stable evidence reference", async () => {
+    await withSchema(async (client, scoped) => {
+      const { completionStore, completionInput, stored } = await createRepositoryNamespaceSession(
+        client,
+        scoped,
+        "completion_retry",
+      );
+      const first = await Effect.runPromise(
+        Effect.scoped(completionStore.reserve(completionInput)),
+      );
+      expect(first).toMatchObject({ kind: "acquired", reservation: { fence_token: 1 } });
+      if (first.kind !== "acquired") throw new Error("expected completion reservation");
+      expect(
+        await Effect.runPromise(Effect.scoped(completionStore.reserve(completionInput))),
+      ).toMatchObject({ kind: "in_flight" });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.release({
+              actor_id: stored.session.actor_id,
+              expected: stored,
+              idempotency_key: completionInput.idempotency_key,
+              completion_request_hash: completionInput.completion_request_hash,
+              expired_result_hash: completionInput.expired_result_hash,
+              attempt: first.reservation,
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "released" });
+      const reacquired = await Effect.runPromise(
+        Effect.scoped(
+          completionStore.reserve({
+            ...completionInput,
+            completion_attempt_id: "ignored_new_attempt_id",
+            evidence_ref: "ignored_new_evidence_ref",
+          }),
+        ),
+      );
+      expect(reacquired).toMatchObject({
+        kind: "acquired",
+        reservation: {
+          fence_token: 2,
+          completion_attempt_id: first.reservation.completion_attempt_id,
+          evidence_ref: first.reservation.evidence_ref,
+        },
+      });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.reserve({
+              ...completionInput,
+              completion_request_hash: SHA_C,
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "idempotency_conflict" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("terminally expires the exact attempt when release crosses the session deadline", async () => {
+    await withSchema(async (client, scoped) => {
+      const expiresAt = new Date(Date.now() + 4_000).toISOString();
+      const { completionStore, completionInput, stored } = await createRepositoryNamespaceSession(
+        client,
+        scoped,
+        "release_after_expiry",
+        { ttl_ms: 20, expires_at: expiresAt },
+      );
+      const reserved = await Effect.runPromise(
+        Effect.scoped(completionStore.reserve({ ...completionInput, lease_ms: 1_100 })),
+      );
+      if (reserved.kind !== "acquired") throw new Error("expected completion reservation");
+      await client.query("SELECT pg_sleep(4.1)");
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.release({
+              actor_id: stored.session.actor_id,
+              expected: stored,
+              idempotency_key: completionInput.idempotency_key,
+              completion_request_hash: completionInput.completion_request_hash,
+              expired_result_hash: completionInput.expired_result_hash,
+              attempt: reserved.reservation,
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "expired", result_hash: SHA_B });
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT state FROM namespace_ownership_completion_attempts LIMIT 1)
+                 AS attempt_state,
+               (SELECT consumption_kind FROM namespace_ownership_completion_attempts LIMIT 1)
+                 AS consumption_kind,
+               (SELECT completion_attempt_id FROM community_creation_ceremony_results LIMIT 1)
+                 AS result_attempt,
+               (SELECT status FROM namespace_ownership_sessions LIMIT 1) AS session_status,
+               (SELECT status FROM community_creation_requirement_states
+                 WHERE requirement_kind = 'namespace_ownership' LIMIT 1) AS requirement_status`,
+          )
+        ).rows[0],
+      ).toEqual({
+        attempt_state: "consumed",
+        consumption_kind: "expired",
+        result_attempt: reserved.reservation.completion_attempt_id,
+        session_status: "expired",
+        requirement_status: "expired",
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("loses an expired completion lease before evidence is persisted", async () => {
+    await withSchema(async (client, scoped) => {
+      const { completionStore, completionInput, stored } = await createRepositoryNamespaceSession(
+        client,
+        scoped,
+        "lease_boundary",
+      );
+      const requestInput = { ...completionInput, lease_ms: 1_100 };
+      const reserved = await Effect.runPromise(
+        Effect.scoped(completionStore.reserve(requestInput)),
+      );
+      if (reserved.kind !== "acquired") throw new Error("expected completion reservation");
+      await client.query("SELECT pg_sleep(1.2)");
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.verify(
+              verifiedCompletionInput(stored, reserved.reservation, requestInput),
+            ),
+          ),
+        ),
+      ).toEqual({ kind: "lease_lost" });
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT state FROM namespace_ownership_completion_attempts LIMIT 1)
+                 AS attempt_state,
+               (SELECT count(*)::int FROM namespace_ownership_evidence_snapshots) AS snapshots,
+               (SELECT count(*)::int FROM community_creation_ceremony_results) AS results,
+               (SELECT count(*)::int FROM community_route_ownership_evidence) AS route_evidence`,
+          )
+        ).rows[0],
+      ).toEqual({ attempt_state: "released", snapshots: 0, results: 0, route_evidence: 0 });
+    });
+    completedTestCount += 1;
+  });
+
+  test("atomically verifies a completion and replays one immutable snapshot and route evidence", async () => {
+    await withSchema(async (client, scoped) => {
+      const { completionStore, completionInput, stored } = await createRepositoryNamespaceSession(
+        client,
+        scoped,
+        "verified",
+      );
+      const reserved = await Effect.runPromise(
+        Effect.scoped(completionStore.reserve(completionInput)),
+      );
+      if (reserved.kind !== "acquired") throw new Error("expected completion reservation");
+      const verified = verifiedCompletionInput(stored, reserved.reservation, completionInput);
+      expect(await Effect.runPromise(Effect.scoped(completionStore.verify(verified)))).toEqual({
+        kind: "committed",
+        result_hash: SHA_C,
+      });
+      expect(await Effect.runPromise(Effect.scoped(completionStore.verify(verified)))).toEqual({
+        kind: "replay",
+        status: "verified",
+        result_hash: SHA_C,
+      });
+      const rows = (
+        await client.query(
+          `SELECT
+             (SELECT count(*)::int FROM namespace_ownership_evidence_snapshots) AS snapshots,
+             (SELECT count(*)::int FROM community_route_ownership_evidence) AS route_evidence,
+             (SELECT count(*)::int FROM community_creation_ceremony_results) AS results,
+             (SELECT status FROM namespace_ownership_sessions LIMIT 1) AS session_status,
+             (SELECT status FROM community_creation_requirement_states
+               WHERE requirement_kind = 'namespace_ownership' LIMIT 1) AS requirement_status,
+             (SELECT state FROM namespace_ownership_completion_attempts LIMIT 1) AS attempt_state`,
+        )
+      ).rows[0];
+      expect(rows).toEqual({
+        snapshots: 1,
+        route_evidence: 1,
+        results: 1,
+        session_status: "completed",
+        requirement_status: "satisfied",
+        attempt_state: "consumed",
+      });
+      const raw = (
+        await client.query<{ raw: Buffer }>(
+          "SELECT raw_response_bytes AS raw FROM namespace_ownership_evidence_snapshots",
+        )
+      ).rows[0]?.raw;
+      expect(raw).toEqual(Buffer.from(verified.verified.raw_response_bytes));
+    });
+    completedTestCount += 1;
+  });
+
+  test("persists rejection without evidence and returns the same terminal replay", async () => {
+    await withSchema(async (client, scoped) => {
+      const { completionStore, completionInput, stored } = await createRepositoryNamespaceSession(
+        client,
+        scoped,
+        "rejected",
+      );
+      const reserved = await Effect.runPromise(
+        Effect.scoped(completionStore.reserve(completionInput)),
+      );
+      if (reserved.kind !== "acquired") throw new Error("expected completion reservation");
+      const rejected = {
+        actor_id: completionInput.actor_id,
+        expected: stored,
+        idempotency_key: completionInput.idempotency_key,
+        completion_request_hash: completionInput.completion_request_hash,
+        result_hash: SHA_C,
+        expired_result_hash: SHA_B,
+        attempt: reserved.reservation,
+      } as const;
+      expect(await Effect.runPromise(Effect.scoped(completionStore.reject(rejected)))).toEqual({
+        kind: "committed",
+        result_hash: SHA_C,
+      });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.verify(
+              verifiedCompletionInput(stored, reserved.reservation, completionInput),
+            ),
+          ),
+        ),
+      ).toEqual({ kind: "replay", status: "rejected", result_hash: SHA_C });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.reserve({
+              ...completionInput,
+              idempotency_key: "different-terminal-key",
+              completion_attempt_id: "different-terminal-attempt",
+              evidence_ref: "different-terminal-evidence",
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "idempotency_conflict" });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.load({
+              actor_id: completionInput.actor_id,
+              ceremony_intent_id: completionInput.ceremony_intent_id,
+              session_id: completionInput.session_id,
+            }),
+          ),
+        ),
+      ).toMatchObject({
+        status: "failed",
+        terminal: { status: "rejected", result_hash: SHA_C },
+      });
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT count(*)::int FROM namespace_ownership_evidence_snapshots) AS snapshots,
+               (SELECT count(*)::int FROM community_route_ownership_evidence) AS route_evidence`,
+          )
+        ).rows[0],
+      ).toEqual({ snapshots: 0, route_evidence: 0 });
+    });
+    completedTestCount += 1;
+  });
+
+  test("consumes semantic contradictions without terminal authority and enforces the three-attempt budget", async () => {
+    await withSchema(async (client, scoped) => {
+      const expiresAt = new Date(Date.now() + 5_000).toISOString();
+      const { completionStore, completionInput, stored } = await createRepositoryNamespaceSession(
+        client,
+        scoped,
+        "budget",
+        { ttl_ms: 20, expires_at: expiresAt },
+      );
+      for (const [index, requestHash] of [SHA, SHA_B, SHA_C].entries()) {
+        const requestInput = {
+          ...completionInput,
+          idempotency_key: `poll_budget_${index}`,
+          completion_request_hash: requestHash,
+          completion_attempt_id: `completion_attempt_budget_${index}`,
+          evidence_ref: `completion_evidence_budget_${index}`,
+          lease_ms: 1_100,
+        };
+        const reserved = await Effect.runPromise(
+          Effect.scoped(completionStore.reserve(requestInput)),
+        );
+        if (reserved.kind !== "acquired") throw new Error("expected budget reservation");
+        expect(
+          await Effect.runPromise(
+            Effect.scoped(
+              completionStore.consume({
+                actor_id: completionInput.actor_id,
+                expected: stored,
+                idempotency_key: requestInput.idempotency_key,
+                completion_request_hash: requestInput.completion_request_hash,
+                expired_result_hash: SHA_B,
+                attempt: reserved.reservation,
+              }),
+            ),
+          ),
+        ).toEqual({ kind: "consumed" });
+      }
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.reserve({
+              ...completionInput,
+              idempotency_key: "poll_budget_fourth",
+              completion_attempt_id: "completion_attempt_budget_fourth",
+              evidence_ref: "completion_evidence_budget_fourth",
+              lease_ms: 1_100,
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "budget_exhausted" });
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT count(*)::int FROM namespace_ownership_completion_attempts
+                 WHERE state = 'consumed') AS consumed,
+               (SELECT count(*)::int FROM community_creation_ceremony_results) AS results,
+               (SELECT count(*)::int FROM namespace_ownership_evidence_snapshots) AS snapshots`,
+          )
+        ).rows[0],
+      ).toEqual({ consumed: 3, results: 0, snapshots: 0 });
+      await client.query("SELECT pg_sleep(5.1)");
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.reserve({
+              ...completionInput,
+              idempotency_key: "poll_budget_after_expiry",
+              completion_attempt_id: "completion_attempt_budget_after_expiry",
+              evidence_ref: "completion_evidence_budget_after_expiry",
+              lease_ms: 1_100,
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "expired", result_hash: SHA_B });
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT count(*)::int FROM community_creation_ceremony_results) AS results,
+               (SELECT status FROM namespace_ownership_sessions LIMIT 1) AS session_status,
+               (SELECT status FROM community_creation_requirement_states
+                 WHERE requirement_kind = 'namespace_ownership' LIMIT 1) AS requirement_status`,
+          )
+        ).rows[0],
+      ).toEqual({ results: 1, session_status: "expired", requirement_status: "expired" });
+    });
+    completedTestCount += 1;
+  }, 10_000);
+
+  test("rolls back every verified projection when the evidence envelope drifts", async () => {
+    await withSchema(async (client, scoped) => {
+      const { completionStore, completionInput, stored } = await createRepositoryNamespaceSession(
+        client,
+        scoped,
+        "rollback",
+      );
+      const reserved = await Effect.runPromise(
+        Effect.scoped(completionStore.reserve(completionInput)),
+      );
+      if (reserved.kind !== "acquired") throw new Error("expected completion reservation");
+      const verified = verifiedCompletionInput(stored, reserved.reservation, completionInput);
+      const drifted = {
+        ...verified,
+        verified: {
+          ...verified.verified,
+          envelope: { ...verified.verified.envelope, root_label: "wrong-root" },
+        },
+      };
+      await expect(
+        Effect.runPromise(Effect.scoped(completionStore.verify(drifted))),
+      ).rejects.toBeInstanceOf(Error);
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT state FROM namespace_ownership_completion_attempts LIMIT 1) AS attempt_state,
+               (SELECT status FROM namespace_ownership_sessions LIMIT 1) AS session_status,
+               (SELECT status FROM community_creation_requirement_states
+                 WHERE requirement_kind = 'namespace_ownership' LIMIT 1) AS requirement_status,
+               (SELECT count(*)::int FROM namespace_ownership_evidence_snapshots) AS snapshots,
+               (SELECT count(*)::int FROM community_creation_ceremony_results) AS results,
+               (SELECT count(*)::int FROM community_route_ownership_evidence) AS route_evidence`,
+          )
+        ).rows[0],
+      ).toEqual({
+        attempt_state: "leased",
+        session_status: "pending",
+        requirement_status: "pending",
+        snapshots: 0,
+        results: 0,
+        route_evidence: 0,
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("terminally expires by database time before admitting a completion attempt", async () => {
+    await withSchema(async (client, scoped) => {
+      const expiresAt = new Date(Date.now() + 1_000).toISOString();
+      const { completionStore, completionInput } = await createRepositoryNamespaceSession(
+        client,
+        scoped,
+        "expired_before_reserve",
+        { ttl_ms: 20, expires_at: expiresAt },
+      );
+      await client.query("SELECT pg_sleep(1.1)");
+      expect(
+        await Effect.runPromise(Effect.scoped(completionStore.reserve(completionInput))),
+      ).toEqual({ kind: "expired", result_hash: SHA_B });
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT count(*)::int FROM namespace_ownership_completion_attempts) AS attempts,
+               (SELECT completion_attempt_id FROM community_creation_ceremony_results LIMIT 1)
+                 AS result_attempt,
+               (SELECT status FROM namespace_ownership_sessions LIMIT 1) AS session_status,
+               (SELECT status FROM community_creation_requirement_states
+                 WHERE requirement_kind = 'namespace_ownership' LIMIT 1) AS requirement_status`,
+          )
+        ).rows[0],
+      ).toEqual({
+        attempts: 0,
+        result_attempt: null,
+        session_status: "expired",
+        requirement_status: "expired",
+      });
     });
     completedTestCount += 1;
   });

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   makeNamespaceOwnershipProviderRegistry,
   NamespaceOwnershipProviderInvalidResponse,
+  NamespaceOwnershipProviderObservationRejected,
   NamespaceOwnershipProviderUnavailable,
 } from "@pirate/application";
 import { Effect } from "effect";
@@ -180,6 +181,25 @@ describe("injected HNS owner adapter", () => {
         }),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
+
+    const contradiction = await Effect.runPromise(
+      makeNamespaceOwnershipProviderRegistry(
+        [adapter(response({ root_control_verified: false }))],
+        {
+          now: () => now,
+        },
+      ),
+    );
+    const contradictionProvider = await Effect.runPromise(contradiction.resolve("hns"));
+    const contradictionSession = await Effect.runPromise(contradictionProvider.start(startInput));
+    await expect(
+      Effect.runPromise(
+        contradictionProvider.complete({
+          session: contradictionSession.session,
+          submission: { channel: "poll_result", payload: {} },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderObservationRejected);
 
     const future = await Effect.runPromise(
       makeNamespaceOwnershipProviderRegistry(

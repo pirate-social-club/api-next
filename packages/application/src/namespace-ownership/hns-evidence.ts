@@ -103,9 +103,9 @@ const HnsOwnerVerifiedObservation = Schema.Struct({
   ownership_source: OwnershipSource,
   challenge_name: ChallengeName,
   challenge_value: ChallengeValue,
-  root_exists: Schema.Literal(true),
-  root_control_verified: Schema.Literal(true),
-  expiry_horizon_sufficient: Schema.Literal(true),
+  root_exists: Schema.Boolean,
+  root_control_verified: Schema.Boolean,
+  expiry_horizon_sufficient: Schema.Boolean,
   chain_network: ChainNetwork,
   chain_anchor_height: PositiveSafeInteger,
   chain_anchor_block_hash: Sha256Hex,
@@ -542,6 +542,13 @@ export async function buildHnsOwnershipEvidence(
     throw new TypeError("Pending HNS observations cannot produce ownership evidence");
   }
   const observation = rawResponse.response;
+  if (
+    observation.root_exists !== true ||
+    observation.root_control_verified !== true ||
+    observation.expiry_horizon_sufficient !== true
+  ) {
+    throw new TypeError("HNS observation does not establish live root control");
+  }
   if (decodedInput.provider_id !== HNS_OWNER_PROVIDER_ID || decodedInput.route.family !== "hns") {
     throw new TypeError("HNS ownership evidence must use hns.owner.v1 and an HNS route");
   }

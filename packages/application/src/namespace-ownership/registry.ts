@@ -8,6 +8,7 @@ import {
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderManifest,
   NamespaceOwnershipProviderMisconfigured,
+  NamespaceOwnershipProviderObservationRejected,
   type NamespaceOwnershipProviderOperation,
   NamespaceOwnershipProviderPlanInput,
   NamespaceOwnershipProviderPlanResult,
@@ -15,6 +16,7 @@ import {
   NamespaceOwnershipProviderStartInput,
   NamespaceOwnershipProviderStartResult,
   NamespaceOwnershipProviderUnavailable,
+  NamespaceOwnershipProviderUnboundRejected,
 } from "./adapter.ts";
 
 type Manifest = Schema.Schema.Type<typeof NamespaceOwnershipProviderManifest>;
@@ -55,11 +57,11 @@ function invalidResponse(
   return new NamespaceOwnershipProviderInvalidResponse({ provider_id, operation });
 }
 
-function rejected(
+function unboundRejected(
   provider_id: string,
   operation: NamespaceOwnershipProviderOperation,
-): NamespaceOwnershipProviderRejected {
-  return new NamespaceOwnershipProviderRejected({ provider_id, operation });
+): NamespaceOwnershipProviderUnboundRejected {
+  return new NamespaceOwnershipProviderUnboundRejected({ provider_id, operation });
 }
 
 function unavailable(
@@ -77,6 +79,8 @@ function safeFailure(
   if (
     (error instanceof NamespaceOwnershipProviderUnavailable ||
       error instanceof NamespaceOwnershipProviderRejected ||
+      error instanceof NamespaceOwnershipProviderUnboundRejected ||
+      error instanceof NamespaceOwnershipProviderObservationRejected ||
       error instanceof NamespaceOwnershipProviderInvalidResponse ||
       error instanceof NamespaceOwnershipProviderMisconfigured) &&
     error.provider_id === provider_id &&
@@ -167,7 +171,7 @@ function guardAdapter(
         exactParseOptions,
       )(untrustedInput);
       if (Option.isNone(input) || !inputSupported(manifest, input.value)) {
-        return Effect.fail(rejected(manifest.provider_id, "plan"));
+        return Effect.fail(unboundRejected(manifest.provider_id, "plan"));
       }
       return Effect.suspend(() => adapter.plan(input.value)).pipe(
         Effect.timeout(manifest.operation_deadlines.plan_ms),
@@ -202,7 +206,7 @@ function guardAdapter(
         !inputSupported(manifest, input.value) ||
         !manifest.protocol_versions.includes(input.value.protocol_version)
       ) {
-        return Effect.fail(rejected(manifest.provider_id, "start"));
+        return Effect.fail(unboundRejected(manifest.provider_id, "start"));
       }
       return Effect.suspend(() => adapter.start(input.value)).pipe(
         Effect.timeout(manifest.operation_deadlines.start_ms),
@@ -254,7 +258,7 @@ function guardAdapter(
         !compatibleSession(manifest, input.value.session, now()) ||
         !manifest.submission_channels.includes(input.value.submission.channel)
       ) {
-        return Effect.fail(rejected(manifest.provider_id, "complete"));
+        return Effect.fail(unboundRejected(manifest.provider_id, "complete"));
       }
       return Effect.suspend(() => adapter.complete(input.value)).pipe(
         Effect.timeout(manifest.operation_deadlines.complete_ms),
