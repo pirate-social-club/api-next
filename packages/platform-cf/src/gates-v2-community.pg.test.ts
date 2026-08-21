@@ -349,7 +349,7 @@ async function completeVeryEvidence(
                provider_configuration_kind, provider_configuration_ref,
                provider_configuration_version
              ) VALUES ($1, $2, 'user-a', $3, $4, $5, 'issuer_rp_scope', $6, NULL, $7,
-                       'test', 'very.oauth.id-token-userinfo.v1', repeat('c', 64), '{}'::jsonb,
+                       'test', 'very.web.server-verified.v1', repeat('c', 64), '{}'::jsonb,
                        clock_timestamp(), clock_timestamp() + interval '1 day', 'proof_session',
                        $8, $9, 1, 'dynamic', $10, $11)`,
       values: [
@@ -765,7 +765,7 @@ suite("Gates v2 curated age community vertical", () => {
       expect(first).toMatchObject({
         status: "verification_required",
         missing_capabilities: ["human_verification"],
-        next_action: { kind: "start_verification", provider_id: "very.oauth" },
+        next_action: { kind: "start_verification", provider_id: "very.web" },
       });
       const intentId =
         first?.next_action.kind === "start_verification" ? first.next_action.intent_id : null;
@@ -788,16 +788,16 @@ suite("Gates v2 curated age community vertical", () => {
           resolver.resolve({
             actor_id: "user-a",
             intent_id: intentId,
-            provider_id: "very.oauth",
+            provider_id: "very.web",
           }),
         ),
-      ).resolves.toMatchObject({ method: "palm_oauth", environment: "test" });
+      ).resolves.toMatchObject({ method: "palm_web", environment: "test" });
       await expect(
         Effect.runPromise(
           resolver.resolve({
             actor_id: "user-b",
             intent_id: intentId,
-            provider_id: "very.oauth",
+            provider_id: "very.web",
           }),
         ),
       ).resolves.toBeNull();
@@ -807,7 +807,7 @@ suite("Gates v2 curated age community vertical", () => {
       );
       expect(replay?.next_action).toEqual({
         kind: "start_verification",
-        provider_id: "very.oauth",
+        provider_id: "very.web",
         intent_id: intentId,
       });
 
@@ -835,10 +835,10 @@ suite("Gates v2 curated age community vertical", () => {
           resolver.resolve({
             actor_id: "user-a",
             intent_id: intentId,
-            provider_id: "very.oauth",
+            provider_id: "very.web",
           }),
         ),
-      ).resolves.toMatchObject({ method: "palm_oauth", environment: "test" });
+      ).resolves.toMatchObject({ method: "palm_web", environment: "test" });
       const eligible = await runStore(connection, (store) =>
         store.getJoinEligibility({ communityId: "community-human", userId: "user-a" }),
       );
@@ -897,7 +897,7 @@ suite("Gates v2 curated age community vertical", () => {
       expect(eligibility).toMatchObject({
         status: "verification_required",
         gate_evaluation: { outcome: "needs_evidence" },
-        next_action: { kind: "start_verification", provider_id: "very.oauth" },
+        next_action: { kind: "start_verification", provider_id: "very.web" },
       });
       expect(
         eligibility?.next_action.kind === "start_verification"
@@ -921,7 +921,7 @@ suite("Gates v2 curated age community vertical", () => {
   test("fails closed before issuing an intent when the persisted provider binding drifts", async () => {
     await withSchema(async (connection, admin) => {
       await prepareHumanCommunity(admin, "community-binding-drift", {
-        providerId: "very.oauth.wrong",
+        providerId: "very.web.wrong",
       });
       await expect(
         runStore(connection, (store) =>
@@ -1069,7 +1069,7 @@ suite("Gates v2 curated age community vertical", () => {
       expect(after).toMatchObject({
         status: "verification_required",
         gate_evaluation: { outcome: "needs_evidence" },
-        next_action: { kind: "start_verification", provider_id: "very.oauth" },
+        next_action: { kind: "start_verification", provider_id: "very.web" },
       });
       await expect(
         runStore(connection, (store) =>
