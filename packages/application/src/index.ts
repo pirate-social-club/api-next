@@ -8,5 +8,6 @@ export * from "./money/community-purchase-funding-reconciliation.ts";
 export * from "./namespace-ownership/index.ts";
 export * from "./ports.ts";
 export * from "./use-cases/community/creation-requirement-projection.ts";
+export * from "./use-cases/community/get-canonical-community-route.ts";
 export * from "./use-cases/identity-registration.ts";
 export * from "./use-cases/identity-registration-handler.ts";

@@ -120,6 +120,7 @@ export function makeCommunityJoinIntentResolver(
   return {
     resolve: (input) =>
       Effect.gen(function* () {
+        if (!("intent_id" in input)) return null;
         if (input.provider_id !== VERY_OAUTH_PROVIDER_ID) return null;
         const result = yield* execute<JoinIntentRow>({
           label: "community.join.resolve-verification-intent",

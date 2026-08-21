@@ -11,6 +11,7 @@ import { makeVerificationProviderRegistry } from "./registry.ts";
 import {
   startVerification,
   type VerificationSessionStartFinalizeOutcome,
+  type VerificationSessionStartReservationInput,
   type VerificationSessionStartReservationOutcome,
   VerificationStartRejected,
 } from "./start.ts";
@@ -119,10 +120,12 @@ async function services(input: {
     makeVerificationProviderRegistry([adapter(input.plan, input.startFailure, input.startCalls)]),
   );
   const commits: ProviderSessionStart[] = [];
+  const reservations: VerificationSessionStartReservationInput[] = [];
   let releases = 0;
   let resolveCalls = 0;
   return {
     commits,
+    reservations,
     get resolveCalls() {
       return resolveCalls;
     },
@@ -144,7 +147,8 @@ async function services(input: {
         },
       },
       store: {
-        reserve: () => {
+        reserve: (reservationInput: VerificationSessionStartReservationInput) => {
+          reservations.push(reservationInput);
           if (input.reservation !== undefined) return Effect.succeed(input.reservation);
           return Effect.succeed(
             input.commit === "conflict"
@@ -178,6 +182,38 @@ async function services(input: {
 }
 
 describe("verification start use case", () => {
+  test("binds a creation start to the server-owned ceremony authority", async () => {
+    const harness = await services({});
+    await Effect.runPromise(
+      startVerification(
+        {
+          actor_id: "user-1",
+          provider_id: MANIFEST.provider_id,
+          creation_intent_id: "creation-1",
+          ceremony_intent_id: "creation-ceremony-1",
+          requirement: "human_identity",
+          generation: 2,
+          expected_revision: 3,
+          idempotency_key: "creation-launch-1",
+        },
+        harness.value,
+      ),
+    );
+    expect(harness.reservations).toHaveLength(1);
+    expect(harness.reservations[0]).toMatchObject({
+      start: { actor_id: "user-1", intent_id: "creation-ceremony-1" },
+      creation: {
+        creation_intent_id: "creation-1",
+        requirement: "human_identity",
+        generation: 2,
+        expected_revision: 3,
+        idempotency_key: "creation-launch-1",
+        provider_id: MANIFEST.provider_id,
+      },
+    });
+    expect(harness.commits[0]?.session.intent_id).toBe("creation-ceremony-1");
+  });
+
   test("resolves the trusted intent, binds provider configuration, and returns only presentation", async () => {
     const harness = await services({});
     const result = await Effect.runPromise(

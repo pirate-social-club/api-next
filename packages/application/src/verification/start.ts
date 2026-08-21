@@ -12,11 +12,23 @@ import type {
 } from "./registry.ts";
 import { computeVerificationRequestHash } from "./request-hash.ts";
 
-export const StartVerificationInput = Schema.Struct({
-  actor_id: Schema.NonEmptyString,
-  intent_id: Schema.NonEmptyString,
-  provider_id: Schema.NonEmptyString,
-});
+export const StartVerificationInput = Schema.Union([
+  Schema.Struct({
+    actor_id: Schema.NonEmptyString,
+    intent_id: Schema.NonEmptyString,
+    provider_id: Schema.NonEmptyString,
+  }),
+  Schema.Struct({
+    actor_id: Schema.NonEmptyString,
+    provider_id: Schema.NonEmptyString,
+    creation_intent_id: Schema.NonEmptyString,
+    ceremony_intent_id: Schema.NonEmptyString,
+    requirement: Schema.Literal("human_identity"),
+    generation: Schema.Int,
+    expected_revision: Schema.Int,
+    idempotency_key: Schema.NonEmptyString,
+  }),
+]);
 export type StartVerificationInput = Schema.Schema.Type<typeof StartVerificationInput>;
 
 export interface VerificationIntentResolver {
@@ -29,6 +41,13 @@ export type VerificationSessionStartReservation = Readonly<{
   readonly reservation_id: string;
   readonly fence_token: number;
   readonly lease_expires_at: string;
+  readonly creation?: Readonly<{
+    readonly creation_intent_id: string;
+    readonly ceremony_intent_id: string;
+    readonly requirement: "human_identity";
+    readonly generation: number;
+    readonly idempotency_key: string;
+  }>;
 }>;
 
 export type VerificationSessionStartReservationOutcome =
@@ -51,6 +70,14 @@ export type VerificationSessionStartReservationInput = Readonly<{
   readonly start: VerificationProviderStartInput;
   /** Lease is start deadline plus a small finalization margin. */
   readonly ttl_ms: number;
+  readonly creation?: Readonly<{
+    readonly creation_intent_id: string;
+    readonly requirement: "human_identity";
+    readonly generation: number;
+    readonly expected_revision: number;
+    readonly idempotency_key: string;
+    readonly provider_id: string;
+  }>;
 }>;
 
 export interface VerificationSessionStartStore {
@@ -121,8 +148,16 @@ function decodeInput(
   if (
     Option.isNone(decoded) ||
     decoded.value.actor_id.trim() !== decoded.value.actor_id ||
-    decoded.value.intent_id.trim() !== decoded.value.intent_id ||
-    decoded.value.provider_id.trim() !== decoded.value.provider_id
+    decoded.value.provider_id.trim() !== decoded.value.provider_id ||
+    ("intent_id" in decoded.value
+      ? decoded.value.intent_id.trim() !== decoded.value.intent_id
+      : decoded.value.creation_intent_id.trim() !== decoded.value.creation_intent_id ||
+        decoded.value.ceremony_intent_id.trim() !== decoded.value.ceremony_intent_id ||
+        decoded.value.idempotency_key.trim() !== decoded.value.idempotency_key ||
+        !Number.isSafeInteger(decoded.value.generation) ||
+        decoded.value.generation <= 0 ||
+        !Number.isSafeInteger(decoded.value.expected_revision) ||
+        decoded.value.expected_revision <= 0)
   ) {
     return Effect.fail(new VerificationStartRejected({ reason: "invalid" }));
   }
@@ -165,9 +200,10 @@ export const startVerification = Effect.fn("startVerification")(function* (
     return yield* new VerificationStartRejected({ reason: "indeterminate" });
   }
 
+  const intentId = "intent_id" in input ? input.intent_id : input.ceremony_intent_id;
   const hashInput = {
     actor_id: input.actor_id,
-    intent_id: input.intent_id,
+    intent_id: intentId,
     ...planInput,
     request_mode: plan.request_mode,
     provider_configuration: plan.provider_configuration,
@@ -180,6 +216,18 @@ export const startVerification = Effect.fn("startVerification")(function* (
   const reservationOutcome = yield* services.store.reserve({
     start: startInput,
     ttl_ms: provider.manifest.operation_deadlines.start_ms + START_RESERVATION_MARGIN_MS,
+    ...("creation_intent_id" in input
+      ? {
+          creation: {
+            creation_intent_id: input.creation_intent_id,
+            requirement: input.requirement,
+            generation: input.generation,
+            expected_revision: input.expected_revision,
+            idempotency_key: input.idempotency_key,
+            provider_id: input.provider_id,
+          },
+        }
+      : {}),
   });
   if (reservationOutcome.kind === "replay") {
     return {

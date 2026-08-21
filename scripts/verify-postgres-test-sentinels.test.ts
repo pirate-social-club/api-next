@@ -27,6 +27,8 @@ async function sentinelSet(): Promise<{
     "migration",
     "identity",
     "community",
+    "community-creation",
+    "canonical-community-route",
     "gates-v2-community",
     "feed",
     "content",
@@ -85,5 +87,23 @@ describe("Postgres suite sentinel verification", () => {
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-gates-v2-community-suite-complete/gu),
     ).toHaveLength(2);
+  });
+
+  test("keeps creation and canonical-route suites fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    for (const suite of ["community-creation-repository", "community-route-repository"]) {
+      expect(workflow).toContain(`packages/platform-cf/src/${suite}.pg.test.ts`);
+    }
+    for (const marker of ["community-creation", "canonical-route"]) {
+      expect(
+        workflow.match(
+          new RegExp(`/tmp/api-next-control-plane-postgres-${marker}-suite-complete`, "gu"),
+        ),
+      ).toHaveLength(2);
+    }
   });
 });

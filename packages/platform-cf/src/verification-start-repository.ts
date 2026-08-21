@@ -12,6 +12,18 @@ import {
   type VerificationSessionStartStore,
   VerificationStartStorageFailed,
 } from "@pirate/application/verification";
+import {
+  communityCreationCeremonyReservationHash,
+  communityCreationProviderBindingHash,
+  HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+  VERY_OAUTH_CONFIGURATION_REFERENCE,
+  VERY_OAUTH_CONFIGURATION_VERSION,
+  VERY_OAUTH_ISSUER,
+  VERY_OAUTH_METHOD,
+  VERY_OAUTH_PROTOCOL_VERSION,
+  VERY_OAUTH_PROVIDER_ID,
+  VERY_OAUTH_RP_SCOPE,
+} from "@pirate/domain";
 import { CanonicalIsoInstant, ProofSession } from "@pirate/domain/verification";
 import { Effect, type Layer, Option, Schema } from "effect";
 
@@ -174,7 +186,8 @@ function sessionColumns(): string {
     provider_configuration_version, method, issuer, scope_kind,
     issuer_rp_scope, issuer_rp_action_scope, request_mode, requested_requirements,
     requested_claim_ids, upstream_session_ref, subject_binding_intent,
-    protocol_version, environment, status, started_at, expires_at, completed_at`;
+    protocol_version, environment, status, started_at, expires_at, completed_at,
+    creation_ceremony_intent_id`;
 }
 
 function decodeStart(sessionRow: Row, presentationRow: Row): ProviderSessionStart | null {
@@ -187,6 +200,7 @@ function decodeStart(sessionRow: Row, presentationRow: Row): ProviderSessionStar
 
 type ExistingStart = Readonly<{
   readonly start: ProviderSessionStart;
+  readonly creation_ceremony_intent_id?: string;
   /** Evaluated by PostgreSQL's clock while the session row is locked. */
   readonly active: boolean;
 }>;
@@ -221,7 +235,212 @@ function reservationFromRow(row: Row): VerificationSessionStartReservation | nul
   ) {
     return null;
   }
-  return { reservation_id, fence_token, lease_expires_at };
+  const creationIntentId = optionalString(row, "creation_intent_id");
+  const ceremonyIntentId = optionalString(row, "intent_id");
+  const creationRequirement = optionalString(row, "creation_requirement_kind");
+  const creationGeneration = row.creation_generation;
+  const clientIdempotencyKey = optionalString(row, "client_idempotency_key");
+  const parsedGeneration =
+    typeof creationGeneration === "number"
+      ? creationGeneration
+      : typeof creationGeneration === "string" && /^[0-9]+$/u.test(creationGeneration)
+        ? Number(creationGeneration)
+        : undefined;
+  if (
+    creationIntentId === null ||
+    ceremonyIntentId === null ||
+    creationRequirement === null ||
+    clientIdempotencyKey === null
+  ) {
+    return null;
+  }
+  const hasCreation = creationIntentId !== undefined;
+  if (
+    hasCreation !== (creationRequirement !== undefined) ||
+    hasCreation !== (parsedGeneration !== undefined) ||
+    hasCreation !== (clientIdempotencyKey !== undefined) ||
+    (hasCreation &&
+      (creationRequirement !== "human_identity" ||
+        !Number.isSafeInteger(parsedGeneration) ||
+        (parsedGeneration ?? 0) <= 0 ||
+        ceremonyIntentId === undefined))
+  ) {
+    return null;
+  }
+  return {
+    reservation_id,
+    fence_token,
+    lease_expires_at,
+    ...(creationIntentId === undefined ||
+    ceremonyIntentId === undefined ||
+    creationRequirement === undefined ||
+    parsedGeneration === undefined ||
+    clientIdempotencyKey === undefined
+      ? {}
+      : {
+          creation: {
+            creation_intent_id: creationIntentId,
+            ceremony_intent_id: ceremonyIntentId,
+            requirement: "human_identity" as const,
+            generation: parsedGeneration,
+            idempotency_key: clientIdempotencyKey,
+          },
+        }),
+  };
+}
+
+function reservationColumns(): string {
+  return `reservation_id, actor_id, intent_id, request_hash, state, fence_token,
+          lease_expires_at, creation_intent_id, creation_requirement_kind,
+          creation_generation, client_idempotency_key`;
+}
+
+function reservationMatchesInput(
+  reservation: VerificationSessionStartReservation,
+  start: VerificationProviderStartInput,
+  creation: VerificationSessionStartReservationInput["creation"],
+): boolean {
+  if (creation === undefined) return reservation.creation === undefined;
+  return (
+    reservation.creation?.creation_intent_id === creation.creation_intent_id &&
+    reservation.creation.ceremony_intent_id === start.intent_id &&
+    reservation.creation.requirement === creation.requirement &&
+    reservation.creation.generation === creation.generation &&
+    reservation.creation.idempotency_key === creation.idempotency_key
+  );
+}
+
+type CreationReservation = NonNullable<VerificationSessionStartReservationInput["creation"]>;
+
+const HUMAN_REQUIREMENTS = [
+  { claim_id: "credential.subject_unique" },
+  { claim_id: "human.personhood" },
+] as const;
+const HUMAN_CLAIM_IDS = ["credential.subject_unique", "human.personhood"] as const;
+
+function exactHumanProviderInput(
+  start: VerificationProviderStartInput,
+  creation: CreationReservation,
+): boolean {
+  return (
+    creation.requirement === "human_identity" &&
+    creation.provider_id === VERY_OAUTH_PROVIDER_ID &&
+    start.provider_configuration.kind === "dynamic" &&
+    start.provider_configuration.reference === VERY_OAUTH_CONFIGURATION_REFERENCE &&
+    start.provider_configuration.version === VERY_OAUTH_CONFIGURATION_VERSION &&
+    start.method === VERY_OAUTH_METHOD &&
+    start.scope.kind === "named" &&
+    start.scope.scope_semantics === "issuer_rp_scope" &&
+    start.scope.issuer === VERY_OAUTH_ISSUER &&
+    start.scope.rp_scope === VERY_OAUTH_RP_SCOPE &&
+    start.request_mode === "dynamic" &&
+    sameValue(start.requested_requirements, HUMAN_REQUIREMENTS) &&
+    sameValue(start.requested_claim_ids, HUMAN_CLAIM_IDS) &&
+    start.subject_binding_intent === "establish" &&
+    start.protocol_version === VERY_OAUTH_PROTOCOL_VERSION
+  );
+}
+
+function lockCreationAuthority(
+  transaction: Transaction,
+  start: VerificationProviderStartInput,
+  creation: CreationReservation,
+  requireRevision: boolean,
+): Effect.Effect<boolean, VerificationStartStorageFailed | ControlPlaneError> {
+  return Effect.gen(function* () {
+    if (!exactHumanProviderInput(start, creation)) return false;
+    const bindingHash = communityCreationProviderBindingHash({
+      requirement: "human_identity",
+      family: null,
+      provider_id: creation.provider_id,
+      provider_configuration: start.provider_configuration,
+      protocol_version: start.protocol_version,
+    });
+    const reservationHash = communityCreationCeremonyReservationHash({
+      actor_id: start.actor_id,
+      creation_intent_id: creation.creation_intent_id,
+      ceremony_intent_id: start.intent_id,
+      requirement: creation.requirement,
+      generation: creation.generation,
+      requirement_hash: HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+      provider_id: creation.provider_id,
+      provider_binding_hash: bindingHash,
+      route: null,
+    });
+    const result = yield* transaction.execute<Row>({
+      label: "verification.start.lock-creation-authority",
+      text: `SELECT intent.revision,
+                    intent.status,
+                    intent.creation_contract_version,
+                    intent.expires_at > clock_timestamp() AS intent_active,
+                    state.status AS requirement_status,
+                    state.requirement_hash,
+                    state.provider_id,
+                    state.provider_binding_hash,
+                    state.provider_configuration_kind,
+                    state.provider_configuration_ref,
+                    state.provider_configuration_version,
+                    state.generation,
+                    state.current_ceremony_intent_id,
+                    state.route_family,
+                    attempt.requirement_hash AS attempt_requirement_hash,
+                    attempt.provider_id AS attempt_provider_id,
+                    attempt.provider_binding_hash AS attempt_provider_binding_hash,
+                    attempt.provider_configuration_kind AS attempt_configuration_kind,
+                    attempt.provider_configuration_ref AS attempt_configuration_ref,
+                    attempt.provider_configuration_version AS attempt_configuration_version,
+                    attempt.generation AS attempt_generation,
+                    attempt.route_family AS attempt_route_family,
+                    attempt.reservation_request_hash,
+                    attempt.expires_at > clock_timestamp() AS attempt_active
+               FROM community_creation_intents AS intent
+               JOIN community_creation_requirement_states AS state
+                 ON state.intent_id = intent.intent_id
+                AND state.actor_id = intent.actor_id
+                AND state.requirement_kind = 'human_identity'
+               JOIN community_creation_ceremony_attempts AS attempt
+                 ON attempt.actor_id = intent.actor_id
+                AND attempt.intent_id = intent.intent_id
+                AND attempt.requirement_kind = state.requirement_kind
+                AND attempt.generation = state.generation
+                AND attempt.ceremony_intent_id = state.current_ceremony_intent_id
+              WHERE intent.actor_id = $1
+                AND intent.intent_id = $2
+                AND attempt.ceremony_intent_id = $3
+              FOR UPDATE OF intent, state, attempt`,
+      values: [start.actor_id, creation.creation_intent_id, start.intent_id],
+      readonly: false,
+    });
+    const row = yield* oneRow(result.rows);
+    if (row === undefined) return yield* Effect.fail(storageFailure());
+    if (row === null) return false;
+    return (
+      (!requireRevision || Number(row.revision) === creation.expected_revision) &&
+      row.status === "verification_required" &&
+      row.creation_contract_version === "route_v1" &&
+      row.intent_active === true &&
+      row.requirement_status === "pending" &&
+      row.requirement_hash === HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
+      row.provider_id === creation.provider_id &&
+      row.provider_binding_hash === bindingHash &&
+      row.provider_configuration_kind === start.provider_configuration.kind &&
+      row.provider_configuration_ref === start.provider_configuration.reference &&
+      row.provider_configuration_version === start.provider_configuration.version &&
+      Number(row.generation) === creation.generation &&
+      row.current_ceremony_intent_id === start.intent_id &&
+      row.route_family === null &&
+      row.attempt_requirement_hash === HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
+      row.attempt_provider_id === creation.provider_id &&
+      row.attempt_provider_binding_hash === bindingHash &&
+      row.attempt_configuration_kind === start.provider_configuration.kind &&
+      row.attempt_configuration_ref === start.provider_configuration.reference &&
+      row.attempt_configuration_version === start.provider_configuration.version &&
+      Number(row.attempt_generation) === creation.generation &&
+      row.attempt_route_family === null &&
+      row.reservation_request_hash === reservationHash &&
+      row.attempt_active === true
+    );
+  });
 }
 
 function reservationInput(input: unknown): VerificationProviderStartInput | null {
@@ -269,8 +488,13 @@ function loadExisting(
     const clockRow = yield* oneRow(clockResult.rows);
     const databaseNow = clockRow === null ? null : timestamp(clockRow, "database_now");
     if (databaseNow === null) return yield* Effect.fail(storageFailure());
+    const creationCeremonyIntentId = optionalString(sessionRow, "creation_ceremony_intent_id");
+    if (creationCeremonyIntentId === null) return yield* Effect.fail(storageFailure());
     return {
       start: decoded,
+      ...(creationCeremonyIntentId === undefined
+        ? {}
+        : { creation_ceremony_intent_id: creationCeremonyIntentId }),
       active: Date.parse(decoded.session.expires_at) > Date.parse(databaseNow),
     };
   });
@@ -329,6 +553,7 @@ function valuesFor(start: ProviderSessionStart): readonly unknown[] {
 function insertSession(
   transaction: Transaction,
   start: ProviderSessionStart,
+  creationCeremonyIntentId?: string,
 ): Effect.Effect<Row | null, VerificationStartStorageFailed | ControlPlaneError> {
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
@@ -340,14 +565,14 @@ function insertSession(
                issuer_rp_scope, issuer_rp_action_scope, request_mode,
                requested_requirements, requested_claim_ids, upstream_session_ref,
                subject_binding_intent, protocol_version, environment, status,
-               started_at, expires_at
+               started_at, expires_at, creation_ceremony_intent_id
              ) VALUES (
                $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-               $14, $15::jsonb, $16::jsonb, $17, $18, $19, $20, $21, $22, $23
+               $14, $15::jsonb, $16::jsonb, $17, $18, $19, $20, $21, $22, $23, $24
              )
              ON CONFLICT (actor_id, intent_id) DO NOTHING
              RETURNING ${sessionColumns()}`,
-      values: valuesFor(start),
+      values: [...valuesFor(start), creationCeremonyIntentId ?? null],
       readonly: false,
     });
     return yield* oneRow(result.rows);
@@ -383,15 +608,40 @@ export function makeControlPlaneVerificationSessionStartRepository() {
     reserve: (input: VerificationSessionStartReservationInput) =>
       Effect.gen(function* () {
         const start = reservationInput(input.start);
-        if (start === null || !Number.isSafeInteger(input.ttl_ms) || input.ttl_ms <= 0) {
+        if (
+          start === null ||
+          !Number.isSafeInteger(input.ttl_ms) ||
+          input.ttl_ms <= 0 ||
+          (input.creation !== undefined &&
+            (!Number.isSafeInteger(input.creation.expected_revision) ||
+              input.creation.expected_revision <= 0 ||
+              !Number.isSafeInteger(input.creation.generation) ||
+              input.creation.generation <= 0 ||
+              input.creation.idempotency_key.trim() !== input.creation.idempotency_key ||
+              input.creation.idempotency_key.length === 0))
+        ) {
           return yield* Effect.fail(storageFailure());
         }
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
             yield* lockActor(transaction, start.actor_id);
+            if (
+              input.creation !== undefined &&
+              !(yield* lockCreationAuthority(transaction, start, input.creation, true))
+            ) {
+              return { kind: "conflict" } as const;
+            }
             const existing = yield* loadExisting(transaction, start.actor_id, start.intent_id);
             if (existing !== null) {
+              if (
+                (input.creation === undefined) !==
+                  (existing.creation_ceremony_intent_id === undefined) ||
+                (input.creation !== undefined &&
+                  existing.creation_ceremony_intent_id !== start.intent_id)
+              ) {
+                return { kind: "conflict" } as const;
+              }
               if (existing.start.session.request_hash !== start.request_hash) {
                 return { kind: "conflict" } as const;
               }
@@ -411,18 +661,37 @@ export function makeControlPlaneVerificationSessionStartRepository() {
             const reservationId = start.request_hash;
             const result = yield* transaction.execute<Row>({
               label: "verification.start.lock-reservation",
-              text: `SELECT reservation_id, request_hash, state, fence_token,
-                             lease_expires_at
+              text: `SELECT ${reservationColumns()}
                         FROM verification_start_reservations
-                       WHERE actor_id = $1 AND intent_id = $2
+                       WHERE actor_id = $1
+                         AND (
+                           intent_id = $2
+                           OR (
+                             $3::text IS NOT NULL
+                             AND creation_intent_id = $3
+                             AND creation_requirement_kind = $4
+                             AND client_idempotency_key = $5
+                           )
+                         )
                        FOR UPDATE`,
-              values: [start.actor_id, start.intent_id],
+              values: [
+                start.actor_id,
+                start.intent_id,
+                input.creation?.creation_intent_id ?? null,
+                input.creation?.requirement ?? null,
+                input.creation?.idempotency_key ?? null,
+              ],
               readonly: false,
             });
             const row = yield* oneRow(result.rows);
             if (row !== null) {
               const requestHash = requiredString(row, "request_hash");
-              if (requestHash !== start.request_hash) {
+              const persistedReservation = reservationFromRow(row);
+              if (
+                requestHash !== start.request_hash ||
+                persistedReservation === null ||
+                !reservationMatchesInput(persistedReservation, start, input.creation)
+              ) {
                 return { kind: "conflict" } as const;
               }
               const state = requiredString(row, "state");
@@ -456,8 +725,13 @@ export function makeControlPlaneVerificationSessionStartRepository() {
                               lease_expires_at = clock_timestamp() + ($4 * INTERVAL '1 millisecond'),
                               updated_at = clock_timestamp()
                         WHERE actor_id = $1 AND intent_id = $2
-                        RETURNING reservation_id, fence_token, lease_expires_at`,
-                values: [start.actor_id, start.intent_id, JSON.stringify(start), input.ttl_ms],
+                        RETURNING ${reservationColumns()}`,
+                values: [
+                  start.actor_id,
+                  start.intent_id,
+                  JSON.stringify({ start, creation: input.creation ?? null }),
+                  input.ttl_ms,
+                ],
                 readonly: false,
               });
               const renewedRow = yield* oneRow(renewed.rows);
@@ -471,17 +745,24 @@ export function makeControlPlaneVerificationSessionStartRepository() {
               label: "verification.start.insert-reservation",
               text: `INSERT INTO verification_start_reservations (
                        reservation_id, actor_id, intent_id, request_hash, request,
-                       state, fence_token, lease_expires_at
+                       state, fence_token, lease_expires_at, creation_intent_id,
+                       creation_requirement_kind, creation_generation,
+                       client_idempotency_key
                      ) VALUES ($1, $2, $3, $4, $5::jsonb, 'acquired', 1,
-                               clock_timestamp() + ($6 * INTERVAL '1 millisecond'))
-                     RETURNING reservation_id, fence_token, lease_expires_at`,
+                               clock_timestamp() + ($6 * INTERVAL '1 millisecond'),
+                               $7, $8, $9, $10)
+                     RETURNING ${reservationColumns()}`,
               values: [
                 reservationId,
                 start.actor_id,
                 start.intent_id,
                 start.request_hash,
-                JSON.stringify(start),
+                JSON.stringify({ start, creation: input.creation ?? null }),
                 input.ttl_ms,
+                input.creation?.creation_intent_id ?? null,
+                input.creation?.requirement ?? null,
+                input.creation?.generation ?? null,
+                input.creation?.idempotency_key ?? null,
               ],
               readonly: false,
             });
@@ -502,10 +783,28 @@ export function makeControlPlaneVerificationSessionStartRepository() {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
+            yield* lockActor(transaction, start.session.actor_id);
+            if (
+              reservation.creation !== undefined &&
+              !(yield* lockCreationAuthority(
+                transaction,
+                start.session,
+                {
+                  creation_intent_id: reservation.creation.creation_intent_id,
+                  requirement: reservation.creation.requirement,
+                  generation: reservation.creation.generation,
+                  expected_revision: 1,
+                  idempotency_key: reservation.creation.idempotency_key,
+                  provider_id: start.session.provider_id,
+                },
+                false,
+              ))
+            ) {
+              return { kind: "stale" } as const;
+            }
             const lock = yield* transaction.execute<Row>({
               label: "verification.start.lock-finalizer",
-              text: `SELECT reservation_id, request_hash, state, fence_token,
-                             lease_expires_at
+              text: `SELECT ${reservationColumns()}
                         FROM verification_start_reservations
                        WHERE reservation_id = $1
                        FOR UPDATE`,
@@ -517,6 +816,7 @@ export function makeControlPlaneVerificationSessionStartRepository() {
             if (
               current === null ||
               current.fence_token !== reservation.fence_token ||
+              !sameValue(current.creation, reservation.creation) ||
               requiredString(row ?? {}, "state") !== "acquired"
             ) {
               return { kind: "stale" } as const;
@@ -536,8 +836,11 @@ export function makeControlPlaneVerificationSessionStartRepository() {
               readonly: false,
             });
             if (fenced.rowCount !== 1) return { kind: "stale" } as const;
-            yield* lockActor(transaction, start.session.actor_id);
-            const insertedSession = yield* insertSession(transaction, start);
+            const insertedSession = yield* insertSession(
+              transaction,
+              start,
+              current.creation?.ceremony_intent_id,
+            );
             if (insertedSession === null) {
               const existing = yield* loadExisting(
                 transaction,

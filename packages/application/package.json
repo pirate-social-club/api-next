@@ -19,6 +19,7 @@
     "./use-cases/community/creation-intents": "./src/use-cases/community/creation-intents.ts",
     "./use-cases/community/follow-community": "./src/use-cases/community/follow-community.ts",
     "./use-cases/community/get-community-preview": "./src/use-cases/community/get-community-preview.ts",
+    "./use-cases/community/get-canonical-community-route": "./src/use-cases/community/get-canonical-community-route.ts",
     "./use-cases/community/get-join-eligibility": "./src/use-cases/community/get-join-eligibility.ts",
     "./use-cases/community/join-community": "./src/use-cases/community/join-community.ts",
     "./use-cases/community/unfollow-community": "./src/use-cases/community/unfollow-community.ts",

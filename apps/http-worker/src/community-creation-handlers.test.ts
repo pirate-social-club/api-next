@@ -7,8 +7,8 @@ import { createHttpWorker, type DecodedRequest, type Principal } from "./transpo
 
 const draft = {
   name: "Jazleeuw",
-  slug: "jazleeuw",
   description: "A community",
+  route_request: { family: "hns" as const, root_label: "jazleeuw" },
   policy: {
     version: 1 as const,
     accessPaths: [
@@ -21,6 +21,27 @@ const draft = {
   },
 };
 
+const requirements = {
+  human_identity: {
+    requirement: "human_identity" as const,
+    status: "pending" as const,
+    requirement_hash: "b".repeat(64),
+    provider_id: "very.oauth",
+    generation: 1,
+    ceremony_intent_id: "human-ceremony-1",
+    satisfied_at: null,
+  },
+  namespace_ownership: {
+    requirement: "namespace_ownership" as const,
+    status: "unmet" as const,
+    requirement_hash: "c".repeat(64),
+    provider_id: "hns.owner.v1",
+    generation: 0,
+    ceremony_intent_id: null,
+    satisfied_at: null,
+  },
+};
+
 const document = {
   intent_id: "intent-1",
   revision: 1,
@@ -28,11 +49,14 @@ const document = {
   draft,
   canonical_policy_revision: 1,
   canonical_policy_hash: "a".repeat(64),
-  verification_requirement_hash: "b".repeat(64),
+  requirements,
   next_action: {
     kind: "start_verification" as const,
+    requirement: "human_identity" as const,
     provider_id: "very.oauth",
-    intent_id: "intent-1",
+    creation_intent_id: "intent-1",
+    ceremony_intent_id: "human-ceremony-1",
+    generation: 1,
   },
   expires_at: "2026-08-20T15:00:00.000Z",
   committed_resource: null,
@@ -66,7 +90,15 @@ function services(
     next_action: { kind: "none" as const, reason: "committed" as const },
     committed_resource: {
       community_id: "community-1",
-      href: "/communities/community-1",
+      href: "/c/app.jazleeuw",
+      canonical_route: {
+        family: "hns" as const,
+        root_label: "jazleeuw",
+        root_label_display: "jazleeuw",
+        path_segment: "app.jazleeuw",
+        href: "/c/app.jazleeuw",
+        app_host: null,
+      },
     },
   };
   const quotaDocument = {

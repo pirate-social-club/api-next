@@ -3,6 +3,7 @@ import type {
   StoredVerificationCompletion,
   VerificationCompletionStore,
 } from "@pirate/application/use-cases/verification-completion";
+import type { StartVerificationInput } from "@pirate/application/use-cases/verification-start";
 import { NotFound } from "@pirate/contracts";
 import type { ProofSession } from "@pirate/domain/verification";
 import {
@@ -84,6 +85,7 @@ async function handlers(
       readonly resolve: () => Effect.Effect<ReturnType<typeof makeFakeVerificationProvider>>;
     };
     readonly callback_credential_headers?: readonly string[];
+    readonly observe_start_input?: (input: StartVerificationInput) => void;
   } = {},
 ) {
   const registry = await Effect.runPromise(
@@ -108,7 +110,12 @@ async function handlers(
   return makeVerificationHandlers({
     start: {
       registry,
-      intents: { resolve: () => Effect.succeed(planInput) },
+      intents: {
+        resolve: (input) => {
+          options.observe_start_input?.(input);
+          return Effect.succeed(planInput);
+        },
+      },
       store: {
         reserve: () =>
           Effect.succeed({
@@ -150,6 +157,35 @@ describe("verification HTTP handlers", () => {
       status: 201,
     });
     expect(JSON.stringify(result)).not.toContain("fake-upstream-session-1");
+  });
+
+  test("forwards the complete creation ceremony discriminator without reconstructing it", async () => {
+    const observed: StartVerificationInput[] = [];
+    const configured = await handlers({
+      observe_start_input: (input) => observed.push(input),
+    });
+    const body = {
+      provider_id: manifest.provider_id,
+      creation_intent_id: "creation-intent-1",
+      ceremony_intent_id: "ceremony-intent-1",
+      requirement: "human_identity" as const,
+      generation: 3,
+      expected_revision: 7,
+      idempotency_key: "start-human-1",
+    };
+
+    const result = await configured.StartVerificationSession({
+      principal: { kind: "user", subject: "user-authenticated" },
+      body,
+      params: undefined,
+      query: undefined,
+    });
+
+    expect(result).toMatchObject({ status: 201 });
+    expect(observed).toEqual([
+      { actor_id: "user-authenticated", ...body },
+      { actor_id: "user-authenticated", ...body },
+    ]);
   });
 
   test("marks app completion as client-result and returns a redacted replay", async () => {

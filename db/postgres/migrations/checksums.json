@@ -30,6 +30,7 @@
     "0027_community_routes_and_creation_requirements.sql": "7cc43a77e074e5ac14669815d033a3677c82a75a261700a693477a82d58aaf11",
     "0028_community_creation_requirement_result_guard.sql": "bb67fa0b7a8c4bcab14d500cbf46a990e4e78c8171956075cf433c15ef977ad8",
     "0029_namespace_ownership_persistence.sql": "4fcc989911f8dd07e05bcc490af4b0f63ba9c161487df3508471b5e01ccd96c2",
-    "0030_namespace_ownership_completion_expiry.sql": "002e4da17a07f22d71c47b7486e1e7d5ce103fe2ab6da698ad6e9386be44af67"
+    "0030_namespace_ownership_completion_expiry.sql": "002e4da17a07f22d71c47b7486e1e7d5ce103fe2ab6da698ad6e9386be44af67",
+    "0031_community_creation_route_contract.sql": "d4f01fb04463f9003dd70e3eabfd01a23b9192031d44eb1cae5049ec29e8e984"
   }
 }

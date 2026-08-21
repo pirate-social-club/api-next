@@ -54,7 +54,9 @@ export function makeStaticVerificationIntentResolver(
 ): VerificationIntentResolver {
   const byProvider = new Map(manifests.map((manifest) => [manifest.provider_id, manifest]));
   return {
-    resolve: ({ intent_id, provider_id }) => {
+    resolve: (input) => {
+      if (!("intent_id" in input)) return Effect.succeed(null);
+      const { intent_id, provider_id } = input;
       const requirements = INTENTS.get(intent_id);
       const manifest = byProvider.get(provider_id);
       const protocolVersion = manifest?.protocol_versions[0];

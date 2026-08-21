@@ -367,6 +367,33 @@ async function insertNamespaceResult(
   );
 }
 
+async function insertRouteEvidence(
+  client: Client,
+  suffix: string,
+  verifiedAt: string,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO community_route_ownership_evidence (
+       evidence_ref, creation_ceremony_intent_id, verified_by_actor_id,
+       family, root_label, root_label_display, path_segment,
+       requirement_hash, provider_id, provider_binding_hash,
+       provider_configuration_version, provider_identity_digest,
+       evidence_digest, binding_generation, verified_at
+     ) VALUES ($1, $2, $3, 'hns', 'example_root', 'example_root', 'app.example_root',
+       $4, 'namespace-provider', $5, 'v1', $6, $7, 1, $8)`,
+    [
+      `evidence_${suffix}`,
+      `ceremony_${suffix}`,
+      `actor_${suffix}`,
+      SHA_B,
+      SHA_C,
+      SHA_B,
+      SHA_C,
+      verifiedAt,
+    ],
+  );
+}
+
 async function finalizeVerifiedSnapshot(client: Client, suffix: string): Promise<void> {
   await client.query("BEGIN");
   await consumeAttempt(client, suffix, "verified");
@@ -379,6 +406,7 @@ async function finalizeVerifiedSnapshot(client: Client, suffix: string): Promise
       WHERE intent_id = $2 AND requirement_kind = 'namespace_ownership'`,
     [terminalAt, `intent_${suffix}`],
   );
+  await insertRouteEvidence(client, suffix, terminalAt);
   await client.query(
     `UPDATE namespace_ownership_sessions
         SET status = 'completed', terminal_at = $1, completed_at = $1,
@@ -674,6 +702,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
           WHERE intent_id = 'intent_valid' AND requirement_kind = 'namespace_ownership'`,
         [terminalAt],
       );
+      await insertRouteEvidence(client, "valid", terminalAt);
       await client.query(
         `UPDATE namespace_ownership_sessions
             SET status = 'completed', terminal_at = $1,
@@ -696,6 +725,13 @@ suite("Postgres namespace ownership persistence foundation", () => {
         [deferredTerminalAt],
       );
       await client.query(
+        `UPDATE namespace_ownership_sessions
+            SET status = 'completed', terminal_at = $1, completed_at = $1,
+                updated_at = clock_timestamp()
+          WHERE namespace_session_id = 'namespace_session_deferred'`,
+        [deferredTerminalAt],
+      );
+      await client.query(
         `INSERT INTO community_creation_ceremony_results (
            ceremony_intent_id, actor_id, intent_id, requirement_kind, generation,
            requirement_hash, provider_id, provider_binding_hash, provider_configuration_version,
@@ -708,13 +744,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
            'namespace_session_deferred', 'completion_deferred', 'poll_result')`,
         [SHA_B, SHA_C, SHA, SHA_B, SHA_C, SHA_B, deferredTerminalAt],
       );
-      await client.query(
-        `UPDATE namespace_ownership_sessions
-            SET status = 'completed', terminal_at = $1, completed_at = $1,
-                updated_at = clock_timestamp()
-          WHERE namespace_session_id = 'namespace_session_deferred'`,
-        [deferredTerminalAt],
-      );
+      await insertRouteEvidence(client, "deferred", deferredTerminalAt);
       await client.query("COMMIT");
       expect(
         (
@@ -1317,6 +1347,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
           WHERE intent_id = 'intent_post-cas' AND requirement_kind = 'namespace_ownership'`,
         [terminalAt],
       );
+      await insertRouteEvidence(client, "post-cas", terminalAt);
       await client.query(
         `UPDATE namespace_ownership_sessions
             SET status = 'completed', terminal_at = $1, completed_at = $1,

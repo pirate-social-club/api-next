@@ -20,7 +20,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 11;
+const foundationTestCount = 12;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -167,6 +167,12 @@ const namespaceOwnershipPersistenceMigrationSql = await Bun.file(
 const namespaceOwnershipCompletionExpiryMigrationSql = await Bun.file(
   new URL(
     "../../../db/postgres/migrations/0030_namespace_ownership_completion_expiry.sql",
+    import.meta.url,
+  ),
+).text();
+const communityCreationRouteContractMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0031_community_creation_route_contract.sql",
     import.meta.url,
   ),
 ).text();
@@ -326,6 +332,11 @@ const namespaceOwnershipCompletionExpiryMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0030_namespace_ownership_completion_expiry.sql"] ?? "",
   sql: namespaceOwnershipCompletionExpiryMigrationSql,
 };
+const communityCreationRouteContractMigration: PostgresMigration = {
+  version: "0031_community_creation_route_contract.sql",
+  checksum: checksumManifest.migrations["0031_community_creation_route_contract.sql"] ?? "",
+  sql: communityCreationRouteContractMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -357,6 +368,7 @@ const migrations: readonly PostgresMigration[] = [
   communityCreationRequirementResultGuardMigration,
   namespaceOwnershipPersistenceMigration,
   namespaceOwnershipCompletionExpiryMigration,
+  communityCreationRouteContractMigration,
 ];
 
 function checksum(value: string): string {
@@ -556,6 +568,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(namespaceOwnershipPersistenceMigrationSql)).toBe(
         namespaceOwnershipPersistenceMigration.checksum,
+      );
+      expect(checksum(namespaceOwnershipCompletionExpiryMigrationSql)).toBe(
+        namespaceOwnershipCompletionExpiryMigration.checksum,
+      );
+      expect(checksum(communityCreationRouteContractMigrationSql)).toBe(
+        communityCreationRouteContractMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
@@ -2255,7 +2273,6 @@ suite("Postgres 17 product and gates v2 foundation", () => {
          ) VALUES ('text-community', 'duplicate-feed-item', 'text-post-1', 0, now())`,
         [],
       );
-
       await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO text_content_submissions (
@@ -2880,6 +2897,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         )
       ).rows[0]?.value;
       if (routeTerminalAt === undefined) throw new Error("route terminal time was unavailable");
+      const routeExpiresAt = (
+        await admin.query<{ readonly value: string }>(
+          "SELECT (clock_timestamp() + interval '2 seconds')::text AS value",
+        )
+      ).rows[0]?.value;
+      if (routeExpiresAt === undefined) throw new Error("route expiry time was unavailable");
 
       await admin.query("BEGIN");
       await admin.query(
@@ -2954,9 +2977,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
            'hns', 'xn--mnchen-3ya', 'münchen', 'app.xn--mnchen-3ya', '/c/app.xn--mnchen-3ya',
            'upstream-route', 1, 'owner_authoritative_dns_txt', '_pirate.xn--mnchen-3ya', repeat('6', 64),
            TRUE, TRUE, TRUE, 'hns-testnet', 10, repeat('b', 64), 100, 20,
-           clock_timestamp() - interval '1 minute', clock_timestamp() + interval '1 hour',
+           clock_timestamp() - interval '1 minute', $1::timestamptz,
            'provider-evidence-route', repeat('7', 64), repeat('a', 64), repeat('9', 64),
            '{"status":"verified"}'::jsonb, decode('01', 'hex'))`,
+        [routeExpiresAt],
       );
       await admin.query(
         `INSERT INTO community_creation_ceremony_results (
@@ -2990,7 +3014,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           WHERE namespace_session_id = 'route-namespace-session'`,
         [routeTerminalAt],
       );
-      await admin.query("COMMIT");
+      await admin.query("SAVEPOINT route_terminal_ready");
 
       const independentRequirements = await admin.query<{
         readonly requirement_kind: string;
@@ -3013,15 +3037,15 @@ suite("Postgres 17 product and gates v2 foundation", () => {
            requirement_hash, provider_id, provider_binding_hash,
            provider_configuration_version,
            provider_identity_digest, evidence_digest, binding_generation,
-           verified_at
+           verified_at, expires_at
          ) VALUES (
            'route-evidence-1', 'ceremony-route-1', 'route-creator', 'hns',
            'xn--mnchen-3ya', 'münchen', 'app.xn--mnchen-3ya', repeat('4', 64),
            'hns.owner.v1',
            repeat('5', 64), '1', repeat('a', 64), repeat('9', 64), 1,
-           $1
+           $1, $2::timestamptz
          )`,
-        [routeTerminalAt],
+        [routeTerminalAt, routeExpiresAt],
       );
 
       await admin.query(
@@ -3046,7 +3070,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(unbound.rows[0]?.count).toBe("0");
 
-      await admin.query("BEGIN");
+      await admin.query("RELEASE SAVEPOINT route_terminal_ready");
       await admin.query(
         `INSERT INTO community_canonical_route_bindings (
            route_binding_id, community_id, family, root_label,
@@ -3078,6 +3102,57 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         href: "/c/app.xn--mnchen-3ya",
         route_lifecycle_status: "active",
       });
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_creation_intents (
+           intent_id, actor_id, create_idempotency_key, create_request_hash,
+           revision, status, draft, canonical_policy_revision,
+           canonical_policy_hash, verification_requirement_hash,
+           verification_provider_id, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version,
+           expires_at, committed_community_id, committed_resource_href,
+           creation_contract_version
+         ) VALUES (
+           'route-v1-live-evidence', 'route-creator', 'route-v1-live-key', repeat('c', 64),
+           1, 'commit_ready',
+           '{"name":"Jazleeuw","description":null,"route_request":{"family":"hns","root_label":"xn--mnchen-3ya"},"policy":{}}'::jsonb,
+           1, repeat('1', 64), repeat('2', 64), 'very.oauth', 'dynamic',
+           'very-oauth', '1', clock_timestamp() + interval '1 day',
+           NULL, NULL, 'route_v1'
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_requirement_states (
+           intent_id, actor_id, requirement_kind, status, requirement_hash,
+           provider_id, provider_binding_hash, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version,
+           route_family, route_root_label, route_root_label_display, route_path_segment
+         ) VALUES (
+           'route-v1-live-evidence', 'route-creator', 'human_identity', 'unmet',
+           repeat('2', 64), 'very.oauth', repeat('3', 64), 'dynamic',
+           'very-oauth', '1', NULL, NULL, NULL, NULL
+         ), (
+           'route-v1-live-evidence', 'route-creator', 'namespace_ownership', 'unmet',
+           repeat('4', 64), 'hns.owner.v1', repeat('5', 64), 'dynamic',
+           'hns-owner', '1', 'hns', 'xn--mnchen-3ya', 'münchen',
+           'app.xn--mnchen-3ya'
+         )`,
+      );
+      await admin.query("COMMIT");
+
+      await new Promise((resolve) => setTimeout(resolve, 2_100));
+      await expectPostgresFailure(
+        admin,
+        "P0001",
+        `UPDATE community_creation_intents
+            SET revision = 2, status = 'committed',
+                committed_community_id = 'route-community',
+                committed_resource_href = '/c/app.xn--mnchen-3ya',
+                updated_at = clock_timestamp()
+          WHERE intent_id = 'route-v1-live-evidence'`,
+        [],
+      );
 
       // Expansion deliberately leaves the legacy active row shape available;
       // the cutover migration makes active canonical references mandatory.
@@ -3241,6 +3316,135 @@ suite("Postgres 17 product and gates v2 foundation", () => {
          )`,
         [],
       );
+    });
+    completedTestCount += 1;
+  });
+
+  test("fences route-v1 drafts and requires both creation requirements", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      await applyMigrations(scopedConnectionString, migrations);
+      await admin.query("INSERT INTO users (user_id) VALUES ('route-v1-creator')");
+
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO community_creation_intents (
+           intent_id, actor_id, create_idempotency_key, create_request_hash,
+           revision, status, draft, canonical_policy_revision,
+           canonical_policy_hash, verification_requirement_hash,
+           verification_provider_id, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version,
+           expires_at, creation_contract_version
+         ) VALUES (
+           'route-v1-invalid', 'route-v1-creator', 'invalid-draft', repeat('1', 64),
+           1, 'verification_required',
+           '{"name":"Legacy","slug":"legacy","description":null,"policy":{}}'::jsonb,
+           1, repeat('2', 64), repeat('3', 64), 'very.oauth', 'dynamic',
+           'very-oauth', '1', clock_timestamp() + interval '1 day', 'route_v1'
+         )`,
+        [],
+      );
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_creation_intents (
+           intent_id, actor_id, create_idempotency_key, create_request_hash,
+           revision, status, draft, canonical_policy_revision,
+           canonical_policy_hash, verification_requirement_hash,
+           verification_provider_id, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version,
+           expires_at, creation_contract_version
+         ) VALUES (
+           'route-v1-incomplete', 'route-v1-creator', 'incomplete', repeat('1', 64),
+           1, 'verification_required',
+           '{"name":"Route","description":null,"route_request":{"family":"hns","root_label":"jazleeuw"},"policy":{}}'::jsonb,
+           1, repeat('2', 64), repeat('3', 64), 'very.oauth', 'dynamic',
+           'very-oauth', '1', clock_timestamp() + interval '1 day', 'route_v1'
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_requirement_states (
+           intent_id, actor_id, requirement_kind, status, requirement_hash,
+           provider_id, provider_binding_hash, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version, generation
+         ) VALUES (
+           'route-v1-incomplete', 'route-v1-creator', 'human_identity', 'unmet',
+           repeat('3', 64), 'very.oauth', repeat('4', 64), 'dynamic', 'very-oauth', '1', 0
+         )`,
+      );
+      await expectPostgresFailure(admin, "P0001", "COMMIT", []);
+      await admin.query("ROLLBACK");
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_creation_intents (
+           intent_id, actor_id, create_idempotency_key, create_request_hash,
+           revision, status, draft, canonical_policy_revision,
+           canonical_policy_hash, verification_requirement_hash,
+           verification_provider_id, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version,
+           expires_at, creation_contract_version
+         ) VALUES (
+           'route-v1-complete', 'route-v1-creator', 'complete', repeat('1', 64),
+           1, 'verification_required',
+           '{"name":"Route","description":null,"route_request":{"family":"hns","root_label":"jazleeuw"},"policy":{}}'::jsonb,
+           1, repeat('2', 64), repeat('3', 64), 'very.oauth', 'dynamic',
+           'very-oauth', '1', clock_timestamp() + interval '1 day', 'route_v1'
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO community_creation_requirement_states (
+           intent_id, actor_id, requirement_kind, status, requirement_hash,
+           provider_id, provider_binding_hash, provider_configuration_kind,
+           provider_configuration_ref, provider_configuration_version,
+           route_family, route_root_label, route_root_label_display,
+           route_path_segment, generation
+         ) VALUES
+         (
+           'route-v1-complete', 'route-v1-creator', 'human_identity', 'unmet',
+           repeat('3', 64), 'very.oauth', repeat('4', 64), 'dynamic', 'very-oauth', '1',
+           NULL, NULL, NULL, NULL, 0
+         ),
+         (
+           'route-v1-complete', 'route-v1-creator', 'namespace_ownership', 'unmet',
+           repeat('5', 64), 'hns.owner.v1', repeat('6', 64), 'managed',
+           'hns-owner-staging', '1', 'hns', 'jazleeuw', 'jazleeuw',
+           'app.jazleeuw', 0
+         )`,
+      );
+      await admin.query("COMMIT");
+
+      const rows = await admin.query<{ readonly count: string }>(
+        `SELECT COUNT(*)::text AS count
+           FROM community_creation_requirement_states
+          WHERE intent_id = 'route-v1-complete'`,
+      );
+      expect(rows.rows[0]?.count).toBe("2");
+
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, membership_mode, human_verification_lane
+         ) VALUES (
+           'route-v1-unbound', 'Unbound', 'active', 'route-v1-creator',
+           clock_timestamp(), clock_timestamp(), 'gated', 'very'
+         )`,
+      );
+      await admin.query("BEGIN");
+      await admin.query(
+        `UPDATE community_creation_intents
+            SET revision = revision + 1, status = 'commit_ready'
+          WHERE intent_id = 'route-v1-complete'`,
+      );
+      await admin.query(
+        `UPDATE community_creation_intents
+            SET revision = revision + 1, status = 'committed',
+                committed_community_id = 'route-v1-unbound',
+                committed_resource_href = '/c/app.jazleeuw'
+          WHERE intent_id = 'route-v1-complete'`,
+      );
+      await expectPostgresFailure(admin, "P0001", "COMMIT", []);
+      await admin.query("ROLLBACK");
     });
     completedTestCount += 1;
   });

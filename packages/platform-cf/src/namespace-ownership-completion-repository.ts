@@ -14,6 +14,7 @@ import {
 } from "@pirate/application";
 import { ProviderConfigurationRef, Sha256Hex } from "@pirate/domain/verification";
 import { Effect, type Layer, Option, Schema } from "effect";
+import { advanceCommunityCreationNamespaceVerificationInTransaction } from "./community-creation-repository.ts";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
@@ -238,6 +239,7 @@ type LockedAuthority = Readonly<{
   readonly intent_revision: number;
   readonly intent_status: string;
   readonly intent_active: boolean;
+  readonly creation_contract_version: string;
   readonly requirement_status: string;
 }>;
 
@@ -249,6 +251,7 @@ function lockAuthority(
     readonly ceremony_intent_id: string;
     readonly session_id: string;
   },
+  databaseNow: string,
 ): Effect.Effect<
   LockedAuthority | null,
   NamespaceOwnershipCompletionStorageFailed | ControlPlaneError
@@ -285,32 +288,45 @@ function lockAuthority(
     if (oneRow(actor) === null) return null;
     const intent = yield* transaction.execute<Row>({
       label: "namespace-ownership.completion.lock-intent",
-      text: `SELECT revision, status, expires_at > clock_timestamp() AS active
+      text: `SELECT revision, status, creation_contract_version,
+                    expires_at > $3::timestamptz AS active
                FROM community_creation_intents
               WHERE intent_id = $1 AND actor_id = $2
               FOR UPDATE`,
-      values: [intentId, input.actor_id],
+      values: [intentId, input.actor_id, databaseNow],
       readonly: false,
     });
     const intentRow = oneRow(intent);
     if (intentRow === undefined) return yield* Effect.fail(storageFailure());
     if (intentRow === null) return null;
-    const requirement = yield* transaction.execute<Row>({
-      label: "namespace-ownership.completion.lock-requirement",
-      text: `SELECT status, generation, current_ceremony_intent_id, requirement_hash,
+    const requirements = yield* transaction.execute<Row>({
+      label: "namespace-ownership.completion.lock-requirements",
+      text: `SELECT requirement_kind, status, generation, current_ceremony_intent_id, requirement_hash,
                     provider_id, provider_binding_hash, provider_configuration_kind,
                     provider_configuration_ref, provider_configuration_version,
                     route_family, route_root_label, route_root_label_display, route_path_segment
                FROM community_creation_requirement_states
               WHERE intent_id = $1 AND actor_id = $2
-                AND requirement_kind = 'namespace_ownership'
+              ORDER BY CASE requirement_kind
+                WHEN 'human_identity' THEN 1
+                WHEN 'namespace_ownership' THEN 2
+              END
               FOR UPDATE`,
       values: [intentId, input.actor_id],
       readonly: false,
     });
-    const requirementRow = oneRow(requirement);
-    if (requirementRow === undefined) return yield* Effect.fail(storageFailure());
-    if (requirementRow === null) return null;
+    if (
+      requirements.rows.length === 0 ||
+      (intentRow.creation_contract_version === "route_v1" && requirements.rows.length !== 2)
+    ) {
+      return null;
+    }
+    const requirementRow = requirements.rows.find(
+      (row) => row.requirement_kind === "namespace_ownership",
+    );
+    if (requirementRow === undefined) return null;
+    const stored = yield* loadStored(transaction, input, true);
+    if (stored === null) return null;
     const ceremony = yield* transaction.execute<Row>({
       label: "namespace-ownership.completion.lock-ceremony",
       text: `SELECT generation, requirement_hash, provider_id, provider_binding_hash,
@@ -326,8 +342,6 @@ function lockAuthority(
     const ceremonyRow = oneRow(ceremony);
     if (ceremonyRow === undefined) return yield* Effect.fail(storageFailure());
     if (ceremonyRow === null) return null;
-    const stored = yield* loadStored(transaction, input, true);
-    if (stored === null) return null;
     const intentRevision = safeInteger(intentRow.revision);
     const requirementGeneration = safeInteger(requirementRow.generation);
     const ceremonyGeneration = safeInteger(ceremonyRow.generation);
@@ -360,14 +374,16 @@ function lockAuthority(
       ceremonyRow.route_path_segment === stored.session.route.path_segment;
     if (intentRevision === null || !sameBinding) return yield* Effect.fail(storageFailure());
     const intentStatus = stringValue(intentRow, "status");
+    const creationContractVersion = stringValue(intentRow, "creation_contract_version");
     const requirementStatus = stringValue(requirementRow, "status");
-    if (intentStatus === null || requirementStatus === null)
+    if (intentStatus === null || creationContractVersion === null || requirementStatus === null)
       return yield* Effect.fail(storageFailure());
     return {
       stored,
       intent_revision: intentRevision,
       intent_status: intentStatus,
       intent_active: intentRow.active === true,
+      creation_contract_version: creationContractVersion,
       requirement_status: requirementStatus,
     };
   });
@@ -379,7 +395,7 @@ function databaseNow(
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: "namespace-ownership.completion.database-now",
-      text: "SELECT clock_timestamp() AS database_now",
+      text: "SELECT transaction_timestamp() AS database_now",
       values: [],
       readonly: false,
     });
@@ -580,17 +596,23 @@ function terminalReplayOutcome(
 function lockAttempt(
   transaction: Transaction,
   attempt: NamespaceOwnershipCompletionAttemptReservation,
+  databaseNow: string,
 ): Effect.Effect<Row | null, NamespaceOwnershipCompletionStorageFailed | ControlPlaneError> {
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: "namespace-ownership.completion.lock-attempt",
-      text: `SELECT *, lease_expires_at > clock_timestamp() AS lease_live
+      text: `SELECT *, lease_expires_at > $4::timestamptz AS lease_live
                FROM namespace_ownership_completion_attempts
               WHERE completion_attempt_id = $1
                 AND namespace_session_id = $2
                 AND actor_id = $3
               FOR UPDATE`,
-      values: [attempt.completion_attempt_id, attempt.namespace_session_id, attempt.actor_id],
+      values: [
+        attempt.completion_attempt_id,
+        attempt.namespace_session_id,
+        attempt.actor_id,
+        databaseNow,
+      ],
       readonly: false,
     });
     const row = oneRow(result);
@@ -623,16 +645,15 @@ function consumeLiveAttempt(
     readonly idempotency_key: string;
     readonly completion_request_hash: string;
     readonly consumption_kind: CompletionConsumptionKind;
+    readonly database_now: string;
   },
 ): Effect.Effect<string | null, NamespaceOwnershipCompletionStorageFailed | ControlPlaneError> {
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: "namespace-ownership.completion.consume-live-attempt",
-      text: `WITH db_now AS (SELECT clock_timestamp() AS now)
-             UPDATE namespace_ownership_completion_attempts AS attempt
+      text: `UPDATE namespace_ownership_completion_attempts AS attempt
                 SET state = 'consumed', consumption_kind = $1,
-                    updated_at = db_now.now
-               FROM db_now
+                    updated_at = $9::timestamptz
               WHERE attempt.completion_attempt_id = $2
                 AND attempt.namespace_session_id = $3
                 AND attempt.actor_id = $4
@@ -641,13 +662,13 @@ function consumeLiveAttempt(
                 AND attempt.evidence_ref = $7
                 AND attempt.fence_token = $8
                 AND attempt.state = 'leased'
-                AND attempt.lease_expires_at > db_now.now
+                AND attempt.lease_expires_at > $9::timestamptz
                 AND EXISTS (
                   SELECT 1 FROM namespace_ownership_sessions AS session
                    WHERE session.namespace_session_id = attempt.namespace_session_id
                      AND session.actor_id = attempt.actor_id
                      AND session.status = 'pending'
-                     AND session.expires_at > db_now.now
+                     AND session.expires_at > $9::timestamptz
                 )
           RETURNING updated_at`,
       values: [
@@ -659,6 +680,7 @@ function consumeLiveAttempt(
         input.completion_request_hash,
         input.attempt.evidence_ref,
         input.attempt.fence_token,
+        input.database_now,
       ],
       readonly: false,
     });
@@ -676,16 +698,15 @@ function consumeExpiredAttempt(
     readonly attempt: NamespaceOwnershipCompletionAttemptReservation;
     readonly idempotency_key: string;
     readonly completion_request_hash: string;
+    readonly database_now: string;
   },
 ): Effect.Effect<string | null, NamespaceOwnershipCompletionStorageFailed | ControlPlaneError> {
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: "namespace-ownership.completion.consume-expired-attempt",
-      text: `WITH db_now AS (SELECT clock_timestamp() AS now)
-             UPDATE namespace_ownership_completion_attempts AS attempt
+      text: `UPDATE namespace_ownership_completion_attempts AS attempt
                 SET state = 'consumed', consumption_kind = 'expired',
-                    updated_at = db_now.now
-               FROM db_now
+                    updated_at = $8::timestamptz
               WHERE attempt.completion_attempt_id = $1
                 AND attempt.namespace_session_id = $2
                 AND attempt.actor_id = $3
@@ -699,7 +720,7 @@ function consumeExpiredAttempt(
                    WHERE session.namespace_session_id = attempt.namespace_session_id
                      AND session.actor_id = attempt.actor_id
                      AND session.status = 'pending'
-                     AND session.expires_at <= db_now.now
+                     AND session.expires_at <= $8::timestamptz
                 )
           RETURNING updated_at`,
       values: [
@@ -710,6 +731,7 @@ function consumeExpiredAttempt(
         input.completion_request_hash,
         input.attempt.evidence_ref,
         input.attempt.fence_token,
+        input.database_now,
       ],
       readonly: false,
     });
@@ -729,6 +751,7 @@ function expireReservedAttempt(
     readonly idempotency_key: string;
     readonly completion_request_hash: string;
     readonly expired_result_hash: string;
+    readonly database_now: string;
   },
 ): Effect.Effect<
   { readonly kind: "expired"; readonly result_hash: string } | { readonly kind: "lease_lost" },
@@ -763,6 +786,7 @@ type AttemptReleaseOutcome = "released_live" | "released_stale" | null;
 function releaseAttempt(
   transaction: Transaction,
   attempt: NamespaceOwnershipCompletionAttemptReservation,
+  databaseNow: string,
 ): Effect.Effect<
   AttemptReleaseOutcome,
   NamespaceOwnershipCompletionStorageFailed | ControlPlaneError
@@ -770,10 +794,8 @@ function releaseAttempt(
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: "namespace-ownership.completion.release-attempt",
-      text: `WITH db_now AS (SELECT clock_timestamp() AS now)
-             UPDATE namespace_ownership_completion_attempts AS attempt
-                SET state = 'released', updated_at = db_now.now
-               FROM db_now
+      text: `UPDATE namespace_ownership_completion_attempts AS attempt
+                SET state = 'released', updated_at = $5::timestamptz
               WHERE attempt.completion_attempt_id = $1
                 AND attempt.namespace_session_id = $2
                 AND attempt.actor_id = $3
@@ -784,14 +806,15 @@ function releaseAttempt(
                    WHERE session.namespace_session_id = attempt.namespace_session_id
                      AND session.actor_id = attempt.actor_id
                      AND session.status = 'pending'
-                     AND session.expires_at > db_now.now
+                     AND session.expires_at > $5::timestamptz
                 )
-          RETURNING attempt.lease_expires_at > attempt.updated_at AS lease_was_live`,
+          RETURNING attempt.lease_expires_at > $5::timestamptz AS lease_was_live`,
       values: [
         attempt.completion_attempt_id,
         attempt.namespace_session_id,
         attempt.actor_id,
         attempt.fence_token,
+        databaseNow,
       ],
       readonly: false,
     });
@@ -871,7 +894,8 @@ function makeRepository(): NamespaceOwnershipCompletionRepository {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            const authority = yield* lockAuthority(transaction, input);
+            const now = yield* databaseNow(transaction);
+            const authority = yield* lockAuthority(transaction, input, now);
             if (authority === null) return { kind: "not_found" } as const;
             const stored = authority.stored;
             if (stored.status !== "pending") {
@@ -894,7 +918,6 @@ function makeRepository(): NamespaceOwnershipCompletionRepository {
             ) {
               return { kind: "binding_conflict" } as const;
             }
-            const now = yield* databaseNow(transaction);
             if (Date.parse(stored.session.expires_at) <= Date.parse(now)) {
               yield* expireWithoutAttempt(transaction, {
                 stored,
@@ -982,7 +1005,7 @@ function makeRepository(): NamespaceOwnershipCompletionRepository {
                 text: `UPDATE namespace_ownership_completion_attempts
                           SET state = 'leased', fence_token = fence_token + 1,
                               lease_expires_at = $1::timestamptz,
-                              updated_at = clock_timestamp()
+                              updated_at = $7::timestamptz
                         WHERE completion_attempt_id = $2
                           AND namespace_session_id = $3
                           AND idempotency_key = $4
@@ -998,6 +1021,7 @@ function makeRepository(): NamespaceOwnershipCompletionRepository {
                   input.session_id,
                   input.idempotency_key,
                   input.completion_request_hash,
+                  now,
                   now,
                 ],
                 readonly: false,
@@ -1047,12 +1071,17 @@ function makeRepository(): NamespaceOwnershipCompletionRepository {
         const db = yield* ControlPlaneDb;
         return yield* db.withTransaction((transaction) =>
           Effect.gen(function* () {
-            const authority = yield* lockAuthority(transaction, {
-              actor_id: input.actor_id,
-              creation_intent_id: input.expected.session.creation_intent_id,
-              ceremony_intent_id: input.expected.session.ceremony_intent_id,
-              session_id: input.expected.namespace_session_id,
-            });
+            const now = yield* databaseNow(transaction);
+            const authority = yield* lockAuthority(
+              transaction,
+              {
+                actor_id: input.actor_id,
+                creation_intent_id: input.expected.session.creation_intent_id,
+                ceremony_intent_id: input.expected.session.ceremony_intent_id,
+                session_id: input.expected.namespace_session_id,
+              },
+              now,
+            );
             if (authority === null) return { kind: "binding_conflict" } as const;
             if (authority.stored.status !== "pending") {
               const terminal = authority.stored.terminal;
@@ -1070,7 +1099,7 @@ function makeRepository(): NamespaceOwnershipCompletionRepository {
             ) {
               return { kind: "binding_conflict" } as const;
             }
-            const locked = yield* lockAttempt(transaction, input.attempt);
+            const locked = yield* lockAttempt(transaction, input.attempt, now);
             if (
               locked === null ||
               !attemptMatches(
@@ -1081,7 +1110,6 @@ function makeRepository(): NamespaceOwnershipCompletionRepository {
               )
             )
               return { kind: "lease_lost" } as const;
-            const now = yield* databaseNow(transaction);
             if (Date.parse(authority.stored.session.expires_at) <= Date.parse(now)) {
               return yield* expireReservedAttempt(transaction, {
                 stored: authority.stored,
@@ -1089,22 +1117,11 @@ function makeRepository(): NamespaceOwnershipCompletionRepository {
                 idempotency_key: input.idempotency_key,
                 completion_request_hash: input.completion_request_hash,
                 expired_result_hash: input.expired_result_hash,
+                database_now: now,
               });
             }
-            const released = yield* releaseAttempt(transaction, input.attempt);
-            if (released === null) {
-              const afterRelease = yield* databaseNow(transaction);
-              if (Date.parse(authority.stored.session.expires_at) <= Date.parse(afterRelease)) {
-                return yield* expireReservedAttempt(transaction, {
-                  stored: authority.stored,
-                  attempt: input.attempt,
-                  idempotency_key: input.idempotency_key,
-                  completion_request_hash: input.completion_request_hash,
-                  expired_result_hash: input.expired_result_hash,
-                });
-              }
-              return { kind: "lease_lost" } as const;
-            }
+            const released = yield* releaseAttempt(transaction, input.attempt, now);
+            if (released === null) return { kind: "lease_lost" } as const;
             return released === "released_live"
               ? ({ kind: "released" } as const)
               : ({ kind: "lease_lost" } as const);
@@ -1154,12 +1171,17 @@ function finalizeTerminal(
   NamespaceOwnershipCompletionStorageFailed | ControlPlaneError
 > {
   return Effect.gen(function* () {
-    const authority = yield* lockAuthority(transaction, {
-      actor_id: input.actor_id,
-      creation_intent_id: input.expected.session.creation_intent_id,
-      ceremony_intent_id: input.expected.session.ceremony_intent_id,
-      session_id: input.expected.namespace_session_id,
-    });
+    const now = yield* databaseNow(transaction);
+    const authority = yield* lockAuthority(
+      transaction,
+      {
+        actor_id: input.actor_id,
+        creation_intent_id: input.expected.session.creation_intent_id,
+        ceremony_intent_id: input.expected.session.ceremony_intent_id,
+        session_id: input.expected.namespace_session_id,
+      },
+      now,
+    );
     if (authority === null) return { kind: "binding_conflict" } as const;
     if (authority.stored.status !== "pending") {
       const terminal = authority.stored.terminal;
@@ -1181,7 +1203,7 @@ function finalizeTerminal(
     ) {
       return { kind: "binding_conflict" } as const;
     }
-    const attemptRow = yield* lockAttempt(transaction, input.attempt);
+    const attemptRow = yield* lockAttempt(transaction, input.attempt, now);
     if (
       attemptRow === null ||
       !attemptMatches(
@@ -1193,7 +1215,6 @@ function finalizeTerminal(
     ) {
       return { kind: "lease_lost" } as const;
     }
-    const now = yield* databaseNow(transaction);
     const sessionExpired = Date.parse(authority.stored.session.expires_at) <= Date.parse(now);
     if (sessionExpired) {
       return yield* expireReservedAttempt(transaction, {
@@ -1202,7 +1223,18 @@ function finalizeTerminal(
         idempotency_key: input.idempotency_key,
         completion_request_hash: input.completion_request_hash,
         expired_result_hash: input.expired_result_hash,
+        database_now: now,
       });
+    }
+    const leaseExpiresAt = timestampValue(attemptRow, "lease_expires_at");
+    if (leaseExpiresAt === null) return yield* Effect.fail(storageFailure());
+    if (Date.parse(leaseExpiresAt) <= Date.parse(now)) {
+      // A stale lease has no terminal authority, but preserve the existing
+      // repair semantics by releasing the fenced attempt when its session is
+      // still live. The release is evaluated against the same transaction
+      // timestamp, so it cannot consume or expire terminal authority here.
+      yield* releaseAttempt(transaction, input.attempt, now);
+      return { kind: "lease_lost" } as const;
     }
     const consumptionKind =
       input.kind === "contradiction"
@@ -1215,31 +1247,13 @@ function finalizeTerminal(
       idempotency_key: input.idempotency_key,
       completion_request_hash: input.completion_request_hash,
       consumption_kind: consumptionKind,
+      database_now: now,
     });
     if (consumedAt === null) {
-      const afterConsume = yield* databaseNow(transaction);
-      if (Date.parse(authority.stored.session.expires_at) <= Date.parse(afterConsume)) {
-        return yield* expireReservedAttempt(transaction, {
-          stored: authority.stored,
-          attempt: input.attempt,
-          idempotency_key: input.idempotency_key,
-          completion_request_hash: input.completion_request_hash,
-          expired_result_hash: input.expired_result_hash,
-        });
-      }
-      const released = yield* releaseAttempt(transaction, input.attempt);
-      if (released === null) {
-        const afterRelease = yield* databaseNow(transaction);
-        if (Date.parse(authority.stored.session.expires_at) <= Date.parse(afterRelease)) {
-          return yield* expireReservedAttempt(transaction, {
-            stored: authority.stored,
-            attempt: input.attempt,
-            idempotency_key: input.idempotency_key,
-            completion_request_hash: input.completion_request_hash,
-            expired_result_hash: input.expired_result_hash,
-          });
-        }
-      }
+      // The locked attempt matched, so a failed live CAS is deterministically
+      // a lease loss (normally expiry at the transaction timestamp). Repair a
+      // still-live session's attempt without consuming terminal authority.
+      yield* releaseAttempt(transaction, input.attempt, now);
       return { kind: "lease_lost" } as const;
     }
     if (input.kind === "contradiction") return { kind: "consumed" } as const;
@@ -1365,6 +1379,14 @@ function finalizeTerminal(
         readonly: false,
       });
       if (routeEvidence.rowCount !== 1) return yield* Effect.fail(storageFailure());
+      if (authority.creation_contract_version === "route_v1") {
+        yield* advanceCommunityCreationNamespaceVerificationInTransaction(transaction, {
+          actor_id: envelope.actor_id,
+          intent_id: envelope.creation_intent_id,
+          result_hash: input.result_hash,
+          database_now: now,
+        }).pipe(Effect.mapError(() => storageFailure()));
+      }
     }
     return { kind: "committed", result_hash: input.result_hash } as const;
   });

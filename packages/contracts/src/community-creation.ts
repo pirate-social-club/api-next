@@ -1,5 +1,10 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
+import {
+  CommunityCreationRequirementsV1,
+  CreationVerificationRequirementV1,
+} from "./community-creation-requirements.ts";
+import { CommunityCanonicalRouteV1, CommunityRouteRequestV1 } from "./community-routes.ts";
 import { endpoint } from "./endpoint.ts";
 import { AuthError, BadRequest, Conflict, InternalError, NotFound } from "./errors.ts";
 
@@ -19,14 +24,6 @@ const CanonicalIsoInstant = Schema.String.check(
       : "Expected a canonical ISO instant";
   }),
 );
-const CommunityRouteSlug = Schema.NonEmptyString.check(
-  Schema.makeFilter((value) =>
-    value.length <= 256 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(value)
-      ? undefined
-      : "Expected a lowercase hyphenated route slug of at most 256 characters",
-  ),
-);
-
 const CompiledGateRequirement = Schema.Union([
   Schema.Struct({ requirement: Schema.Literal("human-verification") }),
   Schema.Struct({ requirement: Schema.Literal("age-minimum"), minimumAge: Schema.Literal(18) }),
@@ -75,8 +72,8 @@ export type CompiledGatePolicy = Schema.Schema.Type<typeof CompiledGatePolicy>;
 
 export const CommunityCreationDraft = Schema.Struct({
   name: Schema.NonEmptyString,
-  slug: CommunityRouteSlug,
   description: Schema.NullOr(Schema.String),
+  route_request: CommunityRouteRequestV1,
   policy: CompiledGatePolicy,
 });
 export type CommunityCreationDraft = Schema.Schema.Type<typeof CommunityCreationDraft>;
@@ -104,12 +101,16 @@ export type NextActionWaitReasonCode = Schema.Schema.Type<typeof NextActionWaitR
 export const CreationNextAction = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("start_verification"),
+    requirement: CreationVerificationRequirementV1,
     provider_id: Schema.NonEmptyString,
-    intent_id: Schema.NonEmptyString,
+    creation_intent_id: Schema.NonEmptyString,
+    ceremony_intent_id: Schema.NonEmptyString,
+    generation: PositiveInteger,
   }),
   Schema.Struct({ kind: Schema.Literal("commit") }),
   Schema.Struct({
     kind: Schema.Literal("wait"),
+    requirement: Schema.NullOr(CreationVerificationRequirementV1),
     reason_code: NextActionWaitReasonCode,
     retry_after_seconds: Schema.optional(PositiveInteger),
   }),
@@ -128,10 +129,17 @@ export const CommittedCommunityResource = Schema.Struct({
   community_id: Schema.NonEmptyString,
   href: Schema.NonEmptyString.check(
     Schema.makeFilter((value) =>
-      value.startsWith("/") ? undefined : "Expected a same-origin resource path",
+      value.startsWith("/c/") ? undefined : "Expected a canonical public community path",
     ),
   ),
-});
+  canonical_route: CommunityCanonicalRouteV1,
+}).check(
+  Schema.makeFilter((resource) =>
+    resource.href === resource.canonical_route.href
+      ? undefined
+      : "Committed resource href must equal its canonical route href",
+  ),
+);
 export type CommittedCommunityResource = Schema.Schema.Type<typeof CommittedCommunityResource>;
 
 export const CommunityCreationIntent = Schema.Struct({
@@ -141,7 +149,7 @@ export const CommunityCreationIntent = Schema.Struct({
   draft: CommunityCreationDraft,
   canonical_policy_revision: PositiveInteger,
   canonical_policy_hash: Sha256Hex,
-  verification_requirement_hash: Sha256Hex,
+  requirements: CommunityCreationRequirementsV1,
   next_action: CreationNextAction,
   expires_at: CanonicalIsoInstant,
   committed_resource: Schema.NullOr(CommittedCommunityResource),
@@ -158,10 +166,24 @@ export const CommunityCreationIntent = Schema.Struct({
       return "Non-committed intents cannot expose a committed resource";
     }
     if (intent.status === "verification_required") {
-      return intent.next_action.kind === "start_verification" &&
-        intent.next_action.intent_id === intent.intent_id
-        ? undefined
-        : "Verification-required intents require their bound start action";
+      if (intent.next_action.kind === "start_verification") {
+        const progress = intent.requirements[intent.next_action.requirement];
+        return intent.next_action.creation_intent_id === intent.intent_id &&
+          progress.requirement === intent.next_action.requirement &&
+          progress.status === "pending" &&
+          progress.provider_id === intent.next_action.provider_id &&
+          progress.ceremony_intent_id === intent.next_action.ceremony_intent_id &&
+          progress.generation === intent.next_action.generation
+          ? undefined
+          : "Verification start action must match its reserved requirement";
+      }
+      if (intent.next_action.kind === "wait") {
+        return intent.next_action.requirement === null ||
+          intent.requirements[intent.next_action.requirement].status === "pending"
+          ? undefined
+          : "Verification wait action must name a pending requirement";
+      }
+      return "Verification-required intents require a typed verification action";
     }
     if (intent.status === "commit_ready") {
       return intent.next_action.kind === "commit"
@@ -178,7 +200,7 @@ export const CommunityCreationIntent = Schema.Struct({
         ? undefined
         : "Terminal intents require their matching terminal action";
     }
-    return intent.next_action.kind === "wait"
+    return intent.next_action.kind === "wait" && intent.next_action.requirement === null
       ? undefined
       : "Draft intents require an explicit wait action";
   }),

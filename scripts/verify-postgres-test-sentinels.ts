@@ -50,6 +50,20 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-community-suite-complete\n",
   },
   {
+    name: "postgres community creation repository",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_COMMUNITY_CREATION_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-community-creation-suite-complete",
+    contents: "api-next-control-plane-postgres-community-creation-suite-complete\n",
+  },
+  {
+    name: "postgres canonical community route repository",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_CANONICAL_ROUTE_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-canonical-route-suite-complete",
+    contents: "api-next-control-plane-postgres-canonical-route-suite-complete\n",
+  },
+  {
     name: "gates v2 community repository",
     path:
       process.env.CONTROL_PLANE_POSTGRES_GATES_V2_COMMUNITY_TEST_SENTINEL ??

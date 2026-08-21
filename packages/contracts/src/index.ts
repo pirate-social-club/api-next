@@ -3,6 +3,7 @@ export * from "./codegen.ts";
 export * from "./community-creation.ts";
 export * from "./community-creation-requirements.ts";
 export * from "./community-purchase-funding.ts";
+export * from "./community-route-resolution.ts";
 export * from "./community-routes.ts";
 export * from "./endpoint.ts";
 export * from "./errors.ts";

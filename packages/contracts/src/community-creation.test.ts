@@ -21,9 +21,29 @@ const policy = {
 };
 const draft = {
   name: "Jazleeuw",
-  slug: "jazleeuw",
   description: null,
+  route_request: { family: "hns" as const, root_label: "jazleeuw" },
   policy,
+};
+const requirements = {
+  human_identity: {
+    requirement: "human_identity" as const,
+    status: "pending" as const,
+    requirement_hash: "b".repeat(64),
+    provider_id: "very.oauth",
+    generation: 1,
+    ceremony_intent_id: "human-ceremony-1",
+    satisfied_at: null,
+  },
+  namespace_ownership: {
+    requirement: "namespace_ownership" as const,
+    status: "unmet" as const,
+    requirement_hash: "c".repeat(64),
+    provider_id: "hns.owner.v1",
+    generation: 0,
+    ceremony_intent_id: null,
+    satisfied_at: null,
+  },
 };
 const base = {
   intent_id: "intent-1",
@@ -31,7 +51,7 @@ const base = {
   draft,
   canonical_policy_revision: 1,
   canonical_policy_hash: "a".repeat(64),
-  verification_requirement_hash: "b".repeat(64),
+  requirements,
   expires_at: "2026-08-20T13:00:00.000Z",
   committed_resource: null,
 };
@@ -66,7 +86,7 @@ describe("community creation contracts", () => {
         idempotency_key: "create-key-1",
         draft,
       }),
-    ).toMatchObject({ draft: { slug: "jazleeuw" } });
+    ).toMatchObject({ draft: { route_request: { family: "hns", root_label: "jazleeuw" } } });
     expect(
       Schema.decodeUnknownSync(UpdateCommunityCreationIntent.request.body)({
         idempotency_key: "update-key-1",
@@ -82,24 +102,52 @@ describe("community creation contracts", () => {
     ).toEqual({ idempotency_key: "commit-key-1", expected_revision: 2 });
   });
 
-  test("accepts local route slugs and rejects hostnames or malformed segments", () => {
-    const decode = Schema.decodeUnknownSync(CreateCommunityCreationIntent.request.body);
-    for (const slug of ["jazleeuw", "techno-hippies", "a".repeat(256)]) {
+  test("accepts HNS and Spaces route requests and rejects client-derived route fields", () => {
+    const decode = Schema.decodeUnknownSync(CreateCommunityCreationIntent.request.body, {
+      onExcessProperty: "error",
+    });
+    for (const route_request of [
+      { family: "hns", root_label: "jazleeuw" },
+      { family: "spaces", root_label: "music" },
+      { family: "hns", root_label: "münchen" },
+      { family: "spaces", root_label: "🔥" },
+    ]) {
       expect(
-        decode({ idempotency_key: `create-${slug.length}`, draft: { ...draft, slug } }),
+        decode({
+          idempotency_key: `create-${route_request.family}-${route_request.root_label}`,
+          draft: { ...draft, route_request },
+        }),
       ).toBeDefined();
     }
-    for (const slug of [
-      "app.jazleeuw",
-      "Jazleeuw",
-      "techno_hippies",
-      "-jazleeuw",
-      "a".repeat(257),
+    for (const route_request of [
+      { family: "hns", root_label: "app.jazleeuw" },
+      { family: "spaces", root_label: "@music" },
+      { family: "hns", root_label: "jazleeuw." },
+      { family: "hns", root_label: "percent%2Eescape" },
     ]) {
       expect(() =>
-        decode({ idempotency_key: `reject-${slug.length}`, draft: { ...draft, slug } }),
+        decode({
+          idempotency_key: `reject-${route_request.root_label}`,
+          draft: { ...draft, route_request },
+        }),
       ).toThrow();
     }
+    expect(() =>
+      decode({ idempotency_key: "legacy-slug", draft: { ...draft, slug: "jazleeuw" } }),
+    ).toThrow();
+    expect(() =>
+      decode({
+        idempotency_key: "derived-route",
+        draft: {
+          ...draft,
+          route_request: {
+            family: "hns",
+            root_label: "jazleeuw",
+            href: "/c/app.evil",
+          },
+        },
+      }),
+    ).toThrow();
   });
 
   test("enforces the status, committed resource, and next-action invariants", () => {
@@ -110,8 +158,11 @@ describe("community creation contracts", () => {
         status: "verification_required",
         next_action: {
           kind: "start_verification",
+          requirement: "human_identity",
           provider_id: "very.oauth",
-          intent_id: "intent-1",
+          creation_intent_id: "intent-1",
+          ceremony_intent_id: "human-ceremony-1",
+          generation: 1,
         },
       }).status,
     ).toBe("verification_required");
@@ -123,12 +174,28 @@ describe("community creation contracts", () => {
         next_action: { kind: "none", reason: "committed" },
         committed_resource: {
           community_id: "community-jazleeuw",
-          href: "/communities/community-jazleeuw",
+          href: "/c/app.jazleeuw",
+          canonical_route: {
+            family: "hns",
+            root_label: "jazleeuw",
+            root_label_display: "jazleeuw",
+            path_segment: "app.jazleeuw",
+            href: "/c/app.jazleeuw",
+            app_host: null,
+          },
         },
       }).committed_resource,
     ).toEqual({
       community_id: "community-jazleeuw",
-      href: "/communities/community-jazleeuw",
+      href: "/c/app.jazleeuw",
+      canonical_route: {
+        family: "hns",
+        root_label: "jazleeuw",
+        root_label_display: "jazleeuw",
+        path_segment: "app.jazleeuw",
+        href: "/c/app.jazleeuw",
+        app_host: null,
+      },
     });
     for (const invalid of [
       { ...base, status: "committed", next_action: { kind: "none", reason: "committed" } },
@@ -145,7 +212,7 @@ describe("community creation contracts", () => {
       {
         ...base,
         status: "draft",
-        next_action: { kind: "wait", reason_code: "free_form" },
+        next_action: { kind: "wait", requirement: null, reason_code: "free_form" },
       },
     ]) {
       expect(() => decode(invalid)).toThrow();
@@ -165,8 +232,53 @@ describe("community creation contracts", () => {
         ...base,
         status: "draft",
         canonical_policy_hash: "not-a-hash",
-        next_action: { kind: "wait", reason_code: "operation_pending" },
+        next_action: { kind: "wait", requirement: null, reason_code: "operation_pending" },
       }),
     ).toThrow();
+  });
+
+  test("pins both verification discriminators and pending wait requirements", () => {
+    const decode = Schema.decodeUnknownSync(CommunityCreationIntent);
+    const namespacePending = {
+      ...requirements,
+      human_identity: {
+        ...requirements.human_identity,
+        status: "satisfied" as const,
+        satisfied_at: "2026-08-20T12:00:00.000Z",
+      },
+      namespace_ownership: {
+        ...requirements.namespace_ownership,
+        status: "pending" as const,
+        generation: 1,
+        ceremony_intent_id: "namespace-ceremony-1",
+      },
+    };
+    expect(
+      decode({
+        ...base,
+        requirements: namespacePending,
+        status: "verification_required",
+        next_action: {
+          kind: "start_verification",
+          requirement: "namespace_ownership",
+          provider_id: "hns.owner.v1",
+          creation_intent_id: "intent-1",
+          ceremony_intent_id: "namespace-ceremony-1",
+          generation: 1,
+        },
+      }).next_action,
+    ).toMatchObject({ requirement: "namespace_ownership" });
+    expect(
+      decode({
+        ...base,
+        requirements: namespacePending,
+        status: "verification_required",
+        next_action: {
+          kind: "wait",
+          requirement: "namespace_ownership",
+          reason_code: "verification_pending",
+        },
+      }).next_action,
+    ).toMatchObject({ kind: "wait", requirement: "namespace_ownership" });
   });
 });

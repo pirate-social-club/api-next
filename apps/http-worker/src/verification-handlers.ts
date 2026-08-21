@@ -9,6 +9,7 @@ import {
   type VerificationCompletionServices,
 } from "@pirate/application/use-cases/verification-completion";
 import {
+  type StartVerificationInput,
   type StartVerificationServices,
   startVerification,
 } from "@pirate/application/use-cases/verification-start";
@@ -157,13 +158,17 @@ function callbackResponse(result: VerificationCallbackResult) {
 }
 
 function startHandler(request: DecodedRequest, services: VerificationHandlerServices) {
-  const body = request.body as Readonly<{ intent_id: string; provider_id: string }>;
+  type StartVerificationRequestBody = StartVerificationInput extends infer Input
+    ? Input extends Readonly<{ actor_id: string }>
+      ? Omit<Input, "actor_id">
+      : never
+    : never;
+  const body = request.body as StartVerificationRequestBody;
   return Effect.runPromise(
     startVerification(
       {
         actor_id: actorId(request.principal),
-        intent_id: body.intent_id,
-        provider_id: body.provider_id,
+        ...body,
       },
       services.start,
     ).pipe(

@@ -10,6 +10,8 @@ import {
 } from "@pirate/application/use-cases/verification-start";
 import { VerificationProviderPlanInput } from "@pirate/application/verification";
 import {
+  communityCreationCeremonyReservationHash,
+  communityCreationProviderBindingHash,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
   VERY_OAUTH_CONFIGURATION_REFERENCE,
   VERY_OAUTH_CONFIGURATION_VERSION,
@@ -24,13 +26,39 @@ import { Effect, type Layer, Option, Schema } from "effect";
 type IntentRow = Readonly<{
   readonly intent_id: unknown;
   readonly actor_id: unknown;
+  readonly revision: unknown;
   readonly status: unknown;
-  readonly verification_requirement_hash: unknown;
-  readonly verification_provider_id: unknown;
+  readonly creation_contract_version: unknown;
+  readonly requirement_kind: unknown;
+  readonly requirement_status: unknown;
+  readonly requirement_hash: unknown;
+  readonly provider_id: unknown;
+  readonly provider_binding_hash: unknown;
   readonly provider_configuration_kind: unknown;
   readonly provider_configuration_ref: unknown;
   readonly provider_configuration_version: unknown;
-  readonly active: unknown;
+  readonly generation: unknown;
+  readonly current_ceremony_intent_id: unknown;
+  readonly route_family: unknown;
+  readonly route_root_label: unknown;
+  readonly route_root_label_display: unknown;
+  readonly route_path_segment: unknown;
+  readonly ceremony_intent_id: unknown;
+  readonly ceremony_requirement_kind: unknown;
+  readonly ceremony_generation: unknown;
+  readonly ceremony_requirement_hash: unknown;
+  readonly ceremony_provider_id: unknown;
+  readonly ceremony_provider_binding_hash: unknown;
+  readonly ceremony_provider_configuration_kind: unknown;
+  readonly ceremony_provider_configuration_ref: unknown;
+  readonly ceremony_provider_configuration_version: unknown;
+  readonly ceremony_route_family: unknown;
+  readonly ceremony_route_root_label: unknown;
+  readonly ceremony_route_root_label_display: unknown;
+  readonly ceremony_route_path_segment: unknown;
+  readonly reservation_request_hash: unknown;
+  readonly intent_active: unknown;
+  readonly ceremony_active: unknown;
 }>;
 
 const CANONICAL_REQUIREMENTS = [
@@ -57,21 +85,73 @@ function exactIntentBinding(
   row: IntentRow,
   input: Readonly<{
     readonly actor_id: string;
-    readonly intent_id: string;
     readonly provider_id: string;
+    readonly creation_intent_id: string;
+    readonly ceremony_intent_id: string;
+    readonly requirement: "human_identity";
+    readonly generation: number;
+    readonly expected_revision: number;
   }>,
 ): boolean {
+  const providerBindingHash = communityCreationProviderBindingHash({
+    requirement: "human_identity",
+    family: null,
+    provider_id: VERY_OAUTH_PROVIDER_ID,
+    provider_configuration: {
+      kind: "dynamic",
+      reference: VERY_OAUTH_CONFIGURATION_REFERENCE,
+      version: VERY_OAUTH_CONFIGURATION_VERSION,
+    },
+    protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+  });
+  const reservationHash = communityCreationCeremonyReservationHash({
+    actor_id: input.actor_id,
+    creation_intent_id: input.creation_intent_id,
+    ceremony_intent_id: input.ceremony_intent_id,
+    requirement: "human_identity",
+    generation: input.generation,
+    requirement_hash: HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
+    provider_id: VERY_OAUTH_PROVIDER_ID,
+    provider_binding_hash: providerBindingHash,
+    route: null,
+  });
   return (
-    row.intent_id === input.intent_id &&
+    row.intent_id === input.creation_intent_id &&
     row.actor_id === input.actor_id &&
+    Number(row.revision) === input.expected_revision &&
     row.status === "verification_required" &&
-    row.verification_requirement_hash === HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
-    row.verification_provider_id === VERY_OAUTH_PROVIDER_ID &&
-    row.verification_provider_id === input.provider_id &&
+    row.creation_contract_version === "route_v1" &&
+    row.requirement_kind === "human_identity" &&
+    row.requirement_status === "pending" &&
+    row.requirement_hash === HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
+    row.provider_id === VERY_OAUTH_PROVIDER_ID &&
+    row.provider_id === input.provider_id &&
+    row.provider_binding_hash === providerBindingHash &&
     row.provider_configuration_kind === "dynamic" &&
     row.provider_configuration_ref === VERY_OAUTH_CONFIGURATION_REFERENCE &&
     row.provider_configuration_version === VERY_OAUTH_CONFIGURATION_VERSION &&
-    row.active === true
+    Number(row.generation) === input.generation &&
+    row.current_ceremony_intent_id === input.ceremony_intent_id &&
+    row.route_family === null &&
+    row.route_root_label === null &&
+    row.route_root_label_display === null &&
+    row.route_path_segment === null &&
+    row.ceremony_intent_id === input.ceremony_intent_id &&
+    row.ceremony_requirement_kind === "human_identity" &&
+    Number(row.ceremony_generation) === input.generation &&
+    row.ceremony_requirement_hash === HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
+    row.ceremony_provider_id === VERY_OAUTH_PROVIDER_ID &&
+    row.ceremony_provider_binding_hash === providerBindingHash &&
+    row.ceremony_provider_configuration_kind === "dynamic" &&
+    row.ceremony_provider_configuration_ref === VERY_OAUTH_CONFIGURATION_REFERENCE &&
+    row.ceremony_provider_configuration_version === VERY_OAUTH_CONFIGURATION_VERSION &&
+    row.ceremony_route_family === null &&
+    row.ceremony_route_root_label === null &&
+    row.ceremony_route_root_label_display === null &&
+    row.ceremony_route_path_segment === null &&
+    row.reservation_request_hash === reservationHash &&
+    row.intent_active === true &&
+    row.ceremony_active === true
   );
 }
 
@@ -105,21 +185,59 @@ export function makeCommunityCreationIntentResolver(
   return {
     resolve: (input) =>
       Effect.gen(function* () {
+        if (!("creation_intent_id" in input) || input.requirement !== "human_identity") return null;
         const result = yield* execute<IntentRow>({
           label: "community.creation.resolve-verification-intent",
-          text: `SELECT intent_id,
-                        actor_id,
-                        status,
-                        verification_requirement_hash,
-                        verification_provider_id,
-                        provider_configuration_kind,
-                        provider_configuration_ref,
-                        provider_configuration_version,
-                        expires_at > clock_timestamp() AS active
-                   FROM community_creation_intents
-                  WHERE intent_id = $1
-                    AND actor_id = $2`,
-          values: [input.intent_id, input.actor_id],
+          text: `SELECT intent.intent_id,
+                        intent.actor_id,
+                        intent.revision,
+                        intent.status,
+                        intent.creation_contract_version,
+                        state.requirement_kind,
+                        state.status AS requirement_status,
+                        state.requirement_hash,
+                        state.provider_id,
+                        state.provider_binding_hash,
+                        state.provider_configuration_kind,
+                        state.provider_configuration_ref,
+                        state.provider_configuration_version,
+                        state.generation,
+                        state.current_ceremony_intent_id,
+                        state.route_family,
+                        state.route_root_label,
+                        state.route_root_label_display,
+                        state.route_path_segment,
+                        attempt.ceremony_intent_id,
+                        attempt.requirement_kind AS ceremony_requirement_kind,
+                        attempt.generation AS ceremony_generation,
+                        attempt.requirement_hash AS ceremony_requirement_hash,
+                        attempt.provider_id AS ceremony_provider_id,
+                        attempt.provider_binding_hash AS ceremony_provider_binding_hash,
+                        attempt.provider_configuration_kind AS ceremony_provider_configuration_kind,
+                        attempt.provider_configuration_ref AS ceremony_provider_configuration_ref,
+                        attempt.provider_configuration_version AS ceremony_provider_configuration_version,
+                        attempt.route_family AS ceremony_route_family,
+                        attempt.route_root_label AS ceremony_route_root_label,
+                        attempt.route_root_label_display AS ceremony_route_root_label_display,
+                        attempt.route_path_segment AS ceremony_route_path_segment,
+                        attempt.reservation_request_hash,
+                        intent.expires_at > clock_timestamp() AS intent_active,
+                        attempt.expires_at > clock_timestamp() AS ceremony_active
+                   FROM community_creation_intents AS intent
+                   JOIN community_creation_requirement_states AS state
+                     ON state.intent_id = intent.intent_id
+                    AND state.actor_id = intent.actor_id
+                    AND state.requirement_kind = 'human_identity'
+                   JOIN community_creation_ceremony_attempts AS attempt
+                     ON attempt.actor_id = intent.actor_id
+                    AND attempt.intent_id = intent.intent_id
+                    AND attempt.requirement_kind = state.requirement_kind
+                    AND attempt.generation = state.generation
+                    AND attempt.ceremony_intent_id = state.current_ceremony_intent_id
+                  WHERE intent.intent_id = $1
+                    AND intent.actor_id = $2
+                    AND attempt.ceremony_intent_id = $3`,
+          values: [input.creation_intent_id, input.actor_id, input.ceremony_intent_id],
           readonly: true,
         });
         const row = oneRow(result);

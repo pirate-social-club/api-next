@@ -16,6 +16,7 @@ import {
   UpdateCommunityCreationIntent,
 } from "./community-creation.ts";
 import * as money from "./community-purchase-funding.ts";
+import { GetCanonicalCommunityRoute } from "./community-route-resolution.ts";
 import { CreateKaraokeAttempt, GetKaraokeAttempt, GetKaraokeLeaderboard } from "./karaoke.ts";
 import { PollNamespaceOwnership, StartNamespaceOwnership } from "./namespace-ownership.ts";
 /** Named registry; the client generator references these exports by name. */
@@ -28,6 +29,7 @@ export const registry = {
   GetCommunityCreationIntent,
   UpdateCommunityCreationIntent,
   CommitCommunityCreationIntent,
+  GetCanonicalCommunityRoute,
   ...v1,
   ...verification,
   ...money,

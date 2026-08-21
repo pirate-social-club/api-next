@@ -69,14 +69,6 @@
                           }
                         ]
                       },
-                      "slug": {
-                        "type": "string",
-                        "allOf": [
-                          {
-                            "minLength": 1
-                          }
-                        ]
-                      },
                       "description": {
                         "anyOf": [
                           {
@@ -86,6 +78,26 @@
                             "type": "null"
                           }
                         ]
+                      },
+                      "route_request": {
+                        "type": "object",
+                        "properties": {
+                          "family": {
+                            "type": "string",
+                            "enum": [
+                              "hns",
+                              "spaces"
+                            ]
+                          },
+                          "root_label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "family",
+                          "root_label"
+                        ],
+                        "additionalProperties": false
                       },
                       "policy": {
                         "type": "object",
@@ -380,8 +392,8 @@
                     },
                     "required": [
                       "name",
-                      "slug",
                       "description",
+                      "route_request",
                       "policy"
                     ],
                     "additionalProperties": false
@@ -439,14 +451,6 @@
                             }
                           ]
                         },
-                        "slug": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
                         "description": {
                           "anyOf": [
                             {
@@ -456,6 +460,26 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "route_request": {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns",
+                                "spaces"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label"
+                          ],
+                          "additionalProperties": false
                         },
                         "policy": {
                           "type": "object",
@@ -750,8 +774,8 @@
                       },
                       "required": [
                         "name",
-                        "slug",
                         "description",
+                        "route_request",
                         "policy"
                       ],
                       "additionalProperties": false
@@ -762,8 +786,21 @@
                     "canonical_policy_hash": {
                       "type": "string"
                     },
-                    "verification_requirement_hash": {
-                      "type": "string"
+                    "requirements": {
+                      "type": "object",
+                      "properties": {
+                        "human_identity": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "namespace_ownership": {
+                          "$ref": "#/$defs/Objects_"
+                        }
+                      },
+                      "required": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ],
+                      "additionalProperties": false
                     },
                     "next_action": {
                       "anyOf": [
@@ -776,6 +813,9 @@
                                 "start_verification"
                               ]
                             },
+                            "requirement": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "provider_id": {
                               "type": "string",
                               "allOf": [
@@ -784,19 +824,33 @@
                                 }
                               ]
                             },
-                            "intent_id": {
+                            "creation_intent_id": {
                               "type": "string",
                               "allOf": [
                                 {
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "ceremony_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "generation": {
+                              "type": "integer"
                             }
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "provider_id",
-                            "intent_id"
+                            "creation_intent_id",
+                            "ceremony_intent_id",
+                            "generation"
                           ],
                           "additionalProperties": false
                         },
@@ -824,6 +878,16 @@
                                 "wait"
                               ]
                             },
+                            "requirement": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "reason_code": {
                               "type": "string",
                               "enum": [
@@ -846,6 +910,7 @@
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "reason_code"
                           ],
                           "additionalProperties": false
@@ -922,11 +987,93 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "canonical_route": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "hns"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "spaces"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "type": "null"
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
                             }
                           },
                           "required": [
                             "community_id",
-                            "href"
+                            "href",
+                            "canonical_route"
                           ],
                           "additionalProperties": false
                         },
@@ -943,12 +1090,78 @@
                     "draft",
                     "canonical_policy_revision",
                     "canonical_policy_hash",
-                    "verification_requirement_hash",
+                    "requirements",
                     "next_action",
                     "expires_at",
                     "committed_resource"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ]
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "requirement": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unmet",
+                            "pending",
+                            "satisfied",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "requirement_hash": {
+                          "type": "string"
+                        },
+                        "provider_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "ceremony_intent_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "satisfied_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "requirement",
+                        "status",
+                        "requirement_hash",
+                        "provider_id",
+                        "generation",
+                        "ceremony_intent_id",
+                        "satisfied_at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -995,14 +1208,6 @@
                             }
                           ]
                         },
-                        "slug": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
                         "description": {
                           "anyOf": [
                             {
@@ -1012,6 +1217,26 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "route_request": {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns",
+                                "spaces"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label"
+                          ],
+                          "additionalProperties": false
                         },
                         "policy": {
                           "type": "object",
@@ -1306,8 +1531,8 @@
                       },
                       "required": [
                         "name",
-                        "slug",
                         "description",
+                        "route_request",
                         "policy"
                       ],
                       "additionalProperties": false
@@ -1318,8 +1543,21 @@
                     "canonical_policy_hash": {
                       "type": "string"
                     },
-                    "verification_requirement_hash": {
-                      "type": "string"
+                    "requirements": {
+                      "type": "object",
+                      "properties": {
+                        "human_identity": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "namespace_ownership": {
+                          "$ref": "#/$defs/Objects_"
+                        }
+                      },
+                      "required": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ],
+                      "additionalProperties": false
                     },
                     "next_action": {
                       "anyOf": [
@@ -1332,6 +1570,9 @@
                                 "start_verification"
                               ]
                             },
+                            "requirement": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "provider_id": {
                               "type": "string",
                               "allOf": [
@@ -1340,19 +1581,33 @@
                                 }
                               ]
                             },
-                            "intent_id": {
+                            "creation_intent_id": {
                               "type": "string",
                               "allOf": [
                                 {
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "ceremony_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "generation": {
+                              "type": "integer"
                             }
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "provider_id",
-                            "intent_id"
+                            "creation_intent_id",
+                            "ceremony_intent_id",
+                            "generation"
                           ],
                           "additionalProperties": false
                         },
@@ -1380,6 +1635,16 @@
                                 "wait"
                               ]
                             },
+                            "requirement": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "reason_code": {
                               "type": "string",
                               "enum": [
@@ -1402,6 +1667,7 @@
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "reason_code"
                           ],
                           "additionalProperties": false
@@ -1478,11 +1744,93 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "canonical_route": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "hns"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "spaces"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "type": "null"
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
                             }
                           },
                           "required": [
                             "community_id",
-                            "href"
+                            "href",
+                            "canonical_route"
                           ],
                           "additionalProperties": false
                         },
@@ -1499,12 +1847,78 @@
                     "draft",
                     "canonical_policy_revision",
                     "canonical_policy_hash",
-                    "verification_requirement_hash",
+                    "requirements",
                     "next_action",
                     "expires_at",
                     "committed_resource"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ]
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "requirement": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unmet",
+                            "pending",
+                            "satisfied",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "requirement_hash": {
+                          "type": "string"
+                        },
+                        "provider_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "ceremony_intent_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "satisfied_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "requirement",
+                        "status",
+                        "requirement_hash",
+                        "provider_id",
+                        "generation",
+                        "ceremony_intent_id",
+                        "satisfied_at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -1796,14 +2210,6 @@
                             }
                           ]
                         },
-                        "slug": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
                         "description": {
                           "anyOf": [
                             {
@@ -1813,6 +2219,26 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "route_request": {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns",
+                                "spaces"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label"
+                          ],
+                          "additionalProperties": false
                         },
                         "policy": {
                           "type": "object",
@@ -2107,8 +2533,8 @@
                       },
                       "required": [
                         "name",
-                        "slug",
                         "description",
+                        "route_request",
                         "policy"
                       ],
                       "additionalProperties": false
@@ -2119,8 +2545,21 @@
                     "canonical_policy_hash": {
                       "type": "string"
                     },
-                    "verification_requirement_hash": {
-                      "type": "string"
+                    "requirements": {
+                      "type": "object",
+                      "properties": {
+                        "human_identity": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "namespace_ownership": {
+                          "$ref": "#/$defs/Objects_"
+                        }
+                      },
+                      "required": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ],
+                      "additionalProperties": false
                     },
                     "next_action": {
                       "anyOf": [
@@ -2133,6 +2572,9 @@
                                 "start_verification"
                               ]
                             },
+                            "requirement": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "provider_id": {
                               "type": "string",
                               "allOf": [
@@ -2141,19 +2583,33 @@
                                 }
                               ]
                             },
-                            "intent_id": {
+                            "creation_intent_id": {
                               "type": "string",
                               "allOf": [
                                 {
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "ceremony_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "generation": {
+                              "type": "integer"
                             }
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "provider_id",
-                            "intent_id"
+                            "creation_intent_id",
+                            "ceremony_intent_id",
+                            "generation"
                           ],
                           "additionalProperties": false
                         },
@@ -2181,6 +2637,16 @@
                                 "wait"
                               ]
                             },
+                            "requirement": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "reason_code": {
                               "type": "string",
                               "enum": [
@@ -2203,6 +2669,7 @@
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "reason_code"
                           ],
                           "additionalProperties": false
@@ -2279,11 +2746,93 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "canonical_route": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "hns"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "spaces"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "type": "null"
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
                             }
                           },
                           "required": [
                             "community_id",
-                            "href"
+                            "href",
+                            "canonical_route"
                           ],
                           "additionalProperties": false
                         },
@@ -2300,12 +2849,78 @@
                     "draft",
                     "canonical_policy_revision",
                     "canonical_policy_hash",
-                    "verification_requirement_hash",
+                    "requirements",
                     "next_action",
                     "expires_at",
                     "committed_resource"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ]
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "requirement": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unmet",
+                            "pending",
+                            "satisfied",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "requirement_hash": {
+                          "type": "string"
+                        },
+                        "provider_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "ceremony_intent_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "satisfied_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "requirement",
+                        "status",
+                        "requirement_hash",
+                        "provider_id",
+                        "generation",
+                        "ceremony_intent_id",
+                        "satisfied_at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -2527,14 +3142,6 @@
                           }
                         ]
                       },
-                      "slug": {
-                        "type": "string",
-                        "allOf": [
-                          {
-                            "minLength": 1
-                          }
-                        ]
-                      },
                       "description": {
                         "anyOf": [
                           {
@@ -2544,6 +3151,26 @@
                             "type": "null"
                           }
                         ]
+                      },
+                      "route_request": {
+                        "type": "object",
+                        "properties": {
+                          "family": {
+                            "type": "string",
+                            "enum": [
+                              "hns",
+                              "spaces"
+                            ]
+                          },
+                          "root_label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "family",
+                          "root_label"
+                        ],
+                        "additionalProperties": false
                       },
                       "policy": {
                         "type": "object",
@@ -2838,8 +3465,8 @@
                     },
                     "required": [
                       "name",
-                      "slug",
                       "description",
+                      "route_request",
                       "policy"
                     ],
                     "additionalProperties": false
@@ -2898,14 +3525,6 @@
                             }
                           ]
                         },
-                        "slug": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
                         "description": {
                           "anyOf": [
                             {
@@ -2915,6 +3534,26 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "route_request": {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns",
+                                "spaces"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label"
+                          ],
+                          "additionalProperties": false
                         },
                         "policy": {
                           "type": "object",
@@ -3209,8 +3848,8 @@
                       },
                       "required": [
                         "name",
-                        "slug",
                         "description",
+                        "route_request",
                         "policy"
                       ],
                       "additionalProperties": false
@@ -3221,8 +3860,21 @@
                     "canonical_policy_hash": {
                       "type": "string"
                     },
-                    "verification_requirement_hash": {
-                      "type": "string"
+                    "requirements": {
+                      "type": "object",
+                      "properties": {
+                        "human_identity": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "namespace_ownership": {
+                          "$ref": "#/$defs/Objects_"
+                        }
+                      },
+                      "required": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ],
+                      "additionalProperties": false
                     },
                     "next_action": {
                       "anyOf": [
@@ -3235,6 +3887,9 @@
                                 "start_verification"
                               ]
                             },
+                            "requirement": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "provider_id": {
                               "type": "string",
                               "allOf": [
@@ -3243,19 +3898,33 @@
                                 }
                               ]
                             },
-                            "intent_id": {
+                            "creation_intent_id": {
                               "type": "string",
                               "allOf": [
                                 {
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "ceremony_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "generation": {
+                              "type": "integer"
                             }
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "provider_id",
-                            "intent_id"
+                            "creation_intent_id",
+                            "ceremony_intent_id",
+                            "generation"
                           ],
                           "additionalProperties": false
                         },
@@ -3283,6 +3952,16 @@
                                 "wait"
                               ]
                             },
+                            "requirement": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "reason_code": {
                               "type": "string",
                               "enum": [
@@ -3305,6 +3984,7 @@
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "reason_code"
                           ],
                           "additionalProperties": false
@@ -3381,11 +4061,93 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "canonical_route": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "hns"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "spaces"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "type": "null"
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
                             }
                           },
                           "required": [
                             "community_id",
-                            "href"
+                            "href",
+                            "canonical_route"
                           ],
                           "additionalProperties": false
                         },
@@ -3402,12 +4164,78 @@
                     "draft",
                     "canonical_policy_revision",
                     "canonical_policy_hash",
-                    "verification_requirement_hash",
+                    "requirements",
                     "next_action",
                     "expires_at",
                     "committed_resource"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ]
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "requirement": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unmet",
+                            "pending",
+                            "satisfied",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "requirement_hash": {
+                          "type": "string"
+                        },
+                        "provider_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "ceremony_intent_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "satisfied_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "requirement",
+                        "status",
+                        "requirement_hash",
+                        "provider_id",
+                        "generation",
+                        "ceremony_intent_id",
+                        "satisfied_at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -3781,14 +4609,6 @@
                             }
                           ]
                         },
-                        "slug": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
                         "description": {
                           "anyOf": [
                             {
@@ -3798,6 +4618,26 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "route_request": {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns",
+                                "spaces"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label"
+                          ],
+                          "additionalProperties": false
                         },
                         "policy": {
                           "type": "object",
@@ -4092,8 +4932,8 @@
                       },
                       "required": [
                         "name",
-                        "slug",
                         "description",
+                        "route_request",
                         "policy"
                       ],
                       "additionalProperties": false
@@ -4104,8 +4944,21 @@
                     "canonical_policy_hash": {
                       "type": "string"
                     },
-                    "verification_requirement_hash": {
-                      "type": "string"
+                    "requirements": {
+                      "type": "object",
+                      "properties": {
+                        "human_identity": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "namespace_ownership": {
+                          "$ref": "#/$defs/Objects_"
+                        }
+                      },
+                      "required": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ],
+                      "additionalProperties": false
                     },
                     "next_action": {
                       "anyOf": [
@@ -4118,6 +4971,9 @@
                                 "start_verification"
                               ]
                             },
+                            "requirement": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "provider_id": {
                               "type": "string",
                               "allOf": [
@@ -4126,19 +4982,33 @@
                                 }
                               ]
                             },
-                            "intent_id": {
+                            "creation_intent_id": {
                               "type": "string",
                               "allOf": [
                                 {
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "ceremony_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "generation": {
+                              "type": "integer"
                             }
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "provider_id",
-                            "intent_id"
+                            "creation_intent_id",
+                            "ceremony_intent_id",
+                            "generation"
                           ],
                           "additionalProperties": false
                         },
@@ -4166,6 +5036,16 @@
                                 "wait"
                               ]
                             },
+                            "requirement": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "reason_code": {
                               "type": "string",
                               "enum": [
@@ -4188,6 +5068,7 @@
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "reason_code"
                           ],
                           "additionalProperties": false
@@ -4264,11 +5145,93 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "canonical_route": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "hns"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "spaces"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "type": "null"
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
                             }
                           },
                           "required": [
                             "community_id",
-                            "href"
+                            "href",
+                            "canonical_route"
                           ],
                           "additionalProperties": false
                         },
@@ -4285,12 +5248,78 @@
                     "draft",
                     "canonical_policy_revision",
                     "canonical_policy_hash",
-                    "verification_requirement_hash",
+                    "requirements",
                     "next_action",
                     "expires_at",
                     "committed_resource"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ]
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "requirement": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unmet",
+                            "pending",
+                            "satisfied",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "requirement_hash": {
+                          "type": "string"
+                        },
+                        "provider_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "ceremony_intent_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "satisfied_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "requirement",
+                        "status",
+                        "requirement_hash",
+                        "provider_id",
+                        "generation",
+                        "ceremony_intent_id",
+                        "satisfied_at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -4337,14 +5366,6 @@
                             }
                           ]
                         },
-                        "slug": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
                         "description": {
                           "anyOf": [
                             {
@@ -4354,6 +5375,26 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "route_request": {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns",
+                                "spaces"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label"
+                          ],
+                          "additionalProperties": false
                         },
                         "policy": {
                           "type": "object",
@@ -4648,8 +5689,8 @@
                       },
                       "required": [
                         "name",
-                        "slug",
                         "description",
+                        "route_request",
                         "policy"
                       ],
                       "additionalProperties": false
@@ -4660,8 +5701,21 @@
                     "canonical_policy_hash": {
                       "type": "string"
                     },
-                    "verification_requirement_hash": {
-                      "type": "string"
+                    "requirements": {
+                      "type": "object",
+                      "properties": {
+                        "human_identity": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "namespace_ownership": {
+                          "$ref": "#/$defs/Objects_"
+                        }
+                      },
+                      "required": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ],
+                      "additionalProperties": false
                     },
                     "next_action": {
                       "anyOf": [
@@ -4674,6 +5728,9 @@
                                 "start_verification"
                               ]
                             },
+                            "requirement": {
+                              "$ref": "#/$defs/Union_"
+                            },
                             "provider_id": {
                               "type": "string",
                               "allOf": [
@@ -4682,19 +5739,33 @@
                                 }
                               ]
                             },
-                            "intent_id": {
+                            "creation_intent_id": {
                               "type": "string",
                               "allOf": [
                                 {
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "ceremony_intent_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "generation": {
+                              "type": "integer"
                             }
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "provider_id",
-                            "intent_id"
+                            "creation_intent_id",
+                            "ceremony_intent_id",
+                            "generation"
                           ],
                           "additionalProperties": false
                         },
@@ -4722,6 +5793,16 @@
                                 "wait"
                               ]
                             },
+                            "requirement": {
+                              "anyOf": [
+                                {
+                                  "$ref": "#/$defs/Union_"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
                             "reason_code": {
                               "type": "string",
                               "enum": [
@@ -4744,6 +5825,7 @@
                           },
                           "required": [
                             "kind",
+                            "requirement",
                             "reason_code"
                           ],
                           "additionalProperties": false
@@ -4820,11 +5902,93 @@
                                   "minLength": 1
                                 }
                               ]
+                            },
+                            "canonical_route": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "hns"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "family": {
+                                      "type": "string",
+                                      "enum": [
+                                        "spaces"
+                                      ]
+                                    },
+                                    "root_label": {
+                                      "type": "string"
+                                    },
+                                    "root_label_display": {
+                                      "type": "string"
+                                    },
+                                    "path_segment": {
+                                      "type": "string"
+                                    },
+                                    "href": {
+                                      "type": "string"
+                                    },
+                                    "app_host": {
+                                      "type": "null"
+                                    }
+                                  },
+                                  "required": [
+                                    "family",
+                                    "root_label",
+                                    "root_label_display",
+                                    "path_segment",
+                                    "href",
+                                    "app_host"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
                             }
                           },
                           "required": [
                             "community_id",
-                            "href"
+                            "href",
+                            "canonical_route"
                           ],
                           "additionalProperties": false
                         },
@@ -4841,12 +6005,78 @@
                     "draft",
                     "canonical_policy_revision",
                     "canonical_policy_hash",
-                    "verification_requirement_hash",
+                    "requirements",
                     "next_action",
                     "expires_at",
                     "committed_resource"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Union_": {
+                      "type": "string",
+                      "enum": [
+                        "human_identity",
+                        "namespace_ownership"
+                      ]
+                    },
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "requirement": {
+                          "$ref": "#/$defs/Union_"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "unmet",
+                            "pending",
+                            "satisfied",
+                            "failed",
+                            "expired"
+                          ]
+                        },
+                        "requirement_hash": {
+                          "type": "string"
+                        },
+                        "provider_id": {
+                          "type": "string"
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "ceremony_intent_id": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "satisfied_at": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "requirement",
+                        "status",
+                        "requirement_hash",
+                        "provider_id",
+                        "generation",
+                        "ceremony_intent_id",
+                        "satisfied_at"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -5128,6 +6358,298 @@
           "Conflict",
           "NotFound",
           "InternalError"
+        ]
+      }
+    },
+    "/c/{path_segment}": {
+      "get": {
+        "operationId": "get_cPathSegment",
+        "parameters": [
+          {
+            "name": "path_segment",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "community_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "canonical_route": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            },
+                            "root_label_display": {
+                              "type": "string"
+                            },
+                            "path_segment": {
+                              "type": "string"
+                            },
+                            "href": {
+                              "type": "string"
+                            },
+                            "app_host": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label",
+                            "root_label_display",
+                            "path_segment",
+                            "href",
+                            "app_host"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "spaces"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            },
+                            "root_label_display": {
+                              "type": "string"
+                            },
+                            "path_segment": {
+                              "type": "string"
+                            },
+                            "href": {
+                              "type": "string"
+                            },
+                            "app_host": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label",
+                            "root_label_display",
+                            "path_segment",
+                            "href",
+                            "app_host"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "community_id",
+                    "canonical_route"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "public"
+          }
+        },
+        "x-errors": [
+          "BadRequest",
+          "InternalError",
+          "NotFound"
         ]
       }
     },
@@ -33716,30 +35238,93 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "intent_id": {
-                    "type": "string",
-                    "allOf": [
-                      {
-                        "minLength": 1
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "intent_id": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      "provider_id": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
                       }
-                    ]
+                    },
+                    "required": [
+                      "intent_id",
+                      "provider_id"
+                    ],
+                    "additionalProperties": false
                   },
-                  "provider_id": {
-                    "type": "string",
-                    "allOf": [
-                      {
-                        "minLength": 1
+                  {
+                    "type": "object",
+                    "properties": {
+                      "provider_id": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      "creation_intent_id": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      "ceremony_intent_id": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      "requirement": {
+                        "type": "string",
+                        "enum": [
+                          "human_identity"
+                        ]
+                      },
+                      "generation": {
+                        "type": "integer"
+                      },
+                      "expected_revision": {
+                        "type": "integer"
+                      },
+                      "idempotency_key": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
                       }
-                    ]
+                    },
+                    "required": [
+                      "provider_id",
+                      "creation_intent_id",
+                      "ceremony_intent_id",
+                      "requirement",
+                      "generation",
+                      "expected_revision",
+                      "idempotency_key"
+                    ],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "intent_id",
-                  "provider_id"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }

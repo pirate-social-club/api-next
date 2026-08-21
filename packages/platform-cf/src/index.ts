@@ -54,6 +54,11 @@ export {
   makeControlPlaneCommunityStore,
 } from "./community-repository";
 export {
+  type CanonicalCommunityRouteRepository,
+  makeControlPlaneCanonicalCommunityRouteRepository,
+  makeControlPlaneCanonicalCommunityRouteStore,
+} from "./community-route-repository";
+export {
   type ContentRepository,
   makeControlPlaneContentRepository,
   makeControlPlaneContentStore,

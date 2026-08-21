@@ -66,10 +66,25 @@ export const StartVerificationSession = endpoint({
   path: "/verification/sessions",
   auth: Auth.userOrAdmin(),
   request: {
-    body: Schema.Struct({
-      intent_id: Schema.NonEmptyString,
-      provider_id: Schema.NonEmptyString,
-    }),
+    body: Schema.Union([
+      Schema.Struct({
+        intent_id: Schema.NonEmptyString,
+        provider_id: Schema.NonEmptyString,
+      }),
+      Schema.Struct({
+        provider_id: Schema.NonEmptyString,
+        creation_intent_id: Schema.NonEmptyString,
+        ceremony_intent_id: Schema.NonEmptyString,
+        requirement: Schema.Literal("human_identity"),
+        generation: Schema.Int.check(
+          Schema.makeFilter((value) => (value > 0 ? undefined : "Expected a positive generation")),
+        ),
+        expected_revision: Schema.Int.check(
+          Schema.makeFilter((value) => (value > 0 ? undefined : "Expected a positive revision")),
+        ),
+        idempotency_key: Schema.NonEmptyString,
+      }),
+    ]),
   },
   response: VerificationStartResponse,
   successStatus: [200, 201],

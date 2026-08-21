@@ -22,6 +22,7 @@ import {
   makeControlPlaneCommunityPurchaseFundingStore,
 } from "@pirate/platform-cf/community-purchase-funding-repository";
 import { makeControlPlaneCommunityStore } from "@pirate/platform-cf/community-repository";
+import { makeControlPlaneCanonicalCommunityRouteStore } from "@pirate/platform-cf/community-route-repository";
 import {
   HttpWorkerConfig,
   type HttpWorkerConfigValue,
@@ -68,6 +69,7 @@ import {
 } from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
 import { Effect, Redacted, Schema } from "effect";
+import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
 import {
   makeCommunityPurchaseFundingObservationHandlers,
@@ -453,6 +455,9 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     identityStore,
   });
   const communityCreationHandlers = makeCommunityCreationHandlers({ communityCreationStore });
+  const canonicalCommunityRouteHandlers = makeCanonicalCommunityRouteHandlers({
+    canonicalCommunityRouteStore: makeControlPlaneCanonicalCommunityRouteStore(controlPlane),
+  });
   // The route is installed before any provider is enabled so durable terminal
   // replays remain available. Fresh starts fail closed until a separately
   // ratified production transport is configured and registered.
@@ -535,6 +540,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     handlers: {
       ...productHandlers,
       ...communityCreationHandlers,
+      ...canonicalCommunityRouteHandlers,
       ...namespaceOwnershipHandlers,
       ...verificationHandlers,
       ...fundingHandlers,

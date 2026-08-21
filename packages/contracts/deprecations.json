@@ -73,6 +73,22 @@
   ],
   "cleanBreakOperations": [
     {
+      "operationId": "post_communityCreationIntents",
+      "reason": "Spec 012 clean break replaces the unshipped Pirate-local slug with canonical HNS/Spaces route requests and two independently projected verification requirements."
+    },
+    {
+      "operationId": "get_communityCreationIntentsIntentId",
+      "reason": "Spec 012 clean break replaces the unshipped slug intent projection with the canonical route and two-requirement creation contract."
+    },
+    {
+      "operationId": "patch_communityCreationIntentsIntentId",
+      "reason": "Spec 012 clean break replaces slug mutation with route-request rebinding and independently fenced namespace evidence."
+    },
+    {
+      "operationId": "post_communityCreationIntentsIntentIdCommit",
+      "reason": "Spec 012 clean break requires both ceremonies and returns the verified canonical route instead of a Pirate-local slug resource."
+    },
+    {
       "operationId": "post_postsPostIdVote",
       "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
     },

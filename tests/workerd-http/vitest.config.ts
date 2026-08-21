@@ -2,6 +2,10 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/application/verification": new URL(
+    "../../packages/application/src/verification/index.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/use-cases/identity-account": new URL(
     "../../packages/application/src/use-cases/identity-account.ts",
     import.meta.url,
@@ -12,6 +16,10 @@ const alias = {
   ).pathname,
   "@pirate/application/use-cases/profile": new URL(
     "../../packages/application/src/use-cases/profile.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/use-cases/community/get-canonical-community-route": new URL(
+    "../../packages/application/src/use-cases/community/get-canonical-community-route.ts",
     import.meta.url,
   ).pathname,
   "@pirate/application/use-cases/session-authentication": new URL(

@@ -6,6 +6,7 @@ import type {
   CreateCommunityCreationIntent,
   CreatePost,
   FollowCommunity,
+  GetCanonicalCommunityRoute,
   GetCommunityPreview,
   GetJoinEligibility,
   GetPost,
@@ -263,10 +264,41 @@ export type M2Actor = Readonly<{
 export type MembershipStatus = "missing" | "pending" | "member" | "left" | "banned";
 
 export type CommunityPreviewDocument = Schema.Schema.Type<typeof GetCommunityPreview.response>;
+export type CanonicalCommunityRouteDocument = Schema.Schema.Type<
+  typeof GetCanonicalCommunityRoute.response
+>;
 export type JoinEligibilityDocument = Schema.Schema.Type<typeof GetJoinEligibility.response>;
 export type JoinDocument = Schema.Schema.Type<typeof JoinCommunity.response>;
 export type FollowDocument = Schema.Schema.Type<typeof FollowCommunity.response>;
 export type UnfollowDocument = Schema.Schema.Type<typeof UnfollowCommunity.response>;
+
+export type CanonicalCommunityRouteRepositoryOperation = "resolve-canonical-route";
+export type CanonicalCommunityRouteRepositoryReason = "invalid-path" | "invalid-row";
+
+export class CanonicalCommunityRouteRepositoryError extends Data.TaggedError(
+  "CanonicalCommunityRouteRepositoryError",
+)<{
+  readonly operation: CanonicalCommunityRouteRepositoryOperation;
+  readonly reason: CanonicalCommunityRouteRepositoryReason;
+}> {}
+
+export type CanonicalCommunityRouteRepositoryFailure =
+  | CanonicalCommunityRouteRepositoryError
+  | ControlPlaneError;
+
+export interface CanonicalCommunityRouteStoreService {
+  readonly resolveCanonicalRoute: (input: {
+    readonly path_segment: string;
+  }) => Effect.Effect<
+    CanonicalCommunityRouteDocument | null,
+    CanonicalCommunityRouteRepositoryFailure
+  >;
+}
+
+export class CanonicalCommunityRouteStore extends Context.Service<
+  CanonicalCommunityRouteStore,
+  CanonicalCommunityRouteStoreService
+>()("CanonicalCommunityRouteStore") {}
 
 export type CreatePostBody = Schema.Schema.Type<(typeof CreatePost.request)["body"]>;
 export type CreateCommentBody = Schema.Schema.Type<(typeof CreateCommentReply.request)["body"]>;

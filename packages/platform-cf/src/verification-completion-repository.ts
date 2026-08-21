@@ -207,11 +207,16 @@ function prelockCommunityCreationCompletion(
   return Effect.gen(function* () {
     const candidateResult = yield* transaction.execute<Row>({
       label: "verification.completion.prelock-creation-candidate",
-      text: `SELECT intent.intent_id
+      text: `SELECT intent.intent_id, attempt.ceremony_intent_id
                FROM proof_sessions AS session
+               JOIN community_creation_ceremony_attempts AS attempt
+                 ON attempt.ceremony_intent_id = session.creation_ceremony_intent_id
+                AND attempt.actor_id = session.actor_id
+                AND attempt.requirement_kind = 'human_identity'
                JOIN community_creation_intents AS intent
-                 ON intent.intent_id = session.intent_id
-                AND intent.actor_id = session.actor_id
+                 ON intent.intent_id = attempt.intent_id
+                AND intent.actor_id = attempt.actor_id
+                AND intent.creation_contract_version = 'route_v1'
               WHERE session.proof_session_id = $1
                 AND session.actor_id = $2`,
       values: [input.proofSessionId, input.actorId],
@@ -220,7 +225,10 @@ function prelockCommunityCreationCompletion(
     const candidate = yield* oneRow(candidateResult.rows);
     if (candidate === null) return;
     const intentId = stringField(candidate, "intent_id");
-    if (intentId === null) return yield* Effect.fail(storageFailure());
+    const ceremonyIntentId = stringField(candidate, "ceremony_intent_id");
+    if (intentId === null || ceremonyIntentId === null) {
+      return yield* Effect.fail(storageFailure());
+    }
 
     const actorResult = yield* transaction.execute<Row>({
       label: "verification.completion.prelock-creation-actor",
@@ -244,6 +252,42 @@ function prelockCommunityCreationCompletion(
     });
     const intent = yield* oneRow(intentResult.rows);
     if (intent === null || stringField(intent, "intent_id") !== intentId) {
+      return yield* Effect.fail(storageFailure());
+    }
+    const requirementsResult = yield* transaction.execute<Row>({
+      label: "verification.completion.prelock-creation-requirements",
+      text: `SELECT requirement_kind
+               FROM community_creation_requirement_states
+              WHERE intent_id = $1 AND actor_id = $2
+              ORDER BY CASE requirement_kind
+                WHEN 'human_identity' THEN 1
+                WHEN 'namespace_ownership' THEN 2
+              END
+              FOR UPDATE`,
+      values: [intentId, input.actorId],
+      readonly: false,
+    });
+    if (
+      requirementsResult.rows.length !== 2 ||
+      requirementsResult.rows[0]?.requirement_kind !== "human_identity" ||
+      requirementsResult.rows[1]?.requirement_kind !== "namespace_ownership"
+    ) {
+      return yield* Effect.fail(storageFailure());
+    }
+    const attemptResult = yield* transaction.execute<Row>({
+      label: "verification.completion.prelock-creation-attempt",
+      text: `SELECT ceremony_intent_id
+               FROM community_creation_ceremony_attempts
+              WHERE ceremony_intent_id = $1
+                AND actor_id = $2
+                AND intent_id = $3
+                AND requirement_kind = 'human_identity'
+              FOR UPDATE`,
+      values: [ceremonyIntentId, input.actorId, intentId],
+      readonly: false,
+    });
+    const attempt = yield* oneRow(attemptResult.rows);
+    if (attempt === null || stringField(attempt, "ceremony_intent_id") !== ceremonyIntentId) {
       return yield* Effect.fail(storageFailure());
     }
   });
