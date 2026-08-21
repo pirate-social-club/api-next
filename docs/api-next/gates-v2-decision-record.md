@@ -356,7 +356,10 @@ is still a later slice.
 
 ## Schema and extension guardrails
 
-`db/postgres/schema.sql` is the fresh-database cumulative baseline. The reviewed
+`db/postgres/schema.sql` is the generated, schema-only fresh-database baseline;
+the forward migrations are authoritative and the artifact is regenerated with
+`bun run db:generate:baseline` and checked with `bun run check:baseline:fresh`.
+The reviewed
 forward-only PlanetScale Postgres ledger contains
 `0009_gates_v2_foundation.sql`, followed by
 `0010_proof_session_provenance.sql` for exact provider configuration and

@@ -8,11 +8,13 @@ Migrations are authoritative repository artifacts because PlanetScale Postgres
 branches do not automatically merge schema changes. Apply them through the
 forward-only ledger and expand/contract changes.
 
-`schema.sql` is the cumulative baseline for the latest complete schema. The
-numbered files are forward deltas and must be applied in order; at every
-revision, applying all migrations to a fresh database must produce the same
-catalog as applying `schema.sql` to a fresh database. They are not expected to
-be byte-identical.
+`schema.sql` is a generated, schema-only baseline for the latest complete
+schema. The numbered files are the sole source of truth and must be applied in
+order; applying all migrations to a fresh database must produce the same
+catalog as applying `schema.sql` to a fresh database. The files are not
+expected to be byte-identical. Do not edit `schema.sql` by hand. Regenerate it
+with `bun run db:generate:baseline`; `bun run check:baseline:fresh` verifies
+that the checked-in artifact is current.
 
 ### Gates v2 pre-deployment baseline reset
 
