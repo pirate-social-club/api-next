@@ -1,11 +1,14 @@
 import {
   decodeHnsOwnerResponseBytes,
+  decodeStrictHnsJsonBytes,
   HNS_OWNER_MANIFEST_VERSION,
   HNS_OWNER_PROTOCOL_VERSION,
   HNS_OWNER_PROVIDER_ID,
   type HnsOwnerRawResponse,
+  hnsOwnerChallengeName,
   hnsOwnerChallengeValue,
   type NamespaceOwnershipProviderAdapter,
+  type NamespaceOwnershipProviderCompleteContext,
   type NamespaceOwnershipProviderCompleteInput,
   type NamespaceOwnershipProviderCompleteResult,
   NamespaceOwnershipProviderInvalidResponse,
@@ -14,6 +17,7 @@ import {
   type NamespaceOwnershipProviderPlanInput,
   type NamespaceOwnershipProviderPlanResult,
   NamespaceOwnershipProviderRejected,
+  type NamespaceOwnershipProviderStartContext,
   type NamespaceOwnershipProviderStartInput,
   type NamespaceOwnershipProviderStartResult,
   NamespaceOwnershipProviderUnavailable,
@@ -21,7 +25,7 @@ import {
   type NamespaceOwnershipSession,
   NamespaceOwnershipUpstreamSessionReference,
 } from "@pirate/application";
-import { ProviderPresentation } from "@pirate/contracts";
+import { HnsTxtChallengeV1 } from "@pirate/contracts";
 import { ProviderConfigurationRef } from "@pirate/domain/verification";
 import { Effect, Option, Schema } from "effect";
 
@@ -29,21 +33,21 @@ const exactParseOptions = { onExcessProperty: "error" } as const;
 
 export type HnsOwnerTransport = Readonly<{
   readonly start: (
-    input: NamespaceOwnershipProviderStartInput,
+    input: Readonly<{
+      readonly input: NamespaceOwnershipProviderStartInput;
+      readonly context: NamespaceOwnershipProviderStartContext;
+    }>,
   ) => Effect.Effect<HnsOwnerTransportStartResult, HnsOwnerTransportFailure>;
   readonly poll: (
     input: Readonly<{
       readonly session: NamespaceOwnershipSession;
       readonly payload: unknown;
+      readonly context: NamespaceOwnershipProviderCompleteContext;
     }>,
   ) => Effect.Effect<Uint8Array, HnsOwnerTransportFailure>;
 }>;
 
-export type HnsOwnerTransportStartResult = Readonly<{
-  readonly upstream_session_ref: string;
-  readonly expires_at: string;
-  readonly presentation: unknown;
-}>;
+export type HnsOwnerTransportStartResult = Uint8Array;
 
 export type HnsOwnerTransportFailure =
   | NamespaceOwnershipProviderUnavailable
@@ -64,10 +68,18 @@ export type HnsOwnerAdapterOptions = Readonly<{
   readonly now?: () => number;
 }>;
 
+const HnsStartPresentation = Schema.Struct({
+  kind: Schema.Literal("embedded_sdk"),
+  session_id: NamespaceOwnershipUpstreamSessionReference,
+  protocol: Schema.Literal("hns-txt-challenge"),
+  version: Schema.Literal("1"),
+  payload: HnsTxtChallengeV1,
+});
+
 const HnsTransportStart = Schema.Struct({
   upstream_session_ref: NamespaceOwnershipUpstreamSessionReference,
   expires_at: Schema.String,
-  presentation: Schema.Unknown,
+  presentation: HnsStartPresentation,
 });
 
 function invalid(operation: "plan" | "start" | "complete") {
@@ -169,6 +181,7 @@ export function makeHnsOwnerAdapter(
     },
     start: (
       input: NamespaceOwnershipProviderStartInput,
+      context: NamespaceOwnershipProviderStartContext,
     ): Effect.Effect<NamespaceOwnershipProviderStartResult, HnsOwnerTransportFailure> => {
       if (
         input.route.family !== "hns" ||
@@ -179,7 +192,7 @@ export function makeHnsOwnerAdapter(
       ) {
         return Effect.fail(unboundRejected("start"));
       }
-      return options.transport.start(input).pipe(
+      return options.transport.start({ input, context }).pipe(
         Effect.mapError((error) =>
           error instanceof NamespaceOwnershipProviderUnavailable ||
           error instanceof NamespaceOwnershipProviderRejected ||
@@ -189,10 +202,16 @@ export function makeHnsOwnerAdapter(
             : invalid("start"),
         ),
         Effect.flatMap((untrusted) => {
+          let document: unknown;
+          try {
+            document = decodeStrictHnsJsonBytes(untrusted, 65_536);
+          } catch {
+            return Effect.fail(invalid("start"));
+          }
           const decoded = Schema.decodeUnknownOption(
             HnsTransportStart,
             exactParseOptions,
-          )(untrusted);
+          )(document);
           if (Option.isNone(decoded)) return Effect.fail(invalid("start"));
           if (
             !isCanonicalInstant(decoded.value.expires_at) ||
@@ -206,30 +225,41 @@ export function makeHnsOwnerAdapter(
             upstream_session_ref: decoded.value.upstream_session_ref,
             expires_at: decoded.value.expires_at,
           };
-          const presentation = Schema.decodeUnknownOption(
-            ProviderPresentation,
-            exactParseOptions,
-          )(decoded.value.presentation);
-          if (Option.isNone(presentation)) return Effect.fail(invalid("start"));
-          if (presentation.value.session_id !== decoded.value.upstream_session_ref) {
+          const presentation = decoded.value.presentation;
+          if (
+            presentation.session_id !== decoded.value.upstream_session_ref ||
+            presentation.payload.expires_at !== decoded.value.expires_at ||
+            presentation.payload.challenge_name !==
+              hnsOwnerChallengeName(
+                presentation.payload.ownership_source,
+                input.route.root_label,
+              ) ||
+            presentation.payload.challenge_value !==
+              hnsOwnerChallengeValue(decoded.value.upstream_session_ref)
+          ) {
             return Effect.fail(invalid("start"));
           }
-          return Effect.succeed({ session, presentation: presentation.value });
+          return Effect.succeed({ session, presentation });
         }),
       );
     },
     complete: (
       input: NamespaceOwnershipProviderCompleteInput,
+      context: NamespaceOwnershipProviderCompleteContext,
     ): Effect.Effect<NamespaceOwnershipProviderCompleteResult, HnsOwnerTransportFailure> => {
       if (
         input.submission.channel !== "poll_result" ||
+        typeof input.submission.payload !== "object" ||
+        input.submission.payload === null ||
+        Array.isArray(input.submission.payload) ||
+        Object.keys(input.submission.payload).length !== 0 ||
         !sessionMatchesConfiguration(input.session, provider_configuration, environments) ||
         Date.parse(input.session.expires_at) <= now()
       ) {
         return Effect.fail(unboundRejected("complete"));
       }
       return options.transport
-        .poll({ session: input.session, payload: input.submission.payload })
+        .poll({ session: input.session, payload: input.submission.payload, context })
         .pipe(
           Effect.mapError((error) =>
             error instanceof NamespaceOwnershipProviderUnavailable ||
@@ -258,7 +288,8 @@ export function makeHnsOwnerAdapter(
               const result = decoded.response;
               if (
                 result.upstream_session_ref !== input.session.upstream_session_ref ||
-                result.challenge_name !== `_pirate.${input.session.route.root_label}` ||
+                result.challenge_name !==
+                  hnsOwnerChallengeName(result.ownership_source, input.session.route.root_label) ||
                 result.challenge_value !==
                   hnsOwnerChallengeValue(input.session.upstream_session_ref) ||
                 result.root_exists !== true ||

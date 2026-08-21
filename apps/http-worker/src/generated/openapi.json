@@ -38121,6 +38121,84 @@
                         "expires_at": {
                           "type": "string"
                         },
+                        "challenge": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "ownership_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "hns_parent_chain_txt"
+                                  ]
+                                },
+                                "challenge_name": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "challenge_value": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "expires_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "ownership_source",
+                                "challenge_name",
+                                "challenge_value",
+                                "expires_at"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "ownership_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "owner_authoritative_dns_txt"
+                                  ]
+                                },
+                                "challenge_name": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "challenge_value": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "expires_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "ownership_source",
+                                "challenge_name",
+                                "challenge_value",
+                                "expires_at"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
                         "replayed": {
                           "type": "boolean"
                         }
@@ -38133,6 +38211,7 @@
                         "channel",
                         "status",
                         "expires_at",
+                        "challenge",
                         "replayed"
                       ],
                       "additionalProperties": false
@@ -38241,6 +38320,84 @@
                         "expires_at": {
                           "type": "string"
                         },
+                        "challenge": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "ownership_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "hns_parent_chain_txt"
+                                  ]
+                                },
+                                "challenge_name": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "challenge_value": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "expires_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "ownership_source",
+                                "challenge_name",
+                                "challenge_value",
+                                "expires_at"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "ownership_source": {
+                                  "type": "string",
+                                  "enum": [
+                                    "owner_authoritative_dns_txt"
+                                  ]
+                                },
+                                "challenge_name": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "challenge_value": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "expires_at": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "ownership_source",
+                                "challenge_name",
+                                "challenge_value",
+                                "expires_at"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
                         "replayed": {
                           "type": "boolean"
                         }
@@ -38253,6 +38410,7 @@
                         "channel",
                         "status",
                         "expires_at",
+                        "challenge",
                         "replayed"
                       ],
                       "additionalProperties": false

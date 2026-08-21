@@ -152,6 +152,12 @@ describe("real HTTP worker transport", () => {
       ceremony_intent_id: "ceremony-workerd",
       session_id: "namespace-session-replay",
       status: "pending",
+      challenge: {
+        ownership_source: "hns_parent_chain_txt",
+        challenge_name: "jazleeuw",
+        challenge_value: "pirate-verification=upstream-workerd",
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
       replayed: true,
     });
 

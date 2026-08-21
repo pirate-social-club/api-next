@@ -101,7 +101,18 @@ function provider(
           upstream_session_ref: "upstream-1",
           expires_at: "2099-01-01T00:00:00.000Z",
         },
-        presentation: { kind: "poll" as const, session_id: "upstream-1", poll_url: "/poll" },
+        presentation: {
+          kind: "embedded_sdk" as const,
+          session_id: "upstream-1",
+          protocol: "hns-txt-challenge" as const,
+          version: "1" as const,
+          payload: {
+            ownership_source: "owner_authoritative_dns_txt" as const,
+            challenge_name: "_pirate.jazleeuw",
+            challenge_value: "pirate-verification=upstream-1",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+        },
       }),
     complete: () =>
       completion === "pending"
@@ -127,23 +138,26 @@ async function startServices(options: { readonly replayed?: boolean } = {}) {
   const providers = registry();
   let captured: unknown;
   const startResult = await Effect.runPromise(
-    provider().start({
-      actor_id: authority.actor_id,
-      creation_intent_id: authority.creation_intent_id,
-      ceremony_intent_id: authority.ceremony_intent_id,
-      requirement_hash: authority.requirement_hash,
-      generation: authority.generation,
-      request_hash: await hnsNamespaceStartHash({
-        ...providerAuthority,
+    provider().start(
+      {
+        actor_id: authority.actor_id,
+        creation_intent_id: authority.creation_intent_id,
+        ceremony_intent_id: authority.ceremony_intent_id,
+        requirement_hash: authority.requirement_hash,
+        generation: authority.generation,
+        request_hash: await hnsNamespaceStartHash({
+          ...providerAuthority,
+          protocol_version: "hns-txt-v1",
+          environment: "test",
+        }),
+        provider_binding_hash: authority.provider_binding_hash,
+        provider_configuration: authority.provider_configuration,
         protocol_version: "hns-txt-v1",
         environment: "test",
-      }),
-      provider_binding_hash: authority.provider_binding_hash,
-      provider_configuration: authority.provider_configuration,
-      protocol_version: "hns-txt-v1",
-      environment: "test",
-      route,
-    }),
+        route,
+      },
+      { namespace_session_id: "namespace-session-1" },
+    ),
   );
   const services: NamespaceOwnershipStartServices = {
     environment: "test",
@@ -415,6 +429,12 @@ describe("namespace ownership HTTP handlers", () => {
       creation_intent_id: "intent-1",
       session_id: "namespace-session-1",
       status: "pending",
+      challenge: {
+        ownership_source: "owner_authoritative_dns_txt",
+        challenge_name: "_pirate.jazleeuw",
+        challenge_value: "pirate-verification=upstream-1",
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
     });
     expect(start.captured()).toMatchObject({
       actor_id: "actor-1",

@@ -434,9 +434,16 @@ suite("Postgres 17 community creation repository", () => {
               expires_at: "2099-08-21T00:00:00.000Z",
             },
             presentation: {
-              kind: "poll",
+              kind: "embedded_sdk",
               session_id: "bound-namespace-upstream",
-              poll_url: "/provider/poll",
+              protocol: "hns-txt-challenge",
+              version: "1",
+              payload: {
+                ownership_source: "owner_authoritative_dns_txt",
+                challenge_name: `_pirate.${namespaceStartInput.start.route.root_label}`,
+                challenge_value: "pirate-verification=bound-namespace-upstream",
+                expires_at: "2099-08-21T00:00:00.000Z",
+              },
             },
           }),
         ),

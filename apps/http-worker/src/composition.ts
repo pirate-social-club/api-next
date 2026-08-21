@@ -36,7 +36,9 @@ import {
 } from "@pirate/platform-cf/identity-repository";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
 import {
+  type HnsOwnerServiceBinding,
   type HnsOwnerTransport,
+  makeHnsOwnerServiceBindingTransport,
   makePlatformNamespaceOwnershipProviderRegistry,
 } from "@pirate/platform-cf/namespace-ownership-provider-registry";
 import {
@@ -86,6 +88,7 @@ import { makeVerificationHandlers } from "./verification-handlers.ts";
 
 export interface HttpWorkerBindings {
   readonly CONTROL_PLANE?: unknown;
+  readonly HNS_OWNER_VERIFIER?: HnsOwnerServiceBinding;
   readonly REGISTRATION_IP_LIMITER?: RegistrationRateLimiterNamespaces["ip"];
   readonly REGISTRATION_APPLICATION_LIMITER?: RegistrationRateLimiterNamespaces["application"];
   readonly API_NEXT_ENV?: string;
@@ -334,15 +337,19 @@ export async function createProductionHttpWorker(
     isCanonicalIsoInstant(config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL);
   const hnsOwnership = (() => {
     try {
-      return makeHnsOwnershipComposition(
-        {
-          enabled: config.HNS_OWNERSHIP_ENABLED,
-          environment: config.API_NEXT_ENV,
-          configuration_reference: config.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
-          configuration_version: config.HNS_OWNERSHIP_CONFIGURATION_VERSION,
-        },
-        dependencies.hns_ownership,
-      );
+      const hnsConfig = {
+        enabled: config.HNS_OWNERSHIP_ENABLED,
+        environment: config.API_NEXT_ENV,
+        configuration_reference: config.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
+        configuration_version: config.HNS_OWNERSHIP_CONFIGURATION_VERSION,
+      } as const;
+      if (!hnsConfig.enabled) return makeHnsOwnershipComposition(hnsConfig);
+      const transport =
+        dependencies.hns_ownership?.transport ??
+        (bindings.HNS_OWNER_VERIFIER === undefined
+          ? undefined
+          : makeHnsOwnerServiceBindingTransport(bindings.HNS_OWNER_VERIFIER));
+      return makeHnsOwnershipComposition(hnsConfig, transport === undefined ? {} : { transport });
     } catch {
       throw new Error("HTTP worker configuration is incomplete or invalid");
     }

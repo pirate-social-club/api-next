@@ -55,6 +55,35 @@ const CanonicalIsoInstant = Schema.String.check(
   }),
 );
 
+const HnsChallengeName = OpaqueId.check(
+  Schema.makeFilter((value) =>
+    utf8Length(value) <= 255 ? undefined : "Expected a bounded HNS TXT challenge name",
+  ),
+);
+const HnsChallengeValue = Schema.NonEmptyString.check(
+  Schema.makeFilter((value) =>
+    value.trim() === value && isControlFree(value) && utf8Length(value) <= 16_448
+      ? undefined
+      : "Expected a bounded HNS TXT challenge value",
+  ),
+);
+
+export const HnsTxtChallengeV1 = Schema.Union([
+  Schema.Struct({
+    ownership_source: Schema.Literal("hns_parent_chain_txt"),
+    challenge_name: HnsChallengeName,
+    challenge_value: HnsChallengeValue,
+    expires_at: CanonicalIsoInstant,
+  }),
+  Schema.Struct({
+    ownership_source: Schema.Literal("owner_authoritative_dns_txt"),
+    challenge_name: HnsChallengeName,
+    challenge_value: HnsChallengeValue,
+    expires_at: CanonicalIsoInstant,
+  }),
+]);
+export type HnsTxtChallengeV1 = Schema.Schema.Type<typeof HnsTxtChallengeV1>;
+
 const IntentPath = Schema.Struct({ intentId: OpaqueId });
 
 /** Exact v1 start request; fields are deliberately declared in wire order. */
@@ -73,6 +102,7 @@ const HnsNamespaceStartPendingResponseV1 = Schema.Struct({
   channel: Schema.Literal("poll_result"),
   status: Schema.Literal("pending"),
   expires_at: CanonicalIsoInstant,
+  challenge: HnsTxtChallengeV1,
   replayed: Schema.Boolean,
 });
 

@@ -272,6 +272,25 @@ describe("HTTP production composition", () => {
     expect((await worker.request("https://worker.test/health")).status).toBe(200);
   });
 
+  test("constructs enabled HNS ownership from only the private service binding", async () => {
+    const configured = await bindings();
+    let calls = 0;
+    const worker = await createProductionHttpWorker({
+      ...configured,
+      HNS_OWNERSHIP_ENABLED: "true",
+      HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "hns-owner-development",
+      HNS_OWNERSHIP_CONFIGURATION_VERSION: "hns-owner-config-v1",
+      HNS_OWNER_VERIFIER: {
+        fetch: async () => {
+          calls += 1;
+          throw new Error("service binding must not run during composition");
+        },
+      },
+    });
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    expect(calls).toBe(0);
+  });
+
   test("rejects whitespace-padded Very OAuth credentials before provider composition", async () => {
     const configured = await bindings();
     await expect(

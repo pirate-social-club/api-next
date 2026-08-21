@@ -72,6 +72,12 @@ describe("namespace ownership endpoint contracts", () => {
         channel: "poll_result",
         status: "pending",
         expires_at: "2026-08-21T00:00:00.000Z",
+        challenge: {
+          ownership_source: "hns_parent_chain_txt",
+          challenge_name: "jazleeuw",
+          challenge_value: "pirate-verification=upstream-1",
+          expires_at: "2026-08-21T00:00:00.000Z",
+        },
         replayed: false,
       }),
     ).toBe(true);

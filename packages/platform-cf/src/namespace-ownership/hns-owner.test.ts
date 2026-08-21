@@ -36,6 +36,7 @@ const startInput = {
   environment: "staging",
   route,
 };
+const startContext = { namespace_session_id: "namespace-session-1" } as const;
 
 function response(overrides: Readonly<Record<string, unknown>> = {}) {
   return new TextEncoder().encode(
@@ -62,7 +63,11 @@ function response(overrides: Readonly<Record<string, unknown>> = {}) {
 }
 
 function transport(
-  options: Readonly<{ readonly bytes?: Uint8Array; readonly failure?: boolean }> = {},
+  options: Readonly<{
+    readonly bytes?: Uint8Array;
+    readonly startBytes?: Uint8Array;
+    readonly failure?: boolean;
+  }> = {},
 ): HnsOwnerTransport {
   return {
     start: () =>
@@ -73,15 +78,27 @@ function transport(
               operation: "start",
             }),
           )
-        : Effect.succeed({
-            upstream_session_ref: "nvs_01",
-            expires_at: "2026-08-20T13:00:00.000Z",
-            presentation: {
-              kind: "poll" as const,
-              session_id: "nvs_01",
-              poll_url: "/hns-owner/nvs_01",
-            },
-          }),
+        : Effect.succeed(
+            options.startBytes ??
+              new TextEncoder().encode(
+                JSON.stringify({
+                  upstream_session_ref: "nvs_01",
+                  expires_at: "2026-08-20T13:00:00.000Z",
+                  presentation: {
+                    kind: "embedded_sdk" as const,
+                    session_id: "nvs_01",
+                    protocol: "hns-txt-challenge" as const,
+                    version: "1" as const,
+                    payload: {
+                      ownership_source: "owner_authoritative_dns_txt" as const,
+                      challenge_name: "_pirate.xn--pokmon-dva",
+                      challenge_value: "pirate-verification=nvs_01",
+                      expires_at: "2026-08-20T13:00:00.000Z",
+                    },
+                  },
+                }),
+              ),
+          ),
     poll: () =>
       options.failure
         ? Effect.fail(
@@ -92,6 +109,30 @@ function transport(
           )
         : Effect.succeed(options.bytes ?? response()),
   };
+}
+
+function startResponseBytes(
+  ownershipSource: "hns_parent_chain_txt" | "owner_authoritative_dns_txt",
+  challengeName: string,
+): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify({
+      upstream_session_ref: "nvs_01",
+      expires_at: "2026-08-20T13:00:00.000Z",
+      presentation: {
+        kind: "embedded_sdk",
+        session_id: "nvs_01",
+        protocol: "hns-txt-challenge",
+        version: "1",
+        payload: {
+          ownership_source: ownershipSource,
+          challenge_name: challengeName,
+          challenge_value: "pirate-verification=nvs_01",
+          expires_at: "2026-08-20T13:00:00.000Z",
+        },
+      },
+    }),
+  );
 }
 
 function adapter(bytes?: Uint8Array) {
@@ -117,12 +158,15 @@ describe("injected HNS owner adapter", () => {
       provider_configuration,
       protocol_version: "hns-txt-v1",
     });
-    const started = await Effect.runPromise(provider.start(startInput));
+    const started = await Effect.runPromise(provider.start(startInput, startContext));
     const result = await Effect.runPromise(
-      provider.complete({
-        session: started.session,
-        submission: { channel: "poll_result", payload: {} },
-      }),
+      provider.complete(
+        {
+          session: started.session,
+          submission: { channel: "poll_result", payload: {} },
+        },
+        startContext,
+      ),
     );
     expect(result).toMatchObject({
       status: "verified",
@@ -143,10 +187,13 @@ describe("injected HNS owner adapter", () => {
     ).rejects.toBeDefined();
     await expect(
       Effect.runPromise(
-        provider.complete({
-          session: started.session,
-          submission: { channel: "client_result", payload: {} },
-        }),
+        provider.complete(
+          {
+            session: started.session,
+            submission: { channel: "client_result", payload: {} },
+          },
+          startContext,
+        ),
       ),
     ).rejects.toBeDefined();
   });
@@ -156,13 +203,16 @@ describe("injected HNS owner adapter", () => {
       makeNamespaceOwnershipProviderRegistry([adapter()], { now: () => now }),
     );
     const provider = await Effect.runPromise(registry.resolve("hns"));
-    const started = await Effect.runPromise(provider.start(startInput));
+    const started = await Effect.runPromise(provider.start(startInput, startContext));
     await expect(
       Effect.runPromise(
-        provider.complete({
-          session: { ...started.session, upstream_session_ref: "different" },
-          submission: { channel: "poll_result", payload: {} },
-        }),
+        provider.complete(
+          {
+            session: { ...started.session, upstream_session_ref: "different" },
+            submission: { channel: "poll_result", payload: {} },
+          },
+          startContext,
+        ),
       ),
     ).rejects.toBeDefined();
 
@@ -172,13 +222,18 @@ describe("injected HNS owner adapter", () => {
       }),
     );
     const badExpiryProvider = await Effect.runPromise(badExpiry.resolve("hns"));
-    const badExpirySession = await Effect.runPromise(badExpiryProvider.start(startInput));
+    const badExpirySession = await Effect.runPromise(
+      badExpiryProvider.start(startInput, startContext),
+    );
     await expect(
       Effect.runPromise(
-        badExpiryProvider.complete({
-          session: badExpirySession.session,
-          submission: { channel: "poll_result", payload: {} },
-        }),
+        badExpiryProvider.complete(
+          {
+            session: badExpirySession.session,
+            submission: { channel: "poll_result", payload: {} },
+          },
+          startContext,
+        ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
 
@@ -191,13 +246,18 @@ describe("injected HNS owner adapter", () => {
       ),
     );
     const contradictionProvider = await Effect.runPromise(contradiction.resolve("hns"));
-    const contradictionSession = await Effect.runPromise(contradictionProvider.start(startInput));
+    const contradictionSession = await Effect.runPromise(
+      contradictionProvider.start(startInput, startContext),
+    );
     await expect(
       Effect.runPromise(
-        contradictionProvider.complete({
-          session: contradictionSession.session,
-          submission: { channel: "poll_result", payload: {} },
-        }),
+        contradictionProvider.complete(
+          {
+            session: contradictionSession.session,
+            submission: { channel: "poll_result", payload: {} },
+          },
+          startContext,
+        ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderObservationRejected);
 
@@ -208,13 +268,16 @@ describe("injected HNS owner adapter", () => {
       ),
     );
     const futureProvider = await Effect.runPromise(future.resolve("hns"));
-    const futureSession = await Effect.runPromise(futureProvider.start(startInput));
+    const futureSession = await Effect.runPromise(futureProvider.start(startInput, startContext));
     await expect(
       Effect.runPromise(
-        futureProvider.complete({
-          session: futureSession.session,
-          submission: { channel: "poll_result", payload: {} },
-        }),
+        futureProvider.complete(
+          {
+            session: futureSession.session,
+            submission: { channel: "poll_result", payload: {} },
+          },
+          startContext,
+        ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
   });
@@ -226,8 +289,46 @@ describe("injected HNS owner adapter", () => {
       environments: ["staging"],
       now: () => now,
     });
-    await expect(Effect.runPromise(provider.start(startInput))).rejects.toBeInstanceOf(
-      NamespaceOwnershipProviderUnavailable,
+    await expect(
+      Effect.runPromise(provider.start(startInput, startContext)),
+    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderUnavailable);
+  });
+
+  test("accepts both TXT topologies and rejects a source/name swap", async () => {
+    for (const [ownershipSource, challengeName] of [
+      ["hns_parent_chain_txt", "xn--pokmon-dva"],
+      ["owner_authoritative_dns_txt", "_pirate.xn--pokmon-dva"],
+    ] as const) {
+      const provider = makeHnsOwnerAdapter({
+        transport: transport({
+          startBytes: startResponseBytes(ownershipSource, challengeName),
+          bytes: response({ ownership_source: ownershipSource, challenge_name: challengeName }),
+        }),
+        provider_configuration,
+        environments: ["staging"],
+        now: () => now,
+      });
+      const started = await Effect.runPromise(provider.start(startInput, startContext));
+      await expect(
+        Effect.runPromise(
+          provider.complete(
+            { session: started.session, submission: { channel: "poll_result", payload: {} } },
+            startContext,
+          ),
+        ),
+      ).resolves.toMatchObject({ status: "verified" });
+    }
+
+    const swapped = makeHnsOwnerAdapter({
+      transport: transport({
+        startBytes: startResponseBytes("hns_parent_chain_txt", "_pirate.xn--pokmon-dva"),
+      }),
+      provider_configuration,
+      environments: ["staging"],
+      now: () => now,
+    });
+    await expect(Effect.runPromise(swapped.start(startInput, startContext))).rejects.toBeInstanceOf(
+      NamespaceOwnershipProviderInvalidResponse,
     );
   });
 
@@ -237,23 +338,34 @@ describe("injected HNS owner adapter", () => {
       transport: {
         ...safeTransport,
         start: () =>
-          Effect.succeed({
-            upstream_session_ref: "nvs\u0001unsafe",
-            expires_at: "2026-08-20T13:00:00.000Z",
-            presentation: {
-              kind: "poll" as const,
-              session_id: "nvs\u0001unsafe",
-              poll_url: "/hns-owner/unsafe",
-            },
-          }),
+          Effect.succeed(
+            new TextEncoder().encode(
+              JSON.stringify({
+                upstream_session_ref: "nvs\u0001unsafe",
+                expires_at: "2026-08-20T13:00:00.000Z",
+                presentation: {
+                  kind: "embedded_sdk" as const,
+                  session_id: "nvs\u0001unsafe",
+                  protocol: "hns-txt-challenge" as const,
+                  version: "1" as const,
+                  payload: {
+                    ownership_source: "owner_authoritative_dns_txt" as const,
+                    challenge_name: "_pirate.xn--pokmon-dva",
+                    challenge_value: "pirate-verification=nvs\u0001unsafe",
+                    expires_at: "2026-08-20T13:00:00.000Z",
+                  },
+                },
+              }),
+            ),
+          ),
       },
       provider_configuration,
       environments: ["staging"],
       now: () => now,
     });
-    await expect(Effect.runPromise(provider.start(startInput))).rejects.toBeInstanceOf(
-      NamespaceOwnershipProviderInvalidResponse,
-    );
+    await expect(
+      Effect.runPromise(provider.start(startInput, startContext)),
+    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
   });
 });
 

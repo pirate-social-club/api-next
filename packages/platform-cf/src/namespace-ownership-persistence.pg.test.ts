@@ -580,6 +580,9 @@ function verifiedCompletionInput(
     readonly idempotency_key: string;
     readonly completion_request_hash: string;
   }>,
+  ownershipSource:
+    | "hns_parent_chain_txt"
+    | "owner_authoritative_dns_txt" = "owner_authoritative_dns_txt",
 ) {
   const raw = Buffer.from(
     JSON.stringify({ status: "verified", provider_evidence_ref: "provider-observation" }),
@@ -615,8 +618,11 @@ function verifiedCompletionInput(
         root_label_display: expected.session.route.root_label_display,
         path_segment: expected.session.route.path_segment,
         upstream_session_ref: expected.session.upstream_session_ref,
-        ownership_source: "owner_authoritative_dns_txt" as const,
-        challenge_name: `_pirate.${expected.session.route.root_label}`,
+        ownership_source: ownershipSource,
+        challenge_name:
+          ownershipSource === "hns_parent_chain_txt"
+            ? expected.session.route.root_label
+            : `_pirate.${expected.session.route.root_label}`,
         challenge_value_sha256: SHA,
         root_exists: true as const,
         root_control_verified: true as const,
@@ -1742,6 +1748,42 @@ suite("Postgres namespace ownership persistence foundation", () => {
         )
       ).rows[0]?.raw;
       expect(raw).toEqual(Buffer.from(verified.verified.raw_response_bytes));
+    });
+    completedTestCount += 1;
+  });
+
+  test("atomically verifies parent-chain apex evidence through the persistence trigger", async () => {
+    await withSchema(async (client, scoped) => {
+      const { completionStore, completionInput, stored } = await createRepositoryNamespaceSession(
+        client,
+        scoped,
+        "parent_chain",
+      );
+      const reserved = await Effect.runPromise(
+        Effect.scoped(completionStore.reserve(completionInput)),
+      );
+      if (reserved.kind !== "acquired") throw new Error("expected completion reservation");
+      const verified = verifiedCompletionInput(
+        stored,
+        reserved.reservation,
+        completionInput,
+        "hns_parent_chain_txt",
+      );
+      expect(await Effect.runPromise(Effect.scoped(completionStore.verify(verified)))).toEqual({
+        kind: "committed",
+        result_hash: SHA_C,
+      });
+      expect(
+        (
+          await client.query<{ ownership_source: string; challenge_name: string }>(
+            `SELECT ownership_source, challenge_name
+               FROM namespace_ownership_evidence_snapshots`,
+          )
+        ).rows[0],
+      ).toEqual({
+        ownership_source: "hns_parent_chain_txt",
+        challenge_name: stored.session.route.root_label,
+      });
     });
     completedTestCount += 1;
   });

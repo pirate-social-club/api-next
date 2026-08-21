@@ -1,3 +1,4 @@
+import { type HnsTxtChallengeV1 as HnsTxtChallenge, HnsTxtChallengeV1 } from "@pirate/contracts";
 import { canonicalJson } from "@pirate/domain";
 import { Data, Effect, Option, Schema } from "effect";
 import type {
@@ -5,7 +6,13 @@ import type {
   NamespaceOwnershipProviderStartInput,
   NamespaceOwnershipProviderStartResult,
 } from "./adapter.ts";
-import { hnsNamespaceStartHash } from "./hns-evidence.ts";
+import {
+  HNS_OWNER_PROTOCOL_VERSION,
+  HNS_OWNER_PROVIDER_ID,
+  hnsNamespaceStartHash,
+  hnsOwnerChallengeName,
+  hnsOwnerChallengeValue,
+} from "./hns-evidence.ts";
 import type { NamespaceOwnershipProviderRegistryService } from "./registry.ts";
 
 const CanonicalIdentifier = Schema.NonEmptyString.check(
@@ -176,6 +183,7 @@ export type NamespaceOwnershipStartResponse =
       readonly channel: "poll_result";
       readonly status: "pending";
       readonly expires_at: string;
+      readonly challenge: HnsTxtChallenge;
       readonly replayed: boolean;
     }>
   | Readonly<{
@@ -236,7 +244,31 @@ function pendingResponse(
   namespaceSessionId: string,
   start: NamespaceOwnershipProviderStartResult,
   replayed: boolean,
-): NamespaceOwnershipStartResponse {
+): NamespaceOwnershipStartResponse | null {
+  if (
+    start.presentation.kind !== "embedded_sdk" ||
+    start.presentation.protocol !== "hns-txt-challenge" ||
+    start.presentation.version !== "1"
+  ) {
+    return null;
+  }
+  const challenge = Schema.decodeUnknownOption(
+    HnsTxtChallengeV1,
+    exactParseOptions,
+  )(start.presentation.payload);
+  if (
+    Option.isNone(challenge) ||
+    start.session.provider_id !== HNS_OWNER_PROVIDER_ID ||
+    start.session.protocol_version !== HNS_OWNER_PROTOCOL_VERSION ||
+    start.session.route.family !== "hns" ||
+    start.presentation.session_id !== start.session.upstream_session_ref ||
+    challenge.value.expires_at !== start.session.expires_at ||
+    challenge.value.challenge_name !==
+      hnsOwnerChallengeName(challenge.value.ownership_source, start.session.route.root_label) ||
+    challenge.value.challenge_value !== hnsOwnerChallengeValue(start.session.upstream_session_ref)
+  ) {
+    return null;
+  }
   return {
     creation_intent_id: start.session.creation_intent_id,
     ceremony_intent_id: start.session.ceremony_intent_id,
@@ -245,6 +277,7 @@ function pendingResponse(
     channel: "poll_result",
     status: "pending",
     expires_at: start.session.expires_at,
+    challenge: challenge.value,
     replayed,
   };
 }
@@ -294,7 +327,10 @@ export const startNamespaceOwnership = Effect.fn("startNamespaceOwnership")(func
     client_idempotency_key: input.idempotency_key,
   });
   if (replay.kind === "replay") {
-    return pendingResponse(replay.namespace_session_id, replay.start, true);
+    const response = pendingResponse(replay.namespace_session_id, replay.start, true);
+    return response === null
+      ? yield* new NamespaceOwnershipStartRejected({ reason: "invalid" })
+      : response;
   }
   if (replay.kind === "terminal") {
     if (replay.status === "verified" && replay.result_hash !== undefined) {
@@ -391,7 +427,14 @@ export const startNamespaceOwnership = Effect.fn("startNamespaceOwnership")(func
   });
 
   if (reservationOutcome.kind === "replay") {
-    return pendingResponse(reservationOutcome.namespace_session_id, reservationOutcome.start, true);
+    const response = pendingResponse(
+      reservationOutcome.namespace_session_id,
+      reservationOutcome.start,
+      true,
+    );
+    return response === null
+      ? yield* new NamespaceOwnershipStartRejected({ reason: "invalid" })
+      : response;
   }
   if (reservationOutcome.kind === "in_flight") {
     return yield* new NamespaceOwnershipStartRejected({
@@ -446,7 +489,7 @@ export const startNamespaceOwnership = Effect.fn("startNamespaceOwnership")(func
   }
 
   const started = yield* provider
-    .start(startInput)
+    .start(startInput, { namespace_session_id: reservation.namespace_session_id })
     .pipe(
       Effect.tapError(() =>
         services.store.release(reservation).pipe(Effect.catch(() => Effect.succeed(undefined))),
@@ -462,9 +505,12 @@ export const startNamespaceOwnership = Effect.fn("startNamespaceOwnership")(func
       retry_after_seconds: 1,
     });
   }
-  return pendingResponse(
+  const response = pendingResponse(
     finalized.namespace_session_id,
     finalized.start,
     finalized.kind === "replay",
   );
+  return response === null
+    ? yield* new NamespaceOwnershipStartRejected({ reason: "invalid" })
+    : response;
 });

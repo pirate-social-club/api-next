@@ -86,7 +86,18 @@ function provider(
           upstream_session_ref: "upstream-1",
           expires_at: "2099-01-01T00:00:00.000Z",
         },
-        presentation: { kind: "poll", session_id: "upstream-1", poll_url: "/provider/poll" },
+        presentation: {
+          kind: "embedded_sdk",
+          session_id: "upstream-1",
+          protocol: "hns-txt-challenge",
+          version: "1",
+          payload: {
+            ownership_source: "owner_authoritative_dns_txt",
+            challenge_name: "_pirate.jazleeuw",
+            challenge_value: "pirate-verification=upstream-1",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+        },
       };
       return Effect.succeed(result);
     },
@@ -128,19 +139,22 @@ async function harness(
       lease_expires_at: "2099-01-01T00:00:00.000Z",
     },
   };
-  const startResult = provider({ plan: 0, start: 0 }).start({
-    actor_id: authority.actor_id,
-    creation_intent_id: authority.creation_intent_id,
-    ceremony_intent_id: authority.ceremony_intent_id,
-    requirement_hash: authority.requirement_hash,
-    generation: authority.generation,
-    request_hash: "c".repeat(64),
-    provider_binding_hash: authority.provider_binding_hash,
-    provider_configuration: authority.provider_configuration,
-    protocol_version: "hns-txt-v1",
-    environment: "test",
-    route: authority.route,
-  });
+  const startResult = provider({ plan: 0, start: 0 }).start(
+    {
+      actor_id: authority.actor_id,
+      creation_intent_id: authority.creation_intent_id,
+      ceremony_intent_id: authority.ceremony_intent_id,
+      requirement_hash: authority.requirement_hash,
+      generation: authority.generation,
+      request_hash: "c".repeat(64),
+      provider_binding_hash: authority.provider_binding_hash,
+      provider_configuration: authority.provider_configuration,
+      protocol_version: "hns-txt-v1",
+      environment: "test",
+      route: authority.route,
+    },
+    { namespace_session_id: "namespace-session-1" },
+  );
   const started = await Effect.runPromise(startResult);
   return {
     calls,
@@ -222,6 +236,12 @@ describe("namespace ownership start use case", () => {
       session_id: "namespace-session-1",
       channel: "poll_result",
       status: "pending",
+      challenge: {
+        ownership_source: "owner_authoritative_dns_txt",
+        challenge_name: "_pirate.jazleeuw",
+        challenge_value: "pirate-verification=upstream-1",
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
       replayed: false,
     });
     expect(result).not.toHaveProperty("provider_configuration");
@@ -263,7 +283,18 @@ describe("namespace ownership start use case", () => {
             upstream_session_ref: "upstream-existing",
             expires_at: "2099-01-01T00:00:00.000Z",
           },
-          presentation: { kind: "none", session_id: "upstream-existing" },
+          presentation: {
+            kind: "embedded_sdk",
+            session_id: "upstream-existing",
+            protocol: "hns-txt-challenge",
+            version: "1",
+            payload: {
+              ownership_source: "owner_authoritative_dns_txt",
+              challenge_name: "_pirate.jazleeuw",
+              challenge_value: "pirate-verification=upstream-existing",
+              expires_at: "2099-01-01T00:00:00.000Z",
+            },
+          },
         },
       },
     });
@@ -280,6 +311,53 @@ describe("namespace ownership start use case", () => {
       ),
     );
     expect(result).toMatchObject({ session_id: "namespace-session-existing", replayed: true });
+    expect(h.calls).toEqual({ plan: 0, start: 0 });
+    expect(h.events).toEqual(["replay"]);
+  });
+
+  test("rejects a persisted replay whose public challenge contradicts its bound session", async () => {
+    const h = await harness({
+      unavailableRegistry: true,
+      replay: {
+        kind: "replay",
+        namespace_session_id: "namespace-session-existing",
+        start: {
+          session: {
+            ...authority,
+            request_hash: "c".repeat(64),
+            protocol_version: "hns-txt-v1",
+            environment: "test",
+            upstream_session_ref: "upstream-existing",
+            expires_at: "2099-01-01T00:00:00.000Z",
+          },
+          presentation: {
+            kind: "embedded_sdk",
+            session_id: "upstream-existing",
+            protocol: "hns-txt-challenge",
+            version: "1",
+            payload: {
+              ownership_source: "hns_parent_chain_txt",
+              challenge_name: "_pirate.jazleeuw",
+              challenge_value: "pirate-verification=upstream-existing",
+              expires_at: "2099-01-01T00:00:00.000Z",
+            },
+          },
+        },
+      },
+    });
+    const exit = await Effect.runPromiseExit(
+      startNamespaceOwnership(
+        {
+          actor_id: authority.actor_id,
+          creation_intent_id: authority.creation_intent_id,
+          ceremony_intent_id: authority.ceremony_intent_id,
+          expected_revision: authority.expected_revision,
+          idempotency_key: "key-1",
+        },
+        h.value,
+      ),
+    );
+    expect(failureOf(exit)).toEqual(new NamespaceOwnershipStartRejected({ reason: "invalid" }));
     expect(h.calls).toEqual({ plan: 0, start: 0 });
     expect(h.events).toEqual(["replay"]);
   });

@@ -580,7 +580,10 @@ export const completeNamespaceOwnership = Effect.fn("completeNamespaceOwnership"
   const attempt = reservationOutcome.reservation;
 
   const providerResult = yield* adapter
-    .complete({ session: stored.session, submission: { channel: "poll_result", payload: {} } })
+    .complete(
+      { session: stored.session, submission: { channel: "poll_result", payload: {} } },
+      { namespace_session_id: stored.namespace_session_id },
+    )
     .pipe(
       Effect.matchEffect({
         onSuccess: (value) => Effect.succeed({ kind: "success" as const, value }),

@@ -228,9 +228,16 @@ const namespaceStart: NamespaceOwnershipStartServices = {
               start: {
                 session: namespaceSession,
                 presentation: {
-                  kind: "poll" as const,
+                  kind: "embedded_sdk" as const,
                   session_id: "upstream-workerd",
-                  poll_url: "/namespace/poll",
+                  protocol: "hns-txt-challenge",
+                  version: "1",
+                  payload: {
+                    ownership_source: "hns_parent_chain_txt",
+                    challenge_name: "jazleeuw",
+                    challenge_value: "pirate-verification=upstream-workerd",
+                    expires_at: "2099-01-01T00:00:00.000Z",
+                  },
                 },
               },
             }

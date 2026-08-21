@@ -224,6 +224,27 @@ export class HnsOwnerResponseDecodeError extends Error {
   }
 }
 
+export function decodeStrictHnsJsonBytes(value: unknown, maxBytes: number): unknown {
+  if (!(value instanceof Uint8Array) || value.byteLength === 0 || value.byteLength > maxBytes) {
+    throw new HnsOwnerResponseDecodeError("HNS provider response has an invalid byte length");
+  }
+  if (value[0] === 0xef && value[1] === 0xbb && value[2] === 0xbf) {
+    throw new HnsOwnerResponseDecodeError("HNS provider response must not contain a UTF-8 BOM");
+  }
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(value);
+    const json = JSON.parse(text) as unknown;
+    assertNoDuplicateJsonObjectKeys(text);
+    return json;
+  } catch (error) {
+    if (error instanceof HnsOwnerResponseDecodeError) throw error;
+    throw new HnsOwnerResponseDecodeError(
+      "HNS provider response is invalid UTF-8/JSON or contains duplicate object members",
+    );
+  }
+}
+
 function assertNoDuplicateJsonObjectKeys(text: string): void {
   let cursor = 0;
 
@@ -316,22 +337,7 @@ export function decodeHnsOwnerResponseBytes(value: unknown): HnsOwnerRawResponse
     throw new HnsOwnerResponseDecodeError("HNS provider response exceeds the 1 MiB byte bound");
   }
 
-  let text: string;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(value);
-  } catch {
-    throw new HnsOwnerResponseDecodeError("HNS provider response is not valid UTF-8");
-  }
-
-  let json: unknown;
-  try {
-    json = JSON.parse(text) as unknown;
-    assertNoDuplicateJsonObjectKeys(text);
-  } catch {
-    throw new HnsOwnerResponseDecodeError(
-      "HNS provider response is invalid JSON or contains duplicate object members",
-    );
-  }
+  const json = decodeStrictHnsJsonBytes(value, HNS_OWNER_MAX_RESPONSE_BYTES);
 
   const response = Schema.decodeUnknownOption(HnsOwnerResponse, exactParseOptions)(json);
   if (Option.isNone(response)) {
@@ -346,6 +352,13 @@ export function hnsOwnerChallengeValue(upstream_session_ref: string): string {
     exactParseOptions,
   )(upstream_session_ref);
   return `pirate-verification=${decoded}`;
+}
+
+export function hnsOwnerChallengeName(
+  ownership_source: HnsOwnerVerifiedObservation["ownership_source"],
+  root_label: string,
+): string {
+  return ownership_source === "hns_parent_chain_txt" ? root_label : `_pirate.${root_label}`;
 }
 
 function sha256Bytes(bytes: Uint8Array): Promise<Sha256HexValue> {
@@ -560,7 +573,8 @@ export async function buildHnsOwnershipEvidence(
   }
   if (
     observation.upstream_session_ref !== decodedInput.upstream_session_ref ||
-    observation.challenge_name !== `_pirate.${decodedInput.route.root_label}` ||
+    observation.challenge_name !==
+      hnsOwnerChallengeName(observation.ownership_source, decodedInput.route.root_label) ||
     observation.challenge_value !== hnsOwnerChallengeValue(decodedInput.upstream_session_ref)
   ) {
     throw new TypeError("HNS challenge name is not bound to the requested root");

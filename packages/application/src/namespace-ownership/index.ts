@@ -5,6 +5,7 @@ export type {
 } from "./adapter.ts";
 export {
   NAMESPACE_OWNERSHIP_RAW_RESPONSE_MAX_BYTES,
+  NamespaceOwnershipProviderCompleteContext,
   NamespaceOwnershipProviderCompleteInput,
   NamespaceOwnershipProviderCompleteResult,
   NamespaceOwnershipProviderInvalidResponse,
@@ -14,6 +15,7 @@ export {
   NamespaceOwnershipProviderPlanInput,
   NamespaceOwnershipProviderPlanResult,
   NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderStartContext,
   NamespaceOwnershipProviderStartInput,
   NamespaceOwnershipProviderStartResult,
   NamespaceOwnershipProviderUnavailable,
@@ -63,6 +65,7 @@ export type {
 export {
   buildHnsOwnershipEvidence,
   decodeHnsOwnerResponseBytes,
+  decodeStrictHnsJsonBytes,
   HNS_OWNER_ACTOR_MAX_BYTES,
   HNS_OWNER_CEREMONY_MAX_BYTES,
   HNS_OWNER_CHAIN_NETWORK_MAX_BYTES,
@@ -87,6 +90,7 @@ export {
   HnsOwnerResponseDecodeError,
   hnsNamespaceStartHash,
   hnsNamespaceStartPreimage,
+  hnsOwnerChallengeName,
   hnsOwnerChallengeValue,
   hnsOwnerChallengeValueSha256,
   hnsOwnershipEvidencePreimage,

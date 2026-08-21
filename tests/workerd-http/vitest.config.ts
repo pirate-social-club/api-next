@@ -66,7 +66,51 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./tests/workerd-http/wrangler.jsonc" },
-      miniflare: { alias },
+      miniflare: {
+        alias,
+        serviceBindings: {
+          HNS_OWNER_VERIFIER: async (request) => {
+            const url = new URL(request.url);
+            if (
+              request.method !== "POST" ||
+              request.headers.get("content-type") !== "application/json" ||
+              request.headers.get("pirate-namespace-session-id") !== "namespace-session-workerd"
+            ) {
+              return new Response(null, { status: 422 });
+            }
+            if (url.pathname === "/internal/hns-owner/v1/start") {
+              if (request.headers.get("accept") !== "application/json") {
+                return new Response(null, { status: 422 });
+              }
+              return Response.json({
+                upstream_session_ref: "upstream-workerd-binding",
+                expires_at: "2099-01-01T00:00:00.000Z",
+                presentation: {
+                  kind: "embedded_sdk",
+                  session_id: "upstream-workerd-binding",
+                  protocol: "hns-txt-challenge",
+                  version: "1",
+                  payload: {
+                    ownership_source: "hns_parent_chain_txt",
+                    challenge_name: "jazleeuw",
+                    challenge_value: "pirate-verification=upstream-workerd-binding",
+                    expires_at: "2099-01-01T00:00:00.000Z",
+                  },
+                },
+              });
+            }
+            if (url.pathname === "/internal/hns-owner/v1/poll") {
+              if (request.headers.get("accept") !== "application/octet-stream") {
+                return new Response(null, { status: 422 });
+              }
+              return new Response(new Uint8Array([0, 1, 127, 255]), {
+                headers: { "content-type": "application/octet-stream" },
+              });
+            }
+            return new Response(null, { status: 404 });
+          },
+        },
+      },
     }),
   ],
   resolve: { alias },

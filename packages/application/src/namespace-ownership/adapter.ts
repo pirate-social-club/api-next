@@ -157,6 +157,19 @@ export type NamespaceOwnershipProviderStartInput = Schema.Schema.Type<
   typeof NamespaceOwnershipProviderStartInput
 >;
 
+export const NamespaceOwnershipProviderStartContext = Schema.Struct({
+  namespace_session_id: CanonicalNonEmptyString.check(
+    Schema.makeFilter((value) =>
+      new TextEncoder().encode(value).byteLength <= 256 && isControlFree(value)
+        ? undefined
+        : "Expected a bounded namespace session id without control characters",
+    ),
+  ),
+});
+export type NamespaceOwnershipProviderStartContext = Schema.Schema.Type<
+  typeof NamespaceOwnershipProviderStartContext
+>;
+
 export const NamespaceOwnershipProviderStartResult = Schema.Struct({
   session: NamespaceOwnershipSession,
   presentation: ProviderPresentation,
@@ -195,6 +208,9 @@ export const NamespaceOwnershipProviderCompleteInput = Schema.Struct({
 export type NamespaceOwnershipProviderCompleteInput = Schema.Schema.Type<
   typeof NamespaceOwnershipProviderCompleteInput
 >;
+
+export const NamespaceOwnershipProviderCompleteContext = NamespaceOwnershipProviderStartContext;
+export type NamespaceOwnershipProviderCompleteContext = NamespaceOwnershipProviderStartContext;
 
 export const NamespaceOwnershipProviderCompleteResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("pending") }),
@@ -290,8 +306,10 @@ export interface NamespaceOwnershipProviderAdapter {
   ) => Effect.Effect<NamespaceOwnershipProviderPlanResult, NamespaceOwnershipProviderFailure>;
   readonly start: (
     input: NamespaceOwnershipProviderStartInput,
+    context: NamespaceOwnershipProviderStartContext,
   ) => Effect.Effect<NamespaceOwnershipProviderStartResult, NamespaceOwnershipProviderFailure>;
   readonly complete: (
     input: NamespaceOwnershipProviderCompleteInput,
+    context: NamespaceOwnershipProviderCompleteContext,
   ) => Effect.Effect<NamespaceOwnershipProviderCompleteResult, NamespaceOwnershipProviderFailure>;
 }

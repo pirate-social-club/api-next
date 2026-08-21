@@ -46,6 +46,7 @@ const startInput = {
   environment: "staging",
   route,
 };
+const startContext = { namespace_session_id: "namespace-session-1" } as const;
 const session = {
   ...startInput,
   provider_id: "test.hns-owner",
@@ -102,7 +103,9 @@ describe("namespace ownership provider registry", () => {
     await expect(
       Effect.runPromise(provider.plan({ route, environment: "staging" })),
     ).resolves.toMatchObject({ status: "supported", protocol_version: "hns-owner-txt-v1" });
-    await expect(Effect.runPromise(provider.start(startInput))).resolves.toMatchObject({
+    await expect(
+      Effect.runPromise(provider.start(startInput, startContext)),
+    ).resolves.toMatchObject({
       session: { actor_id: "user-1", request_hash: "b".repeat(64) },
       presentation: { session_id: "upstream-hns-1" },
     });
@@ -163,9 +166,9 @@ describe("namespace ownership provider registry", () => {
     );
     const provider = await Effect.runPromise(registry.resolve("hns"));
 
-    await expect(Effect.runPromise(provider.start(startInput))).rejects.toBeInstanceOf(
-      NamespaceOwnershipProviderInvalidResponse,
-    );
+    await expect(
+      Effect.runPromise(provider.start(startInput, startContext)),
+    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
   });
 
   test("rejects oversized provider presentation and upstream reference fields", async () => {
@@ -196,9 +199,9 @@ describe("namespace ownership provider registry", () => {
         }),
       );
       const provider = await Effect.runPromise(registry.resolve("hns"));
-      await expect(Effect.runPromise(provider.start(startInput))).rejects.toBeInstanceOf(
-        NamespaceOwnershipProviderInvalidResponse,
-      );
+      await expect(
+        Effect.runPromise(provider.start(startInput, startContext)),
+      ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
     }
 
     const oversizedReference = "r".repeat(NAMESPACE_OWNERSHIP_UPSTREAM_SESSION_REF_MAX_BYTES + 1);
@@ -218,9 +221,9 @@ describe("namespace ownership provider registry", () => {
       ),
     );
     const provider = await Effect.runPromise(registry.resolve("hns"));
-    await expect(Effect.runPromise(provider.start(startInput))).rejects.toBeInstanceOf(
-      NamespaceOwnershipProviderInvalidResponse,
-    );
+    await expect(
+      Effect.runPromise(provider.start(startInput, startContext)),
+    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
   });
 
   test("rejects undeclared channels and oversized provider submissions before the adapter", async () => {
@@ -231,18 +234,24 @@ describe("namespace ownership provider registry", () => {
 
     await expect(
       Effect.runPromise(
-        provider.complete({
-          session,
-          submission: { channel: "client_result", payload: {} },
-        }),
+        provider.complete(
+          {
+            session,
+            submission: { channel: "client_result", payload: {} },
+          },
+          startContext,
+        ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderUnboundRejected);
     await expect(
       Effect.runPromise(
-        provider.complete({
-          session,
-          submission: { channel: "poll_result", payload: "x".repeat(1_048_577) },
-        }),
+        provider.complete(
+          {
+            session,
+            submission: { channel: "poll_result", payload: "x".repeat(1_048_577) },
+          },
+          startContext,
+        ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderUnboundRejected);
   });
@@ -276,10 +285,13 @@ describe("namespace ownership provider registry", () => {
     const acceptedProvider = await Effect.runPromise(accepted.resolve("hns"));
     await expect(
       Effect.runPromise(
-        acceptedProvider.complete({
-          session,
-          submission: { channel: "poll_result", payload: {} },
-        }),
+        acceptedProvider.complete(
+          {
+            session,
+            submission: { channel: "poll_result", payload: {} },
+          },
+          startContext,
+        ),
       ),
     ).resolves.toEqual(verified);
 
@@ -299,10 +311,13 @@ describe("namespace ownership provider registry", () => {
     const lateProvider = await Effect.runPromise(late.resolve("hns"));
     await expect(
       Effect.runPromise(
-        lateProvider.complete({
-          session,
-          submission: { channel: "poll_result", payload: {} },
-        }),
+        lateProvider.complete(
+          {
+            session,
+            submission: { channel: "poll_result", payload: {} },
+          },
+          startContext,
+        ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
 
@@ -324,10 +339,13 @@ describe("namespace ownership provider registry", () => {
       const staleProvider = await Effect.runPromise(stale.resolve("hns"));
       await expect(
         Effect.runPromise(
-          staleProvider.complete({
-            session,
-            submission: { channel: "poll_result", payload: {} },
-          }),
+          staleProvider.complete(
+            {
+              session,
+              submission: { channel: "poll_result", payload: {} },
+            },
+            startContext,
+          ),
         ),
       ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
     }
@@ -341,10 +359,13 @@ describe("namespace ownership provider registry", () => {
     const noExpiryProvider = await Effect.runPromise(noExpiry.resolve("hns"));
     await expect(
       Effect.runPromise(
-        noExpiryProvider.complete({
-          session,
-          submission: { channel: "poll_result", payload: {} },
-        }),
+        noExpiryProvider.complete(
+          {
+            session,
+            submission: { channel: "poll_result", payload: {} },
+          },
+          startContext,
+        ),
       ),
     ).resolves.toEqual(noExpiryResult);
   });

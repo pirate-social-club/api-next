@@ -2,6 +2,7 @@ import type { CommunityRouteFamilyV1 } from "@pirate/contracts";
 import { Context, Data, Effect, Layer, Option, Schema } from "effect";
 import {
   type NamespaceOwnershipProviderAdapter,
+  NamespaceOwnershipProviderCompleteContext,
   NamespaceOwnershipProviderCompleteInput,
   NamespaceOwnershipProviderCompleteResult,
   type NamespaceOwnershipProviderFailure,
@@ -13,6 +14,7 @@ import {
   NamespaceOwnershipProviderPlanInput,
   NamespaceOwnershipProviderPlanResult,
   NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderStartContext,
   NamespaceOwnershipProviderStartInput,
   NamespaceOwnershipProviderStartResult,
   NamespaceOwnershipProviderUnavailable,
@@ -196,19 +198,24 @@ function guardAdapter(
         }),
       );
     },
-    start: (untrustedInput) => {
+    start: (untrustedInput, untrustedContext) => {
       const input = Schema.decodeUnknownOption(
         NamespaceOwnershipProviderStartInput,
         exactParseOptions,
       )(untrustedInput);
+      const context = Schema.decodeUnknownOption(
+        NamespaceOwnershipProviderStartContext,
+        exactParseOptions,
+      )(untrustedContext);
       if (
         Option.isNone(input) ||
+        Option.isNone(context) ||
         !inputSupported(manifest, input.value) ||
         !manifest.protocol_versions.includes(input.value.protocol_version)
       ) {
         return Effect.fail(unboundRejected(manifest.provider_id, "start"));
       }
-      return Effect.suspend(() => adapter.start(input.value)).pipe(
+      return Effect.suspend(() => adapter.start(input.value, context.value)).pipe(
         Effect.timeout(manifest.operation_deadlines.start_ms),
         Effect.catchTag("TimeoutError", () =>
           Effect.fail(unavailable(manifest.provider_id, "start")),
@@ -248,19 +255,24 @@ function guardAdapter(
         }),
       );
     },
-    complete: (untrustedInput) => {
+    complete: (untrustedInput, untrustedContext) => {
       const input = Schema.decodeUnknownOption(
         NamespaceOwnershipProviderCompleteInput,
         exactParseOptions,
       )(untrustedInput);
+      const context = Schema.decodeUnknownOption(
+        NamespaceOwnershipProviderCompleteContext,
+        exactParseOptions,
+      )(untrustedContext);
       if (
         Option.isNone(input) ||
+        Option.isNone(context) ||
         !compatibleSession(manifest, input.value.session, now()) ||
         !manifest.submission_channels.includes(input.value.submission.channel)
       ) {
         return Effect.fail(unboundRejected(manifest.provider_id, "complete"));
       }
-      return Effect.suspend(() => adapter.complete(input.value)).pipe(
+      return Effect.suspend(() => adapter.complete(input.value, context.value)).pipe(
         Effect.timeout(manifest.operation_deadlines.complete_ms),
         Effect.catchTag("TimeoutError", () =>
           Effect.fail(unavailable(manifest.provider_id, "complete")),
