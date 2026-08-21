@@ -189,7 +189,7 @@ describe("HNS ownership evidence ABI", () => {
       `${pending}${" ".repeat(HNS_OWNER_MAX_RESPONSE_BYTES - pending.length)}`,
     );
     expect(exactMaximum.byteLength).toBe(HNS_OWNER_MAX_RESPONSE_BYTES);
-    expect(decodeHnsOwnerResponseBytes(exactMaximum).response).toEqual({ status: "pending" });
+    expect(() => decodeHnsOwnerResponseBytes(exactMaximum)).toThrow(HnsOwnerResponseDecodeError);
   });
 
   test("rejects duplicate JSON object members including escaped aliases", () => {
@@ -198,6 +198,16 @@ describe("HNS ownership evidence ABI", () => {
         new TextEncoder().encode('{"status":"pending","\\u0073tatus":"pending"}'),
       ),
     ).toThrow(HnsOwnerResponseDecodeError);
+    for (const nonCanonical of [
+      '{ "status":"pending"}',
+      '{"status" : "pending"}',
+      '{"status":"pending"}\n',
+      '{"status":"pending","extra":1e0}',
+    ]) {
+      expect(() => decodeHnsOwnerResponseBytes(new TextEncoder().encode(nonCanonical))).toThrow(
+        HnsOwnerResponseDecodeError,
+      );
+    }
   });
 
   test("binds the digest to the target evidence reservation and rejects tampering", async () => {

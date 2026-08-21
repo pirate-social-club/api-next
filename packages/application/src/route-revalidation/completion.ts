@@ -243,7 +243,7 @@ export type HnsRouteRevalidationCompletionFinalizeOutcome =
   | { readonly kind: "consumed" }
   | { readonly kind: "consumed_without_terminal" }
   | { readonly kind: "lease_lost" }
-  | { readonly kind: "stale_cas" }
+  | { readonly kind: "stale_cas"; readonly result_hash: string }
   | { readonly kind: "binding_conflict" };
 
 export type HnsRouteRevalidationCompletionReleaseOutcome =
@@ -306,6 +306,7 @@ export interface HnsRouteRevalidationCompletionStore {
       readonly completion_request_hash: string;
       readonly result_hash: string;
       readonly expired_result_hash: string;
+      readonly stale_result_hash: string;
       readonly attempt: HnsRouteRevalidationCompletionAttemptReservation;
       readonly status: Exclude<HnsRouteRevalidationTerminalStatus, "verified">;
       /** Provider observation expiry, required only for database_time_expired. */
@@ -337,6 +338,8 @@ export interface HnsRouteRevalidationCompletionStore {
       readonly completion_request_hash: string;
       readonly result_hash: string;
       readonly expired_result_hash: string;
+      readonly stale_result_hash: string;
+      readonly database_time_expired_result_hash: string;
       readonly attempt: HnsRouteRevalidationCompletionAttemptReservation;
       readonly verified: HnsRouteRevalidationVerifiedCompletion;
     }>,
@@ -736,7 +739,7 @@ function settleFinalize(
     return Effect.fail(new HnsRouteRevalidationCompletionRejected({ reason: "binding_conflict" }));
   }
   if (outcome.kind === "stale_cas") {
-    return Effect.succeed(response(stored, "stale_cas", false, resultHash, null));
+    return Effect.succeed(response(stored, "stale_cas", false, outcome.result_hash, null));
   }
   if (outcome.kind === "lease_lost") {
     return Effect.succeed(response(stored, "unavailable", false, null, retryAfter));
@@ -747,11 +750,13 @@ function settleFinalize(
   const status =
     outcome.kind === "expired"
       ? "session_expired"
-      : outcome.kind === "replay"
+      : outcome.kind === "replay" || outcome.kind === "committed"
         ? outcome.status
         : requestedStatus;
   const hash =
-    outcome.kind === "expired" || outcome.kind === "replay" ? outcome.result_hash : resultHash;
+    outcome.kind === "expired" || outcome.kind === "replay" || outcome.kind === "committed"
+      ? outcome.result_hash
+      : resultHash;
   return Effect.succeed(response(stored, status, outcome.kind === "replay", hash, null));
 }
 
@@ -900,6 +905,9 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
   const expiredResultHash = yield* Effect.promise(() =>
     hnsRouteRevalidationResultHash(terminalHashInput(input, attempt, "session_expired", null)),
   );
+  const staleResultHash = yield* Effect.promise(() =>
+    hnsRouteRevalidationResultHash(terminalHashInput(input, attempt, "stale_cas", null)),
+  );
   // Deliberately awaited after reserve has committed; no store transaction spans this call.
   const providerEffect = Effect.try({
     try: () => services.provider.complete({ session: stored.session }),
@@ -961,6 +969,7 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
       completion_request_hash: completionRequestHash,
       result_hash: resultHash,
       expired_result_hash: expiredResultHash,
+      stale_result_hash: staleResultHash,
       attempt,
       status,
       observed_expires_at: null,
@@ -972,28 +981,38 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
   // distinct from a semantically contradictory observation, which consumes
   // the attempt without inventing a terminal result.
   const providerExpiresAt = Date.parse(providerResult.value.observation.expires_at);
+  const providerObservedAt = Date.parse(providerResult.value.observation.observed_at);
   const databaseNow = Date.parse(stored.database_now);
+  const databaseTimeExpiredResultHash = yield* Effect.promise(() =>
+    hnsRouteRevalidationResultHash(
+      terminalHashInput(input, attempt, "database_time_expired", null),
+    ),
+  );
   if (
     Number.isFinite(providerExpiresAt) &&
+    Number.isFinite(providerObservedAt) &&
     Number.isFinite(databaseNow) &&
+    providerObservedAt <= databaseNow &&
+    providerExpiresAt > providerObservedAt &&
     providerExpiresAt <= databaseNow
   ) {
-    const resultHash = yield* Effect.promise(() =>
-      hnsRouteRevalidationResultHash(
-        terminalHashInput(input, attempt, "database_time_expired", null),
-      ),
-    );
     const outcome = yield* services.store.reject({
       expected: stored,
       idempotency_key: input.idempotency_key,
       completion_request_hash: completionRequestHash,
-      result_hash: resultHash,
+      result_hash: databaseTimeExpiredResultHash,
       expired_result_hash: expiredResultHash,
+      stale_result_hash: staleResultHash,
       attempt,
       status: "database_time_expired",
       observed_expires_at: providerResult.value.observation.expires_at,
     });
-    return yield* settleFinalize(stored, outcome, "database_time_expired", resultHash);
+    return yield* settleFinalize(
+      stored,
+      outcome,
+      "database_time_expired",
+      databaseTimeExpiredResultHash,
+    );
   }
 
   const verified = yield* buildVerifiedEnvelope(stored, attempt, providerResult.value).pipe(
@@ -1023,6 +1042,8 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
     completion_request_hash: completionRequestHash,
     result_hash: resultHash,
     expired_result_hash: expiredResultHash,
+    stale_result_hash: staleResultHash,
+    database_time_expired_result_hash: databaseTimeExpiredResultHash,
     attempt,
     verified: verified.value,
   });

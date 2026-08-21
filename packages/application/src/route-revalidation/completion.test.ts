@@ -475,11 +475,11 @@ test("returns typed stale_cas without mutating the completion", async () => {
       raw_response_bytes: verifiedBytes(observation()),
     },
     stored(),
-    { kind: "stale_cas" },
+    { kind: "stale_cas", result_hash: "b".repeat(64) },
   );
   const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
   expect(result.status).toBe("stale_cas");
-  expect(result.result_hash).toMatch(/^[0-9a-f]{64}$/);
+  expect(result.result_hash).toBe("b".repeat(64));
   expect(h.calls.verify).toBe(1);
 });
 

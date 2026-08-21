@@ -3,6 +3,8 @@ import {
   type ControlPlaneError,
   type ControlPlaneResult,
   type ControlPlaneTransaction,
+} from "@pirate/application";
+import {
   type HnsRouteRevalidationCompletionAttempt,
   type HnsRouteRevalidationCompletionFinalizeOutcome,
   type HnsRouteRevalidationCompletionReleaseOutcome,
@@ -11,10 +13,11 @@ import {
   type HnsRouteRevalidationCompletionStore,
   type HnsRouteRevalidationSessionV1,
   type HnsRouteRevalidationStoredCompletion,
+  type HnsRouteRevalidationTerminalOutcomeV1,
   hnsRouteRevalidationCompletionHash,
-  hnsRouteRevalidationResultHash,
+  hnsRouteRevalidationResultPreimage,
   type HnsRouteRevalidationCompletionAttemptReservation as Reservation,
-} from "@pirate/application";
+} from "@pirate/application/route-revalidation";
 import { HnsTxtChallengeV1 } from "@pirate/contracts";
 import { ProviderConfigurationRef, Sha256Hex } from "@pirate/domain/verification";
 import { Effect, type Layer, Option, Schema } from "effect";
@@ -23,6 +26,44 @@ type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
 const exactParseOptions = { onExcessProperty: "error" } as const;
 const storageFailure = () => new HnsRouteRevalidationCompletionStorageFailed({});
+
+function terminalResultDocument(
+  attempt: Reservation,
+  idempotencyKey: string,
+  completionRequestHash: string,
+  status: HnsRouteRevalidationTerminalOutcomeV1,
+  evidence: Readonly<{
+    evidence_ref: string;
+    evidence_digest: string;
+    provider_identity_digest: string;
+  }> | null,
+): string {
+  const authority =
+    status === "verified"
+      ? { ownership: "verified", lifecycle: "active" }
+      : status === "missing_root" || status === "revoked"
+        ? { ownership: "revoked", lifecycle: "suspended" }
+        : status === "control_failed" || status === "challenge_mismatch" || status === "disputed"
+          ? { ownership: "disputed", lifecycle: "suspended" }
+          : status === "insufficient_expiry" || status === "database_time_expired"
+            ? { ownership: "expired", lifecycle: "suspended" }
+            : { ownership: null, lifecycle: null };
+  return hnsRouteRevalidationResultPreimage({
+    route_revalidation_id: attempt.route_revalidation_id,
+    revalidation_session_id: attempt.revalidation_session_id,
+    route_revalidation_attempt_id: attempt.route_revalidation_attempt_id,
+    route_binding_id: attempt.route_binding_id,
+    expected_binding_generation: attempt.expected_binding_generation,
+    idempotency_key: idempotencyKey,
+    completion_request_hash: completionRequestHash,
+    outcome_status: status,
+    evidence_ref_or_null: evidence?.evidence_ref ?? null,
+    evidence_digest_or_null: evidence?.evidence_digest ?? null,
+    provider_identity_digest_or_null: evidence?.provider_identity_digest ?? null,
+    ownership_status_or_null: authority.ownership,
+    route_lifecycle_status_or_null: authority.lifecycle,
+  });
+}
 
 function oneRow<RowType>(result: ControlPlaneResult<RowType>): RowType | null | undefined {
   if (result.rows.length > 1) return undefined;
@@ -234,7 +275,12 @@ function attemptFromRow(row: Row, prefix: string): HnsRouteRevalidationCompletio
     return null;
   const kind = optionalStringValue(row, `${prefix}consumption_kind`);
   const resultHash = optionalStringValue(row, `${prefix}result_hash`);
-  if (state === "consumed" && (kind === null || resultHash === null || !validHash(resultHash)))
+  if (
+    state === "consumed" &&
+    (kind === null ||
+      (kind === "challenge_mismatch" && resultHash !== null) ||
+      (kind !== "challenge_mismatch" && (resultHash === null || !validHash(resultHash))))
+  )
     return null;
   if (state !== "consumed" && (kind !== null || resultHash !== null)) return null;
   return {
@@ -290,19 +336,23 @@ function storedFromRow(row: Row): HnsRouteRevalidationStoredCompletion | null {
   const expectedGeneration = integerValue(row.expected_binding_generation);
   const status = row.status;
   const sessionStatus = status as HnsRouteRevalidationSessionV1["status"];
+  const databaseNowValue = timestampValue(row, "database_now");
   const current = attemptFromRow(row, "current_");
   const terminalAttempt = attemptFromRow(row, "terminal_");
-  if (session === null || expectedGeneration === null || session.status !== sessionStatus)
+  if (
+    session === null ||
+    expectedGeneration === null ||
+    databaseNowValue === null ||
+    session.status !== sessionStatus
+  )
     return null;
-  const databaseNow = timestampValue(row, "database_now");
-  if (databaseNow === null) return null;
   if (sessionStatus === "pending") {
     return terminalAttempt === null
       ? {
           route_revalidation_id: session.authority.route_revalidation_id,
           revalidation_session_id: session.revalidation_session_id,
           expected_binding_generation: expectedGeneration,
-          database_now: databaseNow,
+          database_now: databaseNowValue,
           session,
           status: sessionStatus,
           terminal: null,
@@ -321,7 +371,7 @@ function storedFromRow(row: Row): HnsRouteRevalidationStoredCompletion | null {
     route_revalidation_id: session.authority.route_revalidation_id,
     revalidation_session_id: session.revalidation_session_id,
     expected_binding_generation: expectedGeneration,
-    database_now: databaseNow,
+    database_now: databaseNowValue,
     session,
     status: sessionStatus,
     terminal: {
@@ -361,6 +411,7 @@ function loadStored(
                   WHERE latest.route_revalidation_id = s.route_revalidation_id
                     AND latest.revalidation_session_id = s.revalidation_session_id
                     AND latest.state = 'consumed'
+                    AND latest.result_hash IS NOT NULL
                   ORDER BY latest.attempt_number DESC
                   LIMIT 1
                ) AS ta ON TRUE
@@ -472,8 +523,19 @@ const attemptReturning = `
 
 function replayOrConflict(
   stored: HnsRouteRevalidationStoredCompletion,
+  input: Readonly<{ idempotency_key: string; completion_request_hash: string }>,
 ): HnsRouteRevalidationCompletionReservationOutcome {
-  return stored.terminal === null ? { kind: "consumed" } : { kind: "replay", stored };
+  if (
+    stored.attempt?.state === "consumed" &&
+    stored.attempt.consumption_kind === "challenge_mismatch" &&
+    stored.attempt.result_hash === null
+  )
+    return { kind: "consumed" };
+  if (stored.terminal === null) return { kind: "consumed" };
+  return stored.terminal.idempotency_key === input.idempotency_key &&
+    stored.terminal.completion_request_hash === input.completion_request_hash
+    ? { kind: "replay", stored }
+    : { kind: "idempotency_conflict" };
 }
 
 function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletionStore {
@@ -492,7 +554,12 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
         never
       >((transaction) =>
         Effect.gen(function* () {
-          if (input.lease_ms <= 0 || input.lease_ms > 16_000 || input.max_consumed_attempts !== 3)
+          if (
+            input.lease_ms <= 0 ||
+            input.lease_ms > 16_000 ||
+            input.max_consumed_attempts !== 3 ||
+            input.idempotency_key.trim() !== input.idempotency_key
+          )
             return { kind: "binding_conflict" } as const;
           const initial = yield* loadStored(transaction, input);
           if (initial === null) return { kind: "not_found" } as const;
@@ -503,7 +570,15 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
               input.expected_verified_evidence_ref
           )
             return { kind: "binding_conflict" } as const;
-          if (initial.terminal !== null) return replayOrConflict(initial);
+          if (initial.terminal !== null) {
+            const terminalAttempt = initial.attempt;
+            return terminalAttempt === null
+              ? ({ kind: "idempotency_conflict" } as const)
+              : replayOrConflict(initial, {
+                  idempotency_key: input.idempotency_key,
+                  completion_request_hash: terminalAttempt.completion_request_hash,
+                });
+          }
           const routeLock = yield* lockRoute(transaction, initial.session, true);
           if (routeLock === null) return { kind: "binding_conflict" } as const;
           const lock = yield* transaction.execute<Row>({
@@ -517,7 +592,15 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
             return { kind: "not_found" } as const;
           const current = yield* loadStored(transaction, input);
           if (current === null) return { kind: "not_found" } as const;
-          if (current.terminal !== null) return replayOrConflict(current);
+          if (current.terminal !== null) {
+            const terminalAttempt = current.attempt;
+            return terminalAttempt === null
+              ? ({ kind: "idempotency_conflict" } as const)
+              : replayOrConflict(current, {
+                  idempotency_key: input.idempotency_key,
+                  completion_request_hash: terminalAttempt.completion_request_hash,
+                });
+          }
           const now = yield* databaseNow(transaction);
           const existingResult = yield* transaction.execute<Row>({
             label: "route-revalidation.completion.lock-attempt",
@@ -535,7 +618,28 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
           if (existing === undefined) return yield* Effect.fail(storageFailure());
           if (existing !== null) {
             const existingAttempt = attemptFromRow(existing, "current_");
-            if (existingAttempt === null) return { kind: "binding_conflict" } as const;
+            const expectedHash =
+              existingAttempt === null
+                ? null
+                : yield* Effect.promise(() =>
+                    hnsRouteRevalidationCompletionHash({
+                      route_revalidation_id: existingAttempt.route_revalidation_id,
+                      revalidation_session_id: existingAttempt.revalidation_session_id,
+                      route_revalidation_attempt_id: existingAttempt.route_revalidation_attempt_id,
+                      route_binding_id: existingAttempt.route_binding_id,
+                      expected_binding_generation: existingAttempt.expected_binding_generation,
+                      expected_verified_evidence_ref:
+                        existingAttempt.expected_verified_evidence_ref,
+                      attempt_number: existingAttempt.attempt_number,
+                      idempotency_key: input.idempotency_key,
+                      evidence_ref: existingAttempt.evidence_ref,
+                    }),
+                  );
+            if (
+              existingAttempt === null ||
+              existingAttempt.completion_request_hash !== expectedHash
+            )
+              return { kind: "idempotency_conflict" } as const;
             if (existingAttempt.state === "consumed") return { kind: "consumed" } as const;
             const leaseLive = Date.parse(existingAttempt.lease_expires_at) > Date.parse(now);
             if (existingAttempt.state === "leased" && leaseLive)
@@ -602,8 +706,9 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
           if (consumedCount === null) return yield* Effect.fail(storageFailure());
           if (consumedCount >= input.max_consumed_attempts)
             return { kind: "budget_exhausted" } as const;
-          const completionAttemptId = globalThis.crypto.randomUUID();
-          const evidenceRef = `route-revalidation-evidence-${globalThis.crypto.randomUUID()}`;
+          const completionAttemptId = `route_revalidation_attempt_${globalThis.crypto.randomUUID()}`;
+          const evidenceRef = `route_revalidation_evidence_${globalThis.crypto.randomUUID()}`;
+          const attemptNumber = consumedCount + 1;
           const completionRequestHash = yield* Effect.promise(() =>
             hnsRouteRevalidationCompletionHash({
               route_revalidation_id: input.route_revalidation_id,
@@ -612,7 +717,7 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
               route_binding_id: initial.session.authority.route_binding_id,
               expected_binding_generation: input.expected_binding_generation,
               expected_verified_evidence_ref: input.expected_verified_evidence_ref,
-              attempt_number: consumedCount + 1,
+              attempt_number: attemptNumber,
               idempotency_key: input.idempotency_key,
               evidence_ref: evidenceRef,
             }),
@@ -635,7 +740,7 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
               initial.session.authority.route_binding_id,
               input.expected_binding_generation,
               input.expected_verified_evidence_ref,
-              consumedCount + 1,
+              attemptNumber,
               input.idempotency_key,
               completionRequestHash,
               evidenceRef,
@@ -665,7 +770,7 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
         never
       >((transaction) =>
         Effect.gen(function* () {
-          const route = yield* lockRoute(transaction, input.expected.session, false);
+          const route = yield* lockRoute(transaction, input.expected.session, true);
           if (route === null) return { kind: "binding_conflict" } as const;
           const now = yield* databaseNow(transaction);
           const stateResult = yield* transaction.execute<Row>({
@@ -710,6 +815,14 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
               input.completion_request_hash,
               "session_expired",
               input.expired_result_hash,
+              terminalResultDocument(
+                input.attempt,
+                input.idempotency_key,
+                input.completion_request_hash,
+                "session_expired",
+                null,
+              ),
+              null,
               now,
             );
             if (!consumed) return { kind: "lease_lost" } as const;
@@ -788,6 +901,14 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
                 input.completion_request_hash,
                 "session_expired",
                 input.expired_result_hash,
+                terminalResultDocument(
+                  input.attempt,
+                  input.idempotency_key,
+                  input.completion_request_hash,
+                  "session_expired",
+                  null,
+                ),
+                null,
                 now,
               );
               if (consumed && (yield* expireSession(transaction, input.expected, now)))
@@ -795,12 +916,74 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
             }
             return { kind: "lease_lost" } as const;
           }
+          const authority = input.expected.session.authority;
           if (
-            input.status === "database_time_expired" &&
-            (input.observed_expires_at === null ||
-              Date.parse(input.observed_expires_at) > Date.parse(now))
-          )
-            return { kind: "binding_conflict" } as const;
+            integerValue(route.binding_generation) !== authority.expected_binding_generation ||
+            route.verified_evidence_ref !== authority.expected_verified_evidence_ref
+          ) {
+            const consumed = yield* consumeAttempt(
+              transaction,
+              input.attempt,
+              input.idempotency_key,
+              input.completion_request_hash,
+              "stale_cas",
+              input.stale_result_hash,
+              terminalResultDocument(
+                input.attempt,
+                input.idempotency_key,
+                input.completion_request_hash,
+                "stale_cas",
+                null,
+              ),
+              null,
+              now,
+            );
+            if (
+              consumed &&
+              (yield* transitionSession(transaction, input.expected, "failed", now))
+            ) {
+              return {
+                kind: "committed",
+                status: "stale_cas",
+                result_hash: input.stale_result_hash,
+              } as const;
+            }
+            return { kind: "lease_lost" } as const;
+          }
+          const routeState =
+            input.status === "missing_root" || input.status === "revoked"
+              ? "revoked"
+              : input.status === "insufficient_expiry" || input.status === "database_time_expired"
+                ? "expired"
+                : "disputed";
+          const updated = yield* transaction.execute({
+            label: "route-revalidation.completion.suspend-binding",
+            text: `UPDATE community_canonical_route_bindings
+                      SET binding_generation = binding_generation + 1,
+                          verified_evidence_ref = NULL,
+                          ownership_status = $1,
+                          route_lifecycle_status = 'suspended',
+                          updated_at = $2::timestamptz
+                    WHERE community_id = $3 AND route_binding_id = $4
+                      AND binding_generation = $5
+                      AND verified_evidence_ref IS NOT DISTINCT FROM $6
+                      AND family = $7 AND root_label = $8
+                      AND root_label_display = $9 AND path_segment = $10`,
+            values: [
+              routeState,
+              now,
+              authority.community_id,
+              authority.route_binding_id,
+              authority.expected_binding_generation,
+              authority.expected_verified_evidence_ref,
+              authority.family,
+              authority.root_label,
+              authority.root_label_display,
+              authority.path_segment,
+            ],
+            readonly: false,
+          });
+          if (updated.rowCount !== 1) return { kind: "binding_conflict" } as const;
           const consumed = yield* consumeAttempt(
             transaction,
             input.attempt,
@@ -808,6 +991,14 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
             input.completion_request_hash,
             input.status,
             input.result_hash,
+            terminalResultDocument(
+              input.attempt,
+              input.idempotency_key,
+              input.completion_request_hash,
+              input.status,
+              null,
+            ),
+            input.observed_expires_at,
             now,
           );
           if (!consumed) return { kind: "lease_lost" } as const;
@@ -831,31 +1022,54 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
   const reject = (input: Parameters<HnsRouteRevalidationCompletionStore["reject"]>[0]) =>
     finalizeFailure(input);
   const consume = (input: Parameters<HnsRouteRevalidationCompletionStore["consume"]>[0]) =>
-    Effect.gen(function* () {
-      const resultHash = yield* Effect.promise(() =>
-        hnsRouteRevalidationResultHash({
-          route_revalidation_id: input.expected.route_revalidation_id,
-          revalidation_session_id: input.expected.revalidation_session_id,
-          route_revalidation_attempt_id: input.attempt.route_revalidation_attempt_id,
-          route_binding_id: input.attempt.route_binding_id,
-          expected_binding_generation: input.expected.expected_binding_generation,
-          idempotency_key: input.idempotency_key,
-          completion_request_hash: input.completion_request_hash,
-          outcome_status: input.consumption_kind,
-          evidence_ref_or_null: null,
-          evidence_digest_or_null: null,
-          provider_identity_digest_or_null: null,
-          ownership_status_or_null: "disputed",
-          route_lifecycle_status_or_null: "suspended",
+    db
+      .withTransaction<
+        HnsRouteRevalidationCompletionFinalizeOutcome,
+        HnsRouteRevalidationCompletionStorageFailed | ControlPlaneError,
+        never
+      >((transaction) =>
+        Effect.gen(function* () {
+          const route = yield* lockRoute(transaction, input.expected.session, false);
+          if (route === null) return { kind: "binding_conflict" } as const;
+          const now = yield* databaseNow(transaction);
+          const current = yield* loadStored(transaction, {
+            route_revalidation_id: input.expected.route_revalidation_id,
+            revalidation_session_id: input.expected.revalidation_session_id,
+            idempotency_key: input.idempotency_key,
+          });
+          if (current === null) return { kind: "binding_conflict" } as const;
+          if (current.terminal !== null) return { kind: "consumed" } as const;
+          const attempt = current.attempt;
+          if (
+            attempt === null ||
+            attempt.state !== "leased" ||
+            attempt.fence_token !== input.attempt.fence_token ||
+            attempt.completion_request_hash !== input.completion_request_hash
+          )
+            return { kind: "lease_lost" } as const;
+          if (Date.parse(attempt.lease_expires_at) <= Date.parse(now))
+            return { kind: "lease_lost" } as const;
+          const consumed = yield* consumeAttempt(
+            transaction,
+            input.attempt,
+            input.idempotency_key,
+            input.completion_request_hash,
+            input.consumption_kind,
+            null,
+            null,
+            null,
+            now,
+          );
+          return consumed
+            ? ({ kind: "consumed_without_terminal" } as const)
+            : ({ kind: "lease_lost" } as const);
         }),
+      )
+      .pipe(
+        Effect.mapError((error) =>
+          error instanceof HnsRouteRevalidationCompletionStorageFailed ? error : storageFailure(),
+        ),
       );
-      return yield* finalizeFailure({
-        ...input,
-        result_hash: resultHash,
-        status: input.consumption_kind,
-        observed_expires_at: null,
-      });
-    });
 
   const verify = (input: Parameters<HnsRouteRevalidationCompletionStore["verify"]>[0]) =>
     db
@@ -915,14 +1129,77 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
               input.idempotency_key,
               input.completion_request_hash,
               "stale_cas",
-              input.result_hash,
+              input.stale_result_hash,
+              terminalResultDocument(
+                input.attempt,
+                input.idempotency_key,
+                input.completion_request_hash,
+                "stale_cas",
+                null,
+              ),
+              null,
               now,
             );
             if (consumed && (yield* transitionSession(transaction, input.expected, "failed", now)))
-              return { kind: "stale_cas" } as const;
+              return { kind: "stale_cas", result_hash: input.stale_result_hash } as const;
             return { kind: "lease_lost" } as const;
           }
           const envelope = input.verified.envelope;
+          if (Date.parse(envelope.expires_at) <= Date.parse(now)) {
+            const authority = input.expected.session.authority;
+            const suspended = yield* transaction.execute({
+              label: "route-revalidation.completion.expire-binding-at-finalize",
+              text: `UPDATE community_canonical_route_bindings
+                        SET binding_generation = binding_generation + 1,
+                            verified_evidence_ref = NULL,
+                            ownership_status = 'expired',
+                            route_lifecycle_status = 'suspended',
+                            updated_at = $1::timestamptz
+                      WHERE community_id = $2 AND route_binding_id = $3
+                        AND binding_generation = $4
+                        AND verified_evidence_ref IS NOT DISTINCT FROM $5
+                        AND family = $6 AND root_label = $7
+                        AND root_label_display = $8 AND path_segment = $9`,
+              values: [
+                now,
+                authority.community_id,
+                authority.route_binding_id,
+                authority.expected_binding_generation,
+                authority.expected_verified_evidence_ref,
+                authority.family,
+                authority.root_label,
+                authority.root_label_display,
+                authority.path_segment,
+              ],
+              readonly: false,
+            });
+            if (suspended.rowCount !== 1) return { kind: "binding_conflict" } as const;
+            const consumed = yield* consumeAttempt(
+              transaction,
+              input.attempt,
+              input.idempotency_key,
+              input.completion_request_hash,
+              "database_time_expired",
+              input.database_time_expired_result_hash,
+              terminalResultDocument(
+                input.attempt,
+                input.idempotency_key,
+                input.completion_request_hash,
+                "database_time_expired",
+                null,
+              ),
+              envelope.expires_at,
+              now,
+            );
+            if (!consumed) return { kind: "lease_lost" } as const;
+            return (yield* transitionSession(transaction, input.expected, "failed", now))
+              ? ({
+                  kind: "committed",
+                  status: "database_time_expired",
+                  result_hash: input.database_time_expired_result_hash,
+                } as const)
+              : ({ kind: "binding_conflict" } as const);
+          }
           const updated = yield* transaction.execute({
             label: "route-revalidation.completion.advance-binding",
             text: `UPDATE community_canonical_route_bindings
@@ -949,11 +1226,19 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
               input.idempotency_key,
               input.completion_request_hash,
               "stale_cas",
-              input.result_hash,
+              input.stale_result_hash,
+              terminalResultDocument(
+                input.attempt,
+                input.idempotency_key,
+                input.completion_request_hash,
+                "stale_cas",
+                null,
+              ),
+              null,
               now,
             );
             if (consumed && (yield* transitionSession(transaction, input.expected, "failed", now)))
-              return { kind: "stale_cas" } as const;
+              return { kind: "stale_cas", result_hash: input.stale_result_hash } as const;
             return { kind: "lease_lost" } as const;
           }
           if (
@@ -964,6 +1249,14 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
               input.completion_request_hash,
               "verified",
               input.result_hash,
+              terminalResultDocument(
+                input.attempt,
+                input.idempotency_key,
+                input.completion_request_hash,
+                "verified",
+                input.verified.envelope,
+              ),
+              null,
               now,
             ))
           )
@@ -1089,21 +1382,26 @@ function consumeAttempt(
   idempotencyKey: string,
   requestHash: string,
   kind: HnsRouteRevalidationCompletionAttempt["consumption_kind"] & string,
-  resultHash: string,
+  resultHash: string | null,
+  terminalDocument: string | null,
+  observedExpiresAt: string | null,
   now: string,
 ): Effect.Effect<boolean, ControlPlaneError | HnsRouteRevalidationCompletionStorageFailed> {
   return Effect.gen(function* () {
     const result = yield* transaction.execute({
       label: "route-revalidation.completion.consume-attempt",
       text: `UPDATE community_route_revalidation_completion_attempts
-                SET state = 'consumed', consumption_kind = $1, result_hash = $2,
-                    terminal_at = $3::timestamptz, updated_at = $3::timestamptz
-              WHERE route_revalidation_attempt_id = $4 AND revalidation_session_id = $5
-                AND idempotency_key = $6 AND completion_request_hash = $7
-                AND fence_token = $8 AND state = 'leased'`,
+              SET state = 'consumed', consumption_kind = $1, result_hash = $2,
+                    terminal_result_document = $3, terminal_observed_expires_at = $4::timestamptz,
+                    terminal_at = $5::timestamptz, updated_at = $5::timestamptz
+              WHERE route_revalidation_attempt_id = $6 AND revalidation_session_id = $7
+                AND idempotency_key = $8 AND completion_request_hash = $9
+                AND fence_token = $10 AND state = 'leased'`,
       values: [
         kind,
         resultHash,
+        terminalDocument,
+        observedExpiresAt,
         now,
         attempt.route_revalidation_attempt_id,
         attempt.revalidation_session_id,

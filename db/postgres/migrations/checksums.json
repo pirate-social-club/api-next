@@ -36,6 +36,6 @@
     "0033_namespace_ownership_challenge_topologies.sql": "8c61977312fa80550d2cd725c2907aaf4052b24b3b61f4081b8664ad3d67e843",
     "0034_effective_active_route.sql": "156bb4b27a1cdd22fe0d8dc7b679334b2060b27623644828490c26799862c49d",
     "0035_route_revalidation_persistence.sql": "a6a076e6b6edb734923145f1d3b4ab22c6cfcd956aba9075e0aaf9814e5d67de",
-    "0036_route_revalidation_completion_outcome_guard.sql": "3fa89d9b3e6701780d8e5aab4f12b9bd207c7eae490d7e8742cb11977ccac5fb"
+    "0036_route_revalidation_completion_outcome_guard.sql": "df6035bb3ca9a8e558f2d341e523065db536b0440e40a791b66220e09985d94b"
   }
 }

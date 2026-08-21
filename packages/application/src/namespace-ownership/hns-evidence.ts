@@ -236,6 +236,11 @@ export function decodeStrictHnsJsonBytes(value: unknown, maxBytes: number): unkn
     text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(value);
     const json = JSON.parse(text) as unknown;
     assertNoDuplicateJsonObjectKeys(text);
+    if (JSON.stringify(json) !== text) {
+      throw new HnsOwnerResponseDecodeError(
+        "HNS provider response must use the exact compact JSON.stringify representation",
+      );
+    }
     return json;
   } catch (error) {
     if (error instanceof HnsOwnerResponseDecodeError) throw error;
