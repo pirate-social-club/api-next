@@ -24,6 +24,8 @@
     "test:workerd": "vitest run --config tests/workerd/vitest.config.ts && vitest run --config tests/workerd-http/vitest.config.ts && vitest run --config tests/workerd-self/vitest.config.ts",
     "check:breaking": "bun scripts/check-openapi-breaking.ts --base-sha \"${OPENAPI_BASE_SHA:-HEAD^1}\"",
     "db:migrate": "bun scripts/postgres-migrations.ts",
+    "db:generate:baseline": "bun scripts/generate-postgres-baseline.ts",
+    "check:baseline:fresh": "bun scripts/check-postgres-baseline-fresh.ts",
     "db:seed:gates-age18": "bun scripts/seed-gates-v2-age18.ts",
     "db:preflight:m3": "bun scripts/m3-staging-preflight.ts",
     "verify:postgres-sentinels": "bun scripts/verify-postgres-test-sentinels.ts"
