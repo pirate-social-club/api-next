@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { TextPostModerationEvaluation } from "@pirate/application/use-cases/content/text-post";
 import { Effect } from "effect";
 import {
   castPostVoteInputFrom,
@@ -15,8 +16,31 @@ import type { DecodedRequest } from "./transport.ts";
 type CommunityStore = ProductHandlerServices["communityStore"];
 type ContentStore = ProductHandlerServices["contentStore"];
 type FeedStore = ProductHandlerServices["feedStore"];
+type TextStore = NonNullable<ProductHandlerServices["textPostStore"]>;
+type Moderation = NonNullable<ProductHandlerServices["textModeration"]>;
 
 const feed = { items: [], top_communities: [], next_cursor: null };
+const textSubmission = {
+  submission_id: "submission-a",
+  href: "/text-content-submissions/submission-a",
+  surface: "text_post" as const,
+  status: "published" as const,
+  result: { decision: "allow" as const, reason_code: null },
+  published_resource: { kind: "post" as const, post_id: "post-a", href: "/posts/post-a" },
+  review_ref: null,
+  created_at: "2026-08-21T12:00:00.000Z",
+  updated_at: "2026-08-21T12:00:00.000Z",
+};
+const textEvaluation: TextPostModerationEvaluation = {
+  version: "text-moderation-v1",
+  surface: "text_post",
+  decision: "allow",
+  reason_codes: [],
+  policy_revision: "text-policy-1",
+  policy_hash: "a".repeat(64),
+  input_sha256: "f854820405b8cebd6d3212d5de8cd9796b3e0c0c6b41f2ed8f72d961e504c89d",
+  evidence_ref: null,
+};
 
 const preview = (communityId: string) => ({
   id: communityId,
@@ -54,11 +78,15 @@ function stores(
   overrides: {
     readonly community?: Partial<CommunityStore>;
     readonly content?: Partial<ContentStore>;
+    readonly textPost?: Partial<TextStore>;
+    readonly textModeration?: Partial<Moderation>;
     readonly feed?: Partial<FeedStore>;
   } = {},
 ): {
   readonly communityStore: CommunityStore;
   readonly contentStore: ContentStore;
+  readonly textPostStore: TextStore;
+  readonly textModeration: Moderation;
   readonly feedStore: FeedStore;
 } {
   return {
@@ -84,6 +112,16 @@ function stores(
       clearPostVote: () => Effect.succeed(null),
       ...overrides.content,
     } as unknown as ContentStore,
+    textPostStore: {
+      replay: () => Effect.succeed({ kind: "none" as const }),
+      commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: textSubmission }),
+      getForAuthor: () => Effect.succeed(textSubmission),
+      ...overrides.textPost,
+    } as TextStore,
+    textModeration: {
+      evaluate: () => Effect.succeed(textEvaluation),
+      ...overrides.textModeration,
+    } as Moderation,
     feedStore: {
       listHome: () => Effect.succeed(feed),
       ...overrides.feed,
@@ -262,10 +300,6 @@ describe("HTTP product handlers", () => {
     const handlers = makeProductHandlers(
       stores({
         content: {
-          createPost: (input) => {
-            observed.push({ createPost: input });
-            return Effect.succeed({} as never);
-          },
           resolveComment: (input) => {
             observed.push({ resolveComment: input });
             return Effect.succeed({
@@ -289,6 +323,12 @@ describe("HTTP product handlers", () => {
           clearPostVote: (input) => {
             observed.push({ clearPostVote: input });
             return Effect.succeed({ post: input.postId, value: null });
+          },
+        },
+        textPost: {
+          commitTerminal: (input) => {
+            observed.push({ commitTerminal: input });
+            return Effect.succeed({ kind: "created" as const, snapshot: textSubmission });
           },
         },
       }),
@@ -348,15 +388,18 @@ describe("HTTP product handlers", () => {
       request({ params: { postId: "post-a" }, body: clearBody, principal }),
     );
 
-    expect(observed).toEqual([
-      {
-        createPost: {
-          communityId: "community-a",
-          actor: { userId: "user-a", kind: "user" },
-          body: postBody,
-          idempotencyBodyHash: expect.any(String),
-        },
+    expect(observed[0]).toMatchObject({
+      commitTerminal: {
+        communityId: "community-a",
+        actor: { userId: "user-a", kind: "user" },
+        body: postBody,
+        idempotencyKey: "post-key",
+        requestHash: expect.any(String),
+        operationId: expect.any(String),
+        evaluation: { decision: "allow", surface: "text_post" },
       },
+    });
+    expect(observed.slice(1)).toEqual([
       { resolveComment: { commentId: "comment-a" } },
       {
         createCommentReply: {
@@ -409,28 +452,14 @@ describe("HTTP product handlers", () => {
   });
 
   test("preserves repository replay results at the content handler seam", async () => {
-    const replay = {
-      id: "post-replayed",
-      object: "post" as const,
-      community: "community-a",
-      authorship_mode: "human_direct" as const,
-      identity_mode: "public" as const,
-      post_type: "text" as const,
-      status: "processing" as const,
-      visibility: "public" as const,
-      analysis_state: "pending" as const,
-      content_safety_state: "pending" as const,
-      age_gate_policy: "none" as const,
-      created: 1_700_000_000,
-    };
     const body = { post_type: "text" as const, idempotency_key: "replay-key", body: "hello" };
     let replayCalls = 0;
     const replayHandlers = makeProductHandlers(
       stores({
-        content: {
-          createPost: () => {
+        textPost: {
+          replay: () => {
             replayCalls += 1;
-            return Effect.succeed(replay);
+            return Effect.succeed({ kind: "replay" as const, snapshot: textSubmission });
           },
         },
       }),
@@ -444,7 +473,7 @@ describe("HTTP product handlers", () => {
           principal: { kind: "user", subject: "user-a" },
         }),
       ),
-    ).resolves.toEqual(replay);
+    ).resolves.toEqual(textSubmission);
     expect(replayCalls).toBe(1);
   });
 

@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { InternalError } from "@pirate/contracts";
 import { Cause, Effect, Exit, Result } from "effect";
-import { ContentRepositoryError, type ContentStore } from "../../ports.ts";
+import {
+  ContentRepositoryError,
+  type ContentStore,
+  TextModerationProviderError,
+  type TextPostStore,
+} from "../../ports.ts";
 import { castPostVote } from "./cast-post-vote.ts";
 import { createCommentReply } from "./create-comment-reply.ts";
 import { createPost } from "./create-post.ts";
@@ -37,6 +42,35 @@ const fakeStore = (overrides: Partial<ContentStore["Service"]> = {}) => {
   return { ...base, ...overrides };
 };
 
+const textSubmission = {
+  submission_id: "submission_1",
+  href: "/text-content-submissions/submission_1",
+  surface: "text_post" as const,
+  status: "published" as const,
+  result: { decision: "allow" as const, reason_code: null },
+  published_resource: { kind: "post" as const, post_id: "post_1", href: "/posts/post_1" },
+  review_ref: null,
+  created_at: "2026-08-21T12:00:00.000Z",
+  updated_at: "2026-08-21T12:00:00.000Z",
+};
+
+const textPostStore = (
+  overrides: Partial<TextPostStore["Service"]> = {},
+): TextPostStore["Service"] => ({
+  replay: () => Effect.succeed({ kind: "none" as const }),
+  commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: textSubmission }),
+  getForAuthor: () => Effect.succeed(textSubmission),
+  ...overrides,
+});
+
+const textRuntime = () => ({
+  contentStore: fakeStore(),
+  textPostStore: textPostStore(),
+  textModeration: {
+    evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
+  },
+});
+
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromiseExit(effect);
 
 const failureOf = <A, E>(exit: Exit.Exit<A, E>): E | undefined => {
@@ -48,10 +82,10 @@ const failureOf = <A, E>(exit: Exit.Exit<A, E>): E | undefined => {
 describe("M2 content use cases", () => {
   test("hashes the decoded request canonically and forwards processing state", async () => {
     const hashes: string[] = [];
-    const store = fakeStore({
-      createPost: (input) => {
-        hashes.push(input.idempotencyBodyHash);
-        return Effect.succeed(fakeDocument);
+    const store = textPostStore({
+      commitTerminal: (input) => {
+        hashes.push(input.requestHash);
+        return Effect.succeed({ kind: "created" as const, snapshot: textSubmission });
       },
     });
     const first = await run(
@@ -61,7 +95,7 @@ describe("M2 content use cases", () => {
           actor,
           body: { post_type: "text", idempotency_key: "key_1", body: "hello" },
         },
-        { contentStore: store },
+        { ...textRuntime(), textPostStore: store },
       ),
     );
     const second = await run(
@@ -71,7 +105,7 @@ describe("M2 content use cases", () => {
           actor,
           body: { body: "hello", idempotency_key: "key_1", post_type: "text" },
         },
-        { contentStore: store },
+        { ...textRuntime(), textPostStore: store },
       ),
     );
     expect(Exit.isSuccess(first)).toBe(true);
@@ -101,7 +135,7 @@ describe("M2 content use cases", () => {
     ["empty body", { post_type: "text", idempotency_key: "k", body: "   " }],
   ])("rejects unsupported post shape: %s", async (_label, body) => {
     const result = await run(
-      createPost({ communityId: "community_1", actor, body }, { contentStore: fakeStore() }),
+      createPost({ communityId: "community_1", actor, body }, textRuntime()),
     );
     expect(Exit.isFailure(result) ? result.cause : undefined).toBeDefined();
     expect(failureOf(result)).toMatchObject({ _tag: "BadRequest" });
@@ -122,10 +156,11 @@ describe("M2 content use cases", () => {
           },
         },
         {
-          contentStore: fakeStore({
-            createPost: () => {
+          ...textRuntime(),
+          textPostStore: textPostStore({
+            commitTerminal: () => {
               createCalls += 1;
-              return Effect.succeed(fakeDocument);
+              return Effect.succeed({ kind: "created" as const, snapshot: textSubmission });
             },
           }),
         },
@@ -150,10 +185,11 @@ describe("M2 content use cases", () => {
           },
         },
         {
-          contentStore: fakeStore({
-            createPost: () => {
+          ...textRuntime(),
+          textPostStore: textPostStore({
+            commitTerminal: () => {
               createCalls += 1;
-              return Effect.succeed(fakeDocument);
+              return Effect.succeed({ kind: "created" as const, snapshot: textSubmission });
             },
           }),
         },
@@ -171,7 +207,7 @@ describe("M2 content use cases", () => {
           actor: { userId: "usr_agent_owner", kind: "agent" },
           body: { post_type: "text", idempotency_key: "k", body: "hello" },
         },
-        { contentStore: fakeStore() },
+        textRuntime(),
       ),
     );
     expect(failureOf(result)).toMatchObject({ _tag: "BadRequest" });

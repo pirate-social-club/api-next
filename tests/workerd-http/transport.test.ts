@@ -78,7 +78,7 @@ describe("real HTTP worker transport", () => {
     });
   });
 
-  it("serves an installed content mutation and leaves an uninstalled write at 404", async () => {
+  it("serves an installed content mutation and protects author-scoped reads", async () => {
     const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "https://solid.test" },
@@ -100,11 +100,11 @@ describe("real HTTP worker transport", () => {
     expect(await clear.json()).toEqual({ post: "post_1", value: null });
     expect(clear.headers.get("cache-control")).toBe("no-store");
 
-    const uninstalled = await SELF.fetch(
+    const unauthenticated = await SELF.fetch(
       "https://worker.test/text-content-submissions/submission_1",
     );
-    expect(uninstalled.status).toBe(404);
-    expect(await uninstalled.json()).toMatchObject({ error: { code: "not_found" } });
+    expect(unauthenticated.status).toBe(401);
+    expect(await unauthenticated.json()).toMatchObject({ error: { code: "auth_error" } });
   });
 
   it("rejects removed publish_mode at the Workerd HTTP boundary", async () => {
@@ -134,6 +134,44 @@ describe("real HTTP worker transport", () => {
 
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({ error: { code: "bad_request" } });
+  });
+
+  it("serves text POST creation and author-scoped GET responses", async () => {
+    const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "workerd-proof" },
+      }),
+    });
+    const browser = browserCookies(exchange);
+    const headers = {
+      cookie: browser.cookie,
+      "content-type": "application/json",
+      origin: "https://solid.test",
+      "x-csrf-token": browser.csrf,
+    };
+    const created = await SELF.fetch("https://worker.test/communities/community_1/posts", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ post_type: "text", idempotency_key: "workerd-text", body: "hello" }),
+    });
+    expect(created.status).toBe(201);
+    expect(await created.json()).toMatchObject({
+      submission_id: "submission_workerd",
+      status: "manual_review",
+      result: { decision: "manual_review", reason_code: "moderation_unavailable" },
+    });
+
+    const current = await SELF.fetch(
+      "https://worker.test/text-content-submissions/submission_workerd",
+      { headers: { cookie: browser.cookie, origin: "https://solid.test" } },
+    );
+    expect(current.status).toBe(200);
+    expect(await current.json()).toMatchObject({
+      submission_id: "submission_workerd",
+      status: "manual_review",
+    });
   });
 
   it("keeps namespace providers disabled while preserving exact durable replays", async () => {

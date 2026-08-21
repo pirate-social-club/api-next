@@ -200,6 +200,12 @@ const routeRevalidationCompletionMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const textSubmissionResponseSnapshotMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0037_text_submission_response_snapshot.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -387,6 +393,11 @@ const routeRevalidationCompletionMigration: PostgresMigration = {
     checksumManifest.migrations["0036_route_revalidation_completion_outcome_guard.sql"] ?? "",
   sql: routeRevalidationCompletionMigrationSql,
 };
+const textSubmissionResponseSnapshotMigration: PostgresMigration = {
+  version: "0037_text_submission_response_snapshot.sql",
+  checksum: checksumManifest.migrations["0037_text_submission_response_snapshot.sql"] ?? "",
+  sql: textSubmissionResponseSnapshotMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -424,6 +435,7 @@ const migrations: readonly PostgresMigration[] = [
   effectiveActiveRouteMigration,
   routeRevalidationPersistenceMigration,
   routeRevalidationCompletionMigration,
+  textSubmissionResponseSnapshotMigration,
 ];
 
 function checksum(value: string): string {
@@ -2324,15 +2336,17 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       await admin.query(
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash,
-           input_sha256, internal_reason_codes, evidence_ref, published_post_id
+           input_sha256, internal_reason_codes, evidence_ref, published_post_id,
+           response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-1', 'text-author', 'text_post', 'text-key-1',
+           'text-community', 'text-submission-1', 'text-operation-1', 'text-author', 'text_post', 'text-key-1',
            repeat('a', 64), 'published', 'allow', NULL, 'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
-           repeat('b', 64), '[]'::jsonb, 'text-evidence-1', 'text-post-1'
+           repeat('b', 64), '[]'::jsonb, 'text-evidence-1', 'text-post-1',
+           decode('7b7d', 'hex'), encode(sha256(decode('7b7d', 'hex')), 'hex')
          )`,
       );
       await admin.query(
@@ -2352,16 +2366,18 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash,
-           input_sha256, internal_reason_codes, review_ref
+           input_sha256, internal_reason_codes, review_ref,
+           response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-2', 'text-author', 'text_post', 'text-key-2',
+           'text-community', 'text-submission-2', 'text-operation-2', 'text-author', 'text_post', 'text-key-2',
            repeat('c', 64), 'manual_review', 'manual_review', 'moderation_unavailable',
            'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
-           repeat('d', 64), '["provider_timeout"]'::jsonb, 'text-case-2'
+           repeat('d', 64), '["provider_timeout"]'::jsonb, 'text-case-2',
+           decode('7b7d', 'hex'), encode(sha256(decode('7b7d', 'hex')), 'hex')
          )`,
       );
       await admin.query(
@@ -2430,15 +2446,17 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes, review_ref
+           , response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-missing-review', 'text-author', 'text_post',
+           'text-community', 'text-submission-missing-review', 'text-operation-3', 'text-author', 'text_post',
            'text-key-missing-review', repeat('3', 64), 'manual_review', 'manual_review',
            'review_required', 'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
-           repeat('4', 64), '["hate"]'::jsonb, 'text-case-missing'
+           repeat('4', 64), '["hate"]'::jsonb, 'text-case-missing',
+           decode('7b7d', 'hex'), encode(sha256(decode('7b7d', 'hex')), 'hex')
          )`,
       );
       try {
@@ -2454,30 +2472,34 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         admin,
         "23514",
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes
+           , response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-unknown-reason', 'text-author', 'text_post',
+           'text-community', 'text-submission-unknown-reason', 'text-operation-4', 'text-author', 'text_post',
            'text-key-unknown-reason', repeat('5', 64), 'blocked', 'blocked',
            'policy_violation', 'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
-           repeat('6', 64), '["free_form"]'::jsonb
+           repeat('6', 64), '["free_form"]'::jsonb,
+           decode('7b7d', 'hex'), encode(sha256(decode('7b7d', 'hex')), 'hex')
          )`,
         [],
       );
 
       await admin.query(
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes
+           , response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-blocked', 'text-author', 'text_post',
+           'text-community', 'text-submission-blocked', 'text-operation-5', 'text-author', 'text_post',
            'text-key-blocked', repeat('7', 64), 'blocked', 'blocked',
            'policy_violation', 'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
-           repeat('8', 64), '["sexual_minors"]'::jsonb
+           repeat('8', 64), '["sexual_minors"]'::jsonb,
+           decode('7b7d', 'hex'), encode(sha256(decode('7b7d', 'hex')), 'hex')
          )`,
       );
       await expectPostgresFailure(
@@ -2505,16 +2527,17 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         admin,
         "P0001",
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
-           published_post_id
+           published_post_id, response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-bad-post', 'text-author', 'text_post',
+           'text-community', 'text-submission-bad-post', 'text-operation-6', 'text-author', 'text_post',
            'text-key-bad-post', repeat('a', 64), 'published', 'allow', NULL,
            'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
-           repeat('b', 64), '[]'::jsonb, 'image-processing'
+           repeat('b', 64), '[]'::jsonb, 'image-processing',
+           decode('7b7d', 'hex'), encode(sha256(decode('7b7d', 'hex')), 'hex')
          )`,
         [],
       );
@@ -2532,16 +2555,17 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         admin,
         "P0001",
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
-           published_post_id
+           published_post_id, response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-no-feed', 'text-author', 'text_post',
+           'text-community', 'text-submission-no-feed', 'text-operation-7', 'text-author', 'text_post',
            'text-key-no-feed', repeat('0', 64), 'published', 'allow', NULL,
            'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
-           repeat('1', 64), '[]'::jsonb, 'text-post-without-feed'
+           repeat('1', 64), '[]'::jsonb, 'text-post-without-feed',
+           decode('7b7d', 'hex'), encode(sha256(decode('7b7d', 'hex')), 'hex')
          )`,
         [],
       );
@@ -2550,16 +2574,17 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         admin,
         "23514",
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
-           policy_revision_id, policy_hash,
-           input_sha256, internal_reason_codes
+           policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
+           response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-invalid', 'text-author', 'text_post',
+           'text-community', 'text-submission-invalid', 'text-operation-8', 'text-author', 'text_post',
            'text-key-invalid', repeat('1', 64), 'blocked', 'blocked', NULL,
            'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
-           repeat('2', 64), '["sexual_minors"]'::jsonb
+           repeat('2', 64), '["sexual_minors"]'::jsonb,
+           decode('7b7d', 'hex'), encode(sha256(decode('7b7d', 'hex')), 'hex')
          )`,
         [],
       );
