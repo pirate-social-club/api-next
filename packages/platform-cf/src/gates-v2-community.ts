@@ -10,13 +10,13 @@ import {
   evaluateCuratedAge,
   evaluateCuratedHumanMembership,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-  VERY_OAUTH_CONFIGURATION_REFERENCE,
-  VERY_OAUTH_CONFIGURATION_VERSION,
-  VERY_OAUTH_ISSUER,
-  VERY_OAUTH_METHOD,
-  VERY_OAUTH_PROTOCOL_VERSION,
-  VERY_OAUTH_PROVIDER_ID,
-  VERY_OAUTH_RP_SCOPE,
+  VERY_WEB_CONFIGURATION_REFERENCE,
+  VERY_WEB_CONFIGURATION_VERSION,
+  VERY_WEB_ISSUER,
+  VERY_WEB_METHOD,
+  VERY_WEB_PROTOCOL_VERSION,
+  VERY_WEB_PROVIDER_ID,
+  VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { CanonicalIsoInstant, type SubjectScope } from "@pirate/domain/verification";
 import { Data, Effect, Option, Predicate, Schema } from "effect";
@@ -29,23 +29,23 @@ const CANONICAL_HUMAN_COMPILED_PLAN = {
   compiler_version: COMMUNITY_GATE_COMPILER_VERSION,
   evaluator: CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
   provider_binding: {
-    provider_id: VERY_OAUTH_PROVIDER_ID,
+    provider_id: VERY_WEB_PROVIDER_ID,
     provider_configuration: {
       kind: "dynamic",
-      reference: VERY_OAUTH_CONFIGURATION_REFERENCE,
-      version: VERY_OAUTH_CONFIGURATION_VERSION,
+      reference: VERY_WEB_CONFIGURATION_REFERENCE,
+      version: VERY_WEB_CONFIGURATION_VERSION,
     },
-    method: VERY_OAUTH_METHOD,
-    protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+    method: VERY_WEB_METHOD,
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
     scope: {
       kind: "named",
       scope_semantics: "issuer_rp_scope",
-      issuer: VERY_OAUTH_ISSUER,
-      rp_scope: VERY_OAUTH_RP_SCOPE,
+      issuer: VERY_WEB_ISSUER,
+      rp_scope: VERY_WEB_RP_SCOPE,
     },
   },
 } as const;
-const VERY_OAUTH_EVIDENCE_KIND = "very.oauth.id-token-userinfo.v1" as const;
+const VERY_WEB_EVIDENCE_KIND = "very.web.server-verified.v1" as const;
 
 export class GatesV2CommunityDataInvalid extends Data.TaggedError("GatesV2CommunityDataInvalid")<{
   readonly source: "policy" | "evidence" | "clock";
@@ -370,13 +370,13 @@ const loadHumanPolicy = (
         JSON.stringify(CANONICAL_HUMAN_COMPILED_PLAN),
         COMMUNITY_GATE_COMPILER_VERSION,
         HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-        VERY_OAUTH_PROVIDER_ID,
-        VERY_OAUTH_CONFIGURATION_REFERENCE,
-        VERY_OAUTH_CONFIGURATION_VERSION,
-        VERY_OAUTH_METHOD,
-        VERY_OAUTH_PROTOCOL_VERSION,
-        VERY_OAUTH_ISSUER,
-        VERY_OAUTH_RP_SCOPE,
+        VERY_WEB_PROVIDER_ID,
+        VERY_WEB_CONFIGURATION_REFERENCE,
+        VERY_WEB_CONFIGURATION_VERSION,
+        VERY_WEB_METHOD,
+        VERY_WEB_PROTOCOL_VERSION,
+        VERY_WEB_ISSUER,
+        VERY_WEB_RP_SCOPE,
       ],
       readonly: !lock,
     });
@@ -577,19 +577,19 @@ const loadHumanEvidence = (
       values: [
         input.userId,
         input.communityId,
-        VERY_OAUTH_PROVIDER_ID,
-        VERY_OAUTH_CONFIGURATION_REFERENCE,
-        VERY_OAUTH_CONFIGURATION_VERSION,
-        VERY_OAUTH_METHOD,
-        VERY_OAUTH_PROTOCOL_VERSION,
-        VERY_OAUTH_ISSUER,
-        VERY_OAUTH_RP_SCOPE,
+        VERY_WEB_PROVIDER_ID,
+        VERY_WEB_CONFIGURATION_REFERENCE,
+        VERY_WEB_CONFIGURATION_VERSION,
+        VERY_WEB_METHOD,
+        VERY_WEB_PROTOCOL_VERSION,
+        VERY_WEB_ISSUER,
+        VERY_WEB_RP_SCOPE,
         JSON.stringify([
           { claim_id: "credential.subject_unique" },
           { claim_id: "human.personhood" },
         ]),
         JSON.stringify(["credential.subject_unique", "human.personhood"]),
-        VERY_OAUTH_EVIDENCE_KIND,
+        VERY_WEB_EVIDENCE_KIND,
         actionPayloadHash,
         intentBindingHash,
       ],
@@ -802,7 +802,7 @@ export const CURATED_AGE_GATE_SUMMARY = {
 export const CURATED_HUMAN_GATE_SUMMARY = {
   gate_id: CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
   gate_type: "human_verification",
-  accepted_providers: [VERY_OAUTH_PROVIDER_ID],
+  accepted_providers: [VERY_WEB_PROVIDER_ID],
 } as const;
 
 export function gateEvaluationDetails(

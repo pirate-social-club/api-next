@@ -3,13 +3,13 @@ import { CURATED_HUMAN_MEMBERSHIP_POLICY } from "../gates-v2/human-membership-ev
 import { sha256Hex } from "../gates-v2/sha256.ts";
 import {
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-  VERY_OAUTH_CONFIGURATION_REFERENCE,
-  VERY_OAUTH_CONFIGURATION_VERSION,
-  VERY_OAUTH_ISSUER,
-  VERY_OAUTH_METHOD,
-  VERY_OAUTH_PROTOCOL_VERSION,
-  VERY_OAUTH_PROVIDER_ID,
-  VERY_OAUTH_RP_SCOPE,
+  VERY_WEB_CONFIGURATION_REFERENCE,
+  VERY_WEB_CONFIGURATION_VERSION,
+  VERY_WEB_ISSUER,
+  VERY_WEB_METHOD,
+  VERY_WEB_PROTOCOL_VERSION,
+  VERY_WEB_PROVIDER_ID,
+  VERY_WEB_RP_SCOPE,
 } from "./gate-policy-compiler.ts";
 
 export function communityJoinActionPayloadPreimage(communityId: string): string {
@@ -34,14 +34,14 @@ export function communityJoinIntentBindingPreimage(
     policy_version_id: CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
     provider_binding: {
       evaluator_id: CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
-      issuer: VERY_OAUTH_ISSUER,
-      issuer_rp_scope: VERY_OAUTH_RP_SCOPE,
-      method: VERY_OAUTH_METHOD,
-      protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+      issuer: VERY_WEB_ISSUER,
+      issuer_rp_scope: VERY_WEB_RP_SCOPE,
+      method: VERY_WEB_METHOD,
+      protocol_version: VERY_WEB_PROTOCOL_VERSION,
       provider_configuration_kind: "dynamic",
-      provider_configuration_ref: VERY_OAUTH_CONFIGURATION_REFERENCE,
-      provider_configuration_version: VERY_OAUTH_CONFIGURATION_VERSION,
-      provider_id: VERY_OAUTH_PROVIDER_ID,
+      provider_configuration_ref: VERY_WEB_CONFIGURATION_REFERENCE,
+      provider_configuration_version: VERY_WEB_CONFIGURATION_VERSION,
+      provider_id: VERY_WEB_PROVIDER_ID,
       request_mode: "dynamic",
       scope_kind: "issuer_rp_scope",
     },

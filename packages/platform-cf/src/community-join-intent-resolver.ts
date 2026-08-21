@@ -15,13 +15,13 @@ import {
   communityJoinActionPayloadHash,
   communityJoinIntentBindingHash,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-  VERY_OAUTH_CONFIGURATION_REFERENCE,
-  VERY_OAUTH_CONFIGURATION_VERSION,
-  VERY_OAUTH_ISSUER,
-  VERY_OAUTH_METHOD,
-  VERY_OAUTH_PROTOCOL_VERSION,
-  VERY_OAUTH_PROVIDER_ID,
-  VERY_OAUTH_RP_SCOPE,
+  VERY_WEB_CONFIGURATION_REFERENCE,
+  VERY_WEB_CONFIGURATION_VERSION,
+  VERY_WEB_ISSUER,
+  VERY_WEB_METHOD,
+  VERY_WEB_PROTOCOL_VERSION,
+  VERY_WEB_PROVIDER_ID,
+  VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
 
@@ -46,19 +46,19 @@ const CANONICAL_COMPILED_PLAN = {
   compiler_version: COMMUNITY_GATE_COMPILER_VERSION,
   evaluator: CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
   provider_binding: {
-    provider_id: VERY_OAUTH_PROVIDER_ID,
+    provider_id: VERY_WEB_PROVIDER_ID,
     provider_configuration: {
       kind: "dynamic",
-      reference: VERY_OAUTH_CONFIGURATION_REFERENCE,
-      version: VERY_OAUTH_CONFIGURATION_VERSION,
+      reference: VERY_WEB_CONFIGURATION_REFERENCE,
+      version: VERY_WEB_CONFIGURATION_VERSION,
     },
-    method: VERY_OAUTH_METHOD,
-    protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+    method: VERY_WEB_METHOD,
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
     scope: {
       kind: "named",
       scope_semantics: "issuer_rp_scope",
-      issuer: VERY_OAUTH_ISSUER,
-      rp_scope: VERY_OAUTH_RP_SCOPE,
+      issuer: VERY_WEB_ISSUER,
+      rp_scope: VERY_WEB_RP_SCOPE,
     },
   },
 } as const;
@@ -92,17 +92,17 @@ function validEnvironment(value: string): boolean {
 
 function plan(environment: string): unknown {
   return {
-    method: VERY_OAUTH_METHOD,
+    method: VERY_WEB_METHOD,
     scope: {
       kind: "named",
       scope_semantics: "issuer_rp_scope",
-      issuer: VERY_OAUTH_ISSUER,
-      rp_scope: VERY_OAUTH_RP_SCOPE,
+      issuer: VERY_WEB_ISSUER,
+      rp_scope: VERY_WEB_RP_SCOPE,
     },
     requested_requirements: CANONICAL_REQUIREMENTS,
     requested_claim_ids: CANONICAL_CLAIM_IDS,
     subject_binding_intent: "establish",
-    protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
     environment,
   };
 }
@@ -121,7 +121,7 @@ export function makeCommunityJoinIntentResolver(
     resolve: (input) =>
       Effect.gen(function* () {
         if (!("intent_id" in input)) return null;
-        if (input.provider_id !== VERY_OAUTH_PROVIDER_ID) return null;
+        if (input.provider_id !== VERY_WEB_PROVIDER_ID) return null;
         const result = yield* execute<JoinIntentRow>({
           label: "community.join.resolve-verification-intent",
           text: `SELECT intent.action_intent_id,
@@ -196,13 +196,13 @@ export function makeCommunityJoinIntentResolver(
             JSON.stringify(CURATED_HUMAN_MEMBERSHIP_POLICY),
             JSON.stringify(CANONICAL_COMPILED_PLAN),
             COMMUNITY_GATE_COMPILER_VERSION,
-            VERY_OAUTH_PROVIDER_ID,
-            VERY_OAUTH_CONFIGURATION_REFERENCE,
-            VERY_OAUTH_CONFIGURATION_VERSION,
-            VERY_OAUTH_METHOD,
-            VERY_OAUTH_PROTOCOL_VERSION,
-            VERY_OAUTH_ISSUER,
-            VERY_OAUTH_RP_SCOPE,
+            VERY_WEB_PROVIDER_ID,
+            VERY_WEB_CONFIGURATION_REFERENCE,
+            VERY_WEB_CONFIGURATION_VERSION,
+            VERY_WEB_METHOD,
+            VERY_WEB_PROTOCOL_VERSION,
+            VERY_WEB_ISSUER,
+            VERY_WEB_RP_SCOPE,
             JSON.stringify(CANONICAL_REQUIREMENTS),
             JSON.stringify(CANONICAL_CLAIM_IDS),
             environment,

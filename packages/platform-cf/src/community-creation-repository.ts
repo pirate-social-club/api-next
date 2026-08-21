@@ -34,13 +34,13 @@ import {
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
   transitionCommunityCreationIntent,
   transitionCreationRequirement,
-  VERY_OAUTH_CONFIGURATION_REFERENCE,
-  VERY_OAUTH_CONFIGURATION_VERSION,
-  VERY_OAUTH_ISSUER,
-  VERY_OAUTH_METHOD,
-  VERY_OAUTH_PROTOCOL_VERSION,
-  VERY_OAUTH_PROVIDER_ID,
-  VERY_OAUTH_RP_SCOPE,
+  VERY_WEB_CONFIGURATION_REFERENCE,
+  VERY_WEB_CONFIGURATION_VERSION,
+  VERY_WEB_ISSUER,
+  VERY_WEB_METHOD,
+  VERY_WEB_PROTOCOL_VERSION,
+  VERY_WEB_PROVIDER_ID,
+  VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
 
@@ -50,7 +50,7 @@ export const COMMUNITY_CREATION_INTENT_TTL_SECONDS = 24 * 60 * 60;
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const UNRESOLVED_PROVIDER_ID = "unresolved";
 const UNRESOLVED_PROVIDER_CONFIGURATION = "unresolved";
-const VERY_OAUTH_EVIDENCE_KIND = "very.oauth.id-token-userinfo.v1";
+const VERY_WEB_EVIDENCE_KIND = "very.web.server-verified.v1";
 const TERMINAL_STATUSES = new Set([
   "committed",
   "quota_exceeded",
@@ -191,13 +191,13 @@ function compileDraft(
   const humanBinding: CommunityCreationProviderBinding = {
     requirement: "human_identity",
     family: null,
-    provider_id: VERY_OAUTH_PROVIDER_ID,
+    provider_id: VERY_WEB_PROVIDER_ID,
     provider_configuration: {
       kind: "dynamic",
-      reference: VERY_OAUTH_CONFIGURATION_REFERENCE,
-      version: VERY_OAUTH_CONFIGURATION_VERSION,
+      reference: VERY_WEB_CONFIGURATION_REFERENCE,
+      version: VERY_WEB_CONFIGURATION_VERSION,
     },
-    protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
   };
   const unresolvedHumanBinding: CommunityCreationProviderBinding = {
     requirement: "human_identity",
@@ -1108,7 +1108,7 @@ function loadCommitEvidence(
             ON subject.subject_key_id = receipt.subject_key_id
          WHERE session.proof_session_id = $1
            AND session.actor_id = $3`,
-      values: [input.proofSessionId, VERY_OAUTH_EVIDENCE_KIND, input.actorId],
+      values: [input.proofSessionId, VERY_WEB_EVIDENCE_KIND, input.actorId],
       readonly: false,
     });
     const row = oneRow(result.rows);
@@ -1261,26 +1261,26 @@ export function advanceCommunityCreationVerificationInTransaction(
     const expectedProviderBindingHash = communityCreationProviderBindingHash({
       requirement: "human_identity",
       family: null,
-      provider_id: VERY_OAUTH_PROVIDER_ID,
+      provider_id: VERY_WEB_PROVIDER_ID,
       provider_configuration: {
         kind: "dynamic",
-        reference: VERY_OAUTH_CONFIGURATION_REFERENCE,
-        version: VERY_OAUTH_CONFIGURATION_VERSION,
+        reference: VERY_WEB_CONFIGURATION_REFERENCE,
+        version: VERY_WEB_CONFIGURATION_VERSION,
       },
-      protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+      protocol_version: VERY_WEB_PROTOCOL_VERSION,
     });
     if (
       intentId === null ||
       generation === null ||
       requirementHash !== HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH ||
-      providerId !== VERY_OAUTH_PROVIDER_ID ||
+      providerId !== VERY_WEB_PROVIDER_ID ||
       providerBindingHash !== expectedProviderBindingHash ||
-      configurationVersion !== VERY_OAUTH_CONFIGURATION_VERSION ||
+      configurationVersion !== VERY_WEB_CONFIGURATION_VERSION ||
       attemptExpiresAt === null ||
       Date.parse(completedAt) >= Date.parse(attemptExpiresAt) ||
       authority.attempt_requirement_kind !== "human_identity" ||
       authority.attempt_configuration_kind !== "dynamic" ||
-      authority.attempt_configuration_ref !== VERY_OAUTH_CONFIGURATION_REFERENCE ||
+      authority.attempt_configuration_ref !== VERY_WEB_CONFIGURATION_REFERENCE ||
       authority.attempt_route_family !== null ||
       Number(authority.requirement_generation) !== generation ||
       authority.requirement_hash !== requirementHash ||
@@ -1317,16 +1317,16 @@ export function advanceCommunityCreationVerificationInTransaction(
       session.provider_configuration_kind === authority.attempt_configuration_kind &&
       session.provider_configuration_ref === authority.attempt_configuration_ref &&
       session.provider_configuration_version === configurationVersion &&
-      session.method === VERY_OAUTH_METHOD &&
-      session.issuer === VERY_OAUTH_ISSUER &&
+      session.method === VERY_WEB_METHOD &&
+      session.issuer === VERY_WEB_ISSUER &&
       session.scope_kind === "issuer_rp_scope" &&
-      session.issuer_rp_scope === VERY_OAUTH_RP_SCOPE &&
+      session.issuer_rp_scope === VERY_WEB_RP_SCOPE &&
       session.issuer_rp_action_scope === null &&
       session.request_mode === "dynamic" &&
       exactCanonicalJson(session.requested_requirements, HUMAN_MEMBERSHIP_REQUIREMENTS) &&
       exactCanonicalJson(session.requested_claim_ids, HUMAN_MEMBERSHIP_CLAIM_IDS) &&
       session.subject_binding_intent === "establish" &&
-      session.protocol_version === VERY_OAUTH_PROTOCOL_VERSION &&
+      session.protocol_version === VERY_WEB_PROTOCOL_VERSION &&
       asString(session.environment) !== null;
     if (!exactBinding) {
       return { kind: "stale", reason: "session_binding_drift" } as const;
@@ -1436,7 +1436,7 @@ export function advanceCommunityCreationVerificationInTransaction(
           ON active_binding.subject_key_id = receipt.subject_key_id
        WHERE session.proof_session_id = $1
          AND session.actor_id = $3`,
-      values: [input.proof_session_id, VERY_OAUTH_EVIDENCE_KIND, input.actor_id],
+      values: [input.proof_session_id, VERY_WEB_EVIDENCE_KIND, input.actor_id],
       readonly: false,
     });
     const evidenceRow = oneRow(evidenceResult.rows);

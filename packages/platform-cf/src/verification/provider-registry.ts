@@ -14,6 +14,11 @@ import {
   type VeryOauthTransport,
 } from "./providers/very-oauth.ts";
 import {
+  makeVeryWebFetchTransport,
+  makeVeryWebProvider,
+  type VeryWebTransport,
+} from "./providers/very-web.ts";
+import {
   makeZkPassportProvider,
   makeZkPassportVerifierTransport,
   type ZkPassportVerifierTransport,
@@ -58,6 +63,15 @@ export interface PlatformVerificationProviderOptions {
     readonly transport?: VeryOauthTransport;
     readonly jwks_fetch?: VeryOauthJwksFetch;
     readonly id_token_verifier?: VeryOauthIdTokenVerifier;
+  }>;
+  /** Very web remains absent unless every server-side web credential is supplied. */
+  readonly very_web?: Readonly<{
+    readonly app_id: string;
+    readonly api_url: string;
+    readonly verify_url: string;
+    readonly bridge_api_url: string;
+    readonly sealing_key: Uint8Array;
+    readonly transport?: VeryWebTransport;
   }>;
   readonly callback_credential_headers?: readonly string[];
 }
@@ -160,6 +174,19 @@ export function validVeryOauthOptions(
   );
 }
 
+export function validVeryWebOptions(
+  options: NonNullable<PlatformVerificationProviderOptions["very_web"]>,
+): boolean {
+  return (
+    options.sealing_key instanceof Uint8Array &&
+    options.sealing_key.byteLength === 32 &&
+    validConfigString(options.app_id) &&
+    validHttpsUrl(options.api_url) &&
+    validHttpsUrl(options.verify_url) &&
+    validHttpsUrl(options.bridge_api_url)
+  );
+}
+
 function veryOauthAdapter(config: NonNullable<PlatformVerificationProviderOptions["very_oauth"]>) {
   return makeVeryOauthProvider({
     authorization_endpoint: config.authorization_endpoint,
@@ -180,6 +207,28 @@ function veryOauthAdapter(config: NonNullable<PlatformVerificationProviderOption
       now: () => new Date().toISOString(),
       expiresAt: (now) =>
         new Date(Date.parse(now) + VERY_OAUTH_SESSION_TTL_SECONDS * 1_000).toISOString(),
+    },
+    identifiers: {
+      next: (kind) => (kind === "session" ? crypto.randomUUID() : `${kind}-${crypto.randomUUID()}`),
+    },
+    randomness: {
+      bytes: (length) => crypto.getRandomValues(new Uint8Array(length)),
+    },
+    digest: { digest: sha256 },
+  });
+}
+
+function veryWebAdapter(config: NonNullable<PlatformVerificationProviderOptions["very_web"]>) {
+  return makeVeryWebProvider({
+    app_id: config.app_id,
+    api_url: config.api_url,
+    verify_url: config.verify_url,
+    bridge_api_url: config.bridge_api_url,
+    sealing_key: config.sealing_key,
+    transport: config.transport ?? makeVeryWebFetchTransport(),
+    clock: {
+      now: () => new Date().toISOString(),
+      expiresAt: (now) => new Date(Date.parse(now) + 300 * 1_000).toISOString(),
     },
     identifiers: {
       next: (kind) => (kind === "session" ? crypto.randomUUID() : `${kind}-${crypto.randomUUID()}`),
@@ -241,6 +290,9 @@ export function makePlatformVerificationProviderRegistry(
     ...(options.very_oauth === undefined || !validVeryOauthOptions(options.very_oauth)
       ? []
       : [veryOauthAdapter(options.very_oauth)]),
+    ...(options.very_web === undefined || !validVeryWebOptions(options.very_web)
+      ? []
+      : [veryWebAdapter(options.very_web)]),
   ];
   return makeVerificationProviderRegistry(
     providers,

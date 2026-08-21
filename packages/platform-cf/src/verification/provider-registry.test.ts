@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import {
   makePlatformVerificationProviderRegistry,
   validVeryOauthOptions,
+  validVeryWebOptions,
 } from "./provider-registry.ts";
 
 const VERY_OAUTH_OPTIONS = {
@@ -14,6 +15,14 @@ const VERY_OAUTH_OPTIONS = {
   client_id: "pirate-client",
   client_secret: "client-secret",
   redirect_uri: "https://api.pirate.test/verification/very/callback",
+  sealing_key: new Uint8Array(32).fill(7),
+} as const;
+
+const VERY_WEB_OPTIONS = {
+  app_id: "pirate-web-staging",
+  api_url: "https://api.very.org/api/v1",
+  verify_url: "https://verify.very.org/api/v1/verify",
+  bridge_api_url: "https://bridge.very.org/api/v1",
   sealing_key: new Uint8Array(32).fill(7),
 } as const;
 
@@ -148,6 +157,35 @@ describe("platform verification provider registry", () => {
       expect.objectContaining({
         provider_id: "very.oauth",
         supported_methods: ["palm_oauth"],
+        callback_mode: "none",
+      }),
+    ]);
+  });
+
+  test("keeps Very web absent until every staging setting is valid", async () => {
+    expect(validVeryWebOptions(VERY_WEB_OPTIONS)).toBe(true);
+    expect(validVeryWebOptions({ ...VERY_WEB_OPTIONS, app_id: "" })).toBe(false);
+    expect(
+      validVeryWebOptions({ ...VERY_WEB_OPTIONS, api_url: "http://api.very.org/api/v1" }),
+    ).toBe(false);
+    expect(validVeryWebOptions({ ...VERY_WEB_OPTIONS, sealing_key: new Uint8Array(31) })).toBe(
+      false,
+    );
+
+    const invalid = await Effect.runPromise(
+      makePlatformVerificationProviderRegistry({
+        very_web: { ...VERY_WEB_OPTIONS, bridge_api_url: "" },
+      }),
+    );
+    expect(invalid.list()).toEqual([]);
+
+    const enabled = await Effect.runPromise(
+      makePlatformVerificationProviderRegistry({ very_web: VERY_WEB_OPTIONS }),
+    );
+    expect(enabled.list()).toEqual([
+      expect.objectContaining({
+        provider_id: "very.web",
+        supported_methods: ["palm_web"],
         callback_mode: "none",
       }),
     ]);

@@ -117,6 +117,11 @@
         // authorized live-document deployment is required for physical proof.
         "SELF_PASS_MOCK_PASSPORT": "true",
         "VERY_OAUTH_ENABLED": "false",
+        "VERY_WEB_ENABLED": "false",
+        "VERY_APP_ID": "",
+        "VERY_API_URL": "https://api.very.org/api/v1",
+        "VERY_VERIFY_URL": "https://verify.very.org/api/v1/verify",
+        "VERY_BRIDGE_API_URL": "https://bridge.very.org/api/v1",
         "HNS_OWNERSHIP_ENABLED": "false",
         "ZKPASSPORT_ENABLED": "true",
         "ZKPASSPORT_DOMAIN": "web-next-staging.pirate.sc",

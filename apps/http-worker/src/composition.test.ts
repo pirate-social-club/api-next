@@ -72,6 +72,18 @@ function withVeryOauth(bindings: HttpWorkerBindings): HttpWorkerBindings {
   };
 }
 
+function withVeryWeb(bindings: HttpWorkerBindings): HttpWorkerBindings {
+  return {
+    ...bindings,
+    VERY_WEB_ENABLED: "true",
+    VERY_APP_ID: "pirate-web-staging",
+    VERY_API_URL: "https://api.very.org/api/v1",
+    VERY_VERIFY_URL: "https://verify.very.org/api/v1/verify",
+    VERY_BRIDGE_API_URL: "https://bridge.very.org/api/v1",
+    VERY_WEB_SEALING_KEY: "w".repeat(32),
+  };
+}
+
 const inertHnsTransport: HnsOwnerTransport = {
   start: () => Effect.die("HNS transport must not run during Worker composition"),
   poll: () => Effect.die("HNS transport must not run during Worker composition"),
@@ -244,6 +256,26 @@ describe("HTTP production composition", () => {
   test("constructs the enabled Very OAuth provider without making an upstream request", async () => {
     const configured = await bindings();
     const worker = await createProductionHttpWorker(withVeryOauth(configured));
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+  });
+
+  test("fails closed before registering Very web when required configuration is incomplete", async () => {
+    const configured = withVeryWeb(await bindings());
+    for (const setting of [
+      "VERY_APP_ID",
+      "VERY_API_URL",
+      "VERY_VERIFY_URL",
+      "VERY_BRIDGE_API_URL",
+      "VERY_WEB_SEALING_KEY",
+    ] as const) {
+      await expect(
+        createProductionHttpWorker({ ...configured, [setting]: undefined }),
+      ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+    }
+  });
+
+  test("constructs the enabled Very web provider without making an upstream request", async () => {
+    const worker = await createProductionHttpWorker(withVeryWeb(await bindings()));
     expect((await worker.request("https://worker.test/health")).status).toBe(200);
   });
 

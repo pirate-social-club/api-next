@@ -13,13 +13,13 @@ import {
   communityCreationCeremonyReservationHash,
   communityCreationProviderBindingHash,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-  VERY_OAUTH_CONFIGURATION_REFERENCE,
-  VERY_OAUTH_CONFIGURATION_VERSION,
-  VERY_OAUTH_ISSUER,
-  VERY_OAUTH_METHOD,
-  VERY_OAUTH_PROTOCOL_VERSION,
-  VERY_OAUTH_PROVIDER_ID,
-  VERY_OAUTH_RP_SCOPE,
+  VERY_WEB_CONFIGURATION_REFERENCE,
+  VERY_WEB_CONFIGURATION_VERSION,
+  VERY_WEB_ISSUER,
+  VERY_WEB_METHOD,
+  VERY_WEB_PROTOCOL_VERSION,
+  VERY_WEB_PROVIDER_ID,
+  VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { Effect, type Layer, Option, Schema } from "effect";
 
@@ -96,13 +96,13 @@ function exactIntentBinding(
   const providerBindingHash = communityCreationProviderBindingHash({
     requirement: "human_identity",
     family: null,
-    provider_id: VERY_OAUTH_PROVIDER_ID,
+    provider_id: VERY_WEB_PROVIDER_ID,
     provider_configuration: {
       kind: "dynamic",
-      reference: VERY_OAUTH_CONFIGURATION_REFERENCE,
-      version: VERY_OAUTH_CONFIGURATION_VERSION,
+      reference: VERY_WEB_CONFIGURATION_REFERENCE,
+      version: VERY_WEB_CONFIGURATION_VERSION,
     },
-    protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
   });
   const reservationHash = communityCreationCeremonyReservationHash({
     actor_id: input.actor_id,
@@ -111,7 +111,7 @@ function exactIntentBinding(
     requirement: "human_identity",
     generation: input.generation,
     requirement_hash: HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-    provider_id: VERY_OAUTH_PROVIDER_ID,
+    provider_id: VERY_WEB_PROVIDER_ID,
     provider_binding_hash: providerBindingHash,
     route: null,
   });
@@ -124,12 +124,12 @@ function exactIntentBinding(
     row.requirement_kind === "human_identity" &&
     row.requirement_status === "pending" &&
     row.requirement_hash === HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
-    row.provider_id === VERY_OAUTH_PROVIDER_ID &&
+    row.provider_id === VERY_WEB_PROVIDER_ID &&
     row.provider_id === input.provider_id &&
     row.provider_binding_hash === providerBindingHash &&
     row.provider_configuration_kind === "dynamic" &&
-    row.provider_configuration_ref === VERY_OAUTH_CONFIGURATION_REFERENCE &&
-    row.provider_configuration_version === VERY_OAUTH_CONFIGURATION_VERSION &&
+    row.provider_configuration_ref === VERY_WEB_CONFIGURATION_REFERENCE &&
+    row.provider_configuration_version === VERY_WEB_CONFIGURATION_VERSION &&
     Number(row.generation) === input.generation &&
     row.current_ceremony_intent_id === input.ceremony_intent_id &&
     row.route_family === null &&
@@ -140,11 +140,11 @@ function exactIntentBinding(
     row.ceremony_requirement_kind === "human_identity" &&
     Number(row.ceremony_generation) === input.generation &&
     row.ceremony_requirement_hash === HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&
-    row.ceremony_provider_id === VERY_OAUTH_PROVIDER_ID &&
+    row.ceremony_provider_id === VERY_WEB_PROVIDER_ID &&
     row.ceremony_provider_binding_hash === providerBindingHash &&
     row.ceremony_provider_configuration_kind === "dynamic" &&
-    row.ceremony_provider_configuration_ref === VERY_OAUTH_CONFIGURATION_REFERENCE &&
-    row.ceremony_provider_configuration_version === VERY_OAUTH_CONFIGURATION_VERSION &&
+    row.ceremony_provider_configuration_ref === VERY_WEB_CONFIGURATION_REFERENCE &&
+    row.ceremony_provider_configuration_version === VERY_WEB_CONFIGURATION_VERSION &&
     row.ceremony_route_family === null &&
     row.ceremony_route_root_label === null &&
     row.ceremony_route_root_label_display === null &&
@@ -157,17 +157,17 @@ function exactIntentBinding(
 
 function plan(environment: string): unknown {
   return {
-    method: VERY_OAUTH_METHOD,
+    method: VERY_WEB_METHOD,
     scope: {
       kind: "named",
       scope_semantics: "issuer_rp_scope",
-      issuer: VERY_OAUTH_ISSUER,
-      rp_scope: VERY_OAUTH_RP_SCOPE,
+      issuer: VERY_WEB_ISSUER,
+      rp_scope: VERY_WEB_RP_SCOPE,
     },
     requested_requirements: CANONICAL_REQUIREMENTS,
     requested_claim_ids: CANONICAL_CLAIM_IDS,
     subject_binding_intent: "establish",
-    protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
     environment,
   };
 }

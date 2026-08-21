@@ -8,18 +8,18 @@ import {
 const human = {
   requirement: "human_identity" as const,
   family: null,
-  provider_id: "very.oauth",
-  provider_configuration: { kind: "dynamic" as const, reference: "very-oauth", version: "1" },
-  protocol_version: "oauth2-oidc-v1",
+  provider_id: "very.web",
+  provider_configuration: { kind: "dynamic" as const, reference: "very-web", version: "1" },
+  protocol_version: "very-web-v1",
 };
 
 describe("community creation provider binding", () => {
   test("pins the internal authority preimage and digest", () => {
     expect(communityCreationProviderBindingPreimage(human)).toBe(
-      '{"family":null,"protocol_version":"oauth2-oidc-v1","provider_configuration":{"kind":"dynamic","reference":"very-oauth","version":"1"},"provider_id":"very.oauth","requirement":"human_identity","version":"community-creation-provider-binding-v1"}',
+      '{"family":null,"protocol_version":"very-web-v1","provider_configuration":{"kind":"dynamic","reference":"very-web","version":"1"},"provider_id":"very.web","requirement":"human_identity","version":"community-creation-provider-binding-v1"}',
     );
     expect(communityCreationProviderBindingHash(human)).toBe(
-      "daa071f59b3a2026cd6d939440788aa149e65c86ee58930af68f8d450b7ef00f",
+      "2283c494869080e599ad8063831fc7dda3f5e094a53fb3356f333f9e9ca140e8",
     );
   });
 
@@ -43,7 +43,7 @@ describe("community creation provider binding", () => {
   test("rejects cross-requirement and malformed bindings", () => {
     expect(() => communityCreationProviderBindingHash({ ...human, family: "hns" })).toThrow();
     expect(() =>
-      communityCreationProviderBindingHash({ ...human, provider_id: " very.oauth" }),
+      communityCreationProviderBindingHash({ ...human, provider_id: " very.web" }),
     ).toThrow();
   });
 

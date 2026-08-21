@@ -76,6 +76,7 @@ import {
 import {
   makePlatformVerificationProviderRegistry,
   validVeryOauthOptions,
+  validVeryWebOptions,
 } from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
 import { Effect, Redacted, Schema } from "effect";
@@ -124,6 +125,12 @@ export interface HttpWorkerBindings {
   readonly VERY_OAUTH_CLIENT_SECRET?: string;
   readonly VERY_OAUTH_REDIRECT_URI?: string;
   readonly VERY_OAUTH_SEALING_KEY?: string;
+  readonly VERY_WEB_ENABLED?: string;
+  readonly VERY_APP_ID?: string;
+  readonly VERY_API_URL?: string;
+  readonly VERY_VERIFY_URL?: string;
+  readonly VERY_BRIDGE_API_URL?: string;
+  readonly VERY_WEB_SEALING_KEY?: string;
   readonly HNS_OWNERSHIP_ENABLED?: string;
   readonly HNS_OWNERSHIP_CONFIGURATION_REFERENCE?: string;
   readonly HNS_OWNERSHIP_CONFIGURATION_VERSION?: string;
@@ -206,6 +213,12 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     VERY_OAUTH_CLIENT_SECRET: bindings.VERY_OAUTH_CLIENT_SECRET,
     VERY_OAUTH_REDIRECT_URI: bindings.VERY_OAUTH_REDIRECT_URI,
     VERY_OAUTH_SEALING_KEY: bindings.VERY_OAUTH_SEALING_KEY,
+    VERY_WEB_ENABLED: bindings.VERY_WEB_ENABLED,
+    VERY_APP_ID: bindings.VERY_APP_ID,
+    VERY_API_URL: bindings.VERY_API_URL,
+    VERY_VERIFY_URL: bindings.VERY_VERIFY_URL,
+    VERY_BRIDGE_API_URL: bindings.VERY_BRIDGE_API_URL,
+    VERY_WEB_SEALING_KEY: bindings.VERY_WEB_SEALING_KEY,
     HNS_OWNERSHIP_ENABLED: bindings.HNS_OWNERSHIP_ENABLED,
     HNS_OWNERSHIP_CONFIGURATION_REFERENCE: bindings.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
     HNS_OWNERSHIP_CONFIGURATION_VERSION: bindings.HNS_OWNERSHIP_CONFIGURATION_VERSION,
@@ -326,6 +339,7 @@ export async function createProductionHttpWorker(
   const veryOauthSealingKey = decodeVeryOauthSealingKey(
     Redacted.value(config.VERY_OAUTH_SEALING_KEY),
   );
+  const veryWebSealingKey = decodeVeryOauthSealingKey(Redacted.value(config.VERY_WEB_SEALING_KEY));
   const previousSigningFields = [
     zkPassportPreviousSigningSecret,
     config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID,
@@ -379,6 +393,21 @@ export async function createProductionHttpWorker(
             manifest.environments.includes(config.API_NEXT_ENV),
         ),
     )
+  ) {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  }
+  const veryWebOptions = config.VERY_WEB_ENABLED
+    ? {
+        app_id: config.VERY_APP_ID,
+        api_url: config.VERY_API_URL,
+        verify_url: config.VERY_VERIFY_URL,
+        bridge_api_url: config.VERY_BRIDGE_API_URL,
+        sealing_key: veryWebSealingKey ?? new Uint8Array(),
+      }
+    : undefined;
+  if (
+    config.VERY_WEB_ENABLED &&
+    (veryWebOptions === undefined || !validVeryWebOptions(veryWebOptions))
   ) {
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
@@ -503,6 +532,7 @@ export async function createProductionHttpWorker(
           }
         : {}),
       ...(veryOauthOptions === undefined ? {} : { very_oauth: veryOauthOptions }),
+      ...(veryWebOptions === undefined ? {} : { very_web: veryWebOptions }),
       callback_credential_headers: callbackCredentialHeaderNames,
     }),
   );

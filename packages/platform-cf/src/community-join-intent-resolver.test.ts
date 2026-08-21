@@ -39,10 +39,10 @@ describe("community join verification intent resolver", () => {
     const { resolver, statements } = resolverWith([exactRow()]);
     await expect(
       Effect.runPromise(
-        resolver.resolve({ actor_id: "user-a", intent_id: INTENT_ID, provider_id: "very.oauth" }),
+        resolver.resolve({ actor_id: "user-a", intent_id: INTENT_ID, provider_id: "very.web" }),
       ),
     ).resolves.toMatchObject({
-      method: "palm_oauth",
+      method: "palm_web",
       requested_claim_ids: ["credential.subject_unique", "human.personhood"],
       environment: "test",
     });
@@ -60,7 +60,7 @@ describe("community join verification intent resolver", () => {
         resolverWith([]).resolver.resolve({
           actor_id: "user-a",
           intent_id: INTENT_ID,
-          provider_id: "very.oauth",
+          provider_id: "very.web",
         }),
       ),
     ).resolves.toBeNull();
@@ -70,7 +70,7 @@ describe("community join verification intent resolver", () => {
         foreignProvider.resolver.resolve({
           actor_id: "user-a",
           intent_id: INTENT_ID,
-          provider_id: "very",
+          provider_id: "very.oauth",
         }),
       ),
     ).resolves.toBeNull();
@@ -82,7 +82,7 @@ describe("community join verification intent resolver", () => {
         alteredIntent.resolver.resolve({
           actor_id: "user-a",
           intent_id: "community_join",
-          provider_id: "very.oauth",
+          provider_id: "very.web",
         }),
       ),
     ).resolves.toBeNull();
@@ -101,7 +101,7 @@ describe("community join verification intent resolver", () => {
           resolverWith([exactRow(overrides)]).resolver.resolve({
             actor_id: "user-a",
             intent_id: INTENT_ID,
-            provider_id: "very.oauth",
+            provider_id: "very.web",
           }),
         ),
       ).rejects.toBeInstanceOf(VerificationStartStorageFailed);
@@ -115,7 +115,7 @@ describe("community join verification intent resolver", () => {
           resolverWith(rows).resolver.resolve({
             actor_id: "user-a",
             intent_id: INTENT_ID,
-            provider_id: "very.oauth",
+            provider_id: "very.web",
           }),
         ),
       ).rejects.toBeInstanceOf(VerificationStartStorageFailed);
@@ -126,7 +126,7 @@ describe("community join verification intent resolver", () => {
           <Row>(): Effect.Effect<ControlPlaneResult<Row>, VerificationStartStorageFailed> =>
             Effect.succeed({ rows: [], rowCount: 0 }),
           " test ",
-        ).resolve({ actor_id: "user-a", intent_id: INTENT_ID, provider_id: "very.oauth" }),
+        ).resolve({ actor_id: "user-a", intent_id: INTENT_ID, provider_id: "very.web" }),
       ),
     ).rejects.toBeInstanceOf(VerificationStartStorageFailed);
   });

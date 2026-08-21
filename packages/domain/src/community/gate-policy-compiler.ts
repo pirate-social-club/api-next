@@ -3,35 +3,50 @@ import { CURATED_HUMAN_MEMBERSHIP_POLICY } from "../gates-v2/human-membership-ev
 import { sha256Hex } from "../gates-v2/sha256.ts";
 
 export const COMMUNITY_GATE_COMPILER_VERSION = "community-gate-compiler-v1" as const;
-export const VERY_OAUTH_PROVIDER_ID = "very.oauth" as const;
-export const VERY_OAUTH_ISSUER = "https://connect.very.org" as const;
-export const VERY_OAUTH_METHOD = "palm_oauth" as const;
-export const VERY_OAUTH_PROTOCOL_VERSION = "oauth2-oidc-v1" as const;
-export const VERY_OAUTH_RP_SCOPE = "pirate-social" as const;
-export const VERY_OAUTH_CONFIGURATION_REFERENCE = "very-oauth" as const;
-export const VERY_OAUTH_CONFIGURATION_VERSION = "1" as const;
+export const VERY_WEB_PROVIDER_ID = "very.web" as const;
+export const VERY_WEB_ISSUER = "https://verify.very.org" as const;
+export const VERY_WEB_METHOD = "palm_web" as const;
+export const VERY_WEB_PROTOCOL_VERSION = "very-web-v1" as const;
+export const VERY_WEB_RP_SCOPE = "pirate-social" as const;
+export const VERY_WEB_CONFIGURATION_REFERENCE = "very-web" as const;
+export const VERY_WEB_CONFIGURATION_VERSION = "1" as const;
+
+/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
+export const VERY_OAUTH_PROVIDER_ID = VERY_WEB_PROVIDER_ID;
+/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
+export const VERY_OAUTH_ISSUER = VERY_WEB_ISSUER;
+/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
+export const VERY_OAUTH_METHOD = VERY_WEB_METHOD;
+/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
+export const VERY_OAUTH_PROTOCOL_VERSION = VERY_WEB_PROTOCOL_VERSION;
+/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
+export const VERY_OAUTH_RP_SCOPE = VERY_WEB_RP_SCOPE;
+/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
+export const VERY_OAUTH_CONFIGURATION_REFERENCE = VERY_WEB_CONFIGURATION_REFERENCE;
+/** @deprecated Use the transport-accurate VERY_WEB_* binding constants. */
+export const VERY_OAUTH_CONFIGURATION_VERSION = VERY_WEB_CONFIGURATION_VERSION;
 
 export const HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_CANONICAL_PREIMAGE =
-  '{"claims":[{"claim_id":"human.personhood"},{"claim_id":"credential.subject_unique"}],"method":"palm_oauth","provider_configuration":{"kind":"dynamic","reference":"very-oauth","version":"1"},"provider_id":"very.oauth","protocol_version":"oauth2-oidc-v1","request_mode":"dynamic","scope":{"issuer":"https://connect.very.org","kind":"named","rp_scope":"pirate-social","scope_semantics":"issuer_rp_scope"},"subject_binding_intent":"establish","version":1}' as const;
+  '{"claims":[{"claim_id":"human.personhood"},{"claim_id":"credential.subject_unique"}],"method":"palm_web","provider_configuration":{"kind":"dynamic","reference":"very-web","version":"1"},"provider_id":"very.web","protocol_version":"very-web-v1","request_mode":"dynamic","scope":{"issuer":"https://verify.very.org","kind":"named","rp_scope":"pirate-social","scope_semantics":"issuer_rp_scope"},"subject_binding_intent":"establish","version":1}' as const;
 
 export const HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH = sha256Hex(
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_CANONICAL_PREIMAGE,
 );
 
 export type CommunityGateProviderBinding = Readonly<{
-  readonly provider_id: typeof VERY_OAUTH_PROVIDER_ID;
+  readonly provider_id: typeof VERY_WEB_PROVIDER_ID;
   readonly provider_configuration: Readonly<{
     readonly kind: "dynamic";
-    readonly reference: typeof VERY_OAUTH_CONFIGURATION_REFERENCE;
-    readonly version: typeof VERY_OAUTH_CONFIGURATION_VERSION;
+    readonly reference: typeof VERY_WEB_CONFIGURATION_REFERENCE;
+    readonly version: typeof VERY_WEB_CONFIGURATION_VERSION;
   }>;
-  readonly method: typeof VERY_OAUTH_METHOD;
-  readonly protocol_version: typeof VERY_OAUTH_PROTOCOL_VERSION;
+  readonly method: typeof VERY_WEB_METHOD;
+  readonly protocol_version: typeof VERY_WEB_PROTOCOL_VERSION;
   readonly scope: Readonly<{
     readonly kind: "named";
     readonly scope_semantics: "issuer_rp_scope";
-    readonly issuer: typeof VERY_OAUTH_ISSUER;
-    readonly rp_scope: typeof VERY_OAUTH_RP_SCOPE;
+    readonly issuer: typeof VERY_WEB_ISSUER;
+    readonly rp_scope: typeof VERY_WEB_RP_SCOPE;
   }>;
 }>;
 
@@ -118,19 +133,19 @@ function supportedHumanPolicy(value: unknown): boolean {
 
 function providerBinding(): CommunityGateProviderBinding {
   return {
-    provider_id: VERY_OAUTH_PROVIDER_ID,
+    provider_id: VERY_WEB_PROVIDER_ID,
     provider_configuration: {
       kind: "dynamic",
-      reference: VERY_OAUTH_CONFIGURATION_REFERENCE,
-      version: VERY_OAUTH_CONFIGURATION_VERSION,
+      reference: VERY_WEB_CONFIGURATION_REFERENCE,
+      version: VERY_WEB_CONFIGURATION_VERSION,
     },
-    method: VERY_OAUTH_METHOD,
-    protocol_version: VERY_OAUTH_PROTOCOL_VERSION,
+    method: VERY_WEB_METHOD,
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
     scope: {
       kind: "named",
       scope_semantics: "issuer_rp_scope",
-      issuer: VERY_OAUTH_ISSUER,
-      rp_scope: VERY_OAUTH_RP_SCOPE,
+      issuer: VERY_WEB_ISSUER,
+      rp_scope: VERY_WEB_RP_SCOPE,
     },
   };
 }

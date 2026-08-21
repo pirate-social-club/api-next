@@ -118,6 +118,12 @@ export const HttpWorkerConfig = Config.all({
   VERY_OAUTH_SEALING_KEY: secret("VERY_OAUTH_SEALING_KEY").pipe(
     Config.withDefault(Redacted.make("")),
   ),
+  VERY_WEB_ENABLED: Config.boolean("VERY_WEB_ENABLED").pipe(Config.withDefault(false)),
+  VERY_APP_ID: Config.string("VERY_APP_ID").pipe(Config.withDefault("")),
+  VERY_API_URL: Config.string("VERY_API_URL").pipe(Config.withDefault("")),
+  VERY_VERIFY_URL: Config.string("VERY_VERIFY_URL").pipe(Config.withDefault("")),
+  VERY_BRIDGE_API_URL: Config.string("VERY_BRIDGE_API_URL").pipe(Config.withDefault("")),
+  VERY_WEB_SEALING_KEY: secret("VERY_WEB_SEALING_KEY").pipe(Config.withDefault(Redacted.make(""))),
   HNS_OWNERSHIP_ENABLED: Config.boolean("HNS_OWNERSHIP_ENABLED").pipe(Config.withDefault(false)),
   HNS_OWNERSHIP_CONFIGURATION_REFERENCE: Config.string(
     "HNS_OWNERSHIP_CONFIGURATION_REFERENCE",

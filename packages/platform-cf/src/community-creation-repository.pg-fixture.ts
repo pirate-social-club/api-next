@@ -112,7 +112,7 @@ function veryEvidenceBundle(
         protocol_version: session.protocol_version,
         environment: session.environment,
         provenance_kind: "proof_session",
-        evidence_kind: "very.oauth.id-token-userinfo.v1",
+        evidence_kind: "very.web.server-verified.v1",
         evidence_hash: evidenceHash,
         metadata: { source: "test" },
         observed_at: "2026-08-21T00:00:30.000Z",
@@ -186,22 +186,22 @@ export async function prepareCommitReadyCommunity(
     actor_id: actor.userId,
     intent_id: document.next_action.ceremony_intent_id,
     request_hash: input.veryStartRequestHash ?? "8".repeat(64),
-    method: "palm_oauth",
+    method: "palm_web",
     scope: {
       kind: "named" as const,
       scope_semantics: "issuer_rp_scope" as const,
-      issuer: "https://connect.very.org",
+      issuer: "https://verify.very.org",
       rp_scope: "pirate-social",
     },
     request_mode: "dynamic" as const,
-    provider_configuration: { kind: "dynamic" as const, reference: "very-oauth", version: "1" },
+    provider_configuration: { kind: "dynamic" as const, reference: "very-web", version: "1" },
     requested_requirements: [
       { claim_id: "credential.subject_unique" as const },
       { claim_id: "human.personhood" as const },
     ],
     requested_claim_ids: ["credential.subject_unique" as const, "human.personhood" as const],
     subject_binding_intent: "establish" as const,
-    protocol_version: "oauth2-oidc-v1",
+    protocol_version: "very-web-v1",
     environment: "test",
   } as const;
   const reservationInput = {
@@ -213,7 +213,7 @@ export async function prepareCommitReadyCommunity(
       generation: document.next_action.generation,
       expected_revision: document.revision,
       idempotency_key: `${prefix}-launch`,
-      provider_id: "very.oauth",
+      provider_id: "very.web",
     },
   };
   const startStore = makeControlPlaneVerificationSessionStartStore(
@@ -225,7 +225,7 @@ export async function prepareCommitReadyCommunity(
     session: {
       id: `${prefix}-proof`,
       ...providerInput,
-      provider_id: "very.oauth",
+      provider_id: "very.web",
       upstream_session_ref: `${prefix}-very-upstream`,
       status: "pending",
       started_at: "2026-08-21T00:00:00.000Z",

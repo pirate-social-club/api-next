@@ -16,13 +16,13 @@ import {
   communityCreationCeremonyReservationHash,
   communityCreationProviderBindingHash,
   HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-  VERY_OAUTH_CONFIGURATION_REFERENCE,
-  VERY_OAUTH_CONFIGURATION_VERSION,
-  VERY_OAUTH_ISSUER,
-  VERY_OAUTH_METHOD,
-  VERY_OAUTH_PROTOCOL_VERSION,
-  VERY_OAUTH_PROVIDER_ID,
-  VERY_OAUTH_RP_SCOPE,
+  VERY_WEB_CONFIGURATION_REFERENCE,
+  VERY_WEB_CONFIGURATION_VERSION,
+  VERY_WEB_ISSUER,
+  VERY_WEB_METHOD,
+  VERY_WEB_PROTOCOL_VERSION,
+  VERY_WEB_PROVIDER_ID,
+  VERY_WEB_RP_SCOPE,
 } from "@pirate/domain";
 import { CanonicalIsoInstant, ProofSession } from "@pirate/domain/verification";
 import { Effect, type Layer, Option, Schema } from "effect";
@@ -324,20 +324,20 @@ function exactHumanProviderInput(
 ): boolean {
   return (
     creation.requirement === "human_identity" &&
-    creation.provider_id === VERY_OAUTH_PROVIDER_ID &&
+    creation.provider_id === VERY_WEB_PROVIDER_ID &&
     start.provider_configuration.kind === "dynamic" &&
-    start.provider_configuration.reference === VERY_OAUTH_CONFIGURATION_REFERENCE &&
-    start.provider_configuration.version === VERY_OAUTH_CONFIGURATION_VERSION &&
-    start.method === VERY_OAUTH_METHOD &&
+    start.provider_configuration.reference === VERY_WEB_CONFIGURATION_REFERENCE &&
+    start.provider_configuration.version === VERY_WEB_CONFIGURATION_VERSION &&
+    start.method === VERY_WEB_METHOD &&
     start.scope.kind === "named" &&
     start.scope.scope_semantics === "issuer_rp_scope" &&
-    start.scope.issuer === VERY_OAUTH_ISSUER &&
-    start.scope.rp_scope === VERY_OAUTH_RP_SCOPE &&
+    start.scope.issuer === VERY_WEB_ISSUER &&
+    start.scope.rp_scope === VERY_WEB_RP_SCOPE &&
     start.request_mode === "dynamic" &&
     sameValue(start.requested_requirements, HUMAN_REQUIREMENTS) &&
     sameValue(start.requested_claim_ids, HUMAN_CLAIM_IDS) &&
     start.subject_binding_intent === "establish" &&
-    start.protocol_version === VERY_OAUTH_PROTOCOL_VERSION
+    start.protocol_version === VERY_WEB_PROTOCOL_VERSION
   );
 }
 

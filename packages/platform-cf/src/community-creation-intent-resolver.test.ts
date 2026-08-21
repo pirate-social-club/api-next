@@ -12,13 +12,13 @@ import { makeCommunityCreationIntentResolver } from "./community-creation-intent
 const providerBindingHash = communityCreationProviderBindingHash({
   requirement: "human_identity",
   family: null,
-  provider_id: "very.oauth",
-  provider_configuration: { kind: "dynamic", reference: "very-oauth", version: "1" },
-  protocol_version: "oauth2-oidc-v1",
+  provider_id: "very.web",
+  provider_configuration: { kind: "dynamic", reference: "very-web", version: "1" },
+  protocol_version: "very-web-v1",
 });
 const creationInput = {
   actor_id: "user-1",
-  provider_id: "very.oauth",
+  provider_id: "very.web",
   creation_intent_id: "intent-1",
   ceremony_intent_id: "ceremony-1",
   requirement: "human_identity" as const,
@@ -35,10 +35,10 @@ const boundRow = {
   requirement_kind: "human_identity",
   requirement_status: "pending",
   requirement_hash: HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-  provider_id: "very.oauth",
+  provider_id: "very.web",
   provider_binding_hash: providerBindingHash,
   provider_configuration_kind: "dynamic",
-  provider_configuration_ref: "very-oauth",
+  provider_configuration_ref: "very-web",
   provider_configuration_version: "1",
   generation: "1",
   current_ceremony_intent_id: "ceremony-1",
@@ -50,10 +50,10 @@ const boundRow = {
   ceremony_requirement_kind: "human_identity",
   ceremony_generation: "1",
   ceremony_requirement_hash: HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-  ceremony_provider_id: "very.oauth",
+  ceremony_provider_id: "very.web",
   ceremony_provider_binding_hash: providerBindingHash,
   ceremony_provider_configuration_kind: "dynamic",
-  ceremony_provider_configuration_ref: "very-oauth",
+  ceremony_provider_configuration_ref: "very-web",
   ceremony_provider_configuration_version: "1",
   ceremony_route_family: null,
   ceremony_route_root_label: null,
@@ -66,7 +66,7 @@ const boundRow = {
     requirement: "human_identity",
     generation: 1,
     requirement_hash: HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH,
-    provider_id: "very.oauth",
+    provider_id: "very.web",
     provider_binding_hash: providerBindingHash,
     route: null,
   }),
@@ -87,11 +87,11 @@ describe("community creation verification intent resolver", () => {
   test("returns the exact canonical Very palm plan for the persisted actor/intent binding", async () => {
     const { resolver, statements } = resolverWith([boundRow]);
     await expect(Effect.runPromise(resolver.resolve(creationInput))).resolves.toEqual({
-      method: "palm_oauth",
+      method: "palm_web",
       scope: {
         kind: "named",
         scope_semantics: "issuer_rp_scope",
-        issuer: "https://connect.very.org",
+        issuer: "https://verify.very.org",
         rp_scope: "pirate-social",
       },
       requested_requirements: [
@@ -100,7 +100,7 @@ describe("community creation verification intent resolver", () => {
       ],
       requested_claim_ids: ["credential.subject_unique", "human.personhood"],
       subject_binding_intent: "establish",
-      protocol_version: "oauth2-oidc-v1",
+      protocol_version: "very-web-v1",
       environment: "test",
     });
     expect(statements).toHaveLength(1);

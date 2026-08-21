@@ -17,20 +17,20 @@ const humanPolicy = {
 };
 
 describe("community gate policy compiler", () => {
-  test("pins the provider-neutral human gate to the curated evaluator and Very OAuth binding", () => {
+  test("pins the provider-neutral human gate to the curated evaluator and Very web binding", () => {
     const compilation = compileCommunityGatePolicy(humanPolicy);
     expect(compilation).toMatchObject({
       kind: "supported",
       canonical_policy_hash: "4ac57c1db6ca01acf054a096a06963716716647b676fa7be41bb45d4e70d3a46",
       provider_binding: {
-        provider_id: "very.oauth",
-        provider_configuration: { kind: "dynamic", reference: "very-oauth", version: "1" },
-        method: "palm_oauth",
-        protocol_version: "oauth2-oidc-v1",
+        provider_id: "very.web",
+        provider_configuration: { kind: "dynamic", reference: "very-web", version: "1" },
+        method: "palm_web",
+        protocol_version: "very-web-v1",
         scope: {
           kind: "named",
           scope_semantics: "issuer_rp_scope",
-          issuer: "https://connect.very.org",
+          issuer: "https://verify.very.org",
           rp_scope: "pirate-social",
         },
       },
@@ -43,10 +43,10 @@ describe("community gate policy compiler", () => {
 
   test("pins the exact requirement preimage and hash independently of authoring metadata", () => {
     expect(HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_CANONICAL_PREIMAGE).toBe(
-      '{"claims":[{"claim_id":"human.personhood"},{"claim_id":"credential.subject_unique"}],"method":"palm_oauth","provider_configuration":{"kind":"dynamic","reference":"very-oauth","version":"1"},"provider_id":"very.oauth","protocol_version":"oauth2-oidc-v1","request_mode":"dynamic","scope":{"issuer":"https://connect.very.org","kind":"named","rp_scope":"pirate-social","scope_semantics":"issuer_rp_scope"},"subject_binding_intent":"establish","version":1}',
+      '{"claims":[{"claim_id":"human.personhood"},{"claim_id":"credential.subject_unique"}],"method":"palm_web","provider_configuration":{"kind":"dynamic","reference":"very-web","version":"1"},"provider_id":"very.web","protocol_version":"very-web-v1","request_mode":"dynamic","scope":{"issuer":"https://verify.very.org","kind":"named","rp_scope":"pirate-social","scope_semantics":"issuer_rp_scope"},"subject_binding_intent":"establish","version":1}',
     );
     expect(HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH).toBe(
-      "4d2098fbf5884abfaa1571739897f260422ed70318f4a98368392a38f796151d",
+      "74aa0d8aba0e55428ad543e5a6127cb00c647410d29180aff83183c68e148677",
     );
     const first = compileCommunityGatePolicy(humanPolicy);
     const renamedPath = compileCommunityGatePolicy({
@@ -89,7 +89,7 @@ describe("community gate policy compiler", () => {
         accessPaths: [
           {
             ...humanPolicy.accessPaths[0],
-            requirements: [{ requirement: "human-verification", provider: "very.oauth" }],
+            requirements: [{ requirement: "human-verification", provider: "very.web" }],
           },
         ],
       },

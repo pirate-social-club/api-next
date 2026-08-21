@@ -18,7 +18,7 @@ describe("community join intent hashes", () => {
     const input = { actorId: "user-a", communityId: "community-a" };
     const preimage = communityJoinIntentBindingPreimage(input);
     expect(preimage).toContain('"actor_id":"user-a"');
-    expect(preimage).toContain('"provider_id":"very.oauth"');
+    expect(preimage).toContain('"provider_id":"very.web"');
     expect(preimage).toContain('"policy_version_id":"curated-human-membership-v1"');
     expect(communityJoinIntentBindingHash(input)).toMatch(/^[0-9a-f]{64}$/u);
     expect(communityJoinIntentBindingHash({ ...input, actorId: "user-b" })).not.toBe(
