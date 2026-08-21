@@ -530,17 +530,157 @@ suite("Postgres 17 community creation repository", () => {
         next_action: { kind: "commit" },
       });
       if (ready === null) throw new Error("expected a commit-ready creation intent");
-      const committed = await Effect.runPromise(
-        creationStore.commit({
-          actor,
-          intentId: document.intent_id,
-          requestHash: "1".repeat(64),
-          body: {
-            idempotency_key: "bound-create-commit",
-            expected_revision: ready.revision,
-          },
-        }),
+      const commitInput = {
+        actor,
+        intentId: document.intent_id,
+        requestHash: "1".repeat(64),
+        body: {
+          idempotency_key: "bound-create-commit",
+          expected_revision: ready.revision,
+        },
+      } as const;
+
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug
+         ) VALUES (
+           'collision-community', 'Collision', 'hidden', $1,
+           clock_timestamp(), clock_timestamp(), NULL
+         )`,
+        [actor.userId],
       );
+      await expect(
+        Effect.runPromise(storeFor(connection, 86_400, "collision").commit(commitInput)),
+      ).rejects.toMatchObject({
+        _tag: "ControlPlaneStatementFailed",
+        label: "community.creation.commit.insert-community",
+        sqlState: "23505",
+        constraint: "communities_pkey",
+      });
+
+      await admin.query(`
+        CREATE FUNCTION reject_test_community_activation()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          IF OLD.status = 'commit_ready' AND NEW.status = 'committed' THEN
+            IF NOT EXISTS (
+              SELECT 1 FROM communities
+               WHERE community_id = NEW.committed_community_id
+            ) THEN
+              RAISE EXCEPTION USING
+                ERRCODE = 'P1001',
+                MESSAGE = 'test prerequisite missing community';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM community_canonical_route_bindings
+               WHERE community_id = NEW.committed_community_id
+            ) THEN
+              RAISE EXCEPTION USING
+                ERRCODE = 'P1002',
+                MESSAGE = 'test prerequisite missing canonical route';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM policy_versions
+               WHERE community_id = NEW.committed_community_id
+            ) THEN
+              RAISE EXCEPTION USING
+                ERRCODE = 'P1003',
+                MESSAGE = 'test prerequisite missing policy version';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM community_policy_provider_bindings
+               WHERE community_id = NEW.committed_community_id
+            ) THEN
+              RAISE EXCEPTION USING
+                ERRCODE = 'P1004',
+                MESSAGE = 'test prerequisite missing provider binding';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM community_policy_current
+               WHERE community_id = NEW.committed_community_id
+            ) THEN
+              RAISE EXCEPTION USING
+                ERRCODE = 'P1005',
+                MESSAGE = 'test prerequisite missing current policy';
+            END IF;
+            IF NOT EXISTS (
+              SELECT 1 FROM community_creation_subject_claims
+               WHERE community_id = NEW.committed_community_id
+            ) THEN
+              RAISE EXCEPTION USING
+                ERRCODE = 'P1006',
+                MESSAGE = 'test prerequisite missing subject claim';
+            END IF;
+            RAISE EXCEPTION 'test-only late activation rejection';
+          END IF;
+          RETURN NEW;
+        END;
+        $$;
+        CREATE TRIGGER reject_test_community_activation
+        BEFORE UPDATE OF status ON community_creation_intents
+        FOR EACH ROW EXECUTE FUNCTION reject_test_community_activation();
+      `);
+      await expect(Effect.runPromise(creationStore.commit(commitInput))).rejects.toMatchObject({
+        _tag: "ControlPlaneStatementFailed",
+        label: "community.creation.commit.persist-intent",
+        sqlState: "P0001",
+        constraint: null,
+      });
+      const rolledBack = await admin.query(
+        `SELECT intent.revision, intent.status, intent.committed_community_id,
+                (SELECT COUNT(*)::integer FROM communities
+                  WHERE community_id = 'bound-start-community') AS communities,
+                (SELECT COUNT(*)::integer FROM community_canonical_route_bindings
+                  WHERE route_binding_id IN ('bound-start-route', 'collision-route')) AS bindings,
+                (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+                  WHERE claim_id IN (
+                    'bound-start-subject-claim', 'collision-subject-claim'
+                  )) AS claims,
+                (SELECT COUNT(*)::integer FROM policy_versions
+                  WHERE community_id = 'bound-start-community') AS policy_versions,
+                (SELECT COUNT(*)::integer FROM community_policy_provider_bindings
+                  WHERE community_id = 'bound-start-community') AS provider_bindings,
+                (SELECT COUNT(*)::integer FROM community_policy_current
+                  WHERE community_id = 'bound-start-community') AS current_policies,
+                (SELECT COUNT(*)::integer FROM community_creation_intent_revisions
+                  WHERE intent_id = intent.intent_id AND operation_kind = 'commit') AS revisions
+           FROM community_creation_intents AS intent
+          WHERE intent.intent_id = $1`,
+        [document.intent_id],
+      );
+      expect(rolledBack.rows).toEqual([
+        {
+          revision: 3,
+          status: "commit_ready",
+          committed_community_id: null,
+          communities: 0,
+          bindings: 0,
+          claims: 0,
+          policy_versions: 0,
+          provider_bindings: 0,
+          current_policies: 0,
+          revisions: 0,
+        },
+      ]);
+      await admin.query(`
+        DROP TRIGGER reject_test_community_activation ON community_creation_intents;
+        DROP FUNCTION reject_test_community_activation();
+      `);
+
+      const commitOutcomes = await Promise.all([
+        Effect.runPromise(creationStore.commit(commitInput)),
+        Effect.runPromise(creationStore.commit(commitInput)),
+      ]);
+      expect(commitOutcomes.map((outcome) => outcome.outcome).sort()).toEqual([
+        "fresh_created",
+        "replayed",
+      ]);
+      expect(commitOutcomes[0]?.document).toEqual(commitOutcomes[1]?.document);
+      const committed =
+        commitOutcomes.find((outcome) => outcome.outcome === "fresh_created") ?? commitOutcomes[0];
       expect(committed).toMatchObject({
         outcome: "fresh_created",
         document: {
@@ -558,11 +698,32 @@ suite("Postgres 17 community creation repository", () => {
           },
         },
       });
+      await expect(Effect.runPromise(creationStore.commit(commitInput))).resolves.toEqual({
+        document: committed.document,
+        outcome: "replayed",
+      });
+      await expect(
+        Effect.runPromise(creationStore.commit({ ...commitInput, requestHash: "2".repeat(64) })),
+      ).rejects.toMatchObject({
+        _tag: "CommunityCreationRepositoryError",
+        operation: "commit",
+        reason: "idempotency-conflict",
+      });
       const activation = await admin.query(
         `SELECT community.route_slug, community.canonical_route_binding_id,
                 binding.community_id, binding.path_segment, binding.href,
                 binding.ownership_status, binding.route_lifecycle_status,
-                intent.committed_resource_href
+                intent.committed_resource_href,
+                (SELECT COUNT(*)::integer FROM community_creation_subject_claims
+                  WHERE intent_id = intent.intent_id) AS subject_claims,
+                (SELECT COUNT(*)::integer FROM community_creation_intent_revisions
+                  WHERE intent_id = intent.intent_id AND operation_kind = 'commit') AS commit_revisions,
+                (SELECT COUNT(*)::integer FROM policy_versions
+                  WHERE community_id = community.community_id) AS policy_versions,
+                (SELECT COUNT(*)::integer FROM community_policy_provider_bindings
+                  WHERE community_id = community.community_id) AS provider_bindings,
+                (SELECT COUNT(*)::integer FROM community_policy_current
+                  WHERE community_id = community.community_id) AS current_policies
            FROM communities AS community
            JOIN community_canonical_route_bindings AS binding
              ON binding.route_binding_id = community.canonical_route_binding_id
@@ -581,6 +742,11 @@ suite("Postgres 17 community creation repository", () => {
           ownership_status: "verified",
           route_lifecycle_status: "active",
           committed_resource_href: "/c/app.bound-start",
+          subject_claims: 1,
+          commit_revisions: 1,
+          policy_versions: 1,
+          provider_bindings: 1,
+          current_policies: 1,
         },
       ]);
     });

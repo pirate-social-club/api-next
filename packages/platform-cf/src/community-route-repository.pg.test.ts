@@ -53,6 +53,7 @@ type RouteSeed = Readonly<{
   readonly pathSegment: string;
   readonly communityId: string;
   readonly bindingId: string;
+  readonly evidenceExpiresAt?: Date;
 }>;
 
 async function seedRoute(admin: Client, route: RouteSeed): Promise<void> {
@@ -220,7 +221,8 @@ async function seedRoute(admin: Client, route: RouteSeed): Promise<void> {
        'route.provider', $7, 'dynamic', 'route-config', '1', 'hns-txt-v1', 'test',
        'hns', $8, $9, $10, $11, $12, 1, 'owner_authoritative_dns_txt', $13,
        $6, TRUE, TRUE, TRUE, 'hns-testnet', 10, $6, 100, 20,
-       $14, clock_timestamp() + interval '1 hour', $15, $6, $6, $6,
+       $14, COALESCE($15::timestamptz, clock_timestamp() + interval '1 hour'),
+       $16, $6, $6, $6,
        '{"status":"verified"}'::jsonb, decode('01', 'hex'))`,
     [
       evidenceRef,
@@ -237,6 +239,7 @@ async function seedRoute(admin: Client, route: RouteSeed): Promise<void> {
       `upstream-${route.suffix}`,
       `_pirate.${route.rootLabel}`,
       terminalAt,
+      route.evidenceExpiresAt ?? null,
       `provider-evidence-${route.suffix}`,
     ],
   );
@@ -286,9 +289,9 @@ async function seedRoute(admin: Client, route: RouteSeed): Promise<void> {
        family, root_label, root_label_display, path_segment,
        requirement_hash, provider_id, provider_binding_hash,
        provider_configuration_version, provider_identity_digest,
-       evidence_digest, binding_generation, verified_at
+       evidence_digest, binding_generation, verified_at, expires_at
      ) VALUES ($1, $2, 'route-actor', $3, $4, $5, $6, $7,
-       'route.provider', $8, '1', $9, $10, 1, $11)`,
+       'route.provider', $8, '1', $9, $10, 1, $11, $12)`,
     [
       evidenceRef,
       ceremonyId,
@@ -301,6 +304,7 @@ async function seedRoute(admin: Client, route: RouteSeed): Promise<void> {
       hash,
       hash,
       terminalAt,
+      route.evidenceExpiresAt ?? null,
     ],
   );
   await admin.query("COMMIT");
@@ -387,12 +391,71 @@ suite("canonical community route Postgres repository", () => {
           Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.legacy-route" })),
         ),
       ).resolves.toBeNull();
+
+      await admin.query(
+        `UPDATE community_canonical_route_bindings
+            SET ownership_status = 'expired', route_lifecycle_status = 'suspended',
+                binding_generation = 2, updated_at = clock_timestamp()
+          WHERE route_binding_id = 'binding-route-hns'`,
+      );
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.xn--mnchen-3ya" })),
+        ),
+      ).resolves.toBeNull();
+      completedTestCount += 1;
+    });
+  }, 30_000);
+
+  test("fails an expired route closed before a lifecycle writer suspends it", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      await admin.query(
+        `INSERT INTO users (user_id, status, account) VALUES ('route-actor', 'active', '{}'::jsonb)`,
+      );
+      await seedRoute(admin, {
+        suffix: "expiry",
+        family: "hns",
+        rootLabel: "expiry-route",
+        rootLabelDisplay: "expiry-route",
+        pathSegment: "app.expiry-route",
+        communityId: "community-route-expiry",
+        bindingId: "binding-route-expiry",
+        evidenceExpiresAt: new Date(Date.now() + 5_000),
+      });
+      const store = makeControlPlaneCanonicalCommunityRouteStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.expiry-route" })),
+        ),
+      ).resolves.toMatchObject({ community_id: "community-route-expiry" });
+
+      await new Promise((resolve) => setTimeout(resolve, 5_100));
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.expiry-route" })),
+        ),
+      ).resolves.toBeNull();
+      const stored = await admin.query(
+        `SELECT ownership_status, route_lifecycle_status, binding_generation
+           FROM community_canonical_route_bindings
+          WHERE route_binding_id = 'binding-route-expiry'`,
+      );
+      expect(stored.rows).toEqual([
+        {
+          ownership_status: "verified",
+          route_lifecycle_status: "active",
+          binding_generation: "1",
+        },
+      ]);
       completedTestCount += 1;
     });
   }, 30_000);
 });
 
 afterAll(async () => {
-  if (connectionString === undefined || completedTestCount !== 1) return;
+  if (connectionString === undefined || completedTestCount !== 2) return;
   await Bun.write(sentinelPath, sentinelContents);
 });
