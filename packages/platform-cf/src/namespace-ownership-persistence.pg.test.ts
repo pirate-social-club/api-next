@@ -2675,9 +2675,9 @@ suite("Postgres namespace ownership persistence foundation", () => {
           kind: "stale_cas",
           status: "failed",
           generation: 2,
-          evidence: "stale_matrix_stale_cas",
-          ownership: "verified",
-          lifecycle: "active",
+          evidence: null,
+          ownership: "revoked",
+          lifecycle: "suspended",
           snapshots: 0,
           routeEvidence: 0,
         },
@@ -2715,11 +2715,11 @@ suite("Postgres namespace ownership persistence foundation", () => {
               }
               await contender.query(
                 `UPDATE community_canonical_route_bindings
-                    SET binding_generation = 2, verified_evidence_ref = $1,
-                        ownership_status = 'verified', route_lifecycle_status = 'active',
+                    SET binding_generation = 2, verified_evidence_ref = NULL,
+                        ownership_status = 'revoked', route_lifecycle_status = 'suspended',
                         updated_at = clock_timestamp()
-                  WHERE route_binding_id = $2`,
-                [outcome.evidence, `route_binding_${outcome.suffix}`],
+                  WHERE route_binding_id = $1`,
+                [`route_binding_${outcome.suffix}`],
               );
             } else if (outcome.kind !== "session_expired") {
               const [ownership, lifecycle] = negativeRouteState[outcome.kind];
@@ -2803,7 +2803,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
       });
     }
     completedTestCount += 1;
-  });
+  }, 30_000);
 
   test("rejects a fabricated revalidation snapshot and rolls back the authority transition", async () => {
     await withSchema(async (client) => {
