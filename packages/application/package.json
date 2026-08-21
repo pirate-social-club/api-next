@@ -9,6 +9,8 @@
     "./namespace-ownership-start": "./src/namespace-ownership/start.ts",
     "./namespace-ownership-completion": "./src/namespace-ownership/completion.ts",
     "./namespace-ownership-hns-evidence": "./src/namespace-ownership/hns-evidence.ts",
+    "./route-revalidation": "./src/route-revalidation/index.ts",
+    "./route-revalidation-hashes": "./src/route-revalidation/hashes.ts",
     "./money/community-purchase-funding-admission": "./src/money/community-purchase-funding-admission.ts",
     "./money/community-purchase-funding-producer": "./src/money/community-purchase-funding-producer.ts",
     "./use-cases/community-purchase-funding-admission": "./src/use-cases/community-purchase-funding-admission.ts",
