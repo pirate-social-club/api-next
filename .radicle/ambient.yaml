@@ -1,0 +1,31 @@
+# api-next Radicle CI plan — v1 dependency-free smoke gate.
+#
+# Intentionally minimal: it proves the new-RID path end-to-end (broker filter
+# -> Ambient guest -> Run/Finished COB) without waiting on the signed
+# dependency artifact lane. Real checks land as a later commit to this file.
+#
+# Deliberately absent from v1:
+# - pre_plan / bun_get: the deployed bun_get output shape (registry tarballs
+#   plus a manifest.tsv) was rejected by the project's own probe — Bun 1.4.0
+#   cannot consume it as an install cache (docs/ci/ambient-bun-dependency-
+#   artifact.md). Dependency acquisition waits on the signed artifact lane.
+# - check:breaking: it is a bun script and needs node_modules, so it is blocked
+#   on the same dependency lane as every other real check. Whether its base
+#   SHA is reachable from the shipped git history is a separate question to
+#   test later, not the reason for exclusion.
+# - test:workerd: it needs node_modules and pulls a workerd binary; the binary
+#   would additionally need a pre-plan action or an explicit exclusion.
+
+pre_plan: []
+
+plan:
+  - action: shell
+    shell: |
+      set -euo pipefail
+      test -d /ci/src
+      test -f /ci/src/package.json
+      test -f /ci/src/bun.lock
+      grep -Fq '"name": "api-next"' /ci/src/package.json
+      echo 'api-next source snapshot verified at /ci/src'
+
+post_plan: []
