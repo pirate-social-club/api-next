@@ -154,6 +154,10 @@ export {
 } from "./queue-retry";
 export { makeHnsRouteRevalidationProvider } from "./route-revalidation-provider";
 export {
+  makeControlPlaneRouteRevalidationCompletionRepository,
+  makeControlPlaneRouteRevalidationCompletionStore,
+} from "./route-revalidation-completion-repository";
+export {
   makeControlPlaneRouteRevalidationStartRepository,
   makeControlPlaneRouteRevalidationStartStore,
 } from "./route-revalidation-start-repository";
