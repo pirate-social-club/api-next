@@ -313,6 +313,24 @@ const app = createHttpWorker({
     },
     CastPostVote: () => ({ post: "post_1", value: 1 }),
     ClearPostVote: () => ({ post: "post_1", value: null }),
+    // Keep the pre-Order-5 runtime behind the public contract boundary. A
+    // valid text request reaches this handler and is rejected by response
+    // validation until moderation-ledger mapping is installed; malformed
+    // publish_mode input must fail before this handler runs.
+    CreatePost: () => ({
+      id: "post_workerd_internal",
+      object: "post",
+      community: "community_workerd",
+      authorship_mode: "human_direct",
+      identity_mode: "public",
+      post_type: "text",
+      status: "processing",
+      visibility: "public",
+      analysis_state: "pending",
+      content_safety_state: "pending",
+      age_gate_policy: "none",
+      created: 1,
+    }),
     GetJwks: () => sessionCryptoInstance.jwks(),
   },
   profile: ({ principal }) =>

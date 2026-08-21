@@ -9,6 +9,7 @@ import {
   Conflict,
   endpoint,
   GateUnsatisfied,
+  IdempotencyConflict,
   VerificationStartInProgress,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
@@ -895,8 +896,11 @@ describe("contracts-generated HTTP worker", () => {
       headers: auth,
     });
 
-    expect(postResponse.status).toBe(201);
-    expect(await postResponse.json()).toEqual(post);
+    // CreatePost still has the old internal PostDocument runtime until Order
+    // 5 installs moderation-ledger mapping. The public contract must fail
+    // closed rather than accidentally expose that internal document.
+    expect(postResponse.status).toBe(500);
+    expect(await postResponse.json()).toMatchObject({ error: { code: "internal_error" } });
     expect(replyResponse.status).toBe(201);
     expect(await replyResponse.json()).toEqual(comment);
     expect(voteResponse.status).toBe(200);
@@ -909,7 +913,10 @@ describe("contracts-generated HTTP worker", () => {
     const app = createHttpWorker({
       handlers: {
         CreatePost: () => {
-          throw new Conflict({ message: "Idempotency key was already used" });
+          throw new IdempotencyConflict({
+            message: "Idempotency key was already used",
+            details: { reason_code: "idempotency_conflict", submission_id: "sub_1" },
+          });
         },
       },
       authenticate: () => ({ kind: "user", subject: "user_1" }),

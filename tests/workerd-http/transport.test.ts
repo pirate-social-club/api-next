@@ -100,13 +100,40 @@ describe("real HTTP worker transport", () => {
     expect(await clear.json()).toEqual({ post: "post_1", value: null });
     expect(clear.headers.get("cache-control")).toBe("no-store");
 
-    const uninstalled = await SELF.fetch("https://worker.test/communities/community_1/posts", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ post_type: "text", idempotency_key: "workerd-key", body: "hello" }),
-    });
+    const uninstalled = await SELF.fetch(
+      "https://worker.test/text-content-submissions/submission_1",
+    );
     expect(uninstalled.status).toBe(404);
     expect(await uninstalled.json()).toMatchObject({ error: { code: "not_found" } });
+  });
+
+  it("rejects removed publish_mode at the Workerd HTTP boundary", async () => {
+    const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "workerd-proof" },
+      }),
+    });
+    const browser = browserCookies(exchange);
+    const response = await SELF.fetch("https://worker.test/communities/community_1/posts", {
+      method: "POST",
+      headers: {
+        cookie: browser.cookie,
+        "content-type": "application/json",
+        origin: "https://solid.test",
+        "x-csrf-token": browser.csrf,
+      },
+      body: JSON.stringify({
+        post_type: "text",
+        idempotency_key: "workerd-publish-mode",
+        body: "hello",
+        publish_mode: "async",
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({ error: { code: "bad_request" } });
   });
 
   it("keeps namespace providers disabled while preserving exact durable replays", async () => {
