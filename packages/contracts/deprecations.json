@@ -102,7 +102,7 @@
     },
     {
       "operationId": "post_communitiesCommunityIdPosts",
-      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+      "reason": "2026-08-21 Order 4 text-post amendment: this existing operation now returns TextContentSubmissionV1 with HTTP 201, removes publish_mode, and keeps non-text variants declared for runtime 400 rejection; the v2 error envelope remains clean-break behavior."
     },
     {
       "operationId": "post_communitiesCommunityIdFollow",

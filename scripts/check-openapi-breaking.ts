@@ -116,7 +116,7 @@ async function main(): Promise<void> {
 
   const operationKey = (violation: string): string | undefined => {
     const match = violation.match(
-      /^(?:operation removed: |operation id changed on |request |response status removed on |response )([A-Z]+ \/[^\s:]+)(?: status \d+)?(?::|$)/,
+      /^(?:operation removed: |operation id changed on |request |response status removed on |response |error code removed on )([A-Z]+ \/[^\s:]+)(?: status \d+)?(?::|$)/,
     );
     return match?.[1];
   };

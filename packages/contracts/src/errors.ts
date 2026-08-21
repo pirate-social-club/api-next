@@ -105,6 +105,23 @@ export class RetryableConflict extends Data.TaggedError("RetryableConflict")<Wir
   readonly retryable = true as const;
 }
 
+/**
+ * A non-retryable replay conflict with the submission identity required by
+ * the text-post reconciliation contract. The wire code intentionally remains
+ * `conflict`; clients distinguish this member by its closed details shape.
+ */
+export class IdempotencyConflict extends Data.TaggedError("IdempotencyConflict")<{
+  readonly message: string;
+  readonly details: {
+    readonly reason_code: "idempotency_conflict";
+    readonly submission_id: string;
+  };
+}> {
+  readonly status = 409 as const;
+  readonly code = "conflict" as const;
+  readonly retryable = false as const;
+}
+
 /** A start lease is held by another request; clients may retry this request. */
 export class VerificationStartInProgress extends Data.TaggedError("VerificationStartInProgress")<
   WireArgs & { readonly retry_after_seconds: number }
@@ -248,6 +265,7 @@ export type ApiError =
   | RateLimited
   | Conflict
   | RetryableConflict
+  | IdempotencyConflict
   | VerificationStartInProgress
   | VerificationStartNewIntentRequired
   | CodedConflict
