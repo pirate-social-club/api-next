@@ -78,6 +78,7 @@ describe("canonical community route Postgres repository", () => {
         readonly: true,
       });
       expect(calls[0]?.text).toContain("community.canonical_route_binding_id");
+      expect(calls[0]?.text).toContain("evidence.expires_at IS NOT NULL");
       expect(calls[0]?.text).toContain("evidence.expires_at > db_clock.now");
     }
   });

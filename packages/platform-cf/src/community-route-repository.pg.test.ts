@@ -53,7 +53,7 @@ type RouteSeed = Readonly<{
   readonly pathSegment: string;
   readonly communityId: string;
   readonly bindingId: string;
-  readonly evidenceExpiresAt?: Date;
+  readonly evidenceExpiresAt?: Date | null;
 }>;
 
 async function seedRoute(admin: Client, route: RouteSeed): Promise<void> {
@@ -63,6 +63,10 @@ async function seedRoute(admin: Client, route: RouteSeed): Promise<void> {
   const intentId = `intent-${route.suffix}`;
   const evidenceRef = `evidence-${route.suffix}`;
   const terminalAt = new Date(Date.now() - 1_000);
+  const evidenceExpiresAt =
+    route.evidenceExpiresAt === undefined
+      ? new Date(terminalAt.getTime() + 60 * 60 * 1_000)
+      : route.evidenceExpiresAt;
 
   await admin.query(
     `INSERT INTO community_creation_intents (
@@ -239,7 +243,7 @@ async function seedRoute(admin: Client, route: RouteSeed): Promise<void> {
       `upstream-${route.suffix}`,
       `_pirate.${route.rootLabel}`,
       terminalAt,
-      route.evidenceExpiresAt ?? null,
+      evidenceExpiresAt,
       `provider-evidence-${route.suffix}`,
     ],
   );
@@ -304,7 +308,7 @@ async function seedRoute(admin: Client, route: RouteSeed): Promise<void> {
       hash,
       hash,
       terminalAt,
-      route.evidenceExpiresAt ?? null,
+      evidenceExpiresAt,
     ],
   );
   await admin.query("COMMIT");
@@ -453,9 +457,37 @@ suite("canonical community route Postgres repository", () => {
       completedTestCount += 1;
     });
   }, 30_000);
+
+  test("fails incomplete route evidence with no expiry closed", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      await admin.query(
+        `INSERT INTO users (user_id, status, account) VALUES ('route-actor', 'active', '{}'::jsonb)`,
+      );
+      await seedRoute(admin, {
+        suffix: "null-expiry",
+        family: "hns",
+        rootLabel: "null-expiry-route",
+        rootLabelDisplay: "null-expiry-route",
+        pathSegment: "app.null-expiry-route",
+        communityId: "community-route-null-expiry",
+        bindingId: "binding-route-null-expiry",
+        evidenceExpiresAt: null,
+      });
+      const store = makeControlPlaneCanonicalCommunityRouteStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.null-expiry-route" })),
+        ),
+      ).resolves.toBeNull();
+      completedTestCount += 1;
+    });
+  }, 30_000);
 });
 
 afterAll(async () => {
-  if (connectionString === undefined || completedTestCount !== 2) return;
+  if (connectionString === undefined || completedTestCount !== 3) return;
   await Bun.write(sentinelPath, sentinelContents);
 });

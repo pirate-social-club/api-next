@@ -66,7 +66,8 @@ const resolveCanonicalRouteStatement = (pathSegment: string) =>
             AND binding.route_lifecycle_status = 'active'
             AND binding.ownership_status = 'verified'
             AND binding.verified_evidence_ref IS NOT NULL
-            AND (evidence.expires_at IS NULL OR evidence.expires_at > db_clock.now)
+            AND evidence.expires_at IS NOT NULL
+            AND evidence.expires_at > db_clock.now
             AND evidence.family = binding.family
             AND evidence.root_label = binding.root_label
             AND evidence.root_label_display = binding.root_label_display
