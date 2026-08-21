@@ -255,16 +255,12 @@ describe("HNS owner service-binding transport", () => {
       },
     });
 
-    await expect(
-      Effect.runPromise(
-        transport.start({ wire: routeWire, revalidation_session_id: "persisted-session-7" }),
-      ),
-    ).resolves.toEqual(bytes);
+    await expect(Effect.runPromise(transport.start({ wire: routeWire }))).resolves.toEqual(bytes);
     expect(String(calls[0]?.input)).toBe("https://hns-owner.internal/internal/hns-owner/v1/start");
     expect(calls[0]?.init?.headers).toEqual([
       ["Content-Type", "application/json"],
       ["Accept", "application/json"],
-      ["Pirate-Namespace-Session-Id", "persisted-session-7"],
+      ["Pirate-Namespace-Session-Id", routeWire.revalidation_session_id],
     ]);
     expect(new TextDecoder().decode(calls[0]?.init?.body as Uint8Array)).toBe(
       JSON.stringify({
@@ -293,14 +289,7 @@ describe("HNS owner service-binding transport", () => {
     const transport = makeHnsOwnerRouteRevalidationTransport({
       fetch: async () => response(bytes, 200, "application/json"),
     });
-    await expect(
-      Effect.runPromise(
-        transport.start({
-          wire: routeWire,
-          revalidation_session_id: routeWire.revalidation_session_id,
-        }),
-      ),
-    ).resolves.toEqual(bytes);
+    await expect(Effect.runPromise(transport.start({ wire: routeWire }))).resolves.toEqual(bytes);
   });
 
   test("sends the creation-free route poll body and preserves exact response bytes", async () => {
@@ -313,12 +302,7 @@ describe("HNS owner service-binding transport", () => {
       },
     });
     await expect(
-      Effect.runPromise(
-        transport.complete({
-          session: revalidationSession,
-          revalidation_session_id: revalidationSession.revalidation_session_id,
-        }),
-      ),
+      Effect.runPromise(transport.complete({ session: revalidationSession })),
     ).resolves.toEqual(bytes);
     expect(String(calls[0]?.input)).toBe("https://hns-owner.internal/internal/hns-owner/v1/poll");
     expect(calls[0]?.init?.headers).toEqual([
@@ -348,28 +332,18 @@ describe("HNS owner service-binding transport", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         ),
     });
-    await expect(
-      Effect.runPromise(
-        transport.start({
-          wire: routeWire,
-          revalidation_session_id: routeWire.revalidation_session_id,
-        }),
-      ),
-    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
+    await expect(Effect.runPromise(transport.start({ wire: routeWire }))).rejects.toBeInstanceOf(
+      NamespaceOwnershipProviderInvalidResponse,
+    );
   });
 
   test("maps redirects to invalid response and guarded transport failures to unavailable", async () => {
     const redirect = makeHnsOwnerRouteRevalidationTransport({
       fetch: async () => response("redirect", 302),
     });
-    await expect(
-      Effect.runPromise(
-        redirect.start({
-          wire: routeWire,
-          revalidation_session_id: routeWire.revalidation_session_id,
-        }),
-      ),
-    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
+    await expect(Effect.runPromise(redirect.start({ wire: routeWire }))).rejects.toBeInstanceOf(
+      NamespaceOwnershipProviderInvalidResponse,
+    );
 
     let guarded = false;
     const unavailable = makeHnsOwnerRouteRevalidationTransport({
@@ -378,14 +352,9 @@ describe("HNS owner service-binding transport", () => {
         throw new Error("transport unavailable");
       },
     });
-    await expect(
-      Effect.runPromise(
-        unavailable.start({
-          wire: routeWire,
-          revalidation_session_id: routeWire.revalidation_session_id,
-        }),
-      ),
-    ).rejects.toBeInstanceOf(NamespaceOwnershipProviderUnavailable);
+    await expect(Effect.runPromise(unavailable.start({ wire: routeWire }))).rejects.toBeInstanceOf(
+      NamespaceOwnershipProviderUnavailable,
+    );
     expect(guarded).toBe(true);
   });
 });

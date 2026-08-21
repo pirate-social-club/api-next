@@ -28,13 +28,11 @@ export type HnsOwnerRouteRevalidationTransport = Readonly<{
   readonly start: (
     input: Readonly<{
       readonly wire: HnsOwnerRouteRevalidationStartWireV1;
-      readonly revalidation_session_id: string;
     }>,
   ) => Effect.Effect<Uint8Array, HnsOwnerTransportFailure>;
   readonly complete: (
     input: Readonly<{
       readonly session: HnsRouteRevalidationSessionV1;
-      readonly revalidation_session_id: string;
     }>,
   ) => Effect.Effect<Uint8Array, HnsOwnerTransportFailure>;
 }>;
@@ -268,7 +266,7 @@ export function makeHnsOwnerRouteRevalidationTransport(
   binding: HnsOwnerServiceBinding,
 ): HnsOwnerRouteRevalidationTransport {
   return {
-    start: ({ wire, revalidation_session_id }) => {
+    start: ({ wire }) => {
       const body = jsonBytes(
         {
           operation_kind: wire.operation_kind,
@@ -307,13 +305,13 @@ export function makeHnsOwnerRouteRevalidationTransport(
         START_URL,
         body,
         "application/json",
-        revalidation_session_id,
+        wire.revalidation_session_id,
         START_DEADLINE_MS,
         "start",
         START_RESPONSE_MAX_BYTES,
       );
     },
-    complete: ({ session, revalidation_session_id }) => {
+    complete: ({ session }) => {
       const body = jsonBytes(
         {
           operation_kind: "route_revalidation",
@@ -328,7 +326,7 @@ export function makeHnsOwnerRouteRevalidationTransport(
         POLL_URL,
         body,
         "application/octet-stream",
-        revalidation_session_id,
+        session.revalidation_session_id,
         POLL_DEADLINE_MS,
         "complete",
         POLL_RESPONSE_MAX_BYTES,
