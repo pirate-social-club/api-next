@@ -8,6 +8,7 @@ import {
   hnsRouteRevalidationEvidenceHash,
   hnsRouteRevalidationObservationSha256,
   hnsRouteRevalidationProviderIdentityDigest,
+  hnsRouteRevalidationRequirementHash,
   hnsRouteRevalidationResultHash,
 } from "./hashes.ts";
 import {
@@ -176,7 +177,7 @@ export type HnsRouteRevalidationCompletionAttempt = Readonly<{
   readonly state: "leased" | "released" | "consumed";
   readonly fence_token: number;
   readonly lease_expires_at: string;
-  readonly consumption_kind: HnsRouteRevalidationTerminalStatus | "semantic_contradiction" | null;
+  readonly consumption_kind: HnsRouteRevalidationTerminalStatus | null;
   readonly result_hash: string | null;
 }>;
 
@@ -211,6 +212,27 @@ export type HnsRouteRevalidationCompletionAttemptReservation = Readonly<{
   readonly fence_token: number;
   readonly lease_expires_at: string;
 }>;
+
+/** Database-authoritative identity allocated before the completion hash is computed. */
+export type HnsRouteRevalidationCompletionAttemptAllocation = Readonly<{
+  readonly route_revalidation_attempt_id: string;
+  readonly evidence_ref: string;
+  readonly attempt_number: number;
+}>;
+
+export type HnsRouteRevalidationCompletionAllocationOutcome =
+  | {
+      readonly kind: "acquired";
+      readonly allocation: HnsRouteRevalidationCompletionAttemptAllocation;
+    }
+  | { readonly kind: "replay"; readonly stored: HnsRouteRevalidationStoredCompletion }
+  | { readonly kind: "expired"; readonly result_hash: string }
+  | { readonly kind: "in_flight"; readonly retry_after_seconds: number }
+  | { readonly kind: "consumed" }
+  | { readonly kind: "budget_exhausted" }
+  | { readonly kind: "idempotency_conflict" }
+  | { readonly kind: "binding_conflict" }
+  | { readonly kind: "not_found" };
 
 export type HnsRouteRevalidationCompletionReservationOutcome =
   | {
@@ -268,6 +290,21 @@ export interface HnsRouteRevalidationCompletionStore {
     HnsRouteRevalidationStoredCompletion | null,
     HnsRouteRevalidationCompletionStorageFailed
   >;
+  /** Allocate attempt identity under the database lock before hashing it. */
+  readonly allocate: (
+    input: Readonly<{
+      readonly route_revalidation_id: string;
+      readonly revalidation_session_id: string;
+      readonly expected_binding_generation: number;
+      readonly expected_verified_evidence_ref: string | null;
+      readonly idempotency_key: string;
+      readonly lease_ms: number;
+      readonly max_consumed_attempts: number;
+    }>,
+  ) => Effect.Effect<
+    HnsRouteRevalidationCompletionAllocationOutcome,
+    HnsRouteRevalidationCompletionStorageFailed
+  >;
   /** Reserve in a short transaction. The provider must not run in this operation. */
   readonly reserve: (
     input: Readonly<{
@@ -279,6 +316,7 @@ export interface HnsRouteRevalidationCompletionStore {
       readonly completion_request_hash: string;
       readonly completion_attempt_id: string;
       readonly evidence_ref: string;
+      readonly attempt_number: number;
       readonly lease_ms: number;
       readonly max_consumed_attempts: number;
     }>,
@@ -320,7 +358,8 @@ export interface HnsRouteRevalidationCompletionStore {
       readonly idempotency_key: string;
       readonly completion_request_hash: string;
       readonly attempt: HnsRouteRevalidationCompletionAttemptReservation;
-      readonly consumption_kind: "semantic_contradiction";
+      readonly consumption_kind: "challenge_mismatch";
+      readonly expired_result_hash: string;
     }>,
   ) => Effect.Effect<
     HnsRouteRevalidationCompletionFinalizeOutcome,
@@ -373,11 +412,6 @@ export type HnsRouteRevalidationCompletionFailure =
   | HnsRouteRevalidationCompletionStorageFailed
   | HnsRouteRevalidationProviderFailed;
 
-const generatedId = (
-  ids: HnsRouteRevalidationCompletionServices["ids"],
-  kind: "attempt" | "evidence",
-) => ids?.[kind]() ?? `route-revalidation-${kind}_${crypto.randomUUID()}`;
-
 function decodeInput(
   input: unknown,
 ): Effect.Effect<CompleteHnsRouteRevalidationInput, HnsRouteRevalidationCompletionRejected> {
@@ -414,6 +448,16 @@ function terminalHashInput(
   status: HnsRouteRevalidationTerminalStatus,
   evidence: HnsRouteRevalidationEvidenceEnvelopeV1 | null,
 ): HnsRouteRevalidationResultHashInput {
+  const routeAuthority =
+    status === "verified"
+      ? { ownership: "verified" as const, lifecycle: "active" as const }
+      : status === "missing_root" || status === "revoked"
+        ? { ownership: "revoked" as const, lifecycle: "suspended" as const }
+        : status === "control_failed" || status === "challenge_mismatch" || status === "disputed"
+          ? { ownership: "disputed" as const, lifecycle: "suspended" as const }
+          : status === "insufficient_expiry" || status === "database_time_expired"
+            ? { ownership: "expired" as const, lifecycle: "suspended" as const }
+            : { ownership: null, lifecycle: null };
   return {
     route_revalidation_id: input.route_revalidation_id,
     revalidation_session_id: input.revalidation_session_id,
@@ -426,8 +470,8 @@ function terminalHashInput(
     evidence_ref_or_null: evidence?.evidence_ref ?? null,
     evidence_digest_or_null: evidence?.evidence_digest ?? null,
     provider_identity_digest_or_null: evidence?.provider_identity_digest ?? null,
-    ownership_status_or_null: status === "verified" ? "verified" : null,
-    route_lifecycle_status_or_null: status === "verified" ? "active" : null,
+    ownership_status_or_null: routeAuthority.ownership,
+    route_lifecycle_status_or_null: routeAuthority.lifecycle,
   };
 }
 
@@ -482,6 +526,95 @@ function routeMatchesSession(
   );
 }
 
+function canonicalInstant(value: string): number | null {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : null;
+}
+
+function terminalSessionStatus(
+  status: HnsRouteRevalidationTerminalStatus,
+): HnsRouteRevalidationStoredCompletion["status"] {
+  if (status === "database_time_expired" || status === "session_expired") return "expired";
+  if (status === "verified") return "completed";
+  return "failed";
+}
+
+/**
+ * The repository is the authority for the locked row and its cross-row
+ * comparisons. This guard only rejects an impossible object before it can
+ * select a provider: a stale or partially projected session must never turn
+ * into an outbound poll merely because a store implementation returned it.
+ */
+function validateStoredCompletion(
+  input: CompleteHnsRouteRevalidationInput,
+  stored: HnsRouteRevalidationStoredCompletion,
+): Effect.Effect<void, HnsRouteRevalidationCompletionRejected> {
+  const authority = stored.session.authority;
+  const databaseNow = canonicalInstant(stored.database_now);
+  const startedAt = canonicalInstant(stored.session.started_at);
+  const expiresAt = canonicalInstant(stored.session.expires_at);
+  const terminalAt =
+    stored.session.terminal_at === null ? null : canonicalInstant(stored.session.terminal_at);
+  const presentationExpiresAt = canonicalInstant(
+    stored.session.start_presentation.payload.expires_at,
+  );
+  const sessionPending = stored.session.status === "pending";
+  const topLevelPending = stored.status === "pending";
+  const attemptSelfConsistent =
+    stored.attempt === null ||
+    (stored.attempt.route_revalidation_id === stored.route_revalidation_id &&
+      stored.attempt.revalidation_session_id === stored.revalidation_session_id &&
+      stored.attempt.route_binding_id === authority.route_binding_id &&
+      stored.attempt.expected_binding_generation === stored.expected_binding_generation &&
+      stored.attempt.expected_verified_evidence_ref === authority.expected_verified_evidence_ref);
+  const authoritySelfConsistent =
+    authority.version === "pirate-hns-route-revalidation-authority-v1" &&
+    authority.principal_kind === "system" &&
+    authority.provider_id === "hns.owner.v1" &&
+    authority.protocol_version === "hns-txt-v1" &&
+    authority.family === "hns" &&
+    authority.route_revalidation_id === stored.route_revalidation_id &&
+    authority.route_revalidation_id === input.route_revalidation_id &&
+    authority.expected_binding_generation === stored.expected_binding_generation &&
+    authority.expected_binding_generation === input.expected_binding_generation &&
+    attemptSelfConsistent;
+  const sessionSelfConsistent =
+    stored.session.revalidation_session_id === stored.revalidation_session_id &&
+    stored.session.start_presentation.session_id === stored.session.upstream_session_ref &&
+    stored.session.start_presentation.payload.expires_at === stored.session.expires_at &&
+    stored.session.start_presentation.payload.challenge_value ===
+      `pirate-verification=${stored.session.upstream_session_ref}` &&
+    stored.session.start_presentation.payload.challenge_name ===
+      (stored.session.start_presentation.payload.ownership_source === "hns_parent_chain_txt"
+        ? authority.root_label
+        : `_pirate.${authority.root_label}`);
+  const lifecycleConsistent =
+    databaseNow !== null &&
+    startedAt !== null &&
+    expiresAt !== null &&
+    presentationExpiresAt !== null &&
+    (terminalAt === null) === sessionPending &&
+    stored.status === stored.session.status &&
+    ((sessionPending && topLevelPending && startedAt <= databaseNow) ||
+      (!sessionPending &&
+        !topLevelPending &&
+        terminalAt !== null &&
+        terminalAt <= databaseNow &&
+        stored.terminal !== null &&
+        terminalSessionStatus(stored.terminal.status) === stored.status));
+  if (!authoritySelfConsistent || !sessionSelfConsistent || !lifecycleConsistent) {
+    return Effect.fail(new HnsRouteRevalidationCompletionRejected({ reason: "invalid" }));
+  }
+  return Effect.tryPromise({
+    try: async () => {
+      const requirementHash = await hnsRouteRevalidationRequirementHash(authority);
+      if (requirementHash !== authority.requirement_hash)
+        throw new TypeError("authority hash drift");
+    },
+    catch: () => new HnsRouteRevalidationCompletionRejected({ reason: "invalid" }),
+  });
+}
+
 function buildVerifiedEnvelope(
   stored: HnsRouteRevalidationStoredCompletion,
   attempt: HnsRouteRevalidationCompletionAttemptReservation,
@@ -498,9 +631,22 @@ function buildVerifiedEnvelope(
       const databaseNow = Date.parse(stored.database_now);
       const observedAt = Date.parse(observation.observed_at);
       const expiresAt = Date.parse(observation.expires_at);
+      let rawDecoded: unknown;
+      try {
+        rawDecoded = JSON.parse(new TextDecoder().decode(provider.raw_response_bytes)) as unknown;
+      } catch {
+        throw new TypeError("provider response bytes are not JSON");
+      }
+      const rawResult = Schema.decodeUnknownOption(
+        HnsRouteRevalidationProviderResponse,
+        exactParseOptions,
+      )(rawDecoded);
       if (
         provider.raw_response_bytes.byteLength === 0 ||
         provider.raw_response_bytes.byteLength > 1_048_576 ||
+        Option.isNone(rawResult) ||
+        rawResult.value.status !== "verified" ||
+        JSON.stringify(rawResult.value.observation) !== JSON.stringify(observation) ||
         !routeMatchesSession(authority, stored) ||
         observation.challenge_name !== sourceName ||
         observation.challenge_value !==
@@ -651,21 +797,22 @@ function consumeSemanticContradiction(
   stored: HnsRouteRevalidationStoredCompletion,
   input: CompleteHnsRouteRevalidationInput,
   attempt: HnsRouteRevalidationCompletionAttemptReservation,
+  expiredResultHash: string,
   failure: HnsRouteRevalidationProviderFailed,
-): Effect.Effect<never, HnsRouteRevalidationCompletionFailure> {
+): Effect.Effect<HnsRouteRevalidationCompletionResponse, HnsRouteRevalidationCompletionFailure> {
   return Effect.gen(function* () {
     const outcome = yield* services.store.consume({
       expected: stored,
       idempotency_key: input.idempotency_key,
       completion_request_hash: attempt.completion_request_hash,
       attempt,
-      consumption_kind: "semantic_contradiction",
+      consumption_kind: "challenge_mismatch",
+      expired_result_hash: expiredResultHash,
     });
-    if (
-      outcome.kind === "lease_lost" ||
-      outcome.kind === "expired" ||
-      outcome.kind === "stale_cas"
-    ) {
+    if (outcome.kind === "expired") {
+      return response(stored, "session_expired", false, outcome.result_hash, null);
+    }
+    if (outcome.kind === "lease_lost" || outcome.kind === "stale_cas") {
       return yield* new HnsRouteRevalidationCompletionRejected({ reason: "stale_cas" });
     }
     if (outcome.kind === "binding_conflict") {
@@ -688,10 +835,58 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
   });
   if (stored === null)
     return yield* new HnsRouteRevalidationCompletionRejected({ reason: "not_found" });
+  yield* validateStoredCompletion(input, stored);
 
-  const attemptId =
-    stored.attempt?.route_revalidation_attempt_id ?? generatedId(services.ids, "attempt");
-  const evidenceRef = stored.attempt?.evidence_ref ?? generatedId(services.ids, "evidence");
+  const allocation = stored.attempt
+    ? ({
+        kind: "acquired" as const,
+        allocation: {
+          route_revalidation_attempt_id: stored.attempt.route_revalidation_attempt_id,
+          evidence_ref: stored.attempt.evidence_ref,
+          attempt_number: stored.attempt.attempt_number,
+        },
+      } satisfies HnsRouteRevalidationCompletionAllocationOutcome)
+    : yield* services.store.allocate({
+        route_revalidation_id: input.route_revalidation_id,
+        revalidation_session_id: input.revalidation_session_id,
+        expected_binding_generation: input.expected_binding_generation,
+        expected_verified_evidence_ref: stored.session.authority.expected_verified_evidence_ref,
+        idempotency_key: input.idempotency_key,
+        lease_ms: HNS_ROUTE_REVALIDATION_COMPLETION_LEASE_MS,
+        max_consumed_attempts: HNS_ROUTE_REVALIDATION_COMPLETION_MAX_CONSUMED_ATTEMPTS,
+      });
+  if (allocation.kind !== "acquired") {
+    if (allocation.kind === "replay") {
+      const replayed = yield* terminalReplay(
+        input,
+        allocation.stored.terminal?.completion_request_hash ?? "",
+        allocation.stored,
+      );
+      return (
+        replayed ??
+        (yield* new HnsRouteRevalidationCompletionRejected({ reason: "binding_conflict" }))
+      );
+    }
+    if (allocation.kind === "expired")
+      return response(stored, "session_expired", false, allocation.result_hash, null);
+    if (allocation.kind === "in_flight")
+      return yield* new HnsRouteRevalidationCompletionRejected({
+        reason: "completion_in_progress",
+        retry_after_seconds: allocation.retry_after_seconds,
+      });
+    if (allocation.kind === "consumed")
+      return yield* new HnsRouteRevalidationCompletionRejected({ reason: "attempt_consumed" });
+    if (allocation.kind === "budget_exhausted")
+      return yield* new HnsRouteRevalidationCompletionRejected({
+        reason: "attempt_budget_exhausted",
+      });
+    if (allocation.kind === "idempotency_conflict" || allocation.kind === "binding_conflict")
+      return yield* new HnsRouteRevalidationCompletionRejected({ reason: allocation.kind });
+    return yield* new HnsRouteRevalidationCompletionRejected({ reason: "not_found" });
+  }
+  const attemptId = allocation.allocation.route_revalidation_attempt_id;
+  const evidenceRef = allocation.allocation.evidence_ref;
+  const attemptNumber = allocation.allocation.attempt_number;
   const completionRequestHash = yield* Effect.promise(() =>
     hnsRouteRevalidationCompletionHash({
       route_revalidation_id: input.route_revalidation_id,
@@ -700,7 +895,7 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
       route_binding_id: stored.session.authority.route_binding_id,
       expected_binding_generation: input.expected_binding_generation,
       expected_verified_evidence_ref: stored.session.authority.expected_verified_evidence_ref,
-      attempt_number: stored.attempt?.attempt_number ?? 1,
+      attempt_number: attemptNumber,
       idempotency_key: input.idempotency_key,
       evidence_ref: evidenceRef,
     }),
@@ -717,6 +912,7 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
     completion_request_hash: completionRequestHash,
     completion_attempt_id: attemptId,
     evidence_ref: evidenceRef,
+    attempt_number: attemptNumber,
     lease_ms: HNS_ROUTE_REVALIDATION_COMPLETION_LEASE_MS,
     max_consumed_attempts: HNS_ROUTE_REVALIDATION_COMPLETION_MAX_CONSUMED_ATTEMPTS,
   });
@@ -753,7 +949,12 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
     hnsRouteRevalidationResultHash(terminalHashInput(input, attempt, "session_expired", null)),
   );
   // Deliberately awaited after reserve has committed; no store transaction spans this call.
-  const providerResult = yield* services.provider.complete({ session: stored.session }).pipe(
+  const providerEffect = Effect.try({
+    try: () => services.provider.complete({ session: stored.session }),
+    catch: () => new HnsRouteRevalidationProviderFailed({ reason: "unavailable" }),
+  });
+  const providerResult = yield* providerEffect.pipe(
+    Effect.flatten,
     Effect.matchEffect({
       onSuccess: (value) => Effect.succeed({ kind: "success" as const, value }),
       onFailure: (error) => Effect.succeed({ kind: "failure" as const, error }),
@@ -767,6 +968,7 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
         stored,
         input,
         attempt,
+        expiredResultHash,
         providerResult.error,
       );
     }
@@ -847,7 +1049,14 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
     }),
   );
   if (verified.kind === "failure") {
-    return yield* consumeSemanticContradiction(services, stored, input, attempt, verified.error);
+    return yield* consumeSemanticContradiction(
+      services,
+      stored,
+      input,
+      attempt,
+      expiredResultHash,
+      verified.error,
+    );
   }
   const resultHash = yield* Effect.promise(() =>
     hnsRouteRevalidationResultHash(

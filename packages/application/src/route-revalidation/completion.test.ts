@@ -3,15 +3,22 @@ import { Effect, Option, Schema } from "effect";
 import {
   CompleteHnsRouteRevalidationInput,
   completeHnsRouteRevalidation,
+  type HnsRouteRevalidationCompletionAllocationOutcome,
   type HnsRouteRevalidationCompletionAttemptReservation,
   type HnsRouteRevalidationCompletionFinalizeOutcome,
   type HnsRouteRevalidationCompletionProviderResult,
+  type HnsRouteRevalidationCompletionReleaseOutcome,
+  type HnsRouteRevalidationCompletionReservationOutcome,
   type HnsRouteRevalidationCompletionServices,
   type HnsRouteRevalidationCompletionStore,
   HnsRouteRevalidationProviderResponse,
   type HnsRouteRevalidationStoredCompletion,
 } from "./completion.ts";
-import { hnsRouteRevalidationCompletionHash } from "./hashes.ts";
+import {
+  hnsRouteRevalidationCompletionHash,
+  hnsRouteRevalidationRequirementHash,
+  hnsRouteRevalidationResultHash,
+} from "./hashes.ts";
 import { HnsRouteRevalidationProviderFailed, type HnsRouteRevalidationSessionV1 } from "./start.ts";
 
 const input = {
@@ -64,6 +71,9 @@ const session: HnsRouteRevalidationSessionV1 = {
   expires_at: "2099-01-01T00:00:00.000Z",
   terminal_at: null,
 };
+Object.assign(session.authority, {
+  requirement_hash: await hnsRouteRevalidationRequirementHash(session.authority),
+});
 const attempt: HnsRouteRevalidationCompletionAttemptReservation = {
   route_revalidation_attempt_id: "attempt-1",
   route_revalidation_id: input.route_revalidation_id,
@@ -119,33 +129,66 @@ function observation(overrides: Record<string, unknown> = {}) {
   } as const;
 }
 
+function verifiedBytes(value: ReturnType<typeof observation>) {
+  return new TextEncoder().encode(JSON.stringify({ status: "verified", observation: value }));
+}
+
 function harness(
   provider: HnsRouteRevalidationCompletionProviderResult | HnsRouteRevalidationProviderFailed,
   initial: HnsRouteRevalidationStoredCompletion = stored(),
   verifyOutcome?: HnsRouteRevalidationCompletionFinalizeOutcome,
+  consumeOutcome: HnsRouteRevalidationCompletionFinalizeOutcome = {
+    kind: "consumed_without_terminal",
+  },
+  syncThrow = false,
+  releaseOutcome: HnsRouteRevalidationCompletionReleaseOutcome = { kind: "released" },
+  reservationOutcome?: HnsRouteRevalidationCompletionReservationOutcome,
+  allocationOutcome?: HnsRouteRevalidationCompletionAllocationOutcome,
 ) {
   const events: string[] = [];
   const calls = { provider: 0, consume: 0, reject: 0, verify: 0 };
   let consumed: Parameters<HnsRouteRevalidationCompletionStore["consume"]>[0] | undefined;
+  let rejected: Parameters<HnsRouteRevalidationCompletionStore["reject"]>[0] | undefined;
+  let reserved: Parameters<HnsRouteRevalidationCompletionStore["reserve"]>[0] | undefined;
   const store: HnsRouteRevalidationCompletionStore = {
     load: () => {
       events.push("load");
       return Effect.succeed(initial);
     },
+    allocate: () =>
+      Effect.succeed(
+        allocationOutcome ?? {
+          kind: "acquired" as const,
+          allocation: {
+            route_revalidation_attempt_id: attempt.route_revalidation_attempt_id,
+            evidence_ref: attempt.evidence_ref,
+            attempt_number: 1,
+          },
+        },
+      ),
     reserve: (value) => {
       events.push("reserve");
+      reserved = value;
+      if (reservationOutcome !== undefined) return Effect.succeed(reservationOutcome);
       return Effect.succeed({
         kind: "acquired" as const,
-        reservation: { ...attempt, completion_request_hash: value.completion_request_hash },
+        reservation: {
+          ...attempt,
+          route_revalidation_attempt_id: value.completion_attempt_id,
+          evidence_ref: value.evidence_ref,
+          attempt_number: value.attempt_number,
+          completion_request_hash: value.completion_request_hash,
+        },
       });
     },
     release: () => {
       events.push("release");
-      return Effect.succeed({ kind: "released" as const });
+      return Effect.succeed(releaseOutcome);
     },
     reject: (value) => {
       calls.reject += 1;
       events.push("reject");
+      rejected = value;
       return Effect.succeed({
         kind: "committed" as const,
         status: value.status,
@@ -156,7 +199,7 @@ function harness(
       calls.consume += 1;
       events.push("consume");
       consumed = value;
-      return Effect.succeed({ kind: "consumed_without_terminal" as const });
+      return Effect.succeed(consumeOutcome);
     },
     verify: (value) => {
       calls.verify += 1;
@@ -176,6 +219,7 @@ function harness(
       complete: () => {
         calls.provider += 1;
         events.push("provider");
+        if (syncThrow) throw new Error("transport synchronously failed");
         return provider instanceof HnsRouteRevalidationProviderFailed
           ? Effect.fail(provider)
           : Effect.succeed(provider);
@@ -186,7 +230,14 @@ function harness(
       evidence: () => attempt.evidence_ref,
     },
   } satisfies HnsRouteRevalidationCompletionServices;
-  return { services, events, calls, consumed: () => consumed };
+  return {
+    services,
+    events,
+    calls,
+    consumed: () => consumed,
+    rejected: () => rejected,
+    reserved: () => reserved,
+  };
 }
 
 test("accepts exactly five fields and rejects unknown or invalid members", () => {
@@ -239,6 +290,7 @@ test("replay resolves before reservation or provider work", async () => {
   const h = harness(
     { status: "pending" },
     stored({
+      session: { ...session, status: "failed", terminal_at: "2026-08-21T07:00:00.000Z" },
       attempt: attemptRecord,
       status: "failed",
       terminal: {
@@ -255,11 +307,110 @@ test("replay resolves before reservation or provider work", async () => {
   expect(h.calls.provider).toBe(0);
 });
 
+test("rejects a self-inconsistent loaded session before reservation or provider work", async () => {
+  const h = harness(
+    {
+      status: "verified",
+      observation: observation(),
+      raw_response_bytes: verifiedBytes(observation()),
+    },
+    stored({
+      session: {
+        ...session,
+        authority: { ...session.authority, route_revalidation_id: "other-route" },
+      },
+    }),
+  );
+  await expect(
+    Effect.runPromise(completeHnsRouteRevalidation(input, h.services)),
+  ).rejects.toMatchObject({ reason: "invalid" });
+  expect(h.events).toEqual(["load"]);
+  expect(h.calls.provider).toBe(0);
+});
+
 test("reserves before provider and releases pending", async () => {
   const h = harness({ status: "pending" });
   const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
   expect(result).toMatchObject({ status: "pending", result_hash: null, retry_after_seconds: 1 });
   expect(h.events).toEqual(["load", "reserve", "provider", "release"]);
+});
+
+test("hashes the database-authoritative fresh attempt number and identity", async () => {
+  const h = harness(
+    { status: "pending" },
+    stored(),
+    undefined,
+    undefined,
+    false,
+    { kind: "released" },
+    undefined,
+    {
+      kind: "acquired",
+      allocation: {
+        route_revalidation_attempt_id: "attempt-2",
+        evidence_ref: "evidence-2",
+        attempt_number: 2,
+      },
+    },
+  );
+  const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
+  expect(result.status).toBe("pending");
+  expect(h.reserved()).toMatchObject({
+    completion_attempt_id: "attempt-2",
+    evidence_ref: "evidence-2",
+    attempt_number: 2,
+  });
+});
+
+for (const [kind, reason] of [
+  ["in_flight", "completion_in_progress"],
+  ["consumed", "attempt_consumed"],
+  ["budget_exhausted", "attempt_budget_exhausted"],
+  ["idempotency_conflict", "idempotency_conflict"],
+  ["binding_conflict", "binding_conflict"],
+] as const) {
+  test(`does not call provider for reservation outcome: ${kind}`, async () => {
+    const h = harness(
+      { status: "pending" },
+      stored(),
+      undefined,
+      undefined,
+      false,
+      undefined,
+      kind === "in_flight" ? { kind, retry_after_seconds: 1 } : { kind },
+    );
+    await expect(
+      Effect.runPromise(completeHnsRouteRevalidation(input, h.services)),
+    ).rejects.toMatchObject({ reason });
+    expect(h.events).toEqual(["load", "reserve"]);
+    expect(h.calls.provider).toBe(0);
+  });
+}
+
+test("does not call provider when the reservation is already expired", async () => {
+  const expiredHash = "e".repeat(64);
+  const h = harness({ status: "pending" }, stored(), undefined, undefined, false, undefined, {
+    kind: "expired",
+    result_hash: expiredHash,
+  });
+  const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
+  expect(result).toMatchObject({ status: "session_expired", result_hash: expiredHash });
+  expect(h.events).toEqual(["load", "reserve"]);
+  expect(h.calls.provider).toBe(0);
+});
+
+test("maps a lost release fence to retryable unavailable without fabricating a result", async () => {
+  const h = harness({ status: "pending" }, stored(), undefined, undefined, false, {
+    kind: "lease_lost",
+  });
+  const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
+  expect(result).toMatchObject({
+    status: "unavailable",
+    result_hash: null,
+    retry_after_seconds: 1,
+  });
+  expect(h.events).toEqual(["load", "reserve", "provider", "release"]);
+  expect(h.calls.provider).toBe(1);
 });
 
 for (const reason of [
@@ -276,6 +427,31 @@ for (const reason of [
     expect(result.status).toBe(reason);
     expect(result.result_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(h.events).toEqual(["load", "reserve", "provider", "reject"]);
+    const rejection = h.rejected();
+    expect(rejection).toBeDefined();
+    const authority =
+      reason === "missing_root" || reason === "revoked"
+        ? { ownership: "revoked", lifecycle: "suspended" }
+        : reason === "insufficient_expiry"
+          ? { ownership: "expired", lifecycle: "suspended" }
+          : { ownership: "disputed", lifecycle: "suspended" };
+    expect(rejection?.result_hash).toBe(
+      await hnsRouteRevalidationResultHash({
+        route_revalidation_id: input.route_revalidation_id,
+        revalidation_session_id: input.revalidation_session_id,
+        route_revalidation_attempt_id: attempt.route_revalidation_attempt_id,
+        route_binding_id: attempt.route_binding_id,
+        expected_binding_generation: input.expected_binding_generation,
+        idempotency_key: input.idempotency_key,
+        completion_request_hash: rejection?.completion_request_hash ?? "",
+        outcome_status: reason,
+        evidence_ref_or_null: null,
+        evidence_digest_or_null: null,
+        provider_identity_digest_or_null: null,
+        ownership_status_or_null: authority.ownership,
+        route_lifecycle_status_or_null: authority.lifecycle,
+      }),
+    );
   });
 }
 
@@ -283,7 +459,7 @@ test("builds evidence with database_now and fenced verification", async () => {
   const h = harness({
     status: "verified",
     observation: observation(),
-    raw_response_bytes: new Uint8Array([1, 2, 3]),
+    raw_response_bytes: verifiedBytes(observation()),
   });
   const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
   expect(result.status).toBe("verified");
@@ -296,7 +472,7 @@ test("returns typed stale_cas without mutating the completion", async () => {
     {
       status: "verified",
       observation: observation(),
-      raw_response_bytes: new Uint8Array([1, 2, 3]),
+      raw_response_bytes: verifiedBytes(observation()),
     },
     stored(),
     { kind: "stale_cas" },
@@ -311,7 +487,7 @@ test("maps database-time evidence expiry to a terminal expired result", async ()
   const h = harness({
     status: "verified",
     observation: observation({ expires_at: "2026-08-21T07:59:00.000Z" }),
-    raw_response_bytes: new Uint8Array([1]),
+    raw_response_bytes: verifiedBytes(observation({ expires_at: "2026-08-21T07:59:00.000Z" })),
   });
   const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
   expect(result).toMatchObject({ status: "database_time_expired", replayed: false });
@@ -324,14 +500,42 @@ test("semantic contradictions consume without terminal result or evidence", asyn
   const h = harness({
     status: "verified",
     observation: observation({ challenge_value: "wrong" }),
-    raw_response_bytes: new Uint8Array([1]),
+    raw_response_bytes: verifiedBytes(observation({ challenge_value: "wrong" })),
   });
   const exit = await Effect.runPromiseExit(completeHnsRouteRevalidation(input, h.services));
   expect(exit._tag).toBe("Failure");
   expect(h.calls.consume).toBe(1);
   expect(h.calls.reject).toBe(0);
   expect(h.calls.verify).toBe(0);
-  expect(h.consumed()?.consumption_kind).toBe("semantic_contradiction");
+  expect(h.consumed()?.consumption_kind).toBe("challenge_mismatch");
+});
+
+test("rejects typed observations that do not correspond to retained response bytes", async () => {
+  const h = harness({
+    status: "verified",
+    observation: observation(),
+    raw_response_bytes: verifiedBytes(observation({ provider_evidence_ref: "different" })),
+  });
+  const exit = await Effect.runPromiseExit(completeHnsRouteRevalidation(input, h.services));
+  expect(exit._tag).toBe("Failure");
+  expect(h.calls.consume).toBe(1);
+  expect(h.calls.verify).toBe(0);
+});
+
+test("maps an expired semantic consume to a replayable session_expired result", async () => {
+  const expiredHash = "e".repeat(64);
+  const h = harness(
+    {
+      status: "verified",
+      observation: observation({ challenge_value: "wrong" }),
+      raw_response_bytes: verifiedBytes(observation({ challenge_value: "wrong" })),
+    },
+    stored(),
+    undefined,
+    { kind: "expired", result_hash: expiredHash },
+  );
+  const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
+  expect(result).toMatchObject({ status: "session_expired", result_hash: expiredHash });
 });
 
 test("provider outage releases and returns unavailable", async () => {
@@ -342,6 +546,13 @@ test("provider outage releases and returns unavailable", async () => {
     result_hash: null,
     retry_after_seconds: 1,
   });
+  expect(h.events).toEqual(["load", "reserve", "provider", "release"]);
+});
+
+test("releases the lease when provider invocation throws synchronously", async () => {
+  const h = harness({ status: "pending" }, stored(), undefined, undefined, true);
+  const result = await Effect.runPromise(completeHnsRouteRevalidation(input, h.services));
+  expect(result).toMatchObject({ status: "unavailable", result_hash: null });
   expect(h.events).toEqual(["load", "reserve", "provider", "release"]);
 });
 
