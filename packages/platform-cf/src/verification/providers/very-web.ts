@@ -453,11 +453,6 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function mergedResponse(value: unknown): Record<string, unknown> {
-  const root = record(value) ?? {};
-  return { ...(record(root.result) ?? {}), ...(record(root.data) ?? {}), ...root };
-}
-
 function stringField(value: Record<string, unknown>, keys: readonly string[]): string | undefined {
   for (const key of keys) {
     const candidate = value[key];
@@ -470,21 +465,13 @@ function verifyResult(
   value: unknown,
   expectedBinding: string,
 ): Effect.Effect<string, VerificationProviderFailure> {
-  const root = mergedResponse(value);
-  const status = typeof root.status === "string" ? root.status.toLowerCase() : "";
-  if (["pending", "processing", "initialized", "received"].includes(status))
+  const root = record(value) ?? {};
+  const status = typeof root.status === "string" ? root.status : "";
+  if (["pending", "processing", "received"].includes(status))
     return Effect.fail(unavailable("complete"));
-  const valid =
-    root.valid === true ||
-    root.verified === true ||
-    root.isValid === true ||
-    root.is_valid === true ||
-    root.success === true ||
-    status === "valid" ||
-    status === "verified" ||
-    status === "completed" ||
-    root.result === true;
-  if (!valid) return Effect.fail(rejected("complete"));
+  // @veryai/widget 1.0.22 checks the top-level verifier status strictly
+  // against "valid". Do not accept guessed boolean or nested success shapes.
+  if (status !== "valid") return Effect.fail(rejected("complete"));
   const actualBinding = stringField(root, [
     "pseudonym",
     "challenge",
@@ -509,9 +496,8 @@ function bridgeProof(
   keyBytes: Uint8Array,
 ): Effect.Effect<string, VerificationProviderFailure> {
   const root = record(value);
-  const status = typeof root?.status === "string" ? root.status.toLowerCase() : "";
-  if (status === "pending" || status === "initialized" || status === "received")
-    return Effect.fail(unavailable("complete"));
+  const status = typeof root?.status === "string" ? root.status : "";
+  if (status === "pending" || status === "received") return Effect.fail(unavailable("complete"));
   if (status === "error") return Effect.fail(rejected("complete"));
   const response = record(root?.response);
   const iv = typeof response?.iv === "string" ? decodeBase64(response.iv) : undefined;
@@ -815,11 +801,7 @@ export function makeVeryWebProvider(options: VeryWebAdapterOptions): Verificatio
               .pipe(Effect.flatMap((response) => responseBody(response, "start")));
             const bridgeRecord = record(bridge);
             const bridgeSessionId =
-              typeof bridgeRecord?.sessionId === "string"
-                ? bridgeRecord.sessionId
-                : typeof bridgeRecord?.session_id === "string"
-                  ? bridgeRecord.session_id
-                  : "";
+              typeof bridgeRecord?.sessionId === "string" ? bridgeRecord.sessionId : "";
             if (bridgeSessionId.trim() === "") return yield* Effect.fail(invalid("start"));
             const keyBase64 = base64(ownedArrayBuffer(keyBytes));
             const deeplink = `veros://verify?${new URLSearchParams({ sessionId: bridgeSessionId, key: keyBase64, action: "verify" }).toString()}`;

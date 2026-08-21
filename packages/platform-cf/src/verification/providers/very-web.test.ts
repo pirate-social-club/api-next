@@ -292,6 +292,30 @@ describe("Very web provider", () => {
     ).toBe("VerificationProviderRejected");
   });
 
+  test("rejects undocumented verifier success aliases", async () => {
+    const candidates = [
+      { valid: true, pseudonym: "session-1", subject: "subject-1" },
+      { verified: true, pseudonym: "session-1", subject: "subject-1" },
+      { status: "verified", pseudonym: "session-1", subject: "subject-1" },
+      { status: "VALID", pseudonym: "session-1", subject: "subject-1" },
+      { result: true, pseudonym: "session-1", subject: "subject-1" },
+    ] as const;
+
+    for (const body of candidates) {
+      const configured = options({
+        transport: {
+          ...transportWith({ create: [], bridge: [], verify: [] }),
+          verify: () => Effect.succeed({ status: 200, body }),
+        },
+      });
+      const adapter = makeVeryWebProvider(configured.value);
+      const start = await started(adapter);
+      expect(
+        await failureTag(adapter.complete(complete(start.session, { mode: "widget", proof: "p" }))),
+      ).toBe("VerificationProviderRejected");
+    }
+  });
+
   test("bounds fetch responses before JSON parsing", async () => {
     const transport = makeVeryWebFetchTransport(
       async () =>
