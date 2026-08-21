@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { NamespaceOwnershipProviderUnavailable } from "@pirate/application/namespace-ownership";
+import {
+  NamespaceOwnershipProviderInvalidResponse,
+  NamespaceOwnershipProviderRejected,
+  NamespaceOwnershipProviderUnavailable,
+  NamespaceOwnershipProviderUnboundRejected,
+} from "@pirate/application/namespace-ownership";
 import type { HnsRouteRevalidationSessionV1 } from "@pirate/application/route-revalidation";
 import type { HnsOwnerRouteRevalidationStartWireV1 } from "@pirate/application/route-revalidation/hashes";
 import { HnsRouteRevalidationProviderFailed } from "@pirate/application/route-revalidation/start";
@@ -145,6 +150,49 @@ describe("HNS route-revalidation provider adapter", () => {
     await expect(Effect.runPromise(provider.start(wire))).rejects.toMatchObject({
       reason: "unavailable",
     });
+  });
+
+  test("maps every low-level completion failure to the closed provider union", async () => {
+    for (const [failure, reason] of [
+      [
+        new NamespaceOwnershipProviderUnavailable({
+          provider_id: "hns.owner.v1",
+          operation: "complete",
+        }),
+        "unavailable",
+      ],
+      [
+        new NamespaceOwnershipProviderRejected({
+          provider_id: "hns.owner.v1",
+          operation: "complete",
+        }),
+        "rejected",
+      ],
+      [
+        new NamespaceOwnershipProviderUnboundRejected({
+          provider_id: "hns.owner.v1",
+          operation: "complete",
+        }),
+        "misconfigured",
+      ],
+      [
+        new NamespaceOwnershipProviderInvalidResponse({
+          provider_id: "hns.owner.v1",
+          operation: "complete",
+        }),
+        "invalid_response",
+      ],
+    ] as const) {
+      const provider = makeHnsRouteRevalidationProvider({
+        transport: {
+          start: () => Effect.succeed(new Uint8Array()),
+          complete: () => Effect.fail(failure),
+        },
+      });
+      await expect(
+        Effect.runPromise(provider.complete({ session: revalidationSession })),
+      ).rejects.toMatchObject({ reason });
+    }
   });
 
   test("strict-decodes pending and verified poll results while retaining exact bytes", async () => {
