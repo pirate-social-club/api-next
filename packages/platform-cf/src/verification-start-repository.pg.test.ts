@@ -1,11 +1,11 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import type { ProviderSessionStart } from "@pirate/application/verification";
 import type { ProofSession } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { loadPostgresMigrations } from "../../../scripts/postgres-migrations";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
-import { applyPostgresMigrations, type PostgresMigration } from "./postgres-migrations";
+import { applyPostgresMigrations } from "./postgres-migrations";
 import { makeControlPlaneVerificationSessionStartStore } from "./verification-start-repository";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -24,29 +24,6 @@ let completedTestCount = 0;
 // CI database runs. Expiry-specific tests override this value with an
 // intentionally past or database-relative timestamp below.
 const defaultSessionExpiresAt = "2099-08-18T00:00:00.000Z";
-
-const migrationFiles = [
-  "0001_v1_product_slice.sql",
-  "0002_identity.sql",
-  "0003_m2_community_content.sql",
-  "0004_post_comment_lock.sql",
-  "0005_m2_behavior_invariants.sql",
-  "0006_public_profile_handle_index.sql",
-  "0007_public_profile_handle_invariants.sql",
-  "0008_community_route_slug.sql",
-  "0009_gates_v2_foundation.sql",
-  "0010_proof_session_provenance.sql",
-  "0011_verification_start_reservations.sql",
-  "0012_verification_completion_attempts.sql",
-] as const;
-const migrations: readonly PostgresMigration[] = await Promise.all(
-  migrationFiles.map(async (version) => {
-    const sql = await Bun.file(
-      new URL(`../../../db/postgres/migrations/${version}`, import.meta.url),
-    ).text();
-    return { version, sql, checksum: createHash("sha256").update(sql).digest("hex") };
-  }),
-);
 
 function schemaIdentifier(): string {
   return `api_next_verification_start_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -70,6 +47,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
   await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
   try {
     const scoped = connectionForSchema(connectionString, schema);
+    const migrations = await loadPostgresMigrations();
     await Effect.runPromise(
       Effect.scoped(
         applyPostgresMigrations(migrations).pipe(
