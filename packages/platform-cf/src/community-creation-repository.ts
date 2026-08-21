@@ -2792,6 +2792,21 @@ export function makeControlPlaneCommunityCreationRepository(
             ],
             readonly: false,
           });
+          const effectiveRoute = yield* transaction.execute<Row>({
+            label: "community.creation.commit.require-effective-route",
+            text: `SELECT route_binding_id
+                     FROM effective_active_route($1, $2::timestamptz)`,
+            values: [communityId, activationNow],
+            readonly: false,
+          });
+          const effectiveRouteRow = oneRow(effectiveRoute.rows);
+          if (
+            effectiveRouteRow === undefined ||
+            effectiveRouteRow === null ||
+            asString(effectiveRouteRow.route_binding_id) !== routeBindingId
+          ) {
+            return yield* Effect.fail(failure("commit", "constraint"));
+          }
           yield* transaction.execute({
             label: "community.creation.commit.insert-policy",
             text: `INSERT INTO policy_versions (
