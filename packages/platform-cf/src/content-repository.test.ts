@@ -17,6 +17,12 @@ const fakeDb = (responses: readonly (readonly Row[])[]) => {
   let transactionCount = 0;
   const execute = <R>(statement: ControlPlaneStatement) => {
     calls.push(statement);
+    if (statement.label === "content.communities.require-effective-route") {
+      return Effect.succeed({
+        rows: [{ community_id: "community_1" }] as unknown as readonly R[],
+        rowCount: 1,
+      });
+    }
     const rows = responses[responseIndex++] ?? [];
     return Effect.succeed({ rows: rows as readonly R[], rowCount: rows.length });
   };
@@ -227,6 +233,7 @@ describe("M2 content repository row and lock defenses", () => {
       "content.posts.resolve-global",
       "content.posts.state",
       "content.post-votes.lock-actor",
+      "content.communities.require-effective-route",
       "content.post-votes.upsert",
     ]);
     expect(fake.calls[0]).toMatchObject({ readonly: false });
@@ -307,6 +314,7 @@ describe("M2 content repository row and lock defenses", () => {
       "content.comments.resolve-global",
       "content.posts.state",
       "content.comments.state",
+      "content.communities.require-effective-route",
       "content.comments.find-idempotency",
       "content.comments.insert",
     ]);
@@ -382,6 +390,7 @@ describe("M2 content repository row and lock defenses", () => {
       "content.posts.resolve-global",
       "content.posts.state",
       "content.post-votes.lock-actor",
+      "content.communities.require-effective-route",
       "content.post-votes.clear",
     ]);
     expect(fake.calls[4]?.text).toContain("FOR UPDATE");

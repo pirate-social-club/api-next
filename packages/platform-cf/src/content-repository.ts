@@ -411,16 +411,27 @@ const resolveCommentIn = (
       : null;
   });
 
-const requireActiveMembershipIn = (
+/**
+ * The route predicate is deliberately kept in the platform repository.  The
+ * application only supplies the canonical community id; it must not recreate
+ * route authority from an application clock or a partial set of route rows.
+ *
+ * The community row is locked before membership and content rows, matching
+ * the route-revalidation lock order (community -> binding).
+ */
+const lockActiveCommunityIn = (
   transaction: Transaction,
   communityId: string,
-  userId: string,
   operation: ContentRepositoryOperation,
 ) =>
   Effect.gen(function* () {
     const community = yield* transaction.execute<Row>({
       label: "content.communities.lock-active",
-      text: "SELECT community_id, status FROM communities WHERE community_id = $1 FOR UPDATE",
+      text: `SELECT c.community_id, c.status
+             FROM communities AS c
+             WHERE c.community_id = $1
+               AND c.status = 'active'
+             FOR UPDATE OF c`,
       values: [communityId],
       readonly: false,
     });
@@ -432,12 +443,21 @@ const requireActiveMembershipIn = (
       storedCommunityId === null ||
       storedCommunityId !== communityId ||
       !validId(storedCommunityId) ||
-      communityStatus === null ||
-      !allowedCommunityStatus(communityStatus)
+      communityStatus !== "active"
     ) {
       return yield* invalid(operation);
     }
-    if (communityStatus !== "active") return yield* notFound(operation);
+    return communityRow;
+  });
+
+const requireActiveMembershipIn = (
+  transaction: Transaction,
+  communityId: string,
+  userId: string,
+  operation: ContentRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    yield* lockActiveCommunityIn(transaction, communityId, operation);
     const membership = yield* transaction.execute<Row>({
       label: "content.community-memberships.lock-active",
       text: `SELECT status
@@ -463,6 +483,30 @@ const requireActiveMembershipIn = (
         operation,
         reason: "membership-required",
       });
+    }
+  });
+
+const requireEffectiveActiveRouteIn = (
+  transaction: Transaction,
+  communityId: string,
+  operation: ContentRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: "content.communities.require-effective-route",
+      text: `WITH db_clock AS MATERIALIZED (
+               SELECT clock_timestamp() AS now
+             )
+             SELECT route.community_id
+             FROM db_clock
+             CROSS JOIN LATERAL effective_active_route($1, db_clock.now) AS route`,
+      values: [communityId],
+      readonly: true,
+    });
+    if (result.rows.length > 1) return yield* invalid(operation);
+    if (result.rows.length === 0) return yield* notFound(operation);
+    if (stringValue(result.rows[0] as Row, "community_id") !== communityId) {
+      return yield* invalid(operation);
     }
   });
 
@@ -743,6 +787,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             actor.userId,
             body.idempotency_key,
           );
+          yield* requireEffectiveActiveRouteIn(transaction, communityId, "create-post");
           const found = yield* oneRow(existing.rows, "create-post");
           if (found !== null) {
             const persistedHash = stringValue(found, "idempotency_body_hash");
@@ -1011,6 +1056,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               reason: "comments-locked",
             });
           }
+          yield* requireEffectiveActiveRouteIn(transaction, communityId, "create-comment-reply");
           const depth = parentState.depth + 1;
           if (!Number.isSafeInteger(depth)) {
             return yield* invalid("create-comment-reply");
@@ -1129,6 +1175,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             return yield* notFound("cast-vote");
           }
           yield* loadActorVoteIn(transaction, communityId, postId, actor.userId, "cast-vote");
+          yield* requireEffectiveActiveRouteIn(transaction, communityId, "cast-vote");
           const result = yield* transaction.execute<Row>({
             label: "content.post-votes.upsert",
             text: `INSERT INTO post_votes
@@ -1190,6 +1237,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             return yield* notFound("clear-vote");
           }
           yield* loadActorVoteIn(transaction, communityId, postId, actor.userId, "clear-vote");
+          yield* requireEffectiveActiveRouteIn(transaction, communityId, "clear-vote");
           yield* transaction.execute({
             label: "content.post-votes.clear",
             text: "DELETE FROM post_votes WHERE community_id = $1 AND post_id = $2 AND user_id = $3",
