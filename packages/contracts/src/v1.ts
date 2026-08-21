@@ -2,19 +2,19 @@ import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { endpoint } from "./endpoint.ts";
 import {
-  AnalysisBlocked,
   AuthError,
   BadRequest,
   CommentsLocked,
   Conflict,
   GateUnsatisfied,
+  IdempotencyConflict,
   InternalError,
   MembershipRequired,
   NotFound,
-  ProviderUnavailable,
   RateLimited,
   VerificationRequired,
 } from "./errors.ts";
+import { TextContentSubmissionV1 } from "./text-moderation.ts";
 
 /**
  * v1 api-next endpoint contracts: session exchange and auth -> profile ->
@@ -473,7 +473,13 @@ const CommunityPreview = Schema.Struct({
   created: Schema.Number,
 });
 
-const Post = Schema.Struct({
+/**
+ * The published Post document is a repository/read-model contract. It is
+ * deliberately separate from CreatePost's text-submission response: a text
+ * creation command returns the moderation submission snapshot, while reads
+ * and feed projections return this document.
+ */
+const PostDocument = Schema.Struct({
   id: Schema.String,
   object: Schema.Literal("post"),
   community: Schema.String,
@@ -567,9 +573,10 @@ const Post = Schema.Struct({
   asset_story: Schema.optional(Schema.NullOr(JsonObject)),
   created: Schema.Number,
 });
+export type PostDocument = Schema.Schema.Type<typeof PostDocument>;
 
 const LocalizedPost = Schema.Struct({
-  post: Post,
+  post: PostDocument,
   community: Schema.optional(Schema.NullOr(CommunityPreview)),
   viewer_gate_state: Schema.optional(Schema.NullOr(JsonObject)),
   author_community_role: Schema.optional(Schema.NullOr(Schema.String)),
@@ -732,7 +739,6 @@ const CreatePostCommon = {
   source_community: Schema.optional(Schema.NullOr(Schema.String)),
   crosspost_source: Schema.optional(Schema.NullOr(JsonObject)),
   event: Schema.optional(Schema.NullOr(JsonObject)),
-  publish_mode: Schema.optional(Schema.Literals(["sync", "async"])),
   listing_draft: Schema.optional(Schema.NullOr(JsonObject)),
   title: Schema.optional(Schema.NullOr(Schema.String)),
 };
@@ -1033,21 +1039,28 @@ export const UnfollowCommunity = endpoint({
 export const CreatePost = endpoint({
   method: "POST",
   path: "/communities/:communityId/posts",
-  auth: Auth.userOrAdminOrAgentDelegated("posts"),
+  auth: Auth.userOrAdmin(),
   request: { path: PathCommunity, body: CreatePostRequest },
-  response: Post,
-  successStatus: [201, 202],
+  response: TextContentSubmissionV1,
+  successStatus: 201,
   errors: [
     AuthError,
     BadRequest,
-    Conflict,
-    GateUnsatisfied,
+    IdempotencyConflict,
     MembershipRequired,
     NotFound,
-    ProviderUnavailable,
     RateLimited,
-    AnalysisBlocked,
   ],
+});
+
+export const GetTextContentSubmission = endpoint({
+  method: "GET",
+  path: "/text-content-submissions/:submissionId",
+  auth: Auth.userOrAdmin(),
+  request: { path: Schema.Struct({ submissionId: Schema.String }) },
+  response: TextContentSubmissionV1,
+  successStatus: 200,
+  errors: [AuthError, NotFound, InternalError],
 });
 
 export const GetPost = endpoint({

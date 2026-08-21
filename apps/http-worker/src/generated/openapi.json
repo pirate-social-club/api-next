@@ -8497,14 +8497,11 @@
                       "event": {
                         "$ref": "#/$defs/Union_31"
                       },
-                      "publish_mode": {
+                      "listing_draft": {
                         "$ref": "#/$defs/Union_32"
                       },
-                      "listing_draft": {
-                        "$ref": "#/$defs/Union_33"
-                      },
                       "title": {
-                        "$ref": "#/$defs/Union_34"
+                        "$ref": "#/$defs/Union_33"
                       },
                       "post_type": {
                         "type": "string",
@@ -8621,14 +8618,11 @@
                       "event": {
                         "$ref": "#/$defs/Union_31"
                       },
-                      "publish_mode": {
+                      "listing_draft": {
                         "$ref": "#/$defs/Union_32"
                       },
-                      "listing_draft": {
-                        "$ref": "#/$defs/Union_33"
-                      },
                       "title": {
-                        "$ref": "#/$defs/Union_34"
+                        "$ref": "#/$defs/Union_33"
                       },
                       "post_type": {
                         "type": "string",
@@ -8746,14 +8740,11 @@
                       "event": {
                         "$ref": "#/$defs/Union_31"
                       },
-                      "publish_mode": {
+                      "listing_draft": {
                         "$ref": "#/$defs/Union_32"
                       },
-                      "listing_draft": {
-                        "$ref": "#/$defs/Union_33"
-                      },
                       "title": {
-                        "$ref": "#/$defs/Union_34"
+                        "$ref": "#/$defs/Union_33"
                       },
                       "post_type": {
                         "type": "string",
@@ -8871,14 +8862,11 @@
                       "event": {
                         "$ref": "#/$defs/Union_31"
                       },
-                      "publish_mode": {
+                      "listing_draft": {
                         "$ref": "#/$defs/Union_32"
                       },
-                      "listing_draft": {
-                        "$ref": "#/$defs/Union_33"
-                      },
                       "title": {
-                        "$ref": "#/$defs/Union_34"
+                        "$ref": "#/$defs/Union_33"
                       },
                       "post_type": {
                         "type": "string",
@@ -8996,14 +8984,11 @@
                       "event": {
                         "$ref": "#/$defs/Union_31"
                       },
-                      "publish_mode": {
+                      "listing_draft": {
                         "$ref": "#/$defs/Union_32"
                       },
-                      "listing_draft": {
-                        "$ref": "#/$defs/Union_33"
-                      },
                       "title": {
-                        "$ref": "#/$defs/Union_34"
+                        "$ref": "#/$defs/Union_33"
                       },
                       "post_type": {
                         "type": "string",
@@ -9124,11 +9109,8 @@
                       "event": {
                         "$ref": "#/$defs/Union_31"
                       },
-                      "publish_mode": {
-                        "$ref": "#/$defs/Union_32"
-                      },
                       "listing_draft": {
-                        "$ref": "#/$defs/Union_33"
+                        "$ref": "#/$defs/Union_32"
                       },
                       "title": {
                         "type": "string"
@@ -9251,11 +9233,8 @@
                       "event": {
                         "$ref": "#/$defs/Union_31"
                       },
-                      "publish_mode": {
-                        "$ref": "#/$defs/Union_32"
-                      },
                       "listing_draft": {
-                        "$ref": "#/$defs/Union_33"
+                        "$ref": "#/$defs/Union_32"
                       },
                       "title": {
                         "type": "string"
@@ -9876,20 +9855,6 @@
                   "Union_32": {
                     "anyOf": [
                       {
-                        "type": "string",
-                        "enum": [
-                          "sync",
-                          "async"
-                        ]
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "Union_33": {
-                    "anyOf": [
-                      {
                         "anyOf": [
                           {
                             "$ref": "#/$defs/Objects_"
@@ -9904,7 +9869,7 @@
                       }
                     ]
                   },
-                  "Union_34": {
+                  "Union_33": {
                     "anyOf": [
                       {
                         "anyOf": [
@@ -9934,1054 +9899,175 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "id": {
-                      "type": "string"
+                    "submission_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
                     },
-                    "object": {
+                    "href": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "surface": {
                       "type": "string",
                       "enum": [
-                        "post"
-                      ]
-                    },
-                    "community": {
-                      "type": "string"
-                    },
-                    "author_user": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "author_public_handle": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "authorship_mode": {
-                      "type": "string",
-                      "enum": [
-                        "human_direct",
-                        "user_agent"
-                      ]
-                    },
-                    "agent": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_ownership_record": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "identity_mode": {
-                      "type": "string",
-                      "enum": [
-                        "public",
-                        "anonymous"
-                      ]
-                    },
-                    "anonymous_scope": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "anonymous_label": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_handle_snapshot": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_display_name_snapshot": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_owner_handle_snapshot": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_ownership_provider_snapshot": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "disclosed_qualifiers_json": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "array",
-                              "items": {
-                                "$ref": "#/$defs/Objects_"
-                              }
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "label": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "post_type": {
-                      "type": "string",
-                      "enum": [
-                        "text",
-                        "image",
-                        "video",
-                        "link",
-                        "song",
-                        "crosspost",
-                        "file"
+                        "text_post",
+                        "comment",
+                        "reply"
                       ]
                     },
                     "status": {
                       "type": "string",
                       "enum": [
-                        "draft",
-                        "processing",
                         "published",
-                        "failed",
-                        "hidden",
-                        "removed",
-                        "deleted"
-                      ]
-                    },
-                    "comments_locked": {
-                      "$ref": "#/$defs/Union_"
-                    },
-                    "comments_locked_at": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Union_1"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "comments_locked_by_user": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "comments_lock_reason": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "visibility": {
-                      "type": "string",
-                      "enum": [
-                        "public",
-                        "members_only"
-                      ]
-                    },
-                    "publish_failure_code": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "publish_failure_message": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "publish_failure_retryable": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "boolean"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "publish_failed_at": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Union_1"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "title": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "body": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "caption": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "link_url": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "link_og_image_url": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "link_og_title": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "link_enrichment": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "embeds": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "array",
-                              "items": {
-                                "$ref": "#/$defs/Objects_"
-                              }
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "media_refs": {
-                      "anyOf": [
-                        {
-                          "type": "array"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "creator_relation": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "promotion_disclosure": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "event": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "source_language": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "source_language_confidence": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Union_1"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "source_language_reliable": {
-                      "$ref": "#/$defs/Union_"
-                    },
-                    "source_language_detector": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "source_language_detected_at": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "source_language_source_hash": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics_language": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics_language_confidence": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Union_1"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics_language_reliable": {
-                      "$ref": "#/$defs/Union_"
-                    },
-                    "lyrics_language_detector": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics_language_detected_at": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics_language_source_hash": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "translation_policy": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "none",
-                                "machine_allowed",
-                                "human_only",
-                                "hybrid"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "access_mode": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "public",
-                                "locked"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "asset": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "song_artifact_bundle": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "crosspost_source": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "anchor_live_room": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "anchor_live_room_status": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "scheduled",
-                                "live",
-                                "ended",
-                                "canceled"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "song_title": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "song_annotations_url": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "parent_post": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "song_mode": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "original",
-                                "remix"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "rights_basis": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "none",
-                                "original",
-                                "derivative",
-                                "attribution_only"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "upstream_asset_refs": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "array",
-                              "items": {
-                                "type": "string"
-                              }
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "analysis_state": {
-                      "type": "string",
-                      "enum": [
-                        "pending",
-                        "allow",
-                        "allow_with_required_reference",
-                        "review_required",
+                        "manual_review",
                         "blocked"
                       ]
                     },
-                    "analysis_result_ref": {
+                    "result": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "decision": {
+                              "type": "string",
+                              "enum": [
+                                "allow"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "decision",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "decision": {
+                              "type": "string",
+                              "enum": [
+                                "manual_review"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "review_required",
+                                "moderation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "decision",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "decision": {
+                              "type": "string",
+                              "enum": [
+                                "blocked"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "policy_violation"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "decision",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "published_resource": {
                       "anyOf": [
                         {
                           "anyOf": [
                             {
-                              "type": "string"
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "post"
+                                  ]
+                                },
+                                "post_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "href": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "post_id",
+                                "href"
+                              ],
+                              "additionalProperties": false
                             },
                             {
-                              "type": "null"
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "comment"
+                                  ]
+                                },
+                                "comment_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "href": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "comment_id",
+                                "href"
+                              ],
+                              "additionalProperties": false
                             }
                           ]
                         },
@@ -10990,31 +10076,13 @@
                         }
                       ]
                     },
-                    "content_safety_state": {
-                      "type": "string",
-                      "enum": [
-                        "pending",
-                        "safe",
-                        "sensitive",
-                        "adult"
-                      ]
-                    },
-                    "age_gate_policy": {
-                      "type": "string",
-                      "enum": [
-                        "none",
-                        "18_plus"
-                      ]
-                    },
-                    "asset_story": {
+                    "review_ref": {
                       "anyOf": [
                         {
-                          "anyOf": [
+                          "type": "string",
+                          "allOf": [
                             {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
+                              "minLength": 1
                             }
                           ]
                         },
@@ -11023,1204 +10091,25 @@
                         }
                       ]
                     },
-                    "created": {
-                      "$ref": "#/$defs/Union_1"
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "string"
                     }
                   },
                   "required": [
-                    "id",
-                    "object",
-                    "community",
-                    "authorship_mode",
-                    "identity_mode",
-                    "post_type",
+                    "submission_id",
+                    "href",
+                    "surface",
                     "status",
-                    "visibility",
-                    "analysis_state",
-                    "content_safety_state",
-                    "age_gate_policy",
-                    "created"
+                    "result",
+                    "published_resource",
+                    "review_ref",
+                    "created_at",
+                    "updated_at"
                   ],
-                  "additionalProperties": false,
-                  "$defs": {
-                    "Objects_": {
-                      "type": "object"
-                    },
-                    "Union_": {
-                      "anyOf": [
-                        {
-                          "type": "boolean"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "Union_1": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "string",
-                          "enum": [
-                            "Infinity",
-                            "-Infinity",
-                            "NaN"
-                          ]
-                        }
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "202": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "object": {
-                      "type": "string",
-                      "enum": [
-                        "post"
-                      ]
-                    },
-                    "community": {
-                      "type": "string"
-                    },
-                    "author_user": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "author_public_handle": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "authorship_mode": {
-                      "type": "string",
-                      "enum": [
-                        "human_direct",
-                        "user_agent"
-                      ]
-                    },
-                    "agent": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_ownership_record": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "identity_mode": {
-                      "type": "string",
-                      "enum": [
-                        "public",
-                        "anonymous"
-                      ]
-                    },
-                    "anonymous_scope": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "anonymous_label": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_handle_snapshot": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_display_name_snapshot": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_owner_handle_snapshot": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "agent_ownership_provider_snapshot": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "disclosed_qualifiers_json": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "array",
-                              "items": {
-                                "$ref": "#/$defs/Objects_"
-                              }
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "label": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "post_type": {
-                      "type": "string",
-                      "enum": [
-                        "text",
-                        "image",
-                        "video",
-                        "link",
-                        "song",
-                        "crosspost",
-                        "file"
-                      ]
-                    },
-                    "status": {
-                      "type": "string",
-                      "enum": [
-                        "draft",
-                        "processing",
-                        "published",
-                        "failed",
-                        "hidden",
-                        "removed",
-                        "deleted"
-                      ]
-                    },
-                    "comments_locked": {
-                      "$ref": "#/$defs/Union_"
-                    },
-                    "comments_locked_at": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Union_1"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "comments_locked_by_user": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "comments_lock_reason": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "visibility": {
-                      "type": "string",
-                      "enum": [
-                        "public",
-                        "members_only"
-                      ]
-                    },
-                    "publish_failure_code": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "publish_failure_message": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "publish_failure_retryable": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "boolean"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "publish_failed_at": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Union_1"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "title": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "body": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "caption": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "link_url": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "link_og_image_url": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "link_og_title": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "link_enrichment": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "embeds": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "array",
-                              "items": {
-                                "$ref": "#/$defs/Objects_"
-                              }
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "media_refs": {
-                      "anyOf": [
-                        {
-                          "type": "array"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "creator_relation": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "promotion_disclosure": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "event": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "source_language": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "source_language_confidence": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Union_1"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "source_language_reliable": {
-                      "$ref": "#/$defs/Union_"
-                    },
-                    "source_language_detector": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "source_language_detected_at": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "source_language_source_hash": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics_language": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics_language_confidence": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Union_1"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics_language_reliable": {
-                      "$ref": "#/$defs/Union_"
-                    },
-                    "lyrics_language_detector": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics_language_detected_at": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "lyrics_language_source_hash": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "translation_policy": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "none",
-                                "machine_allowed",
-                                "human_only",
-                                "hybrid"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "access_mode": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "public",
-                                "locked"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "asset": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "song_artifact_bundle": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "crosspost_source": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "anchor_live_room": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "anchor_live_room_status": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "scheduled",
-                                "live",
-                                "ended",
-                                "canceled"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "song_title": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "song_annotations_url": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "parent_post": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "song_mode": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "original",
-                                "remix"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "rights_basis": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string",
-                              "enum": [
-                                "none",
-                                "original",
-                                "derivative",
-                                "attribution_only"
-                              ]
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "upstream_asset_refs": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "array",
-                              "items": {
-                                "type": "string"
-                              }
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "analysis_state": {
-                      "type": "string",
-                      "enum": [
-                        "pending",
-                        "allow",
-                        "allow_with_required_reference",
-                        "review_required",
-                        "blocked"
-                      ]
-                    },
-                    "analysis_result_ref": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "content_safety_state": {
-                      "type": "string",
-                      "enum": [
-                        "pending",
-                        "safe",
-                        "sensitive",
-                        "adult"
-                      ]
-                    },
-                    "age_gate_policy": {
-                      "type": "string",
-                      "enum": [
-                        "none",
-                        "18_plus"
-                      ]
-                    },
-                    "asset_story": {
-                      "anyOf": [
-                        {
-                          "anyOf": [
-                            {
-                              "$ref": "#/$defs/Objects_"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "created": {
-                      "$ref": "#/$defs/Union_1"
-                    }
-                  },
-                  "required": [
-                    "id",
-                    "object",
-                    "community",
-                    "authorship_mode",
-                    "identity_mode",
-                    "post_type",
-                    "status",
-                    "visibility",
-                    "analysis_state",
-                    "content_safety_state",
-                    "age_gate_policy",
-                    "created"
-                  ],
-                  "additionalProperties": false,
-                  "$defs": {
-                    "Objects_": {
-                      "type": "object"
-                    },
-                    "Union_": {
-                      "anyOf": [
-                        {
-                          "type": "boolean"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ]
-                    },
-                    "Union_1": {
-                      "anyOf": [
-                        {
-                          "type": "number"
-                        },
-                        {
-                          "type": "string",
-                          "enum": [
-                            "Infinity",
-                            "-Infinity",
-                            "NaN"
-                          ]
-                        }
-                      ]
-                    }
-                  }
+                  "additionalProperties": false
                 }
               }
             }
@@ -12381,7 +10270,6 @@
               }
             },
             "x-error-codes": [
-              "gate_unsatisfied",
               "membership_required"
             ]
           },
@@ -12491,59 +10379,6 @@
               "conflict"
             ]
           },
-          "422": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "analysis_blocked"
-            ]
-          },
           "429": {
             "description": "api-next error envelope v2",
             "content": {
@@ -12596,77 +10431,20 @@
             "x-error-codes": [
               "rate_limited"
             ]
-          },
-          "502": {
-            "description": "api-next error envelope v2",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "object",
-                      "properties": {
-                        "code": {
-                          "type": "string"
-                        },
-                        "message": {
-                          "type": "string"
-                        },
-                        "retryable": {
-                          "type": "boolean"
-                        },
-                        "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "code",
-                        "message",
-                        "retryable"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            },
-            "x-error-codes": [
-              "provider_unavailable"
-            ]
           }
         },
         "x-auth": {
           "policy": {
-            "kind": "userOrAdminOrAgentDelegated",
-            "scope": "posts"
+            "kind": "userOrAdmin"
           }
         },
         "x-errors": [
           "AuthError",
           "BadRequest",
-          "Conflict",
-          "GateUnsatisfied",
+          "IdempotencyConflict",
           "MembershipRequired",
           "NotFound",
-          "ProviderUnavailable",
-          "RateLimited",
-          "AnalysisBlocked"
+          "RateLimited"
         ]
       }
     },
@@ -30307,6 +28085,414 @@
         },
         "x-errors": [
           "BadRequest",
+          "NotFound",
+          "InternalError"
+        ]
+      }
+    },
+    "/text-content-submissions/{submissionId}": {
+      "get": {
+        "operationId": "get_textContentSubmissionsSubmissionId",
+        "parameters": [
+          {
+            "name": "submissionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "submission_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "href": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "surface": {
+                      "type": "string",
+                      "enum": [
+                        "text_post",
+                        "comment",
+                        "reply"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "published",
+                        "manual_review",
+                        "blocked"
+                      ]
+                    },
+                    "result": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "decision": {
+                              "type": "string",
+                              "enum": [
+                                "allow"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "decision",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "decision": {
+                              "type": "string",
+                              "enum": [
+                                "manual_review"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "review_required",
+                                "moderation_unavailable"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "decision",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "decision": {
+                              "type": "string",
+                              "enum": [
+                                "blocked"
+                              ]
+                            },
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "policy_violation"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "decision",
+                            "reason_code"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "published_resource": {
+                      "anyOf": [
+                        {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "post"
+                                  ]
+                                },
+                                "post_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "href": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "post_id",
+                                "href"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "comment"
+                                  ]
+                                },
+                                "comment_id": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                },
+                                "href": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "comment_id",
+                                "href"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "review_ref": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "created_at": {
+                      "type": "string"
+                    },
+                    "updated_at": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "submission_id",
+                    "href",
+                    "surface",
+                    "status",
+                    "result",
+                    "published_resource",
+                    "review_ref",
+                    "created_at",
+                    "updated_at"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
           "NotFound",
           "InternalError"
         ]

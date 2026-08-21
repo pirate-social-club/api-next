@@ -83,6 +83,75 @@ describe("generated api client", () => {
     });
   });
 
+  test("round-trips text CreatePost and current-state submission responses", async () => {
+    const submission = {
+      submission_id: "sub_1",
+      href: "/text-content-submissions/sub_1",
+      surface: "text_post",
+      status: "published",
+      result: { decision: "allow", reason_code: null },
+      published_resource: { kind: "post", post_id: "post_1", href: "/posts/post_1" },
+      review_ref: null,
+      created_at: "2026-08-21T12:00:00.000Z",
+      updated_at: "2026-08-21T12:00:00.000Z",
+    };
+    const responses = [201, 200].map(
+      (status) => () => new Response(JSON.stringify(submission), { status }),
+    );
+    const fetchImpl = Object.assign(
+      async () => {
+        const next = responses.shift();
+        if (next === undefined) throw new Error("unexpected request");
+        return next();
+      },
+      { preconnect: fetch.preconnect },
+    );
+    const client = createPirateApiClient("https://api.example", fetchImpl);
+
+    await expect(
+      client.post_communitiesCommunityIdPosts({
+        path: { communityId: "community_1" },
+        body: { post_type: "text", idempotency_key: "key_1", body: "hello" },
+      }),
+    ).resolves.toEqual(submission);
+    await expect(
+      client.get_textContentSubmissionsSubmissionId({ path: { submissionId: "sub_1" } }),
+    ).resolves.toEqual(submission);
+  });
+
+  test("preserves typed idempotency conflict details and request ids", async () => {
+    const fetchImpl = Object.assign(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "conflict",
+              message: "The idempotency key belongs to another submission",
+              retryable: false,
+              details: { reason_code: "idempotency_conflict", submission_id: "sub_1" },
+            },
+            request_id: "req_1",
+          }),
+          { status: 409 },
+        ),
+      { preconnect: fetch.preconnect },
+    );
+    const client = createPirateApiClient("https://api.example", fetchImpl);
+
+    await expect(
+      client.post_communitiesCommunityIdPosts({
+        path: { communityId: "community_1" },
+        body: { post_type: "text", idempotency_key: "key_1", body: "hello" },
+      }),
+    ).rejects.toMatchObject({
+      declaredName: "IdempotencyConflict",
+      code: "conflict",
+      retryable: false,
+      requestId: "req_1",
+      details: { reason_code: "idempotency_conflict", submission_id: "sub_1" },
+    });
+  });
+
   test("forwards default and per-call authentication headers and cancellation", async () => {
     const calls: Array<{ headers: Headers; signal: AbortSignal | null | undefined }> = [];
     const fetchImpl = Object.assign(

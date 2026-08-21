@@ -1,10 +1,9 @@
 import { BadRequest, CreatePost } from "@pirate/contracts";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import type { M2Actor } from "../../ports.ts";
 import {
   type ContentUseCaseServices,
   canonicalBodyHash,
-  decodeBody,
   mapContentFailure,
   validateHumanDirectActor,
   validateIdentifier,
@@ -48,13 +47,22 @@ const hasUnsupportedMetadata = (body: object): boolean => {
     "age_gate_policy",
     "access_mode",
     "translation_policy",
-    "publish_mode",
   ];
   return disallowed.some((key) => {
     const value = (body as Record<string, unknown>)[key];
     return value !== undefined && value !== null && !(Array.isArray(value) && value.length === 0);
   });
 };
+
+/** CreatePost is decoded strictly here because the shared decoder is reused by other content paths. */
+const decodeCreatePostBody = (
+  input: unknown,
+): Effect.Effect<Schema.Schema.Type<(typeof CreatePost.request)["body"]>, BadRequest> =>
+  Effect.try({
+    try: () =>
+      Schema.decodeUnknownSync(CreatePost.request.body, { onExcessProperty: "error" })(input),
+    catch: () => new BadRequest({ message: "Invalid request body" }),
+  });
 
 export const createPost = Effect.fn("createPost")(function* (
   input: CreatePostInput,
@@ -63,7 +71,7 @@ export const createPost = Effect.fn("createPost")(function* (
   yield* validateIdentifier(input.communityId, "Invalid community identifier");
   yield* validateHumanDirectActor(input.actor);
 
-  const body = yield* decodeBody(CreatePost.request.body, input.body);
+  const body = yield* decodeCreatePostBody(input.body);
   if (
     !validPublicHumanDirectPost(body) ||
     hasUnsupportedMetadata(body) ||
