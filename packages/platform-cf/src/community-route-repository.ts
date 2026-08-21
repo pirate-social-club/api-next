@@ -39,40 +39,24 @@ const resolveCanonicalRouteStatement = (pathSegment: string) =>
     text: `WITH db_clock AS MATERIALIZED (
            SELECT clock_timestamp() AS now
          )
-         SELECT community.community_id,
-                binding.family,
-                binding.root_label,
-                binding.root_label_display,
-                binding.path_segment,
-                binding.href,
+         SELECT route.community_id,
+                route.family,
+                route.root_label,
+                route.root_label_display,
+                route.path_segment,
+                route.href,
                 CASE
-                  WHEN binding.family = 'hns' AND health.health_status = 'healthy'
-                    THEN binding.path_segment
+                  WHEN route.family = 'hns' AND health.health_status = 'healthy'
+                    THEN route.path_segment
                   ELSE NULL
                 END AS app_host
            FROM db_clock
-           CROSS JOIN community_canonical_route_bindings AS binding
-           JOIN communities AS community
-             ON community.community_id = binding.community_id
-            AND community.canonical_route_binding_id = binding.route_binding_id
-           JOIN community_route_ownership_evidence AS evidence
-             ON evidence.evidence_ref = binding.verified_evidence_ref
+           CROSS JOIN LATERAL effective_active_route(NULL, db_clock.now) AS route
            LEFT JOIN community_route_app_host_health AS health
-             ON health.route_binding_id = binding.route_binding_id
+             ON health.route_binding_id = route.route_binding_id
             AND health.family = 'hns'
-            AND health.health_generation = binding.binding_generation
-          WHERE binding.path_segment = $1
-            AND community.status = 'active'
-            AND binding.route_lifecycle_status = 'active'
-            AND binding.ownership_status = 'verified'
-            AND binding.verified_evidence_ref IS NOT NULL
-            AND evidence.expires_at IS NOT NULL
-            AND evidence.expires_at > db_clock.now
-            AND evidence.family = binding.family
-            AND evidence.root_label = binding.root_label
-            AND evidence.root_label_display = binding.root_label_display
-            AND evidence.path_segment = binding.path_segment
-            AND evidence.binding_generation = binding.binding_generation`,
+            AND health.health_generation = route.binding_generation
+          WHERE route.path_segment = $1`,
     values: [pathSegment],
     readonly: true,
   }) as const;

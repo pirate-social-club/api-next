@@ -390,6 +390,18 @@ suite("canonical community route Postgres repository", () => {
           app_host: "app.xn--mnchen-3ya",
         },
       });
+      const effective = await admin.query(
+        `SELECT community_id, route_binding_id, path_segment, binding_generation
+           FROM effective_active_route('community-route-hns', clock_timestamp())`,
+      );
+      expect(effective.rows).toEqual([
+        {
+          community_id: "community-route-hns",
+          route_binding_id: "binding-route-hns",
+          path_segment: "app.xn--mnchen-3ya",
+          binding_generation: "1",
+        },
+      ]);
       await expect(
         Effect.runPromise(
           Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.legacy-route" })),
@@ -407,6 +419,11 @@ suite("canonical community route Postgres repository", () => {
           Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.xn--mnchen-3ya" })),
         ),
       ).resolves.toBeNull();
+      const suspended = await admin.query(
+        `SELECT community_id
+           FROM effective_active_route('community-route-hns', clock_timestamp())`,
+      );
+      expect(suspended.rows).toEqual([]);
       completedTestCount += 1;
     });
   }, 30_000);
