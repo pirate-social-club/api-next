@@ -1,15 +1,13 @@
-import { decodeStrictHnsJsonBytes } from "@pirate/application/namespace-ownership";
 import {
+  decodeStrictHnsJsonBytes,
   type HnsRouteRevalidationCompletionProvider,
   type HnsRouteRevalidationCompletionProviderResult,
-  HnsRouteRevalidationProviderResponse,
-} from "@pirate/application/route-revalidation/completion";
-import {
   HnsRouteRevalidationProviderFailed,
+  HnsRouteRevalidationProviderResponse,
   HnsRouteRevalidationProviderStartResult,
   type HnsRouteRevalidationProviderStartResult as HnsRouteRevalidationProviderStartResultType,
   type HnsRouteRevalidationStartProvider,
-} from "@pirate/application/route-revalidation/start";
+} from "@pirate/application";
 import { Effect, Option, Schema } from "effect";
 import type { HnsOwnerTransportFailure } from "./namespace-ownership/hns-owner.ts";
 import type { HnsOwnerRouteRevalidationTransport } from "./namespace-ownership/hns-owner-service-binding.ts";

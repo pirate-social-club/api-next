@@ -3,7 +3,7 @@ import {
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
-} from "@pirate/application/namespace-ownership";
+} from "@pirate/application";
 import type { HnsRouteRevalidationSessionV1 } from "@pirate/application/route-revalidation";
 import type { HnsOwnerRouteRevalidationStartWireV1 } from "@pirate/application/route-revalidation/hashes";
 import { Effect } from "effect";
