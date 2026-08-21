@@ -96,6 +96,10 @@ export {
   makeHnsOwnerAdapter,
 } from "./namespace-ownership/hns-owner";
 export {
+  type HnsOwnerRouteRevalidationTransport,
+  makeHnsOwnerRouteRevalidationTransport,
+} from "./namespace-ownership/hns-owner-service-binding";
+export {
   makePlatformNamespaceOwnershipProviderRegistry,
   type PlatformNamespaceOwnershipProviderOptions,
 } from "./namespace-ownership/provider-registry";
@@ -148,6 +152,11 @@ export {
   queueRetryBackoffSeconds,
   queueRetryDelaySeconds,
 } from "./queue-retry";
+export { makeHnsRouteRevalidationProvider } from "./route-revalidation-provider";
+export {
+  makeControlPlaneRouteRevalidationStartRepository,
+  makeControlPlaneRouteRevalidationStartStore,
+} from "./route-revalidation-start-repository";
 export {
   MAX_SESSION_TOKEN_LENGTH,
   makeSessionCrypto,

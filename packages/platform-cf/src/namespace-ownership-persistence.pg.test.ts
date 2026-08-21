@@ -6,6 +6,10 @@ import type {
   NamespaceOwnershipStartReservationInput,
   NamespaceOwnershipStoredCompletion,
 } from "@pirate/application";
+import type {
+  HnsRouteRevalidationProviderStartResult,
+  HnsRouteRevalidationStartReservationInput,
+} from "@pirate/application/route-revalidation";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "./namespace-ownership-completion-repository";
@@ -14,6 +18,7 @@ import {
   makeControlPlaneNamespaceOwnershipStartStore,
 } from "./namespace-ownership-start-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
+import { makeControlPlaneRouteRevalidationStartStore } from "./route-revalidation-start-repository";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -22,7 +27,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const namespacePersistenceTestCount = 30;
+const namespacePersistenceTestCount = 32;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete";
@@ -767,6 +772,63 @@ function repositoryStartResult(
       kind: "poll",
       session_id: `upstream_${input.namespace_session_id}`,
       poll_url: "/provider/poll",
+    },
+  };
+}
+
+function routeRevalidationStartInput(
+  suffix: string,
+  overrides: Partial<HnsRouteRevalidationStartReservationInput> = {},
+): HnsRouteRevalidationStartReservationInput {
+  return {
+    authority: {
+      version: "pirate-hns-route-revalidation-authority-v1",
+      route_revalidation_id: `route_revalidation_start_${suffix}`,
+      community_id: `community_${suffix}`,
+      route_binding_id: `route_binding_${suffix}`,
+      principal_kind: "system",
+      principal_id: "route-revalidation-scheduler",
+      expected_binding_generation: 1,
+      expected_verified_evidence_ref: `evidence_${suffix}`,
+      requirement_hash: SHA,
+      provider_id: "namespace-provider",
+      provider_binding_hash: SHA_C,
+      provider_configuration_kind: "managed",
+      provider_configuration_reference: "namespace-config",
+      provider_configuration_version: "v1",
+      protocol_version: "hns-txt-v1",
+      environment: "test",
+      family: "hns",
+      root_label: "example_root",
+      root_label_display: "example_root",
+      path_segment: "app.example_root",
+    },
+    revalidation_session_id: `revalidation_session_start_${suffix}`,
+    start_request_hash: SHA_B,
+    ttl_ms: 6_000,
+    ...overrides,
+  };
+}
+
+function routeRevalidationStartResult(
+  input: HnsRouteRevalidationStartReservationInput,
+  upstreamSessionRef = `upstream_start_${input.revalidation_session_id}`,
+  expiresAt = "2099-08-21T00:00:00.000Z",
+): HnsRouteRevalidationProviderStartResult {
+  return {
+    upstream_session_ref: upstreamSessionRef,
+    expires_at: expiresAt,
+    presentation: {
+      kind: "embedded_sdk",
+      session_id: upstreamSessionRef,
+      protocol: "hns-txt-challenge",
+      version: "1",
+      payload: {
+        ownership_source: "owner_authoritative_dns_txt",
+        challenge_name: `_pirate.${input.authority.root_label}`,
+        challenge_value: `pirate-verification=${upstreamSessionRef}`,
+        expires_at: expiresAt,
+      },
     },
   };
 }
@@ -2667,6 +2729,98 @@ suite("Postgres namespace ownership persistence foundation", () => {
           )
         ).rows[0],
       ).toEqual({ state: "acquired", fence_token: 2 });
+    });
+    completedTestCount += 1;
+  });
+
+  test("runs route-revalidation START reserve, finalize, and exact replay", async () => {
+    await withSchema(async (client, scoped) => {
+      await seedActiveRevalidationRoute(client, "route_start_repository");
+      const store = makeControlPlaneRouteRevalidationStartStore(
+        makeDirectPostgresControlPlaneLayer(scoped),
+      );
+      const input = routeRevalidationStartInput("route_start_repository");
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            store.replay({
+              route_revalidation_id: input.authority.route_revalidation_id,
+              revalidation_session_id: input.revalidation_session_id,
+              start_request_hash: input.start_request_hash,
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "none" });
+      const reserved = await Effect.runPromise(Effect.scoped(store.reserve(input)));
+      expect(reserved.kind).toBe("acquired");
+      if (reserved.kind !== "acquired") throw new Error("expected route START reservation");
+      const finalized = await Effect.runPromise(
+        Effect.scoped(store.finalize(reserved.reservation, routeRevalidationStartResult(input))),
+      );
+      expect(finalized.kind).toBe("created");
+      const replayed = await Effect.runPromise(
+        Effect.scoped(
+          store.replay({
+            route_revalidation_id: input.authority.route_revalidation_id,
+            revalidation_session_id: input.revalidation_session_id,
+            start_request_hash: input.start_request_hash,
+          }),
+        ),
+      );
+      expect(replayed).toMatchObject({ kind: "replay" });
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT count(*)::int
+                  FROM community_route_revalidation_start_reservations) AS reservations,
+               (SELECT count(*)::int
+                  FROM community_route_revalidation_sessions) AS sessions`,
+          )
+        ).rows[0],
+      ).toEqual({ reservations: 1, sessions: 1 });
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects route START authority conflicts and fences a late finalizer", async () => {
+    await withSchema(async (client, scoped) => {
+      await seedActiveRevalidationRoute(client, "route_start_fence");
+      const store = makeControlPlaneRouteRevalidationStartStore(
+        makeDirectPostgresControlPlaneLayer(scoped),
+      );
+      const input = routeRevalidationStartInput("route_start_fence", { ttl_ms: 100 });
+      const reserved = await Effect.runPromise(Effect.scoped(store.reserve(input)));
+      expect(reserved.kind).toBe("acquired");
+      if (reserved.kind !== "acquired") throw new Error("expected route START reservation");
+      const conflict = await Effect.runPromise(
+        Effect.scoped(
+          store.reserve({
+            ...input,
+            revalidation_session_id: "conflicting-session",
+            start_request_hash: SHA,
+          }),
+        ),
+      );
+      expect(conflict).toEqual({ kind: "conflict" });
+      await client.query("SELECT pg_sleep(0.2)");
+      const reacquired = await Effect.runPromise(
+        Effect.scoped(store.reserve({ ...input, ttl_ms: 6_000 })),
+      );
+      expect(reacquired).toMatchObject({ kind: "acquired", reservation: { fence_token: 2 } });
+      if (reacquired.kind !== "acquired") throw new Error("expected route START reacquisition");
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(store.finalize(reserved.reservation, routeRevalidationStartResult(input))),
+        ),
+      ).toEqual({ kind: "stale" });
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            store.finalize(reacquired.reservation, routeRevalidationStartResult(input)),
+          ),
+        ),
+      ).toMatchObject({ kind: "created" });
     });
     completedTestCount += 1;
   });

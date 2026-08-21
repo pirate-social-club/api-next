@@ -30,6 +30,8 @@
     "./namespace-ownership-provider-registry": "./src/namespace-ownership/provider-registry.ts",
     "./namespace-ownership-start-repository": "./src/namespace-ownership-start-repository.ts",
     "./namespace-ownership-completion-repository": "./src/namespace-ownership-completion-repository.ts",
+    "./route-revalidation-provider": "./src/route-revalidation-provider.ts",
+    "./route-revalidation-start-repository": "./src/route-revalidation-start-repository.ts",
     "./verification-intent-resolver": "./src/verification-intent-resolver.ts",
     "./verification-start-repository": "./src/verification-start-repository.ts"
   },

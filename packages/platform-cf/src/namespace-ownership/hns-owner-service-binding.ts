@@ -3,7 +3,8 @@ import {
   NamespaceOwnershipProviderInvalidResponse,
   NamespaceOwnershipProviderRejected,
   NamespaceOwnershipProviderUnavailable,
-} from "@pirate/application";
+} from "@pirate/application/namespace-ownership";
+import type { HnsOwnerRouteRevalidationStartWireV1 } from "@pirate/application/route-revalidation/hashes";
 import { Effect } from "effect";
 import type { HnsOwnerTransport, HnsOwnerTransportFailure } from "./hns-owner.ts";
 
@@ -18,6 +19,17 @@ const POLL_DEADLINE_MS = 15_000;
 
 export type HnsOwnerServiceBinding = Readonly<{
   readonly fetch: (input: string | URL, init?: RequestInit) => Promise<Response>;
+}>;
+
+/** Low-level route-revalidation start transport. It deliberately has no
+ * creation-intent or ceremony fields and is not part of the creation adapter. */
+export type HnsOwnerRouteRevalidationTransport = Readonly<{
+  readonly start: (
+    input: Readonly<{
+      readonly wire: HnsOwnerRouteRevalidationStartWireV1;
+      readonly revalidation_session_id: string;
+    }>,
+  ) => Effect.Effect<Uint8Array, HnsOwnerTransportFailure>;
 }>;
 
 type Operation = "start" | "complete";
@@ -236,6 +248,62 @@ export function makeHnsOwnerServiceBindingTransport(
         POLL_DEADLINE_MS,
         "complete",
         POLL_RESPONSE_MAX_BYTES,
+      );
+    },
+  };
+}
+
+/**
+ * Reuses only the service-binding HTTP seam. The route-revalidation body is a
+ * separate target-owned wire shape and cannot enter the creation adapter.
+ */
+export function makeHnsOwnerRouteRevalidationTransport(
+  binding: HnsOwnerServiceBinding,
+): HnsOwnerRouteRevalidationTransport {
+  return {
+    start: ({ wire, revalidation_session_id }) => {
+      const body = jsonBytes(
+        {
+          operation_kind: wire.operation_kind,
+          route_revalidation_id: wire.route_revalidation_id,
+          revalidation_session_id: wire.revalidation_session_id,
+          community_id: wire.community_id,
+          route_binding_id: wire.route_binding_id,
+          expected_binding_generation: wire.expected_binding_generation,
+          expected_verified_evidence_ref: wire.expected_verified_evidence_ref,
+          principal_kind: wire.principal_kind,
+          principal_id: wire.principal_id,
+          requirement_hash: wire.requirement_hash,
+          start_request_hash: wire.start_request_hash,
+          provider_binding_hash: wire.provider_binding_hash,
+          provider_configuration: {
+            kind: wire.provider_configuration.kind,
+            reference: wire.provider_configuration.reference,
+            version: wire.provider_configuration.version,
+          },
+          protocol_version: wire.protocol_version,
+          environment: wire.environment,
+          route: {
+            family: wire.route.family,
+            root_label: wire.route.root_label,
+            root_label_display: wire.route.root_label_display,
+            path_segment: wire.route.path_segment,
+            href: wire.route.href,
+            app_host: wire.route.app_host,
+          },
+        },
+        START_REQUEST_MAX_BYTES,
+        "start",
+      );
+      return request(
+        binding,
+        START_URL,
+        body,
+        "application/json",
+        revalidation_session_id,
+        START_DEADLINE_MS,
+        "start",
+        START_RESPONSE_MAX_BYTES,
       );
     },
   };
