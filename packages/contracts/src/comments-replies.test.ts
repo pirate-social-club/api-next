@@ -1,0 +1,89 @@
+import { describe, expect, test } from "bun:test";
+import { Schema } from "effect";
+import {
+  CreateComment,
+  CreateCommentReply,
+  ModerateCaseAction,
+  ReportComment,
+  schemaToOpenApi,
+} from "./index.ts";
+import { TextContentSubmissionV1 } from "./text-moderation.ts";
+
+const publishedCommentSubmission = {
+  submission_id: "submission_comment_1",
+  href: "/text-content-submissions/submission_comment_1",
+  surface: "comment",
+  status: "published",
+  result: { decision: "allow", reason_code: null },
+  published_resource: {
+    kind: "comment",
+    comment_id: "comment_1",
+    href: "/comments/comment_1",
+  },
+  review_ref: null,
+  created_at: "2026-08-22T00:00:00.000Z",
+  updated_at: "2026-08-22T00:00:00.000Z",
+} as const;
+
+const schemaProperties = (schema: unknown): Record<string, unknown> => {
+  const openApi = schemaToOpenApi(schema);
+  return (openApi.properties ?? {}) as Record<string, unknown>;
+};
+
+describe("comments and replies contracts", () => {
+  test("uses the exact text request and shared submission response for both routes", () => {
+    expect(CreateComment.path).toBe("/posts/:postId/comments");
+    expect(CreateCommentReply.path).toBe("/comments/:commentId/replies");
+    expect(CreateComment.auth).toEqual({ policy: { kind: "userOrAdmin" } });
+    expect(CreateCommentReply.auth).toEqual({ policy: { kind: "userOrAdmin" } });
+    expect(CreateComment.request?.body).toBe(CreateCommentReply.request?.body);
+    expect(CreateComment.response).toBe(TextContentSubmissionV1);
+    expect(CreateCommentReply.response).toBe(TextContentSubmissionV1);
+    expect(CreateComment.successStatus).toBe(201);
+    expect(CreateCommentReply.successStatus).toBe(201);
+  });
+
+  test("requires only idempotency_key and body and rejects legacy fields", () => {
+    const requestBody = CreateComment.request?.body;
+    const schema = schemaToOpenApi(requestBody);
+    expect(schema.required).toEqual(["idempotency_key", "body"]);
+    expect(Object.keys(schemaProperties(requestBody)).sort()).toEqual(["body", "idempotency_key"]);
+    expect(schema.additionalProperties).toBe(false);
+    expect(() =>
+      Schema.decodeUnknownSync(requestBody, { onExcessProperty: "error" })({
+        idempotency_key: "key_1",
+        body: "hello",
+        media_refs: [],
+      }),
+    ).toThrow();
+  });
+
+  test("accepts a comment resource through the frozen submission response", () => {
+    expect(Schema.decodeUnknownSync(TextContentSubmissionV1)(publishedCommentSubmission)).toEqual(
+      publishedCommentSubmission,
+    );
+  });
+
+  test("keeps report coalescing and case-scoped action shapes closed", () => {
+    expect(ReportComment.path).toBe("/comments/:commentId/reports");
+    expect(schemaToOpenApi(ReportComment.request?.body).required).toEqual([
+      "idempotency_key",
+      "reason_code",
+    ]);
+    expect(schemaToOpenApi(ReportComment.response).required).toEqual([
+      "report_id",
+      "case_ref",
+      "status",
+    ]);
+    expect(ModerateCaseAction.path).toBe("/moderation/cases/:caseRef/actions");
+    const actionBody = ModerateCaseAction.request?.body;
+    const actionProperty = schemaProperties(actionBody).action as Record<string, unknown>;
+    expect(actionProperty.enum).toEqual(["approve", "dismiss", "hide", "remove", "restore"]);
+    expect(() =>
+      Schema.decodeUnknownSync(actionBody)({
+        idempotency_key: "action_1",
+        action: "block",
+      }),
+    ).toThrow();
+  });
+});

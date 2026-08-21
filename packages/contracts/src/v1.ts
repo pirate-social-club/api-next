@@ -613,52 +613,6 @@ const LocalizedPost = Schema.Struct({
   source_hash: Schema.String,
 });
 
-const Comment = Schema.Struct({
-  id: Schema.String,
-  object: Schema.Literal("comment"),
-  community: Schema.String,
-  thread_root_post: Schema.String,
-  parent_comment: Schema.NullOr(Schema.String),
-  author_user: Schema.NullOr(Schema.String),
-  author_public_handle: Schema.optional(Schema.NullOr(Schema.String)),
-  authorship_mode: Schema.Literals(["human_direct", "user_agent", "guest"]),
-  agent: Schema.optional(Schema.NullOr(Schema.String)),
-  agent_ownership_record: Schema.optional(Schema.NullOr(Schema.String)),
-  identity_mode: Schema.Literals(["public", "anonymous"]),
-  anonymous_scope: Schema.NullOr(Schema.Literals(["community_stable", "thread_stable"])),
-  anonymous_label: Schema.NullOr(Schema.String),
-  agent_handle_snapshot: Schema.optional(Schema.NullOr(Schema.String)),
-  agent_display_name_snapshot: Schema.optional(Schema.NullOr(Schema.String)),
-  agent_owner_handle_snapshot: Schema.optional(Schema.NullOr(Schema.String)),
-  agent_ownership_provider_snapshot: Schema.optional(
-    Schema.NullOr(Schema.Literals(["self_agent_id", "clawkey"])),
-  ),
-  body: Schema.NullOr(Schema.String),
-  media_refs: Schema.optional(Schema.Array(JsonValue)),
-  source_language: Schema.optional(Schema.NullOr(Schema.String)),
-  source_language_confidence: Schema.optional(Schema.NullOr(Schema.Number)),
-  source_language_reliable: Schema.optional(Schema.Boolean),
-  source_language_detector: Schema.optional(Schema.NullOr(Schema.String)),
-  source_language_detected_at: Schema.optional(Schema.NullOr(Schema.String)),
-  source_language_source_hash: Schema.optional(Schema.NullOr(Schema.String)),
-  status: Schema.Literals(["published", "hidden", "removed", "deleted"]),
-  replies_locked: Schema.optional(Schema.Boolean),
-  replies_locked_at: Schema.optional(Schema.NullOr(Schema.Number)),
-  replies_locked_by_user: Schema.optional(Schema.NullOr(Schema.String)),
-  replies_lock_reason: Schema.optional(Schema.NullOr(Schema.String)),
-  depth: Schema.Number,
-  direct_reply_count: Schema.Number,
-  descendant_count: Schema.Number,
-  upvote_count: Schema.Number,
-  downvote_count: Schema.Number,
-  score: Schema.Number,
-  last_reply_at: Schema.optional(Schema.NullOr(Schema.Number)),
-  content_hash: Schema.NullOr(Schema.String),
-  swarm_body_ref: Schema.NullOr(Schema.String),
-  idempotency_key: Schema.NullOr(Schema.String),
-  created: Schema.Number,
-});
-
 const HomeFeedCommunitySummary = Schema.Struct({
   id: Schema.String,
   object: Schema.Literal("home_feed_community_summary"),
@@ -777,17 +731,44 @@ const CreatePostRequest = Schema.Union([
   }),
 ]);
 
-const CreateComment = Schema.Struct({
-  idempotency_key: Schema.optional(Schema.NullOr(Schema.String)),
-  body: Schema.optional(Schema.NullOr(Schema.String)),
-  media_refs: Schema.optional(Schema.Array(JsonValue)),
-  authorship_mode: Schema.optional(Schema.Literals(["human_direct", "user_agent", "guest"])),
-  agent_id: Schema.optional(Schema.NullOr(Schema.String)),
-  agent_action_proof: Schema.optional(Schema.NullOr(AgentActionProof)),
-  identity_mode: Schema.optional(Schema.Literals(["public", "anonymous"])),
-  anonymous_scope: Schema.optional(
-    Schema.NullOr(Schema.Literals(["community_stable", "thread_stable"])),
-  ),
+const TextCommentReplyRequestV1 = Schema.Struct({
+  idempotency_key: Schema.String,
+  body: Schema.String,
+});
+
+const CommentReportReasonCode = Schema.Literals([
+  "spam",
+  "harassment",
+  "hate",
+  "sexual_content",
+  "graphic_content",
+  "misleading",
+  "other",
+]);
+
+const CommentReportRequestV1 = Schema.Struct({
+  idempotency_key: Schema.String,
+  reason_code: CommentReportReasonCode,
+});
+
+const CommentReportResponseV1 = Schema.Struct({
+  report_id: Schema.String,
+  case_ref: Schema.String,
+  status: Schema.Literals(["open", "coalesced"]),
+});
+
+const TextModerationAction = Schema.Literals(["approve", "dismiss", "hide", "remove", "restore"]);
+
+const ModerationCaseActionRequestV1 = Schema.Struct({
+  idempotency_key: Schema.String,
+  action: TextModerationAction,
+});
+
+const ModerationCaseActionResponseV1 = Schema.Struct({
+  action_id: Schema.String,
+  case_ref: Schema.String,
+  action: TextModerationAction,
+  target_status: Schema.Literals(["held", "published", "hidden", "removed"]),
 });
 
 const Jwk = Schema.Struct({
@@ -1066,6 +1047,26 @@ export const GetPost = endpoint({
   errors: [AuthError, BadRequest, NotFound],
 });
 
+export const CreateComment = endpoint({
+  method: "POST",
+  path: "/posts/:postId/comments",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathPost, body: TextCommentReplyRequestV1 },
+  response: TextContentSubmissionV1,
+  successStatus: 201,
+  errors: [
+    AuthError,
+    BadRequest,
+    CommentsLocked,
+    Conflict,
+    GateUnsatisfied,
+    IdempotencyConflict,
+    MembershipRequired,
+    NotFound,
+    RateLimited,
+  ],
+});
+
 const VoteRequest = Schema.Struct({
   value: Schema.Literals([-1, 1]),
   altcha: Schema.optional(Schema.String),
@@ -1122,9 +1123,9 @@ export const ClearPostVote = endpoint({
 export const CreateCommentReply = endpoint({
   method: "POST",
   path: "/comments/:commentId/replies",
-  auth: Auth.userOrAdminOrAgentDelegated("comments"),
-  request: { path: PathComment, body: CreateComment },
-  response: Comment,
+  auth: Auth.userOrAdmin(),
+  request: { path: PathComment, body: TextCommentReplyRequestV1 },
+  response: TextContentSubmissionV1,
   successStatus: 201,
   errors: [
     AuthError,
@@ -1132,10 +1133,34 @@ export const CreateCommentReply = endpoint({
     CommentsLocked,
     Conflict,
     GateUnsatisfied,
+    IdempotencyConflict,
     MembershipRequired,
     NotFound,
     RateLimited,
   ],
+});
+
+export const ReportComment = endpoint({
+  method: "POST",
+  path: "/comments/:commentId/reports",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathComment, body: CommentReportRequestV1 },
+  response: CommentReportResponseV1,
+  successStatus: 201,
+  errors: [AuthError, BadRequest, IdempotencyConflict, MembershipRequired, NotFound, RateLimited],
+});
+
+export const ModerateCaseAction = endpoint({
+  method: "POST",
+  path: "/moderation/cases/:caseRef/actions",
+  auth: Auth.userOrAdmin(),
+  request: {
+    path: Schema.Struct({ caseRef: Schema.String }),
+    body: ModerationCaseActionRequestV1,
+  },
+  response: ModerationCaseActionResponseV1,
+  successStatus: 200,
+  errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
 });
 
 // --- home feed -------------------------------------------------------------
