@@ -2,6 +2,11 @@ import {
   AlertCollector,
   ControlPlaneDb,
   completeHnsRouteRevalidation,
+  HnsRouteRevalidationCompletionRejected,
+  HnsRouteRevalidationCompletionStorageFailed,
+  HnsRouteRevalidationProviderFailed,
+  HnsRouteRevalidationStartRejected,
+  HnsRouteRevalidationStartStorageFailed,
   startHnsRouteRevalidation,
 } from "@pirate/application";
 import type {
@@ -16,7 +21,7 @@ import {
   makeHnsRouteRevalidationProvider,
 } from "@pirate/platform-cf";
 import type { HnsOwnerServiceBinding } from "@pirate/platform-cf/namespace-ownership/hns-owner-service-binding";
-import { Effect, Layer } from "effect";
+import { Cause, Effect, Exit, Layer } from "effect";
 
 import {
   defaultRetrySchedule,
@@ -32,7 +37,13 @@ export const HNS_ROUTE_REVALIDATION_SCHEDULE = "*/5 * * * *";
 export const HNS_ROUTE_REVALIDATION_TIMEOUT = "45 seconds";
 export const HNS_ROUTE_REVALIDATION_PRINCIPAL_ID = "route-revalidation-scheduler";
 export const HNS_ROUTE_REVALIDATION_LEAD_SECONDS = 24 * 60 * 60;
-export const HNS_ROUTE_REVALIDATION_BATCH_LIMIT = 25;
+/**
+ * The start and poll transports have 5s and 15s deadlines respectively. Keep
+ * the total number of provider operations per cron tick at two so a worst-case
+ * pair of polls remains inside the 45s job deadline, including database work.
+ */
+export const HNS_ROUTE_REVALIDATION_BATCH_LIMIT = 2;
+export const HNS_ROUTE_REVALIDATION_PHASE_LIMIT = 1;
 
 export const HNS_ROUTE_REVALIDATION_READS = [
   "postgres:communities",
@@ -95,6 +106,76 @@ export type HnsRouteRevalidationComposition =
     }>;
 
 const disabledComposition: HnsRouteRevalidationComposition = Object.freeze({ enabled: false });
+
+export type HnsRouteRevalidationBatchSummary = Readonly<{
+  readonly processed: number;
+  readonly expected_failures: number;
+  readonly high_severity_failures: number;
+}>;
+
+function expectedFailureSeverity(error: unknown): "medium" | "high" | null {
+  if (
+    error instanceof HnsRouteRevalidationStartStorageFailed ||
+    error instanceof HnsRouteRevalidationCompletionStorageFailed
+  ) {
+    return "high";
+  }
+  if (
+    error instanceof HnsRouteRevalidationStartRejected ||
+    error instanceof HnsRouteRevalidationProviderFailed ||
+    error instanceof HnsRouteRevalidationCompletionRejected
+  ) {
+    return "medium";
+  }
+  return null;
+}
+
+/**
+ * Runs a bounded batch without allowing one expected provider/storage outcome
+ * to discard the rest of the tick. Defects, interruptions, and unknown
+ * control-plane failures still escape to the scheduler runner.
+ */
+export function runBoundedHnsRouteRevalidationBatch<T>(
+  items: readonly T[],
+  limit: number,
+  run: (item: T) => Effect.Effect<void, unknown>,
+): Effect.Effect<HnsRouteRevalidationBatchSummary, unknown> {
+  const boundedLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : 0;
+  return Effect.gen(function* () {
+    let processed = 0;
+    let expectedFailures = 0;
+    let highSeverityFailures = 0;
+    for (const item of items) {
+      if (processed >= boundedLimit) break;
+      processed += 1;
+      const result = yield* Effect.exit(run(item));
+      if (Exit.isSuccess(result)) continue;
+      const severity = expectedFailureSeverity(Cause.squash(result.cause));
+      if (severity === null) return yield* Effect.failCause(result.cause);
+      expectedFailures += 1;
+      if (severity === "high") highSeverityFailures += 1;
+    }
+    return {
+      processed,
+      expected_failures: expectedFailures,
+      high_severity_failures: highSeverityFailures,
+    };
+  });
+}
+
+function emitBatchFailureAlert(
+  collector: AlertCollector["Service"],
+  phase: "start" | "poll",
+  summary: HnsRouteRevalidationBatchSummary,
+): Effect.Effect<void> {
+  if (summary.expected_failures === 0) return Effect.void;
+  return collector.emit({
+    key: `hns-route-revalidation:${phase}-item-failures`,
+    severity: summary.high_severity_failures > 0 ? "high" : "medium",
+    body: `HNS route-revalidation ${phase} item failed; it remains eligible for a later sweep.`,
+    entity: `batch:${phase}`,
+  });
+}
 
 function enabledValue(value: string | undefined): boolean {
   if (value === undefined || value === "false") return false;
@@ -482,17 +563,21 @@ export function makeHnsRouteRevalidationJob(
 ): JobDeclaration<unknown, ControlPlaneDb | AlertCollector> {
   const run = Effect.gen(function* () {
     const db = yield* ControlPlaneDb;
-    yield* AlertCollector;
+    const collector = yield* AlertCollector;
     const runtime = Layer.succeed(ControlPlaneDb, db);
     const startStore = makeControlPlaneRouteRevalidationStartStore(runtime);
     const completionStore = makeControlPlaneRouteRevalidationCompletionStore(runtime);
+    // The provider start returns a challenge for the owner to publish. Do not
+    // consume that fresh challenge in this same tick; no minimum poll age is
+    // frozen by spec, so the scheduler defers exactly these session ids.
+    const startedSessionIds = new Set<string>();
 
     const candidates = yield* db.execute<Row>({
       label: "jobs.hns-route-revalidation.start-candidates",
       text: HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL,
       values: [
         HNS_ROUTE_REVALIDATION_LEAD_SECONDS,
-        HNS_ROUTE_REVALIDATION_BATCH_LIMIT,
+        HNS_ROUTE_REVALIDATION_PHASE_LIMIT,
         HNS_ROUTE_REVALIDATION_PRINCIPAL_ID,
         options.force?.route_binding_id ?? null,
         options.force?.expected_generation ?? null,
@@ -500,38 +585,48 @@ export function makeHnsRouteRevalidationJob(
       ],
       readonly: true,
     });
-    for (const row of candidates.rows) {
-      const candidate = startCandidate(row);
-      if (
-        candidate === null ||
-        candidate.environment !== options.environment ||
-        candidate.provider_configuration.reference !== options.configuration.reference ||
-        candidate.provider_configuration.version !== options.configuration.version
-      ) {
-        continue;
-      }
-      yield* startHnsRouteRevalidation(
-        {
-          route_revalidation_id: candidate.route_revalidation_id,
-          revalidation_session_id: candidate.revalidation_session_id,
-          community_id: candidate.community_id,
-          route_binding_id: candidate.route_binding_id,
-          expected_binding_generation: candidate.expected_binding_generation,
-          expected_verified_evidence_ref: candidate.expected_verified_evidence_ref,
-          provider_binding_hash: candidate.provider_binding_hash,
-          provider_configuration: candidate.provider_configuration,
-          root_label: candidate.root_label,
-          root_label_display: candidate.root_label_display,
-          path_segment: candidate.path_segment,
-        },
-        {
-          store: startStore,
-          provider: options.provider,
-          principal_id: HNS_ROUTE_REVALIDATION_PRINCIPAL_ID,
-          environment: options.environment,
-        },
+    const startCandidates = candidates.rows
+      .map(startCandidate)
+      .filter(
+        (candidate): candidate is StartCandidate =>
+          candidate !== null &&
+          candidate.environment === options.environment &&
+          candidate.provider_configuration.reference === options.configuration.reference &&
+          candidate.provider_configuration.version === options.configuration.version,
       );
-    }
+    const startSummary = yield* runBoundedHnsRouteRevalidationBatch(
+      startCandidates,
+      HNS_ROUTE_REVALIDATION_PHASE_LIMIT,
+      (candidate) =>
+        Effect.gen(function* () {
+          startedSessionIds.add(candidate.revalidation_session_id);
+          yield* startHnsRouteRevalidation(
+            {
+              route_revalidation_id: candidate.route_revalidation_id,
+              revalidation_session_id: candidate.revalidation_session_id,
+              community_id: candidate.community_id,
+              route_binding_id: candidate.route_binding_id,
+              expected_binding_generation: candidate.expected_binding_generation,
+              expected_verified_evidence_ref: candidate.expected_verified_evidence_ref,
+              provider_binding_hash: candidate.provider_binding_hash,
+              provider_configuration: candidate.provider_configuration,
+              root_label: candidate.root_label,
+              root_label_display: candidate.root_label_display,
+              path_segment: candidate.path_segment,
+            },
+            {
+              store: startStore,
+              provider: options.provider,
+              principal_id: HNS_ROUTE_REVALIDATION_PRINCIPAL_ID,
+              environment: options.environment,
+            },
+          );
+        }),
+    );
+    yield* emitBatchFailureAlert(collector, "start", startSummary);
+
+    const pendingLimit = HNS_ROUTE_REVALIDATION_BATCH_LIMIT - startSummary.processed;
+    if (pendingLimit === 0) return;
 
     const pending = yield* db.execute<Row>({
       label: "jobs.hns-route-revalidation.pending-sessions",
@@ -541,24 +636,34 @@ export function makeHnsRouteRevalidationJob(
         options.configuration.reference,
         options.configuration.version,
         options.environment,
-        HNS_ROUTE_REVALIDATION_BATCH_LIMIT,
+        pendingLimit,
       ],
       readonly: true,
     });
-    for (const row of pending.rows) {
-      const session = pendingSession(row);
-      if (session === null || session.consumed_attempts >= 3) continue;
-      yield* completeHnsRouteRevalidation(
-        {
-          route_revalidation_id: session.route_revalidation_id,
-          revalidation_session_id: session.revalidation_session_id,
-          expected_binding_generation: session.expected_binding_generation,
-          idempotency_key: `hns-route-revalidation-poll:${session.consumed_attempts + 1}`,
-          channel: "poll_result",
-        },
-        { store: completionStore, provider: options.provider },
+    const pendingSessions = pending.rows
+      .map(pendingSession)
+      .filter(
+        (session): session is PendingSession =>
+          session !== null &&
+          session.consumed_attempts < 3 &&
+          !startedSessionIds.has(session.revalidation_session_id),
       );
-    }
+    const pollSummary = yield* runBoundedHnsRouteRevalidationBatch(
+      pendingSessions,
+      pendingLimit,
+      (session) =>
+        completeHnsRouteRevalidation(
+          {
+            route_revalidation_id: session.route_revalidation_id,
+            revalidation_session_id: session.revalidation_session_id,
+            expected_binding_generation: session.expected_binding_generation,
+            idempotency_key: `hns-route-revalidation-poll:${session.consumed_attempts + 1}`,
+            channel: "poll_result",
+          },
+          { store: completionStore, provider: options.provider },
+        ).pipe(Effect.asVoid),
+    );
+    yield* emitBatchFailureAlert(collector, "poll", pollSummary);
   }).pipe(
     Effect.onInterrupt(() =>
       JobContext.use((context) => Effect.sync(context.adapterSafety.markAbortedOrFenced)),

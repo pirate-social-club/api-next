@@ -110,6 +110,58 @@ async function start(): Promise<{
   };
 }
 
+async function startRevalidation(): Promise<{
+  readonly body: Record<string, unknown>;
+  readonly session: Record<string, unknown>;
+}> {
+  const started = await app.fetch(
+    request(
+      "/internal/hns-owner/v1/start",
+      revalidationStart,
+      "application/json",
+      "revalidation-session-1",
+    ),
+    env,
+  );
+  expect(started.status).toBe(200);
+  const body = (await started.json()) as Record<string, unknown>;
+  return {
+    body,
+    session: {
+      authority: {
+        version: "pirate-hns-route-revalidation-authority-v1",
+        route_revalidation_id: revalidationStart.route_revalidation_id,
+        community_id: revalidationStart.community_id,
+        route_binding_id: revalidationStart.route_binding_id,
+        principal_kind: "system",
+        principal_id: revalidationStart.principal_id,
+        expected_binding_generation: revalidationStart.expected_binding_generation,
+        expected_verified_evidence_ref: null,
+        requirement_hash: revalidationStart.requirement_hash,
+        provider_id: "hns.owner.v1",
+        provider_binding_hash: revalidationStart.provider_binding_hash,
+        provider_configuration_kind: "managed",
+        provider_configuration_reference: "hns-owner-staging",
+        provider_configuration_version: "hns-owner-config-v1",
+        protocol_version: "hns-txt-v1",
+        environment: "staging",
+        family: "hns",
+        root_label: route.root_label,
+        root_label_display: route.root_label_display,
+        path_segment: route.path_segment,
+      },
+      revalidation_session_id: revalidationStart.revalidation_session_id,
+      start_request_hash: revalidationStart.start_request_hash,
+      upstream_session_ref: body.upstream_session_ref,
+      start_presentation: body.presentation,
+      status: "pending",
+      started_at: new Date(Date.now() - 1_000).toISOString(),
+      expires_at: body.expires_at,
+      terminal_at: null,
+    },
+  };
+}
+
 describe("HNS owner verifier Worker", () => {
   test("starts both the frozen creation and route-revalidation presentation", async () => {
     const response = await app.fetch(
@@ -213,6 +265,10 @@ describe("HNS owner verifier Worker", () => {
           called = true;
           expect(String(input)).toBe("https://verifier.pirate.sc/hns/verify-txt");
           expect(new Headers(init?.headers).get("authorization")).toBe("Bearer test-bearer");
+          expect(JSON.parse(String(init?.body))).toEqual({
+            root_label: "jazleeuw",
+            challenge_txt_value: `pirate-verification=${String(body.upstream_session_ref)}`,
+          });
           return new Response(JSON.stringify(legacy), {
             status: 200,
             headers: { "content-type": "application/json" },
@@ -272,6 +328,79 @@ describe("HNS owner verifier Worker", () => {
     expect(body.upstream_session_ref).toBeTruthy();
   });
 
+  test("maps a creation challenge mismatch from an existing TXT to pending", async () => {
+    const { session } = await start();
+    const response = await handleRequest(
+      request("/internal/hns-owner/v1/poll", { session, payload: {} }, "application/octet-stream"),
+      env,
+      {
+        fetcher: async () =>
+          new Response(
+            JSON.stringify({
+              verified: false,
+              failure_reason: "challenge_mismatch",
+              challenge_name: "jazleeuw.",
+              observed_values: ["v=spf1 include:example.invalid"],
+            }),
+            { headers: { "content-type": "application/json" } },
+          ),
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "pending" });
+  });
+
+  test("accepts owner-DNS trailing-dot challenge names and sends challenge_host", async () => {
+    const { body, session } = await start();
+    const ownerDnsEnv: Env = { ...env, HNS_OWNERSHIP_SOURCE: "owner_authoritative_dns_txt" };
+    const legacy = {
+      verified: true,
+      observation_provider: "owner_dns",
+      ownership_source: "owner_authoritative_dns_txt",
+      failure_reason: null,
+      observed_values: [`pirate-verification=${String(body.upstream_session_ref)}`],
+      root_exists: true,
+      root_control_verified: true,
+      expiry_root_exists: true,
+      expiry_horizon_sufficient: true,
+      expiry_blocks_remaining: 100,
+      expiry_horizon_blocks: 50,
+      expiry_anchor_height: 100,
+      expiry_anchor_block_hash: "8".repeat(64),
+      expiry_anchor_median_time: 90,
+      expiry_chain_network: "main",
+      expiry_height: 200,
+      expiry_observation_provider: "hsd_json_rpc",
+      routing_enabled: false,
+      pirate_dns_authority_verified: false,
+      control_class: "single_holder_root",
+      operation_class: "owner_managed_namespace",
+      root_label: "jazleeuw",
+      zone_name: "jazleeuw.",
+      challenge_name: "_pirate.jazleeuw.",
+    };
+    let sentBody: Record<string, unknown> | null = null;
+    const response = await handleRequest(
+      request("/internal/hns-owner/v1/poll", { session, payload: {} }, "application/octet-stream"),
+      ownerDnsEnv,
+      {
+        fetcher: async (_input, init) => {
+          sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+          return new Response(JSON.stringify(legacy), {
+            headers: { "content-type": "application/json" },
+          });
+        },
+      },
+    );
+    expect(sentBody as Record<string, unknown> | null).toEqual({
+      root_label: "jazleeuw",
+      challenge_host: "_pirate.jazleeuw",
+      challenge_txt_value: `pirate-verification=${String(body.upstream_session_ref)}`,
+    });
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as Record<string, unknown>).status).toBe("verified");
+  });
+
   test("maps legacy infrastructure-unavailable observations to retryable 503", async () => {
     const { session } = await start();
     const response = await handleRequest(
@@ -292,50 +421,70 @@ describe("HNS owner verifier Worker", () => {
     expect(response.status).toBe(503);
   });
 
-  test("accepts the exact route-revalidation poll wire and returns nested verified output", async () => {
-    const started = await app.fetch(
-      request(
-        "/internal/hns-owner/v1/start",
-        revalidationStart,
-        "application/json",
-        "revalidation-session-1",
-      ),
-      env,
-    );
-    expect(started.status).toBe(200);
-    const startBody = (await started.json()) as Record<string, unknown>;
-    const session = {
-      authority: {
-        version: "pirate-hns-route-revalidation-authority-v1",
-        route_revalidation_id: revalidationStart.route_revalidation_id,
-        community_id: revalidationStart.community_id,
-        route_binding_id: revalidationStart.route_binding_id,
-        principal_kind: "system",
-        principal_id: revalidationStart.principal_id,
-        expected_binding_generation: revalidationStart.expected_binding_generation,
-        expected_verified_evidence_ref: null,
-        requirement_hash: revalidationStart.requirement_hash,
-        provider_id: "hns.owner.v1",
-        provider_binding_hash: revalidationStart.provider_binding_hash,
-        provider_configuration_kind: "managed",
-        provider_configuration_reference: "hns-owner-staging",
-        provider_configuration_version: "hns-owner-config-v1",
-        protocol_version: "hns-txt-v1",
-        environment: "staging",
-        family: "hns",
-        root_label: route.root_label,
-        root_label_display: route.root_label_display,
-        path_segment: route.path_segment,
+  test("rejects an HTTP legacy URL before making an upstream request", async () => {
+    const { session } = await start();
+    let called = false;
+    const response = await handleRequest(
+      request("/internal/hns-owner/v1/poll", { session, payload: {} }, "application/octet-stream"),
+      { ...env, HNS_LEGACY_VERIFIER_URL: "http://verifier.pirate.sc/hns" },
+      {
+        fetcher: async () => {
+          called = true;
+          return new Response(null, { status: 500 });
+        },
       },
-      revalidation_session_id: revalidationStart.revalidation_session_id,
-      start_request_hash: revalidationStart.start_request_hash,
-      upstream_session_ref: startBody.upstream_session_ref,
-      start_presentation: startBody.presentation,
-      status: "pending",
-      started_at: new Date(Date.now() - 1_000).toISOString(),
-      expires_at: startBody.expires_at,
-      terminal_at: null,
-    };
+    );
+    expect(called).toBe(false);
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "provider_misconfigured" });
+  });
+
+  test("maps upstream throttling, failures, redirects, and oversize bodies safely", async () => {
+    const { session } = await start();
+    const cases: ReadonlyArray<{
+      readonly upstream: Response;
+      readonly status: number;
+      readonly error: string;
+    }> = [
+      { upstream: new Response(null, { status: 429 }), status: 503, error: "provider_unavailable" },
+      { upstream: new Response(null, { status: 503 }), status: 503, error: "provider_unavailable" },
+      {
+        upstream: new Response(null, {
+          status: 302,
+          headers: { location: "https://other.invalid" },
+        }),
+        status: 502,
+        error: "invalid_response",
+      },
+      {
+        upstream: new Response("{}", {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "content-length": "1048577",
+          },
+        }),
+        status: 502,
+        error: "invalid_response",
+      },
+    ];
+    for (const testCase of cases) {
+      const response = await handleRequest(
+        request(
+          "/internal/hns-owner/v1/poll",
+          { session, payload: {} },
+          "application/octet-stream",
+        ),
+        env,
+        { fetcher: async () => testCase.upstream },
+      );
+      expect(response.status).toBe(testCase.status);
+      expect(await response.json()).toEqual({ error: testCase.error });
+    }
+  });
+
+  test("accepts the exact route-revalidation poll wire and returns nested verified output", async () => {
+    const { body: startBody, session } = await startRevalidation();
     const legacy = {
       verified: true,
       observation_provider: "hns_parent_chain",
@@ -435,5 +584,28 @@ describe("HNS owner verifier Worker", () => {
       status: "rejected",
       reason_code: "challenge_mismatch",
     });
+  });
+
+  test("rejects a route-revalidation poll when the header does not match the session", async () => {
+    const { session } = await startRevalidation();
+    let called = false;
+    const response = await handleRequest(
+      request(
+        "/internal/hns-owner/v1/poll",
+        { operation_kind: "route_revalidation", session, payload: {} },
+        "application/octet-stream",
+        "different-revalidation-session",
+      ),
+      env,
+      {
+        fetcher: async () => {
+          called = true;
+          return new Response(null, { status: 500 });
+        },
+      },
+    );
+    expect(called).toBe(false);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "invalid_request" });
   });
 });

@@ -5,6 +5,7 @@
   "compatibility_date": "2026-08-21",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": false,
+  "preview_urls": false,
   "observability": {
     "enabled": true,
     "logs": {
@@ -15,6 +16,7 @@
     "staging": {
       "name": "pirate-hns-owner-verifier-staging",
       "workers_dev": false,
+      "preview_urls": false,
       "observability": {
         "enabled": true,
         "logs": {

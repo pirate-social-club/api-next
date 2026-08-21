@@ -701,7 +701,15 @@ function startResponse(input: StartInput, source: string, ttlSeconds: number): R
 function legacyUrl(value: string): string | null {
   try {
     const url = new URL(value);
-    if (url.username || url.password || url.search || url.hash || !url.origin) return null;
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !url.origin
+    )
+      return null;
     const path = url.pathname.replace(/\/+$/u, "");
     url.pathname = path.endsWith("/verify-txt") ? path : `${path}/verify-txt`;
     return url.toString();
@@ -755,10 +763,9 @@ function validLegacyShape(value: JsonObject): boolean {
   return Object.keys(value).every((key) => LEGACY_KEYS.has(key));
 }
 
-function legacyChallengeName(value: unknown, poll: PollInput, source: string): boolean {
+function legacyChallengeName(value: unknown, poll: PollInput): boolean {
   if (typeof value !== "string") return false;
-  const normalized =
-    source === "hns_parent_chain_txt" && value.endsWith(".") ? value.slice(0, -1) : value;
+  const normalized = value.endsWith(".") ? value.slice(0, -1) : value;
   return normalized === poll.challenge_name;
 }
 
@@ -801,7 +808,7 @@ function expectedObservation(
     !validLegacyShape(value) ||
     value.verified !== true ||
     value.ownership_source !== source ||
-    !legacyChallengeName(value.challenge_name, poll, source)
+    !legacyChallengeName(value.challenge_name, poll)
   )
     return null;
   const expectedChallenge = `pirate-verification=${poll.upstream_session_ref}`;
@@ -871,10 +878,7 @@ async function mapLegacy(
   if (value.verified === false) {
     if (value.ownership_source !== undefined && value.ownership_source !== null)
       return { kind: "invalid" };
-    if (
-      value.challenge_name !== undefined &&
-      !legacyChallengeName(value.challenge_name, poll, source)
-    )
+    if (value.challenge_name !== undefined && !legacyChallengeName(value.challenge_name, poll))
       return { kind: "invalid" };
     if (
       value.challenge_value !== undefined &&
@@ -887,7 +891,11 @@ async function mapLegacy(
     ) {
       return { kind: "unavailable" };
     }
-    if (value.failure_reason === "challenge_not_published" && poll.operation === "creation") {
+    if (
+      poll.operation === "creation" &&
+      (value.failure_reason === "challenge_not_published" ||
+        value.failure_reason === "challenge_mismatch")
+    ) {
       return {
         kind: "bytes",
         bytes: new TextEncoder().encode(JSON.stringify({ status: "pending" })),
@@ -954,7 +962,9 @@ async function pollLegacy(
       },
       body: JSON.stringify({
         root_label: poll.root_label,
-        challenge_host: poll.challenge_name,
+        ...(source === "owner_authoritative_dns_txt"
+          ? { challenge_host: poll.challenge_name }
+          : {}),
         challenge_txt_value: `pirate-verification=${poll.upstream_session_ref}`,
       }),
       redirect: "manual",

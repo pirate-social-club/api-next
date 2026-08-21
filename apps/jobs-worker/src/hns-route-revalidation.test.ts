@@ -1,11 +1,19 @@
 import { describe, expect, mock, test } from "bun:test";
+import { Effect } from "effect";
 
 mock.module("cloudflare:workers", () => ({
   DurableObject: class DurableObject {},
 }));
 
-const { HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL, makeHnsRouteRevalidationComposition } =
-  await import("./hns-route-revalidation");
+const {
+  HNS_ROUTE_REVALIDATION_BATCH_LIMIT,
+  HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL,
+  makeHnsRouteRevalidationComposition,
+  runBoundedHnsRouteRevalidationBatch,
+} = await import("./hns-route-revalidation");
+const { HnsRouteRevalidationProviderFailed, HnsRouteRevalidationStartStorageFailed } = await import(
+  "@pirate/application"
+);
 type HnsRouteRevalidationBindings = import("./hns-route-revalidation").HnsRouteRevalidationBindings;
 
 const serviceBinding = {
@@ -20,6 +28,55 @@ const enabledBindings = (): HnsRouteRevalidationBindings => ({
 });
 
 describe("jobs-worker HNS route-revalidation composition", () => {
+  test("bounds a tick and continues after expected item failures", async () => {
+    const invoked: string[] = [];
+    const summary = await Effect.runPromise(
+      runBoundedHnsRouteRevalidationBatch(
+        ["first", "second", "third"],
+        HNS_ROUTE_REVALIDATION_BATCH_LIMIT,
+        (item) => {
+          invoked.push(item);
+          return item === "first"
+            ? Effect.fail(new HnsRouteRevalidationProviderFailed({ reason: "unavailable" }))
+            : Effect.void;
+        },
+      ),
+    );
+
+    expect(invoked).toEqual(["first", "second"]);
+    expect(summary).toEqual({
+      processed: 2,
+      expected_failures: 1,
+      high_severity_failures: 0,
+    });
+  });
+
+  test("propagates an unexpected failure instead of hiding a scheduler defect", async () => {
+    const invoked: string[] = [];
+    await expect(
+      Effect.runPromise(
+        runBoundedHnsRouteRevalidationBatch(["first", "second"], 2, (item) => {
+          invoked.push(item);
+          return Effect.fail(new Error("unexpected scheduler defect"));
+        }),
+      ),
+    ).rejects.toThrow("unexpected scheduler defect");
+    expect(invoked).toEqual(["first"]);
+  });
+
+  test("classifies storage failures as high severity while continuing the bounded batch", async () => {
+    const summary = await Effect.runPromise(
+      runBoundedHnsRouteRevalidationBatch(["first", "second"], 2, (item) =>
+        item === "first" ? Effect.fail(new HnsRouteRevalidationStartStorageFailed()) : Effect.void,
+      ),
+    );
+    expect(summary).toEqual({
+      processed: 2,
+      expected_failures: 1,
+      high_severity_failures: 1,
+    });
+  });
+
   test("is disabled by absence and by an explicit false flag", () => {
     expect(makeHnsRouteRevalidationComposition({})).toEqual({ enabled: false });
     expect(
