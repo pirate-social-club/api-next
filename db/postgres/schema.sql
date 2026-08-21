@@ -9766,7 +9766,7 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-+-- Correct the deferred route-revalidation completion/session guard.
+-- Correct the deferred route-revalidation completion/session guard.
 --
 -- Migration 0035 accidentally rejected every failed terminal session.  This
 -- forward-only correction is deliberately a guard replacement: it does not
