@@ -34,6 +34,7 @@
     "0031_community_creation_route_contract.sql": "d4f01fb04463f9003dd70e3eabfd01a23b9192031d44eb1cae5049ec29e8e984",
     "0032_route_authority_version.sql": "4986031d6a8a300f688c98916b60e38152bb3d6ed1c5c484a39f77b1c1843a71",
     "0033_namespace_ownership_challenge_topologies.sql": "8c61977312fa80550d2cd725c2907aaf4052b24b3b61f4081b8664ad3d67e843",
-    "0034_effective_active_route.sql": "156bb4b27a1cdd22fe0d8dc7b679334b2060b27623644828490c26799862c49d"
+    "0034_effective_active_route.sql": "156bb4b27a1cdd22fe0d8dc7b679334b2060b27623644828490c26799862c49d",
+    "0035_route_revalidation_persistence.sql": "a6a076e6b6edb734923145f1d3b4ab22c6cfcd956aba9075e0aaf9814e5d67de"
   }
 }

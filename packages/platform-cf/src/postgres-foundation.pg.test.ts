@@ -179,6 +179,21 @@ const communityCreationRouteContractMigrationSql = await Bun.file(
 const routeAuthorityVersionMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0032_route_authority_version.sql", import.meta.url),
 ).text();
+const namespaceOwnershipChallengeTopologiesMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0033_namespace_ownership_challenge_topologies.sql",
+    import.meta.url,
+  ),
+).text();
+const effectiveActiveRouteMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0034_effective_active_route.sql", import.meta.url),
+).text();
+const routeRevalidationPersistenceMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0035_route_revalidation_persistence.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -345,6 +360,21 @@ const routeAuthorityVersionMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0032_route_authority_version.sql"] ?? "",
   sql: routeAuthorityVersionMigrationSql,
 };
+const namespaceOwnershipChallengeTopologiesMigration: PostgresMigration = {
+  version: "0033_namespace_ownership_challenge_topologies.sql",
+  checksum: checksumManifest.migrations["0033_namespace_ownership_challenge_topologies.sql"] ?? "",
+  sql: namespaceOwnershipChallengeTopologiesMigrationSql,
+};
+const effectiveActiveRouteMigration: PostgresMigration = {
+  version: "0034_effective_active_route.sql",
+  checksum: checksumManifest.migrations["0034_effective_active_route.sql"] ?? "",
+  sql: effectiveActiveRouteMigrationSql,
+};
+const routeRevalidationPersistenceMigration: PostgresMigration = {
+  version: "0035_route_revalidation_persistence.sql",
+  checksum: checksumManifest.migrations["0035_route_revalidation_persistence.sql"] ?? "",
+  sql: routeRevalidationPersistenceMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -378,6 +408,9 @@ const migrations: readonly PostgresMigration[] = [
   namespaceOwnershipCompletionExpiryMigration,
   communityCreationRouteContractMigration,
   routeAuthorityVersionMigration,
+  namespaceOwnershipChallengeTopologiesMigration,
+  effectiveActiveRouteMigration,
+  routeRevalidationPersistenceMigration,
 ];
 
 function checksum(value: string): string {
@@ -587,6 +620,15 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(routeAuthorityVersionMigrationSql)).toBe(
         routeAuthorityVersionMigration.checksum,
       );
+      expect(checksum(namespaceOwnershipChallengeTopologiesMigrationSql)).toBe(
+        namespaceOwnershipChallengeTopologiesMigration.checksum,
+      );
+      expect(checksum(effectiveActiveRouteMigrationSql)).toBe(
+        effectiveActiveRouteMigration.checksum,
+      );
+      expect(checksum(routeRevalidationPersistenceMigrationSql)).toBe(
+        routeRevalidationPersistenceMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -661,6 +703,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_purchase_verification_snapshots",
         "community_route_app_host_health",
         "community_route_ownership_evidence",
+        "community_route_revalidation_completion_attempts",
+        "community_route_revalidation_evidence_snapshots",
+        "community_route_revalidation_sessions",
+        "community_route_revalidation_start_reservations",
         "decision_records",
         "evidence_receipts",
         "home_feed_projection",
@@ -804,6 +850,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_purchase_settlement_snapshot_append_only",
         "community_purchase_verification_snapshot_append_only",
         "community_route_ownership_evidence_append_only",
+        "community_route_revalidation_snapshot_append_only",
         "decision_records_append_only",
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",

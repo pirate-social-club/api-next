@@ -1,4 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import type {
   NamespaceOwnershipCompletionAttemptReservation,
   NamespaceOwnershipProviderStartResult,
@@ -21,7 +22,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const namespacePersistenceTestCount = 21;
+const namespacePersistenceTestCount = 30;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete";
@@ -378,9 +379,10 @@ async function insertRouteEvidence(
        family, root_label, root_label_display, path_segment,
        requirement_hash, provider_id, provider_binding_hash,
        provider_configuration_version, provider_identity_digest,
-       evidence_digest, binding_generation, verified_at
+       evidence_digest, binding_generation, verified_at, expires_at
      ) VALUES ($1, $2, $3, 'hns', 'example_root', 'example_root', 'app.example_root',
-       $4, 'namespace-provider', $5, 'v1', $6, $7, 1, $8)`,
+       $4, 'namespace-provider', $5, 'v1', $6, $7, 1, $8,
+       (SELECT expires_at FROM namespace_ownership_evidence_snapshots WHERE evidence_ref = $1))`,
     [
       `evidence_${suffix}`,
       `ceremony_${suffix}`,
@@ -413,6 +415,253 @@ async function finalizeVerifiedSnapshot(client: Client, suffix: string): Promise
             updated_at = clock_timestamp()
       WHERE namespace_session_id = $2`,
     [terminalAt, `namespace_session_${suffix}`],
+  );
+  await client.query("COMMIT");
+}
+
+async function seedActiveRevalidationRoute(client: Client, suffix: string): Promise<void> {
+  await seed(client, suffix);
+  await insertSession(client, suffix);
+  await insertAttempt(client, suffix);
+  await finalizeVerifiedSnapshot(client, suffix);
+  await client.query("BEGIN");
+  await client.query(
+    `INSERT INTO communities (
+       community_id, display_name, status, created_by_user_id, canonical_route_binding_id,
+       route_authority_version, created_at, updated_at, route_slug
+     ) VALUES ($1, $2, 'active', $3, $4, 'route_v1',
+       clock_timestamp(), clock_timestamp(), NULL)`,
+    [`community_${suffix}`, `Community ${suffix}`, `actor_${suffix}`, `route_binding_${suffix}`],
+  );
+  await client.query(
+    `INSERT INTO community_canonical_route_bindings (
+       route_binding_id, community_id, family, root_label, root_label_display,
+       ownership_status, route_lifecycle_status, binding_generation,
+       verified_evidence_ref
+     ) VALUES ($1, $2, 'hns', 'example_root', 'example_root',
+       'verified', 'active', 1, $3)`,
+    [`route_binding_${suffix}`, `community_${suffix}`, `evidence_${suffix}`],
+  );
+  await client.query("COMMIT");
+}
+
+async function insertRevalidationSession(client: Client, suffix: string): Promise<void> {
+  const upstreamSessionRef = `revalidation_upstream_${suffix}`;
+  const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+  const startPresentation = {
+    kind: "embedded_sdk",
+    session_id: upstreamSessionRef,
+    protocol: "hns-txt-challenge",
+    version: "1",
+    payload: {
+      ownership_source: "owner_authoritative_dns_txt",
+      challenge_name: "_pirate.example_root",
+      challenge_value: `pirate-verification=${upstreamSessionRef}`,
+      expires_at: expiresAt,
+    },
+  };
+  await client.query("BEGIN");
+  await client.query(
+    `INSERT INTO community_route_revalidation_start_reservations (
+       route_revalidation_id, revalidation_session_id, community_id, route_binding_id,
+       principal_kind, principal_id, expected_binding_generation,
+       expected_verified_evidence_ref, requirement_hash, provider_id,
+       provider_binding_hash, provider_configuration_kind,
+       provider_configuration_reference, provider_configuration_version,
+       protocol_version, environment, family, root_label, root_label_display,
+       path_segment, start_request_hash, state, fence_token, lease_expires_at
+     ) VALUES ($1, $2, $3, $4, 'system', 'route-revalidation-scheduler', 1, $5,
+       $6, 'namespace-provider', $7, 'managed', 'namespace-config', 'v1',
+       'hns-txt-v1', 'test', 'hns', 'example_root', 'example_root',
+       'app.example_root', $8, 'acquired', 1, clock_timestamp() + interval '15 seconds')`,
+    [
+      `route_revalidation_${suffix}`,
+      `revalidation_session_${suffix}`,
+      `community_${suffix}`,
+      `route_binding_${suffix}`,
+      `evidence_${suffix}`,
+      SHA,
+      SHA_C,
+      SHA_B,
+    ],
+  );
+  await client.query(
+    `INSERT INTO community_route_revalidation_sessions (
+       revalidation_session_id, route_revalidation_id, start_fence_token,
+       community_id, route_binding_id, principal_kind, principal_id,
+       expected_binding_generation, expected_verified_evidence_ref,
+       requirement_hash, start_request_hash, provider_id, provider_binding_hash,
+       provider_configuration_kind, provider_configuration_reference,
+       provider_configuration_version, protocol_version, environment, family,
+       root_label, root_label_display, path_segment, upstream_session_ref,
+       start_presentation, status, started_at, expires_at
+     ) VALUES ($1, $2, 1, $3, $4, 'system', 'route-revalidation-scheduler',
+       1, $5, $6, $7, 'namespace-provider', $8, 'managed', 'namespace-config',
+       'v1', 'hns-txt-v1', 'test', 'hns', 'example_root', 'example_root',
+       'app.example_root', $9, $10::jsonb, 'pending', clock_timestamp(), $11)`,
+    [
+      `revalidation_session_${suffix}`,
+      `route_revalidation_${suffix}`,
+      `community_${suffix}`,
+      `route_binding_${suffix}`,
+      `evidence_${suffix}`,
+      SHA,
+      SHA_B,
+      SHA_C,
+      upstreamSessionRef,
+      JSON.stringify(startPresentation),
+      expiresAt,
+    ],
+  );
+  await client.query(
+    `UPDATE community_route_revalidation_start_reservations
+        SET state = 'finalized'
+      WHERE route_revalidation_id = $1`,
+    [`route_revalidation_${suffix}`],
+  );
+  await client.query("COMMIT");
+}
+
+async function insertRevalidationAttempt(client: Client, suffix: string): Promise<void> {
+  await client.query(
+    `INSERT INTO community_route_revalidation_completion_attempts (
+       route_revalidation_attempt_id, route_revalidation_id,
+       revalidation_session_id, route_binding_id, expected_binding_generation,
+       expected_verified_evidence_ref, attempt_number, idempotency_key,
+       completion_request_hash, evidence_ref, state, fence_token, lease_expires_at
+     ) VALUES ($1, $2, $3, $4, 1, $5, 1, $6, $7, $8, 'leased', 1,
+       clock_timestamp() + interval '15 seconds')`,
+    [
+      `revalidation_attempt_${suffix}`,
+      `route_revalidation_${suffix}`,
+      `revalidation_session_${suffix}`,
+      `route_binding_${suffix}`,
+      `evidence_${suffix}`,
+      `revalidation-key-${suffix}`,
+      SHA_C,
+      `revalidation_evidence_${suffix}`,
+    ],
+  );
+}
+
+async function finalizeRevalidationEvidence(
+  client: Client,
+  suffix: string,
+  options: { challengeValueOverride?: string; corruptRawResponse?: boolean } = {},
+): Promise<void> {
+  const observedAt = new Date(Date.now() - 60_000).toISOString();
+  const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+  const challengeValue =
+    options.challengeValueOverride ?? `pirate-verification=revalidation_upstream_${suffix}`;
+  const observation = {
+    status: "verified",
+    observation: {
+      ownership_source: "owner_authoritative_dns_txt",
+      challenge_name: "_pirate.example_root",
+      challenge_value: challengeValue,
+      root_exists: true,
+      root_control_verified: true,
+      expiry_horizon_sufficient: true,
+      chain_network: "hns-testnet",
+      chain_anchor_height: 10,
+      chain_anchor_block_hash: SHA_B,
+      chain_anchor_median_time: 100,
+      expiry_height: 20,
+      observed_at: observedAt,
+      expires_at: expiresAt,
+      provider_evidence_ref: `provider-revalidation-${suffix}`,
+    },
+  };
+  const rawResponse = Buffer.from(JSON.stringify(observation), "utf8");
+  const storedRawResponse = options.corruptRawResponse
+    ? Buffer.concat([rawResponse, Buffer.from(" ", "utf8")])
+    : rawResponse;
+  const challengeValueSha256 = createHash("sha256").update(challengeValue).digest("hex");
+  const observationSha256 = createHash("sha256").update(rawResponse).digest("hex");
+  await client.query("BEGIN");
+  await client.query(
+    `UPDATE community_canonical_route_bindings
+        SET binding_generation = 2, verified_evidence_ref = $1,
+            ownership_status = 'verified', route_lifecycle_status = 'active',
+            updated_at = clock_timestamp()
+      WHERE route_binding_id = $2`,
+    [`revalidation_evidence_${suffix}`, `route_binding_${suffix}`],
+  );
+  await client.query(
+    `UPDATE community_route_revalidation_completion_attempts
+        SET state = 'consumed', consumption_kind = 'verified', result_hash = $1,
+            terminal_at = clock_timestamp()
+      WHERE route_revalidation_attempt_id = $2`,
+    [SHA, `revalidation_attempt_${suffix}`],
+  );
+  await client.query(
+    `UPDATE community_route_revalidation_sessions
+        SET status = 'completed', terminal_at = clock_timestamp()
+      WHERE revalidation_session_id = $1`,
+    [`revalidation_session_${suffix}`],
+  );
+  await client.query(
+    `INSERT INTO community_route_revalidation_evidence_snapshots (
+       evidence_ref, route_revalidation_attempt_id, route_revalidation_id,
+       revalidation_session_id, community_id, route_binding_id, principal_kind,
+       principal_id, requirement_hash, expected_binding_generation,
+       binding_generation, expected_verified_evidence_ref, start_request_hash,
+       provider_id, provider_binding_hash, provider_configuration_kind,
+       provider_configuration_reference, provider_configuration_version,
+       protocol_version, environment, family, root_label, root_label_display,
+       path_segment, upstream_session_ref, fence_token, ownership_source,
+       challenge_name, challenge_value_sha256, root_exists, root_control_verified,
+       expiry_horizon_sufficient, chain_network, chain_anchor_height,
+       chain_anchor_block_hash, chain_anchor_median_time, expiry_height,
+       observed_at, expires_at, provider_evidence_ref, observation_sha256,
+       provider_identity_digest, evidence_digest, observation, raw_response_bytes
+     ) VALUES ($1, $2, $3, $4, $5, $6, 'system', 'route-revalidation-scheduler',
+       $7, 1, 2, $8, $9, 'namespace-provider', $10, 'managed',
+       'namespace-config', 'v1', 'hns-txt-v1', 'test', 'hns', 'example_root',
+       'example_root', 'app.example_root', $11, 1,
+       'owner_authoritative_dns_txt', '_pirate.example_root', $12,
+       TRUE, TRUE, TRUE, 'hns-testnet', 10, $13, 100, 20,
+       $14::timestamptz, $15::timestamptz, $16, $17, $18, $19, $20::jsonb, $21)`,
+    [
+      `revalidation_evidence_${suffix}`,
+      `revalidation_attempt_${suffix}`,
+      `route_revalidation_${suffix}`,
+      `revalidation_session_${suffix}`,
+      `community_${suffix}`,
+      `route_binding_${suffix}`,
+      SHA,
+      `evidence_${suffix}`,
+      SHA_B,
+      SHA_C,
+      `revalidation_upstream_${suffix}`,
+      challengeValueSha256,
+      SHA_B,
+      observedAt,
+      expiresAt,
+      `provider-revalidation-${suffix}`,
+      observationSha256,
+      SHA_B,
+      SHA,
+      JSON.stringify(observation),
+      storedRawResponse,
+    ],
+  );
+  await client.query(
+    `INSERT INTO community_route_ownership_evidence (
+       evidence_ref, origin, route_revalidation_attempt_id,
+       creation_ceremony_intent_id, verified_by_actor_id, family, root_label,
+       root_label_display, path_segment, requirement_hash, provider_id,
+       provider_binding_hash, provider_configuration_version,
+       provider_identity_digest, evidence_digest, evidence_receipt_id,
+       binding_generation, verified_at, expires_at
+     ) SELECT evidence_ref, 'route_revalidation', route_revalidation_attempt_id,
+       NULL, NULL, family, root_label, root_label_display, path_segment,
+       requirement_hash, provider_id, provider_binding_hash,
+       provider_configuration_version, provider_identity_digest, evidence_digest,
+       NULL, binding_generation, observed_at, expires_at
+     FROM community_route_revalidation_evidence_snapshots
+     WHERE route_revalidation_attempt_id = $1`,
+    [`revalidation_attempt_${suffix}`],
   );
   await client.query("COMMIT");
 }
@@ -2032,6 +2281,395 @@ suite("Postgres namespace ownership persistence foundation", () => {
     });
     completedTestCount += 1;
   }, 10_000);
+
+  test("persists one complete scheduler-owned route revalidation evidence chain", async () => {
+    await withSchema(async (client) => {
+      await seedActiveRevalidationRoute(client, "revalidation_valid");
+      await insertRevalidationSession(client, "revalidation_valid");
+      await insertRevalidationAttempt(client, "revalidation_valid");
+      await finalizeRevalidationEvidence(client, "revalidation_valid");
+      expect(
+        (
+          await client.query(
+            `SELECT
+               evidence.origin,
+               evidence.creation_ceremony_intent_id,
+               evidence.verified_by_actor_id,
+               evidence.route_revalidation_attempt_id,
+               evidence.binding_generation::int,
+               snapshot.principal_kind,
+               snapshot.principal_id,
+               encode(sha256(snapshot.raw_response_bytes), 'hex') =
+                 snapshot.observation_sha256 AS raw_hash_matches,
+               snapshot.observation #>> '{observation,provider_evidence_ref}'
+                 AS provider_evidence_ref,
+               binding.binding_generation::int AS live_generation,
+               binding.verified_evidence_ref
+             FROM community_route_ownership_evidence AS evidence
+             JOIN community_route_revalidation_evidence_snapshots AS snapshot
+               ON snapshot.evidence_ref = evidence.evidence_ref
+             JOIN community_canonical_route_bindings AS binding
+               ON binding.route_binding_id = snapshot.route_binding_id
+            WHERE evidence.evidence_ref = $1`,
+            ["revalidation_evidence_revalidation_valid"],
+          )
+        ).rows[0],
+      ).toEqual({
+        origin: "route_revalidation",
+        creation_ceremony_intent_id: null,
+        verified_by_actor_id: null,
+        route_revalidation_attempt_id: "revalidation_attempt_revalidation_valid",
+        binding_generation: 2,
+        principal_kind: "system",
+        principal_id: "route-revalidation-scheduler",
+        raw_hash_matches: true,
+        provider_evidence_ref: "provider-revalidation-revalidation_valid",
+        live_generation: 2,
+        verified_evidence_ref: "revalidation_evidence_revalidation_valid",
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects crossed evidence origins and substituted revalidation authority", async () => {
+    await withSchema(async (client) => {
+      await seedActiveRevalidationRoute(client, "revalidation_origin");
+      await insertRevalidationSession(client, "revalidation_origin");
+      await insertRevalidationAttempt(client, "revalidation_origin");
+      await failure(
+        client,
+        `INSERT INTO community_route_ownership_evidence (
+           evidence_ref, origin, creation_ceremony_intent_id,
+           route_revalidation_attempt_id, verified_by_actor_id, family,
+           root_label, root_label_display, path_segment, requirement_hash,
+           provider_id, provider_binding_hash, provider_configuration_version,
+           provider_identity_digest, evidence_digest, binding_generation,
+           verified_at, expires_at
+         ) VALUES ('crossed-origin', 'route_revalidation', $1, $2, $3, 'hns',
+           'example_root', 'example_root', 'app.example_root', $4,
+           'namespace-provider', $5, 'v1', $6, $7, 2,
+           clock_timestamp(), clock_timestamp() + interval '1 hour')`,
+        [
+          "ceremony_revalidation_origin",
+          "revalidation_attempt_revalidation_origin",
+          "actor_revalidation_origin",
+          SHA,
+          SHA_C,
+          SHA_B,
+          SHA_C,
+        ],
+      );
+      await failure(
+        client,
+        `UPDATE community_route_revalidation_sessions
+            SET provider_configuration_reference = 'substituted'
+          WHERE revalidation_session_id = $1`,
+        ["revalidation_session_revalidation_origin"],
+      );
+    });
+    completedTestCount += 1;
+  });
+
+  test("enforces reservation, session, attempt fences and append-only authority", async () => {
+    await withSchema(async (client) => {
+      await seedActiveRevalidationRoute(client, "revalidation_fence");
+      await insertRevalidationSession(client, "revalidation_fence");
+      await insertRevalidationAttempt(client, "revalidation_fence");
+      await failure(
+        client,
+        `UPDATE community_route_revalidation_start_reservations
+            SET principal_id = 'other-scheduler'
+          WHERE route_revalidation_id = $1`,
+        ["route_revalidation_revalidation_fence"],
+      );
+      await failure(
+        client,
+        `UPDATE community_route_revalidation_completion_attempts
+            SET fence_token = 2
+          WHERE route_revalidation_attempt_id = $1`,
+        ["revalidation_attempt_revalidation_fence"],
+      );
+      await failure(
+        client,
+        `INSERT INTO community_route_revalidation_completion_attempts (
+           route_revalidation_attempt_id, route_revalidation_id,
+           revalidation_session_id, route_binding_id,
+           expected_binding_generation, expected_verified_evidence_ref,
+           attempt_number, idempotency_key, completion_request_hash,
+           evidence_ref, state, fence_token, lease_expires_at
+         ) VALUES ('second-leased', $1, $2, $3, 1, $4, 2, 'second-key',
+           $5, 'second-evidence', 'leased', 1,
+           clock_timestamp() + interval '15 seconds')`,
+        [
+          "route_revalidation_revalidation_fence",
+          "revalidation_session_revalidation_fence",
+          "route_binding_revalidation_fence",
+          "evidence_revalidation_fence",
+          SHA,
+        ],
+      );
+    });
+    completedTestCount += 1;
+  });
+
+  test("consumes a negative revalidation without evidence and admits only fresh-generation recovery", async () => {
+    await withSchema(async (client) => {
+      await seedActiveRevalidationRoute(client, "revalidation_negative");
+      await insertRevalidationSession(client, "revalidation_negative");
+      await insertRevalidationAttempt(client, "revalidation_negative");
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE community_canonical_route_bindings
+            SET binding_generation = 2, verified_evidence_ref = NULL,
+                ownership_status = 'revoked', route_lifecycle_status = 'suspended',
+                updated_at = clock_timestamp()
+          WHERE route_binding_id = $1`,
+        ["route_binding_revalidation_negative"],
+      );
+      await client.query(
+        `UPDATE community_route_revalidation_completion_attempts
+            SET state = 'consumed', consumption_kind = 'missing_root',
+                result_hash = $1, terminal_at = clock_timestamp()
+          WHERE route_revalidation_attempt_id = $2`,
+        [SHA, "revalidation_attempt_revalidation_negative"],
+      );
+      await client.query(
+        `UPDATE community_route_revalidation_sessions
+            SET status = 'completed', terminal_at = clock_timestamp()
+          WHERE revalidation_session_id = $1`,
+        ["revalidation_session_revalidation_negative"],
+      );
+      await client.query("COMMIT");
+      expect(
+        (
+          await client.query(
+            `SELECT
+               (SELECT count(*)::int
+                  FROM community_route_revalidation_evidence_snapshots) AS snapshots,
+               (SELECT count(*)::int
+                  FROM community_route_ownership_evidence
+                 WHERE origin = 'route_revalidation') AS route_evidence,
+               (SELECT consumption_kind
+                  FROM community_route_revalidation_completion_attempts
+                 WHERE route_revalidation_attempt_id = $1) AS consumption_kind`,
+            ["revalidation_attempt_revalidation_negative"],
+          )
+        ).rows[0],
+      ).toEqual({ snapshots: 0, route_evidence: 0, consumption_kind: "missing_root" });
+      await failure(
+        client,
+        `UPDATE community_route_revalidation_completion_attempts
+            SET result_hash = $1
+          WHERE route_revalidation_attempt_id = $2`,
+        [SHA_B, "revalidation_attempt_revalidation_negative"],
+      );
+      await client.query(
+        `INSERT INTO community_route_revalidation_start_reservations (
+           route_revalidation_id, revalidation_session_id, community_id,
+           route_binding_id, principal_kind, principal_id,
+           expected_binding_generation, expected_verified_evidence_ref,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_kind, provider_configuration_reference,
+           provider_configuration_version, protocol_version, environment,
+           family, root_label, root_label_display, path_segment,
+           start_request_hash, state, fence_token, lease_expires_at
+         ) VALUES ($1, $2, $3, $4, 'system', 'route-revalidation-scheduler',
+           2, NULL, $5, 'namespace-provider', $6, 'managed', 'namespace-config',
+           'v1', 'hns-txt-v1', 'test', 'hns', 'example_root', 'example_root',
+           'app.example_root', $7, 'acquired', 1,
+           clock_timestamp() + interval '15 seconds')`,
+        [
+          "route_revalidation_negative_recovery",
+          "revalidation_session_negative_recovery",
+          "community_revalidation_negative",
+          "route_binding_revalidation_negative",
+          SHA_B,
+          SHA_C,
+          SHA,
+        ],
+      );
+      expect(
+        (
+          await client.query(
+            `SELECT expected_binding_generation::int, expected_verified_evidence_ref
+               FROM community_route_revalidation_start_reservations
+              WHERE route_revalidation_id = $1`,
+            ["route_revalidation_negative_recovery"],
+          )
+        ).rows[0],
+      ).toEqual({ expected_binding_generation: 2, expected_verified_evidence_ref: null });
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects a fabricated revalidation snapshot and rolls back the authority transition", async () => {
+    await withSchema(async (client) => {
+      await seedActiveRevalidationRoute(client, "revalidation_fabricated");
+      await insertRevalidationSession(client, "revalidation_fabricated");
+      await insertRevalidationAttempt(client, "revalidation_fabricated");
+      await expect(
+        finalizeRevalidationEvidence(client, "revalidation_fabricated", {
+          corruptRawResponse: true,
+        }),
+      ).rejects.toThrow("route revalidation snapshot observation is incomplete or inconsistent");
+      await client.query("ROLLBACK");
+      expect(
+        (
+          await client.query(
+            `SELECT
+               binding.binding_generation::int,
+               binding.verified_evidence_ref,
+               session.status AS session_status,
+               attempt.state AS attempt_state,
+               (SELECT count(*)::int
+                  FROM community_route_revalidation_evidence_snapshots) AS snapshots
+             FROM community_canonical_route_bindings AS binding
+             JOIN community_route_revalidation_sessions AS session
+               ON session.route_binding_id = binding.route_binding_id
+             JOIN community_route_revalidation_completion_attempts AS attempt
+               ON attempt.revalidation_session_id = session.revalidation_session_id
+            WHERE binding.route_binding_id = $1`,
+            ["route_binding_revalidation_fabricated"],
+          )
+        ).rows[0],
+      ).toEqual({
+        binding_generation: 1,
+        verified_evidence_ref: "evidence_revalidation_fabricated",
+        session_status: "pending",
+        attempt_state: "leased",
+        snapshots: 0,
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects a poll challenge that does not match the persisted start presentation", async () => {
+    await withSchema(async (client) => {
+      await seedActiveRevalidationRoute(client, "revalidation_challenge_mismatch");
+      await insertRevalidationSession(client, "revalidation_challenge_mismatch");
+      await insertRevalidationAttempt(client, "revalidation_challenge_mismatch");
+      await expect(
+        finalizeRevalidationEvidence(client, "revalidation_challenge_mismatch", {
+          challengeValueOverride: "pirate-verification=substituted-upstream-session",
+        }),
+      ).rejects.toThrow("route revalidation snapshot observation is incomplete or inconsistent");
+      await client.query("ROLLBACK");
+      expect(
+        (
+          await client.query(
+            `SELECT binding.binding_generation::int,
+                    session.status AS session_status,
+                    attempt.state AS attempt_state,
+                    (SELECT count(*)::int
+                       FROM community_route_revalidation_evidence_snapshots) AS snapshots
+               FROM community_canonical_route_bindings AS binding
+               JOIN community_route_revalidation_sessions AS session
+                 ON session.route_binding_id = binding.route_binding_id
+               JOIN community_route_revalidation_completion_attempts AS attempt
+                 ON attempt.revalidation_session_id = session.revalidation_session_id
+              WHERE binding.route_binding_id = $1`,
+            ["route_binding_revalidation_challenge_mismatch"],
+          )
+        ).rows[0],
+      ).toEqual({
+        binding_generation: 1,
+        session_status: "pending",
+        attempt_state: "leased",
+        snapshots: 0,
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects a terminal session whose status contradicts its consumed outcome", async () => {
+    await withSchema(async (client) => {
+      await seedActiveRevalidationRoute(client, "revalidation_outcome_mismatch");
+      await insertRevalidationSession(client, "revalidation_outcome_mismatch");
+      await insertRevalidationAttempt(client, "revalidation_outcome_mismatch");
+      await client.query("BEGIN");
+      await client.query(
+        `UPDATE community_route_revalidation_completion_attempts
+            SET state = 'consumed', consumption_kind = 'missing_root',
+                result_hash = $1, terminal_at = clock_timestamp()
+          WHERE route_revalidation_attempt_id = $2`,
+        [SHA, "revalidation_attempt_revalidation_outcome_mismatch"],
+      );
+      await client.query(
+        `UPDATE community_route_revalidation_sessions
+            SET status = 'failed', terminal_at = clock_timestamp()
+          WHERE revalidation_session_id = $1`,
+        ["revalidation_session_revalidation_outcome_mismatch"],
+      );
+      await expect(client.query("COMMIT")).rejects.toThrow(
+        "route revalidation session status contradicts its consumed outcome",
+      );
+      await client.query("ROLLBACK");
+      expect(
+        (
+          await client.query(
+            `SELECT session.status AS session_status, attempt.state AS attempt_state
+               FROM community_route_revalidation_sessions AS session
+               JOIN community_route_revalidation_completion_attempts AS attempt
+                 ON attempt.revalidation_session_id = session.revalidation_session_id
+              WHERE session.revalidation_session_id = $1`,
+            ["revalidation_session_revalidation_outcome_mismatch"],
+          )
+        ).rows[0],
+      ).toEqual({ session_status: "pending", attempt_state: "leased" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("reacquires an expired start reservation with the next fence", async () => {
+    await withSchema(async (client) => {
+      await seedActiveRevalidationRoute(client, "revalidation_start_reacquire");
+      await client.query(
+        `INSERT INTO community_route_revalidation_start_reservations (
+           route_revalidation_id, revalidation_session_id, community_id,
+           route_binding_id, principal_kind, principal_id,
+           expected_binding_generation, expected_verified_evidence_ref,
+           requirement_hash, provider_id, provider_binding_hash,
+           provider_configuration_kind, provider_configuration_reference,
+           provider_configuration_version, protocol_version, environment,
+           family, root_label, root_label_display, path_segment,
+           start_request_hash, state, fence_token, lease_expires_at
+         ) VALUES ($1, $2, $3, $4, 'system', 'route-revalidation-scheduler',
+           1, $5, $6, 'namespace-provider', $7, 'managed', 'namespace-config',
+           'v1', 'hns-txt-v1', 'test', 'hns', 'example_root', 'example_root',
+           'app.example_root', $8, 'acquired', 1,
+           clock_timestamp() + interval '100 milliseconds')`,
+        [
+          "route_revalidation_start_reacquire",
+          "revalidation_session_start_reacquire",
+          "community_revalidation_start_reacquire",
+          "route_binding_revalidation_start_reacquire",
+          "evidence_revalidation_start_reacquire",
+          SHA,
+          SHA_C,
+          SHA_B,
+        ],
+      );
+      await client.query("SELECT pg_sleep(0.15)");
+      await client.query(
+        `UPDATE community_route_revalidation_start_reservations
+            SET state = 'acquired', fence_token = 2,
+                lease_expires_at = clock_timestamp() + interval '15 seconds'
+          WHERE route_revalidation_id = $1`,
+        ["route_revalidation_start_reacquire"],
+      );
+      expect(
+        (
+          await client.query(
+            `SELECT state, fence_token::int
+               FROM community_route_revalidation_start_reservations
+              WHERE route_revalidation_id = $1`,
+            ["route_revalidation_start_reacquire"],
+          )
+        ).rows[0],
+      ).toEqual({ state: "acquired", fence_token: 2 });
+    });
+    completedTestCount += 1;
+  });
 
   afterAll(async () => {
     if (connectionString !== undefined && completedTestCount === namespacePersistenceTestCount) {
