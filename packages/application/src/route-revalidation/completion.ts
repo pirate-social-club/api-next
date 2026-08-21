@@ -1,5 +1,6 @@
 import { Sha256Hex } from "@pirate/domain/verification";
 import { Data, Effect, Option, Schema } from "effect";
+import { decodeStrictHnsJsonBytes } from "../namespace-ownership/hns-evidence.ts";
 import {
   type HnsRouteRevalidationEvidenceEnvelopeV1,
   type HnsRouteRevalidationResultHashInput,
@@ -593,7 +594,7 @@ function buildVerifiedEnvelope(
       const expiresAt = Date.parse(observation.expires_at);
       let rawDecoded: unknown;
       try {
-        rawDecoded = JSON.parse(new TextDecoder().decode(provider.raw_response_bytes)) as unknown;
+        rawDecoded = decodeStrictHnsJsonBytes(provider.raw_response_bytes, 1_048_576);
       } catch {
         throw new TypeError("provider response bytes are not JSON");
       }
