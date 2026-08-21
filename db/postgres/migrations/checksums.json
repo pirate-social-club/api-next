@@ -37,6 +37,6 @@
     "0034_effective_active_route.sql": "156bb4b27a1cdd22fe0d8dc7b679334b2060b27623644828490c26799862c49d",
     "0035_route_revalidation_persistence.sql": "a6a076e6b6edb734923145f1d3b4ab22c6cfcd956aba9075e0aaf9814e5d67de",
     "0036_route_revalidation_completion_outcome_guard.sql": "b4af7d73fe2cf540d10b44cd2f063f2f7f0168fee380aacb79333d5659941d4b",
-    "0037_text_submission_response_snapshot.sql": "61eb9ab8475a3aa3ef9c062d31207224edcbee4ef8c0f9cf6580ef3886996890"
+    "0037_text_submission_response_snapshot.sql": "60b368c2bb274dd32cfeff268c8084d47d61b76b0cae83f31d98b3645e21a101"
   }
 }

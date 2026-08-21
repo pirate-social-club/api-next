@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 108183)
-Total output lines: 10272
-
 -- api-next v1 product slice.
 -- PlanetScale Postgres is the only runtime relational store. All identifiers
 -- API identifiers remain TEXT so the current string-ID contracts need no
@@ -3949,6 +3946,7 @@ $$;
 CREATE TABLE text_content_submissions (
   community_id TEXT NOT NULL,
   submission_id TEXT PRIMARY KEY,
+  operation_id TEXT NOT NULL,
   actor_user_id TEXT NOT NULL,
   surface TEXT NOT NULL CHECK (surface IN ('text_post', 'comment', 'reply')),
   idempotency_key TEXT NOT NULL,
@@ -3976,8 +3974,6 @@ CREATE TABLE text_content_submissions (
   CONSTRAINT text_content_submissions_policy_fk
     FOREIGN KEY (policy_revision_id, policy_hash)
     REFERENCES text_moderation_policy_revisions (policy_revision_id, policy_hash),
-  CONSTRAINT text_content_submissions_evidence_fk
-    FOREIGN KEY (evidence_ref) REFERENCES text_moderation_evidence (evidence_ref),
   CONSTRAINT text_content_submissions_post_fk
     FOREIGN KEY (community_id, published_post_id)
     REFERENCES posts (community_id, post_id),
@@ -3987,6 +3983,8 @@ CREATE TABLE text_content_submissions (
   CONSTRAINT text_content_submissions_identifiers_not_blank CHECK (
     btrim(submission_id) <> ''
     AND submission_id = btrim(submission_id)
+    AND btrim(operation_id) <> ''
+    AND operation_id = btrim(operation_id)
     AND btrim(actor_user_id) <> ''
     AND actor_user_id = btrim(actor_user_id)
     AND btrim(idempotency_key) <> ''
@@ -4048,6 +4046,7 @@ CREATE TABLE text_content_submissions (
   ),
   CONSTRAINT text_content_submissions_time_order CHECK (updated_at >= created_at),
   CONSTRAINT text_content_submissions_community_id_unique UNIQUE (community_id, submission_id),
+  CONSTRAINT text_content_submissions_operation_id_unique UNIQUE (operation_id),
   CONSTRAINT text_content_submissions_actor_idempotency_unique
     UNIQUE (community_id, actor_user_id, surface, idempotency_key)
 );
@@ -4226,6 +4225,7 @@ BEGIN
   IF ROW(
     NEW.community_id,
     NEW.submission_id,
+    NEW.operation_id,
     NEW.actor_user_id,
     NEW.surface,
     NEW.idempotency_key,
@@ -4240,6 +4240,7 @@ BEGIN
   ) IS DISTINCT FROM ROW(
     OLD.community_id,
     OLD.submission_id,
+    OLD.operation_id,
     OLD.actor_user_id,
     OLD.surface,
     OLD.idempotency_key,
@@ -5010,7 +5011,819 @@ CREATE TABLE community_canonical_route_bindings (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   CONSTRAINT community_canonical_route_bindings_id_not_blank CHECK (
     btrim(route_binding_id) <> ''
-    AND rou…8183 tokens truncated…ty_creation_intents%ROWTYPE;
+    AND route_binding_id = btrim(route_binding_id)
+  ),
+  CONSTRAINT community_canonical_route_bindings_root_shape CHECK (
+    is_community_route_root_label(family, root_label) IS TRUE
+    AND is_community_route_root_label_display(root_label_display) IS TRUE
+  ),
+  CONSTRAINT community_canonical_route_bindings_active_shape CHECK (
+    route_lifecycle_status <> 'active'
+    OR (ownership_status = 'verified' AND verified_evidence_ref IS NOT NULL)
+  ),
+  CONSTRAINT community_canonical_route_bindings_time_order
+    CHECK (updated_at >= created_at),
+  CONSTRAINT community_canonical_route_bindings_id_family_unique
+    UNIQUE (route_binding_id, family),
+  CONSTRAINT community_canonical_route_bindings_community_id_unique
+    UNIQUE (community_id, route_binding_id),
+  CONSTRAINT community_canonical_route_bindings_path_unique UNIQUE (path_segment)
+);
+
+ALTER TABLE communities
+  ADD COLUMN canonical_route_binding_id TEXT,
+  ADD CONSTRAINT communities_canonical_route_binding_fk
+  FOREIGN KEY (community_id, canonical_route_binding_id)
+  REFERENCES community_canonical_route_bindings (community_id, route_binding_id)
+  DEFERRABLE INITIALLY DEFERRED;
+
+CREATE TABLE community_route_app_host_health (
+  route_binding_id TEXT PRIMARY KEY,
+  family TEXT NOT NULL DEFAULT 'hns' CHECK (family = 'hns'),
+  health_status TEXT NOT NULL
+    CHECK (health_status IN ('unconfigured', 'pending', 'healthy', 'unhealthy', 'stale')),
+  health_generation BIGINT NOT NULL DEFAULT 0 CHECK (health_generation >= 0),
+  observed_at TIMESTAMPTZ,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT community_route_app_host_health_route_fk
+    FOREIGN KEY (route_binding_id, family)
+    REFERENCES community_canonical_route_bindings (route_binding_id, family)
+);
+
+CREATE OR REPLACE FUNCTION guard_community_creation_requirement_state_update()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  binding_changed BOOLEAN;
+BEGIN
+  IF ROW(NEW.intent_id, NEW.actor_id, NEW.requirement_kind, NEW.created_at)
+    IS DISTINCT FROM
+    ROW(OLD.intent_id, OLD.actor_id, OLD.requirement_kind, OLD.created_at) THEN
+    RAISE EXCEPTION 'community creation requirement identity is immutable';
+  END IF;
+
+  binding_changed := ROW(
+    NEW.requirement_hash,
+    NEW.provider_id,
+    NEW.provider_binding_hash,
+    NEW.provider_configuration_kind,
+    NEW.provider_configuration_ref,
+    NEW.provider_configuration_version,
+    NEW.route_family,
+    NEW.route_root_label,
+    NEW.route_root_label_display,
+    NEW.route_path_segment
+  ) IS DISTINCT FROM ROW(
+    OLD.requirement_hash,
+    OLD.provider_id,
+    OLD.provider_binding_hash,
+    OLD.provider_configuration_kind,
+    OLD.provider_configuration_ref,
+    OLD.provider_configuration_version,
+    OLD.route_family,
+    OLD.route_root_label,
+    OLD.route_root_label_display,
+    OLD.route_path_segment
+  );
+
+  IF binding_changed THEN
+    IF NEW.status <> 'unmet'
+      OR NEW.generation <> OLD.generation
+      OR NEW.current_ceremony_intent_id IS NOT NULL
+      OR NEW.satisfied_at IS NOT NULL THEN
+      RAISE EXCEPTION 'changed requirement binding must invalidate current evidence';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF NOT (
+    (
+      OLD.status IN ('unmet', 'failed', 'expired')
+      AND NEW.status = 'pending'
+      AND NEW.generation = OLD.generation + 1
+      AND NEW.current_ceremony_intent_id IS NOT NULL
+      AND NEW.satisfied_at IS NULL
+    )
+    OR (
+      OLD.status = 'pending'
+      AND NEW.status IN ('satisfied', 'failed', 'expired')
+      AND NEW.generation = OLD.generation
+      AND NEW.current_ceremony_intent_id = OLD.current_ceremony_intent_id
+    )
+  ) THEN
+    RAISE EXCEPTION 'community creation requirement transition is not allowed: % -> %',
+      OLD.status,
+      NEW.status;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER community_creation_requirement_state_update_guard
+BEFORE UPDATE ON community_creation_requirement_states
+FOR EACH ROW EXECUTE FUNCTION guard_community_creation_requirement_state_update();
+
+CREATE TRIGGER community_creation_requirement_state_delete_guard
+BEFORE DELETE ON community_creation_requirement_states
+FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
+
+CREATE OR REPLACE FUNCTION validate_community_creation_ceremony_attempt_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  state_record community_creation_requirement_states%ROWTYPE;
+BEGIN
+  SELECT * INTO state_record
+    FROM community_creation_requirement_states
+   WHERE intent_id = NEW.intent_id
+     AND requirement_kind = NEW.requirement_kind
+   FOR UPDATE;
+
+  IF NOT FOUND
+    OR state_record.actor_id <> NEW.actor_id
+    OR state_record.status NOT IN ('unmet', 'failed', 'expired')
+    OR NEW.generation <> state_record.generation + 1
+    OR NEW.requirement_hash <> state_record.requirement_hash
+    OR NEW.provider_id <> state_record.provider_id
+    OR NEW.provider_binding_hash <> state_record.provider_binding_hash
+    OR NEW.provider_configuration_kind <> state_record.provider_configuration_kind
+    OR NEW.provider_configuration_ref <> state_record.provider_configuration_ref
+    OR NEW.provider_configuration_version <> state_record.provider_configuration_version
+    OR NEW.route_family IS DISTINCT FROM state_record.route_family
+    OR NEW.route_root_label IS DISTINCT FROM state_record.route_root_label
+    OR NEW.route_root_label_display IS DISTINCT FROM state_record.route_root_label_display
+    OR NEW.route_path_segment IS DISTINCT FROM state_record.route_path_segment THEN
+    RAISE EXCEPTION 'ceremony reservation does not match the current requirement binding';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER community_creation_ceremony_attempt_insert_guard
+BEFORE INSERT ON community_creation_ceremony_attempts
+FOR EACH ROW EXECUTE FUNCTION validate_community_creation_ceremony_attempt_insert();
+
+CREATE TRIGGER community_creation_ceremony_attempt_append_only
+BEFORE UPDATE OR DELETE ON community_creation_ceremony_attempts
+FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
+
+CREATE OR REPLACE FUNCTION validate_community_creation_ceremony_result_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  attempt_record community_creation_ceremony_attempts%ROWTYPE;
+  session_record proof_sessions%ROWTYPE;
+  receipt_record evidence_receipts%ROWTYPE;
+BEGIN
+  SELECT * INTO attempt_record
+    FROM community_creation_ceremony_attempts
+   WHERE ceremony_intent_id = NEW.ceremony_intent_id
+   FOR SHARE;
+
+  IF NOT FOUND
+    OR NEW.actor_id <> attempt_record.actor_id
+    OR NEW.intent_id <> attempt_record.intent_id
+    OR NEW.requirement_kind <> attempt_record.requirement_kind
+    OR NEW.generation <> attempt_record.generation
+    OR NEW.requirement_hash <> attempt_record.requirement_hash
+    OR NEW.provider_id <> attempt_record.provider_id
+    OR NEW.provider_binding_hash <> attempt_record.provider_binding_hash
+    OR NEW.provider_configuration_version <> attempt_record.provider_configuration_version THEN
+    RAISE EXCEPTION 'ceremony result does not match its immutable attempt';
+  END IF;
+
+  IF NEW.requirement_kind = 'human_identity'
+    AND NEW.outcome_status = 'satisfied'
+    AND NEW.proof_session_id IS NULL THEN
+    RAISE EXCEPTION 'satisfied human ceremony requires its proof session';
+  END IF;
+
+  IF NEW.proof_session_id IS NOT NULL THEN
+    SELECT * INTO session_record
+      FROM proof_sessions
+     WHERE proof_session_id = NEW.proof_session_id;
+    IF NOT FOUND
+      OR session_record.actor_id <> NEW.actor_id
+      OR session_record.creation_ceremony_intent_id <> NEW.ceremony_intent_id
+      OR session_record.provider_id <> NEW.provider_id
+      OR session_record.provider_configuration_kind <>
+        attempt_record.provider_configuration_kind
+      OR session_record.provider_configuration_ref <> attempt_record.provider_configuration_ref
+      OR session_record.provider_configuration_version <>
+        attempt_record.provider_configuration_version THEN
+      RAISE EXCEPTION 'ceremony result proof session does not match its attempt';
+    END IF;
+  END IF;
+
+  IF NEW.evidence_receipt_id IS NOT NULL THEN
+    SELECT * INTO receipt_record
+      FROM evidence_receipts
+     WHERE evidence_receipt_id = NEW.evidence_receipt_id;
+    IF NOT FOUND
+      OR NEW.proof_session_id IS NULL
+      OR receipt_record.proof_session_id <> NEW.proof_session_id
+      OR receipt_record.user_id <> NEW.actor_id
+      OR receipt_record.provider_id <> NEW.provider_id
+      OR receipt_record.provider_configuration_kind <>
+        attempt_record.provider_configuration_kind
+      OR receipt_record.provider_configuration_ref <>
+        attempt_record.provider_configuration_ref
+      OR receipt_record.provider_configuration_version <>
+        attempt_record.provider_configuration_version
+      OR receipt_record.evidence_hash <> NEW.evidence_digest THEN
+      RAISE EXCEPTION 'ceremony result evidence receipt does not match its attempt';
+    END IF;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER community_creation_ceremony_result_insert_guard
+BEFORE INSERT ON community_creation_ceremony_results
+FOR EACH ROW EXECUTE FUNCTION validate_community_creation_ceremony_result_insert();
+
+CREATE TRIGGER community_creation_ceremony_result_append_only
+BEFORE UPDATE OR DELETE ON community_creation_ceremony_results
+FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
+
+CREATE OR REPLACE FUNCTION validate_community_route_ownership_evidence_insert()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  attempt_record community_creation_ceremony_attempts%ROWTYPE;
+  result_record community_creation_ceremony_results%ROWTYPE;
+  state_record community_creation_requirement_states%ROWTYPE;
+BEGIN
+  SELECT * INTO attempt_record
+    FROM community_creation_ceremony_attempts
+   WHERE ceremony_intent_id = NEW.creation_ceremony_intent_id;
+  SELECT * INTO result_record
+    FROM community_creation_ceremony_results
+   WHERE ceremony_intent_id = NEW.creation_ceremony_intent_id;
+  SELECT * INTO state_record
+    FROM community_creation_requirement_states
+   WHERE intent_id = attempt_record.intent_id
+     AND requirement_kind = attempt_record.requirement_kind
+   FOR SHARE;
+
+  IF attempt_record.ceremony_intent_id IS NULL
+    OR result_record.ceremony_intent_id IS NULL
+    OR state_record.intent_id IS NULL
+    OR attempt_record.requirement_kind <> 'namespace_ownership'
+    OR result_record.outcome_status <> 'satisfied'
+    OR state_record.status <> 'satisfied'
+    OR state_record.generation <> attempt_record.generation
+    OR state_record.current_ceremony_intent_id <> NEW.creation_ceremony_intent_id
+    OR NEW.verified_by_actor_id <> attempt_record.actor_id
+    OR NEW.family <> attempt_record.route_family
+    OR NEW.root_label <> attempt_record.route_root_label
+    OR NEW.root_label_display <> attempt_record.route_root_label_display
+    OR NEW.path_segment <> attempt_record.route_path_segment
+    OR NEW.requirement_hash <> attempt_record.requirement_hash
+    OR NEW.provider_id <> attempt_record.provider_id
+    OR NEW.provider_binding_hash <> attempt_record.provider_binding_hash
+    OR NEW.provider_configuration_version <> attempt_record.provider_configuration_version
+    OR NEW.provider_identity_digest <> result_record.provider_identity_digest
+    OR NEW.evidence_ref <> result_record.evidence_ref
+    OR NEW.evidence_digest <> result_record.evidence_digest
+    OR NEW.evidence_receipt_id IS DISTINCT FROM result_record.evidence_receipt_id
+    OR NEW.verified_at <> result_record.satisfied_at THEN
+    RAISE EXCEPTION 'route ownership evidence does not match its creation ceremony';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER community_route_ownership_evidence_insert_guard
+BEFORE INSERT ON community_route_ownership_evidence
+FOR EACH ROW EXECUTE FUNCTION validate_community_route_ownership_evidence_insert();
+
+CREATE TRIGGER community_route_ownership_evidence_append_only
+BEFORE UPDATE OR DELETE ON community_route_ownership_evidence
+FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
+
+CREATE OR REPLACE FUNCTION validate_community_creation_requirement_result()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  state_record community_creation_requirement_states%ROWTYPE;
+  result_record community_creation_ceremony_results%ROWTYPE;
+  ceremony_id TEXT;
+BEGIN
+  IF TG_TABLE_NAME = 'community_creation_requirement_states' THEN
+    IF NEW.current_ceremony_intent_id IS NULL THEN
+      RETURN NULL;
+    END IF;
+    ceremony_id := NEW.current_ceremony_intent_id;
+  ELSE
+    ceremony_id := NEW.ceremony_intent_id;
+  END IF;
+
+  SELECT * INTO state_record
+    FROM community_creation_requirement_states
+   WHERE current_ceremony_intent_id = ceremony_id;
+
+  SELECT * INTO result_record
+    FROM community_creation_ceremony_results
+   WHERE ceremony_intent_id = ceremony_id;
+
+  IF NOT FOUND THEN
+    IF TG_TABLE_NAME = 'community_creation_ceremony_results' THEN
+      RAISE EXCEPTION 'ceremony result does not match current requirement state';
+    END IF;
+    RETURN NULL;
+  END IF;
+
+  IF state_record.status IN ('satisfied', 'failed', 'expired') THEN
+    IF result_record.ceremony_intent_id IS NULL
+      OR result_record.outcome_status <> state_record.status
+      OR result_record.actor_id <> state_record.actor_id
+      OR result_record.intent_id <> state_record.intent_id
+      OR result_record.requirement_kind <> state_record.requirement_kind
+      OR result_record.generation <> state_record.generation
+      OR result_record.requirement_hash <> state_record.requirement_hash
+      OR result_record.provider_id <> state_record.provider_id
+      OR result_record.provider_binding_hash <> state_record.provider_binding_hash
+      OR result_record.provider_configuration_version <>
+        state_record.provider_configuration_version
+      OR result_record.satisfied_at IS DISTINCT FROM state_record.satisfied_at THEN
+      RAISE EXCEPTION 'ceremony result does not match terminal requirement state';
+    END IF;
+  ELSIF result_record.ceremony_intent_id IS NOT NULL THEN
+    RAISE EXCEPTION 'nonterminal requirement cannot have a terminal ceremony result';
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER community_creation_requirement_result_state_guard
+AFTER INSERT OR UPDATE ON community_creation_requirement_states
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION validate_community_creation_requirement_result();
+
+CREATE CONSTRAINT TRIGGER community_creation_ceremony_result_state_guard
+AFTER INSERT ON community_creation_ceremony_results
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION validate_community_creation_requirement_result();
+
+CREATE OR REPLACE FUNCTION guard_community_canonical_route_binding_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  authority_changed BOOLEAN;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'community canonical route binding is immutable';
+  END IF;
+
+  IF ROW(
+    NEW.route_binding_id,
+    NEW.community_id,
+    NEW.family,
+    NEW.root_label,
+    NEW.root_label_display,
+    NEW.created_at
+  )
+    IS DISTINCT FROM
+    ROW(
+      OLD.route_binding_id,
+      OLD.community_id,
+      OLD.family,
+      OLD.root_label,
+      OLD.root_label_display,
+      OLD.created_at
+    ) THEN
+    RAISE EXCEPTION 'community canonical route identity is immutable';
+  END IF;
+
+  authority_changed := ROW(
+    NEW.ownership_status,
+    NEW.route_lifecycle_status,
+    NEW.verified_evidence_ref
+  ) IS DISTINCT FROM ROW(
+    OLD.ownership_status,
+    OLD.route_lifecycle_status,
+    OLD.verified_evidence_ref
+  );
+
+  IF authority_changed AND NEW.binding_generation <> OLD.binding_generation + 1 THEN
+    RAISE EXCEPTION 'community canonical route generation must advance exactly once';
+  END IF;
+  IF NOT authority_changed AND NEW.binding_generation <> OLD.binding_generation THEN
+    RAISE EXCEPTION 'community canonical route generation cannot advance without authority change';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER community_canonical_route_binding_update_guard
+BEFORE UPDATE ON community_canonical_route_bindings
+FOR EACH ROW EXECUTE FUNCTION guard_community_canonical_route_binding_change();
+
+CREATE TRIGGER community_canonical_route_binding_delete_guard
+BEFORE DELETE ON community_canonical_route_bindings
+FOR EACH ROW EXECUTE FUNCTION guard_community_canonical_route_binding_change();
+
+CREATE OR REPLACE FUNCTION guard_community_canonical_route_reference()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF OLD.canonical_route_binding_id IS NOT NULL
+    AND NEW.canonical_route_binding_id IS DISTINCT FROM OLD.canonical_route_binding_id THEN
+    RAISE EXCEPTION 'community canonical route cannot be rebound or cleared';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER communities_canonical_route_reference_guard
+BEFORE UPDATE OF canonical_route_binding_id ON communities
+FOR EACH ROW EXECUTE FUNCTION guard_community_canonical_route_reference();
+
+CREATE OR REPLACE FUNCTION validate_community_canonical_route_reference()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  binding_record community_canonical_route_bindings%ROWTYPE;
+  evidence_record community_route_ownership_evidence%ROWTYPE;
+  community_binding_id TEXT;
+  binding_id TEXT;
+BEGIN
+  IF TG_TABLE_NAME = 'communities' THEN
+    binding_id := NEW.canonical_route_binding_id;
+    IF binding_id IS NULL THEN
+      RETURN NULL;
+    END IF;
+  ELSE
+    binding_id := NEW.route_binding_id;
+  END IF;
+
+  SELECT * INTO binding_record
+    FROM community_canonical_route_bindings
+   WHERE route_binding_id = binding_id;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'community canonical route binding is missing';
+  END IF;
+
+  SELECT canonical_route_binding_id INTO community_binding_id
+    FROM communities
+   WHERE community_id = binding_record.community_id;
+  IF community_binding_id IS DISTINCT FROM binding_record.route_binding_id THEN
+    RAISE EXCEPTION 'community canonical route reference is not reciprocal';
+  END IF;
+
+  IF binding_record.route_lifecycle_status = 'active' THEN
+    SELECT * INTO evidence_record
+      FROM community_route_ownership_evidence
+     WHERE evidence_ref = binding_record.verified_evidence_ref;
+    IF NOT FOUND
+      OR binding_record.ownership_status <> 'verified'
+      OR evidence_record.family <> binding_record.family
+      OR evidence_record.root_label <> binding_record.root_label
+      OR evidence_record.root_label_display <> binding_record.root_label_display
+      OR evidence_record.path_segment <> binding_record.path_segment
+      OR evidence_record.binding_generation <> binding_record.binding_generation THEN
+      RAISE EXCEPTION 'active community route lacks matching verified ownership evidence';
+    END IF;
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER community_canonical_route_reference_guard
+AFTER INSERT OR UPDATE ON community_canonical_route_bindings
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION validate_community_canonical_route_reference();
+
+CREATE CONSTRAINT TRIGGER communities_canonical_route_binding_guard
+AFTER INSERT OR UPDATE OF canonical_route_binding_id ON communities
+DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION validate_community_canonical_route_reference();
+
+-- 0028_community_creation_requirement_result_guard.sql
+
+-- Close the deferred requirement/result coherence gap without rewriting 0027.
+-- A nonterminal requirement may wait for its result, but a terminal requirement
+-- must have a matching immutable result by transaction commit.
+
+CREATE OR REPLACE FUNCTION validate_community_creation_requirement_result()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  state_record community_creation_requirement_states%ROWTYPE;
+  result_record community_creation_ceremony_results%ROWTYPE;
+  ceremony_id TEXT;
+  state_found BOOLEAN;
+  result_found BOOLEAN;
+BEGIN
+  IF TG_TABLE_NAME = 'community_creation_requirement_states' THEN
+    IF NEW.current_ceremony_intent_id IS NULL THEN
+      RETURN NULL;
+    END IF;
+    ceremony_id := NEW.current_ceremony_intent_id;
+  ELSE
+    ceremony_id := NEW.ceremony_intent_id;
+  END IF;
+
+  SELECT * INTO state_record
+    FROM community_creation_requirement_states
+   WHERE current_ceremony_intent_id = ceremony_id;
+  state_found := FOUND;
+
+  SELECT * INTO result_record
+    FROM community_creation_ceremony_results
+   WHERE ceremony_intent_id = ceremony_id;
+  result_found := FOUND;
+
+  IF NOT result_found THEN
+    IF TG_TABLE_NAME = 'community_creation_ceremony_results' THEN
+      RAISE EXCEPTION 'ceremony result does not match current requirement state';
+    END IF;
+
+    IF state_found
+      AND state_record.status IN ('satisfied', 'failed', 'expired') THEN
+      RAISE EXCEPTION 'ceremony result does not match terminal requirement state';
+    END IF;
+
+    RETURN NULL;
+  END IF;
+
+  IF state_record.status IN ('satisfied', 'failed', 'expired') THEN
+    IF result_record.ceremony_intent_id IS NULL
+      OR result_record.outcome_status <> state_record.status
+      OR result_record.actor_id <> state_record.actor_id
+      OR result_record.intent_id <> state_record.intent_id
+      OR result_record.requirement_kind <> state_record.requirement_kind
+      OR result_record.generation <> state_record.generation
+      OR result_record.requirement_hash <> state_record.requirement_hash
+      OR result_record.provider_id <> state_record.provider_id
+      OR result_record.provider_binding_hash <> state_record.provider_binding_hash
+      OR result_record.provider_configuration_version <>
+        state_record.provider_configuration_version
+      OR result_record.satisfied_at IS DISTINCT FROM state_record.satisfied_at THEN
+      RAISE EXCEPTION 'ceremony result does not match terminal requirement state';
+    END IF;
+  ELSIF result_record.ceremony_intent_id IS NOT NULL THEN
+    RAISE EXCEPTION 'nonterminal requirement cannot have a terminal ceremony result';
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+-- Durable target-owned namespace-ownership sessions, completion leases, and
+-- immutable HNS evidence snapshots.
+--
+-- Lock order for trigger paths that touch more than one row is fixed as:
+-- users(actor) -> creation intent -> requirement state -> namespace session ->
+-- completion attempt -> evidence snapshot/result. Provider calls are always
+-- outside SQL, after the reservation transaction has committed.
+
+ALTER TABLE community_creation_requirement_states
+  ADD CONSTRAINT community_creation_requirement_states_actor_generation_unique
+  UNIQUE (actor_id, intent_id, requirement_kind, generation);
+
+CREATE TABLE namespace_ownership_start_reservations (
+  reservation_id TEXT PRIMARY KEY,
+  namespace_session_id TEXT NOT NULL,
+  actor_id TEXT NOT NULL REFERENCES users (user_id),
+  creation_intent_id TEXT NOT NULL,
+  ceremony_intent_id TEXT NOT NULL,
+  requirement_kind TEXT NOT NULL DEFAULT 'namespace_ownership'
+    CHECK (requirement_kind = 'namespace_ownership'),
+  generation BIGINT NOT NULL CHECK (generation > 0),
+  requirement_hash TEXT NOT NULL CHECK (requirement_hash ~ '^[0-9a-f]{64}$'),
+  expected_revision INTEGER NOT NULL CHECK (expected_revision > 0),
+  client_idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  provider_id TEXT NOT NULL,
+  provider_binding_hash TEXT NOT NULL CHECK (provider_binding_hash ~ '^[0-9a-f]{64}$'),
+  provider_configuration_kind TEXT NOT NULL
+    CHECK (provider_configuration_kind IN ('managed', 'dynamic')),
+  provider_configuration_ref TEXT NOT NULL,
+  provider_configuration_version TEXT NOT NULL,
+  protocol_version TEXT NOT NULL,
+  environment TEXT NOT NULL,
+  route_family TEXT NOT NULL CHECK (route_family = 'hns'),
+  route_root_label TEXT NOT NULL,
+  route_root_label_display TEXT NOT NULL,
+  route_path_segment TEXT NOT NULL,
+  route_href TEXT NOT NULL,
+  route_app_host TEXT,
+  state TEXT NOT NULL DEFAULT 'acquired'
+    CHECK (state IN ('acquired', 'released', 'finalized')),
+  fence_token BIGINT NOT NULL DEFAULT 1 CHECK (fence_token > 0),
+  lease_expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT namespace_ownership_start_reservations_actor_intent_fk
+    FOREIGN KEY (actor_id, creation_intent_id)
+    REFERENCES community_creation_intents (actor_id, intent_id),
+  CONSTRAINT namespace_ownership_start_reservations_requirement_fk
+    FOREIGN KEY (creation_intent_id, requirement_kind)
+    REFERENCES community_creation_requirement_states (intent_id, requirement_kind),
+  CONSTRAINT namespace_ownership_start_reservations_ceremony_fk
+    FOREIGN KEY (
+      actor_id, creation_intent_id, requirement_kind, generation, ceremony_intent_id
+    )
+    REFERENCES community_creation_ceremony_attempts (
+      actor_id, intent_id, requirement_kind, generation, ceremony_intent_id
+    ),
+  CONSTRAINT namespace_ownership_start_reservations_generation_unique
+    UNIQUE (creation_intent_id, requirement_kind, generation),
+  CONSTRAINT namespace_ownership_start_reservations_actor_ceremony_unique
+    UNIQUE (actor_id, ceremony_intent_id),
+  CONSTRAINT namespace_ownership_start_reservations_client_key_unique
+    UNIQUE (actor_id, creation_intent_id, client_idempotency_key),
+  CONSTRAINT namespace_ownership_start_reservations_session_unique
+    UNIQUE (namespace_session_id, actor_id),
+  CONSTRAINT namespace_ownership_start_reservations_fence_unique
+    UNIQUE (reservation_id, fence_token),
+  CONSTRAINT namespace_ownership_start_reservations_identifiers_not_blank CHECK (
+    btrim(reservation_id) <> ''
+    AND reservation_id = btrim(reservation_id)
+    AND btrim(namespace_session_id) <> ''
+    AND namespace_session_id = btrim(namespace_session_id)
+    AND btrim(creation_intent_id) <> ''
+    AND creation_intent_id = btrim(creation_intent_id)
+    AND btrim(ceremony_intent_id) <> ''
+    AND ceremony_intent_id = btrim(ceremony_intent_id)
+    AND btrim(client_idempotency_key) <> ''
+    AND client_idempotency_key = btrim(client_idempotency_key)
+    AND btrim(provider_id) <> ''
+    AND provider_id = btrim(provider_id)
+    AND btrim(provider_configuration_ref) <> ''
+    AND provider_configuration_ref = btrim(provider_configuration_ref)
+    AND btrim(provider_configuration_version) <> ''
+    AND provider_configuration_version = btrim(provider_configuration_version)
+    AND btrim(protocol_version) <> ''
+    AND protocol_version = btrim(protocol_version)
+    AND btrim(environment) <> ''
+    AND environment = btrim(environment)
+  ),
+  CONSTRAINT namespace_ownership_start_reservations_route_shape CHECK (
+    is_community_route_root_label(route_family, route_root_label) IS TRUE
+    AND is_community_route_root_label_display(route_root_label_display) IS TRUE
+    AND route_path_segment = 'app.' || route_root_label
+    AND route_href = '/c/' || route_path_segment
+    AND route_app_host IS NULL
+  ),
+  CONSTRAINT namespace_ownership_start_reservations_time_order CHECK (
+    updated_at >= created_at
+  )
+);
+
+CREATE INDEX namespace_ownership_start_reservations_lease_idx
+  ON namespace_ownership_start_reservations (state, lease_expires_at);
+
+CREATE TABLE namespace_ownership_sessions (
+  namespace_session_id TEXT PRIMARY KEY,
+  actor_id TEXT NOT NULL REFERENCES users (user_id),
+  creation_intent_id TEXT NOT NULL,
+  ceremony_intent_id TEXT NOT NULL,
+  start_reservation_id TEXT NOT NULL,
+  start_fence_token BIGINT NOT NULL CHECK (start_fence_token > 0),
+  expected_revision INTEGER NOT NULL CHECK (expected_revision > 0),
+  requirement_kind TEXT NOT NULL DEFAULT 'namespace_ownership'
+    CHECK (requirement_kind = 'namespace_ownership'),
+  generation BIGINT NOT NULL CHECK (generation > 0),
+  requirement_hash TEXT NOT NULL CHECK (requirement_hash ~ '^[0-9a-f]{64}$'),
+  request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  provider_id TEXT NOT NULL,
+  provider_binding_hash TEXT NOT NULL CHECK (provider_binding_hash ~ '^[0-9a-f]{64}$'),
+  provider_configuration_kind TEXT NOT NULL
+    CHECK (provider_configuration_kind IN ('managed', 'dynamic')),
+  provider_configuration_ref TEXT NOT NULL,
+  provider_configuration_version TEXT NOT NULL,
+  protocol_version TEXT NOT NULL,
+  environment TEXT NOT NULL,
+  route_family TEXT NOT NULL CHECK (route_family IN ('hns', 'spaces')),
+  route_root_label TEXT NOT NULL,
+  route_root_label_display TEXT NOT NULL,
+  route_path_segment TEXT NOT NULL,
+  route_href TEXT NOT NULL,
+  route_app_host TEXT,
+  upstream_session_ref TEXT NOT NULL,
+  presentation_kind TEXT NOT NULL
+    CHECK (presentation_kind IN ('redirect', 'deeplink', 'embedded_sdk', 'poll', 'none')),
+  presentation_payload JSONB NOT NULL DEFAULT '{}'::jsonb
+    CHECK (jsonb_typeof(presentation_payload) = 'object'),
+  status TEXT NOT NULL
+    CHECK (status IN ('pending', 'completed', 'failed', 'expired')),
+  started_at TIMESTAMPTZ NOT NULL,
+  completed_at TIMESTAMPTZ,
+  terminal_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT namespace_ownership_sessions_actor_intent_fk
+    FOREIGN KEY (actor_id, creation_intent_id)
+    REFERENCES community_creation_intents (actor_id, intent_id),
+  CONSTRAINT namespace_ownership_sessions_requirement_fk
+    FOREIGN KEY (creation_intent_id, requirement_kind)
+    REFERENCES community_creation_requirement_states (intent_id, requirement_kind),
+  CONSTRAINT namespace_ownership_sessions_ceremony_fk
+    FOREIGN KEY (
+      actor_id, creation_intent_id, requirement_kind, generation, ceremony_intent_id
+    )
+    REFERENCES community_creation_ceremony_attempts (
+      actor_id, intent_id, requirement_kind, generation, ceremony_intent_id
+    ),
+  CONSTRAINT namespace_ownership_sessions_start_reservation_fk
+    FOREIGN KEY (start_reservation_id, start_fence_token)
+    REFERENCES namespace_ownership_start_reservations (reservation_id, fence_token)
+    DEFERRABLE INITIALLY DEFERRED,
+  CONSTRAINT namespace_ownership_sessions_actor_ceremony_unique
+    UNIQUE (actor_id, ceremony_intent_id),
+  CONSTRAINT namespace_ownership_sessions_generation_unique
+    UNIQUE (creation_intent_id, requirement_kind, generation),
+  CONSTRAINT namespace_ownership_sessions_identifiers_not_blank CHECK (
+    btrim(namespace_session_id) <> ''
+    AND namespace_session_id = btrim(namespace_session_id)
+    AND btrim(start_reservation_id) <> ''
+    AND start_reservation_id = btrim(start_reservation_id)
+    AND btrim(creation_intent_id) <> ''
+    AND creation_intent_id = btrim(creation_intent_id)
+    AND btrim(ceremony_intent_id) <> ''
+    AND ceremony_intent_id = btrim(ceremony_intent_id)
+    AND btrim(provider_id) <> ''
+    AND provider_id = btrim(provider_id)
+    AND btrim(provider_configuration_ref) <> ''
+    AND provider_configuration_ref = btrim(provider_configuration_ref)
+    AND btrim(provider_configuration_version) <> ''
+    AND provider_configuration_version = btrim(provider_configuration_version)
+    AND btrim(protocol_version) <> ''
+    AND protocol_version = btrim(protocol_version)
+    AND btrim(environment) <> ''
+    AND environment = btrim(environment)
+  ),
+  CONSTRAINT namespace_ownership_sessions_route_shape CHECK (
+    is_community_route_root_label(route_family, route_root_label) IS TRUE
+    AND is_community_route_root_label_display(route_root_label_display) IS TRUE
+    AND route_path_segment = CASE route_family
+      WHEN 'hns' THEN 'app.' || route_root_label
+      WHEN 'spaces' THEN '@' || route_root_label
+    END
+    AND route_href = '/c/' || route_path_segment
+    AND route_app_host IS NULL
+  ),
+  CONSTRAINT namespace_ownership_sessions_upstream_ref_shape CHECK (
+    octet_length(upstream_session_ref) BETWEEN 1 AND 16384
+    AND btrim(upstream_session_ref) = upstream_session_ref
+    AND upstream_session_ref !~ '[[:cntrl:]]'
+  ),
+  CONSTRAINT namespace_ownership_sessions_request_lifecycle_shape CHECK (
+    (
+      status = 'pending'
+      AND completed_at IS NULL
+      AND terminal_at IS NULL
+    )
+    OR (
+      status = 'completed'
+      AND completed_at IS NOT NULL
+      AND terminal_at IS NOT NULL
+      AND completed_at = terminal_at
+    )
+    OR (
+      status IN ('failed', 'expired')
+      AND completed_at IS NULL
+      AND terminal_at IS NOT NULL
+      AND (status <> 'expired' OR terminal_at >= expires_at)
+    )
+  ),
+  CONSTRAINT namespace_ownership_sessions_time_order CHECK (
+    expires_at > started_at
+    AND created_at >= started_at
+    AND updated_at >= created_at
+    AND (terminal_at IS NULL OR terminal_at >= started_at)
+  )
+);
+
+ALTER TABLE namespace_ownership_sessions
+  ADD CONSTRAINT namespace_ownership_sessions_id_actor_unique
+  UNIQUE (namespace_session_id, actor_id);
+
+CREATE OR REPLACE FUNCTION guard_namespace_ownership_start_reservation_change()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  intent_record community_creation_intents%ROWTYPE;
   state_record community_creation_requirement_states%ROWTYPE;
   ceremony_record community_creation_ceremony_attempts%ROWTYPE;
   session_record namespace_ownership_sessions%ROWTYPE;
@@ -8631,39 +9444,27 @@ $$;
 -- 0037_text_submission_response_snapshot.sql
 -- The text-post runtime keeps the exact original creation response separate
 -- from mutable current-state columns used by author-scoped GET.
-CREATE TABLE text_post_reservations (
-  community_id TEXT NOT NULL,
-  submission_id TEXT PRIMARY KEY,
-  actor_user_id TEXT NOT NULL,
-  surface TEXT NOT NULL CHECK (surface = 'text_post'),
-  idempotency_key TEXT NOT NULL,
-  request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
-  input_sha256 TEXT NOT NULL CHECK (input_sha256 ~ '^[0-9a-f]{64}$'),
-  title TEXT,
-  body TEXT,
-  policy_revision_id TEXT NOT NULL,
-  policy_hash TEXT NOT NULL CHECK (policy_hash ~ '^[0-9a-f]{64}$'),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT text_post_reservations_community_fk
-    FOREIGN KEY (community_id) REFERENCES communities (community_id),
-  CONSTRAINT text_post_reservations_policy_fk
-    FOREIGN KEY (policy_revision_id, policy_hash)
-    REFERENCES text_moderation_policy_revisions (policy_revision_id, policy_hash),
-  CONSTRAINT text_post_reservations_identifiers_not_blank CHECK (
-    btrim(submission_id) <> ''
-    AND submission_id = btrim(submission_id)
-    AND btrim(actor_user_id) <> ''
-    AND actor_user_id = btrim(actor_user_id)
-    AND btrim(idempotency_key) <> ''
-    AND idempotency_key = btrim(idempotency_key)
-    AND ((title IS NOT NULL AND btrim(title) <> '') OR (body IS NOT NULL AND btrim(body) <> ''))
-  ),
-  CONSTRAINT text_post_reservations_actor_idempotency_unique
-    UNIQUE (community_id, actor_user_id, surface, idempotency_key)
-);
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM text_content_submissions)
+    OR EXISTS (SELECT 1 FROM text_content_held_revisions)
+    OR EXISTS (SELECT 1 FROM text_moderation_cases)
+    OR EXISTS (SELECT 1 FROM text_moderation_evidence)
+    OR EXISTS (
+      SELECT 1 FROM home_feed_projection AS feed
+      JOIN text_content_submissions AS submission
+        ON submission.community_id = feed.community_id
+       AND submission.published_post_id = feed.post_id
+    )
+  THEN
+    RAISE EXCEPTION
+      '0037 text runtime requires empty text tables and dependents; no backfill is permitted';
+  END IF;
+END;
+$$;
 
-CREATE INDEX text_post_reservations_actor_created_idx
-  ON text_post_reservations (actor_user_id, created_at DESC, submission_id);
+ALTER TABLE text_content_submissions
+  DROP CONSTRAINT IF EXISTS text_content_submissions_evidence_fk;
 
 ALTER TABLE text_content_submissions
   ADD COLUMN response_snapshot_bytes BYTEA NOT NULL,
@@ -8675,6 +9476,34 @@ ALTER TABLE text_content_submissions
     CHECK (
       encode(sha256(response_snapshot_bytes), 'hex') = response_snapshot_sha256
     );
+
+CREATE OR REPLACE FUNCTION guard_text_content_submission_update()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF ROW(
+    NEW.community_id, NEW.submission_id, NEW.operation_id, NEW.actor_user_id,
+    NEW.surface, NEW.idempotency_key, NEW.request_hash, NEW.moderation_decision,
+    NEW.policy_revision_id, NEW.policy_hash, NEW.input_sha256,
+    NEW.internal_reason_codes, NEW.evidence_ref, NEW.created_at,
+    NEW.response_snapshot_bytes, NEW.response_snapshot_sha256
+  ) IS DISTINCT FROM ROW(
+    OLD.community_id, OLD.submission_id, OLD.operation_id, OLD.actor_user_id,
+    OLD.surface, OLD.idempotency_key, OLD.request_hash, OLD.moderation_decision,
+    OLD.policy_revision_id, OLD.policy_hash, OLD.input_sha256,
+    OLD.internal_reason_codes, OLD.evidence_ref, OLD.created_at,
+    OLD.response_snapshot_bytes, OLD.response_snapshot_sha256
+  ) THEN
+    RAISE EXCEPTION 'text content submission evidence and creation snapshot are immutable';
+  END IF;
+  IF OLD.status <> 'manual_review' OR NEW.status NOT IN ('published', 'blocked') THEN
+    RAISE EXCEPTION 'text content submission transition is not allowed: % -> %', OLD.status, NEW.status;
+  END IF;
+  IF NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'text content submission updated_at must advance';
+  END IF;
+  RETURN NEW;
+END;
+$$;
 
 COMMENT ON COLUMN text_content_submissions.response_snapshot_bytes IS
   'Immutable UTF-8 JSON bytes of the original TextContentSubmissionV1 creation response.';
