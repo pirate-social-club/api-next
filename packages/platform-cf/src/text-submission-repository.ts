@@ -2,12 +2,12 @@ import {
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
+  canonicalBodyHash,
   type M2Actor,
-  type TextPostFinalizeOutcome,
-  type TextPostReplayOutcome,
+  type TextPostCommitOutcome,
+  type TextPostModerationEvaluation,
   TextPostRepositoryError,
-  type TextPostReservation,
-  type TextPostReserveOutcome,
+  type TextPostRepositoryFailure,
   type TextPostStore,
   type TextPostSubmissionDocument,
 } from "@pirate/application";
@@ -22,51 +22,45 @@ import { Effect, type Layer } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
 type Transaction = ControlPlaneTransaction;
-type StoreFailure = TextPostRepositoryError | ControlPlaneError;
+type StoreFailure = TextPostRepositoryFailure | ControlPlaneError;
 type ReplayInput = Parameters<TextPostStore["Service"]["replay"]>[0];
-type ReserveInput = Parameters<TextPostStore["Service"]["reserve"]>[0];
-type FinalizeInput = Parameters<TextPostStore["Service"]["finalize"]>[0];
+type CommitInput = Parameters<TextPostStore["Service"]["commitTerminal"]>[0];
 type GetInput = Parameters<TextPostStore["Service"]["getForAuthor"]>[0];
 type RepositoryService = {
   readonly replay: (
     input: ReplayInput,
-  ) => Effect.Effect<TextPostReplayOutcome, StoreFailure, ControlPlaneDb>;
-  readonly reserve: (
-    input: ReserveInput,
-  ) => Effect.Effect<TextPostReserveOutcome, StoreFailure, ControlPlaneDb>;
-  readonly finalize: (
-    input: FinalizeInput,
-  ) => Effect.Effect<TextPostFinalizeOutcome, StoreFailure, ControlPlaneDb>;
+  ) => Effect.Effect<
+    import("@pirate/application").TextPostReplayOutcome,
+    StoreFailure,
+    ControlPlaneDb
+  >;
+  readonly commitTerminal: (
+    input: CommitInput,
+  ) => Effect.Effect<TextPostCommitOutcome, StoreFailure, ControlPlaneDb>;
   readonly getForAuthor: (
     input: GetInput,
   ) => Effect.Effect<TextPostSubmissionDocument | null, StoreFailure, ControlPlaneDb>;
 };
 
 const HASH = /^[0-9a-f]{64}$/u;
-
 const failure = (
-  operation: "replay" | "reserve" | "finalize" | "get",
+  operation: "replay" | "commit" | "get",
   reason: "not-found" | "membership-required" | "constraint" | "invalid-row",
 ) => new TextPostRepositoryError({ operation, reason });
 
 const stringValue = (row: Row, key: string): string | null => {
-  const current = row[key];
-  return typeof current === "string" ? current : null;
+  const value = row[key];
+  return typeof value === "string" ? value : null;
 };
-
 const validId = (value: string | null): value is string =>
   value !== null && value.length > 0 && value.trim() === value && !value.includes("\u0000");
-
 const validHash = (value: string | null): value is string => value !== null && HASH.test(value);
-
 const iso = (row: Row, key: string): string | null => {
-  const current = row[key];
-  if (current instanceof Date && Number.isFinite(current.getTime())) return current.toISOString();
-  if (typeof current === "string") {
-    const parsed = Date.parse(current);
-    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
-  }
-  return null;
+  const value = row[key];
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value.toISOString();
+  if (typeof value !== "string") return null;
+  const millis = Date.parse(value);
+  return Number.isFinite(millis) ? new Date(millis).toISOString() : null;
 };
 
 const decodeBytes = (value: unknown): Uint8Array | null => {
@@ -75,22 +69,21 @@ const decodeBytes = (value: unknown): Uint8Array | null => {
   return null;
 };
 
-function snapshotFromBytes(row: Row): TextPostSubmissionDocument | null {
+const snapshotFromBytes = (row: Row): TextPostSubmissionDocument | null => {
   const bytes = decodeBytes(row.response_snapshot_bytes);
   if (bytes === null) return null;
   try {
-    const decoded: unknown = JSON.parse(new TextDecoder().decode(bytes));
-    if (typeof decoded !== "object" || decoded === null) return null;
-    const snapshot = decoded as TextPostSubmissionDocument;
+    const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
+    if (typeof value !== "object" || value === null) return null;
+    const snapshot = value as TextPostSubmissionDocument;
     return textContentSubmissionInvariant(snapshot) === null ? snapshot : null;
   } catch {
     return null;
   }
-}
+};
 
-function currentSnapshot(row: Row): TextPostSubmissionDocument | null {
+const currentSnapshot = (row: Row): TextPostSubmissionDocument | null => {
   const submissionId = stringValue(row, "submission_id");
-  const surface = stringValue(row, "surface");
   const status = stringValue(row, "status");
   const createdAt = iso(row, "created_at");
   const updatedAt = iso(row, "updated_at");
@@ -99,32 +92,29 @@ function currentSnapshot(row: Row): TextPostSubmissionDocument | null {
   const reviewRef = stringValue(row, "review_ref");
   if (
     !validId(submissionId) ||
-    surface !== "text_post" ||
     !["published", "manual_review", "blocked"].includes(status ?? "") ||
     createdAt === null ||
     updatedAt === null
-  ) {
+  )
     return null;
-  }
   const typedStatus = status as "published" | "manual_review" | "blocked";
-  const result =
-    typedStatus === "published"
-      ? ({ decision: "allow", reason_code: null } as const)
-      : typedStatus === "blocked"
-        ? ({ decision: "blocked", reason_code: "policy_violation" } as const)
-        : ({
-            decision: "manual_review",
-            reason_code:
-              publicReason === "moderation_unavailable"
-                ? "moderation_unavailable"
-                : "review_required",
-          } as const);
   const snapshot: TextPostSubmissionDocument = {
     submission_id: submissionId,
     href: `/text-content-submissions/${submissionId}`,
     surface: "text_post",
     status: typedStatus,
-    result,
+    result:
+      typedStatus === "published"
+        ? { decision: "allow", reason_code: null }
+        : typedStatus === "blocked"
+          ? { decision: "blocked", reason_code: "policy_violation" }
+          : {
+              decision: "manual_review",
+              reason_code:
+                publicReason === "moderation_unavailable"
+                  ? "moderation_unavailable"
+                  : "review_required",
+            },
     published_resource:
       typedStatus === "published" && validId(postId)
         ? { kind: "post", post_id: postId, href: `/posts/${postId}` }
@@ -134,12 +124,11 @@ function currentSnapshot(row: Row): TextPostSubmissionDocument | null {
     updated_at: updatedAt,
   };
   return textContentSubmissionInvariant(snapshot) === null ? snapshot : null;
-}
+};
 
 const finalByKey = (
   transaction: Transaction,
   input: {
-    readonly communityId: string;
     readonly actorUserId: string;
     readonly idempotencyKey: string;
   },
@@ -152,10 +141,10 @@ const finalByKey = (
                   published_comment_id, review_ref, created_at, updated_at,
                   response_snapshot_bytes, response_snapshot_sha256
              FROM text_content_submissions
-            WHERE community_id = $1 AND actor_user_id = $2
-              AND surface = 'text_post' AND idempotency_key = $3
+            WHERE actor_user_id = $1
+              AND surface = 'text_post' AND idempotency_key = $2
             ${lock ? "FOR UPDATE" : ""}`,
-    values: [input.communityId, input.actorUserId, input.idempotencyKey],
+    values: [input.actorUserId, input.idempotencyKey],
     readonly: !lock,
   });
 
@@ -173,35 +162,6 @@ const finalById = (transaction: Transaction, submissionId: string, actorUserId?:
     readonly: false,
   });
 
-const reservationByKey = (
-  transaction: Transaction,
-  input: Pick<TextPostReservation, "communityId" | "actorId" | "idempotencyKey">,
-  lock: boolean,
-) =>
-  transaction.execute<Row>({
-    label: "text-post.reservation-by-key",
-    text: `SELECT community_id, submission_id, actor_user_id, surface, idempotency_key,
-                  request_hash, input_sha256, title, body, policy_revision_id, policy_hash
-             FROM text_post_reservations
-            WHERE community_id = $1 AND actor_user_id = $2 AND surface = 'text_post'
-              AND idempotency_key = $3
-            ${lock ? "FOR UPDATE" : ""}`,
-    values: [input.communityId, input.actorId, input.idempotencyKey],
-    readonly: !lock,
-  });
-
-const reservationById = (transaction: Transaction, reservation: TextPostReservation) =>
-  transaction.execute<Row>({
-    label: "text-post.reservation-by-id",
-    text: `SELECT community_id, submission_id, actor_user_id, surface, idempotency_key,
-                  request_hash, input_sha256, title, body, policy_revision_id, policy_hash
-             FROM text_post_reservations
-            WHERE submission_id = $1
-            FOR UPDATE`,
-    values: [reservation.submissionId],
-    readonly: false,
-  });
-
 const lockKey = (transaction: Transaction, value: string) =>
   transaction.execute({
     label: "text-post.lock-idempotency",
@@ -210,28 +170,24 @@ const lockKey = (transaction: Transaction, value: string) =>
     readonly: false,
   });
 
-const idempotencyLockKey = (
-  communityId: string,
-  actorUserId: string,
-  idempotencyKey: string,
-): string => JSON.stringify([communityId, actorUserId, "text_post", idempotencyKey]);
+const idempotencyLockKey = (actorUserId: string, key: string): string =>
+  JSON.stringify([actorUserId, "text_post", key]);
 
 const authority = (
   transaction: Transaction,
-  operation: "reserve" | "finalize",
   communityId: string,
   actorUserId: string,
 ): Effect.Effect<{ readonly policyRevision: string; readonly policyHash: string }, StoreFailure> =>
   Effect.gen(function* () {
     const community = yield* transaction.execute<Row>({
-      label: `text-post.${operation}.lock-community`,
+      label: "text-post.commit.lock-community",
       text: "SELECT community_id FROM communities WHERE community_id = $1 AND status = 'active' FOR UPDATE",
       values: [communityId],
       readonly: false,
     });
-    if (community.rows.length !== 1) return yield* Effect.fail(failure(operation, "not-found"));
+    if (community.rows.length !== 1) return yield* Effect.fail(failure("commit", "not-found"));
     const membership = yield* transaction.execute<Row>({
-      label: `text-post.${operation}.lock-membership`,
+      label: "text-post.commit.lock-membership",
       text: "SELECT status FROM community_memberships WHERE community_id = $1 AND user_id = $2 FOR UPDATE",
       values: [communityId, actorUserId],
       readonly: false,
@@ -239,11 +195,10 @@ const authority = (
     if (
       membership.rows.length !== 1 ||
       stringValue(membership.rows[0] as Row, "status") !== "member"
-    ) {
-      return yield* Effect.fail(failure(operation, "membership-required"));
-    }
+    )
+      return yield* Effect.fail(failure("commit", "membership-required"));
     const route = yield* transaction.execute<Row>({
-      label: `text-post.${operation}.effective-route`,
+      label: "text-post.commit.effective-route",
       text: `WITH db_clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
              SELECT route.community_id
                FROM db_clock
@@ -251,9 +206,9 @@ const authority = (
       values: [communityId],
       readonly: true,
     });
-    if (route.rows.length !== 1) return yield* Effect.fail(failure(operation, "not-found"));
+    if (route.rows.length !== 1) return yield* Effect.fail(failure("commit", "not-found"));
     const policy = yield* transaction.execute<Row>({
-      label: `text-post.${operation}.current-policy`,
+      label: "text-post.commit.current-policy",
       text: `SELECT pointer.policy_revision_id, revision.policy_hash
                FROM text_moderation_policy_current AS pointer
                JOIN text_moderation_policy_revisions AS revision
@@ -263,47 +218,13 @@ const authority = (
       values: [],
       readonly: false,
     });
-    const policyRow = (policy.rows[0] ?? {}) as Row;
-    const policyRevision = stringValue(policyRow, "policy_revision_id");
-    const policyHash = stringValue(policyRow, "policy_hash");
-    if (policy.rows.length !== 1 || !validId(policyRevision) || !validHash(policyHash)) {
-      return yield* Effect.fail(failure(operation, "invalid-row"));
-    }
+    const row = (policy.rows[0] ?? {}) as Row;
+    const policyRevision = stringValue(row, "policy_revision_id");
+    const policyHash = stringValue(row, "policy_hash");
+    if (policy.rows.length !== 1 || !validId(policyRevision) || !validHash(policyHash))
+      return yield* Effect.fail(failure("commit", "invalid-row"));
     return { policyRevision, policyHash };
   });
-
-const toReservation = (row: Row): TextPostReservation | null => {
-  const submissionId = stringValue(row, "submission_id");
-  const communityId = stringValue(row, "community_id");
-  const actorId = stringValue(row, "actor_user_id");
-  const key = stringValue(row, "idempotency_key");
-  const requestHash = stringValue(row, "request_hash");
-  const inputSha256 = stringValue(row, "input_sha256");
-  const policyRevision = stringValue(row, "policy_revision_id");
-  const policyHash = stringValue(row, "policy_hash");
-  if (
-    !validId(submissionId) ||
-    !validId(communityId) ||
-    !validId(actorId) ||
-    !validId(key) ||
-    !validHash(requestHash) ||
-    !validHash(inputSha256) ||
-    !validId(policyRevision) ||
-    !validHash(policyHash)
-  ) {
-    return null;
-  }
-  return {
-    submissionId,
-    communityId,
-    actorId,
-    idempotencyKey: key,
-    requestHash,
-    inputSha256,
-    policyRevision,
-    policyHash,
-  };
-};
 
 const replayRow = (
   row: Row,
@@ -326,57 +247,54 @@ const actorInputValid = (actor: M2Actor, communityId: string, key: string, hash:
   validId(communityId) &&
   validId(key) &&
   validHash(hash);
-
 const makeId = (prefix: string): string => `${prefix}_${crypto.randomUUID()}`;
 
-function responseSnapshot(input: {
+const responseSnapshot = (input: {
   readonly submissionId: string;
   readonly status: "published" | "manual_review" | "blocked";
   readonly reasonCode: "review_required" | "moderation_unavailable" | "policy_violation" | null;
   readonly postId: string | null;
   readonly reviewRef: string | null;
   readonly at: string;
-}): TextPostSubmissionDocument {
-  return {
-    submission_id: input.submissionId,
-    href: `/text-content-submissions/${input.submissionId}`,
-    surface: "text_post",
-    status: input.status,
-    result:
-      input.status === "published"
-        ? { decision: "allow", reason_code: null }
-        : input.status === "manual_review"
-          ? {
-              decision: "manual_review",
-              reason_code:
-                input.reasonCode === "moderation_unavailable"
-                  ? "moderation_unavailable"
-                  : "review_required",
-            }
-          : { decision: "blocked", reason_code: "policy_violation" },
-    published_resource:
-      input.status === "published" && input.postId !== null
-        ? { kind: "post", post_id: input.postId, href: `/posts/${input.postId}` }
-        : null,
-    review_ref: input.status === "manual_review" ? input.reviewRef : null,
-    created_at: input.at,
-    updated_at: input.at,
-  };
-}
+}): TextPostSubmissionDocument => ({
+  submission_id: input.submissionId,
+  href: `/text-content-submissions/${input.submissionId}`,
+  surface: "text_post",
+  status: input.status,
+  result:
+    input.status === "published"
+      ? { decision: "allow", reason_code: null }
+      : input.status === "manual_review"
+        ? {
+            decision: "manual_review",
+            reason_code:
+              input.reasonCode === "moderation_unavailable"
+                ? "moderation_unavailable"
+                : "review_required",
+          }
+        : { decision: "blocked", reason_code: "policy_violation" },
+  published_resource:
+    input.status === "published" && input.postId !== null
+      ? { kind: "post", post_id: input.postId, href: `/posts/${input.postId}` }
+      : null,
+  review_ref: input.status === "manual_review" ? input.reviewRef : null,
+  created_at: input.at,
+  updated_at: input.at,
+});
+
+const isProviderFailure = (evaluation: TextPostModerationEvaluation): boolean =>
+  evaluation.decision === "manual_review" &&
+  evaluation.reason_codes.some((reason) => reason.startsWith("provider_"));
 
 export function makeControlPlaneTextPostRepository(): RepositoryService {
   const replay: RepositoryService["replay"] = (input) =>
     Effect.gen(function* () {
-      if (
-        !actorInputValid(input.actor, input.communityId, input.idempotencyKey, input.requestHash)
-      ) {
+      if (!actorInputValid(input.actor, input.communityId, input.idempotencyKey, input.requestHash))
         return yield* Effect.fail(failure("replay", "constraint"));
-      }
       const db = yield* ControlPlaneDb;
       const result = yield* finalByKey(
         db,
         {
-          communityId: input.communityId,
           actorUserId: input.actor.userId,
           idempotencyKey: input.idempotencyKey,
         },
@@ -384,285 +302,162 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
       );
       if (result.rows.length > 1) return yield* Effect.fail(failure("replay", "invalid-row"));
       if (result.rows.length === 0) return { kind: "none" as const };
-      const rowResult = replayRow(result.rows[0] as Row, input.requestHash);
-      if (rowResult === null) return yield* Effect.fail(failure("replay", "invalid-row"));
-      return rowResult;
+      const outcome = replayRow(result.rows[0] as Row, input.requestHash);
+      return outcome === null ? yield* Effect.fail(failure("replay", "invalid-row")) : outcome;
     });
 
-  const reserve: RepositoryService["reserve"] = (input) =>
+  const commitTerminal: RepositoryService["commitTerminal"] = (input) =>
     Effect.gen(function* () {
       if (
         !actorInputValid(input.actor, input.communityId, input.idempotencyKey, input.requestHash) ||
-        input.moderationInput.surface !== "text_post"
-      ) {
-        return yield* Effect.fail(failure("reserve", "constraint"));
-      }
+        !validId(input.operationId) ||
+        input.moderationInput.surface !== "text_post" ||
+        input.body.post_type !== "text" ||
+        input.body.idempotency_key !== input.idempotencyKey
+      )
+        return yield* Effect.fail(failure("commit", "constraint"));
+      const canonicalRequestHash = yield* canonicalBodyHash({
+        community_id: input.communityId,
+        body: input.body,
+      }).pipe(Effect.mapError(() => failure("commit", "constraint")));
+      if (canonicalRequestHash !== input.requestHash)
+        return yield* Effect.fail(failure("commit", "constraint"));
       const canonical = canonicalTextModerationInput(input.moderationInput);
-      if (canonical.kind !== "accepted")
-        return yield* Effect.fail(failure("reserve", "constraint"));
+      if (
+        canonical.kind !== "accepted" ||
+        canonical.sha256 !== input.evaluation.input_sha256 ||
+        (input.body.title ?? null) !== input.moderationInput.title ||
+        (input.body.body ?? null) !== input.moderationInput.body
+      )
+        return yield* Effect.fail(failure("commit", "constraint"));
+      const providerFailure = isProviderFailure(input.evaluation);
+      const emptyPolicy =
+        input.evaluation.policy_revision === "" && input.evaluation.policy_hash === "";
+      if (
+        textModerationEvaluationInvariant(input.evaluation as TextModerationEvaluationV1) !==
+          null &&
+        !(providerFailure && emptyPolicy)
+      )
+        return yield* Effect.fail(failure("commit", "constraint"));
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
-          const lock = idempotencyLockKey(
-            input.communityId,
-            input.actor.userId,
-            input.idempotencyKey,
-          );
-          yield* lockKey(transaction, lock);
+          // The advisory lock is only a contention fence; it is not a durable
+          // reservation. Every accepted request still gets exactly one row.
+          yield* lockKey(transaction, idempotencyLockKey(input.actor.userId, input.idempotencyKey));
           const existing = yield* finalByKey(
             transaction,
             {
-              communityId: input.communityId,
               actorUserId: input.actor.userId,
               idempotencyKey: input.idempotencyKey,
             },
             true,
           );
-          if (existing.rows.length > 1) return yield* failure("reserve", "invalid-row");
+          if (existing.rows.length > 1) return yield* Effect.fail(failure("commit", "invalid-row"));
           if (existing.rows.length === 1) {
-            const result = replayRow(existing.rows[0] as Row, input.requestHash);
-            if (result === null) return yield* failure("reserve", "invalid-row");
-            return result.kind === "replay" ? result : result;
+            const outcome = replayRow(existing.rows[0] as Row, input.requestHash);
+            if (outcome === null) return yield* Effect.fail(failure("commit", "invalid-row"));
+            return outcome;
           }
-          const authorityResult = yield* authority(
-            transaction,
-            "reserve",
-            input.communityId,
-            input.actor.userId,
-          );
-          const reservationInput: TextPostReservation = {
-            submissionId: makeId("sub"),
-            communityId: input.communityId,
-            actorId: input.actor.userId,
-            idempotencyKey: input.idempotencyKey,
-            requestHash: input.requestHash,
-            inputSha256: canonical.sha256,
-            policyRevision: authorityResult.policyRevision,
-            policyHash: authorityResult.policyHash,
-          };
-          const prior = yield* reservationByKey(transaction, reservationInput, true);
-          if (prior.rows.length > 1) return yield* failure("reserve", "invalid-row");
-          if (prior.rows.length === 1) {
-            const existingReservation = toReservation(prior.rows[0] as Row);
-            if (existingReservation === null) return yield* failure("reserve", "invalid-row");
-            if (existingReservation.requestHash !== input.requestHash) {
-              return { kind: "conflict" as const, submissionId: existingReservation.submissionId };
-            }
-            if (
-              existingReservation.policyRevision !== authorityResult.policyRevision ||
-              existingReservation.policyHash !== authorityResult.policyHash
-            ) {
-              yield* transaction.execute({
-                label: "text-post.reserve.refresh-policy",
-                text: `UPDATE text_post_reservations
-                           SET policy_revision_id = $2, policy_hash = $3
-                         WHERE submission_id = $1`,
-                values: [
-                  existingReservation.submissionId,
-                  authorityResult.policyRevision,
-                  authorityResult.policyHash,
-                ],
-                readonly: false,
-              });
-              return {
-                kind: "reserved" as const,
-                reservation: {
-                  ...existingReservation,
-                  policyRevision: authorityResult.policyRevision,
-                  policyHash: authorityResult.policyHash,
-                },
-              };
-            }
-            return { kind: "reserved" as const, reservation: existingReservation };
-          }
-          const inserted = yield* transaction.execute<Row>({
-            label: "text-post.reserve",
-            text: `INSERT INTO text_post_reservations
-              (community_id, submission_id, actor_user_id, surface, idempotency_key,
-               request_hash, input_sha256, title, body, policy_revision_id, policy_hash)
-             VALUES ($1, $2, $3, 'text_post', $4, $5, $6, $7, $8, $9, $10)
-             RETURNING community_id, submission_id, actor_user_id, surface, idempotency_key,
-                       request_hash, input_sha256, policy_revision_id, policy_hash`,
-            values: [
-              input.communityId,
-              reservationInput.submissionId,
-              input.actor.userId,
-              input.idempotencyKey,
-              input.requestHash,
-              canonical.sha256,
-              input.moderationInput.title,
-              input.moderationInput.body,
-              authorityResult.policyRevision,
-              authorityResult.policyHash,
-            ],
-            readonly: false,
-          });
-          const reservation =
-            inserted.rows.length === 1 ? toReservation(inserted.rows[0] as Row) : null;
-          if (reservation === null) return yield* failure("reserve", "invalid-row");
-          return { kind: "reserved" as const, reservation };
-        }),
-      );
-    });
 
-  const finalize: RepositoryService["finalize"] = (input) =>
-    Effect.gen(function* () {
-      if (
-        !validId(input.reservation.submissionId) ||
-        !validId(input.reservation.communityId) ||
-        !validId(input.reservation.actorId) ||
-        !validId(input.reservation.idempotencyKey) ||
-        !validHash(input.reservation.requestHash) ||
-        !validHash(input.reservation.inputSha256) ||
-        textModerationEvaluationInvariant(input.evaluation as TextModerationEvaluationV1) !==
-          null ||
-        input.evaluation.surface !== "text_post" ||
-        input.evaluation.policy_revision !== input.reservation.policyRevision ||
-        input.evaluation.policy_hash !== input.reservation.policyHash ||
-        input.evaluation.input_sha256 !== input.reservation.inputSha256 ||
-        publicTextPublicationResult(input.evaluation as TextModerationEvaluationV1) === null
-      ) {
-        return yield* Effect.fail(failure("finalize", "constraint"));
-      }
-      const db = yield* ControlPlaneDb;
-      return yield* db.withTransaction((transaction) =>
-        Effect.gen(function* () {
-          yield* lockKey(
-            transaction,
-            idempotencyLockKey(
-              input.reservation.communityId,
-              input.reservation.actorId,
-              input.reservation.idempotencyKey,
-            ),
-          );
-          const final = yield* finalById(transaction, input.reservation.submissionId);
-          if (final.rows.length > 1) return yield* failure("finalize", "invalid-row");
-          if (final.rows.length === 1) {
-            const result = replayRow(final.rows[0] as Row, input.reservation.requestHash);
-            if (result === null) return yield* failure("finalize", "invalid-row");
-            return result.kind === "replay" ? result : result;
-          }
-          const reservationRows = yield* reservationById(transaction, input.reservation);
-          if (reservationRows.rows.length !== 1) {
-            const byKey = yield* finalByKey(
-              transaction,
-              {
-                communityId: input.reservation.communityId,
-                actorUserId: input.reservation.actorId,
-                idempotencyKey: input.reservation.idempotencyKey,
-              },
-              true,
-            );
-            if (byKey.rows.length === 1) {
-              const result = replayRow(byKey.rows[0] as Row, input.reservation.requestHash);
-              if (result !== null) return result;
-            }
-            return yield* failure("finalize", "not-found");
-          }
-          const persisted = toReservation(reservationRows.rows[0] as Row);
-          if (persisted === null || persisted.requestHash !== input.reservation.requestHash) {
-            return yield* failure("finalize", "invalid-row");
-          }
-          const authorityResult = yield* authority(
-            transaction,
-            "finalize",
-            persisted.communityId,
-            persisted.actorId,
-          );
+          const current = yield* authority(transaction, input.communityId, input.actor.userId);
+          const evaluation =
+            providerFailure &&
+            input.evaluation.policy_revision === "" &&
+            input.evaluation.policy_hash === ""
+              ? {
+                  ...input.evaluation,
+                  policy_revision: current.policyRevision,
+                  policy_hash: current.policyHash,
+                }
+              : input.evaluation;
           if (
-            authorityResult.policyRevision !== persisted.policyRevision ||
-            authorityResult.policyHash !== persisted.policyHash
-          ) {
+            evaluation.policy_revision !== current.policyRevision ||
+            evaluation.policy_hash !== current.policyHash
+          )
             return {
               kind: "policy-stale" as const,
-              policyRevision: authorityResult.policyRevision,
-              policyHash: authorityResult.policyHash,
+              policyRevision: current.policyRevision,
+              policyHash: current.policyHash,
             };
-          }
+          const publicResult = publicTextPublicationResult(
+            evaluation as TextModerationEvaluationV1,
+          );
+          if (publicResult === null) return yield* Effect.fail(failure("commit", "constraint"));
           const nowResult = yield* transaction.execute<Row>({
-            label: "text-post.finalize.database-clock",
+            label: "text-post.commit.database-clock",
             text: "SELECT clock_timestamp() AS now",
             values: [],
             readonly: true,
           });
           const at = iso(nowResult.rows[0] as Row, "now");
-          if (at === null) return yield* failure("finalize", "invalid-row");
+          if (at === null) return yield* Effect.fail(failure("commit", "invalid-row"));
+          const submissionId = makeId("sub");
           const status =
-            input.evaluation.decision === "allow"
+            evaluation.decision === "allow"
               ? ("published" as const)
-              : input.evaluation.decision === "manual_review"
+              : evaluation.decision === "manual_review"
                 ? ("manual_review" as const)
                 : ("blocked" as const);
           const postId = status === "published" ? makeId("post") : null;
           const reviewRef = status === "manual_review" ? makeId("review") : null;
-          const heldId = status === "manual_review" ? makeId("held") : null;
-          const publicResult = publicTextPublicationResult(
-            input.evaluation as TextModerationEvaluationV1,
-          );
-          if (publicResult === null) return yield* failure("finalize", "constraint");
           const snapshot = responseSnapshot({
-            submissionId: persisted.submissionId,
+            submissionId,
             status,
             reasonCode: publicResult.reason_code,
             postId,
             reviewRef,
             at,
           });
-          const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
           if (textContentSubmissionInvariant(snapshot) !== null)
-            return yield* failure("finalize", "invalid-row");
-          if (status === "published" && postId !== null) {
+            return yield* Effect.fail(failure("commit", "invalid-row"));
+          const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
+
+          if (postId !== null) {
             yield* transaction.execute({
-              label: "text-post.finalize.post",
+              label: "text-post.commit.post",
               text: `INSERT INTO posts
                 (community_id, post_id, author_user_id, post_type, status, visibility,
                  title, body, created_at, updated_at, idempotency_key, idempotency_body_hash)
-               SELECT $1, $2, $3, 'text', 'published', 'public', title, body, $4, $4, $5, $6
-                 FROM text_post_reservations WHERE submission_id = $7`,
+               VALUES ($1, $2, $3, 'text', 'published', 'public', $4, $5, $6, $6, $7, $8)`,
               values: [
-                persisted.communityId,
+                input.communityId,
                 postId,
-                persisted.actorId,
+                input.actor.userId,
+                input.moderationInput.title,
+                input.moderationInput.body,
                 at,
-                persisted.idempotencyKey,
-                persisted.requestHash,
-                persisted.submissionId,
+                input.idempotencyKey,
+                input.requestHash,
               ],
-              readonly: false,
-            });
-            yield* transaction.execute({
-              label: "text-post.finalize.home-feed",
-              text: `INSERT INTO home_feed_projection
-                (community_id, feed_item_id, post_id, rank_score, projected_at)
-               VALUES ($1, $2, $3, 0, $4)`,
-              values: [persisted.communityId, makeId("feed"), postId, at],
               readonly: false,
             });
           }
           yield* transaction.execute({
-            label: "text-post.finalize.submission",
+            label: "text-post.commit.submission",
             text: `INSERT INTO text_content_submissions (
-                community_id, submission_id, actor_user_id, surface, idempotency_key,
+                community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
                 request_hash, status, moderation_decision, public_reason_code,
                 policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
                 evidence_ref, published_post_id, published_comment_id, review_ref,
                 created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256
-              ) VALUES ($1, $2, $3, 'text_post', $4, $5, $6, $7, $8, $9, $10, $11,
-                $12::jsonb, $13, $14, NULL, $15, $16, $16, $17, encode(sha256($17), 'hex'))`,
+              ) VALUES ($1, $2, $3, $4, 'text_post', $5, $6, $7, $8, $9, $10, $11, $12,
+                $13::jsonb, $14, $15, NULL, $16, $17, $17, $18, encode(sha256($18), 'hex'))`,
             values: [
-              persisted.communityId,
-              persisted.submissionId,
-              persisted.actorId,
-              persisted.idempotencyKey,
-              persisted.requestHash,
+              input.communityId,
+              submissionId,
+              input.operationId,
+              input.actor.userId,
+              input.idempotencyKey,
+              input.requestHash,
               status,
-              input.evaluation.decision,
+              evaluation.decision,
               publicResult.reason_code,
-              persisted.policyRevision,
-              persisted.policyHash,
-              persisted.inputSha256,
-              JSON.stringify(input.evaluation.reason_codes),
-              input.evaluation.evidence_ref,
+              current.policyRevision,
+              current.policyHash,
+              canonical.sha256,
+              JSON.stringify(evaluation.reason_codes),
+              evaluation.evidence_ref,
               postId,
               reviewRef,
               at,
@@ -670,31 +465,42 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             ],
             readonly: false,
           });
-          if (status === "manual_review" && heldId !== null && reviewRef !== null) {
+          if (postId !== null) {
             yield* transaction.execute({
-              label: "text-post.finalize.held-revision",
-              text: `INSERT INTO text_content_held_revisions
-                (community_id, held_revision_id, submission_id, title, body, content_sha256, created_at)
-               SELECT community_id, $1, submission_id, title, body, input_sha256, $2
-                 FROM text_post_reservations WHERE submission_id = $3`,
-              values: [heldId, at, persisted.submissionId],
-              readonly: false,
-            });
-            yield* transaction.execute({
-              label: "text-post.finalize.review-case",
-              text: `INSERT INTO text_moderation_cases
-                (community_id, case_id, submission_id, status, created_at, updated_at)
-               VALUES ($1, $2, $3, 'open', $4, $4)`,
-              values: [persisted.communityId, reviewRef, persisted.submissionId, at],
+              label: "text-post.commit.home-feed",
+              text: `INSERT INTO home_feed_projection
+                (community_id, feed_item_id, post_id, rank_score, projected_at)
+               VALUES ($1, $2, $3, 0, $4)`,
+              values: [input.communityId, makeId("feed"), postId, at],
               readonly: false,
             });
           }
-          yield* transaction.execute({
-            label: "text-post.finalize.consume-reservation",
-            text: "DELETE FROM text_post_reservations WHERE submission_id = $1",
-            values: [persisted.submissionId],
-            readonly: false,
-          });
+          if (status === "manual_review" && reviewRef !== null) {
+            yield* transaction.execute({
+              label: "text-post.commit.held-revision",
+              text: `INSERT INTO text_content_held_revisions
+                (community_id, held_revision_id, submission_id, title, body, content_sha256, created_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+              values: [
+                input.communityId,
+                makeId("held"),
+                submissionId,
+                input.moderationInput.title,
+                input.moderationInput.body,
+                canonical.sha256,
+                at,
+              ],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "text-post.commit.review-case",
+              text: `INSERT INTO text_moderation_cases
+                (community_id, case_id, submission_id, status, created_at, updated_at)
+               VALUES ($1, $2, $3, 'open', $4, $4)`,
+              values: [input.communityId, reviewRef, submissionId, at],
+              readonly: false,
+            });
+          }
           return { kind: "created" as const, snapshot };
         }),
       );
@@ -706,9 +512,8 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
         !validId(input.submissionId) ||
         input.actor.kind === "agent" ||
         !validId(input.actor.userId)
-      ) {
+      )
         return yield* Effect.fail(failure("get", "constraint"));
-      }
       const db = yield* ControlPlaneDb;
       const result = yield* finalById(db, input.submissionId, input.actor.userId);
       if (result.rows.length > 1) return yield* Effect.fail(failure("get", "invalid-row"));
@@ -717,7 +522,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
       return snapshot === null ? yield* Effect.fail(failure("get", "invalid-row")) : snapshot;
     });
 
-  return { replay, reserve, finalize, getForAuthor };
+  return { replay, commitTerminal, getForAuthor };
 }
 
 export function makeControlPlaneTextSubmissionRepository(): RepositoryService {
@@ -732,8 +537,7 @@ export function makeControlPlaneTextSubmissionStore(
     Effect.provide(runtime)(effect);
   return {
     replay: (input) => provide(repository.replay(input)),
-    reserve: (input) => provide(repository.reserve(input)),
-    finalize: (input) => provide(repository.finalize(input)),
+    commitTerminal: (input) => provide(repository.commitTerminal(input)),
     getForAuthor: (input) => provide(repository.getForAuthor(input)),
   };
 }

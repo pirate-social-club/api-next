@@ -3946,7 +3946,6 @@ $$;
 CREATE TABLE text_content_submissions (
   community_id TEXT NOT NULL,
   submission_id TEXT PRIMARY KEY,
-  operation_id TEXT NOT NULL,
   actor_user_id TEXT NOT NULL,
   surface TEXT NOT NULL CHECK (surface IN ('text_post', 'comment', 'reply')),
   idempotency_key TEXT NOT NULL,
@@ -3969,6 +3968,7 @@ CREATE TABLE text_content_submissions (
   review_ref TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  operation_id TEXT NOT NULL,
   CONSTRAINT text_content_submissions_community_fk
     FOREIGN KEY (community_id) REFERENCES communities (community_id),
   CONSTRAINT text_content_submissions_policy_fk
@@ -3983,8 +3983,6 @@ CREATE TABLE text_content_submissions (
   CONSTRAINT text_content_submissions_identifiers_not_blank CHECK (
     btrim(submission_id) <> ''
     AND submission_id = btrim(submission_id)
-    AND btrim(operation_id) <> ''
-    AND operation_id = btrim(operation_id)
     AND btrim(actor_user_id) <> ''
     AND actor_user_id = btrim(actor_user_id)
     AND btrim(idempotency_key) <> ''
@@ -4046,10 +4044,15 @@ CREATE TABLE text_content_submissions (
   ),
   CONSTRAINT text_content_submissions_time_order CHECK (updated_at >= created_at),
   CONSTRAINT text_content_submissions_community_id_unique UNIQUE (community_id, submission_id),
-  CONSTRAINT text_content_submissions_operation_id_unique UNIQUE (operation_id),
-  CONSTRAINT text_content_submissions_actor_idempotency_unique
-    UNIQUE (community_id, actor_user_id, surface, idempotency_key)
+  CONSTRAINT text_content_submissions_operation_id_not_blank CHECK (
+    btrim(operation_id) <> '' AND operation_id = btrim(operation_id)
+  ),
+  CONSTRAINT text_content_submissions_operation_id_unique UNIQUE (operation_id)
 );
+
+CREATE UNIQUE INDEX text_content_submissions_text_post_actor_key_unique
+  ON text_content_submissions (actor_user_id, idempotency_key)
+  WHERE surface = 'text_post';
 
 COMMENT ON COLUMN text_content_submissions.moderation_decision IS
   'Immutable original moderation evaluation; the public result derives from status and public_reason_code after review resolution.';

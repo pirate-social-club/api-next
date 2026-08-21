@@ -19,6 +19,14 @@ BEGIN
 END;
 $$;
 
+
+ALTER TABLE text_content_submissions
+  DROP CONSTRAINT IF EXISTS text_content_submissions_actor_idempotency_unique;
+
+CREATE UNIQUE INDEX text_content_submissions_text_post_actor_key_unique
+  ON text_content_submissions (actor_user_id, idempotency_key)
+  WHERE surface = 'text_post';
+
 ALTER TABLE text_content_submissions
   DROP CONSTRAINT IF EXISTS text_content_submissions_evidence_fk,
   ADD COLUMN operation_id TEXT NOT NULL,
