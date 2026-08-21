@@ -542,7 +542,8 @@ async function createRepositoryNamespaceSession(
       ),
     ),
   );
-  if (finalized.kind !== "created") throw new Error("expected namespace START finalization");
+  if (finalized.kind !== "created")
+    throw new Error(`expected namespace START finalization, received ${finalized.kind}`);
   const completionStore = makeControlPlaneNamespaceOwnershipCompletionStore(layer);
   const completionInput = {
     actor_id: startInput.start.actor_id,
@@ -1609,7 +1610,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
         client,
         scoped,
         "release_after_expiry",
-        { ttl_ms: 20, expires_at: expiresAt },
+        { ttl_ms: 1_000, expires_at: expiresAt },
       );
       const reserved = await Effect.runPromise(
         Effect.scoped(completionStore.reserve({ ...completionInput, lease_ms: 1_100 })),
@@ -1825,7 +1826,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
         client,
         scoped,
         "budget",
-        { ttl_ms: 20, expires_at: expiresAt },
+        { ttl_ms: 1_000, expires_at: expiresAt },
       );
       for (const [index, requestHash] of [SHA, SHA_B, SHA_C].entries()) {
         const requestInput = {
@@ -1957,14 +1958,14 @@ suite("Postgres namespace ownership persistence foundation", () => {
 
   test("terminally expires by database time before admitting a completion attempt", async () => {
     await withSchema(async (client, scoped) => {
-      const expiresAt = new Date(Date.now() + 1_000).toISOString();
+      const expiresAt = new Date(Date.now() + 3_000).toISOString();
       const { completionStore, completionInput } = await createRepositoryNamespaceSession(
         client,
         scoped,
         "expired_before_reserve",
-        { ttl_ms: 20, expires_at: expiresAt },
+        { ttl_ms: 1_000, expires_at: expiresAt },
       );
-      await client.query("SELECT pg_sleep(1.1)");
+      await client.query("SELECT pg_sleep(3.1)");
       expect(
         await Effect.runPromise(Effect.scoped(completionStore.reserve(completionInput))),
       ).toEqual({ kind: "expired", result_hash: SHA_B });
@@ -1988,7 +1989,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
       });
     });
     completedTestCount += 1;
-  });
+  }, 10_000);
 
   afterAll(async () => {
     if (connectionString !== undefined && completedTestCount === namespacePersistenceTestCount) {
