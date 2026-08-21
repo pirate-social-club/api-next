@@ -20,7 +20,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 12;
+const foundationTestCount = 13;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -2603,6 +2603,51 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(submissionColumns.rows.map((row) => row.column_name)).not.toContain("title");
       expect(submissionColumns.rows.map((row) => row.column_name)).not.toContain("body");
+    });
+    completedTestCount += 1;
+  });
+
+  test("requires the 0037 text tables to be empty before adding response snapshots", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      const preSnapshotMigrations = migrations.slice(0, -1);
+      await applyMigrations(scopedConnectionString, preSnapshotMigrations);
+      await admin.query("INSERT INTO users (user_id) VALUES ('text-order5-guard-actor')");
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, created_by_user_id, created_at, updated_at
+         ) VALUES ('text-order5-guard-community', 'Text guard', 'text-order5-guard-actor', now(), now())`,
+      );
+      await admin.query(
+        `INSERT INTO text_content_submissions (
+           community_id, submission_id, actor_user_id, surface, idempotency_key,
+           request_hash, status, moderation_decision, public_reason_code,
+           policy_revision_id, policy_hash, input_sha256, internal_reason_codes
+         ) VALUES (
+           'text-order5-guard-community', 'text-order5-guard-submission',
+           'text-order5-guard-actor', 'text_post', 'text-order5-guard-key',
+           repeat('a', 64), 'blocked', 'blocked', 'policy_violation',
+           'text-moderation-policy-v1',
+           'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
+           repeat('b', 64), '["hate"]'::jsonb
+         )`,
+      );
+
+      const guarded = await applyMigrations(scopedConnectionString, migrations).catch(
+        (error: unknown) => error,
+      );
+      expect(guarded).toMatchObject({
+        _tag: "ControlPlaneStatementFailed",
+        label: "postgres.migrations.0037_text_submission_response_snapshot.sql.apply",
+        sqlState: "P0001",
+      });
+      const applied = await admin.query<{ readonly version: string }>(
+        "SELECT version FROM schema_migrations ORDER BY version",
+      );
+      expect(applied.rows.at(-1)?.version).toBe(routeRevalidationCompletionMigration.version);
+    });
+
+    await withSchema(async (_admin, scopedConnectionString) => {
+      await applyMigrations(scopedConnectionString, migrations);
     });
     completedTestCount += 1;
   });

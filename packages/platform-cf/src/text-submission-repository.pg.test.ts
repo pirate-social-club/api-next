@@ -1,12 +1,19 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import type {
   CreatePostBody,
   M2Actor,
   TextPostModerationEvaluation,
   TextPostStore,
+  TextPostSubmissionDocument,
 } from "@pirate/application";
+import {
+  createTextPost,
+  getTextContentSubmission,
+  TextModerationProviderError,
+} from "@pirate/application/use-cases/content/text-post";
 import { canonicalTextModerationInput } from "@pirate/domain";
-import { Effect } from "effect";
+import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
@@ -19,6 +26,7 @@ if (required && connectionString === undefined)
 const suite = connectionString === undefined ? describe.skip : describe;
 
 const actor: M2Actor = { userId: "usr_text_order5", kind: "user" };
+const otherActor: M2Actor = { userId: "usr_text_order5_other", kind: "user" };
 const body = {
   post_type: "text",
   idempotency_key: "text-order5-race",
@@ -83,6 +91,7 @@ async function seed(admin: Client, schema: string): Promise<void> {
   const terminalAt = new Date(Date.now() - 1_000);
   const expiresAt = new Date(Date.now() + 60 * 60 * 1_000);
   await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor.userId]);
+  await admin.query("INSERT INTO users (user_id) VALUES ($1)", [otherActor.userId]);
   await admin.query(
     `INSERT INTO community_creation_intents (
        intent_id, actor_id, create_idempotency_key, create_request_hash, revision, status,
@@ -263,6 +272,19 @@ function runStore<A, E>(
   return Effect.runPromise(Effect.scoped(use(store)));
 }
 
+function snapshotBytes(snapshot: TextPostSubmissionDocument): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify(snapshot));
+}
+
+function databaseBytes(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array && value.byteLength > 0) return new Uint8Array(value);
+  throw new Error("expected non-empty response_snapshot_bytes");
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
 suite("Postgres 17 terminal text submission repository", () => {
   test("commits one terminal row and makes concurrent same-key submissions replay the winner", async () => {
     await withSchema(async (admin, connection) => {
@@ -281,6 +303,30 @@ suite("Postgres 17 terminal text submission repository", () => {
         );
       const results = await Promise.all([commit("operation_text_1"), commit("operation_text_2")]);
       expect(results.map((result) => result.kind).sort()).toEqual(["created", "replay"]);
+      const created = results.find((result) => result.kind === "created");
+      const replay = results.find((result) => result.kind === "replay");
+      if (created === undefined || replay === undefined)
+        throw new Error("expected one created outcome and one replay outcome");
+      const stored = await admin.query<{
+        readonly submission_id: string;
+        readonly response_snapshot_bytes: unknown;
+        readonly response_snapshot_sha256: string;
+      }>(
+        `SELECT submission_id, response_snapshot_bytes, response_snapshot_sha256
+           FROM text_content_submissions
+          WHERE actor_user_id = $1 AND surface = 'text_post' AND idempotency_key = $2`,
+        [actor.userId, body.idempotency_key],
+      );
+      expect(stored.rows).toHaveLength(1);
+      const storedRow = stored.rows[0];
+      if (storedRow === undefined) throw new Error("missing stored response snapshot");
+      const createdBytes = snapshotBytes(created.snapshot);
+      const replayBytes = snapshotBytes(replay.snapshot);
+      const storedBytes = databaseBytes(storedRow.response_snapshot_bytes);
+      expect(Array.from(replayBytes)).toEqual(Array.from(createdBytes));
+      expect(Array.from(replayBytes)).toEqual(Array.from(storedBytes));
+      expect(storedRow.response_snapshot_sha256).toBe(sha256(storedBytes));
+      expect(storedRow.response_snapshot_sha256).toBe(sha256(replayBytes));
       const crossCommunity = await runStore(connection, (store) =>
         store.replay({
           communityId: "other-community",
@@ -289,7 +335,9 @@ suite("Postgres 17 terminal text submission repository", () => {
           requestHash: "e".repeat(64),
         }),
       );
-      expect(crossCommunity).toMatchObject({ kind: "conflict" });
+      if (crossCommunity.kind !== "conflict")
+        throw new Error("expected cross-community key reuse to conflict");
+      expect(crossCommunity.submissionId).toBe(storedRow.submission_id);
       await admin
         .query("SELECT count(*) FROM text_post_reservations")
         .then(() => {
@@ -305,6 +353,182 @@ suite("Postgres 17 terminal text submission repository", () => {
          (SELECT count(*)::int FROM home_feed_projection) AS feed`,
       );
       expect(counts.rows[0]).toMatchObject({ submissions: 1, posts: 1, feed: 1 });
+    });
+  }, 30_000);
+
+  test("replays the immutable POST response bytes and digest without a second row", async () => {
+    await withSchema(async (admin, connection) => {
+      const postBody = {
+        ...body,
+        idempotency_key: "text-order5-post-replay",
+      } as CreatePostBody;
+      const textPostStore = makeControlPlaneTextSubmissionStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      let moderationCalls = 0;
+      const textModeration = {
+        evaluate: () => {
+          moderationCalls += 1;
+          return Effect.succeed(evaluation);
+        },
+      };
+      const first = await Effect.runPromise(
+        createTextPost(
+          { communityId: "text-community", actor, body: postBody },
+          { textPostStore, textModeration },
+        ),
+      );
+      const stored = await admin.query<{
+        readonly response_snapshot_bytes: unknown;
+        readonly response_snapshot_sha256: string;
+      }>(
+        `SELECT response_snapshot_bytes, response_snapshot_sha256
+           FROM text_content_submissions
+          WHERE actor_user_id = $1 AND surface = 'text_post' AND idempotency_key = $2`,
+        [actor.userId, postBody.idempotency_key],
+      );
+      expect(stored.rows).toHaveLength(1);
+      const storedRow = stored.rows[0];
+      if (storedRow === undefined) throw new Error("missing stored response snapshot");
+      const firstBytes = snapshotBytes(first);
+      const storedBytes = databaseBytes(storedRow.response_snapshot_bytes);
+      expect(Array.from(firstBytes)).toEqual(Array.from(storedBytes));
+      expect(storedRow.response_snapshot_sha256).toBe(sha256(storedBytes));
+      expect(storedRow.response_snapshot_sha256).toBe(sha256(firstBytes));
+
+      const second = await Effect.runPromise(
+        createTextPost(
+          { communityId: "text-community", actor, body: postBody },
+          { textPostStore, textModeration },
+        ),
+      );
+      expect(Array.from(snapshotBytes(second))).toEqual(Array.from(firstBytes));
+      expect(moderationCalls).toBe(1);
+      const count = await admin.query<{ readonly count: number }>(
+        `SELECT count(*)::int AS count
+           FROM text_content_submissions
+          WHERE actor_user_id = $1 AND surface = 'text_post' AND idempotency_key = $2`,
+        [actor.userId, postBody.idempotency_key],
+      );
+      expect(count.rows).toEqual([{ count: 1 }]);
+    });
+  }, 30_000);
+
+  test("returns the current GET state while replaying the original held POST response", async () => {
+    await withSchema(async (admin, connection) => {
+      const postBody = {
+        ...body,
+        idempotency_key: "text-order5-get-semantics",
+      } as CreatePostBody;
+      const textPostStore = makeControlPlaneTextSubmissionStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const first = await Effect.runPromise(
+        createTextPost(
+          { communityId: "text-community", actor, body: postBody },
+          {
+            textPostStore,
+            textModeration: {
+              evaluate: () =>
+                Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
+            },
+          },
+        ),
+      );
+      expect(first.status).toBe("manual_review");
+      const stored = await admin.query<{
+        readonly submission_id: string;
+        readonly review_ref: string;
+        readonly response_snapshot_bytes: unknown;
+      }>(
+        `SELECT submission_id, review_ref, response_snapshot_bytes
+           FROM text_content_submissions
+          WHERE actor_user_id = $1 AND surface = 'text_post' AND idempotency_key = $2`,
+        [actor.userId, postBody.idempotency_key],
+      );
+      expect(stored.rows).toHaveLength(1);
+      const storedRow = stored.rows[0];
+      if (storedRow === undefined) throw new Error("missing held submission");
+      const originalBytes = snapshotBytes(first);
+      expect(Array.from(originalBytes)).toEqual(
+        Array.from(databaseBytes(storedRow.response_snapshot_bytes)),
+      );
+
+      const otherActorResult = await Effect.runPromiseExit(
+        getTextContentSubmission(
+          { submissionId: storedRow.submission_id, actor: otherActor },
+          { textPostStore },
+        ),
+      );
+      if (Exit.isSuccess(otherActorResult))
+        throw new Error("an author-scoped GET must not return another actor's body");
+      const otherActorFailure = Cause.findError(otherActorResult.cause);
+      expect(
+        Result.isSuccess(otherActorFailure) ? otherActorFailure.success : undefined,
+      ).toMatchObject({ _tag: "NotFound" });
+
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO posts (
+           community_id, post_id, author_user_id, post_type, status, visibility,
+           title, body, created_at, updated_at
+         ) VALUES ('text-community', 'text-order5-approved', $1, 'text', 'published', 'public',
+           NULL, 'terminal text', now(), now())`,
+        [actor.userId],
+      );
+      await admin.query(
+        `UPDATE text_moderation_cases
+            SET status = 'approved', resolved_by_user_id = 'moderator-order5',
+                updated_at = clock_timestamp() + interval '1 millisecond'
+          WHERE case_id = $1`,
+        [storedRow.review_ref],
+      );
+      await admin.query(
+        `UPDATE text_content_submissions
+            SET status = 'published', public_reason_code = NULL,
+                published_post_id = 'text-order5-approved', review_ref = NULL,
+                updated_at = clock_timestamp() + interval '1 millisecond'
+          WHERE submission_id = $1`,
+        [storedRow.submission_id],
+      );
+      await admin.query(
+        `INSERT INTO home_feed_projection (
+           community_id, feed_item_id, post_id, rank_score, projected_at
+         ) VALUES ('text-community', 'feed-text-order5-approved', 'text-order5-approved', 0, now())`,
+      );
+      await admin.query("COMMIT");
+
+      const current = await Effect.runPromise(
+        getTextContentSubmission(
+          { submissionId: storedRow.submission_id, actor },
+          { textPostStore },
+        ),
+      );
+      expect(current).toMatchObject({
+        status: "published",
+        published_resource: {
+          kind: "post",
+          post_id: "text-order5-approved",
+        },
+      });
+      let replayModerationCalls = 0;
+      const replay = await Effect.runPromise(
+        createTextPost(
+          { communityId: "text-community", actor, body: postBody },
+          {
+            textPostStore,
+            textModeration: {
+              evaluate: () => {
+                replayModerationCalls += 1;
+                return Effect.fail(new TextModerationProviderError({ reason: "unavailable" }));
+              },
+            },
+          },
+        ),
+      );
+      expect(Array.from(snapshotBytes(replay))).toEqual(Array.from(originalBytes));
+      expect(replay.status).toBe("manual_review");
+      expect(replayModerationCalls).toBe(0);
     });
   }, 30_000);
 
