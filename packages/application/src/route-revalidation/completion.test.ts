@@ -225,10 +225,6 @@ function harness(
           : Effect.succeed(provider);
       },
     },
-    ids: {
-      attempt: () => attempt.route_revalidation_attempt_id,
-      evidence: () => attempt.evidence_ref,
-    },
   } satisfies HnsRouteRevalidationCompletionServices;
   return {
     services,

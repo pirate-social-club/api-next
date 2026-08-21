@@ -385,7 +385,6 @@ export interface HnsRouteRevalidationCompletionStore {
 export type HnsRouteRevalidationCompletionServices = Readonly<{
   readonly store: HnsRouteRevalidationCompletionStore;
   readonly provider: HnsRouteRevalidationCompletionProvider;
-  readonly ids?: Readonly<{ readonly attempt: () => string; readonly evidence: () => string }>;
 }>;
 
 export class HnsRouteRevalidationCompletionRejected extends Data.TaggedError(
