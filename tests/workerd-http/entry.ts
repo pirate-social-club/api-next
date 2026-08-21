@@ -1,6 +1,16 @@
 import type { IdentityStore } from "@pirate/application";
 import { getCurrentUser } from "@pirate/application/use-cases/current-user";
 import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
+import {
+  hnsCompletionRequestHash,
+  type NamespaceOwnershipCompletionServices,
+  type NamespaceOwnershipStoredCompletion,
+} from "@pirate/application/use-cases/namespace-ownership-completion";
+import {
+  hnsNamespaceStartHash,
+  type NamespaceOwnershipStartAuthority,
+  type NamespaceOwnershipStartServices,
+} from "@pirate/application/use-cases/namespace-ownership-start";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
 import {
   authenticateSession,
@@ -16,7 +26,9 @@ import {
   makeRs256SessionTokenVerifier,
   makeSessionCrypto,
 } from "@pirate/platform-cf";
+import { makePlatformNamespaceOwnershipProviderRegistry } from "@pirate/platform-cf/namespace-ownership-provider-registry";
 import { Effect } from "effect";
+import { makeNamespaceOwnershipHandlers } from "../../apps/http-worker/src/namespace-ownership-handlers.ts";
 import { createHttpWorker, type Principal } from "../../apps/http-worker/src/transport.ts";
 
 export {
@@ -136,10 +148,156 @@ const sessionExchange: SessionExchangeServices = {
   tokenMinter: makeRs256SessionTokenMinter(sessionCryptoInstance),
 };
 
+const namespaceRoute = {
+  family: "hns" as const,
+  root_label: "jazleeuw",
+  root_label_display: "jazleeuw",
+  path_segment: "app.jazleeuw",
+  href: "/c/app.jazleeuw",
+  app_host: null,
+};
+const namespaceAuthority: NamespaceOwnershipStartAuthority = {
+  actor_id: "usr_workerd_test",
+  creation_intent_id: "intent-workerd",
+  ceremony_intent_id: "ceremony-workerd",
+  expected_revision: 3,
+  requirement_hash: "a".repeat(64),
+  generation: 1,
+  provider_id: "hns.owner.v1",
+  provider_binding_hash: "b".repeat(64),
+  provider_configuration: { kind: "managed", reference: "hns-workerd", version: "1" },
+  route: namespaceRoute,
+};
+const namespaceStartRequestHash = await hnsNamespaceStartHash({
+  actor_id: namespaceAuthority.actor_id,
+  creation_intent_id: namespaceAuthority.creation_intent_id,
+  ceremony_intent_id: namespaceAuthority.ceremony_intent_id,
+  requirement_hash: namespaceAuthority.requirement_hash,
+  generation: namespaceAuthority.generation,
+  provider_id: namespaceAuthority.provider_id,
+  provider_binding_hash: namespaceAuthority.provider_binding_hash,
+  provider_configuration: namespaceAuthority.provider_configuration,
+  protocol_version: "hns-txt-v1",
+  environment: "test",
+  route: namespaceRoute,
+});
+const namespaceSession = {
+  actor_id: namespaceAuthority.actor_id,
+  creation_intent_id: namespaceAuthority.creation_intent_id,
+  ceremony_intent_id: namespaceAuthority.ceremony_intent_id,
+  requirement_hash: namespaceAuthority.requirement_hash,
+  generation: namespaceAuthority.generation,
+  request_hash: namespaceStartRequestHash,
+  provider_id: namespaceAuthority.provider_id,
+  provider_binding_hash: namespaceAuthority.provider_binding_hash,
+  provider_configuration: namespaceAuthority.provider_configuration,
+  protocol_version: "hns-txt-v1",
+  environment: "test",
+  route: namespaceRoute,
+  upstream_session_ref: "upstream-workerd",
+  expires_at: "2099-01-01T00:00:00.000Z",
+};
+const namespaceRegistry = await Effect.runPromise(makePlatformNamespaceOwnershipProviderRegistry());
+const namespaceStart: NamespaceOwnershipStartServices = {
+  environment: "test",
+  intents: {
+    resolve: (input) =>
+      input.actor_id === namespaceAuthority.actor_id &&
+      input.creation_intent_id === namespaceAuthority.creation_intent_id &&
+      input.ceremony_intent_id === namespaceAuthority.ceremony_intent_id &&
+      input.expected_revision === namespaceAuthority.expected_revision
+        ? Effect.succeed(namespaceAuthority)
+        : Effect.die("namespace authority input drifted"),
+  },
+  registry: namespaceRegistry,
+  store: {
+    replay: (input) => {
+      if (
+        input.actor_id !== namespaceAuthority.actor_id ||
+        input.creation_intent_id !== namespaceAuthority.creation_intent_id ||
+        input.ceremony_intent_id !== namespaceAuthority.ceremony_intent_id ||
+        input.expected_revision !== namespaceAuthority.expected_revision
+      ) {
+        return Effect.die("namespace replay input drifted");
+      }
+      return Effect.succeed(
+        input.client_idempotency_key === "replay-1"
+          ? {
+              kind: "replay" as const,
+              namespace_session_id: "namespace-session-replay",
+              start: {
+                session: namespaceSession,
+                presentation: {
+                  kind: "poll" as const,
+                  session_id: "upstream-workerd",
+                  poll_url: "/namespace/poll",
+                },
+              },
+            }
+          : { kind: "none" as const },
+      );
+    },
+    reserve: () => Effect.die("disabled registry must reject before reservation"),
+    finalize: () => Effect.die("disabled registry must reject before finalization"),
+    release: () => Effect.die("disabled registry must reject before release"),
+  },
+};
+const replayCompletionInput = {
+  actor_id: namespaceAuthority.actor_id,
+  creation_intent_id: namespaceAuthority.creation_intent_id,
+  ceremony_intent_id: namespaceAuthority.ceremony_intent_id,
+  session_id: "namespace-session-replay",
+  expected_revision: 3,
+  idempotency_key: "poll-replay-1",
+  channel: "poll_result" as const,
+};
+const replayCompletionHash = await hnsCompletionRequestHash(replayCompletionInput);
+const namespaceCompletion: NamespaceOwnershipCompletionServices = {
+  registry: namespaceRegistry,
+  store: {
+    load: (input) => {
+      if (
+        input.actor_id !== namespaceAuthority.actor_id ||
+        input.creation_intent_id !== namespaceAuthority.creation_intent_id ||
+        input.ceremony_intent_id !== namespaceAuthority.ceremony_intent_id ||
+        (input.session_id !== replayCompletionInput.session_id &&
+          input.session_id !== "namespace-session-fresh")
+      ) {
+        return Effect.die("namespace completion input drifted");
+      }
+      const terminal = input.session_id === replayCompletionInput.session_id;
+      const stored: NamespaceOwnershipStoredCompletion = {
+        namespace_session_id: input.session_id,
+        revision: 3,
+        session: namespaceSession,
+        status: terminal ? "completed" : "pending",
+        terminal: terminal
+          ? {
+              status: "verified",
+              idempotency_key: replayCompletionInput.idempotency_key,
+              completion_request_hash: replayCompletionHash,
+              result_hash: "d".repeat(64),
+            }
+          : null,
+      };
+      return Effect.succeed(stored);
+    },
+    reserve: () => Effect.die("disabled registry must reject before reservation"),
+    release: () => Effect.die("disabled registry must reject before release"),
+    reject: () => Effect.die("disabled registry must reject before rejection"),
+    consume: () => Effect.die("disabled registry must reject before consumption"),
+    verify: () => Effect.die("disabled registry must reject before verification"),
+  },
+};
+
 const app = createHttpWorker({
   config: { corsOrigin: "https://solid.test" },
   sessionExchange,
   handlers: {
+    ...makeNamespaceOwnershipHandlers({
+      start: namespaceStart,
+      completion: namespaceCompletion,
+    }),
     GetCurrentUser: ({ principal }) => {
       if (principal === null || (principal.kind !== "user" && principal.kind !== "admin")) {
         throw new AuthError({ message: "Authorization failed" });

@@ -40,6 +40,7 @@ const PositiveInteger = Schema.Int.check(
 
 export const CompleteNamespaceOwnershipInput = Schema.Struct({
   actor_id: CanonicalIdentifier,
+  creation_intent_id: CanonicalIdentifier,
   ceremony_intent_id: CanonicalIdentifier,
   session_id: CanonicalIdentifier,
   expected_revision: PositiveInteger,
@@ -121,6 +122,7 @@ export type NamespaceOwnershipVerifiedCompletion = Readonly<{
 export interface NamespaceOwnershipCompletionStore {
   readonly load: (input: {
     readonly actor_id: string;
+    readonly creation_intent_id: string;
     readonly ceremony_intent_id: string;
     readonly session_id: string;
   }) => Effect.Effect<
@@ -129,6 +131,7 @@ export interface NamespaceOwnershipCompletionStore {
   >;
   readonly reserve: (input: {
     readonly actor_id: string;
+    readonly creation_intent_id: string;
     readonly ceremony_intent_id: string;
     readonly session_id: string;
     readonly expected_revision: number;
@@ -243,11 +246,17 @@ function decodeInput(
 export function hnsCompletionRequestPreimage(
   input: Pick<
     CompleteNamespaceOwnershipInput,
-    "ceremony_intent_id" | "session_id" | "expected_revision" | "idempotency_key" | "channel"
+    | "creation_intent_id"
+    | "ceremony_intent_id"
+    | "session_id"
+    | "expected_revision"
+    | "idempotency_key"
+    | "channel"
   >,
 ): string {
   return JSON.stringify([
-    "pirate-hns-completion-request-v1",
+    "pirate-hns-completion-request-v2",
+    input.creation_intent_id,
     input.ceremony_intent_id,
     input.session_id,
     input.expected_revision,
@@ -260,7 +269,12 @@ export function hnsCompletionRequestPreimage(
 export function hnsCompletionRequestHash(
   input: Pick<
     CompleteNamespaceOwnershipInput,
-    "ceremony_intent_id" | "session_id" | "expected_revision" | "idempotency_key" | "channel"
+    | "creation_intent_id"
+    | "ceremony_intent_id"
+    | "session_id"
+    | "expected_revision"
+    | "idempotency_key"
+    | "channel"
   >,
 ): Promise<string> {
   return sha256Utf8(hnsCompletionRequestPreimage(input));
@@ -322,6 +336,7 @@ function validateStoredIdentity(
   if (
     stored.namespace_session_id !== input.session_id ||
     stored.session.actor_id !== input.actor_id ||
+    stored.session.creation_intent_id !== input.creation_intent_id ||
     stored.session.ceremony_intent_id !== input.ceremony_intent_id
   ) {
     return new NamespaceOwnershipCompletionRejected({ reason: "not_found" });
@@ -494,6 +509,7 @@ export const completeNamespaceOwnership = Effect.fn("completeNamespaceOwnership"
   );
   const stored = yield* services.store.load({
     actor_id: input.actor_id,
+    creation_intent_id: input.creation_intent_id,
     ceremony_intent_id: input.ceremony_intent_id,
     session_id: input.session_id,
   });
@@ -510,6 +526,7 @@ export const completeNamespaceOwnership = Effect.fn("completeNamespaceOwnership"
 
   const reservationOutcome = yield* services.store.reserve({
     actor_id: input.actor_id,
+    creation_intent_id: input.creation_intent_id,
     ceremony_intent_id: input.ceremony_intent_id,
     session_id: input.session_id,
     expected_revision: input.expected_revision,

@@ -518,6 +518,7 @@ async function createRepositoryNamespaceSession(
   const completionStore = makeControlPlaneNamespaceOwnershipCompletionStore(layer);
   const completionInput = {
     actor_id: startInput.start.actor_id,
+    creation_intent_id: startInput.start.creation_intent_id,
     ceremony_intent_id: startInput.start.ceremony_intent_id,
     session_id: startInput.namespace_session_id,
     expected_revision: 1,
@@ -533,6 +534,7 @@ async function createRepositoryNamespaceSession(
     Effect.scoped(
       completionStore.load({
         actor_id: completionInput.actor_id,
+        creation_intent_id: completionInput.creation_intent_id,
         ceremony_intent_id: completionInput.ceremony_intent_id,
         session_id: completionInput.session_id,
       }),
@@ -1494,6 +1496,28 @@ suite("Postgres namespace ownership persistence foundation", () => {
         scoped,
         "completion_retry",
       );
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.load({
+              actor_id: completionInput.actor_id,
+              creation_intent_id: "intent_other",
+              ceremony_intent_id: completionInput.ceremony_intent_id,
+              session_id: completionInput.session_id,
+            }),
+          ),
+        ),
+      ).toBeNull();
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            completionStore.reserve({
+              ...completionInput,
+              creation_intent_id: "intent_other",
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "not_found" });
       const first = await Effect.runPromise(
         Effect.scoped(completionStore.reserve(completionInput)),
       );
@@ -1740,6 +1764,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
           Effect.scoped(
             completionStore.load({
               actor_id: completionInput.actor_id,
+              creation_intent_id: completionInput.creation_intent_id,
               ceremony_intent_id: completionInput.ceremony_intent_id,
               session_id: completionInput.session_id,
             }),

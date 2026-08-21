@@ -169,6 +169,41 @@ describe("HTTP production composition", () => {
     });
     expect(startVerification.status).toBe(401);
 
+    for (const namespaceRequest of [
+      new Request(
+        "https://worker.test/community-creation-intents/intent-1/namespace-ownership/start",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ceremony_intent_id: "ceremony-1",
+            expected_revision: 1,
+            idempotency_key: "start-1",
+          }),
+        },
+      ),
+      new Request(
+        "https://worker.test/community-creation-intents/intent-1/namespace-ownership/poll",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ceremony_intent_id: "ceremony-1",
+            session_id: "namespace-session-1",
+            expected_revision: 1,
+            idempotency_key: "poll-1",
+            channel: "poll_result",
+          }),
+        },
+      ),
+    ]) {
+      const namespaceResponse = await worker.request(namespaceRequest);
+      // A 401, rather than the transport's 404 for a missing handler, proves
+      // both frozen routes are installed behind the session boundary.
+      expect(namespaceResponse.status).toBe(401);
+      expect(await namespaceResponse.json()).toMatchObject({ error: { code: "auth_error" } });
+    }
+
     const callback = await worker.request(
       "https://worker.test/verification/callbacks/future.provider",
       {

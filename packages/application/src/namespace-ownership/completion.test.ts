@@ -30,6 +30,7 @@ import { makeNamespaceOwnershipProviderRegistry } from "./registry.ts";
 const NOW = Date.parse("2026-02-03T00:00:00.000Z");
 const request = {
   actor_id: "user-1",
+  creation_intent_id: "cc_intent-1",
   ceremony_intent_id: "cc_ceremony-1",
   session_id: "ns_session-1",
   expected_revision: 1,
@@ -222,27 +223,27 @@ async function services(options: {
 describe("namespace ownership poll completion", () => {
   test("pins the completion request and terminal result vectors", async () => {
     expect(hnsCompletionRequestPreimage(request)).toBe(
-      '["pirate-hns-completion-request-v1","cc_ceremony-1","ns_session-1",1,"poll-01","poll_result",{}]',
+      '["pirate-hns-completion-request-v2","cc_intent-1","cc_ceremony-1","ns_session-1",1,"poll-01","poll_result",{}]',
     );
     await expect(hnsCompletionRequestHash(request)).resolves.toBe(
-      "1b517ea4ad9f8e462fd7f0a4ad9451230421f37d4395709ffe8a7dcecf7208a4",
+      "baf902779ead99960d22ec4662ffc9007066c4e823d384b6da97b6797564c06d",
     );
     const rejected = {
       ceremony_intent_id: request.ceremony_intent_id,
       session_id: request.session_id,
       expected_revision: request.expected_revision,
       idempotency_key: request.idempotency_key,
-      completion_request_hash: "1b517ea4ad9f8e462fd7f0a4ad9451230421f37d4395709ffe8a7dcecf7208a4",
+      completion_request_hash: "baf902779ead99960d22ec4662ffc9007066c4e823d384b6da97b6797564c06d",
       status: "rejected" as const,
       evidence_ref: null,
       evidence_digest: null,
       provider_identity_digest: null,
     };
     expect(hnsTerminalResultPreimage(rejected)).toBe(
-      '["pirate-hns-terminal-result-v1","cc_ceremony-1","ns_session-1",1,"poll-01","1b517ea4ad9f8e462fd7f0a4ad9451230421f37d4395709ffe8a7dcecf7208a4","rejected",null,null,null]',
+      '["pirate-hns-terminal-result-v1","cc_ceremony-1","ns_session-1",1,"poll-01","baf902779ead99960d22ec4662ffc9007066c4e823d384b6da97b6797564c06d","rejected",null,null,null]',
     );
     await expect(hnsTerminalResultHash(rejected)).resolves.toBe(
-      "8f1bc3403dcddb3291774f8baf39368198ffb1fe6c3e69364fb720293e62688d",
+      "ef01c152cc0a7205db726538a7ef70e91666901b37616f9b8881f7a91d6f484d",
     );
     await expect(
       hnsTerminalResultHash({
@@ -253,7 +254,7 @@ describe("namespace ownership poll completion", () => {
         provider_identity_digest:
           "21d53c5e1d466e65cfa1a2997ddf307640592743472df15feb64d4084b5396ff",
       }),
-    ).resolves.toBe("222449132b6b4c10a3fea301df3e2de61744521c75d38ce8dd063504a26e1958");
+    ).resolves.toBe("5a57ab41cc2e555024d838e861484caafa59eb742a5ed3bd097dea2bc2d8354f");
   });
 
   test("returns an exact terminal replay before registry or provider access", async () => {
@@ -320,6 +321,31 @@ describe("namespace ownership poll completion", () => {
     ).rejects.toMatchObject(
       new NamespaceOwnershipCompletionRejected({ reason: "idempotency_conflict" }),
     );
+    await expect(
+      Effect.runPromise(
+        completeNamespaceOwnership(
+          { ...request, creation_intent_id: "cc_intent-other" },
+          {
+            store: {
+              load: () => Effect.succeed(initial),
+              reserve: () => Effect.die("not used"),
+              release: () => Effect.die("not used"),
+              reject: () => Effect.die("not used"),
+              consume: () => Effect.die("not used"),
+              verify: () => Effect.die("not used"),
+            },
+            registry: {
+              list: () => [],
+              resolve: () => {
+                resolved += 1;
+                return Effect.die("not used");
+              },
+            },
+          },
+        ),
+      ),
+    ).rejects.toMatchObject(new NamespaceOwnershipCompletionRejected({ reason: "not_found" }));
+    expect(resolved).toBe(0);
   });
 
   test("releases pending and unavailable attempts without terminal authority", async () => {

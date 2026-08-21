@@ -34,6 +34,9 @@
       "@pirate/platform-cf/verification-provider-registry": [
         "./packages/platform-cf/src/verification/provider-registry.ts"
       ],
+      "@pirate/platform-cf/namespace-ownership-provider-registry": [
+        "./packages/platform-cf/src/namespace-ownership/provider-registry.ts"
+      ],
       "@pirate/platform-cf/verification-start-repository": [
         "./packages/platform-cf/src/verification-start-repository.ts"
       ],

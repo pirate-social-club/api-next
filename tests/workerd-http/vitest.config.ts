@@ -26,6 +26,14 @@ const alias = {
     "../../packages/application/src/use-cases/identity-registration-handler.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/use-cases/namespace-ownership-start": new URL(
+    "../../packages/application/src/use-cases/namespace-ownership-start.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/use-cases/namespace-ownership-completion": new URL(
+    "../../packages/application/src/use-cases/namespace-ownership-completion.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application": new URL("../../packages/application/src/index.ts", import.meta.url)
     .pathname,
   "@pirate/contracts": new URL("../../packages/contracts/src/index.ts", import.meta.url).pathname,
@@ -34,6 +42,10 @@ const alias = {
     import.meta.url,
   ).pathname,
   "@pirate/domain": new URL("../../packages/domain/src/index.ts", import.meta.url).pathname,
+  "@pirate/platform-cf/namespace-ownership-provider-registry": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/provider-registry.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)
     .pathname,
   "@pirate/platform-cf/registration-rate-limiter": new URL(

@@ -33,6 +33,12 @@ import {
   makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityStore,
 } from "@pirate/platform-cf/identity-repository";
+import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
+import { makePlatformNamespaceOwnershipProviderRegistry } from "@pirate/platform-cf/namespace-ownership-provider-registry";
+import {
+  makeControlPlaneNamespaceOwnershipStartAuthorityResolver,
+  makeControlPlaneNamespaceOwnershipStartStore,
+} from "@pirate/platform-cf/namespace-ownership-start-repository";
 import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
@@ -67,6 +73,7 @@ import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
+import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
@@ -446,6 +453,24 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     identityStore,
   });
   const communityCreationHandlers = makeCommunityCreationHandlers({ communityCreationStore });
+  // The route is installed before any provider is enabled so durable terminal
+  // replays remain available. Fresh starts fail closed until a separately
+  // ratified production transport is configured and registered.
+  const namespaceOwnershipRegistry = await Effect.runPromise(
+    makePlatformNamespaceOwnershipProviderRegistry(),
+  );
+  const namespaceOwnershipHandlers = makeNamespaceOwnershipHandlers({
+    start: {
+      intents: makeControlPlaneNamespaceOwnershipStartAuthorityResolver(controlPlane),
+      registry: namespaceOwnershipRegistry,
+      store: makeControlPlaneNamespaceOwnershipStartStore(controlPlane),
+      environment: config.API_NEXT_ENV,
+    },
+    completion: {
+      registry: namespaceOwnershipRegistry,
+      store: makeControlPlaneNamespaceOwnershipCompletionStore(controlPlane),
+    },
+  });
   const sessionCrypto = await makeSessionCrypto({
     privateKeyPem: Redacted.value(config.PIRATE_APP_JWT_PRIVATE_KEY),
     publicKeyPem: Redacted.value(config.PIRATE_APP_JWT_PUBLIC_KEY),
@@ -510,6 +535,7 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     handlers: {
       ...productHandlers,
       ...communityCreationHandlers,
+      ...namespaceOwnershipHandlers,
       ...verificationHandlers,
       ...fundingHandlers,
       GetJwks: () => sessionCrypto.jwks(),

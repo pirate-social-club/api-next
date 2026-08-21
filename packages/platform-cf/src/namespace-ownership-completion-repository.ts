@@ -195,6 +195,7 @@ function loadStored(
   transaction: Transaction,
   input: {
     readonly actor_id: string;
+    readonly creation_intent_id: string;
     readonly ceremony_intent_id: string;
     readonly session_id: string;
   },
@@ -213,9 +214,15 @@ function loadStored(
                LEFT JOIN community_creation_ceremony_results AS result
                  ON result.namespace_session_id = ns.namespace_session_id
               WHERE ns.actor_id = $1
-                AND ns.ceremony_intent_id = $2
-                AND ns.namespace_session_id = $3${lock ? " FOR UPDATE OF ns" : ""}`,
-      values: [input.actor_id, input.ceremony_intent_id, input.session_id],
+                AND ns.creation_intent_id = $2
+                AND ns.ceremony_intent_id = $3
+                AND ns.namespace_session_id = $4${lock ? " FOR UPDATE OF ns" : ""}`,
+      values: [
+        input.actor_id,
+        input.creation_intent_id,
+        input.ceremony_intent_id,
+        input.session_id,
+      ],
       readonly: !lock,
     });
     const row = oneRow(result);
@@ -238,6 +245,7 @@ function lockAuthority(
   transaction: Transaction,
   input: {
     readonly actor_id: string;
+    readonly creation_intent_id: string;
     readonly ceremony_intent_id: string;
     readonly session_id: string;
   },
@@ -252,8 +260,14 @@ function lockAuthority(
                FROM namespace_ownership_sessions
               WHERE namespace_session_id = $1
                 AND actor_id = $2
-                AND ceremony_intent_id = $3`,
-      values: [input.session_id, input.actor_id, input.ceremony_intent_id],
+                AND creation_intent_id = $3
+                AND ceremony_intent_id = $4`,
+      values: [
+        input.session_id,
+        input.actor_id,
+        input.creation_intent_id,
+        input.ceremony_intent_id,
+      ],
       readonly: false,
     });
     const candidate = oneRow(candidateResult);
@@ -1035,6 +1049,7 @@ function makeRepository(): NamespaceOwnershipCompletionRepository {
           Effect.gen(function* () {
             const authority = yield* lockAuthority(transaction, {
               actor_id: input.actor_id,
+              creation_intent_id: input.expected.session.creation_intent_id,
               ceremony_intent_id: input.expected.session.ceremony_intent_id,
               session_id: input.expected.namespace_session_id,
             });
@@ -1141,6 +1156,7 @@ function finalizeTerminal(
   return Effect.gen(function* () {
     const authority = yield* lockAuthority(transaction, {
       actor_id: input.actor_id,
+      creation_intent_id: input.expected.session.creation_intent_id,
       ceremony_intent_id: input.expected.session.ceremony_intent_id,
       session_id: input.expected.namespace_session_id,
     });
