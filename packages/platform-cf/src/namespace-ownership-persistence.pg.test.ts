@@ -27,7 +27,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const namespacePersistenceTestCount = 32;
+const namespacePersistenceTestCount = 33;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete";
@@ -450,9 +450,12 @@ async function seedActiveRevalidationRoute(client: Client, suffix: string): Prom
   await client.query("COMMIT");
 }
 
-async function insertRevalidationSession(client: Client, suffix: string): Promise<void> {
+async function insertRevalidationSession(
+  client: Client,
+  suffix: string,
+  expiresAt = new Date(Date.now() + 3_600_000).toISOString(),
+): Promise<void> {
   const upstreamSessionRef = `revalidation_upstream_${suffix}`;
-  const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
   const startPresentation = {
     kind: "embedded_sdk",
     session_id: upstreamSessionRef,
@@ -535,7 +538,9 @@ async function insertRevalidationAttempt(client: Client, suffix: string): Promis
        expected_verified_evidence_ref, attempt_number, idempotency_key,
        completion_request_hash, evidence_ref, state, fence_token, lease_expires_at
      ) VALUES ($1, $2, $3, $4, 1, $5, 1, $6, $7, $8, 'leased', 1,
-       clock_timestamp() + interval '15 seconds')`,
+       LEAST(clock_timestamp() + interval '15 seconds',
+             (SELECT expires_at FROM community_route_revalidation_sessions
+               WHERE revalidation_session_id = $3)))`,
     [
       `revalidation_attempt_${suffix}`,
       `route_revalidation_${suffix}`,
@@ -2497,7 +2502,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
       );
       await client.query(
         `UPDATE community_route_revalidation_sessions
-            SET status = 'completed', terminal_at = clock_timestamp()
+            SET status = 'failed', terminal_at = clock_timestamp()
           WHERE revalidation_session_id = $1`,
         ["revalidation_session_revalidation_negative"],
       );
@@ -2561,6 +2566,242 @@ suite("Postgres namespace ownership persistence foundation", () => {
         ).rows[0],
       ).toEqual({ expected_binding_generation: 2, expected_verified_evidence_ref: null });
     });
+    completedTestCount += 1;
+  });
+
+  test("persists the complete route-revalidation outcome matrix and fences a stale CAS", async () => {
+    const outcomes = [
+        {
+          suffix: "matrix_verified",
+          kind: "verified",
+          status: "completed",
+          generation: 2,
+          evidence: "revalidation_evidence_matrix_verified",
+          ownership: "verified",
+          lifecycle: "active",
+          snapshots: 1,
+          routeEvidence: 1,
+        },
+        {
+          suffix: "matrix_session_expired",
+          kind: "session_expired",
+          status: "expired",
+          generation: 1,
+          evidence: "evidence_matrix_session_expired",
+          ownership: "verified",
+          lifecycle: "active",
+          snapshots: 0,
+          routeEvidence: 0,
+        },
+        {
+          suffix: "matrix_missing_root",
+          kind: "missing_root",
+          status: "failed",
+          generation: 2,
+          evidence: null,
+          ownership: "revoked",
+          lifecycle: "suspended",
+          snapshots: 0,
+          routeEvidence: 0,
+        },
+        {
+          suffix: "matrix_control_failed",
+          kind: "control_failed",
+          status: "failed",
+          generation: 2,
+          evidence: null,
+          ownership: "disputed",
+          lifecycle: "suspended",
+          snapshots: 0,
+          routeEvidence: 0,
+        },
+        {
+          suffix: "matrix_challenge_mismatch",
+          kind: "challenge_mismatch",
+          status: "failed",
+          generation: 2,
+          evidence: null,
+          ownership: "disputed",
+          lifecycle: "suspended",
+          snapshots: 0,
+          routeEvidence: 0,
+        },
+        {
+          suffix: "matrix_insufficient_expiry",
+          kind: "insufficient_expiry",
+          status: "failed",
+          generation: 2,
+          evidence: null,
+          ownership: "expired",
+          lifecycle: "suspended",
+          snapshots: 0,
+          routeEvidence: 0,
+        },
+        {
+          suffix: "matrix_disputed",
+          kind: "disputed",
+          status: "failed",
+          generation: 2,
+          evidence: null,
+          ownership: "disputed",
+          lifecycle: "suspended",
+          snapshots: 0,
+          routeEvidence: 0,
+        },
+        {
+          suffix: "matrix_revoked",
+          kind: "revoked",
+          status: "failed",
+          generation: 2,
+          evidence: null,
+          ownership: "revoked",
+          lifecycle: "suspended",
+          snapshots: 0,
+          routeEvidence: 0,
+        },
+        {
+          suffix: "matrix_database_time_expired",
+          kind: "database_time_expired",
+          status: "failed",
+          generation: 2,
+          evidence: null,
+          ownership: "expired",
+          lifecycle: "suspended",
+          snapshots: 0,
+          routeEvidence: 0,
+        },
+        {
+          suffix: "matrix_stale_cas",
+          kind: "stale_cas",
+          status: "failed",
+          generation: 2,
+          evidence: "stale_matrix_stale_cas",
+          ownership: "verified",
+          lifecycle: "active",
+          snapshots: 0,
+          routeEvidence: 0,
+        },
+    ] as const;
+    const negativeRouteState = {
+        missing_root: ["revoked", "suspended"],
+        control_failed: ["disputed", "suspended"],
+        challenge_mismatch: ["disputed", "suspended"],
+        insufficient_expiry: ["expired", "suspended"],
+        disputed: ["disputed", "suspended"],
+        revoked: ["revoked", "suspended"],
+        database_time_expired: ["expired", "suspended"],
+    } as const;
+    for (const outcome of outcomes) {
+      await withSchema(async (client, scoped) => {
+        let contender: Client | null = null;
+        try {
+          const expiresAt =
+            outcome.kind === "session_expired"
+              ? new Date(Date.now() + 400).toISOString()
+              : new Date(Date.now() + 3_600_000).toISOString();
+          await seedActiveRevalidationRoute(client, outcome.suffix);
+          await insertRevalidationSession(client, outcome.suffix, expiresAt);
+          await insertRevalidationAttempt(client, outcome.suffix);
+          if (outcome.kind === "session_expired") {
+            await client.query("SELECT pg_sleep(0.6)");
+          }
+          if (outcome.kind === "verified") {
+            await finalizeRevalidationEvidence(client, outcome.suffix);
+          } else {
+            if (outcome.kind === "stale_cas") {
+              if (contender === null) {
+                contender = new Client({ connectionString: scoped });
+                await contender.connect();
+              }
+              await contender.query(
+                `UPDATE community_canonical_route_bindings
+                    SET binding_generation = 2, verified_evidence_ref = $1,
+                        ownership_status = 'verified', route_lifecycle_status = 'active',
+                        updated_at = clock_timestamp()
+                  WHERE route_binding_id = $2`,
+                [outcome.evidence, `route_binding_${outcome.suffix}`],
+              );
+            } else if (outcome.kind !== "session_expired") {
+              const [ownership, lifecycle] = negativeRouteState[outcome.kind];
+              await client.query(
+                `UPDATE community_canonical_route_bindings
+                    SET binding_generation = 2, verified_evidence_ref = NULL,
+                        ownership_status = $1, route_lifecycle_status = $2,
+                        updated_at = clock_timestamp()
+                  WHERE route_binding_id = $3`,
+                [ownership, lifecycle, `route_binding_${outcome.suffix}`],
+              );
+            }
+            await client.query("BEGIN");
+            if (outcome.kind === "stale_cas") {
+              const cas = await client.query(
+                `UPDATE community_canonical_route_bindings
+                    SET binding_generation = 2, verified_evidence_ref = $1
+                  WHERE route_binding_id = $2
+                    AND binding_generation = 1
+                    AND verified_evidence_ref IS NOT DISTINCT FROM $3`,
+                [outcome.evidence, `route_binding_${outcome.suffix}`, `evidence_${outcome.suffix}`],
+              );
+              expect(cas.rowCount).toBe(0);
+            }
+            await client.query(
+              `UPDATE community_route_revalidation_completion_attempts
+                  SET state = 'consumed', consumption_kind = $1,
+                      result_hash = $2, terminal_at = clock_timestamp()
+                WHERE route_revalidation_attempt_id = $3`,
+              [outcome.kind, SHA, `revalidation_attempt_${outcome.suffix}`],
+            );
+            await client.query(
+              `UPDATE community_route_revalidation_sessions
+                  SET status = $1, terminal_at = clock_timestamp()
+                WHERE revalidation_session_id = $2`,
+              [outcome.status, `revalidation_session_${outcome.suffix}`],
+            );
+            await client.query("COMMIT");
+          }
+          expect(
+            (
+              await client.query(
+                `SELECT session.status,
+                        attempt.consumption_kind,
+                        (attempt.result_hash IS NOT NULL) AS has_result_hash,
+                        binding.binding_generation::int AS binding_generation,
+                        binding.verified_evidence_ref,
+                        binding.ownership_status,
+                        binding.route_lifecycle_status,
+                        (SELECT count(*)::int
+                           FROM community_route_revalidation_evidence_snapshots AS snapshot
+                          WHERE snapshot.revalidation_session_id = session.revalidation_session_id)
+                          AS snapshots,
+                        (SELECT count(*)::int
+                           FROM community_route_ownership_evidence AS evidence
+                          WHERE evidence.route_revalidation_attempt_id = attempt.route_revalidation_attempt_id)
+                          AS route_evidence
+                   FROM community_route_revalidation_sessions AS session
+                   JOIN community_route_revalidation_completion_attempts AS attempt
+                     ON attempt.revalidation_session_id = session.revalidation_session_id
+                   JOIN community_canonical_route_bindings AS binding
+                     ON binding.route_binding_id = session.route_binding_id
+                  WHERE session.revalidation_session_id = $1`,
+                [`revalidation_session_${outcome.suffix}`],
+              )
+            ).rows[0],
+          ).toEqual({
+            status: outcome.status,
+            consumption_kind: outcome.kind,
+            has_result_hash: true,
+            binding_generation: outcome.generation,
+            verified_evidence_ref: outcome.evidence,
+            ownership_status: outcome.ownership,
+            route_lifecycle_status: outcome.lifecycle,
+            snapshots: outcome.snapshots,
+            route_evidence: outcome.routeEvidence,
+          });
+        } finally {
+          if (contender !== null) await contender.end();
+        }
+      });
+    }
     completedTestCount += 1;
   });
 
@@ -2658,12 +2899,12 @@ suite("Postgres namespace ownership persistence foundation", () => {
       );
       await client.query(
         `UPDATE community_route_revalidation_sessions
-            SET status = 'failed', terminal_at = clock_timestamp()
+            SET status = 'completed', terminal_at = clock_timestamp()
           WHERE revalidation_session_id = $1`,
         ["revalidation_session_revalidation_outcome_mismatch"],
       );
       await expect(client.query("COMMIT")).rejects.toThrow(
-        "route revalidation session status contradicts its consumed outcome",
+        "completed route revalidation session requires exactly one verified attempt with a result hash",
       );
       await client.query("ROLLBACK");
       expect(

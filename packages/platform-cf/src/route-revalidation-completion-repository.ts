@@ -906,7 +906,20 @@ function makeStore(db: ControlPlaneDb["Service"]): HnsRouteRevalidationCompletio
             ],
             readonly: false,
           });
-          if (updated.rowCount !== 1) return { kind: "stale_cas" } as const;
+          if (updated.rowCount !== 1) {
+            const consumed = yield* consumeAttempt(
+              transaction,
+              input.attempt,
+              input.idempotency_key,
+              input.completion_request_hash,
+              "stale_cas",
+              input.result_hash,
+              now,
+            );
+            if (consumed && (yield* transitionSession(transaction, input.expected, "failed", now)))
+              return { kind: "stale_cas" } as const;
+            return { kind: "lease_lost" } as const;
+          }
           if (
             !(yield* consumeAttempt(
               transaction,
@@ -1129,4 +1142,3 @@ export function makeControlPlaneRouteRevalidationCompletionRepository(
 ): HnsRouteRevalidationCompletionStore {
   return makeControlPlaneRouteRevalidationCompletionStore(runtime);
 }
-
