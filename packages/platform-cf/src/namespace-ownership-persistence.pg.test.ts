@@ -10,6 +10,7 @@ import type {
   HnsRouteRevalidationProviderStartResult,
   HnsRouteRevalidationStartReservationInput,
 } from "@pirate/application/route-revalidation";
+import { hnsRouteRevalidationCompletionHash } from "@pirate/application/route-revalidation";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "./namespace-ownership-completion-repository";
@@ -19,6 +20,7 @@ import {
 } from "./namespace-ownership-start-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { makeControlPlaneRouteRevalidationStartStore } from "./route-revalidation-start-repository";
+import { makeControlPlaneRouteRevalidationCompletionStore } from "./route-revalidation-completion-repository";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -27,7 +29,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const namespacePersistenceTestCount = 33;
+const namespacePersistenceTestCount = 34;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-namespace-ownership-suite-complete";
@@ -2804,6 +2806,82 @@ suite("Postgres namespace ownership persistence foundation", () => {
     }
     completedTestCount += 1;
   }, 30_000);
+
+  test("allocates and hashes one authoritative completion reservation under concurrency", async () => {
+    await withSchema(async (client, scoped) => {
+      await seedActiveRevalidationRoute(client, "completion_abi");
+      await insertRevalidationSession(client, "completion_abi");
+      const store = makeControlPlaneRouteRevalidationCompletionStore(
+        makeDirectPostgresControlPlaneLayer(scoped),
+      );
+      const input = {
+        route_revalidation_id: "route_revalidation_completion_abi",
+        revalidation_session_id: "revalidation_session_completion_abi",
+        expected_binding_generation: 1,
+        expected_verified_evidence_ref: "evidence_completion_abi",
+        idempotency_key: "completion-key-abi",
+        lease_ms: 1_000,
+        max_consumed_attempts: 3,
+      } as const;
+      const outcomes = await Promise.all(
+        [0, 1].map(() => Effect.runPromise(Effect.scoped(store.reserve(input)))),
+      );
+      expect(outcomes.map(({ kind }) => kind).sort()).toEqual(["acquired", "in_flight"]);
+      const acquired = outcomes.find((outcome) => outcome.kind === "acquired");
+      if (acquired?.kind !== "acquired") throw new Error("expected one acquired completion");
+      const reservation = acquired.reservation;
+      const expectedHash = await hnsRouteRevalidationCompletionHash({
+        route_revalidation_id: input.route_revalidation_id,
+        revalidation_session_id: input.revalidation_session_id,
+        route_revalidation_attempt_id: reservation.route_revalidation_attempt_id,
+        route_binding_id: reservation.route_binding_id,
+        expected_binding_generation: reservation.expected_binding_generation,
+        expected_verified_evidence_ref: reservation.expected_verified_evidence_ref,
+        attempt_number: reservation.attempt_number,
+        idempotency_key: reservation.idempotency_key,
+        evidence_ref: reservation.evidence_ref,
+      });
+      expect(reservation).toMatchObject({ attempt_number: 1, fence_token: 1 });
+      expect(reservation.completion_request_hash).toBe(expectedHash);
+      expect(reservation.evidence_ref).toMatch(/^route-revalidation-evidence-/u);
+      const stored = await Effect.runPromise(
+        Effect.scoped(
+          store.load({
+            route_revalidation_id: input.route_revalidation_id,
+            revalidation_session_id: input.revalidation_session_id,
+            idempotency_key: input.idempotency_key,
+          }),
+        ),
+      );
+      if (stored === null) throw new Error("expected stored completion");
+      expect(stored.database_now).toMatch(/^20/u);
+      expect(
+        await Effect.runPromise(
+          Effect.scoped(
+            store.release({
+              expected: stored,
+              idempotency_key: input.idempotency_key,
+              completion_request_hash: reservation.completion_request_hash,
+              expired_result_hash: SHA_B,
+              attempt: reservation,
+            }),
+          ),
+        ),
+      ).toEqual({ kind: "released" });
+      const reacquired = await Effect.runPromise(Effect.scoped(store.reserve(input)));
+      expect(reacquired).toMatchObject({
+        kind: "acquired",
+        reservation: {
+          route_revalidation_attempt_id: reservation.route_revalidation_attempt_id,
+          evidence_ref: reservation.evidence_ref,
+          attempt_number: 1,
+          fence_token: 2,
+          completion_request_hash: expectedHash,
+        },
+      });
+    });
+    completedTestCount += 1;
+  }, 15_000);
 
   test("rejects a fabricated revalidation snapshot and rolls back the authority transition", async () => {
     await withSchema(async (client) => {
