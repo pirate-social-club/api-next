@@ -732,7 +732,8 @@ suite("Postgres 17 community creation repository", () => {
         reason: "idempotency-conflict",
       });
       const activation = await admin.query(
-        `SELECT community.route_slug, community.canonical_route_binding_id,
+        `SELECT community.route_slug, community.route_authority_version,
+                community.canonical_route_binding_id,
                 binding.community_id, binding.path_segment, binding.href,
                 binding.ownership_status, binding.route_lifecycle_status,
                 intent.committed_resource_href,
@@ -757,6 +758,7 @@ suite("Postgres 17 community creation repository", () => {
       expect(activation.rows).toEqual([
         {
           route_slug: null,
+          route_authority_version: "route_v1",
           canonical_route_binding_id: "bound-start-route",
           community_id: "bound-start-community",
           path_segment: "app.bound-start",

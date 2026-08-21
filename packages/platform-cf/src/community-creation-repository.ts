@@ -2760,10 +2760,10 @@ export function makeControlPlaneCommunityCreationRepository(
                      community_id, display_name, status, created_by_user_id,
                      created_at, updated_at, membership_mode,
                      human_verification_lane, route_slug, description,
-                     canonical_route_binding_id
+                     canonical_route_binding_id, route_authority_version
                    ) VALUES (
                      $1, $2, 'active', $3, clock_timestamp(), clock_timestamp(),
-                     'gated', 'very', NULL, $4, $5
+                     'gated', 'very', NULL, $4, $5, 'route_v1'
                    )`,
             values: [
               communityId,

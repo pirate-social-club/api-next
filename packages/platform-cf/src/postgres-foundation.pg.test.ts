@@ -176,6 +176,9 @@ const communityCreationRouteContractMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const routeAuthorityVersionMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0032_route_authority_version.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -337,6 +340,11 @@ const communityCreationRouteContractMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0031_community_creation_route_contract.sql"] ?? "",
   sql: communityCreationRouteContractMigrationSql,
 };
+const routeAuthorityVersionMigration: PostgresMigration = {
+  version: "0032_route_authority_version.sql",
+  checksum: checksumManifest.migrations["0032_route_authority_version.sql"] ?? "",
+  sql: routeAuthorityVersionMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -369,6 +377,7 @@ const migrations: readonly PostgresMigration[] = [
   namespaceOwnershipPersistenceMigration,
   namespaceOwnershipCompletionExpiryMigration,
   communityCreationRouteContractMigration,
+  routeAuthorityVersionMigration,
 ];
 
 function checksum(value: string): string {
@@ -574,6 +583,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(communityCreationRouteContractMigrationSql)).toBe(
         communityCreationRouteContractMigration.checksum,
+      );
+      expect(checksum(routeAuthorityVersionMigrationSql)).toBe(
+        routeAuthorityVersionMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
@@ -944,6 +956,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         { column_name: "route_slug", ordinal_position: 9 },
         { column_name: "description", ordinal_position: 10 },
         { column_name: "canonical_route_binding_id", ordinal_position: 11 },
+        { column_name: "route_authority_version", ordinal_position: 12 },
       ]);
     });
     completedTestCount += 1;
@@ -3069,6 +3082,20 @@ suite("Postgres 17 product and gates v2 foundation", () => {
           WHERE community_id = 'unbound-community'`,
       );
       expect(unbound.rows[0]?.count).toBe("0");
+      await admin.query("SAVEPOINT route_v1_unbound");
+      await expectPostgresFailure(
+        admin,
+        "23514",
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug, route_authority_version
+         ) VALUES (
+           'route-v1-unbound', 'Route v1 unbound', 'active', 'route-creator',
+           clock_timestamp(), clock_timestamp(), NULL, 'route_v1'
+         )`,
+        [],
+      );
+      await admin.query("ROLLBACK TO SAVEPOINT route_v1_unbound");
 
       await admin.query("RELEASE SAVEPOINT route_terminal_ready");
       await admin.query(
