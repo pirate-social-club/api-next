@@ -73,13 +73,16 @@ describe("config system (000 §9)", () => {
       VERY_OAUTH_JWKS_URL: "",
       VERY_OAUTH_CLIENT_ID: "",
       VERY_OAUTH_REDIRECT_URI: "",
+      HNS_OWNERSHIP_ENABLED: false,
+      HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "",
+      HNS_OWNERSHIP_CONFIGURATION_VERSION: "",
       PIRATE_API_PUBLIC_ORIGIN: "",
     });
     expect(Redacted.value(configured.VERY_OAUTH_CLIENT_SECRET)).toBe("");
     expect(Redacted.value(configured.VERY_OAUTH_SEALING_KEY)).toBe("");
   });
 
-  test("Wrangler keeps Very OAuth disabled and out of required secrets in every environment", async () => {
+  test("Wrangler keeps external ownership providers disabled in every environment", async () => {
     const config = BunRuntime.JSONC.parse(
       await BunRuntime.file(
         new URL("../../../apps/http-worker/wrangler.jsonc", import.meta.url),
@@ -100,6 +103,7 @@ describe("config system (000 §9)", () => {
     const environments = [config, ...Object.values(config.env ?? {})];
     for (const environment of environments) {
       expect(environment.vars?.VERY_OAUTH_ENABLED).toBe("false");
+      expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
     }

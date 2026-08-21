@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { HnsOwnerTransport } from "@pirate/platform-cf/namespace-ownership-provider-registry";
 import { Effect } from "effect";
 import {
   createProductionHttpWorker,
@@ -70,6 +71,11 @@ function withVeryOauth(bindings: HttpWorkerBindings): HttpWorkerBindings {
     VERY_OAUTH_SEALING_KEY: "k".repeat(32),
   };
 }
+
+const inertHnsTransport: HnsOwnerTransport = {
+  start: () => Effect.die("HNS transport must not run during Worker composition"),
+  poll: () => Effect.die("HNS transport must not run during Worker composition"),
+};
 
 describe("HTTP production composition", () => {
   test("requires both Durable Object registration limiter bindings", () => {
@@ -238,6 +244,31 @@ describe("HTTP production composition", () => {
   test("constructs the enabled Very OAuth provider without making an upstream request", async () => {
     const configured = await bindings();
     const worker = await createProductionHttpWorker(withVeryOauth(configured));
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+  });
+
+  test("keeps HNS ownership disabled by default and fails closed when enabled incompletely", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker(configured, {
+      hns_ownership: { transport: inertHnsTransport },
+    });
+    expect((await worker.request("https://worker.test/health")).status).toBe(200);
+    await expect(
+      createProductionHttpWorker({ ...configured, HNS_OWNERSHIP_ENABLED: "true" }),
+    ).rejects.toThrow("HTTP worker configuration is incomplete or invalid");
+  });
+
+  test("constructs enabled HNS ownership without invoking its injected transport", async () => {
+    const configured = await bindings();
+    const worker = await createProductionHttpWorker(
+      {
+        ...configured,
+        HNS_OWNERSHIP_ENABLED: "true",
+        HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "hns-owner-development",
+        HNS_OWNERSHIP_CONFIGURATION_VERSION: "hns-owner-config-v1",
+      },
+      { hns_ownership: { transport: inertHnsTransport } },
+    );
     expect((await worker.request("https://worker.test/health")).status).toBe(200);
   });
 

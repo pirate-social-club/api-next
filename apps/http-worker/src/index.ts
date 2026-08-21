@@ -17,6 +17,7 @@ export { makeCommunityPurchaseFundingHandlers } from "./community-purchase-fundi
 export {
   createProductionHttpWorker,
   type HttpWorkerBindings,
+  type HttpWorkerCompositionDependencies,
 } from "./composition.ts";
 export { createHttpWorker, withEndpointResult } from "./transport.ts";
 

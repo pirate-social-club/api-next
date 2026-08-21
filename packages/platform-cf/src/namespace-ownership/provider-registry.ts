@@ -12,6 +12,9 @@ import {
   makeHnsOwnerAdapter,
 } from "./hns-owner.ts";
 
+export { HNS_OWNER_PROTOCOL_VERSION, HNS_OWNER_PROVIDER_ID } from "@pirate/application";
+export type { HnsOwnerTransport } from "./hns-owner.ts";
+
 const exactParseOptions = { onExcessProperty: "error" } as const;
 
 export type PlatformNamespaceOwnershipProviderOptions = Readonly<{

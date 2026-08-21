@@ -118,6 +118,13 @@ export const HttpWorkerConfig = Config.all({
   VERY_OAUTH_SEALING_KEY: secret("VERY_OAUTH_SEALING_KEY").pipe(
     Config.withDefault(Redacted.make("")),
   ),
+  HNS_OWNERSHIP_ENABLED: Config.boolean("HNS_OWNERSHIP_ENABLED").pipe(Config.withDefault(false)),
+  HNS_OWNERSHIP_CONFIGURATION_REFERENCE: Config.string(
+    "HNS_OWNERSHIP_CONFIGURATION_REFERENCE",
+  ).pipe(Config.withDefault("")),
+  HNS_OWNERSHIP_CONFIGURATION_VERSION: Config.string("HNS_OWNERSHIP_CONFIGURATION_VERSION").pipe(
+    Config.withDefault(""),
+  ),
   VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: Config.string(
     "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS",
   ).pipe(Config.withDefault("")),

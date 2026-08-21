@@ -35,7 +35,10 @@ import {
   makeControlPlaneIdentityStore,
 } from "@pirate/platform-cf/identity-repository";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
-import { makePlatformNamespaceOwnershipProviderRegistry } from "@pirate/platform-cf/namespace-ownership-provider-registry";
+import {
+  type HnsOwnerTransport,
+  makePlatformNamespaceOwnershipProviderRegistry,
+} from "@pirate/platform-cf/namespace-ownership-provider-registry";
 import {
   makeControlPlaneNamespaceOwnershipStartAuthorityResolver,
   makeControlPlaneNamespaceOwnershipStartStore,
@@ -75,6 +78,7 @@ import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
+import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
@@ -112,6 +116,9 @@ export interface HttpWorkerBindings {
   readonly VERY_OAUTH_CLIENT_SECRET?: string;
   readonly VERY_OAUTH_REDIRECT_URI?: string;
   readonly VERY_OAUTH_SEALING_KEY?: string;
+  readonly HNS_OWNERSHIP_ENABLED?: string;
+  readonly HNS_OWNERSHIP_CONFIGURATION_REFERENCE?: string;
+  readonly HNS_OWNERSHIP_CONFIGURATION_VERSION?: string;
   readonly VERIFICATION_CALLBACK_CREDENTIAL_HEADERS?: string;
   readonly PIRATE_APP_JWT_PRIVATE_KEY?: string;
   readonly PIRATE_APP_JWT_PUBLIC_KEY?: string;
@@ -126,6 +133,12 @@ export interface HttpWorkerBindings {
   readonly PRIVY_JWT_ISSUER?: string;
   readonly PRIVY_JWT_AUDIENCE?: string;
   readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
+}
+
+export interface HttpWorkerCompositionDependencies {
+  readonly hns_ownership?: Readonly<{
+    readonly transport?: HnsOwnerTransport;
+  }>;
 }
 
 type WorkerConfig = HttpWorkerConfigValue;
@@ -185,6 +198,9 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     VERY_OAUTH_CLIENT_SECRET: bindings.VERY_OAUTH_CLIENT_SECRET,
     VERY_OAUTH_REDIRECT_URI: bindings.VERY_OAUTH_REDIRECT_URI,
     VERY_OAUTH_SEALING_KEY: bindings.VERY_OAUTH_SEALING_KEY,
+    HNS_OWNERSHIP_ENABLED: bindings.HNS_OWNERSHIP_ENABLED,
+    HNS_OWNERSHIP_CONFIGURATION_REFERENCE: bindings.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
+    HNS_OWNERSHIP_CONFIGURATION_VERSION: bindings.HNS_OWNERSHIP_CONFIGURATION_VERSION,
     VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: bindings.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
     PIRATE_APP_JWT_PRIVATE_KEY: bindings.PIRATE_APP_JWT_PRIVATE_KEY,
     PIRATE_APP_JWT_PUBLIC_KEY: bindings.PIRATE_APP_JWT_PUBLIC_KEY,
@@ -286,7 +302,10 @@ function fundingRpcUrl(value: string, environment: WorkerConfig["API_NEXT_ENV"])
   }
 }
 
-export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
+export async function createProductionHttpWorker(
+  bindings: HttpWorkerBindings,
+  dependencies: HttpWorkerCompositionDependencies = {},
+) {
   const config = loadWorkerConfig(bindings);
   const zkPassportBearerSecret = Redacted.value(config.ZKPASSPORT_VERIFIER_SHARED_SECRET);
   const zkPassportSigningSecret = Redacted.value(
@@ -313,11 +332,51 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     zkPassportPreviousSigningSecret !== zkPassportSigningSecret &&
     zkPassportPreviousSigningSecret !== zkPassportBearerSecret &&
     isCanonicalIsoInstant(config.ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL);
+  const hnsOwnership = (() => {
+    try {
+      return makeHnsOwnershipComposition(
+        {
+          enabled: config.HNS_OWNERSHIP_ENABLED,
+          environment: config.API_NEXT_ENV,
+          configuration_reference: config.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
+          configuration_version: config.HNS_OWNERSHIP_CONFIGURATION_VERSION,
+        },
+        dependencies.hns_ownership,
+      );
+    } catch {
+      throw new Error("HTTP worker configuration is incomplete or invalid");
+    }
+  })();
+  const namespaceOwnershipRegistry = await Effect.runPromise(
+    makePlatformNamespaceOwnershipProviderRegistry(hnsOwnership.provider_registry_options),
+  ).catch(() => {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  });
+  const namespaceBindings = hnsOwnership.namespace_provider_bindings;
+  if (
+    namespaceBindings.length > 0 &&
+    !namespaceBindings.every((binding) =>
+      namespaceOwnershipRegistry
+        .list()
+        .some(
+          (manifest) =>
+            manifest.provider_id === binding.provider_id &&
+            binding.family !== null &&
+            manifest.supported_families.includes(binding.family) &&
+            manifest.protocol_versions.includes(binding.protocol_version) &&
+            manifest.environments.includes(config.API_NEXT_ENV),
+        ),
+    )
+  ) {
+    throw new Error("HTTP worker configuration is incomplete or invalid");
+  }
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
   const publicProfileStore = makeControlPlanePublicProfileStore(controlPlane, identityStore);
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
-  const communityCreationStore = makeControlPlaneCommunityCreationStore(controlPlane);
+  const communityCreationStore = makeControlPlaneCommunityCreationStore(controlPlane, {
+    namespace_provider_bindings: namespaceBindings,
+  });
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const feedStore = makeControlPlaneFeedStore(controlPlane);
   const fundingJournal = makeControlPlaneCommunityPurchaseFundingStore(controlPlane);
@@ -459,11 +518,9 @@ export async function createProductionHttpWorker(bindings: HttpWorkerBindings) {
     canonicalCommunityRouteStore: makeControlPlaneCanonicalCommunityRouteStore(controlPlane),
   });
   // The route is installed before any provider is enabled so durable terminal
-  // replays remain available. Fresh starts fail closed until a separately
-  // ratified production transport is configured and registered.
-  const namespaceOwnershipRegistry = await Effect.runPromise(
-    makePlatformNamespaceOwnershipProviderRegistry(),
-  );
+  // replays remain available. The same explicit configuration owns both the
+  // creation binding above and this registry; no provider may exist in only
+  // one side of the ceremony.
   const namespaceOwnershipHandlers = makeNamespaceOwnershipHandlers({
     start: {
       intents: makeControlPlaneNamespaceOwnershipStartAuthorityResolver(controlPlane),
