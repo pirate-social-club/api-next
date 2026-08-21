@@ -3,6 +3,9 @@ import type {
   ClearPostVote,
   CommitCommunityCreationIntent,
   PostDocument as ContractPostDocument,
+  TextContentSubmissionV1 as ContractTextContentSubmissionV1,
+  TextModerationEvaluationV1 as ContractTextModerationEvaluationV1,
+  TextModerationInputV1 as ContractTextModerationInputV1,
   CreateCommentReply,
   CreateCommunityCreationIntent,
   CreatePost,
@@ -178,6 +181,23 @@ export class Analytics extends Context.Service<
   }
 >()("Analytics") {}
 
+/**
+ * Synchronous safety evaluation. Provider adapters implement this port
+ * without exposing their protocol or response payload to the application.
+ */
+export class TextModerationProviderError extends Data.TaggedError("TextModerationProviderError")<{
+  readonly reason: "unavailable" | "timeout" | "invalid";
+}> {}
+
+export class TextModeration extends Context.Service<
+  TextModeration,
+  {
+    readonly evaluate: (
+      input: ContractTextModerationInputV1,
+    ) => Effect.Effect<ContractTextModerationEvaluationV1, TextModerationProviderError>;
+  }
+>()("TextModeration") {}
+
 // --- Identity persistence (coordinator amendment 2026-08-16, wave-2
 // identity-boundary barrier). Derived from the reviewed platform-cf
 // implementation; the frozen physical schema is users(user_id, status,
@@ -305,6 +325,98 @@ export type CreatePostBody = Schema.Schema.Type<(typeof CreatePost.request)["bod
 export type CreateCommentBody = Schema.Schema.Type<(typeof CreateCommentReply.request)["body"]>;
 export type VoteBody = Schema.Schema.Type<(typeof CastPostVote.request)["body"]>;
 export type ClearVoteBody = Schema.Schema.Type<(typeof ClearPostVote.request)["body"]>;
+
+/**
+ * Text-post persistence is intentionally a separate seam from the legacy M2
+ * content repository. It owns the submission ledger, policy fence, and the
+ * immutable creation snapshot; it never asks the application to infer a
+ * replay from a Post row.
+ */
+export type TextPostSubmissionDocument = ContractTextContentSubmissionV1;
+export type TextPostModerationInput = ContractTextModerationInputV1;
+export type TextPostModerationEvaluation = ContractTextModerationEvaluationV1;
+
+export type TextPostReservation = Readonly<{
+  readonly submissionId: string;
+  readonly communityId: string;
+  readonly actorId: string;
+  readonly idempotencyKey: string;
+  readonly requestHash: string;
+  readonly inputSha256: string;
+  readonly policyRevision: string;
+  readonly policyHash: string;
+}>;
+
+export type TextPostReplayOutcome =
+  | { readonly kind: "none" }
+  | { readonly kind: "replay"; readonly snapshot: TextPostSubmissionDocument }
+  | { readonly kind: "conflict"; readonly submissionId: string };
+
+export type TextPostReserveOutcome =
+  | { readonly kind: "reserved"; readonly reservation: TextPostReservation }
+  | { readonly kind: "replay"; readonly snapshot: TextPostSubmissionDocument }
+  | { readonly kind: "conflict"; readonly submissionId: string };
+
+export type TextPostFinalizeOutcome =
+  | { readonly kind: "created"; readonly snapshot: TextPostSubmissionDocument }
+  | { readonly kind: "replay"; readonly snapshot: TextPostSubmissionDocument }
+  | { readonly kind: "conflict"; readonly submissionId: string }
+  | {
+      readonly kind: "policy-stale";
+      readonly policyRevision: string;
+      readonly policyHash: string;
+    };
+
+export type TextPostRepositoryOperation = "replay" | "reserve" | "finalize" | "get";
+export type TextPostRepositoryReason =
+  | "not-found"
+  | "membership-required"
+  | "constraint"
+  | "invalid-row";
+
+export class TextPostRepositoryError extends Data.TaggedError("TextPostRepositoryError")<{
+  readonly operation: TextPostRepositoryOperation;
+  readonly reason: TextPostRepositoryReason;
+}> {}
+
+export type TextPostRepositoryFailure = TextPostRepositoryError | ControlPlaneError;
+
+export interface TextPostStoreService {
+  /** Exact same-key/same-hash replay lookup. Must precede moderation. */
+  readonly replay: (input: {
+    readonly communityId: string;
+    readonly actor: M2Actor;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+  }) => Effect.Effect<TextPostReplayOutcome, TextPostRepositoryFailure>;
+
+  /** Reserve the immutable submission identity and current policy in a short transaction. */
+  readonly reserve: (input: {
+    readonly communityId: string;
+    readonly actor: M2Actor;
+    readonly body: CreatePostBody;
+    readonly moderationInput: TextPostModerationInput;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+  }) => Effect.Effect<TextPostReserveOutcome, TextPostRepositoryFailure>;
+
+  /** Commit the provider result in a new transaction; never call a provider here. */
+  readonly finalize: (input: {
+    readonly reservation: TextPostReservation;
+    readonly body: CreatePostBody;
+    readonly evaluation: TextPostModerationEvaluation;
+  }) => Effect.Effect<TextPostFinalizeOutcome, TextPostRepositoryFailure>;
+
+  /** Author-scoped current submission state, distinct from immutable replay. */
+  readonly getForAuthor: (input: {
+    readonly submissionId: string;
+    readonly actor: M2Actor;
+  }) => Effect.Effect<TextPostSubmissionDocument | null, TextPostRepositoryFailure>;
+}
+
+export class TextPostStore extends Context.Service<TextPostStore, TextPostStoreService>()(
+  "TextPostStore",
+) {}
 
 /**
  * The content repository still returns the internal post read model.  It is

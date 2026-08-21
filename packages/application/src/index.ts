@@ -10,5 +10,6 @@ export * from "./ports.ts";
 export * from "./route-revalidation/index.ts";
 export * from "./use-cases/community/creation-requirement-projection.ts";
 export * from "./use-cases/community/get-canonical-community-route.ts";
+export * from "./use-cases/content/text-post.ts";
 export * from "./use-cases/identity-registration.ts";
 export * from "./use-cases/identity-registration-handler.ts";

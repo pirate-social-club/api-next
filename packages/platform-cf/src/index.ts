@@ -162,6 +162,12 @@ export {
   makeControlPlaneRouteRevalidationStartStore,
 } from "./route-revalidation-start-repository";
 export {
+  makeControlPlaneTextPostRepository,
+  makeControlPlaneTextSubmissionRepository,
+  makeControlPlaneTextSubmissionStore,
+  type TextSubmissionRepository,
+} from "./text-submission-repository";
+export {
   MAX_SESSION_TOKEN_LENGTH,
   makeSessionCrypto,
   makeSessionCryptoFromEnv,

@@ -15,10 +15,17 @@ import {
   type CreateCommentBody,
   type CreatePostBody,
   type M2Actor,
+  type TextModeration,
+  type TextPostStore,
 } from "../../ports.ts";
 
 export interface ContentUseCaseServices {
   readonly contentStore: ContentStore["Service"];
+  /** Optional until the HTTP composition installs the Order 5 runtime. */
+  readonly textPostStore?: TextPostStore["Service"];
+  readonly textStore?: TextPostStore["Service"];
+  readonly textModeration?: TextModeration["Service"];
+  readonly moderation?: TextModeration["Service"];
 }
 
 /** Decode at the application boundary so unsupported request shapes fail closed. */

@@ -9,6 +9,7 @@ import {
   validateIdentifier,
   validPublicHumanDirectPost,
 } from "./common.ts";
+import { createTextPost } from "./text-post.ts";
 
 export type CreatePostInput = Readonly<{
   readonly communityId: string;
@@ -68,6 +69,14 @@ export const createPost = Effect.fn("createPost")(function* (
   input: CreatePostInput,
   services: ContentUseCaseServices,
 ) {
+  const textStore = services.textPostStore ?? services.textStore;
+  const moderation = services.textModeration ?? services.moderation;
+  if (textStore !== undefined && moderation !== undefined) {
+    return yield* createTextPost(input, {
+      store: textStore,
+      moderation,
+    });
+  }
   yield* validateIdentifier(input.communityId, "Invalid community identifier");
   yield* validateHumanDirectActor(input.actor);
 
