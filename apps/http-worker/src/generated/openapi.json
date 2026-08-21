@@ -10346,21 +10346,30 @@
                           "type": "boolean"
                         },
                         "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
+                          "type": "object",
+                          "properties": {
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "idempotency_conflict"
+                              ]
                             },
-                            {
-                              "type": "null"
+                            "submission_id": {
+                              "type": "string"
                             }
-                          ]
+                          },
+                          "required": [
+                            "reason_code",
+                            "submission_id"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
                         "code",
                         "message",
-                        "retryable"
+                        "retryable",
+                        "details"
                       ],
                       "additionalProperties": false
                     },

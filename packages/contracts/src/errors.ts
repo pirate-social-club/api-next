@@ -1,4 +1,4 @@
-import { Data } from "effect";
+import { Data, Schema } from "effect";
 
 /**
  * api-next-owned v2 wire-error catalog (api-next 000 §10; 001 phase 0 step 2).
@@ -117,6 +117,14 @@ export class IdempotencyConflict extends Data.TaggedError("IdempotencyConflict")
     readonly submission_id: string;
   };
 }> {
+  /** Contract metadata consumed by OpenAPI/client generation only.  Runtime
+   * mapping remains owned by the moderation-ledger tranche. */
+  static readonly detailsSchema = Schema.Struct({
+    reason_code: Schema.Literal("idempotency_conflict"),
+    submission_id: Schema.String,
+  });
+  static readonly detailsRequired = true;
+
   readonly status = 409 as const;
   readonly code = "conflict" as const;
   readonly retryable = false as const;

@@ -18,7 +18,14 @@ export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 export type EndpointBodyEncoding = "json" | "exact-json" | "raw-text";
 
 /** Constructors from the wire-error catalog a handler may fail with. */
-export type ApiErrorCtor = new (args: never) => ApiError;
+export type ApiErrorCtor = (new (
+  args: never,
+) => ApiError) & {
+  /** Optional closed details schema for generated wire-error declarations. */
+  readonly detailsSchema?: Schema.Schema<unknown>;
+  /** Whether the declared details member is required on the wire. */
+  readonly detailsRequired?: boolean;
+};
 
 /**
  * The independently decoded request locations. A request schema is

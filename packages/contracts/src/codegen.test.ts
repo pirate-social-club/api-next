@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { generateClient, generateOpenApi, generateRouteTable, schemaToOpenApi } from "./codegen.ts";
 import { endpoint } from "./endpoint.ts";
-import { BadRequest, RateLimited } from "./errors.ts";
+import { BadRequest, IdempotencyConflict, RateLimited } from "./errors.ts";
 import { Cents } from "./money.ts";
 import { diffBreaking, type OpenApiDocument } from "./openapi-diff.ts";
 import { registry } from "./registry.ts";
@@ -56,6 +56,38 @@ describe("codegen pipeline", () => {
     >;
     expect(responses["400"]?.["x-error-codes"]).toEqual(["bad_request"]);
     expect(responses["429"]?.["x-error-codes"]).toEqual(["rate_limited"]);
+  });
+
+  test("declares idempotency conflict details and preserves primitive refinements", () => {
+    const textPost = endpoint({
+      method: "POST",
+      path: "/text-post",
+      auth: Auth.user(),
+      response: Schema.Struct({ id: Schema.NonEmptyString }),
+      errors: [IdempotencyConflict],
+    });
+    const response = generateOpenApi([textPost]).paths["/text-post"]?.post?.responses as Record<
+      string,
+      Record<string, unknown>
+    >;
+    const response409 = response["409"] as Record<string, unknown>;
+    const responseContent = response409.content as Record<string, Record<string, unknown>>;
+    const responseSchema = responseContent["application/json"]?.schema as Record<string, unknown>;
+    const responseProperties = responseSchema.properties as Record<string, Record<string, unknown>>;
+    const errorSchema = responseProperties.error as Record<string, unknown>;
+    const details = (errorSchema.properties as Record<string, unknown>).details as Record<
+      string,
+      unknown
+    >;
+    expect(details).toMatchObject({
+      type: "object",
+      required: ["reason_code", "submission_id"],
+      additionalProperties: false,
+    });
+    expect(errorSchema.required as readonly string[]).toContain("details");
+    const client = generateClient({ TextPost: textPost });
+    expect(client).toContain('"detailsSchema"');
+    expect(client).toContain("readonly id: string");
   });
 
   test("generated client is type-checkable source with typed methods", () => {

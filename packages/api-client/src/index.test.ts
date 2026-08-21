@@ -152,6 +152,32 @@ describe("generated api client", () => {
     });
   });
 
+  test("rejects an idempotency conflict envelope with malformed declared details", async () => {
+    const fetchImpl = Object.assign(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "conflict",
+              message: "The idempotency key belongs to another submission",
+              retryable: false,
+              details: { reason_code: "idempotency_conflict" },
+            },
+          }),
+          { status: 409 },
+        ),
+      { preconnect: fetch.preconnect },
+    );
+    const client = createPirateApiClient("https://api.example", fetchImpl);
+
+    await expect(
+      client.post_communitiesCommunityIdPosts({
+        path: { communityId: "community_1" },
+        body: { post_type: "text", idempotency_key: "key_1", body: "hello" },
+      }),
+    ).rejects.toBeInstanceOf(ApiClientProtocolError);
+  });
+
   test("forwards default and per-call authentication headers and cancellation", async () => {
     const calls: Array<{ headers: Headers; signal: AbortSignal | null | undefined }> = [];
     const fetchImpl = Object.assign(

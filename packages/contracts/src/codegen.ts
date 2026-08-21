@@ -32,7 +32,14 @@ export function schemaToOpenApi(value: unknown): JsonSchema {
   return schema;
 }
 
-const wireErrorBodySchema: JsonSchema = {
+const genericErrorDetailsSchema: JsonSchema = {
+  anyOf: [{ type: "object", additionalProperties: true }, { type: "null" }],
+};
+
+const wireErrorBodySchema = (
+  detailsSchema: JsonSchema = genericErrorDetailsSchema,
+  detailsRequired = false,
+): JsonSchema => ({
   type: "object",
   properties: {
     error: {
@@ -41,18 +48,16 @@ const wireErrorBodySchema: JsonSchema = {
         code: { type: "string" },
         message: { type: "string" },
         retryable: { type: "boolean" },
-        details: {
-          anyOf: [{ type: "object", additionalProperties: true }, { type: "null" }],
-        },
+        details: detailsSchema,
       },
-      required: ["code", "message", "retryable"],
+      required: ["code", "message", "retryable", ...(detailsRequired ? ["details"] : [])],
       additionalProperties: false,
     },
     request_id: { type: "string" },
   },
   required: ["error"],
   additionalProperties: false,
-};
+});
 
 /**
  * One OpenAPI response entry per distinct status in the endpoint's closed
@@ -66,9 +71,34 @@ function errorResponses(errors: readonly ApiErrorCtor[] | undefined): Record<str
     const status = String(instance.status);
     const previous = responses[status];
     const existing = (previous?.["x-error-codes"] as string[] | undefined) ?? [];
+    const detailsSchemas = (errors ?? [])
+      .filter((candidate) => {
+        const candidateInstance = new candidate({} as never) as ApiError;
+        return (
+          candidateInstance.status === instance.status && candidate.detailsSchema !== undefined
+        );
+      })
+      .map((candidate) => schemaToOpenApi(candidate.detailsSchema));
+    const statusErrors = (errors ?? []).filter((candidate) => {
+      const candidateInstance = new candidate({} as never) as ApiError;
+      return candidateInstance.status === instance.status;
+    });
+    const detailsRequired =
+      statusErrors.length > 0 &&
+      statusErrors.every(
+        (candidate) => candidate.detailsSchema !== undefined && candidate.detailsRequired === true,
+      );
+    const detailsSchema =
+      detailsSchemas.length === 0
+        ? genericErrorDetailsSchema
+        : detailsSchemas.length === 1
+          ? detailsSchemas[0]
+          : { anyOf: detailsSchemas };
     responses[status] = {
       description: "api-next error envelope v2",
-      content: { "application/json": { schema: wireErrorBodySchema } },
+      content: {
+        "application/json": { schema: wireErrorBodySchema(detailsSchema, detailsRequired) },
+      },
       "x-error-codes": [...existing, instance.code],
       ...(previous?.headers === undefined ? {} : { headers: previous.headers }),
       ...(instance.code === "verification_start_in_progress"
@@ -222,6 +252,8 @@ export interface ClientErrorDefinition {
   readonly code: string;
   readonly name: string;
   readonly retryable: boolean;
+  readonly detailsSchema?: JsonSchema;
+  readonly detailsRequired?: boolean;
 }
 
 function clientErrorDefinitions(
@@ -234,6 +266,14 @@ function clientErrorDefinitions(
       code: instance.code,
       name: Ctor.name,
       retryable: instance.retryable,
+      ...(Ctor.detailsSchema === undefined
+        ? {}
+        : {
+            detailsSchema: schemaToOpenApi(Ctor.detailsSchema),
+            ...(Ctor.detailsRequired === undefined
+              ? {}
+              : { detailsRequired: Ctor.detailsRequired }),
+          }),
     };
   });
 }
@@ -285,7 +325,7 @@ function jsonSchemaToType(
     const unique = [...new Set(union)];
     return unique.length === 0 ? "unknown" : unique.join(" | ");
   }
-  if (Array.isArray(value.allOf)) {
+  if (Array.isArray(value.allOf) && value.type === undefined && value.properties === undefined) {
     const intersection = value.allOf
       .filter(isRecord)
       .map((part) => jsonSchemaToType(part, root, depth + 1, resolving));
@@ -543,6 +583,8 @@ export interface ApiClientErrorDefinition {
   readonly code: string;
   readonly name: string;
   readonly retryable: boolean;
+  readonly detailsSchema?: JsonSchema;
+  readonly detailsRequired?: boolean;
 }
 
 export class ApiClientProtocolError extends Error {
@@ -763,6 +805,20 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
       const body = parseWireError(payload, response.status);
       const definition = ERROR_DEFINITIONS[operation]?.find((candidate) => candidate.status === response.status && candidate.code === body.error.code && candidate.retryable === body.error.retryable);
       if (definition === undefined) throw new ApiClientUnexpectedError(response.status, body);
+      if (definition.detailsSchema !== undefined) {
+        const detailsError = schemaError(
+          body.error.details,
+          definition.detailsSchema,
+          "$.error.details",
+          definition.detailsSchema,
+        );
+        if (detailsError !== undefined) {
+          throw new ApiClientProtocolError(
+            "API error response failed declared details validation",
+            response.status,
+          );
+        }
+      }
       throw new ApiClientError(definition, body, response.headers);
     }
     if (!declaredSuccess) throw new ApiClientProtocolError("API returned an undeclared success status", response.status);
