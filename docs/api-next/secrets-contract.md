@@ -47,11 +47,13 @@ returns a 404.
 | Environment | Current folder tree and root inventory |
 | --- | --- |
 | `dev` | no folders and no secrets |
-| `staging` | `/services/api-next` has 3 runtime entries; `/services/api-next/operator` has 2 operator entries; root is empty |
+| `staging` | `/services/api-next` has 4 runtime entries; `/services/api-next/operator` has 2 operator entries; root is empty |
 | `prod` | `/services/api-next` has 2 runtime entries; `/services/api-next/operator` has 2 operator entries; root retains only four alert placeholders |
 
-No HNS or Very path was created, because no approved HNS or Very entry exists.
-The service and operator copies remain the canonical Infisical locations.
+No HNS path was created because no approved HNS entry exists. The approved
+Very sealing key is stored under `/services/api-next`; no separate Very path
+was created. The service and operator copies remain the canonical Infisical
+locations.
 Cloudflare synchronization must use those paths explicitly on the next
 authorized deployment; Infisical does not infer path changes.
 
@@ -59,7 +61,7 @@ The post-cleanup inventory was confirmed across all three environments.
 `dev` is empty. `staging` has no root entries. `prod` has only the four
 `API_NEXT_ALERT_*` placeholders; it has no funding RPC or self-callback token.
 
-Prod therefore has two runtime entries where staging has three. The missing
+Prod therefore has two runtime entries where staging has four. The missing
 one is `COMMUNITY_PURCHASE_FUNDING_RPC_URL`, which does not exist in prod. This
 is expected rather than a partial copy, but it means prod cannot satisfy the
 runtime contract until an authorized production funding RPC is sourced.
@@ -175,9 +177,10 @@ configuration must be reintroduced deliberately.
    development declarations remain a known classification gap until a real
    development configuration is sourced.
 5. **Infisical is not a complete source for the staging Worker.**
-   The live name-only audit found five entries at `/services/api-next`: the
-   three previously copied runtime secrets, `VERY_WEB_SEALING_KEY`, and the
-   unexpected public-config name `VERY_APP_ID`. The two missing confidential
+   The initial live name-only audit found five entries at `/services/api-next`:
+   the three previously copied runtime secrets, `VERY_WEB_SEALING_KEY`, and
+   the unexpected public-config name `VERY_APP_ID`. After its deletion, the
+   current path contains four intended entries. The two missing confidential
    runtime names are `ZKPASSPORT_VERIFIER_SHARED_SECRET` and
    `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET`. The public key ID is not an
    Infisical runtime secret; it remains an installed Cloudflare value until
