@@ -206,6 +206,12 @@ const textSubmissionResponseSnapshotMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const communityCreationVeryWebEvidenceMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0038_community_creation_very_web_evidence.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -398,6 +404,11 @@ const textSubmissionResponseSnapshotMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0037_text_submission_response_snapshot.sql"] ?? "",
   sql: textSubmissionResponseSnapshotMigrationSql,
 };
+const communityCreationVeryWebEvidenceMigration: PostgresMigration = {
+  version: "0038_community_creation_very_web_evidence.sql",
+  checksum: checksumManifest.migrations["0038_community_creation_very_web_evidence.sql"] ?? "",
+  sql: communityCreationVeryWebEvidenceMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -436,6 +447,7 @@ const migrations: readonly PostgresMigration[] = [
   routeRevalidationPersistenceMigration,
   routeRevalidationCompletionMigration,
   textSubmissionResponseSnapshotMigration,
+  communityCreationVeryWebEvidenceMigration,
 ];
 
 function checksum(value: string): string {
@@ -656,6 +668,12 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(routeRevalidationCompletionMigrationSql)).toBe(
         routeRevalidationCompletionMigration.checksum,
+      );
+      expect(checksum(textSubmissionResponseSnapshotMigrationSql)).toBe(
+        textSubmissionResponseSnapshotMigration.checksum,
+      );
+      expect(checksum(communityCreationVeryWebEvidenceMigrationSql)).toBe(
+        communityCreationVeryWebEvidenceMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
