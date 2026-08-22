@@ -1,10 +1,12 @@
 import {
   BadRequest,
+  CommentsLocked,
   CreatePost,
   IdempotencyConflict,
   InternalError,
   MembershipRequired,
   NotFound,
+  ReplyDepthExceeded,
 } from "@pirate/contracts";
 import {
   canonicalTextModerationInput,
@@ -115,12 +117,28 @@ function mapStoreFailure(failure: TextPostRepositoryFailure) {
   switch (failure.reason) {
     case "membership-required":
       return new MembershipRequired({ message: "Community membership is required" });
+    case "comments-locked":
+      return new CommentsLocked({ message: "Comments are locked for this post" });
+    case "reply-depth-exceeded":
+      return new ReplyDepthExceeded({ message: "Reply depth exceeds the v1 limit" });
     case "not-found":
       return new NotFound({ message: "Text submission not found" });
     case "constraint":
       return new BadRequest({ message: "Text submission violates a resource constraint" });
     case "invalid-row":
       return new InternalError({ message: "Text submission operation returned an invalid record" });
+    case "idempotency-conflict":
+      return new IdempotencyConflict({
+        message: "The idempotency key was already used with a different request",
+        details: {
+          reason_code: "idempotency_conflict",
+          submission_id: failure.submissionId ?? "unknown",
+        },
+      });
+    case "action-conflict":
+      return new InternalError({ message: "Text submission action conflict" });
+    default:
+      return new InternalError({ message: "Text submission operation failed" });
   }
 }
 
@@ -195,10 +213,12 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
 ): Effect.fn.Return<
   TextPostSubmissionDocument,
   | BadRequest
+  | CommentsLocked
+  | IdempotencyConflict
   | MembershipRequired
   | NotFound
+  | ReplyDepthExceeded
   | InternalError
-  | IdempotencyConflict
   | TextPostPolicyStale
   | TextPostRuntimeUnavailable
 > {
@@ -226,7 +246,13 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
 
   for (let attempt = 0; attempt < MAX_POLICY_RETRIES; attempt += 1) {
     const replay: TextPostReplayOutcome = yield* store
-      .replay({ communityId: input.communityId, actor: input.actor, idempotencyKey, requestHash })
+      .replay({
+        communityId: input.communityId,
+        actor: input.actor,
+        idempotencyKey,
+        requestHash,
+        surface: "text_post",
+      })
       .pipe(Effect.mapError(mapStoreFailure));
     if (replay.kind === "replay") return replay.snapshot;
     if (replay.kind === "conflict") return yield* idempotencyConflict(replay.submissionId);
@@ -252,6 +278,7 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
         requestHash,
         operationId: `operation_${crypto.randomUUID()}`,
         evaluation,
+        target: { surface: "text_post", communityId: input.communityId },
       })
       .pipe(Effect.mapError(mapStoreFailure));
     if (committed.kind === "created" || committed.kind === "replay") return committed.snapshot;
@@ -267,7 +294,14 @@ export const getTextContentSubmission = Effect.fn("getTextContentSubmission")(fu
   services: TextPostServices,
 ): Effect.fn.Return<
   TextPostSubmissionDocument,
-  BadRequest | NotFound | InternalError | TextPostRuntimeUnavailable | MembershipRequired
+  | BadRequest
+  | CommentsLocked
+  | IdempotencyConflict
+  | NotFound
+  | ReplyDepthExceeded
+  | InternalError
+  | TextPostRuntimeUnavailable
+  | MembershipRequired
 > {
   const store = services.textPostStore;
   if (store === undefined) return yield* new TextPostRuntimeUnavailable();

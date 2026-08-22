@@ -333,6 +333,56 @@ export type ClearVoteBody = Schema.Schema.Type<(typeof ClearPostVote.request)["b
 export type TextPostSubmissionDocument = ContractTextContentSubmissionV1;
 export type TextPostModerationInput = ContractTextModerationInputV1;
 export type TextPostModerationEvaluation = ContractTextModerationEvaluationV1;
+export type TextSubmissionSurface = ContractTextModerationInputV1["surface"];
+export type TextSubmissionBody =
+  | CreatePostBody
+  | Readonly<{ readonly idempotency_key: string; readonly body: string }>;
+
+export type TextSubmissionTarget =
+  | Readonly<{ readonly surface: "text_post"; readonly communityId: string }>
+  | Readonly<{ readonly surface: "comment"; readonly communityId: string; readonly postId: string }>
+  | Readonly<{
+      readonly surface: "reply";
+      readonly communityId: string;
+      readonly postId: string;
+      readonly parentCommentId: string;
+    }>;
+
+export type TextCommentTargetResolution =
+  | Readonly<{
+      readonly kind: "ready";
+      readonly communityId: string;
+      readonly postId: string;
+      readonly parentCommentId: string | null;
+      readonly parentDepth: number;
+    }>
+  | Readonly<{ readonly kind: "not-found" }>
+  | Readonly<{ readonly kind: "closed" }>
+  | Readonly<{ readonly kind: "depth-exceeded"; readonly depth: number }>;
+
+export type CommentReportReasonCode =
+  | "spam"
+  | "harassment"
+  | "hate"
+  | "sexual_content"
+  | "graphic_content"
+  | "misleading"
+  | "other";
+
+export type CommentReportOutcome = Readonly<{
+  readonly reportId: string;
+  readonly caseRef: string;
+  readonly status: "open" | "coalesced";
+}>;
+
+export type ModerationAction = "approve" | "dismiss" | "hide" | "remove" | "restore";
+export type ModerationTargetStatus = "held" | "published" | "hidden" | "removed";
+export type ModerationActionOutcome = Readonly<{
+  readonly actionId: string;
+  readonly caseRef: string;
+  readonly action: ModerationAction;
+  readonly targetStatus: ModerationTargetStatus;
+}>;
 
 export type TextPostReplayOutcome =
   | { readonly kind: "none" }
@@ -349,16 +399,27 @@ export type TextPostCommitOutcome =
       readonly policyHash: string;
     };
 
-export type TextPostRepositoryOperation = "replay" | "commit" | "get";
+export type TextPostRepositoryOperation =
+  | "replay"
+  | "commit"
+  | "get"
+  | "resolve-target"
+  | "report"
+  | "action";
 export type TextPostRepositoryReason =
   | "not-found"
   | "membership-required"
+  | "comments-locked"
+  | "reply-depth-exceeded"
+  | "idempotency-conflict"
+  | "action-conflict"
   | "constraint"
   | "invalid-row";
 
 export class TextPostRepositoryError extends Data.TaggedError("TextPostRepositoryError")<{
   readonly operation: TextPostRepositoryOperation;
   readonly reason: TextPostRepositoryReason;
+  readonly submissionId?: string;
 }> {}
 
 export type TextPostRepositoryFailure = TextPostRepositoryError | ControlPlaneError;
@@ -370,6 +431,7 @@ export interface TextPostStoreService {
     readonly actor: M2Actor;
     readonly idempotencyKey: string;
     readonly requestHash: string;
+    readonly surface?: TextSubmissionSurface;
   }) => Effect.Effect<TextPostReplayOutcome, TextPostRepositoryFailure>;
 
   /**
@@ -380,13 +442,36 @@ export interface TextPostStoreService {
   readonly commitTerminal: (input: {
     readonly communityId: string;
     readonly actor: M2Actor;
-    readonly body: CreatePostBody;
+    readonly body: TextSubmissionBody;
     readonly moderationInput: TextPostModerationInput;
     readonly idempotencyKey: string;
     readonly requestHash: string;
     readonly operationId: string;
     readonly evaluation: TextPostModerationEvaluation;
+    readonly target?: TextSubmissionTarget;
   }) => Effect.Effect<TextPostCommitOutcome, TextPostRepositoryFailure>;
+
+  /** Read-only preflight for comment/reply target and depth checks. */
+  readonly resolveCommentTarget?: (input: {
+    readonly surface: "comment" | "reply";
+    readonly targetId: string;
+  }) => Effect.Effect<TextCommentTargetResolution, TextPostRepositoryFailure>;
+
+  readonly reportComment?: (input: {
+    readonly commentId: string;
+    readonly actor: M2Actor;
+    readonly idempotencyKey: string;
+    readonly reasonCode: CommentReportReasonCode;
+    readonly requestHash: string;
+  }) => Effect.Effect<CommentReportOutcome, TextPostRepositoryFailure>;
+
+  readonly moderateCaseAction?: (input: {
+    readonly caseRef: string;
+    readonly actor: M2Actor;
+    readonly idempotencyKey: string;
+    readonly action: ModerationAction;
+    readonly requestHash: string;
+  }) => Effect.Effect<ModerationActionOutcome, TextPostRepositoryFailure>;
 
   /** Author-scoped current submission state, distinct from immutable replay. */
   readonly getForAuthor: (input: {

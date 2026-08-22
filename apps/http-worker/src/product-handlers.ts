@@ -18,6 +18,16 @@ import {
   clearPostVote,
 } from "@pirate/application/use-cases/content/clear-post-vote";
 import {
+  type ModerateCaseActionInput,
+  moderateCaseAction,
+  type ReportCommentInput,
+  reportComment,
+} from "@pirate/application/use-cases/content/comment-moderation";
+import {
+  type CreateCommentReplyInput,
+  createCommentReply,
+} from "@pirate/application/use-cases/content/comments-replies";
+import {
   type CreatePostInput,
   createPost,
 } from "@pirate/application/use-cases/content/create-post";
@@ -60,6 +70,10 @@ export type ProductHandlers = Readonly<{
   readonly FollowCommunity: EndpointHandler;
   readonly UnfollowCommunity: EndpointHandler;
   readonly CreatePost: EndpointHandler;
+  readonly CreateComment: EndpointHandler;
+  readonly CreateCommentReply: EndpointHandler;
+  readonly ReportComment: EndpointHandler;
+  readonly ModerateCaseAction: EndpointHandler;
   readonly GetTextContentSubmission: EndpointHandler;
   readonly GetPost: EndpointHandler;
   readonly CastPostVote: EndpointHandler;
@@ -71,6 +85,8 @@ export type ProductHandlers = Readonly<{
 type CommunityPath = Readonly<{ readonly communityId: string }>;
 type PostPath = Readonly<{ readonly postId: string }>;
 type SubmissionPath = Readonly<{ readonly submissionId: string }>;
+type CommentPath = Readonly<{ readonly commentId: string }>;
+type CasePath = Readonly<{ readonly caseRef: string }>;
 type LocaleQuery = Readonly<{ readonly locale?: string }>;
 type JoinBody = Schema.Schema.Type<(typeof JoinCommunity.request)["body"]>;
 
@@ -80,6 +96,10 @@ const postPath = (request: DecodedRequest): PostPath => request.params as PostPa
 
 const submissionPath = (request: DecodedRequest): SubmissionPath =>
   request.params as SubmissionPath;
+
+const commentPath = (request: DecodedRequest): CommentPath => request.params as CommentPath;
+
+const casePath = (request: DecodedRequest): CasePath => request.params as CasePath;
 
 const localeQuery = (request: DecodedRequest): LocaleQuery => (request.query ?? {}) as LocaleQuery;
 
@@ -139,6 +159,36 @@ export const createPostInputFrom = (request: DecodedRequest): CreatePostInput =>
     actor: communityActor(request.principal),
     body: request.body,
   };
+};
+
+export const createCommentInputFrom = (request: DecodedRequest): CreateCommentReplyInput => {
+  const { postId } = postPath(request);
+  return {
+    surface: "comment",
+    targetId: postId,
+    actor: communityActor(request.principal),
+    body: request.body,
+  };
+};
+
+export const createReplyInputFrom = (request: DecodedRequest): CreateCommentReplyInput => {
+  const { commentId } = commentPath(request);
+  return {
+    surface: "reply",
+    targetId: commentId,
+    actor: communityActor(request.principal),
+    body: request.body,
+  };
+};
+
+export const reportCommentInputFrom = (request: DecodedRequest): ReportCommentInput => {
+  const { commentId } = commentPath(request);
+  return { commentId, actor: communityActor(request.principal), body: request.body };
+};
+
+export const moderateCaseActionInputFrom = (request: DecodedRequest): ModerateCaseActionInput => {
+  const { caseRef } = casePath(request);
+  return { caseRef, actor: communityActor(request.principal), body: request.body };
 };
 
 export const castPostVoteInputFrom = (request: DecodedRequest): CastPostVoteInput => {
@@ -236,6 +286,39 @@ const createPostHandler = async (request: DecodedRequest, services: ProductHandl
     }),
   );
 
+const createCommentHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
+  Effect.runPromise(
+    createCommentReply(createCommentInputFrom(request), {
+      ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
+      ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
+    }),
+  );
+
+const createReplyHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
+  Effect.runPromise(
+    createCommentReply(createReplyInputFrom(request), {
+      ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
+      ...(services.textModeration === undefined ? {} : { textModeration: services.textModeration }),
+    }),
+  );
+
+const reportCommentHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
+  Effect.runPromise(
+    reportComment(reportCommentInputFrom(request), {
+      ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
+    }),
+  );
+
+const moderateCaseActionHandler = async (
+  request: DecodedRequest,
+  services: ProductHandlerServices,
+) =>
+  Effect.runPromise(
+    moderateCaseAction(moderateCaseActionInputFrom(request), {
+      ...(services.textPostStore === undefined ? {} : { textPostStore: services.textPostStore }),
+    }),
+  );
+
 const getTextContentSubmissionHandler = async (
   request: DecodedRequest,
   services: ProductHandlerServices,
@@ -280,6 +363,10 @@ export const makeProductHandlers = (services: ProductHandlerServices): ProductHa
   FollowCommunity: (request) => follow(request, services),
   UnfollowCommunity: (request) => unfollow(request, services),
   CreatePost: (request) => createPostHandler(request, services),
+  CreateComment: (request) => createCommentHandler(request, services),
+  CreateCommentReply: (request) => createReplyHandler(request, services),
+  ReportComment: (request) => reportCommentHandler(request, services),
+  ModerateCaseAction: (request) => moderateCaseActionHandler(request, services),
   GetTextContentSubmission: (request) => getTextContentSubmissionHandler(request, services),
   GetPost: (request) => post(request, services),
   CastPostVote: (request) => castPostVoteHandler(request, services),

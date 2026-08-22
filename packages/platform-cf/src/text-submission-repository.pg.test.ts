@@ -7,6 +7,7 @@ import type {
   TextPostStore,
   TextPostSubmissionDocument,
 } from "@pirate/application";
+import { canonicalBodyHash } from "@pirate/application/use-cases/content/common";
 import {
   createTextPost,
   getTextContentSubmission,
@@ -24,6 +25,10 @@ const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
 if (required && connectionString === undefined)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 const suite = connectionString === undefined ? describe.skip : describe;
+type RuntimeStore = TextPostStore["Service"] & {
+  readonly reportComment: NonNullable<TextPostStore["Service"]["reportComment"]>;
+  readonly moderateCaseAction: NonNullable<TextPostStore["Service"]["moderateCaseAction"]>;
+};
 
 const actor: M2Actor = { userId: "usr_text_order5", kind: "user" };
 const otherActor: M2Actor = { userId: "usr_text_order5_other", kind: "user" };
@@ -54,6 +59,56 @@ const evaluation: TextPostModerationEvaluation = {
   input_sha256: inputSha,
   evidence_ref: null,
 };
+
+const commentBody = { idempotency_key: "comment-order6-race", body: "terminal comment" };
+const commentInput = {
+  version: "text-moderation-input-v1" as const,
+  surface: "comment" as const,
+  title: null,
+  body: commentBody.body,
+};
+const commentInputSha = (() => {
+  const canonical = canonicalTextModerationInput(commentInput);
+  if (canonical.kind === "rejected") throw new Error(canonical.reason);
+  return canonical.sha256;
+})();
+const commentEvaluation: TextPostModerationEvaluation = {
+  version: "text-moderation-v1",
+  surface: "comment",
+  decision: "allow",
+  reason_codes: [],
+  policy_revision: "text-moderation-policy-v1",
+  policy_hash: policyHash,
+  input_sha256: commentInputSha,
+  evidence_ref: null,
+};
+const replyBody = { idempotency_key: "reply-order6-depth", body: "terminal reply" };
+const replyInput = { ...commentInput, surface: "reply" as const, body: replyBody.body };
+const replyCanonical = canonicalTextModerationInput(replyInput);
+if (replyCanonical.kind === "rejected") throw new Error(replyCanonical.reason);
+const replyEvaluation: TextPostModerationEvaluation = {
+  ...commentEvaluation,
+  surface: "reply",
+  input_sha256: replyCanonical.sha256,
+};
+
+async function commentRequestHash(
+  idempotencyKey: string,
+  text: string,
+  postId = "text-order6-post",
+  surface: "comment" | "reply" = "comment",
+  parentCommentId?: string,
+): Promise<string> {
+  return Effect.runPromise(
+    canonicalBodyHash({
+      endpoint: surface,
+      community_id: "text-community",
+      post_id: postId,
+      ...(parentCommentId === undefined ? {} : { parent_comment_id: parentCommentId }),
+      body: { idempotency_key: idempotencyKey, body: text },
+    }),
+  );
+}
 
 function schemaName(): string {
   return `api_next_text_order5_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -265,10 +320,10 @@ async function seed(admin: Client, schema: string): Promise<void> {
 
 function runStore<A, E>(
   connection: string,
-  use: (store: TextPostStore["Service"]) => Effect.Effect<A, E>,
+  use: (store: RuntimeStore) => Effect.Effect<A, E>,
 ): Promise<A> {
   const layer = makeDirectPostgresControlPlaneLayer(connection);
-  const store = makeControlPlaneTextSubmissionStore(layer);
+  const store = makeControlPlaneTextSubmissionStore(layer) as RuntimeStore;
   return Effect.runPromise(Effect.scoped(use(store)));
 }
 
@@ -283,6 +338,34 @@ function databaseBytes(value: unknown): Uint8Array {
 
 function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function insertCommentPost(admin: Client, postId = "text-order6-post"): Promise<void> {
+  await admin.query(
+    `INSERT INTO posts (
+       community_id, post_id, author_user_id, post_type, status, visibility,
+       title, body, created_at, updated_at
+     ) VALUES ('text-community', $1, $2, 'text', 'published', 'public',
+       NULL, 'comment target', now(), now())`,
+    [postId, actor.userId],
+  );
+}
+
+async function insertParentComment(
+  admin: Client,
+  postId = "text-order6-post",
+  commentId = "text-order6-parent",
+  depth = 0,
+): Promise<void> {
+  await admin.query(
+    `INSERT INTO comments (
+       community_id, comment_id, post_id, parent_comment_id, author_user_id,
+       status, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
+       depth, reply_count
+     ) VALUES ('text-community', $1, $2, NULL, $3, 'published', 'parent', now(), now(),
+       $4, $5, $6, 0)`,
+    [commentId, postId, actor.userId, `${commentId}-key`, "a".repeat(64), depth],
+  );
 }
 
 suite("Postgres 17 terminal text submission repository", () => {
@@ -585,6 +668,413 @@ suite("Postgres 17 terminal text submission repository", () => {
          (SELECT count(*)::int FROM text_moderation_cases) AS cases`,
       );
       expect(counts.rows[0]).toEqual({ submissions: 1, posts: 0, feed: 0, held: 1, cases: 1 });
+    });
+  }, 30_000);
+
+  test("comments same-key race commits one submission and replays winner bytes", async () => {
+    await withSchema(async (admin, connection) => {
+      await insertCommentPost(admin);
+      const requestHash = await commentRequestHash(commentBody.idempotency_key, commentBody.body);
+      const commit = (operationId: string) =>
+        runStore(connection, (store) =>
+          store.commitTerminal({
+            communityId: "text-community",
+            actor,
+            body: commentBody,
+            moderationInput: commentInput,
+            idempotencyKey: commentBody.idempotency_key,
+            requestHash,
+            operationId,
+            evaluation: commentEvaluation,
+            target: {
+              surface: "comment",
+              communityId: "text-community",
+              postId: "text-order6-post",
+            },
+          }),
+        );
+      const results = await Promise.all([
+        commit("operation_comment_1"),
+        commit("operation_comment_2"),
+      ]);
+      expect(results.map((result) => result.kind).sort()).toEqual(["created", "replay"]);
+      const created = results.find((result) => result.kind === "created");
+      const replay = results.find((result) => result.kind === "replay");
+      if (created === undefined || replay === undefined)
+        throw new Error("expected comment race winner");
+      const stored = await admin.query<{
+        readonly submission_id: string;
+        readonly response_snapshot_bytes: unknown;
+        readonly response_snapshot_sha256: string;
+      }>(
+        `SELECT submission_id, response_snapshot_bytes, response_snapshot_sha256
+           FROM text_content_submissions
+          WHERE actor_user_id = $1 AND surface = 'comment' AND idempotency_key = $2`,
+        [actor.userId, commentBody.idempotency_key],
+      );
+      expect(stored.rows).toHaveLength(1);
+      const storedRow = stored.rows[0];
+      if (storedRow === undefined) throw new Error("missing comment response snapshot");
+      const createdBytes = snapshotBytes(created.snapshot);
+      const replayBytes = snapshotBytes(replay.snapshot);
+      const storedBytes = databaseBytes(storedRow.response_snapshot_bytes);
+      expect(Array.from(replayBytes)).toEqual(Array.from(createdBytes));
+      expect(Array.from(replayBytes)).toEqual(Array.from(storedBytes));
+      expect(storedRow.response_snapshot_sha256).toBe(sha256(storedBytes));
+      const counts = await admin.query(
+        `SELECT
+           (SELECT count(*)::int FROM comments WHERE post_id = 'text-order6-post') AS comments,
+           (SELECT comment_count FROM posts WHERE post_id = 'text-order6-post') AS comment_count,
+           (SELECT count(*)::int FROM comment_publication_projection) AS projections,
+           (SELECT count(*)::int FROM content_publication_outbox) AS outbox`,
+      );
+      expect(counts.rows[0]).toEqual({ comments: 1, comment_count: 1, projections: 1, outbox: 3 });
+      const crossCommunity = await runStore(connection, (store) =>
+        store.replay({
+          communityId: "other-community",
+          actor,
+          idempotencyKey: commentBody.idempotency_key,
+          requestHash: "e".repeat(64),
+          surface: "comment",
+        }),
+      );
+      expect(crossCommunity).toEqual({ kind: "conflict", submissionId: storedRow.submission_id });
+    });
+  }, 30_000);
+
+  test("blocked comments create no comment, counter, projection, or outbox effect", async () => {
+    await withSchema(async (admin, connection) => {
+      await insertCommentPost(admin);
+      const blockedBody = { idempotency_key: "comment-order6-blocked", body: "blocked comment" };
+      const blockedInput = { ...commentInput, body: blockedBody.body };
+      const canonical = canonicalTextModerationInput(blockedInput);
+      if (canonical.kind === "rejected") throw new Error(canonical.reason);
+      const requestHash = await commentRequestHash(blockedBody.idempotency_key, blockedBody.body);
+      const result = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId: "text-community",
+          actor,
+          body: blockedBody,
+          moderationInput: blockedInput,
+          idempotencyKey: blockedBody.idempotency_key,
+          requestHash,
+          operationId: "operation_comment_blocked",
+          evaluation: {
+            ...commentEvaluation,
+            decision: "blocked",
+            reason_codes: ["hate"],
+            input_sha256: canonical.sha256,
+          },
+          target: { surface: "comment", communityId: "text-community", postId: "text-order6-post" },
+        }),
+      );
+      expect(result.kind).toBe("created");
+      const counts = await admin.query(
+        `SELECT
+           (SELECT count(*)::int FROM text_content_submissions WHERE surface = 'comment') AS submissions,
+           (SELECT count(*)::int FROM comments) AS comments,
+           (SELECT comment_count FROM posts WHERE post_id = 'text-order6-post') AS comment_count,
+           (SELECT count(*)::int FROM comment_publication_projection) AS projections,
+           (SELECT count(*)::int FROM content_publication_outbox) AS outbox`,
+      );
+      expect(counts.rows[0]).toEqual({
+        submissions: 1,
+        comments: 0,
+        comment_count: 0,
+        projections: 0,
+        outbox: 0,
+      });
+    });
+  }, 30_000);
+
+  test("reply parent closure, cross-thread, and depth checks happen at commit", async () => {
+    await withSchema(async (admin, connection) => {
+      await insertCommentPost(admin);
+      await insertCommentPost(admin, "text-order6-other-post");
+      await insertParentComment(admin, "text-order6-other-post", "text-order6-cross-parent");
+      const replyHash = await commentRequestHash(
+        replyBody.idempotency_key,
+        replyBody.body,
+        "text-order6-post",
+        "reply",
+        "text-order6-cross-parent",
+      );
+      const crossThreadFailure = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId: "text-community",
+          actor,
+          body: replyBody,
+          moderationInput: replyInput,
+          idempotencyKey: replyBody.idempotency_key,
+          requestHash: replyHash,
+          operationId: "operation_reply_cross_thread",
+          evaluation: replyEvaluation,
+          target: {
+            surface: "reply",
+            communityId: "text-community",
+            postId: "text-order6-post",
+            parentCommentId: "text-order6-cross-parent",
+          },
+        }),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(crossThreadFailure).toMatchObject({
+        _tag: "TextPostRepositoryError",
+        reason: "not-found",
+      });
+
+      await admin.query(
+        "UPDATE posts SET comments_locked = TRUE WHERE community_id = 'text-community' AND post_id = 'text-order6-post'",
+      );
+      await insertParentComment(admin, "text-order6-post", "text-order6-closed-parent");
+      const closedHash = await commentRequestHash(
+        "reply-order6-closed",
+        replyBody.body,
+        "text-order6-post",
+        "reply",
+        "text-order6-closed-parent",
+      );
+      const closedFailure = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId: "text-community",
+          actor,
+          body: { ...replyBody, idempotency_key: "reply-order6-closed" },
+          moderationInput: replyInput,
+          idempotencyKey: "reply-order6-closed",
+          requestHash: closedHash,
+          operationId: "operation_reply_closed",
+          evaluation: replyEvaluation,
+          target: {
+            surface: "reply",
+            communityId: "text-community",
+            postId: "text-order6-post",
+            parentCommentId: "text-order6-closed-parent",
+          },
+        }),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(closedFailure).toMatchObject({
+        _tag: "TextPostRepositoryError",
+        reason: "comments-locked",
+      });
+
+      await admin.query(
+        "UPDATE posts SET comments_locked = FALSE WHERE community_id = 'text-community' AND post_id = 'text-order6-post'",
+      );
+      await insertParentComment(admin, "text-order6-post", "text-order6-deep-parent", 8);
+      const depthHash = await commentRequestHash(
+        "reply-order6-depth",
+        replyBody.body,
+        "text-order6-post",
+        "reply",
+        "text-order6-deep-parent",
+      );
+      const depthFailure = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId: "text-community",
+          actor,
+          body: replyBody,
+          moderationInput: replyInput,
+          idempotencyKey: replyBody.idempotency_key,
+          requestHash: depthHash,
+          operationId: "operation_reply_depth",
+          evaluation: replyEvaluation,
+          target: {
+            surface: "reply",
+            communityId: "text-community",
+            postId: "text-order6-post",
+            parentCommentId: "text-order6-deep-parent",
+          },
+        }),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(depthFailure).toMatchObject({
+        _tag: "TextPostRepositoryError",
+        reason: "reply-depth-exceeded",
+      });
+    });
+  }, 30_000);
+
+  test("reports coalesce and moderator approval projects a held comment atomically", async () => {
+    await withSchema(async (admin, connection) => {
+      await insertCommentPost(admin);
+      const requestHash = await commentRequestHash("comment-order6-report", commentBody.body);
+      const publishedResult = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId: "text-community",
+          actor,
+          body: { ...commentBody, idempotency_key: "comment-order6-report" },
+          moderationInput: commentInput,
+          idempotencyKey: "comment-order6-report",
+          requestHash,
+          operationId: "operation_comment_report_target",
+          evaluation: commentEvaluation,
+          target: { surface: "comment", communityId: "text-community", postId: "text-order6-post" },
+        }),
+      );
+      if (publishedResult.kind !== "created") throw new Error("expected report target comment");
+      const commentId =
+        publishedResult.snapshot.published_resource?.kind === "comment"
+          ? publishedResult.snapshot.published_resource.comment_id
+          : null;
+      if (commentId === null) throw new Error("missing published comment id");
+      const reportHash = (key: string) =>
+        Effect.runPromise(
+          canonicalBodyHash({
+            endpoint: "POST /comments/:commentId/reports",
+            comment_id: commentId,
+            body: { idempotency_key: key, reason_code: "spam" },
+          }),
+        );
+      const firstReportHash = await reportHash("report-order6-1");
+      const report = await runStore(connection, (store) =>
+        store.reportComment({
+          commentId,
+          actor,
+          idempotencyKey: "report-order6-1",
+          reasonCode: "spam",
+          requestHash: firstReportHash,
+        }),
+      );
+      expect(report.status).toBe("open");
+      const reportConflict = await runStore(connection, (store) =>
+        store.reportComment({
+          commentId,
+          actor,
+          idempotencyKey: "report-order6-1",
+          reasonCode: "spam",
+          requestHash: "0".repeat(64),
+        }),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(reportConflict).toMatchObject({
+        _tag: "TextPostRepositoryError",
+        reason: "idempotency-conflict",
+      });
+      const secondReportHash = await reportHash("report-order6-2");
+      const coalesced = await runStore(connection, (store) =>
+        store.reportComment({
+          commentId,
+          actor,
+          idempotencyKey: "report-order6-2",
+          reasonCode: "harassment",
+          requestHash: secondReportHash,
+        }),
+      );
+      expect(coalesced).toMatchObject({ caseRef: report.caseRef, status: "coalesced" });
+      const reportReplay = await runStore(connection, (store) =>
+        store.reportComment({
+          commentId,
+          actor,
+          idempotencyKey: "report-order6-1",
+          reasonCode: "spam",
+          requestHash: firstReportHash,
+        }),
+      );
+      expect(reportReplay).toEqual(report);
+
+      const heldKey = "comment-order6-held";
+      const heldHash = await commentRequestHash(heldKey, "held comment");
+      const heldInput = { ...commentInput, body: "held comment" };
+      const heldCanonical = canonicalTextModerationInput(heldInput);
+      if (heldCanonical.kind === "rejected") throw new Error(heldCanonical.reason);
+      const heldResult = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId: "text-community",
+          actor,
+          body: { idempotency_key: heldKey, body: "held comment" },
+          moderationInput: heldInput,
+          idempotencyKey: heldKey,
+          requestHash: heldHash,
+          operationId: "operation_comment_held",
+          evaluation: {
+            ...commentEvaluation,
+            decision: "manual_review",
+            reason_codes: ["provider_unavailable"],
+            input_sha256: heldCanonical.sha256,
+          },
+          target: { surface: "comment", communityId: "text-community", postId: "text-order6-post" },
+        }),
+      );
+      if (heldResult.kind !== "created" || heldResult.snapshot.review_ref === null)
+        throw new Error("expected held comment");
+      const heldCaseRef = heldResult.snapshot.review_ref;
+      const actionHash = (key: string, action: string) =>
+        Effect.runPromise(
+          canonicalBodyHash({
+            endpoint: "POST /moderation/cases/:caseRef/actions",
+            case_ref: heldCaseRef,
+            body: { idempotency_key: key, action },
+          }),
+        );
+      const moderator = { ...actor, scopes: ["moderator"] };
+      const dismissHash = await actionHash("action-order6-dismiss", "dismiss");
+      const dismissFailure = await runStore(connection, (store) =>
+        store.moderateCaseAction({
+          caseRef: heldCaseRef,
+          actor: moderator,
+          idempotencyKey: "action-order6-dismiss",
+          action: "dismiss",
+          requestHash: dismissHash,
+        }),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(dismissFailure).toMatchObject({
+        _tag: "TextPostRepositoryError",
+        reason: "action-conflict",
+      });
+      const approveHash = await actionHash("action-order6-approve", "approve");
+      const approved = await runStore(connection, (store) =>
+        store.moderateCaseAction({
+          caseRef: heldCaseRef,
+          actor: moderator,
+          idempotencyKey: "action-order6-approve",
+          action: "approve",
+          requestHash: approveHash,
+        }),
+      );
+      expect(approved).toMatchObject({
+        caseRef: heldCaseRef,
+        action: "approve",
+        targetStatus: "published",
+      });
+      const approvedReplay = await runStore(connection, (store) =>
+        store.moderateCaseAction({
+          caseRef: heldCaseRef,
+          actor: moderator,
+          idempotencyKey: "action-order6-approve",
+          action: "approve",
+          requestHash: approveHash,
+        }),
+      );
+      expect(approvedReplay).toEqual(approved);
+      const counts = await admin.query(
+        `SELECT
+           (SELECT count(*)::int FROM comment_reports) AS reports,
+           (SELECT count(*)::int FROM text_moderation_cases) AS cases,
+           (SELECT count(*)::int FROM comment_moderation_cases) AS comment_cases,
+           (SELECT count(*)::int FROM comments) AS comments,
+           (SELECT comment_count FROM posts WHERE post_id = 'text-order6-post') AS comment_count,
+           (SELECT count(*)::int FROM content_publication_outbox) AS outbox`,
+      );
+      expect(counts.rows[0]).toEqual({
+        reports: 2,
+        cases: 1,
+        comment_cases: 2,
+        comments: 2,
+        comment_count: 2,
+        outbox: 6,
+      });
     });
   }, 30_000);
 });

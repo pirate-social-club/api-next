@@ -3662,6 +3662,69 @@ CREATE TABLE assertions (
     CONSTRAINT assertions_identifiers_not_blank CHECK (((btrim(claim_id) <> ''::text) AND (btrim(assurance) <> ''::text)))
 );
 
+CREATE TABLE comment_moderation_actions (
+    action_id text NOT NULL,
+    community_id text NOT NULL,
+    case_ref text NOT NULL,
+    actor_user_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    action text NOT NULL,
+    target_status text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    CONSTRAINT comment_moderation_actions_action_check CHECK ((action = ANY (ARRAY['approve'::text, 'dismiss'::text, 'hide'::text, 'remove'::text, 'restore'::text]))),
+    CONSTRAINT comment_moderation_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT comment_moderation_actions_target_status_check CHECK ((target_status = ANY (ARRAY['held'::text, 'published'::text, 'hidden'::text, 'removed'::text])))
+);
+
+CREATE TABLE comment_moderation_cases (
+    case_ref text NOT NULL,
+    community_id text NOT NULL,
+    submission_id text NOT NULL,
+    comment_id text,
+    source text NOT NULL,
+    status text DEFAULT 'open'::text NOT NULL,
+    resolved_by_user_id text,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT comment_moderation_cases_resolution_shape CHECK ((((status = 'open'::text) AND (resolved_by_user_id IS NULL)) OR ((status <> 'open'::text) AND (resolved_by_user_id IS NOT NULL)))),
+    CONSTRAINT comment_moderation_cases_source_check CHECK ((source = ANY (ARRAY['automated'::text, 'report'::text]))),
+    CONSTRAINT comment_moderation_cases_source_shape CHECK ((((source = 'automated'::text) AND (comment_id IS NULL)) OR ((source = 'report'::text) AND (comment_id IS NOT NULL)))),
+    CONSTRAINT comment_moderation_cases_status_check CHECK ((status = ANY (ARRAY['open'::text, 'approved'::text, 'dismissed'::text, 'blocked'::text]))),
+    CONSTRAINT comment_moderation_cases_time_order CHECK ((updated_at >= created_at))
+);
+
+CREATE TABLE comment_publication_projection (
+    community_id text NOT NULL,
+    comment_id text NOT NULL,
+    post_id text NOT NULL,
+    parent_comment_id text,
+    author_user_id text NOT NULL,
+    body text NOT NULL,
+    depth integer NOT NULL,
+    status text NOT NULL,
+    projected_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT comment_publication_projection_depth_check CHECK (((depth >= 0) AND (depth <= 8))),
+    CONSTRAINT comment_publication_projection_status_check CHECK ((status = ANY (ARRAY['published'::text, 'hidden'::text, 'removed'::text])))
+);
+
+CREATE TABLE comment_reports (
+    report_id text NOT NULL,
+    community_id text NOT NULL,
+    comment_id text NOT NULL,
+    case_ref text NOT NULL,
+    reporter_user_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    reason_code text NOT NULL,
+    status text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    CONSTRAINT comment_reports_reason_code_check CHECK ((reason_code = ANY (ARRAY['spam'::text, 'harassment'::text, 'hate'::text, 'sexual_content'::text, 'graphic_content'::text, 'misleading'::text, 'other'::text]))),
+    CONSTRAINT comment_reports_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT comment_reports_status_check CHECK ((status = ANY (ARRAY['open'::text, 'coalesced'::text])))
+);
+
 CREATE TABLE comments (
     community_id text NOT NULL,
     comment_id text NOT NULL,
@@ -3675,8 +3738,10 @@ CREATE TABLE comments (
     idempotency_key text DEFAULT ''::text NOT NULL,
     idempotency_body_hash text,
     depth integer DEFAULT 0 NOT NULL,
+    reply_count integer DEFAULT 0 NOT NULL,
     CONSTRAINT comments_depth_check CHECK ((depth >= 0)),
     CONSTRAINT comments_not_self_parent CHECK (((parent_comment_id IS NULL) OR (parent_comment_id <> comment_id))),
+    CONSTRAINT comments_reply_count_nonnegative CHECK ((reply_count >= 0)),
     CONSTRAINT comments_status_check CHECK ((status = ANY (ARRAY['published'::text, 'hidden'::text, 'removed'::text, 'deleted'::text])))
 );
 
@@ -4666,6 +4731,23 @@ CREATE TABLE community_route_revalidation_start_reservations (
     CONSTRAINT community_route_revalidation_start_time_order CHECK ((updated_at >= created_at))
 );
 
+CREATE TABLE content_publication_outbox (
+    outbox_event_id text NOT NULL,
+    community_id text NOT NULL,
+    submission_id text NOT NULL,
+    comment_id text NOT NULL,
+    event_type text NOT NULL,
+    effect_key text NOT NULL,
+    payload jsonb NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    published_at timestamp with time zone,
+    CONSTRAINT content_publication_outbox_event_type_check CHECK ((event_type = ANY (ARRAY['comment_published'::text, 'comment_notification'::text, 'comment_cache_invalidation'::text]))),
+    CONSTRAINT content_publication_outbox_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
+    CONSTRAINT content_publication_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'published'::text, 'failed'::text]))),
+    CONSTRAINT content_publication_outbox_time_shape CHECK ((((state = 'published'::text) AND (published_at IS NOT NULL)) OR ((state = ANY (ARRAY['pending'::text, 'failed'::text])) AND (published_at IS NULL))))
+);
+
 CREATE TABLE decision_records (
     decision_record_id text NOT NULL,
     community_id text NOT NULL,
@@ -5063,6 +5145,8 @@ CREATE TABLE posts (
     idempotency_key text DEFAULT ''::text NOT NULL,
     idempotency_body_hash text,
     comments_locked boolean DEFAULT false NOT NULL,
+    comment_count integer DEFAULT 0 NOT NULL,
+    CONSTRAINT posts_comment_count_nonnegative CHECK ((comment_count >= 0)),
     CONSTRAINT posts_post_type_check CHECK ((post_type = ANY (ARRAY['text'::text, 'image'::text, 'video'::text, 'link'::text, 'song'::text, 'crosspost'::text, 'file'::text]))),
     CONSTRAINT posts_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'processing'::text, 'published'::text, 'failed'::text, 'hidden'::text, 'removed'::text, 'deleted'::text]))),
     CONSTRAINT posts_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
@@ -5257,6 +5341,8 @@ CREATE TABLE text_content_submissions (
     operation_id text NOT NULL,
     response_snapshot_bytes bytea NOT NULL,
     response_snapshot_sha256 text NOT NULL,
+    target_post_id text,
+    target_parent_comment_id text,
     CONSTRAINT text_content_submissions_identifiers_not_blank CHECK (((btrim(submission_id) <> ''::text) AND (submission_id = btrim(submission_id)) AND (btrim(actor_user_id) <> ''::text) AND (actor_user_id = btrim(actor_user_id)) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND ((review_ref IS NULL) OR ((btrim(review_ref) <> ''::text) AND (review_ref = btrim(review_ref)))))),
     CONSTRAINT text_content_submissions_input_sha256_check CHECK ((input_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_moderation_decision_check CHECK ((moderation_decision = ANY (ARRAY['allow'::text, 'manual_review'::text, 'blocked'::text]))),
@@ -5271,6 +5357,7 @@ CREATE TABLE text_content_submissions (
     CONSTRAINT text_content_submissions_status_check CHECK ((status = ANY (ARRAY['published'::text, 'manual_review'::text, 'blocked'::text]))),
     CONSTRAINT text_content_submissions_status_shape CHECK ((((status = 'published'::text) AND (public_reason_code IS NULL) AND (review_ref IS NULL) AND (((surface = 'text_post'::text) AND (published_post_id IS NOT NULL) AND (published_comment_id IS NULL)) OR ((surface = ANY (ARRAY['comment'::text, 'reply'::text])) AND (published_post_id IS NULL) AND (published_comment_id IS NOT NULL)))) OR ((status = 'manual_review'::text) AND (public_reason_code IS NOT NULL) AND (public_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text])) AND (review_ref IS NOT NULL) AND (published_post_id IS NULL) AND (published_comment_id IS NULL)) OR ((status = 'blocked'::text) AND (public_reason_code IS NOT NULL) AND (public_reason_code = 'policy_violation'::text) AND (review_ref IS NULL) AND (published_post_id IS NULL) AND (published_comment_id IS NULL)))),
     CONSTRAINT text_content_submissions_surface_check CHECK ((surface = ANY (ARRAY['text_post'::text, 'comment'::text, 'reply'::text]))),
+    CONSTRAINT text_content_submissions_target_shape CHECK ((((surface = 'text_post'::text) AND (target_post_id IS NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'comment'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NULL)) OR ((surface = 'reply'::text) AND (target_post_id IS NOT NULL) AND (target_parent_comment_id IS NOT NULL)))),
     CONSTRAINT text_content_submissions_time_order CHECK ((updated_at >= created_at))
 );
 
@@ -5449,6 +5536,27 @@ ALTER TABLE ONLY assertions
 
 ALTER TABLE ONLY assertions
     ADD CONSTRAINT assertions_pkey PRIMARY KEY (assertion_id);
+
+ALTER TABLE ONLY comment_moderation_actions
+    ADD CONSTRAINT comment_moderation_actions_actor_key_unique UNIQUE (case_ref, actor_user_id, idempotency_key);
+
+ALTER TABLE ONLY comment_moderation_actions
+    ADD CONSTRAINT comment_moderation_actions_pkey PRIMARY KEY (action_id);
+
+ALTER TABLE ONLY comment_moderation_cases
+    ADD CONSTRAINT comment_moderation_cases_pkey PRIMARY KEY (case_ref);
+
+ALTER TABLE ONLY comment_moderation_cases
+    ADD CONSTRAINT comment_moderation_cases_source_submission_unique UNIQUE (source, submission_id);
+
+ALTER TABLE ONLY comment_publication_projection
+    ADD CONSTRAINT comment_publication_projection_pkey PRIMARY KEY (community_id, comment_id);
+
+ALTER TABLE ONLY comment_reports
+    ADD CONSTRAINT comment_reports_pkey PRIMARY KEY (report_id);
+
+ALTER TABLE ONLY comment_reports
+    ADD CONSTRAINT comment_reports_reporter_key_unique UNIQUE (reporter_user_id, comment_id, idempotency_key);
 
 ALTER TABLE ONLY comments
     ADD CONSTRAINT comments_pkey PRIMARY KEY (community_id, comment_id);
@@ -5738,6 +5846,15 @@ ALTER TABLE ONLY community_route_revalidation_start_reservations
 ALTER TABLE ONLY community_route_revalidation_start_reservations
     ADD CONSTRAINT community_route_revalidation_start_reservations_pkey PRIMARY KEY (route_revalidation_id);
 
+ALTER TABLE ONLY content_publication_outbox
+    ADD CONSTRAINT content_publication_outbox_effect_key_unique UNIQUE (effect_key);
+
+ALTER TABLE ONLY content_publication_outbox
+    ADD CONSTRAINT content_publication_outbox_effect_unique UNIQUE (submission_id, event_type);
+
+ALTER TABLE ONLY content_publication_outbox
+    ADD CONSTRAINT content_publication_outbox_pkey PRIMARY KEY (outbox_event_id);
+
 ALTER TABLE ONLY decision_records
     ADD CONSTRAINT decision_records_pkey PRIMARY KEY (decision_record_id);
 
@@ -5974,7 +6091,17 @@ CREATE INDEX assertions_binding_claim_idx ON assertions USING btree (binding_gro
 
 CREATE INDEX assertions_user_claim_observed_idx ON assertions USING btree (user_id, claim_id, observed_at DESC);
 
-CREATE UNIQUE INDEX comments_author_idempotency_unique ON comments USING btree (community_id, author_user_id, idempotency_key) WHERE ((author_user_id IS NOT NULL) AND (idempotency_key <> ''::text));
+CREATE INDEX comment_moderation_cases_open_target_idx ON comment_moderation_cases USING btree (community_id, comment_id, created_at, case_ref) WHERE (status = 'open'::text);
+
+CREATE INDEX comment_publication_projection_thread_idx ON comment_publication_projection USING btree (community_id, post_id, parent_comment_id, projected_at, comment_id);
+
+CREATE INDEX comment_reports_open_target_idx ON comment_reports USING btree (community_id, comment_id, created_at, report_id) WHERE (status = 'open'::text);
+
+CREATE UNIQUE INDEX comments_author_endpoint_idempotency_unique ON comments USING btree (author_user_id, (
+CASE
+    WHEN (parent_comment_id IS NULL) THEN 'comment'::text
+    ELSE 'reply'::text
+END), idempotency_key) WHERE ((author_user_id IS NOT NULL) AND (idempotency_key <> ''::text));
 
 CREATE UNIQUE INDEX comments_comment_id_global_unique ON comments USING btree (comment_id);
 
@@ -6031,6 +6158,8 @@ CREATE INDEX community_route_revalidation_attempts_lease_idx ON community_route_
 CREATE UNIQUE INDEX community_route_revalidation_one_leased_attempt_uidx ON community_route_revalidation_completion_attempts USING btree (revalidation_session_id) WHERE (state = 'leased'::text);
 
 CREATE INDEX community_route_revalidation_start_lease_idx ON community_route_revalidation_start_reservations USING btree (state, lease_expires_at);
+
+CREATE INDEX content_publication_outbox_pending_idx ON content_publication_outbox USING btree (state, created_at, outbox_event_id) WHERE (state = ANY (ARRAY['pending'::text, 'failed'::text]));
 
 CREATE INDEX cpf_attempt_operator_actions_operation_idx ON community_purchase_funding_reconciliation_operator_actions USING btree (operation_id, action_id);
 
@@ -6103,6 +6232,8 @@ CREATE UNIQUE INDEX subject_keys_rp_scope_uidx ON subject_keys USING btree (issu
 CREATE INDEX subject_keys_scope_created_idx ON subject_keys USING btree (issuer, method, scope_kind, created_at DESC, subject_key_id);
 
 CREATE INDEX text_content_submissions_actor_created_idx ON text_content_submissions USING btree (actor_user_id, created_at DESC, submission_id);
+
+CREATE UNIQUE INDEX text_content_submissions_comment_reply_actor_key_unique ON text_content_submissions USING btree (actor_user_id, surface, idempotency_key) WHERE (surface = ANY (ARRAY['comment'::text, 'reply'::text]));
 
 CREATE INDEX text_content_submissions_review_idx ON text_content_submissions USING btree (community_id, status, created_at, submission_id) WHERE (status = 'manual_review'::text);
 
@@ -6410,6 +6541,30 @@ ALTER TABLE ONLY assertions
 ALTER TABLE ONLY assertions
     ADD CONSTRAINT assertions_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id);
 
+ALTER TABLE ONLY comment_moderation_actions
+    ADD CONSTRAINT comment_moderation_actions_case_fk FOREIGN KEY (case_ref) REFERENCES comment_moderation_cases(case_ref);
+
+ALTER TABLE ONLY comment_moderation_cases
+    ADD CONSTRAINT comment_moderation_cases_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);
+
+ALTER TABLE ONLY comment_moderation_cases
+    ADD CONSTRAINT comment_moderation_cases_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);
+
+ALTER TABLE ONLY comment_publication_projection
+    ADD CONSTRAINT comment_publication_projection_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);
+
+ALTER TABLE ONLY comment_publication_projection
+    ADD CONSTRAINT comment_publication_projection_parent_fk FOREIGN KEY (community_id, parent_comment_id) REFERENCES comments(community_id, comment_id);
+
+ALTER TABLE ONLY comment_publication_projection
+    ADD CONSTRAINT comment_publication_projection_post_fk FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY comment_reports
+    ADD CONSTRAINT comment_reports_case_fk FOREIGN KEY (case_ref) REFERENCES comment_moderation_cases(case_ref);
+
+ALTER TABLE ONLY comment_reports
+    ADD CONSTRAINT comment_reports_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);
+
 ALTER TABLE ONLY comments
     ADD CONSTRAINT comments_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
@@ -6713,6 +6868,12 @@ ALTER TABLE ONLY community_route_revalidation_start_reservations
 ALTER TABLE ONLY community_route_revalidation_start_reservations
     ADD CONSTRAINT community_route_revalidation_start_reservatio_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
+ALTER TABLE ONLY content_publication_outbox
+    ADD CONSTRAINT content_publication_outbox_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);
+
+ALTER TABLE ONLY content_publication_outbox
+    ADD CONSTRAINT content_publication_outbox_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);
+
 ALTER TABLE ONLY decision_records
     ADD CONSTRAINT decision_records_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
@@ -6865,6 +7026,12 @@ ALTER TABLE ONLY text_content_submissions
 
 ALTER TABLE ONLY text_content_submissions
     ADD CONSTRAINT text_content_submissions_post_fk FOREIGN KEY (community_id, published_post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY text_content_submissions
+    ADD CONSTRAINT text_content_submissions_target_parent_fk FOREIGN KEY (community_id, target_parent_comment_id) REFERENCES comments(community_id, comment_id);
+
+ALTER TABLE ONLY text_content_submissions
+    ADD CONSTRAINT text_content_submissions_target_post_fk FOREIGN KEY (community_id, target_post_id) REFERENCES posts(community_id, post_id);
 
 ALTER TABLE ONLY text_moderation_cases
     ADD CONSTRAINT text_moderation_cases_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);

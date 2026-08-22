@@ -854,6 +854,43 @@ describe("contracts-generated HTTP worker", () => {
     }
   });
 
+  it("fails closed in Workerd authorization before any Order 6 handler runs", async () => {
+    let handlerCalls = 0;
+    const blocked = () => {
+      handlerCalls += 1;
+      throw new Error("handler must not run after authorization failure");
+    };
+    const app = createHttpWorker({
+      handlers: {
+        CreateComment: blocked,
+        CreateCommentReply: blocked,
+        ReportComment: blocked,
+        ModerateCaseAction: blocked,
+      },
+      authenticate: () => ({ kind: "user", subject: "user_1" }),
+      authorize: () => {
+        throw new AuthError({ message: "moderator authorization failed closed" });
+      },
+    });
+    const headers = { authorization: "Bearer test", "content-type": "application/json" };
+    const requests = [
+      ["/posts/post_1/comments", { idempotency_key: "comment-key", body: "comment" }],
+      ["/comments/comment_1/replies", { idempotency_key: "reply-key", body: "reply" }],
+      ["/comments/comment_1/reports", { idempotency_key: "report-key", reason_code: "spam" }],
+      ["/moderation/cases/case_1/actions", { idempotency_key: "action-key", action: "approve" }],
+    ] as const;
+    for (const [path, body] of requests) {
+      const response = await app.request(`http://worker.test${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({ error: { code: "auth_error" } });
+    }
+    expect(handlerCalls).toBe(0);
+  });
+
   it("validates installed content mutation responses through the normal route schemas", async () => {
     const app = createHttpWorker({
       handlers: {

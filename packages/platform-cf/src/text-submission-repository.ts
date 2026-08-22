@@ -1,15 +1,23 @@
 import {
+  type CommentReportOutcome,
+  type CommentReportReasonCode,
   ControlPlaneDb,
   type ControlPlaneError,
   type ControlPlaneTransaction,
+  type CreatePostBody,
   canonicalBodyHash,
   type M2Actor,
+  type ModerationAction,
+  type ModerationActionOutcome,
+  type TextCommentTargetResolution,
   type TextPostCommitOutcome,
   type TextPostModerationEvaluation,
   TextPostRepositoryError,
   type TextPostRepositoryFailure,
   type TextPostStore,
   type TextPostSubmissionDocument,
+  type TextSubmissionSurface,
+  type TextSubmissionTarget,
 } from "@pirate/application";
 import {
   canonicalTextModerationInput,
@@ -40,17 +48,62 @@ type RepositoryService = {
   readonly getForAuthor: (
     input: GetInput,
   ) => Effect.Effect<TextPostSubmissionDocument | null, StoreFailure, ControlPlaneDb>;
+  readonly resolveCommentTarget: (input: {
+    readonly surface: "comment" | "reply";
+    readonly targetId: string;
+  }) => Effect.Effect<TextCommentTargetResolution, StoreFailure, ControlPlaneDb>;
+  readonly reportComment: (input: {
+    readonly commentId: string;
+    readonly actor: M2Actor;
+    readonly idempotencyKey: string;
+    readonly reasonCode: CommentReportReasonCode;
+    readonly requestHash: string;
+  }) => Effect.Effect<CommentReportOutcome, StoreFailure, ControlPlaneDb>;
+  readonly moderateCaseAction: (input: {
+    readonly caseRef: string;
+    readonly actor: M2Actor;
+    readonly idempotencyKey: string;
+    readonly action: ModerationAction;
+    readonly requestHash: string;
+  }) => Effect.Effect<ModerationActionOutcome, StoreFailure, ControlPlaneDb>;
 };
 
 const HASH = /^[0-9a-f]{64}$/u;
 const failure = (
-  operation: "replay" | "commit" | "get",
-  reason: "not-found" | "membership-required" | "constraint" | "invalid-row",
+  operation: "replay" | "commit" | "get" | "resolve-target" | "report" | "action",
+  reason:
+    | "not-found"
+    | "membership-required"
+    | "comments-locked"
+    | "reply-depth-exceeded"
+    | "idempotency-conflict"
+    | "action-conflict"
+    | "constraint"
+    | "invalid-row",
 ) => new TextPostRepositoryError({ operation, reason });
+const failureWithSubmission = (
+  operation: "report" | "action",
+  reason:
+    | "not-found"
+    | "membership-required"
+    | "idempotency-conflict"
+    | "action-conflict"
+    | "constraint"
+    | "invalid-row",
+  submissionId: string,
+) => new TextPostRepositoryError({ operation, reason, submissionId });
 
 const stringValue = (row: Row, key: string): string | null => {
   const value = row[key];
   return typeof value === "string" ? value : null;
+};
+const booleanValue = (row: Row, key: string): boolean | null => {
+  const value = row[key];
+  return typeof value === "boolean" ? value : null;
+};
+const safeIntegerValue = (row: Row, key: string): number | null => {
+  const value = row[key];
+  return typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 };
 const validId = (value: string | null): value is string =>
   value !== null && value.length > 0 && value.trim() === value && !value.includes("\u0000");
@@ -84,6 +137,7 @@ const snapshotFromBytes = (row: Row): TextPostSubmissionDocument | null => {
 
 const currentSnapshot = (row: Row): TextPostSubmissionDocument | null => {
   const submissionId = stringValue(row, "submission_id");
+  const surface = stringValue(row, "surface");
   const status = stringValue(row, "status");
   const createdAt = iso(row, "created_at");
   const updatedAt = iso(row, "updated_at");
@@ -92,16 +146,18 @@ const currentSnapshot = (row: Row): TextPostSubmissionDocument | null => {
   const reviewRef = stringValue(row, "review_ref");
   if (
     !validId(submissionId) ||
+    !["text_post", "comment", "reply"].includes(surface ?? "") ||
     !["published", "manual_review", "blocked"].includes(status ?? "") ||
     createdAt === null ||
     updatedAt === null
   )
     return null;
   const typedStatus = status as "published" | "manual_review" | "blocked";
+  const typedSurface = surface as TextSubmissionSurface;
   const snapshot: TextPostSubmissionDocument = {
     submission_id: submissionId,
     href: `/text-content-submissions/${submissionId}`,
-    surface: "text_post",
+    surface: typedSurface,
     status: typedStatus,
     result:
       typedStatus === "published"
@@ -116,8 +172,16 @@ const currentSnapshot = (row: Row): TextPostSubmissionDocument | null => {
                   : "review_required",
             },
     published_resource:
-      typedStatus === "published" && validId(postId)
-        ? { kind: "post", post_id: postId, href: `/posts/${postId}` }
+      typedStatus === "published"
+        ? typedSurface === "text_post" && validId(postId)
+          ? { kind: "post", post_id: postId, href: `/posts/${postId}` }
+          : typedSurface !== "text_post" && validId(stringValue(row, "published_comment_id"))
+            ? {
+                kind: "comment",
+                comment_id: stringValue(row, "published_comment_id") as string,
+                href: `/comments/${stringValue(row, "published_comment_id")}`,
+              }
+            : null
         : null,
     review_ref: typedStatus === "manual_review" && validId(reviewRef) ? reviewRef : null,
     created_at: createdAt,
@@ -131,26 +195,27 @@ const finalByKey = (
   input: {
     readonly actorUserId: string;
     readonly idempotencyKey: string;
+    readonly surface: TextSubmissionSurface;
   },
   lock: boolean,
 ) =>
   transaction.execute<Row>({
-    label: "text-post.replay",
+    label: "text-submission.replay",
     text: `SELECT community_id, submission_id, actor_user_id, surface, idempotency_key,
                   request_hash, status, public_reason_code, published_post_id,
                   published_comment_id, review_ref, created_at, updated_at,
                   response_snapshot_bytes, response_snapshot_sha256
              FROM text_content_submissions
             WHERE actor_user_id = $1
-              AND surface = 'text_post' AND idempotency_key = $2
+              AND surface = $2 AND idempotency_key = $3
             ${lock ? "FOR UPDATE" : ""}`,
-    values: [input.actorUserId, input.idempotencyKey],
+    values: [input.actorUserId, input.surface, input.idempotencyKey],
     readonly: !lock,
   });
 
 const finalById = (transaction: Transaction, submissionId: string, actorUserId?: string) =>
   transaction.execute<Row>({
-    label: "text-post.final-by-id",
+    label: "text-submission.final-by-id",
     text: `SELECT community_id, submission_id, actor_user_id, surface, idempotency_key,
                   request_hash, status, public_reason_code, published_post_id,
                   published_comment_id, review_ref, created_at, updated_at,
@@ -170,8 +235,11 @@ const lockKey = (transaction: Transaction, value: string) =>
     readonly: false,
   });
 
-const idempotencyLockKey = (actorUserId: string, key: string): string =>
-  JSON.stringify([actorUserId, "text_post", key]);
+const idempotencyLockKey = (
+  actorUserId: string,
+  surface: TextSubmissionSurface,
+  key: string,
+): string => JSON.stringify([actorUserId, surface, key]);
 
 const authority = (
   transaction: Transaction,
@@ -226,6 +294,54 @@ const authority = (
     return { policyRevision, policyHash };
   });
 
+const lockCommentTarget = (
+  transaction: Transaction,
+  target: Extract<TextSubmissionTarget, { readonly surface: "comment" | "reply" }>,
+): Effect.Effect<{ readonly parentDepth: number }, StoreFailure> =>
+  Effect.gen(function* () {
+    const post = yield* transaction.execute<Row>({
+      label: "text-submission.commit.lock-comment-post",
+      text: `SELECT community_id, post_id, status, comments_locked
+                FROM posts
+               WHERE community_id = $1 AND post_id = $2
+               FOR UPDATE`,
+      values: [target.communityId, target.postId],
+      readonly: false,
+    });
+    const postRow = post.rows[0] as Row | undefined;
+    if (
+      post.rows.length !== 1 ||
+      postRow === undefined ||
+      stringValue(postRow, "status") !== "published"
+    )
+      return yield* Effect.fail(failure("commit", "not-found"));
+    if (booleanValue(postRow, "comments_locked") === true)
+      return yield* Effect.fail(failure("commit", "comments-locked"));
+    if (target.surface === "comment") return { parentDepth: -1 };
+
+    const parent = yield* transaction.execute<Row>({
+      label: "text-submission.commit.lock-parent-comment",
+      text: `SELECT community_id, post_id, comment_id, status, depth
+                FROM comments
+               WHERE community_id = $1 AND comment_id = $2
+               FOR UPDATE`,
+      values: [target.communityId, target.parentCommentId],
+      readonly: false,
+    });
+    const parentRow = parent.rows[0] as Row | undefined;
+    const parentDepth = parentRow === undefined ? null : safeIntegerValue(parentRow, "depth");
+    if (
+      parent.rows.length !== 1 ||
+      parentRow === undefined ||
+      stringValue(parentRow, "post_id") !== target.postId ||
+      stringValue(parentRow, "status") !== "published" ||
+      parentDepth === null
+    )
+      return yield* Effect.fail(failure("commit", "not-found"));
+    if (parentDepth >= 8) return yield* Effect.fail(failure("commit", "reply-depth-exceeded"));
+    return { parentDepth };
+  });
+
 const replayRow = (
   row: Row,
   requestHash: string,
@@ -249,17 +365,49 @@ const actorInputValid = (actor: M2Actor, communityId: string, key: string, hash:
   validHash(hash);
 const makeId = (prefix: string): string => `${prefix}_${crypto.randomUUID()}`;
 
+const commentBodyValid = (
+  body: unknown,
+): body is Readonly<{
+  readonly idempotency_key: string;
+  readonly body: string;
+}> => {
+  if (typeof body !== "object" || body === null) return false;
+  const value = body as Record<string, unknown>;
+  return (
+    typeof value.idempotency_key === "string" &&
+    value.idempotency_key.trim() !== "" &&
+    typeof value.body === "string" &&
+    value.body.trim() !== ""
+  );
+};
+
+const targetFor = (input: CommitInput): TextSubmissionTarget =>
+  input.target ?? { surface: "text_post", communityId: input.communityId };
+
+const requestHashValue = (input: CommitInput, target: TextSubmissionTarget): unknown =>
+  target.surface === "text_post"
+    ? { community_id: input.communityId, body: input.body }
+    : {
+        endpoint: target.surface,
+        community_id: input.communityId,
+        post_id: target.postId,
+        ...(target.surface === "reply" ? { parent_comment_id: target.parentCommentId } : {}),
+        body: input.body,
+      };
+
 const responseSnapshot = (input: {
   readonly submissionId: string;
+  readonly surface: TextSubmissionSurface;
   readonly status: "published" | "manual_review" | "blocked";
   readonly reasonCode: "review_required" | "moderation_unavailable" | "policy_violation" | null;
   readonly postId: string | null;
+  readonly commentId: string | null;
   readonly reviewRef: string | null;
   readonly at: string;
 }): TextPostSubmissionDocument => ({
   submission_id: input.submissionId,
   href: `/text-content-submissions/${input.submissionId}`,
-  surface: "text_post",
+  surface: input.surface,
   status: input.status,
   result:
     input.status === "published"
@@ -274,8 +422,12 @@ const responseSnapshot = (input: {
           }
         : { decision: "blocked", reason_code: "policy_violation" },
   published_resource:
-    input.status === "published" && input.postId !== null
-      ? { kind: "post", post_id: input.postId, href: `/posts/${input.postId}` }
+    input.status === "published"
+      ? input.surface === "text_post" && input.postId !== null
+        ? { kind: "post", post_id: input.postId, href: `/posts/${input.postId}` }
+        : input.surface !== "text_post" && input.commentId !== null
+          ? { kind: "comment", comment_id: input.commentId, href: `/comments/${input.commentId}` }
+          : null
       : null,
   review_ref: input.status === "manual_review" ? input.reviewRef : null,
   created_at: input.at,
@@ -291,12 +443,14 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
     Effect.gen(function* () {
       if (!actorInputValid(input.actor, input.communityId, input.idempotencyKey, input.requestHash))
         return yield* Effect.fail(failure("replay", "constraint"));
+      const surface = input.surface ?? "text_post";
       const db = yield* ControlPlaneDb;
       const result = yield* finalByKey(
         db,
         {
           actorUserId: input.actor.userId,
           idempotencyKey: input.idempotencyKey,
+          surface,
         },
         false,
       );
@@ -308,26 +462,37 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
 
   const commitTerminal: RepositoryService["commitTerminal"] = (input) =>
     Effect.gen(function* () {
+      const target = targetFor(input);
+      const surface = target.surface;
+      const body = input.body as CreatePostBody;
+      const targetValid =
+        target.communityId === input.communityId &&
+        (surface === "text_post"
+          ? true
+          : validId(target.postId) && (surface === "comment" || validId(target.parentCommentId)));
+      const bodyValid =
+        surface === "text_post"
+          ? body.post_type === "text" && body.idempotency_key === input.idempotencyKey
+          : commentBodyValid(input.body) && input.body.idempotency_key === input.idempotencyKey;
       if (
         !actorInputValid(input.actor, input.communityId, input.idempotencyKey, input.requestHash) ||
         !validId(input.operationId) ||
-        input.moderationInput.surface !== "text_post" ||
-        input.body.post_type !== "text" ||
-        input.body.idempotency_key !== input.idempotencyKey
+        !targetValid ||
+        input.moderationInput.surface !== surface ||
+        !bodyValid
       )
         return yield* Effect.fail(failure("commit", "constraint"));
-      const canonicalRequestHash = yield* canonicalBodyHash({
-        community_id: input.communityId,
-        body: input.body,
-      }).pipe(Effect.mapError(() => failure("commit", "constraint")));
+      const canonicalRequestHash = yield* canonicalBodyHash(requestHashValue(input, target)).pipe(
+        Effect.mapError(() => failure("commit", "constraint")),
+      );
       if (canonicalRequestHash !== input.requestHash)
         return yield* Effect.fail(failure("commit", "constraint"));
       const canonical = canonicalTextModerationInput(input.moderationInput);
       if (
         canonical.kind !== "accepted" ||
         canonical.sha256 !== input.evaluation.input_sha256 ||
-        (input.body.title ?? null) !== input.moderationInput.title ||
-        (input.body.body ?? null) !== input.moderationInput.body
+        (surface === "text_post" ? (body.title ?? null) : null) !== input.moderationInput.title ||
+        body.body !== input.moderationInput.body
       )
         return yield* Effect.fail(failure("commit", "constraint"));
       const providerFailure = isProviderFailure(input.evaluation);
@@ -344,12 +509,16 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
         Effect.gen(function* () {
           // The advisory lock is only a contention fence; it is not a durable
           // reservation. Every accepted request still gets exactly one row.
-          yield* lockKey(transaction, idempotencyLockKey(input.actor.userId, input.idempotencyKey));
+          yield* lockKey(
+            transaction,
+            idempotencyLockKey(input.actor.userId, surface, input.idempotencyKey),
+          );
           const existing = yield* finalByKey(
             transaction,
             {
               actorUserId: input.actor.userId,
               idempotencyKey: input.idempotencyKey,
+              surface,
             },
             true,
           );
@@ -361,6 +530,10 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           }
 
           const current = yield* authority(transaction, input.communityId, input.actor.userId);
+          const targetState =
+            target.surface === "text_post"
+              ? { parentDepth: -1 }
+              : yield* lockCommentTarget(transaction, target);
           const evaluation =
             providerFailure &&
             input.evaluation.policy_revision === "" &&
@@ -399,13 +572,19 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               : evaluation.decision === "manual_review"
                 ? ("manual_review" as const)
                 : ("blocked" as const);
-          const postId = status === "published" ? makeId("post") : null;
+          const postId = surface === "text_post" && status === "published" ? makeId("post") : null;
+          const commentId =
+            surface !== "text_post" && status === "published" ? makeId("comment") : null;
+          const targetPostId = target.surface === "text_post" ? null : target.postId;
+          const targetParentCommentId = target.surface === "reply" ? target.parentCommentId : null;
           const reviewRef = status === "manual_review" ? makeId("review") : null;
           const snapshot = responseSnapshot({
             submissionId,
+            surface,
             status,
             reasonCode: publicResult.reason_code,
             postId,
+            commentId,
             reviewRef,
             at,
           });
@@ -433,6 +612,70 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               readonly: false,
             });
           }
+          if (commentId !== null) {
+            const commentTarget = target.surface === "text_post" ? null : target;
+            if (commentTarget === null) return yield* Effect.fail(failure("commit", "invalid-row"));
+            const parentCommentId =
+              commentTarget.surface === "reply" ? commentTarget.parentCommentId : null;
+            const depth = surface === "comment" ? 0 : targetState.parentDepth + 1;
+            yield* transaction.execute({
+              label: "text-submission.commit.comment",
+              text: `INSERT INTO comments (
+                  community_id, comment_id, post_id, parent_comment_id, author_user_id,
+                  status, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
+                  depth, reply_count
+                ) VALUES ($1, $2, $3, $4, $5, 'published', $6, $7, $7, $8, $9, $10, 0)`,
+              values: [
+                input.communityId,
+                commentId,
+                commentTarget.postId,
+                parentCommentId,
+                input.actor.userId,
+                input.moderationInput.body,
+                at,
+                input.idempotencyKey,
+                input.requestHash,
+                depth,
+              ],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "text-submission.commit.comment-count",
+              text: "UPDATE posts SET comment_count = comment_count + 1, updated_at = $3 WHERE community_id = $1 AND post_id = $2",
+              values: [input.communityId, commentTarget.postId, at],
+              readonly: false,
+            });
+            if (target.surface === "reply") {
+              yield* transaction.execute({
+                label: "text-submission.commit.reply-count",
+                text: "UPDATE comments SET reply_count = reply_count + 1, updated_at = $3 WHERE community_id = $1 AND comment_id = $2",
+                values: [
+                  input.communityId,
+                  target.surface === "reply" ? target.parentCommentId : null,
+                  at,
+                ],
+                readonly: false,
+              });
+            }
+            yield* transaction.execute({
+              label: "text-submission.commit.comment-projection",
+              text: `INSERT INTO comment_publication_projection (
+                  community_id, comment_id, post_id, parent_comment_id, author_user_id,
+                  body, depth, status, projected_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'published', $8, $8)`,
+              values: [
+                input.communityId,
+                commentId,
+                commentTarget.postId,
+                parentCommentId,
+                input.actor.userId,
+                input.moderationInput.body,
+                depth,
+                at,
+              ],
+              readonly: false,
+            });
+          }
           yield* transaction.execute({
             label: "text-post.commit.submission",
             text: `INSERT INTO text_content_submissions (
@@ -440,14 +683,16 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 request_hash, status, moderation_decision, public_reason_code,
                 policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
                 evidence_ref, published_post_id, published_comment_id, review_ref,
+                target_post_id, target_parent_comment_id,
                 created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256
-              ) VALUES ($1, $2, $3, $4, 'text_post', $5, $6, $7, $8, $9, $10, $11, $12,
-                $13::jsonb, $14, $15, NULL, $16, $17, $17, $18, encode(sha256($18), 'hex'))`,
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $21, $22, encode(sha256($22), 'hex'))`,
             values: [
               input.communityId,
               submissionId,
               input.operationId,
               input.actor.userId,
+              surface,
               input.idempotencyKey,
               input.requestHash,
               status,
@@ -459,13 +704,56 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               JSON.stringify(evaluation.reason_codes),
               evaluation.evidence_ref,
               postId,
+              commentId,
               reviewRef,
+              targetPostId,
+              targetParentCommentId,
               at,
               bytes,
             ],
             readonly: false,
           });
-          if (postId !== null) {
+          if (commentId !== null) {
+            const commentTarget = target.surface === "text_post" ? null : target;
+            if (commentTarget === null) return yield* Effect.fail(failure("commit", "invalid-row"));
+            const parentCommentId =
+              commentTarget.surface === "reply" ? commentTarget.parentCommentId : null;
+            const outboxEvents = [
+              [
+                "comment_published",
+                { comment_id: commentId, post_id: commentTarget.postId },
+              ] as const,
+              [
+                "comment_notification",
+                { comment_id: commentId, parent_comment_id: parentCommentId },
+              ] as const,
+              [
+                "comment_cache_invalidation",
+                { comment_id: commentId, post_id: commentTarget.postId },
+              ] as const,
+            ];
+            for (const [eventType, payload] of outboxEvents) {
+              yield* transaction.execute({
+                label: `text-submission.commit.outbox.${eventType}`,
+                text: `INSERT INTO content_publication_outbox (
+                    outbox_event_id, community_id, submission_id, comment_id, event_type,
+                    effect_key, payload, created_at
+                  ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+                values: [
+                  makeId("outbox"),
+                  input.communityId,
+                  submissionId,
+                  commentId,
+                  eventType,
+                  `${submissionId}:${eventType}`,
+                  JSON.stringify(payload),
+                  at,
+                ],
+                readonly: false,
+              });
+            }
+          }
+          if (surface === "text_post" && postId !== null) {
             yield* transaction.execute({
               label: "text-post.commit.home-feed",
               text: `INSERT INTO home_feed_projection
@@ -500,8 +788,625 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               values: [input.communityId, reviewRef, submissionId, at],
               readonly: false,
             });
+            if (surface === "comment" || surface === "reply") {
+              yield* transaction.execute({
+                label: "text-post.commit.comment-moderation-case",
+                text: `INSERT INTO comment_moderation_cases
+                  (case_ref, community_id, submission_id, source, status, created_at, updated_at)
+                 VALUES ($1, $2, $3, 'automated', 'open', $4, $4)`,
+                values: [reviewRef, input.communityId, submissionId, at],
+                readonly: false,
+              });
+            }
           }
           return { kind: "created" as const, snapshot };
+        }),
+      );
+    });
+
+  const resolveCommentTarget: RepositoryService["resolveCommentTarget"] = (input) =>
+    Effect.gen(function* () {
+      if (!validId(input.targetId)) return { kind: "not-found" as const };
+      const db = yield* ControlPlaneDb;
+      if (input.surface === "comment") {
+        const result = yield* db.execute<Row>({
+          label: "text-submission.resolve-comment-post",
+          text: "SELECT community_id, post_id, status, comments_locked FROM posts WHERE post_id = $1",
+          values: [input.targetId],
+          readonly: true,
+        });
+        const row = result.rows[0] as Row | undefined;
+        if (result.rows.length !== 1 || row === undefined) return { kind: "not-found" as const };
+        if (
+          stringValue(row, "status") !== "published" ||
+          booleanValue(row, "comments_locked") === true
+        )
+          return { kind: "closed" as const };
+        const communityId = stringValue(row, "community_id");
+        const postId = stringValue(row, "post_id");
+        if (communityId === null || postId === null) return { kind: "not-found" as const };
+        return {
+          kind: "ready" as const,
+          communityId,
+          postId,
+          parentCommentId: null,
+          parentDepth: -1,
+        };
+      }
+      const result = yield* db.execute<Row>({
+        label: "text-submission.resolve-reply-parent",
+        text: `SELECT p.community_id, p.post_id, p.status AS post_status, p.comments_locked,
+                       c.comment_id, c.status AS comment_status, c.depth
+                  FROM comments AS c
+                  JOIN posts AS p
+                    ON p.community_id = c.community_id AND p.post_id = c.post_id
+                 WHERE c.comment_id = $1`,
+        values: [input.targetId],
+        readonly: true,
+      });
+      const row = result.rows[0] as Row | undefined;
+      if (result.rows.length !== 1 || row === undefined) return { kind: "not-found" as const };
+      const depth = safeIntegerValue(row, "depth");
+      const communityId = stringValue(row, "community_id");
+      const postId = stringValue(row, "post_id");
+      const parentCommentId = stringValue(row, "comment_id");
+      if (depth === null || communityId === null || postId === null || parentCommentId === null)
+        return { kind: "not-found" as const };
+      if (depth >= 8) return { kind: "depth-exceeded" as const, depth: depth + 1 };
+      if (
+        stringValue(row, "post_status") !== "published" ||
+        stringValue(row, "comment_status") !== "published" ||
+        booleanValue(row, "comments_locked") === true
+      )
+        return { kind: "closed" as const };
+      return { kind: "ready" as const, communityId, postId, parentCommentId, parentDepth: depth };
+    });
+
+  const reportComment: RepositoryService["reportComment"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        input.actor.kind === "agent" ||
+        !validId(input.actor.userId) ||
+        !validId(input.commentId) ||
+        !validId(input.idempotencyKey) ||
+        !validHash(input.requestHash)
+      )
+        return yield* Effect.fail(failure("report", "constraint"));
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        Effect.gen(function* () {
+          const comment = yield* transaction.execute<Row>({
+            label: "comment-report.lock-comment",
+            text: `SELECT c.community_id, c.comment_id, c.status, s.submission_id
+                     FROM comments AS c
+                     JOIN text_content_submissions AS s
+                       ON s.community_id = c.community_id
+                      AND s.published_comment_id = c.comment_id
+                    WHERE c.comment_id = $1
+                    FOR UPDATE OF c, s`,
+            values: [input.commentId],
+            readonly: false,
+          });
+          const commentRow = comment.rows[0] as Row | undefined;
+          const communityId =
+            commentRow === undefined ? null : stringValue(commentRow, "community_id");
+          const submissionId =
+            commentRow === undefined ? input.commentId : stringValue(commentRow, "submission_id");
+          if (
+            comment.rows.length !== 1 ||
+            commentRow === undefined ||
+            communityId === null ||
+            submissionId === null ||
+            !["published", "hidden", "removed"].includes(stringValue(commentRow, "status") ?? "")
+          )
+            return yield* Effect.fail(
+              failureWithSubmission("report", "not-found", input.commentId),
+            );
+          const membership = yield* transaction.execute<Row>({
+            label: "comment-report.check-membership",
+            text: "SELECT status FROM community_memberships WHERE community_id = $1 AND user_id = $2",
+            values: [communityId, input.actor.userId],
+            readonly: true,
+          });
+          if (
+            membership.rows.length !== 1 ||
+            stringValue(membership.rows[0] as Row, "status") !== "member"
+          )
+            return yield* Effect.fail(
+              failureWithSubmission("report", "membership-required", submissionId),
+            );
+          const existing = yield* transaction.execute<Row>({
+            label: "comment-report.replay",
+            text: `SELECT report_id, case_ref, status, request_hash
+                      FROM comment_reports
+                     WHERE reporter_user_id = $1 AND comment_id = $2 AND idempotency_key = $3
+                     FOR UPDATE`,
+            values: [input.actor.userId, input.commentId, input.idempotencyKey],
+            readonly: false,
+          });
+          if (existing.rows.length > 1)
+            return yield* Effect.fail(failureWithSubmission("report", "invalid-row", submissionId));
+          if (existing.rows.length === 1) {
+            const row = existing.rows[0] as Row;
+            const reportId = stringValue(row, "report_id");
+            const caseRef = stringValue(row, "case_ref");
+            const status = stringValue(row, "status");
+            if (
+              reportId === null ||
+              caseRef === null ||
+              !["open", "coalesced"].includes(status ?? "")
+            )
+              return yield* Effect.fail(
+                failureWithSubmission("report", "invalid-row", submissionId),
+              );
+            if (stringValue(row, "request_hash") !== input.requestHash)
+              return yield* Effect.fail(
+                failureWithSubmission("report", "idempotency-conflict", reportId),
+              );
+            return { reportId, caseRef, status: status as "open" | "coalesced" };
+          }
+          const openCase = yield* transaction.execute<Row>({
+            label: "comment-report.find-case",
+            text: `SELECT case_ref, status
+                     FROM comment_moderation_cases
+                    WHERE community_id = $1 AND submission_id = $2 AND source = 'report'
+                    FOR UPDATE`,
+            values: [communityId, submissionId],
+            readonly: false,
+          });
+          let caseRef: string;
+          let reportStatus: "open" | "coalesced";
+          if (openCase.rows.length === 0) {
+            caseRef = makeId("case");
+            const now = yield* transaction.execute<Row>({
+              label: "comment-report.database-clock",
+              text: "SELECT clock_timestamp() AS now",
+              values: [],
+              readonly: true,
+            });
+            const at = iso(now.rows[0] as Row, "now");
+            if (at === null)
+              return yield* Effect.fail(
+                failureWithSubmission("report", "invalid-row", submissionId),
+              );
+            yield* transaction.execute({
+              label: "comment-report.case",
+              text: `INSERT INTO comment_moderation_cases
+                (case_ref, community_id, submission_id, comment_id, source, status, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, 'report', 'open', $5, $5)`,
+              values: [caseRef, communityId, submissionId, input.commentId, at],
+              readonly: false,
+            });
+            reportStatus = "open";
+          } else {
+            const row = openCase.rows[0] as Row;
+            caseRef = stringValue(row, "case_ref") ?? "";
+            if (!validId(caseRef))
+              return yield* Effect.fail(
+                failureWithSubmission("report", "invalid-row", submissionId),
+              );
+            reportStatus = stringValue(row, "status") === "open" ? "coalesced" : "open";
+          }
+          const now = yield* transaction.execute<Row>({
+            label: "comment-report.created-at",
+            text: "SELECT clock_timestamp() AS now",
+            values: [],
+            readonly: true,
+          });
+          const at = iso(now.rows[0] as Row, "now");
+          if (at === null)
+            return yield* Effect.fail(failureWithSubmission("report", "invalid-row", submissionId));
+          const reportId = makeId("report");
+          yield* transaction.execute({
+            label: "comment-report.insert",
+            text: `INSERT INTO comment_reports
+              (report_id, community_id, comment_id, case_ref, reporter_user_id,
+               idempotency_key, request_hash, reason_code, status, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            values: [
+              reportId,
+              communityId,
+              input.commentId,
+              caseRef,
+              input.actor.userId,
+              input.idempotencyKey,
+              input.requestHash,
+              input.reasonCode,
+              reportStatus,
+              at,
+            ],
+            readonly: false,
+          });
+          return { reportId, caseRef, status: reportStatus };
+        }),
+      );
+    });
+
+  const moderateCaseAction: RepositoryService["moderateCaseAction"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        input.actor.kind === "agent" ||
+        !validId(input.actor.userId) ||
+        !validId(input.caseRef) ||
+        !validId(input.idempotencyKey) ||
+        !validHash(input.requestHash)
+      )
+        return yield* Effect.fail(failure("action", "constraint"));
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        Effect.gen(function* () {
+          yield* lockKey(
+            transaction,
+            JSON.stringify([
+              "moderation-case-action",
+              input.caseRef,
+              input.actor.userId,
+              input.idempotencyKey,
+            ]),
+          );
+          const existingAction = yield* transaction.execute<Row>({
+            label: "moderation-action.replay",
+            text: `SELECT action_id, case_ref, action, target_status, request_hash
+                     FROM comment_moderation_actions
+                    WHERE case_ref = $1 AND actor_user_id = $2 AND idempotency_key = $3
+                    FOR UPDATE`,
+            values: [input.caseRef, input.actor.userId, input.idempotencyKey],
+            readonly: false,
+          });
+          if (existingAction.rows.length > 1)
+            return yield* Effect.fail(failure("action", "invalid-row"));
+          if (existingAction.rows.length === 1) {
+            const row = existingAction.rows[0] as Row;
+            const actionId = stringValue(row, "action_id");
+            const caseRef = stringValue(row, "case_ref");
+            const action = stringValue(row, "action") as ModerationAction | null;
+            const targetStatus = stringValue(row, "target_status") as
+              | "held"
+              | "published"
+              | "hidden"
+              | "removed"
+              | null;
+            if (
+              actionId === null ||
+              caseRef === null ||
+              action === null ||
+              targetStatus === null ||
+              stringValue(row, "request_hash") !== input.requestHash
+            ) {
+              return yield* Effect.fail(
+                failureWithSubmission("action", "idempotency-conflict", input.caseRef),
+              );
+            }
+            return { actionId, caseRef, action, targetStatus };
+          }
+          const caseRows = yield* transaction.execute<Row>({
+            label: "moderation-action.lock-case",
+            text: `SELECT cmc.community_id, cmc.case_ref, cmc.status AS comment_case_status,
+                          tc.case_id AS text_case_id, tc.status AS case_status,
+                          s.submission_id, s.actor_user_id, s.status AS submission_status,
+                          s.surface, s.idempotency_key, s.request_hash,
+                          s.target_post_id, s.target_parent_comment_id,
+                          s.published_comment_id, h.body AS held_body,
+                          c.comment_id, c.post_id, c.parent_comment_id, c.author_user_id,
+                          c.status AS comment_status, c.body AS comment_body, c.depth
+                     FROM comment_moderation_cases AS cmc
+                     LEFT JOIN text_moderation_cases AS tc
+                       ON tc.case_id = cmc.case_ref AND tc.submission_id = cmc.submission_id
+                     JOIN text_content_submissions AS s
+                       ON s.community_id = cmc.community_id AND s.submission_id = cmc.submission_id
+                     LEFT JOIN text_content_held_revisions AS h
+                       ON h.community_id = s.community_id AND h.submission_id = s.submission_id
+                     LEFT JOIN comments AS c
+                       ON c.community_id = s.community_id AND c.comment_id = s.published_comment_id
+                    WHERE cmc.case_ref = $1
+                    FOR UPDATE OF cmc, s`,
+            values: [input.caseRef],
+            readonly: false,
+          });
+          const row = caseRows.rows[0] as Row | undefined;
+          if (caseRows.rows.length !== 1 || row === undefined)
+            return yield* Effect.fail(failure("action", "not-found"));
+          const communityId = stringValue(row, "community_id");
+          const submissionId = stringValue(row, "submission_id");
+          const submissionActorId = stringValue(row, "actor_user_id");
+          const submissionIdempotencyKey = stringValue(row, "idempotency_key");
+          const submissionRequestHash = stringValue(row, "request_hash");
+          const surface = stringValue(row, "surface");
+          if (
+            communityId === null ||
+            submissionId === null ||
+            submissionActorId === null ||
+            submissionIdempotencyKey === null ||
+            !validHash(submissionRequestHash) ||
+            !["comment", "reply"].includes(surface ?? "")
+          )
+            return yield* Effect.fail(failure("action", "invalid-row"));
+          const textCaseId = stringValue(row, "text_case_id");
+          if (textCaseId !== null) {
+            const textCase = yield* transaction.execute<Row>({
+              label: "moderation-action.lock-text-case",
+              text: "SELECT case_id, status FROM text_moderation_cases WHERE case_id = $1 FOR UPDATE",
+              values: [textCaseId],
+              readonly: false,
+            });
+            if (textCase.rows.length !== 1)
+              return yield* Effect.fail(failure("action", "invalid-row"));
+          }
+          const isModerator = input.actor.scopes?.includes("moderator") === true;
+          if (
+            input.actor.kind !== "admin" &&
+            !isModerator &&
+            input.actor.userId !== submissionActorId
+          )
+            return yield* Effect.fail(failure("action", "not-found"));
+          const submissionStatus = stringValue(row, "submission_status");
+          const commentId = stringValue(row, "comment_id");
+          const commentStatus = stringValue(row, "comment_status");
+          const currentStatus =
+            submissionStatus === "manual_review"
+              ? ("held" as const)
+              : commentStatus === "published" ||
+                  commentStatus === "hidden" ||
+                  commentStatus === "removed"
+                ? (commentStatus as "published" | "hidden" | "removed")
+                : null;
+          if (currentStatus === null)
+            return yield* Effect.fail(failure("action", "action-conflict"));
+          const targetPostId = stringValue(row, "target_post_id") ?? stringValue(row, "post_id");
+          const targetParentCommentId =
+            stringValue(row, "target_parent_comment_id") ?? stringValue(row, "parent_comment_id");
+          if (targetPostId === null) return yield* Effect.fail(failure("action", "invalid-row"));
+
+          let targetStatus: "held" | "published" | "hidden" | "removed";
+          if (input.action === "approve") {
+            if (currentStatus !== "held" || submissionStatus !== "manual_review")
+              return yield* Effect.fail(failure("action", "action-conflict"));
+            const target =
+              surface === "comment"
+                ? { surface: "comment" as const, communityId, postId: targetPostId }
+                : targetParentCommentId === null
+                  ? null
+                  : {
+                      surface: "reply" as const,
+                      communityId,
+                      postId: targetPostId,
+                      parentCommentId: targetParentCommentId,
+                    };
+            if (target === null) return yield* Effect.fail(failure("action", "invalid-row"));
+            const targetState = yield* lockCommentTarget(transaction, target);
+            const body = stringValue(row, "held_body");
+            if (body === null || body.trim() === "")
+              return yield* Effect.fail(failure("action", "invalid-row"));
+            const now = yield* transaction.execute<Row>({
+              label: "moderation-action.approve.database-clock",
+              text: "SELECT clock_timestamp() AS now",
+              values: [],
+              readonly: true,
+            });
+            const at = iso(now.rows[0] as Row, "now");
+            if (at === null) return yield* Effect.fail(failure("action", "invalid-row"));
+            const newCommentId = makeId("comment");
+            const depth = surface === "comment" ? 0 : targetState.parentDepth + 1;
+            yield* transaction.execute({
+              label: "moderation-action.approve.comment",
+              text: `INSERT INTO comments (
+                  community_id, comment_id, post_id, parent_comment_id, author_user_id,
+                  status, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
+                  depth, reply_count
+                ) VALUES ($1, $2, $3, $4, $5, 'published', $6, $7, $7, $8, $9, $10, 0)`,
+              values: [
+                communityId,
+                newCommentId,
+                targetPostId,
+                targetParentCommentId,
+                submissionActorId,
+                body,
+                at,
+                submissionIdempotencyKey,
+                submissionRequestHash,
+                depth,
+              ],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "moderation-action.approve.comment-count",
+              text: "UPDATE posts SET comment_count = comment_count + 1, updated_at = $3 WHERE community_id = $1 AND post_id = $2",
+              values: [communityId, targetPostId, at],
+              readonly: false,
+            });
+            if (surface === "reply" && targetParentCommentId !== null) {
+              yield* transaction.execute({
+                label: "moderation-action.approve.reply-count",
+                text: "UPDATE comments SET reply_count = reply_count + 1, updated_at = $3 WHERE community_id = $1 AND comment_id = $2",
+                values: [communityId, targetParentCommentId, at],
+                readonly: false,
+              });
+            }
+            yield* transaction.execute({
+              label: "moderation-action.approve.projection",
+              text: `INSERT INTO comment_publication_projection (
+                  community_id, comment_id, post_id, parent_comment_id, author_user_id,
+                  body, depth, status, projected_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'published', $8, $8)`,
+              values: [
+                communityId,
+                newCommentId,
+                targetPostId,
+                targetParentCommentId,
+                submissionActorId,
+                body,
+                depth,
+                at,
+              ],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "moderation-action.approve.submission",
+              text: `UPDATE text_content_submissions
+                         SET status = 'published', public_reason_code = NULL,
+                             published_comment_id = $2, review_ref = NULL, updated_at = $3
+                       WHERE community_id = $1 AND submission_id = $4`,
+              values: [communityId, newCommentId, at, submissionId],
+              readonly: false,
+            });
+            const events = [
+              ["comment_published", { comment_id: newCommentId, post_id: targetPostId }] as const,
+              [
+                "comment_notification",
+                { comment_id: newCommentId, parent_comment_id: targetParentCommentId },
+              ] as const,
+              [
+                "comment_cache_invalidation",
+                { comment_id: newCommentId, post_id: targetPostId },
+              ] as const,
+            ];
+            for (const [eventType, payload] of events) {
+              yield* transaction.execute({
+                label: `moderation-action.approve.outbox.${eventType}`,
+                text: `INSERT INTO content_publication_outbox (
+                    outbox_event_id, community_id, submission_id, comment_id, event_type,
+                    effect_key, payload, created_at
+                  ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+                  ON CONFLICT DO NOTHING`,
+                values: [
+                  makeId("outbox"),
+                  communityId,
+                  submissionId,
+                  newCommentId,
+                  eventType,
+                  `${submissionId}:${eventType}`,
+                  JSON.stringify(payload),
+                  at,
+                ],
+                readonly: false,
+              });
+            }
+            targetStatus = "published";
+          } else {
+            if (commentId === null) return yield* Effect.fail(failure("action", "action-conflict"));
+            if (input.action === "dismiss") {
+              if (currentStatus === "held")
+                return yield* Effect.fail(failure("action", "action-conflict"));
+              targetStatus = currentStatus;
+            } else if (input.action === "hide" || input.action === "remove") {
+              if (currentStatus !== "published")
+                return yield* Effect.fail(failure("action", "action-conflict"));
+              targetStatus = input.action === "hide" ? "hidden" : "removed";
+            } else if (input.action === "restore") {
+              if (currentStatus !== "hidden" && currentStatus !== "removed")
+                return yield* Effect.fail(failure("action", "action-conflict"));
+              targetStatus = "published";
+            } else {
+              return yield* Effect.fail(failure("action", "action-conflict"));
+            }
+            if (input.action !== "dismiss") {
+              const now = yield* transaction.execute<Row>({
+                label: "moderation-action.visibility.database-clock",
+                text: "SELECT clock_timestamp() AS now",
+                values: [],
+                readonly: true,
+              });
+              const at = iso(now.rows[0] as Row, "now");
+              if (at === null) return yield* Effect.fail(failure("action", "invalid-row"));
+              const wasPublic = currentStatus === "published";
+              const isPublic = targetStatus === "published";
+              yield* transaction.execute({
+                label: "moderation-action.visibility.comment",
+                text: "UPDATE comments SET status = $3, updated_at = $4 WHERE community_id = $1 AND comment_id = $2",
+                values: [communityId, commentId, targetStatus, at],
+                readonly: false,
+              });
+              yield* transaction.execute({
+                label: "moderation-action.visibility.projection",
+                text: "UPDATE comment_publication_projection SET status = $3, updated_at = $4 WHERE community_id = $1 AND comment_id = $2",
+                values: [communityId, commentId, targetStatus, at],
+                readonly: false,
+              });
+              if (wasPublic !== isPublic) {
+                const delta = isPublic ? 1 : -1;
+                yield* transaction.execute({
+                  label: "moderation-action.visibility.comment-count",
+                  text: "UPDATE posts SET comment_count = GREATEST(comment_count + $3, 0), updated_at = $4 WHERE community_id = $1 AND post_id = $2",
+                  values: [communityId, targetPostId, delta, at],
+                  readonly: false,
+                });
+                if (targetParentCommentId !== null) {
+                  yield* transaction.execute({
+                    label: "moderation-action.visibility.reply-count",
+                    text: "UPDATE comments SET reply_count = GREATEST(reply_count + $3, 0), updated_at = $4 WHERE community_id = $1 AND comment_id = $2",
+                    values: [communityId, targetParentCommentId, delta, at],
+                    readonly: false,
+                  });
+                }
+              }
+              yield* transaction.execute({
+                label: "moderation-action.visibility.outbox",
+                text: `INSERT INTO content_publication_outbox (
+                    outbox_event_id, community_id, submission_id, comment_id, event_type,
+                    effect_key, payload, created_at
+                  ) VALUES ($1, $2, $3, $4, 'comment_cache_invalidation', $5, $6::jsonb, $7)
+                  ON CONFLICT DO NOTHING`,
+                values: [
+                  makeId("outbox"),
+                  communityId,
+                  submissionId,
+                  commentId,
+                  `${submissionId}:comment_cache_invalidation`,
+                  JSON.stringify({ comment_id: commentId, status: targetStatus }),
+                  at,
+                ],
+                readonly: false,
+              });
+            }
+          }
+          const now = yield* transaction.execute<Row>({
+            label: "moderation-action.created-at",
+            text: "SELECT clock_timestamp() AS now",
+            values: [],
+            readonly: true,
+          });
+          const at = iso(now.rows[0] as Row, "now");
+          if (at === null) return yield* Effect.fail(failure("action", "invalid-row"));
+          const actionId = makeId("action");
+          yield* transaction.execute({
+            label: "moderation-action.insert",
+            text: `INSERT INTO comment_moderation_actions
+              (action_id, community_id, case_ref, actor_user_id, idempotency_key,
+               request_hash, action, target_status, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+            values: [
+              actionId,
+              communityId,
+              input.caseRef,
+              input.actor.userId,
+              input.idempotencyKey,
+              input.requestHash,
+              input.action,
+              targetStatus,
+              at,
+            ],
+            readonly: false,
+          });
+          const caseStatus = input.action === "dismiss" ? "dismissed" : "approved";
+          if (textCaseId !== null) {
+            yield* transaction.execute({
+              label: "moderation-action.resolve-text-case",
+              text: `UPDATE text_moderation_cases
+                         SET status = $2, resolved_by_user_id = $3, updated_at = $4
+                       WHERE case_id = $1`,
+              values: [textCaseId, caseStatus, input.actor.userId, at],
+              readonly: false,
+            });
+          }
+          yield* transaction.execute({
+            label: "moderation-action.resolve-comment-case",
+            text: `UPDATE comment_moderation_cases
+                       SET status = $2, resolved_by_user_id = $3, updated_at = $4
+                     WHERE case_ref = $1`,
+            values: [input.caseRef, caseStatus, input.actor.userId, at],
+            readonly: false,
+          });
+          return { actionId, caseRef: input.caseRef, action: input.action, targetStatus };
         }),
       );
     });
@@ -522,7 +1427,14 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
       return snapshot === null ? yield* Effect.fail(failure("get", "invalid-row")) : snapshot;
     });
 
-  return { replay, commitTerminal, getForAuthor };
+  return {
+    replay,
+    commitTerminal,
+    getForAuthor,
+    resolveCommentTarget,
+    reportComment,
+    moderateCaseAction,
+  };
 }
 
 export function makeControlPlaneTextSubmissionRepository(): RepositoryService {
@@ -539,6 +1451,9 @@ export function makeControlPlaneTextSubmissionStore(
     replay: (input) => provide(repository.replay(input)),
     commitTerminal: (input) => provide(repository.commitTerminal(input)),
     getForAuthor: (input) => provide(repository.getForAuthor(input)),
+    resolveCommentTarget: (input) => provide(repository.resolveCommentTarget(input)),
+    reportComment: (input) => provide(repository.reportComment(input)),
+    moderateCaseAction: (input) => provide(repository.moderateCaseAction(input)),
   };
 }
 
