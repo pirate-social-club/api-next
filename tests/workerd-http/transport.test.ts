@@ -133,7 +133,16 @@ describe("real HTTP worker transport", () => {
       body: JSON.stringify({ idempotency_key: "workerd-vote-conflict", value: 1 }),
     });
     expect(conflict.status).toBe(409);
-    expect(await conflict.json()).toMatchObject({ error: { code: "conflict" } });
+    expect(await conflict.json()).toMatchObject({
+      error: {
+        code: "conflict",
+        retryable: false,
+        details: {
+          reason_code: "idempotency_conflict",
+          action_id: "vote_action_workerd_conflict",
+        },
+      },
+    });
 
     const unauthenticated = await SELF.fetch(
       "https://worker.test/text-content-submissions/submission_1",

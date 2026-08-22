@@ -152,6 +152,45 @@ describe("generated api client", () => {
     });
   });
 
+  test("preserves typed post-vote conflict action identities", async () => {
+    const fetchImpl = Object.assign(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "conflict",
+              message: "The vote key belongs to another action",
+              retryable: false,
+              details: {
+                reason_code: "idempotency_conflict",
+                action_id: "vote_action_existing",
+              },
+            },
+            request_id: "req_vote_1",
+          }),
+          { status: 409 },
+        ),
+      { preconnect: fetch.preconnect },
+    );
+    const client = createPirateApiClient("https://api.example", fetchImpl);
+
+    await expect(
+      client.post_postsPostIdVote({
+        path: { postId: "post_1" },
+        body: { idempotency_key: "vote-key", value: -1 },
+      }),
+    ).rejects.toMatchObject({
+      declaredName: "PostVoteIdempotencyConflict",
+      code: "conflict",
+      retryable: false,
+      requestId: "req_vote_1",
+      details: {
+        reason_code: "idempotency_conflict",
+        action_id: "vote_action_existing",
+      },
+    });
+  });
+
   test("rejects an idempotency conflict envelope with malformed declared details", async () => {
     const fetchImpl = Object.assign(
       async () =>

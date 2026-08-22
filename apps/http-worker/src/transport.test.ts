@@ -10,6 +10,7 @@ import {
   endpoint,
   GateUnsatisfied,
   IdempotencyConflict,
+  PostVoteIdempotencyConflict,
   VerificationStartInProgress,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
@@ -809,7 +810,10 @@ describe("contracts-generated HTTP worker", () => {
     const authenticationFailure = createHttpWorker({
       handlers: { CastPostVote: () => vote },
       authenticate: () => {
-        throw new Conflict({ message: "not declared for voting" });
+        throw new IdempotencyConflict({
+          message: "not declared for voting",
+          details: { reason_code: "idempotency_conflict", submission_id: "sub_1" },
+        });
       },
       authorize: () => undefined,
     });
@@ -826,7 +830,10 @@ describe("contracts-generated HTTP worker", () => {
       handlers: { CastPostVote: () => vote },
       authenticate: () => ({ kind: "user", subject: "user_1" }),
       authorize: () => {
-        throw new Conflict({ message: "not declared for voting" });
+        throw new IdempotencyConflict({
+          message: "not declared for voting",
+          details: { reason_code: "idempotency_conflict", submission_id: "sub_1" },
+        });
       },
     });
     const authorizationResponse = await authorizationFailure.request(
@@ -838,12 +845,12 @@ describe("contracts-generated HTTP worker", () => {
       },
     );
 
-    expect(authenticationResponse.status).toBe(409);
+    expect(authenticationResponse.status).toBe(500);
     expect(await authenticationResponse.json()).toMatchObject({
-      error: { code: "conflict" },
+      error: { code: "internal_error" },
     });
-    expect(authorizationResponse.status).toBe(409);
-    expect(await authorizationResponse.json()).toMatchObject({ error: { code: "conflict" } });
+    expect(authorizationResponse.status).toBe(500);
+    expect(await authorizationResponse.json()).toMatchObject({ error: { code: "internal_error" } });
   });
 
   it("returns not_found for an uninstalled route instead of undeclared not_implemented", async () => {
@@ -969,6 +976,44 @@ describe("contracts-generated HTTP worker", () => {
     const body = await response.json();
     expect(body).toMatchObject({ error: { code: "conflict" } });
     expect(JSON.stringify(body)).not.toContain("same-key");
+  });
+
+  it("passes a typed post-vote conflict with its stored action identity", async () => {
+    const app = createHttpWorker({
+      handlers: {
+        CastPostVote: () => {
+          throw new PostVoteIdempotencyConflict({
+            message: "Idempotency key was already used",
+            details: {
+              reason_code: "idempotency_conflict",
+              action_id: "vote_action_existing",
+            },
+          });
+        },
+      },
+      authenticate: () => ({ kind: "user", subject: "user_1" }),
+      authorize: () => undefined,
+    });
+    const response = await app.request("http://worker.test/posts/post_1/vote", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ idempotency_key: "same-key", value: -1 }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: {
+        code: "conflict",
+        retryable: false,
+        details: {
+          reason_code: "idempotency_conflict",
+          action_id: "vote_action_existing",
+        },
+      },
+    });
   });
 
   it("distinguishes retryable verification starts from terminal 409 conflicts on the wire", async () => {

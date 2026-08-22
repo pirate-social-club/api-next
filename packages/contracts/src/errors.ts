@@ -136,6 +136,29 @@ export class IdempotencyConflict extends Data.TaggedError("IdempotencyConflict")
   readonly retryable = false as const;
 }
 
+/**
+ * A non-retryable post-vote replay conflict carrying the immutable action
+ * identity. The wire code remains `conflict`; clients recognize the closed
+ * reason and action identity in `details`.
+ */
+export class PostVoteIdempotencyConflict extends Data.TaggedError("PostVoteIdempotencyConflict")<{
+  readonly message: string;
+  readonly details: {
+    readonly reason_code: "idempotency_conflict";
+    readonly action_id: string;
+  };
+}> {
+  static readonly detailsSchema = Schema.Struct({
+    reason_code: Schema.Literal("idempotency_conflict"),
+    action_id: Schema.String,
+  });
+  static readonly detailsRequired = true;
+
+  readonly status = 409 as const;
+  readonly code = "conflict" as const;
+  readonly retryable = false as const;
+}
+
 /** A start lease is held by another request; clients may retry this request. */
 export class VerificationStartInProgress extends Data.TaggedError("VerificationStartInProgress")<
   WireArgs & { readonly retry_after_seconds: number }
@@ -281,6 +304,7 @@ export type ApiError =
   | Conflict
   | RetryableConflict
   | IdempotencyConflict
+  | PostVoteIdempotencyConflict
   | VerificationStartInProgress
   | VerificationStartNewIntentRequired
   | CodedConflict

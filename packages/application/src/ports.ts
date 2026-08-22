@@ -546,6 +546,7 @@ export class CommunityRepositoryError extends Data.TaggedError("CommunityReposit
 export class ContentRepositoryError extends Data.TaggedError("ContentRepositoryError")<{
   readonly operation: ContentRepositoryOperation;
   readonly reason: M2RepositoryReason;
+  readonly actionId?: string;
 }> {}
 
 export type CommunityRepositoryFailure = CommunityRepositoryError | ControlPlaneError;

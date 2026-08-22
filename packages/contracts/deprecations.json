@@ -90,11 +90,11 @@
     },
     {
       "operationId": "post_postsPostIdVote",
-      "reason": "2026-08-22 post-vote amendment: cast requires {idempotency_key, value}, returns {post_id, value}, removes ALTCHA from the body and auth policy, and declares replay conflicts."
+      "reason": "2026-08-22 post-vote amendment: cast requires {idempotency_key, value}, returns {post_id, value}, removes ALTCHA from the body and auth policy, and declares typed replay conflicts with the stored action identity."
     },
     {
       "operationId": "post_postsPostIdClearVote",
-      "reason": "2026-08-22 post-vote amendment: clear requires {idempotency_key}, returns {post_id, value: 0}, removes ALTCHA from the body and auth policy, and declares replay conflicts."
+      "reason": "2026-08-22 post-vote amendment: clear requires {idempotency_key}, returns {post_id, value: 0}, removes ALTCHA from the body and auth policy, and declares typed replay conflicts with the stored action identity."
     },
     {
       "operationId": "post_commentsCommentIdReplies",

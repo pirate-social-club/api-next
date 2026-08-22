@@ -449,6 +449,7 @@ const voteFixture: ContentStore["Service"] = {
           new ContentRepositoryError({
             operation: "cast-vote",
             reason: "idempotency-conflict",
+            actionId: "vote_action_workerd_conflict",
           }),
         )
       : Effect.succeed(null),

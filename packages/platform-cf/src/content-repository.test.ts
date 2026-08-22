@@ -108,6 +108,56 @@ describe("M2 content repository row and lock defenses", () => {
     expect(failureOf(result)).toMatchObject({ operation: "get-post", reason: "invalid-row" });
   });
 
+  test("returns stored vote counters and surfaces valid live aggregate drift", async () => {
+    const fake = fakeDb([
+      [resolvedPost],
+      [validPost],
+      [
+        {
+          ...validCounts[0],
+          vote_row_count: 1,
+          distinct_voter_count: 1,
+          upvote_count: 1,
+          stored_upvote_count: 9,
+          stored_downvote_count: 8,
+        },
+      ],
+      [{ vote_value: 1 }],
+    ]);
+    const warnings: unknown[][] = [];
+    const originalWarn = console.warn;
+    console.warn = (...input: unknown[]) => warnings.push(input);
+    try {
+      const result = await runWith(
+        makeControlPlaneContentRepository().getPost({
+          communityId: "community_1",
+          postId: "post_1",
+          viewerUserId: "usr_alice",
+        }),
+        fake.db,
+      );
+      expect(result).toMatchObject({
+        _tag: "Success",
+        value: { upvote_count: 9, downvote_count: 8, viewer_vote: 1 },
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warnings).toEqual([
+      [
+        "content_vote_aggregate_drift",
+        {
+          community_id: "community_1",
+          post_id: "post_1",
+          stored_upvote_count: 9,
+          stored_downvote_count: 8,
+          live_upvote_count: 1,
+          live_downvote_count: 0,
+        },
+      ],
+    ]);
+  });
+
   test("normalizes numeric epoch milliseconds to Unix seconds", async () => {
     const fake = fakeDb([
       [resolvedPost],
@@ -181,6 +231,7 @@ describe("M2 content repository row and lock defenses", () => {
       [{ upvote_count: 1, downvote_count: 0 }],
       [
         {
+          action_id: "vote_action_1",
           community_id: "community_1",
           post_id: "post_1",
           actor_user_id: "usr_alice",
@@ -284,6 +335,7 @@ describe("M2 content repository row and lock defenses", () => {
       [{ upvote_count: 0, downvote_count: 0 }],
       [
         {
+          action_id: "vote_action_2",
           community_id: "community_1",
           post_id: "post_1",
           actor_user_id: "usr_alice",

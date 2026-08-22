@@ -446,6 +446,14 @@ suite("Postgres 17 content repository", () => {
       const castReplay = await Effect.runPromise(castPostVote(castInput, { contentStore: store }));
       expect(castReplay).toEqual(cast);
       expect(cast).toEqual({ post_id: "post_parent", value: 1 });
+      const storedCastAction = await admin.query<{ action_id: string }>(
+        `SELECT action_id FROM post_vote_actions
+         WHERE post_id = 'post_parent'
+           AND endpoint_template = '/posts/:postId/vote'
+           AND idempotency_key = 'replay-cast'`,
+      );
+      const castActionId = storedCastAction.rows[0]?.action_id;
+      expect(castActionId).toStartWith("vote_action_");
 
       const conflict = await Effect.runPromiseExit(
         castPostVote(
@@ -457,7 +465,11 @@ suite("Postgres 17 content repository", () => {
         ),
       );
       expect(failureOf(conflict)).toMatchObject({
-        _tag: "Conflict",
+        _tag: "PostVoteIdempotencyConflict",
+        details: {
+          reason_code: "idempotency_conflict",
+          action_id: castActionId,
+        },
       });
 
       const changeInput = {
@@ -513,7 +525,13 @@ suite("Postgres 17 content repository", () => {
           { contentStore: store },
         ),
       );
-      expect(failureOf(conflictAfterAuthorityLoss)).toMatchObject({ _tag: "Conflict" });
+      expect(failureOf(conflictAfterAuthorityLoss)).toMatchObject({
+        _tag: "PostVoteIdempotencyConflict",
+        details: {
+          reason_code: "idempotency_conflict",
+          action_id: castActionId,
+        },
+      });
     });
     completedTestCount += 1;
   });
@@ -575,6 +593,24 @@ suite("Postgres 17 content repository", () => {
       );
       const store = await storeFor(connection);
       const bob: M2Actor = { userId: "usr_bob", kind: "user" };
+      const driftedRead = await Effect.runPromise(
+        Effect.scoped(
+          store.getPost({
+            communityId: "community_1",
+            postId: "post_parent",
+            viewerUserId: actor.userId,
+          }),
+        ),
+      );
+      expect(driftedRead).toMatchObject({
+        upvote_count: 9,
+        downvote_count: 8,
+        viewer_vote: null,
+      });
+      const storedDrift = await admin.query<{ upvote_count: number; downvote_count: number }>(
+        "SELECT upvote_count, downvote_count FROM posts WHERE post_id = 'post_parent'",
+      );
+      expect(storedDrift.rows[0]).toEqual({ upvote_count: 9, downvote_count: 8 });
       await Promise.all([
         Effect.runPromise(
           Effect.scoped(

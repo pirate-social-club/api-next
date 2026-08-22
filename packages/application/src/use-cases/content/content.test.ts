@@ -397,6 +397,7 @@ describe("M2 content use cases", () => {
                 new ContentRepositoryError({
                   operation: "cast-vote",
                   reason: "idempotency-conflict",
+                  actionId: "vote_action_existing",
                 }),
               ),
             checkVoteAuthority: () => {
@@ -407,7 +408,13 @@ describe("M2 content use cases", () => {
         },
       ),
     );
-    expect(failureOf(conflict)).toMatchObject({ _tag: "Conflict" });
+    expect(failureOf(conflict)).toMatchObject({
+      _tag: "PostVoteIdempotencyConflict",
+      details: {
+        reason_code: "idempotency_conflict",
+        action_id: "vote_action_existing",
+      },
+    });
     expect(authorityCalls).toBe(0);
     expect(persistenceCalls).toBe(0);
   });

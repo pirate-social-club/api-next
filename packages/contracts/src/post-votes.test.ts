@@ -5,6 +5,7 @@ import {
   ClearPostVote,
   Conflict,
   GateUnsatisfied,
+  PostVoteIdempotencyConflict,
   schemaToOpenApi,
   VerificationRequired,
 } from "./index.ts";
@@ -33,10 +34,16 @@ describe("post vote contracts", () => {
     expect(CastPostVote.auth).toEqual({ policy: { kind: "userOrAdmin" } });
     expect(ClearPostVote.auth).toEqual({ policy: { kind: "userOrAdmin" } });
     for (const endpoint of [CastPostVote, ClearPostVote]) {
-      expect(endpoint.errors).toContain(Conflict);
+      expect(endpoint.errors).toContain(PostVoteIdempotencyConflict);
+      expect(endpoint.errors).not.toContain(Conflict);
       expect(endpoint.errors).not.toContain(VerificationRequired);
       expect(endpoint.errors).not.toContain(GateUnsatisfied);
     }
+    expect(PostVoteIdempotencyConflict.detailsRequired).toBe(true);
+    expect(schemaToOpenApi(PostVoteIdempotencyConflict.detailsSchema)).toMatchObject({
+      required: ["reason_code", "action_id"],
+      additionalProperties: false,
+    });
   });
 
   test("returns post_id and the closed cast or clear value", () => {

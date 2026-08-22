@@ -2,10 +2,10 @@ import {
   type ApiError,
   BadRequest,
   CommentsLocked,
-  Conflict,
   InternalError,
   MembershipRequired,
   NotFound,
+  PostVoteIdempotencyConflict,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import {
@@ -94,7 +94,18 @@ export const mapContentFailure = (failure: ContentRepositoryFailure): ApiError =
     case "not-found":
       return new NotFound({ message: "Content not found" });
     case "idempotency-conflict":
-      return new Conflict({ message: "Idempotency key was already used with a different body" });
+      return (failure.operation === "cast-vote" || failure.operation === "clear-vote") &&
+        failure.actionId !== undefined &&
+        failure.actionId.length > 0 &&
+        failure.actionId.trim() === failure.actionId
+        ? new PostVoteIdempotencyConflict({
+            message: "Idempotency key was already used with a different body",
+            details: {
+              reason_code: "idempotency_conflict",
+              action_id: failure.actionId,
+            },
+          })
+        : new InternalError({ message: "Content replay conflict has no action identity" });
     case "membership-required":
       return new MembershipRequired({ message: "Community membership is required" });
     case "comments-locked":

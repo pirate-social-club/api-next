@@ -84,8 +84,12 @@ const constraint = (operation: ContentRepositoryOperation) =>
 const notFound = (operation: ContentRepositoryOperation) =>
   new ContentRepositoryError({ operation, reason: "not-found" });
 
-const idempotencyConflict = (operation: ContentRepositoryOperation) =>
-  new ContentRepositoryError({ operation, reason: "idempotency-conflict" });
+const idempotencyConflict = (operation: ContentRepositoryOperation, actionId?: string) =>
+  new ContentRepositoryError({
+    operation,
+    reason: "idempotency-conflict",
+    ...(actionId === undefined ? {} : { actionId }),
+  });
 
 const validId = (value: string): boolean =>
   value.length > 0 && value.trim() === value && !value.includes("\u0000");
@@ -596,6 +600,7 @@ const loadActorVoteIn = (
 type VoteEndpointTemplate = "/posts/:postId/vote" | "/posts/:postId/clear_vote";
 
 type VoteAction = Readonly<{
+  readonly actionId: string;
   readonly communityId: string;
   readonly postId: string;
   readonly actorUserId: string;
@@ -606,6 +611,7 @@ type VoteAction = Readonly<{
 }>;
 
 const voteActionFromRow = (row: Row, operation: ContentRepositoryOperation) => {
+  const actionId = stringValue(row, "action_id");
   const communityId = stringValue(row, "community_id");
   const postId = stringValue(row, "post_id");
   const actorUserId = stringValue(row, "actor_user_id");
@@ -614,10 +620,12 @@ const voteActionFromRow = (row: Row, operation: ContentRepositoryOperation) => {
   const requestHash = stringValue(row, "request_hash");
   const resultValue = safeIntegerValue(row, "result_value");
   if (
+    actionId === null ||
     communityId === null ||
     postId === null ||
     actorUserId === null ||
     idempotencyKey === null ||
+    !validId(actionId) ||
     !validId(communityId) ||
     !validId(postId) ||
     !validId(actorUserId) ||
@@ -630,6 +638,7 @@ const voteActionFromRow = (row: Row, operation: ContentRepositoryOperation) => {
     return Effect.fail(invalid(operation));
   }
   return Effect.succeed({
+    actionId,
     communityId,
     postId,
     actorUserId,
@@ -652,7 +661,7 @@ const loadVoteActionIn = (
   Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: "content.post-vote-actions.lock",
-      text: `SELECT community_id, post_id, actor_user_id, endpoint_template,
+      text: `SELECT action_id, community_id, post_id, actor_user_id, endpoint_template,
                     idempotency_key, request_hash, result_value
              FROM post_vote_actions
              WHERE actor_user_id = $1
@@ -681,7 +690,9 @@ const loadVoteActionIn = (
 const castReplayFromAction = (action: VoteAction | null, requestHash: string, postId: string) =>
   Effect.gen(function* () {
     if (action === null) return null;
-    if (action.requestHash !== requestHash) return yield* idempotencyConflict("cast-vote");
+    if (action.requestHash !== requestHash) {
+      return yield* idempotencyConflict("cast-vote", action.actionId);
+    }
     if (action.resultValue !== -1 && action.resultValue !== 1) {
       return yield* invalid("cast-vote");
     }
@@ -691,7 +702,9 @@ const castReplayFromAction = (action: VoteAction | null, requestHash: string, po
 const clearReplayFromAction = (action: VoteAction | null, requestHash: string, postId: string) =>
   Effect.gen(function* () {
     if (action === null) return null;
-    if (action.requestHash !== requestHash) return yield* idempotencyConflict("clear-vote");
+    if (action.requestHash !== requestHash) {
+      return yield* idempotencyConflict("clear-vote", action.actionId);
+    }
     if (action.resultValue !== 0) return yield* invalid("clear-vote");
     return { post_id: postId, value: 0 } satisfies ClearVoteDocument;
   });
@@ -748,7 +761,7 @@ const insertVoteActionIn = (
                (action_id, community_id, post_id, actor_user_id, endpoint_template,
                 idempotency_key, request_hash, result_value, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp())
-             RETURNING community_id, post_id, actor_user_id, endpoint_template,
+             RETURNING action_id, community_id, post_id, actor_user_id, endpoint_template,
                        idempotency_key, request_hash, result_value`,
       values: [
         makeVoteActionId(),
@@ -1020,11 +1033,19 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             nullVoterCount !== 0 ||
             invalidVoteCount !== 0 ||
             voteRowCount !== distinctVoterCount ||
-            upvoteCount + downvoteCount !== voteRowCount ||
-            storedUpvoteCount !== upvoteCount ||
-            storedDownvoteCount !== downvoteCount
+            upvoteCount + downvoteCount !== voteRowCount
           ) {
             return yield* invalid("get-post");
+          }
+          if (storedUpvoteCount !== upvoteCount || storedDownvoteCount !== downvoteCount) {
+            console.warn("content_vote_aggregate_drift", {
+              community_id: communityId,
+              post_id: postId,
+              stored_upvote_count: storedUpvoteCount,
+              stored_downvote_count: storedDownvoteCount,
+              live_upvote_count: upvoteCount,
+              live_downvote_count: downvoteCount,
+            });
           }
           return {
             post,

@@ -6953,21 +6953,30 @@
                           "type": "boolean"
                         },
                         "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
+                          "type": "object",
+                          "properties": {
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "idempotency_conflict"
+                              ]
                             },
-                            {
-                              "type": "null"
+                            "action_id": {
+                              "type": "string"
                             }
-                          ]
+                          },
+                          "required": [
+                            "reason_code",
+                            "action_id"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
                         "code",
                         "message",
-                        "retryable"
+                        "retryable",
+                        "details"
                       ],
                       "additionalProperties": false
                     },
@@ -7048,7 +7057,7 @@
         "x-errors": [
           "AuthError",
           "BadRequest",
-          "Conflict",
+          "PostVoteIdempotencyConflict",
           "MembershipRequired",
           "NotFound",
           "RateLimited"
@@ -7346,21 +7355,30 @@
                           "type": "boolean"
                         },
                         "details": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "additionalProperties": true
+                          "type": "object",
+                          "properties": {
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "idempotency_conflict"
+                              ]
                             },
-                            {
-                              "type": "null"
+                            "action_id": {
+                              "type": "string"
                             }
-                          ]
+                          },
+                          "required": [
+                            "reason_code",
+                            "action_id"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
                         "code",
                         "message",
-                        "retryable"
+                        "retryable",
+                        "details"
                       ],
                       "additionalProperties": false
                     },
@@ -7441,7 +7459,7 @@
         "x-errors": [
           "AuthError",
           "BadRequest",
-          "Conflict",
+          "PostVoteIdempotencyConflict",
           "MembershipRequired",
           "NotFound",
           "RateLimited"
