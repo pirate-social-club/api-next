@@ -1,4 +1,6 @@
 import {
+  ContentRepositoryError,
+  type ContentStore,
   type IdentityStore,
   type M2Actor,
   TextPostRepositoryError,
@@ -39,6 +41,8 @@ import {
   type DecodedRequest,
   type Principal,
 } from "../../apps/http-worker/src/transport.ts";
+import { castPostVote } from "../../packages/application/src/use-cases/content/cast-post-vote.ts";
+import { clearPostVote } from "../../packages/application/src/use-cases/content/clear-post-vote.ts";
 import {
   moderateCaseAction,
   reportComment,
@@ -414,6 +418,44 @@ const moderationFixture: TextPostStore["Service"] = {
         })
       : Effect.fail(new TextPostRepositoryError({ operation: "action", reason: "not-found" })),
 };
+const voteFixture: ContentStore["Service"] = {
+  resolvePost: ({ postId }) =>
+    Effect.succeed({
+      communityId:
+        postId === "post_nonmember"
+          ? "community_nonmember"
+          : postId === "post_ineffective"
+            ? "community_ineffective"
+            : "community_workerd",
+      postId,
+    }),
+  resolveComment: () => Effect.die("unused vote fixture operation"),
+  createPost: () => Effect.die("unused vote fixture operation"),
+  getPost: () => Effect.die("unused vote fixture operation"),
+  checkVoteAuthority: ({ communityId }) =>
+    communityId === "community_nonmember"
+      ? Effect.fail(
+          new ContentRepositoryError({
+            operation: "cast-vote",
+            reason: "membership-required",
+          }),
+        )
+      : communityId === "community_ineffective"
+        ? Effect.fail(new ContentRepositoryError({ operation: "cast-vote", reason: "not-found" }))
+        : Effect.succeed(undefined),
+  replayCastPostVote: ({ idempotencyKey }) =>
+    idempotencyKey === "workerd-vote-conflict"
+      ? Effect.fail(
+          new ContentRepositoryError({
+            operation: "cast-vote",
+            reason: "idempotency-conflict",
+          }),
+        )
+      : Effect.succeed(null),
+  replayClearPostVote: () => Effect.succeed(null),
+  castPostVote: ({ postId, body }) => Effect.succeed({ post_id: postId, value: body.value }),
+  clearPostVote: ({ postId }) => Effect.succeed({ post_id: postId, value: 0 }),
+};
 const moderationActor = (request: DecodedRequest): M2Actor => {
   const principal = request.principal;
   if (principal === null || (principal.kind !== "user" && principal.kind !== "admin"))
@@ -441,8 +483,28 @@ const app = createHttpWorker({
       }
       return Effect.runPromise(getCurrentUser({ userId: principal.subject }, { identityStore }));
     },
-    CastPostVote: () => ({ post: "post_1", value: 1 }),
-    ClearPostVote: () => ({ post: "post_1", value: null }),
+    CastPostVote: (request) =>
+      Effect.runPromise(
+        castPostVote(
+          {
+            postId: String(moderationParams(request).postId),
+            actor: moderationActor(request),
+            body: request.body,
+          },
+          { contentStore: voteFixture },
+        ),
+      ),
+    ClearPostVote: (request) =>
+      Effect.runPromise(
+        clearPostVote(
+          {
+            postId: String(moderationParams(request).postId),
+            actor: moderationActor(request),
+            body: request.body,
+          },
+          { contentStore: voteFixture },
+        ),
+      ),
     CreateComment: (request) =>
       Effect.runPromise(
         createCommentReply(

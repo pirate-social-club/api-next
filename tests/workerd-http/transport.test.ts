@@ -78,7 +78,7 @@ describe("real HTTP worker transport", () => {
     });
   });
 
-  it("serves an installed content mutation and protects author-scoped reads", async () => {
+  it("serves authenticated replay-safe post votes and protects author-scoped reads", async () => {
     const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "https://solid.test" },
@@ -88,17 +88,52 @@ describe("real HTTP worker transport", () => {
     });
     const browser = browserCookies(exchange);
 
+    const headers = {
+      cookie: browser.cookie,
+      "content-type": "application/json",
+      origin: "https://solid.test",
+      "x-csrf-token": browser.csrf,
+    };
+    const cast = await SELF.fetch("https://worker.test/posts/post_1/vote", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ idempotency_key: "workerd-vote", value: -1 }),
+    });
+    expect(cast.status).toBe(200);
+    expect(await cast.json()).toEqual({ post_id: "post_1", value: -1 });
+
     const clear = await SELF.fetch("https://worker.test/posts/post_1/clear_vote", {
       method: "POST",
-      headers: {
-        cookie: browser.cookie,
-        origin: "https://solid.test",
-        "x-csrf-token": browser.csrf,
-      },
+      headers,
+      body: JSON.stringify({ idempotency_key: "workerd-clear" }),
     });
     expect(clear.status).toBe(200);
-    expect(await clear.json()).toEqual({ post: "post_1", value: null });
+    expect(await clear.json()).toEqual({ post_id: "post_1", value: 0 });
     expect(clear.headers.get("cache-control")).toBe("no-store");
+
+    const nonmember = await SELF.fetch("https://worker.test/posts/post_nonmember/vote", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ idempotency_key: "workerd-vote-nonmember", value: 1 }),
+    });
+    expect(nonmember.status).toBe(403);
+    expect(await nonmember.json()).toMatchObject({ error: { code: "membership_required" } });
+
+    const ineffective = await SELF.fetch("https://worker.test/posts/post_ineffective/vote", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ idempotency_key: "workerd-vote-ineffective", value: 1 }),
+    });
+    expect(ineffective.status).toBe(404);
+    expect(await ineffective.json()).toMatchObject({ error: { code: "not_found" } });
+
+    const conflict = await SELF.fetch("https://worker.test/posts/post_1/vote", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ idempotency_key: "workerd-vote-conflict", value: 1 }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({ error: { code: "conflict" } });
 
     const unauthenticated = await SELF.fetch(
       "https://worker.test/text-content-submissions/submission_1",

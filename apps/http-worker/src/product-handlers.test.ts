@@ -106,6 +106,9 @@ function stores(
       resolveComment: () => Effect.succeed(null),
       createPost: () => Effect.succeed(null),
       getPost: () => Effect.succeed(null),
+      checkVoteAuthority: () => Effect.succeed(undefined),
+      replayCastPostVote: () => Effect.succeed(null),
+      replayClearPostVote: () => Effect.succeed(null),
       castPostVote: () => Effect.succeed(null),
       clearPostVote: () => Effect.succeed(null),
       ...overrides.content,
@@ -346,13 +349,25 @@ describe("HTTP product handlers", () => {
             observed.push({ resolvePost: input });
             return Effect.succeed({ communityId: "community-a", postId: input.postId });
           },
+          checkVoteAuthority: (input) => {
+            observed.push({ checkVoteAuthority: input });
+            return Effect.succeed(undefined);
+          },
+          replayCastPostVote: (input) => {
+            observed.push({ replayCastPostVote: input });
+            return Effect.succeed(null);
+          },
+          replayClearPostVote: (input) => {
+            observed.push({ replayClearPostVote: input });
+            return Effect.succeed(null);
+          },
           castPostVote: (input) => {
             observed.push({ castPostVote: input });
-            return Effect.succeed({ post: input.postId, value: input.body.value });
+            return Effect.succeed({ post_id: input.postId, value: input.body.value });
           },
           clearPostVote: (input) => {
             observed.push({ clearPostVote: input });
-            return Effect.succeed({ post: input.postId, value: null });
+            return Effect.succeed({ post_id: input.postId, value: 0 as const });
           },
         },
         textPost: {
@@ -371,8 +386,8 @@ describe("HTTP product handlers", () => {
       authorship_mode: "human_direct" as const,
       identity_mode: "public" as const,
     };
-    const voteBody = { value: -1 as const, altcha: "proof" };
-    const clearBody = { altcha: "proof" };
+    const voteBody = { idempotency_key: "vote-key", value: -1 as const };
+    const clearBody = { idempotency_key: "clear-key" };
 
     expect(
       createPostInputFrom(
@@ -414,20 +429,54 @@ describe("HTTP product handlers", () => {
     expect(observed.slice(1)).toEqual([
       { resolvePost: { postId: "post-a" } },
       {
+        replayCastPostVote: {
+          communityId: "community-a",
+          postId: "post-a",
+          actor: { userId: "user-a", kind: "user" },
+          idempotencyKey: "vote-key",
+          requestHash: expect.any(String),
+        },
+      },
+      {
+        checkVoteAuthority: {
+          communityId: "community-a",
+          postId: "post-a",
+          actor: { userId: "user-a", kind: "user" },
+        },
+      },
+      {
         castPostVote: {
           communityId: "community-a",
           postId: "post-a",
           actor: { userId: "user-a", kind: "user" },
           body: voteBody,
+          requestHash: expect.any(String),
         },
       },
       { resolvePost: { postId: "post-a" } },
+      {
+        replayClearPostVote: {
+          communityId: "community-a",
+          postId: "post-a",
+          actor: { userId: "user-a", kind: "user" },
+          idempotencyKey: "clear-key",
+          requestHash: expect.any(String),
+        },
+      },
+      {
+        checkVoteAuthority: {
+          communityId: "community-a",
+          postId: "post-a",
+          actor: { userId: "user-a", kind: "user" },
+        },
+      },
       {
         clearPostVote: {
           communityId: "community-a",
           postId: "post-a",
           actor: { userId: "user-a", kind: "user" },
           body: clearBody,
+          requestHash: expect.any(String),
         },
       },
     ]);
@@ -481,6 +530,9 @@ describe("HTTP product handlers", () => {
         "resolveComment",
         "createPost",
         "getPost",
+        "checkVoteAuthority",
+        "replayCastPostVote",
+        "replayClearPostVote",
         "castPostVote",
         "clearPostVote",
       ].map((name) => [

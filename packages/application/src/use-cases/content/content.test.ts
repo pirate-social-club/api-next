@@ -8,6 +8,7 @@ import {
   type TextPostStore,
 } from "../../ports.ts";
 import { castPostVote } from "./cast-post-vote.ts";
+import { clearPostVote } from "./clear-post-vote.ts";
 import { createPost } from "./create-post.ts";
 import { getPost } from "./get-post.ts";
 
@@ -34,8 +35,11 @@ const fakeStore = (overrides: Partial<ContentStore["Service"]> = {}) => {
     resolveComment: () => Effect.succeed(null),
     createPost: () => Effect.succeed(fakeDocument),
     getPost: () => Effect.succeed(null),
-    castPostVote: () => Effect.succeed({ post: "post_1", value: 1 as const }),
-    clearPostVote: () => Effect.succeed({ post: "post_1", value: null }),
+    checkVoteAuthority: () => Effect.succeed(undefined),
+    replayCastPostVote: () => Effect.succeed(null),
+    replayClearPostVote: () => Effect.succeed(null),
+    castPostVote: () => Effect.succeed({ post_id: "post_1", value: 1 as const }),
+    clearPostVote: () => Effect.succeed({ post_id: "post_1", value: 0 as const }),
   } as unknown as ContentStore["Service"];
   return { ...base, ...overrides };
 };
@@ -235,14 +239,25 @@ describe("M2 content use cases", () => {
           source_hash: "",
         });
       },
+      checkVoteAuthority: ({ communityId, postId }) => {
+        calls.push(`authority:${communityId}/${postId}`);
+        return Effect.succeed(undefined);
+      },
+      replayCastPostVote: ({ communityId, postId }) => {
+        calls.push(`replay:${communityId}/${postId}`);
+        return Effect.succeed(null);
+      },
       castPostVote: ({ communityId, postId }) => {
         calls.push(`vote:${communityId}/${postId}`);
-        return Effect.succeed({ post: postId, value: 1 as const });
+        return Effect.succeed({ post_id: postId, value: 1 as const });
       },
     });
     const read = await run(getPost({ postId: "post_1", viewer: actor }, { contentStore: store }));
     const vote = await run(
-      castPostVote({ postId: "post_1", actor, body: { value: 1 } }, { contentStore: store }),
+      castPostVote(
+        { postId: "post_1", actor, body: { idempotency_key: "vote-key", value: 1 } },
+        { contentStore: store },
+      ),
     );
     expect(Exit.isSuccess(read)).toBe(true);
     expect(Exit.isSuccess(vote)).toBe(true);
@@ -250,6 +265,8 @@ describe("M2 content use cases", () => {
       "resolve:post_1",
       "get:community_1/post_1",
       "resolve:post_1",
+      "replay:community_1/post_1",
+      "authority:community_1/post_1",
       "vote:community_1/post_1",
     ]);
 
@@ -257,6 +274,172 @@ describe("M2 content use cases", () => {
       getPost({ postId: "post_missing", viewer: actor }, { contentStore: fakeStore() }),
     );
     expect(failureOf(missing)).toMatchObject({ _tag: "NotFound" });
+  });
+
+  test("checks vote authority before persistence and never moderates a negative vote", async () => {
+    const calls: string[] = [];
+    let moderationCalls = 0;
+    const store = fakeStore({
+      resolvePost: ({ postId }) => Effect.succeed({ communityId: "community_1", postId }),
+      replayCastPostVote: () => {
+        calls.push("replay");
+        return Effect.succeed(null);
+      },
+      checkVoteAuthority: () => {
+        calls.push("authority");
+        return Effect.succeed(undefined);
+      },
+      castPostVote: ({ body, requestHash }) => {
+        calls.push(`persist:${body.value}:${requestHash.length}`);
+        return Effect.succeed({ post_id: "post_1", value: body.value });
+      },
+    });
+    const result = await run(
+      castPostVote(
+        {
+          postId: "post_1",
+          actor,
+          body: { idempotency_key: "negative-vote", value: -1 },
+        },
+        {
+          contentStore: store,
+          textModeration: {
+            evaluate: () => {
+              moderationCalls += 1;
+              return Effect.die("vote moderation must stay disconnected");
+            },
+          },
+        },
+      ),
+    );
+    expect(result).toMatchObject({ _tag: "Success", value: { post_id: "post_1", value: -1 } });
+    expect(calls).toEqual(["replay", "authority", "persist:-1:64"]);
+    expect(moderationCalls).toBe(0);
+
+    let persistenceCalls = 0;
+    const denied = await run(
+      castPostVote(
+        {
+          postId: "post_1",
+          actor,
+          body: { idempotency_key: "denied-vote", value: 1 },
+        },
+        {
+          contentStore: fakeStore({
+            resolvePost: ({ postId }) => Effect.succeed({ communityId: "community_1", postId }),
+            checkVoteAuthority: () =>
+              Effect.fail(
+                new ContentRepositoryError({
+                  operation: "cast-vote",
+                  reason: "membership-required",
+                }),
+              ),
+            castPostVote: () => {
+              persistenceCalls += 1;
+              return Effect.succeed({ post_id: "post_1", value: 1 });
+            },
+          }),
+        },
+      ),
+    );
+    expect(failureOf(denied)).toMatchObject({ _tag: "MembershipRequired" });
+    expect(persistenceCalls).toBe(0);
+  });
+
+  test("returns stored vote replays and conflicts before current authority", async () => {
+    let authorityCalls = 0;
+    let persistenceCalls = 0;
+    const replayed = await run(
+      castPostVote(
+        {
+          postId: "post_1",
+          actor,
+          body: { idempotency_key: "replay-key", value: 1 },
+        },
+        {
+          contentStore: fakeStore({
+            resolvePost: ({ postId }) => Effect.succeed({ communityId: "community_1", postId }),
+            replayCastPostVote: () => Effect.succeed({ post_id: "post_1", value: 1 as const }),
+            checkVoteAuthority: () => {
+              authorityCalls += 1;
+              return Effect.fail(
+                new ContentRepositoryError({
+                  operation: "cast-vote",
+                  reason: "membership-required",
+                }),
+              );
+            },
+            castPostVote: () => {
+              persistenceCalls += 1;
+              return Effect.succeed({ post_id: "post_1", value: 1 as const });
+            },
+          }),
+        },
+      ),
+    );
+    expect(replayed).toMatchObject({
+      _tag: "Success",
+      value: { post_id: "post_1", value: 1 },
+    });
+
+    const conflict = await run(
+      castPostVote(
+        {
+          postId: "post_1",
+          actor,
+          body: { idempotency_key: "replay-key", value: -1 },
+        },
+        {
+          contentStore: fakeStore({
+            resolvePost: ({ postId }) => Effect.succeed({ communityId: "community_1", postId }),
+            replayCastPostVote: () =>
+              Effect.fail(
+                new ContentRepositoryError({
+                  operation: "cast-vote",
+                  reason: "idempotency-conflict",
+                }),
+              ),
+            checkVoteAuthority: () => {
+              authorityCalls += 1;
+              return Effect.succeed(undefined);
+            },
+          }),
+        },
+      ),
+    );
+    expect(failureOf(conflict)).toMatchObject({ _tag: "Conflict" });
+    expect(authorityCalls).toBe(0);
+    expect(persistenceCalls).toBe(0);
+  });
+
+  test("rejects missing keys and legacy ALTCHA fields before vote authority checks", async () => {
+    let authorityCalls = 0;
+    const store = fakeStore({
+      resolvePost: ({ postId }) => Effect.succeed({ communityId: "community_1", postId }),
+      checkVoteAuthority: () => {
+        authorityCalls += 1;
+        return Effect.succeed(undefined);
+      },
+    });
+    const cast = await run(
+      castPostVote(
+        { postId: "post_1", actor, body: { value: 1, altcha: "legacy" } },
+        { contentStore: store },
+      ),
+    );
+    const clear = await run(
+      clearPostVote(
+        {
+          postId: "post_1",
+          actor,
+          body: { idempotency_key: "clear-key", altcha: "legacy" },
+        },
+        { contentStore: store },
+      ),
+    );
+    expect(failureOf(cast)).toMatchObject({ _tag: "BadRequest" });
+    expect(failureOf(clear)).toMatchObject({ _tag: "BadRequest" });
+    expect(authorityCalls).toBe(0);
   });
 
   test("maps malformed repository rows to InternalError", async () => {

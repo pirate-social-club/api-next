@@ -39,6 +39,7 @@
     "0036_route_revalidation_completion_outcome_guard.sql": "b4af7d73fe2cf540d10b44cd2f063f2f7f0168fee380aacb79333d5659941d4b",
     "0037_text_submission_response_snapshot.sql": "2bf8fcff4b86d40a2d9f86c0b4f9f56b2c962dacbb19ccaea3e3dd2afd55b581",
     "0038_community_creation_very_web_evidence.sql": "a8473ffa7623357cac90a7364fe7a0c237bdae419d0feb35714b495be2721a20",
-    "0039_comments_replies_runtime.sql": "66089597fce8c360698ef11b8757926e1ca6eddfb59019c3bad6f86ca7c8d095"
+    "0039_comments_replies_runtime.sql": "66089597fce8c360698ef11b8757926e1ca6eddfb59019c3bad6f86ca7c8d095",
+    "0040_post_vote_actions.sql": "5fc51ad2ab08717fce95fae558e4ac1fad06e01bd952c4bdc5e307f4fa1e9df7"
   }
 }

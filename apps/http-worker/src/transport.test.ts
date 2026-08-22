@@ -39,8 +39,8 @@ const publicCommunityThreads = {
   items: [],
   next_cursor: null,
 };
-const vote = { post: "post_1", value: 1 as const };
-const clearedVote = { post: "post_1", value: null };
+const vote = { post_id: "post_1", value: 1 as const };
+const clearedVote = { post_id: "post_1", value: 0 as const };
 const post = {
   id: "post_1",
   object: "post" as const,
@@ -295,7 +295,13 @@ describe("contracts-generated HTTP worker", () => {
 
     const allowed = await app.request("https://worker.test/posts/post_1/clear_vote", {
       method: "POST",
-      headers: { cookie, origin: "https://solid.test", "x-csrf-token": csrf as string },
+      headers: {
+        cookie,
+        origin: "https://solid.test",
+        "content-type": "application/json",
+        "x-csrf-token": csrf as string,
+      },
+      body: JSON.stringify({ idempotency_key: "clear-key" }),
     });
     expect(allowed.status).toBe(200);
   });
@@ -491,7 +497,7 @@ describe("contracts-generated HTTP worker", () => {
     const bodyResponse = await app.request("http://worker.test/posts/post_1/vote", {
       method: "POST",
       headers: { authorization: "Bearer test", "content-type": "application/json" },
-      body: JSON.stringify({ value: 1, forged: true }),
+      body: JSON.stringify({ idempotency_key: "vote-key", value: 1, forged: true }),
     });
     const queryResponse = await app.request("http://worker.test/feed/home/public?forged=true");
 
@@ -812,7 +818,7 @@ describe("contracts-generated HTTP worker", () => {
       {
         method: "POST",
         headers: { authorization: "Bearer test", "content-type": "application/json" },
-        body: JSON.stringify({ value: 1 }),
+        body: JSON.stringify({ idempotency_key: "authn-vote", value: 1 }),
       },
     );
 
@@ -828,16 +834,16 @@ describe("contracts-generated HTTP worker", () => {
       {
         method: "POST",
         headers: { authorization: "Bearer test", "content-type": "application/json" },
-        body: JSON.stringify({ value: 1 }),
+        body: JSON.stringify({ idempotency_key: "authz-vote", value: 1 }),
       },
     );
 
-    expect(authenticationResponse.status).toBe(500);
+    expect(authenticationResponse.status).toBe(409);
     expect(await authenticationResponse.json()).toMatchObject({
-      error: { code: "internal_error" },
+      error: { code: "conflict" },
     });
-    expect(authorizationResponse.status).toBe(500);
-    expect(await authorizationResponse.json()).toMatchObject({ error: { code: "internal_error" } });
+    expect(authorizationResponse.status).toBe(409);
+    expect(await authorizationResponse.json()).toMatchObject({ error: { code: "conflict" } });
   });
 
   it("returns not_found for an uninstalled route instead of undeclared not_implemented", async () => {
@@ -916,11 +922,12 @@ describe("contracts-generated HTTP worker", () => {
     const voteResponse = await app.request("http://worker.test/posts/post_1/vote", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ value: 1 }),
+      body: JSON.stringify({ idempotency_key: "vote-key", value: 1 }),
     });
     const clearResponse = await app.request("http://worker.test/posts/post_1/clear_vote", {
       method: "POST",
       headers: auth,
+      body: JSON.stringify({ idempotency_key: "clear-key" }),
     });
 
     // CreatePost still has the old internal PostDocument runtime until Order
@@ -1073,7 +1080,7 @@ describe("contracts-generated HTTP worker", () => {
         "content-type": "application/json",
         origin: "https://solid.test",
       },
-      body: JSON.stringify({ value: 1 }),
+      body: JSON.stringify({ idempotency_key: "cors-vote", value: 1 }),
     });
 
     expect(response.status).toBe(200);
@@ -1096,7 +1103,7 @@ describe("contracts-generated HTTP worker", () => {
           "content-type": "application/json",
           origin,
         },
-        body: JSON.stringify({ value: 1 }),
+        body: JSON.stringify({ idempotency_key: `cors-${origin}`, value: 1 }),
       });
 
       expect(response.status).toBe(200);
@@ -1118,7 +1125,7 @@ describe("contracts-generated HTTP worker", () => {
         "content-type": "application/json",
         origin: "https://staging.pirate.sc",
       },
-      body: JSON.stringify({ value: 1 }),
+      body: JSON.stringify({ idempotency_key: "cors-denied", value: 1 }),
     });
 
     expect(response.status).toBe(200);

@@ -13,7 +13,6 @@ import {
   NotFound,
   RateLimited,
   ReplyDepthExceeded,
-  VerificationRequired,
 } from "./errors.ts";
 import { TextContentSubmissionV1 } from "./text-moderation.ts";
 
@@ -1088,14 +1087,7 @@ export const CastPostVote = endpoint({
   request: { path: PathPost, body: VoteRequest },
   response: VoteResponse,
   successStatus: 200,
-  errors: [
-    AuthError,
-    BadRequest,
-    Conflict,
-    MembershipRequired,
-    NotFound,
-    RateLimited,
-  ],
+  errors: [AuthError, BadRequest, Conflict, MembershipRequired, NotFound, RateLimited],
 });
 
 export const ClearPostVote = endpoint({
@@ -1108,14 +1100,7 @@ export const ClearPostVote = endpoint({
   },
   response: ClearVoteResponse,
   successStatus: 200,
-  errors: [
-    AuthError,
-    BadRequest,
-    Conflict,
-    MembershipRequired,
-    NotFound,
-    RateLimited,
-  ],
+  errors: [AuthError, BadRequest, Conflict, MembershipRequired, NotFound, RateLimited],
 });
 
 export const CreateCommentReply = endpoint({

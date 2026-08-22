@@ -1,5 +1,6 @@
 import {
   type ClearVoteBody,
+  type ClearVoteDocument,
   type CommentLocation,
   ContentRepositoryError,
   type ContentRepositoryFailure,
@@ -14,6 +15,7 @@ import {
   type PostDocument,
   type PostLocation,
   type VoteBody,
+  type VoteDocument,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
 
@@ -36,26 +38,39 @@ export interface ContentRepository {
     readonly viewerUserId: string;
     readonly locale?: string;
   }) => Effect.Effect<LocalizedPostDocument | null, ContentRepositoryFailure, ControlPlaneDb>;
+  readonly checkVoteAuthority: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actor: M2Actor;
+  }) => Effect.Effect<void, ContentRepositoryFailure, ControlPlaneDb>;
+  readonly replayCastPostVote: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actor: M2Actor;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+  }) => Effect.Effect<VoteDocument | null, ContentRepositoryFailure, ControlPlaneDb>;
+  readonly replayClearPostVote: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actor: M2Actor;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+  }) => Effect.Effect<ClearVoteDocument | null, ContentRepositoryFailure, ControlPlaneDb>;
   readonly castPostVote: (input: {
     readonly communityId: string;
     readonly postId: string;
     readonly actor: M2Actor;
     readonly body: VoteBody;
-  }) => Effect.Effect<
-    { readonly post: string; readonly value: -1 | 1 },
-    ContentRepositoryFailure,
-    ControlPlaneDb
-  >;
+    readonly requestHash: string;
+  }) => Effect.Effect<VoteDocument, ContentRepositoryFailure, ControlPlaneDb>;
   readonly clearPostVote: (input: {
     readonly communityId: string;
     readonly postId: string;
     readonly actor: M2Actor;
     readonly body: ClearVoteBody;
-  }) => Effect.Effect<
-    { readonly post: string; readonly value: null },
-    ContentRepositoryFailure,
-    ControlPlaneDb
-  >;
+    readonly requestHash: string;
+  }) => Effect.Effect<ClearVoteDocument, ContentRepositoryFailure, ControlPlaneDb>;
 }
 
 type Row = Readonly<Record<string, unknown>>;
@@ -69,8 +84,8 @@ const constraint = (operation: ContentRepositoryOperation) =>
 const notFound = (operation: ContentRepositoryOperation) =>
   new ContentRepositoryError({ operation, reason: "not-found" });
 
-const idempotencyConflict = () =>
-  new ContentRepositoryError({ operation: "create-post", reason: "idempotency-conflict" });
+const idempotencyConflict = (operation: ContentRepositoryOperation) =>
+  new ContentRepositoryError({ operation, reason: "idempotency-conflict" });
 
 const validId = (value: string): boolean =>
   value.length > 0 && value.trim() === value && !value.includes("\u0000");
@@ -252,6 +267,7 @@ const exactlyOneRow = <T extends Row>(
 
 const makePostId = (): string => `post_${crypto.randomUUID()}`;
 const makeVoteId = (): string => `vote_${crypto.randomUUID()}`;
+const makeVoteActionId = (): string => `vote_action_${crypto.randomUUID()}`;
 
 type Transaction = ControlPlaneTransaction;
 
@@ -332,7 +348,11 @@ const resolveCommentIn = (
       return yield* invalid(operation);
     }
     return communityStatus === "active"
-      ? ({ communityId, postId, commentId: resolvedCommentId } satisfies CommentLocation)
+      ? ({
+          communityId,
+          postId,
+          commentId: resolvedCommentId,
+        } satisfies CommentLocation)
       : null;
   });
 
@@ -486,6 +506,31 @@ const postStateFromRow = (row: Row, operation: ContentRepositoryOperation) => {
   } satisfies PostState);
 };
 
+const requireVoteAuthorityIn = (
+  transaction: Transaction,
+  communityId: string,
+  postId: string,
+  actorUserId: string,
+  operation: "cast-vote" | "clear-vote",
+) =>
+  Effect.gen(function* () {
+    yield* requireActiveMembershipIn(transaction, communityId, actorUserId, operation);
+    const location = yield* resolvePostIn(transaction, postId, operation);
+    if (location === null || location.communityId !== communityId) {
+      return yield* notFound(operation);
+    }
+    const postRow = yield* oneRow(
+      (yield* loadPostStateIn(transaction, communityId, postId)).rows,
+      operation,
+    );
+    if (postRow === null) return yield* notFound(operation);
+    const post = yield* postStateFromRow(postRow, operation);
+    if (post.communityId !== communityId || post.postId !== postId || post.status !== "published") {
+      return yield* notFound(operation);
+    }
+    yield* requireEffectiveActiveRouteIn(transaction, communityId, operation);
+  });
+
 type ActorVote = Readonly<{
   readonly communityId: string;
   readonly postVoteId: string;
@@ -546,6 +591,190 @@ const loadActorVoteIn = (
       return yield* invalid(operation);
     }
     return vote;
+  });
+
+type VoteEndpointTemplate = "/posts/:postId/vote" | "/posts/:postId/clear_vote";
+
+type VoteAction = Readonly<{
+  readonly communityId: string;
+  readonly postId: string;
+  readonly actorUserId: string;
+  readonly endpointTemplate: VoteEndpointTemplate;
+  readonly idempotencyKey: string;
+  readonly requestHash: string;
+  readonly resultValue: -1 | 0 | 1;
+}>;
+
+const voteActionFromRow = (row: Row, operation: ContentRepositoryOperation) => {
+  const communityId = stringValue(row, "community_id");
+  const postId = stringValue(row, "post_id");
+  const actorUserId = stringValue(row, "actor_user_id");
+  const endpointTemplate = stringValue(row, "endpoint_template");
+  const idempotencyKey = stringValue(row, "idempotency_key");
+  const requestHash = stringValue(row, "request_hash");
+  const resultValue = safeIntegerValue(row, "result_value");
+  if (
+    communityId === null ||
+    postId === null ||
+    actorUserId === null ||
+    idempotencyKey === null ||
+    !validId(communityId) ||
+    !validId(postId) ||
+    !validId(actorUserId) ||
+    !validId(idempotencyKey) ||
+    !validIdempotencyHash(requestHash) ||
+    (endpointTemplate !== "/posts/:postId/vote" &&
+      endpointTemplate !== "/posts/:postId/clear_vote") ||
+    (resultValue !== -1 && resultValue !== 0 && resultValue !== 1)
+  ) {
+    return Effect.fail(invalid(operation));
+  }
+  return Effect.succeed({
+    communityId,
+    postId,
+    actorUserId,
+    endpointTemplate,
+    idempotencyKey,
+    requestHash,
+    resultValue,
+  } satisfies VoteAction);
+};
+
+const loadVoteActionIn = (
+  transaction: Transaction,
+  communityId: string,
+  postId: string,
+  actorUserId: string,
+  endpointTemplate: VoteEndpointTemplate,
+  idempotencyKey: string,
+  operation: ContentRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: "content.post-vote-actions.lock",
+      text: `SELECT community_id, post_id, actor_user_id, endpoint_template,
+                    idempotency_key, request_hash, result_value
+             FROM post_vote_actions
+             WHERE actor_user_id = $1
+               AND post_id = $2
+               AND endpoint_template = $3
+               AND idempotency_key = $4
+             FOR UPDATE`,
+      values: [actorUserId, postId, endpointTemplate, idempotencyKey],
+      readonly: false,
+    });
+    const row = yield* oneRow(result.rows, operation);
+    if (row === null) return null;
+    const action = yield* voteActionFromRow(row, operation);
+    if (
+      action.communityId !== communityId ||
+      action.postId !== postId ||
+      action.actorUserId !== actorUserId ||
+      action.endpointTemplate !== endpointTemplate ||
+      action.idempotencyKey !== idempotencyKey
+    ) {
+      return yield* invalid(operation);
+    }
+    return action;
+  });
+
+const castReplayFromAction = (action: VoteAction | null, requestHash: string, postId: string) =>
+  Effect.gen(function* () {
+    if (action === null) return null;
+    if (action.requestHash !== requestHash) return yield* idempotencyConflict("cast-vote");
+    if (action.resultValue !== -1 && action.resultValue !== 1) {
+      return yield* invalid("cast-vote");
+    }
+    return { post_id: postId, value: action.resultValue } satisfies VoteDocument;
+  });
+
+const clearReplayFromAction = (action: VoteAction | null, requestHash: string, postId: string) =>
+  Effect.gen(function* () {
+    if (action === null) return null;
+    if (action.requestHash !== requestHash) return yield* idempotencyConflict("clear-vote");
+    if (action.resultValue !== 0) return yield* invalid("clear-vote");
+    return { post_id: postId, value: 0 } satisfies ClearVoteDocument;
+  });
+
+const repairVoteAggregatesIn = (
+  transaction: Transaction,
+  communityId: string,
+  postId: string,
+  operation: ContentRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: "content.posts.repair-vote-aggregates",
+      text: `UPDATE posts AS p
+             SET upvote_count = counts.upvote_count,
+                 downvote_count = counts.downvote_count,
+                 updated_at = clock_timestamp()
+             FROM (
+               SELECT
+                 COUNT(*) FILTER (WHERE vote_value = 1)::int AS upvote_count,
+                 COUNT(*) FILTER (WHERE vote_value = -1)::int AS downvote_count
+               FROM post_votes
+               WHERE community_id = $1 AND post_id = $2
+             ) AS counts
+             WHERE p.community_id = $1 AND p.post_id = $2
+             RETURNING p.upvote_count, p.downvote_count`,
+      values: [communityId, postId],
+      readonly: false,
+    });
+    const row = yield* exactlyOneRow(result.rows, operation);
+    const upvoteCount = nonNegativeIntegerValue(row, "upvote_count");
+    const downvoteCount = nonNegativeIntegerValue(row, "downvote_count");
+    if (upvoteCount === null || downvoteCount === null) return yield* invalid(operation);
+    return { upvoteCount, downvoteCount };
+  });
+
+const insertVoteActionIn = (
+  transaction: Transaction,
+  input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actorUserId: string;
+    readonly endpointTemplate: VoteEndpointTemplate;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+    readonly resultValue: -1 | 0 | 1;
+  },
+  operation: ContentRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    const inserted = yield* transaction.execute<Row>({
+      label: "content.post-vote-actions.insert",
+      text: `INSERT INTO post_vote_actions
+               (action_id, community_id, post_id, actor_user_id, endpoint_template,
+                idempotency_key, request_hash, result_value, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp())
+             RETURNING community_id, post_id, actor_user_id, endpoint_template,
+                       idempotency_key, request_hash, result_value`,
+      values: [
+        makeVoteActionId(),
+        input.communityId,
+        input.postId,
+        input.actorUserId,
+        input.endpointTemplate,
+        input.idempotencyKey,
+        input.requestHash,
+        input.resultValue,
+      ],
+      readonly: false,
+    });
+    const row = yield* exactlyOneRow(inserted.rows, operation);
+    const action = yield* voteActionFromRow(row, operation);
+    if (
+      action.communityId !== input.communityId ||
+      action.postId !== input.postId ||
+      action.actorUserId !== input.actorUserId ||
+      action.endpointTemplate !== input.endpointTemplate ||
+      action.idempotencyKey !== input.idempotencyKey ||
+      action.requestHash !== input.requestHash ||
+      action.resultValue !== input.resultValue
+    ) {
+      return yield* invalid(operation);
+    }
   });
 
 const loadPostByIdempotency = (
@@ -629,7 +858,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
               return yield* invalid("create-post");
             }
             if (persistedHash !== idempotencyBodyHash) {
-              return yield* idempotencyConflict();
+              return yield* idempotencyConflict("create-post");
             }
             return yield* postIdempotencyDocument(found, body.idempotency_key, "create-post");
           }
@@ -683,7 +912,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             return yield* invalid("create-post");
           }
           if (persistedHash !== idempotencyBodyHash) {
-            return yield* idempotencyConflict();
+            return yield* idempotencyConflict("create-post");
           }
           return yield* postIdempotencyDocument(concurrentRow, body.idempotency_key, "create-post");
         }),
@@ -740,6 +969,8 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           const counts = yield* transaction.execute<Row>({
             label: "content.posts.counts",
             text: `SELECT
+              p.upvote_count AS stored_upvote_count,
+              p.downvote_count AS stored_downvote_count,
               (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2) AS vote_row_count,
               (SELECT COUNT(DISTINCT user_id)::int FROM post_votes WHERE community_id = $1 AND post_id = $2) AS distinct_voter_count,
               (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2 AND user_id IS NULL) AS null_voter_count,
@@ -747,7 +978,9 @@ export function makeControlPlaneContentRepository(): ContentRepository {
                  AND (vote_value IS NULL OR vote_value NOT IN (1, -1))) AS invalid_vote_count,
               (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2 AND vote_value = 1) AS upvote_count,
               (SELECT COUNT(*)::int FROM post_votes WHERE community_id = $1 AND post_id = $2 AND vote_value = -1) AS downvote_count,
-              (SELECT COUNT(*)::int FROM comments WHERE community_id = $1 AND post_id = $2 AND status = 'published') AS comment_count`,
+              (SELECT COUNT(*)::int FROM comments WHERE community_id = $1 AND post_id = $2 AND status = 'published') AS comment_count
+             FROM posts AS p
+             WHERE p.community_id = $1 AND p.post_id = $2`,
             values: [communityId, postId],
             readonly: true,
           });
@@ -767,6 +1000,8 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           const vote: -1 | 1 | null = voteValue === -1 ? -1 : voteValue === 1 ? 1 : null;
           const upvoteCount = nonNegativeIntegerValue(countRow, "upvote_count");
           const downvoteCount = nonNegativeIntegerValue(countRow, "downvote_count");
+          const storedUpvoteCount = nonNegativeIntegerValue(countRow, "stored_upvote_count");
+          const storedDownvoteCount = nonNegativeIntegerValue(countRow, "stored_downvote_count");
           const commentCount = nonNegativeIntegerValue(countRow, "comment_count");
           const voteRowCount = nonNegativeIntegerValue(countRow, "vote_row_count");
           const distinctVoterCount = nonNegativeIntegerValue(countRow, "distinct_voter_count");
@@ -775,6 +1010,8 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           if (
             upvoteCount === null ||
             downvoteCount === null ||
+            storedUpvoteCount === null ||
+            storedDownvoteCount === null ||
             commentCount === null ||
             voteRowCount === null ||
             distinctVoterCount === null ||
@@ -783,15 +1020,17 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             nullVoterCount !== 0 ||
             invalidVoteCount !== 0 ||
             voteRowCount !== distinctVoterCount ||
-            upvoteCount + downvoteCount !== voteRowCount
+            upvoteCount + downvoteCount !== voteRowCount ||
+            storedUpvoteCount !== upvoteCount ||
+            storedDownvoteCount !== downvoteCount
           ) {
             return yield* invalid("get-post");
           }
           return {
             post,
             thread_snapshot: null,
-            upvote_count: upvoteCount,
-            downvote_count: downvoteCount,
+            upvote_count: storedUpvoteCount,
+            downvote_count: storedDownvoteCount,
             like_count: 0,
             comment_count: commentCount,
             viewer_vote: vote,
@@ -806,7 +1045,11 @@ export function makeControlPlaneContentRepository(): ContentRepository {
       );
     });
 
-  const castPostVote: ContentRepository["castPostVote"] = ({ communityId, postId, actor, body }) =>
+  const checkVoteAuthority: ContentRepository["checkVoteAuthority"] = ({
+    communityId,
+    postId,
+    actor,
+  }) =>
     Effect.gen(function* () {
       if (
         actor.kind === "agent" ||
@@ -818,29 +1061,127 @@ export function makeControlPlaneContentRepository(): ContentRepository {
       }
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
+        requireVoteAuthorityIn(transaction, communityId, postId, actor.userId, "cast-vote"),
+      );
+    });
+
+  const replayCastPostVote: ContentRepository["replayCastPostVote"] = ({
+    communityId,
+    postId,
+    actor,
+    idempotencyKey,
+    requestHash,
+  }) =>
+    Effect.gen(function* () {
+      if (
+        actor.kind === "agent" ||
+        !validId(communityId) ||
+        !validId(postId) ||
+        !validId(actor.userId) ||
+        !validId(idempotencyKey) ||
+        !validIdempotencyHash(requestHash)
+      ) {
+        return yield* constraint("cast-vote");
+      }
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        loadVoteActionIn(
+          transaction,
+          communityId,
+          postId,
+          actor.userId,
+          "/posts/:postId/vote",
+          idempotencyKey,
+          "cast-vote",
+        ).pipe(Effect.flatMap((action) => castReplayFromAction(action, requestHash, postId))),
+      );
+    });
+
+  const replayClearPostVote: ContentRepository["replayClearPostVote"] = ({
+    communityId,
+    postId,
+    actor,
+    idempotencyKey,
+    requestHash,
+  }) =>
+    Effect.gen(function* () {
+      if (
+        actor.kind === "agent" ||
+        !validId(communityId) ||
+        !validId(postId) ||
+        !validId(actor.userId) ||
+        !validId(idempotencyKey) ||
+        !validIdempotencyHash(requestHash)
+      ) {
+        return yield* constraint("clear-vote");
+      }
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        loadVoteActionIn(
+          transaction,
+          communityId,
+          postId,
+          actor.userId,
+          "/posts/:postId/clear_vote",
+          idempotencyKey,
+          "clear-vote",
+        ).pipe(Effect.flatMap((action) => clearReplayFromAction(action, requestHash, postId))),
+      );
+    });
+
+  const castPostVote: ContentRepository["castPostVote"] = ({
+    communityId,
+    postId,
+    actor,
+    body,
+    requestHash,
+  }) =>
+    Effect.gen(function* () {
+      if (
+        actor.kind === "agent" ||
+        !validId(communityId) ||
+        !validId(postId) ||
+        !validId(actor.userId) ||
+        !validId(body.idempotency_key) ||
+        !validIdempotencyHash(requestHash) ||
+        (body.value !== -1 && body.value !== 1)
+      ) {
+        return yield* constraint("cast-vote");
+      }
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
-          yield* requireActiveMembershipIn(transaction, communityId, actor.userId, "cast-vote");
-          const location = yield* resolvePostIn(transaction, postId, "cast-vote");
-          if (location === null || location.communityId !== communityId) {
-            return yield* notFound("cast-vote");
-          }
-          const postRow = yield* oneRow(
-            (yield* loadPostStateIn(transaction, communityId, postId)).rows,
+          const endpointTemplate = "/posts/:postId/vote" as const;
+          const initialAction = yield* loadVoteActionIn(
+            transaction,
+            communityId,
+            postId,
+            actor.userId,
+            endpointTemplate,
+            body.idempotency_key,
             "cast-vote",
           );
-          if (postRow === null) {
-            return yield* notFound("cast-vote");
-          }
-          const post = yield* postStateFromRow(postRow, "cast-vote");
-          if (
-            post.communityId !== communityId ||
-            post.postId !== postId ||
-            post.status !== "published"
-          ) {
-            return yield* notFound("cast-vote");
-          }
+          const initialReplay = yield* castReplayFromAction(initialAction, requestHash, postId);
+          if (initialReplay !== null) return initialReplay;
+          yield* requireVoteAuthorityIn(
+            transaction,
+            communityId,
+            postId,
+            actor.userId,
+            "cast-vote",
+          );
+          const existingAction = yield* loadVoteActionIn(
+            transaction,
+            communityId,
+            postId,
+            actor.userId,
+            endpointTemplate,
+            body.idempotency_key,
+            "cast-vote",
+          );
+          const replay = yield* castReplayFromAction(existingAction, requestHash, postId);
+          if (replay !== null) return replay;
           yield* loadActorVoteIn(transaction, communityId, postId, actor.userId, "cast-vote");
-          yield* requireEffectiveActiveRouteIn(transaction, communityId, "cast-vote");
           const result = yield* transaction.execute<Row>({
             label: "content.post-votes.upsert",
             text: `INSERT INTO post_votes
@@ -863,53 +1204,98 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           )
             return yield* invalid("cast-vote");
           const voteValue: -1 | 1 = value as -1 | 1;
-          return { post: returnedPost, value: voteValue };
+          yield* repairVoteAggregatesIn(transaction, communityId, postId, "cast-vote");
+          yield* insertVoteActionIn(
+            transaction,
+            {
+              communityId,
+              postId,
+              actorUserId: actor.userId,
+              endpointTemplate,
+              idempotencyKey: body.idempotency_key,
+              requestHash,
+              resultValue: voteValue,
+            },
+            "cast-vote",
+          );
+          return { post_id: returnedPost, value: voteValue };
         }),
       );
     });
 
-  const clearPostVote: ContentRepository["clearPostVote"] = ({ communityId, postId, actor }) =>
+  const clearPostVote: ContentRepository["clearPostVote"] = ({
+    communityId,
+    postId,
+    actor,
+    body,
+    requestHash,
+  }) =>
     Effect.gen(function* () {
       if (
         actor.kind === "agent" ||
         !validId(communityId) ||
         !validId(postId) ||
-        !validId(actor.userId)
+        !validId(actor.userId) ||
+        !validId(body.idempotency_key) ||
+        !validIdempotencyHash(requestHash)
       ) {
         return yield* constraint("clear-vote");
       }
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
-          yield* requireActiveMembershipIn(transaction, communityId, actor.userId, "clear-vote");
-          const location = yield* resolvePostIn(transaction, postId, "clear-vote");
-          if (location === null || location.communityId !== communityId) {
-            return yield* notFound("clear-vote");
-          }
-          const postRow = yield* oneRow(
-            (yield* loadPostStateIn(transaction, communityId, postId)).rows,
+          const endpointTemplate = "/posts/:postId/clear_vote" as const;
+          const initialAction = yield* loadVoteActionIn(
+            transaction,
+            communityId,
+            postId,
+            actor.userId,
+            endpointTemplate,
+            body.idempotency_key,
             "clear-vote",
           );
-          if (postRow === null) {
-            return yield* notFound("clear-vote");
-          }
-          const post = yield* postStateFromRow(postRow, "clear-vote");
-          if (
-            post.communityId !== communityId ||
-            post.postId !== postId ||
-            post.status !== "published"
-          ) {
-            return yield* notFound("clear-vote");
-          }
+          const initialReplay = yield* clearReplayFromAction(initialAction, requestHash, postId);
+          if (initialReplay !== null) return initialReplay;
+          yield* requireVoteAuthorityIn(
+            transaction,
+            communityId,
+            postId,
+            actor.userId,
+            "clear-vote",
+          );
+          const existingAction = yield* loadVoteActionIn(
+            transaction,
+            communityId,
+            postId,
+            actor.userId,
+            endpointTemplate,
+            body.idempotency_key,
+            "clear-vote",
+          );
+          const replay = yield* clearReplayFromAction(existingAction, requestHash, postId);
+          if (replay !== null) return replay;
           yield* loadActorVoteIn(transaction, communityId, postId, actor.userId, "clear-vote");
-          yield* requireEffectiveActiveRouteIn(transaction, communityId, "clear-vote");
           yield* transaction.execute({
             label: "content.post-votes.clear",
             text: "DELETE FROM post_votes WHERE community_id = $1 AND post_id = $2 AND user_id = $3",
             values: [communityId, postId, actor.userId],
             readonly: false,
           });
-          return { post: postId, value: null } as const;
+          yield* repairVoteAggregatesIn(transaction, communityId, postId, "clear-vote");
+          yield* insertVoteActionIn(
+            transaction,
+            {
+              communityId,
+              postId,
+              actorUserId: actor.userId,
+              endpointTemplate,
+              idempotencyKey: body.idempotency_key,
+              requestHash,
+              resultValue: 0,
+            },
+            "clear-vote",
+          );
+          return { post_id: postId, value: 0 } as const;
         }),
       );
     });
@@ -919,6 +1305,9 @@ export function makeControlPlaneContentRepository(): ContentRepository {
     resolveComment,
     createPost,
     getPost,
+    checkVoteAuthority,
+    replayCastPostVote,
+    replayClearPostVote,
     castPostVote,
     clearPostVote,
   };
@@ -936,6 +1325,9 @@ export function makeControlPlaneContentStore(
     resolveComment: (input) => provide(repository.resolveComment(input)),
     createPost: (input) => provide(repository.createPost(input)),
     getPost: (input) => provide(repository.getPost(input)),
+    checkVoteAuthority: (input) => provide(repository.checkVoteAuthority(input)),
+    replayCastPostVote: (input) => provide(repository.replayCastPostVote(input)),
+    replayClearPostVote: (input) => provide(repository.replayClearPostVote(input)),
     castPostVote: (input) => provide(repository.castPostVote(input)),
     clearPostVote: (input) => provide(repository.clearPostVote(input)),
   };

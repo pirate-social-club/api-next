@@ -40,14 +40,20 @@ describe("post vote contracts", () => {
   });
 
   test("returns post_id and the closed cast or clear value", () => {
-    expect(Schema.decodeUnknownSync(CastPostVote.response)({ post_id: "post_1", value: 1 })).toEqual({
+    expect(
+      Schema.decodeUnknownSync(CastPostVote.response)({ post_id: "post_1", value: 1 }),
+    ).toEqual({
       post_id: "post_1",
       value: 1,
     });
-    expect(Schema.decodeUnknownSync(ClearPostVote.response)({ post_id: "post_1", value: 0 })).toEqual({
+    expect(
+      Schema.decodeUnknownSync(ClearPostVote.response)({ post_id: "post_1", value: 0 }),
+    ).toEqual({
       post_id: "post_1",
       value: 0,
     });
-    expect(() => Schema.decodeUnknownSync(ClearPostVote.response)({ post_id: "post_1", value: null })).toThrow();
+    expect(() =>
+      Schema.decodeUnknownSync(ClearPostVote.response)({ post_id: "post_1", value: null }),
+    ).toThrow();
   });
 });

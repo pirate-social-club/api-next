@@ -31,7 +31,7 @@ export const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(
   input: unknown,
 ): Effect.Effect<S["Type"], BadRequest> =>
   Effect.try({
-    try: () => Schema.decodeUnknownSync(schema)(input),
+    try: () => Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(input),
     catch: () => new BadRequest({ message: "Invalid request body" }),
   });
 

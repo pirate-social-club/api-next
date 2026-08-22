@@ -1,5 +1,7 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import type { ClearVoteBody, CreatePostBody, M2Actor } from "@pirate/application";
+import type { CreatePostBody, M2Actor } from "@pirate/application";
+import { castPostVote } from "@pirate/application/use-cases/content/cast-post-vote";
+import { clearPostVote } from "@pirate/application/use-cases/content/clear-post-vote";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
@@ -58,6 +60,7 @@ function failureOf<A, E>(exit: Exit.Exit<A, E>): E | undefined {
 }
 
 const actor: M2Actor = { userId: "usr_alice", kind: "user" };
+const requestHash = "a".repeat(64);
 const postBody = (key: string, body = "hello"): CreatePostBody =>
   ({ post_type: "text", idempotency_key: key, body }) as CreatePostBody;
 type RouteState = "active" | "suspended" | "expired";
@@ -371,7 +374,8 @@ suite("Postgres 17 content repository", () => {
             communityId: "community_1",
             postId: "post_parent",
             actor,
-            body: { value: 1 },
+            body: { idempotency_key: "vote-up", value: 1 },
+            requestHash,
           }),
         ),
       );
@@ -381,7 +385,8 @@ suite("Postgres 17 content repository", () => {
             communityId: "community_1",
             postId: "post_parent",
             actor,
-            body: { value: -1 },
+            body: { idempotency_key: "vote-down", value: -1 },
+            requestHash: "b".repeat(64),
           }),
         ),
       );
@@ -403,7 +408,8 @@ suite("Postgres 17 content repository", () => {
             communityId: "community_1",
             postId: "post_parent",
             actor,
-            body: {} as ClearVoteBody,
+            body: { idempotency_key: "vote-clear" },
+            requestHash: "c".repeat(64),
           }),
         ),
       );
@@ -422,6 +428,210 @@ suite("Postgres 17 content repository", () => {
         "SELECT COUNT(*) AS count FROM post_votes WHERE post_id = 'post_parent'",
       );
       expect(rows.rows[0]?.count).toBe("0");
+    });
+    completedTestCount += 1;
+  });
+
+  test("replays cast, change, and clear results and rejects a changed request hash", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seed(admin);
+      const store = await storeFor(connection);
+      const castInput = {
+        postId: "post_parent",
+        actor,
+        body: { idempotency_key: "replay-cast", value: 1 as const },
+      };
+      const cast = await Effect.runPromise(castPostVote(castInput, { contentStore: store }));
+      const castReplay = await Effect.runPromise(castPostVote(castInput, { contentStore: store }));
+      expect(castReplay).toEqual(cast);
+      expect(cast).toEqual({ post_id: "post_parent", value: 1 });
+
+      const conflict = await Effect.runPromiseExit(
+        castPostVote(
+          {
+            ...castInput,
+            body: { idempotency_key: "replay-cast", value: -1 },
+          },
+          { contentStore: store },
+        ),
+      );
+      expect(failureOf(conflict)).toMatchObject({
+        _tag: "Conflict",
+      });
+
+      const changeInput = {
+        ...castInput,
+        body: { idempotency_key: "replay-change", value: -1 as const },
+      };
+      const changed = await Effect.runPromise(castPostVote(changeInput, { contentStore: store }));
+      expect(await Effect.runPromise(castPostVote(changeInput, { contentStore: store }))).toEqual(
+        changed,
+      );
+      expect(changed).toEqual({ post_id: "post_parent", value: -1 });
+
+      const clearInput = {
+        postId: "post_parent",
+        actor,
+        body: { idempotency_key: "replay-cast" },
+      };
+      const cleared = await Effect.runPromise(clearPostVote(clearInput, { contentStore: store }));
+      expect(await Effect.runPromise(clearPostVote(clearInput, { contentStore: store }))).toEqual(
+        cleared,
+      );
+      expect(cleared).toEqual({ post_id: "post_parent", value: 0 });
+
+      const rows = await admin.query<{ actions: string; votes: string }>(
+        `SELECT
+           (SELECT COUNT(*)::text FROM post_vote_actions WHERE post_id = 'post_parent') AS actions,
+           (SELECT COUNT(*)::text FROM post_votes WHERE post_id = 'post_parent') AS votes`,
+      );
+      expect(rows.rows[0]).toEqual({ actions: "3", votes: "0" });
+
+      await admin.query(
+        "UPDATE community_memberships SET status = 'left', updated_at = clock_timestamp() WHERE membership_id = 'membership_alice'",
+      );
+      await admin.query(
+        "UPDATE posts SET status = 'hidden', updated_at = clock_timestamp() WHERE post_id = 'post_parent'",
+      );
+      await admin.query(
+        "UPDATE community_canonical_route_bindings SET route_lifecycle_status = 'suspended', binding_generation = binding_generation + 1, updated_at = clock_timestamp() WHERE route_binding_id = 'content-binding'",
+      );
+
+      expect(await Effect.runPromise(castPostVote(castInput, { contentStore: store }))).toEqual(
+        cast,
+      );
+      expect(await Effect.runPromise(clearPostVote(clearInput, { contentStore: store }))).toEqual(
+        cleared,
+      );
+      const conflictAfterAuthorityLoss = await Effect.runPromiseExit(
+        castPostVote(
+          {
+            ...castInput,
+            body: { idempotency_key: "replay-cast", value: -1 },
+          },
+          { contentStore: store },
+        ),
+      );
+      expect(failureOf(conflictAfterAuthorityLoss)).toMatchObject({ _tag: "Conflict" });
+    });
+    completedTestCount += 1;
+  });
+
+  test("coalesces a same-key vote race into one stored action", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seed(admin);
+      const store = await storeFor(connection);
+      const input = {
+        communityId: "community_1",
+        postId: "post_parent",
+        actor,
+        body: { idempotency_key: "race-key", value: 1 as const },
+        requestHash,
+      };
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          Effect.runPromise(Effect.scoped(store.castPostVote(input))),
+        ),
+      );
+      expect(results).toEqual(
+        Array.from({ length: 8 }, () => ({ post_id: "post_parent", value: 1 })),
+      );
+      const counts = await admin.query<{
+        actions: string;
+        votes: string;
+        upvotes: number;
+        downvotes: number;
+      }>(
+        `SELECT
+           (SELECT COUNT(*)::text FROM post_vote_actions WHERE post_id = 'post_parent') AS actions,
+           (SELECT COUNT(*)::text FROM post_votes WHERE post_id = 'post_parent') AS votes,
+           upvote_count AS upvotes,
+           downvote_count AS downvotes
+         FROM posts WHERE post_id = 'post_parent'`,
+      );
+      expect(counts.rows[0]).toEqual({
+        actions: "1",
+        votes: "1",
+        upvotes: 1,
+        downvotes: 0,
+      });
+    });
+    completedTestCount += 1;
+  });
+
+  test("serializes concurrent actors and repairs drifted vote aggregates", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      await seed(admin);
+      await admin.query(
+        `INSERT INTO community_memberships
+           (community_id, membership_id, user_id, status, joined_at, created_at, updated_at)
+         VALUES ('community_1', 'membership_bob', 'usr_bob', 'member', now(), now(), now())`,
+      );
+      await admin.query(
+        `UPDATE posts SET upvote_count = 9, downvote_count = 8 WHERE post_id = 'post_parent'`,
+      );
+      const store = await storeFor(connection);
+      const bob: M2Actor = { userId: "usr_bob", kind: "user" };
+      await Promise.all([
+        Effect.runPromise(
+          Effect.scoped(
+            store.castPostVote({
+              communityId: "community_1",
+              postId: "post_parent",
+              actor,
+              body: { idempotency_key: "concurrent-alice", value: 1 },
+              requestHash,
+            }),
+          ),
+        ),
+        Effect.runPromise(
+          Effect.scoped(
+            store.castPostVote({
+              communityId: "community_1",
+              postId: "post_parent",
+              actor: bob,
+              body: { idempotency_key: "concurrent-bob", value: -1 },
+              requestHash: "b".repeat(64),
+            }),
+          ),
+        ),
+      ]);
+      const post = await Effect.runPromise(
+        Effect.scoped(
+          store.getPost({
+            communityId: "community_1",
+            postId: "post_parent",
+            viewerUserId: actor.userId,
+          }),
+        ),
+      );
+      expect(post).toMatchObject({ upvote_count: 1, downvote_count: 1, viewer_vote: 1 });
+      const counts = await admin.query<{
+        stored_upvotes: number;
+        stored_downvotes: number;
+        live_upvotes: string;
+        live_downvotes: string;
+      }>(
+        `SELECT
+           p.upvote_count AS stored_upvotes,
+           p.downvote_count AS stored_downvotes,
+           COUNT(*) FILTER (WHERE pv.vote_value = 1)::text AS live_upvotes,
+           COUNT(*) FILTER (WHERE pv.vote_value = -1)::text AS live_downvotes
+         FROM posts p
+         LEFT JOIN post_votes pv
+           ON pv.community_id = p.community_id AND pv.post_id = p.post_id
+         WHERE p.post_id = 'post_parent'
+         GROUP BY p.upvote_count, p.downvote_count`,
+      );
+      expect(counts.rows[0]).toEqual({
+        stored_upvotes: 1,
+        stored_downvotes: 1,
+        live_upvotes: "1",
+        live_downvotes: "1",
+      });
     });
     completedTestCount += 1;
   });
@@ -452,7 +662,8 @@ suite("Postgres 17 content repository", () => {
             communityId: "community_1",
             postId: "post_parent",
             actor: nonmember,
-            body: { value: 1 },
+            body: { idempotency_key: "nonmember-vote", value: 1 },
+            requestHash,
           }),
         ),
       );
@@ -594,11 +805,12 @@ suite("Postgres 17 content repository", () => {
           communityId: "community_1",
           postId: "post_parent",
           actor,
-          body: { value: 1 },
+          body: { idempotency_key: `route-${routeState}`, value: 1 },
+          requestHash,
         });
         if (routeState === "active") {
           await expect(Effect.runPromise(Effect.scoped(operation))).resolves.toMatchObject({
-            post: "post_parent",
+            post_id: "post_parent",
             value: 1,
           });
           const created = await admin.query<{ count: string }>(
@@ -635,12 +847,13 @@ suite("Postgres 17 content repository", () => {
           communityId: "community_1",
           postId: "post_parent",
           actor,
-          body: {} as ClearVoteBody,
+          body: { idempotency_key: `clear-${routeState}` },
+          requestHash,
         });
         if (routeState === "active") {
           await expect(Effect.runPromise(Effect.scoped(operation))).resolves.toMatchObject({
-            post: "post_parent",
-            value: null,
+            post_id: "post_parent",
+            value: 0,
           });
           const cleared = await admin.query<{ count: string }>(
             "SELECT COUNT(*) AS count FROM post_votes WHERE community_id = 'community_1'",

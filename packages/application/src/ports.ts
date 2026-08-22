@@ -340,7 +340,11 @@ export type TextSubmissionBody =
 
 export type TextSubmissionTarget =
   | Readonly<{ readonly surface: "text_post"; readonly communityId: string }>
-  | Readonly<{ readonly surface: "comment"; readonly communityId: string; readonly postId: string }>
+  | Readonly<{
+      readonly surface: "comment";
+      readonly communityId: string;
+      readonly postId: string;
+    }>
   | Readonly<{
       readonly surface: "reply";
       readonly communityId: string;
@@ -706,11 +710,35 @@ export interface ContentStoreService {
     readonly locale?: string;
   }) => Effect.Effect<LocalizedPostDocument | null, ContentRepositoryFailure>;
 
+  /** Cheap authority check before a vote write; the write transaction rechecks it. */
+  readonly checkVoteAuthority: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actor: M2Actor;
+  }) => Effect.Effect<void, ContentRepositoryFailure>;
+
+  readonly replayCastPostVote: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actor: M2Actor;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+  }) => Effect.Effect<VoteDocument | null, ContentRepositoryFailure>;
+
+  readonly replayClearPostVote: (input: {
+    readonly communityId: string;
+    readonly postId: string;
+    readonly actor: M2Actor;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+  }) => Effect.Effect<ClearVoteDocument | null, ContentRepositoryFailure>;
+
   readonly castPostVote: (input: {
     readonly communityId: string;
     readonly postId: string;
     readonly actor: M2Actor;
     readonly body: VoteBody;
+    readonly requestHash: string;
   }) => Effect.Effect<VoteDocument, ContentRepositoryFailure>;
 
   readonly clearPostVote: (input: {
@@ -718,6 +746,7 @@ export interface ContentStoreService {
     readonly postId: string;
     readonly actor: M2Actor;
     readonly body: ClearVoteBody;
+    readonly requestHash: string;
   }) => Effect.Effect<ClearVoteDocument, ContentRepositoryFailure>;
 }
 

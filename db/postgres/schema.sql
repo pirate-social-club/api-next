@@ -5121,6 +5121,23 @@ CREATE TABLE policy_versions (
     CONSTRAINT policy_versions_reward_authority_check CHECK ((((policy_purpose = 'access'::text) AND (uniqueness_authority_id IS NULL)) OR ((policy_purpose = 'reward'::text) AND (uniqueness_authority_id IS NOT NULL) AND ((uniqueness_model ->> 'kind'::text) = 'single_authority'::text) AND ((uniqueness_model ->> 'authority_id'::text) = uniqueness_authority_id))))
 );
 
+CREATE TABLE post_vote_actions (
+    action_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    endpoint_template text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_value integer NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    CONSTRAINT post_vote_actions_endpoint_result_shape CHECK ((((endpoint_template = '/posts/:postId/vote'::text) AND (result_value = ANY (ARRAY['-1'::integer, 1]))) OR ((endpoint_template = '/posts/:postId/clear_vote'::text) AND (result_value = 0)))),
+    CONSTRAINT post_vote_actions_endpoint_template_check CHECK ((endpoint_template = ANY (ARRAY['/posts/:postId/vote'::text, '/posts/:postId/clear_vote'::text]))),
+    CONSTRAINT post_vote_actions_idempotency_key_check CHECK ((idempotency_key <> ''::text)),
+    CONSTRAINT post_vote_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT post_vote_actions_result_value_check CHECK ((result_value = ANY (ARRAY['-1'::integer, 0, 1])))
+);
+
 CREATE TABLE post_votes (
     community_id text NOT NULL,
     post_vote_id text NOT NULL,
@@ -5147,9 +5164,13 @@ CREATE TABLE posts (
     idempotency_body_hash text,
     comments_locked boolean DEFAULT false NOT NULL,
     comment_count integer DEFAULT 0 NOT NULL,
+    upvote_count integer DEFAULT 0 NOT NULL,
+    downvote_count integer DEFAULT 0 NOT NULL,
     CONSTRAINT posts_comment_count_nonnegative CHECK ((comment_count >= 0)),
+    CONSTRAINT posts_downvote_count_nonnegative CHECK ((downvote_count >= 0)),
     CONSTRAINT posts_post_type_check CHECK ((post_type = ANY (ARRAY['text'::text, 'image'::text, 'video'::text, 'link'::text, 'song'::text, 'crosspost'::text, 'file'::text]))),
     CONSTRAINT posts_status_check CHECK ((status = ANY (ARRAY['draft'::text, 'processing'::text, 'published'::text, 'failed'::text, 'hidden'::text, 'removed'::text, 'deleted'::text]))),
+    CONSTRAINT posts_upvote_count_nonnegative CHECK ((upvote_count >= 0)),
     CONSTRAINT posts_visibility_check CHECK ((visibility = ANY (ARRAY['public'::text, 'members_only'::text])))
 );
 
@@ -5946,6 +5967,12 @@ ALTER TABLE ONLY policy_versions
 ALTER TABLE ONLY policy_versions
     ADD CONSTRAINT policy_versions_revision_unique UNIQUE (community_id, policy_key, revision);
 
+ALTER TABLE ONLY post_vote_actions
+    ADD CONSTRAINT post_vote_actions_actor_post_endpoint_key_unique UNIQUE (actor_user_id, post_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY post_vote_actions
+    ADD CONSTRAINT post_vote_actions_pkey PRIMARY KEY (action_id);
+
 ALTER TABLE ONLY post_votes
     ADD CONSTRAINT post_votes_pkey PRIMARY KEY (community_id, post_vote_id);
 
@@ -6205,6 +6232,8 @@ CREATE INDEX observations_snapshot_idx ON observations USING gin (snapshot_ref);
 CREATE INDEX observations_snapshot_response_idx ON observations USING btree (resolver_id, source_response_hash);
 
 CREATE INDEX observations_user_kind_observed_idx ON observations USING btree (user_id, observation_kind, observed_at DESC, observation_id);
+
+CREATE INDEX post_vote_actions_target_time_idx ON post_vote_actions USING btree (community_id, post_id, created_at, action_id);
 
 CREATE INDEX post_votes_post_idx ON post_votes USING btree (community_id, post_id, updated_at DESC, post_vote_id);
 
@@ -6968,6 +6997,9 @@ ALTER TABLE ONLY policy_versions
 
 ALTER TABLE ONLY policy_versions
     ADD CONSTRAINT policy_versions_uniqueness_authority_fk FOREIGN KEY (uniqueness_authority_id) REFERENCES reward_uniqueness_authorities(campaign_id);
+
+ALTER TABLE ONLY post_vote_actions
+    ADD CONSTRAINT post_vote_actions_post_fk FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
 
 ALTER TABLE ONLY post_votes
     ADD CONSTRAINT post_votes_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);

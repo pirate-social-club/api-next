@@ -72,11 +72,14 @@ const validCounts = [
     invalid_vote_count: 0,
     upvote_count: 0,
     downvote_count: 0,
+    stored_upvote_count: 0,
+    stored_downvote_count: 0,
     comment_count: 0,
   },
 ];
 
 describe("M2 content repository row and lock defenses", () => {
+  const requestHash = "a".repeat(64);
   test.each([
     ["comments_locked", { ...validPost, comments_locked: "false" }, validCounts, []],
     ["counts", validPost, [{ ...validCounts[0], upvote_count: -1 }], []],
@@ -167,12 +170,26 @@ describe("M2 content repository row and lock defenses", () => {
 
   test("locks membership and authoritative post state before a vote", async () => {
     const fake = fakeDb([
+      [],
       [{ community_id: "community_1", status: "active" }],
       [{ status: "member" }],
       [resolvedPost],
       [{ ...validPost }],
       [],
+      [],
       [{ post_id: "post_1", vote_value: 1 }],
+      [{ upvote_count: 1, downvote_count: 0 }],
+      [
+        {
+          community_id: "community_1",
+          post_id: "post_1",
+          actor_user_id: "usr_alice",
+          endpoint_template: "/posts/:postId/vote",
+          idempotency_key: "vote-key",
+          request_hash: requestHash,
+          result_value: 1,
+        },
+      ],
     ]);
     const repository = makeControlPlaneContentRepository();
     const result = await runWith(
@@ -180,27 +197,34 @@ describe("M2 content repository row and lock defenses", () => {
         communityId: "community_1",
         postId: "post_1",
         actor: { userId: "usr_alice", kind: "user" },
-        body: { value: 1 },
+        body: { idempotency_key: "vote-key", value: 1 },
+        requestHash,
       }),
       fake.db,
     );
     expect(Exit.isSuccess(result)).toBe(true);
     expect(fake.transactionCount).toBe(1);
     expect(fake.calls.map((call) => call.label)).toEqual([
+      "content.post-vote-actions.lock",
       "content.communities.lock-active",
       "content.community-memberships.lock-active",
       "content.posts.resolve-global",
       "content.posts.state",
-      "content.post-votes.lock-actor",
       "content.communities.require-effective-route",
+      "content.post-vote-actions.lock",
+      "content.post-votes.lock-actor",
       "content.post-votes.upsert",
+      "content.posts.repair-vote-aggregates",
+      "content.post-vote-actions.insert",
     ]);
     expect(fake.calls[0]).toMatchObject({ readonly: false });
     expect(fake.calls[0]?.text).toContain("FOR UPDATE");
     expect(fake.calls[1]).toMatchObject({ readonly: false });
     expect(fake.calls[1]?.text).toContain("FOR UPDATE");
-    expect(fake.calls[3]).toMatchObject({ readonly: false });
-    expect(fake.calls[3]?.text).toContain("FOR UPDATE");
+    expect(fake.calls[2]).toMatchObject({ readonly: false });
+    expect(fake.calls[2]?.text).toContain("FOR UPDATE");
+    expect(fake.calls[4]).toMatchObject({ readonly: false });
+    expect(fake.calls[4]?.text).toContain("FOR UPDATE");
   });
 
   test.each([
@@ -208,10 +232,12 @@ describe("M2 content repository row and lock defenses", () => {
     ["malformed vote id", { post_vote_id: "" }],
   ])("rejects %s before changing an actor vote", async (_label, vote) => {
     const fake = fakeDb([
+      [],
       [{ community_id: "community_1", status: "active" }],
       [{ status: "member" }],
       [resolvedPost],
       [{ ...validPost }],
+      [],
       [
         {
           community_id: "community_1",
@@ -228,7 +254,8 @@ describe("M2 content repository row and lock defenses", () => {
         communityId: "community_1",
         postId: "post_1",
         actor: { userId: "usr_alice", kind: "user" },
-        body: { value: 1 },
+        body: { idempotency_key: "vote-key", value: 1 },
+        requestHash,
       }),
       fake.db,
     );
@@ -238,10 +265,12 @@ describe("M2 content repository row and lock defenses", () => {
 
   test("locks and validates an existing actor vote before clearing it", async () => {
     const fake = fakeDb([
+      [],
       [{ community_id: "community_1", status: "active" }],
       [{ status: "member" }],
       [resolvedPost],
       [{ ...validPost }],
+      [],
       [
         {
           community_id: "community_1",
@@ -252,27 +281,44 @@ describe("M2 content repository row and lock defenses", () => {
         },
       ],
       [],
+      [{ upvote_count: 0, downvote_count: 0 }],
+      [
+        {
+          community_id: "community_1",
+          post_id: "post_1",
+          actor_user_id: "usr_alice",
+          endpoint_template: "/posts/:postId/clear_vote",
+          idempotency_key: "clear-key",
+          request_hash: requestHash,
+          result_value: 0,
+        },
+      ],
     ]);
     const result = await runWith(
       makeControlPlaneContentRepository().clearPostVote({
         communityId: "community_1",
         postId: "post_1",
         actor: { userId: "usr_alice", kind: "user" },
-        body: {},
+        body: { idempotency_key: "clear-key" },
+        requestHash,
       }),
       fake.db,
     );
     expect(Exit.isSuccess(result)).toBe(true);
     expect(fake.calls.map((call) => call.label)).toEqual([
+      "content.post-vote-actions.lock",
       "content.communities.lock-active",
       "content.community-memberships.lock-active",
       "content.posts.resolve-global",
       "content.posts.state",
-      "content.post-votes.lock-actor",
       "content.communities.require-effective-route",
+      "content.post-vote-actions.lock",
+      "content.post-votes.lock-actor",
       "content.post-votes.clear",
+      "content.posts.repair-vote-aggregates",
+      "content.post-vote-actions.insert",
     ]);
-    expect(fake.calls[4]?.text).toContain("FOR UPDATE");
+    expect(fake.calls[6]?.text).toContain("FOR UPDATE");
   });
 
   test.each([
@@ -282,10 +328,12 @@ describe("M2 content repository row and lock defenses", () => {
   ])("rejects an actor vote with a mismatched %s identity", async (_label, mismatch) => {
     for (const operation of ["cast", "clear"] as const) {
       const fake = fakeDb([
+        [],
         [{ community_id: "community_1", status: "active" }],
         [{ status: "member" }],
         [resolvedPost],
         [{ ...validPost }],
+        [],
         [
           {
             community_id: "community_1",
@@ -304,7 +352,8 @@ describe("M2 content repository row and lock defenses", () => {
                 communityId: "community_1",
                 postId: "post_1",
                 actor: { userId: "usr_alice", kind: "user" },
-                body: { value: 1 },
+                body: { idempotency_key: "vote-key", value: 1 },
+                requestHash,
               }),
               fake.db,
             )
@@ -313,7 +362,8 @@ describe("M2 content repository row and lock defenses", () => {
                 communityId: "community_1",
                 postId: "post_1",
                 actor: { userId: "usr_alice", kind: "user" },
-                body: {},
+                body: { idempotency_key: "clear-key" },
+                requestHash,
               }),
               fake.db,
             );

@@ -20,7 +20,7 @@ if (required && connectionString === undefined) {
 }
 
 const suite = connectionString === undefined ? describe.skip : describe;
-const foundationTestCount = 13;
+const foundationTestCount = 14;
 const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_FOUNDATION_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-foundation-suite-complete";
@@ -214,6 +214,9 @@ const communityCreationVeryWebEvidenceMigrationSql = await Bun.file(
 ).text();
 const commentsRepliesRuntimeMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0039_comments_replies_runtime.sql", import.meta.url),
+).text();
+const postVoteActionsMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0040_post_vote_actions.sql", import.meta.url),
 ).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
@@ -417,6 +420,11 @@ const commentsRepliesRuntimeMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0039_comments_replies_runtime.sql"] ?? "",
   sql: commentsRepliesRuntimeMigrationSql,
 };
+const postVoteActionsMigration: PostgresMigration = {
+  version: "0040_post_vote_actions.sql",
+  checksum: checksumManifest.migrations["0040_post_vote_actions.sql"] ?? "",
+  sql: postVoteActionsMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -457,6 +465,7 @@ const migrations: readonly PostgresMigration[] = [
   textSubmissionResponseSnapshotMigration,
   communityCreationVeryWebEvidenceMigration,
   commentsRepliesRuntimeMigration,
+  postVoteActionsMigration,
 ];
 
 function checksum(value: string): string {
@@ -687,6 +696,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(commentsRepliesRuntimeMigrationSql)).toBe(
         commentsRepliesRuntimeMigration.checksum,
       );
+      expect(checksum(postVoteActionsMigrationSql)).toBe(postVoteActionsMigration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -782,6 +792,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "namespace_ownership_start_reservations",
         "observations",
         "policy_versions",
+        "post_vote_actions",
         "post_votes",
         "posts",
         "proof_session_completion_events",
@@ -2644,7 +2655,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
 
   test("requires the 0037 text tables to be empty before adding response snapshots", async () => {
     await withSchema(async (admin, scopedConnectionString) => {
-      const preSnapshotMigrations = migrations.slice(0, -3);
+      const preSnapshotMigrations = migrations.slice(
+        0,
+        migrations.indexOf(textSubmissionResponseSnapshotMigration),
+      );
       await applyMigrations(scopedConnectionString, preSnapshotMigrations);
       await admin.query("INSERT INTO users (user_id) VALUES ('text-order5-guard-actor')");
       await admin.query(
@@ -2683,6 +2697,54 @@ suite("Postgres 17 product and gates v2 foundation", () => {
 
     await withSchema(async (_admin, scopedConnectionString) => {
       await applyMigrations(scopedConnectionString, migrations);
+    });
+    completedTestCount += 1;
+  });
+
+  test("requires post votes to be empty before installing stored aggregates and actions", async () => {
+    await withSchema(async (admin, scopedConnectionString) => {
+      const preVoteActionMigrations = migrations.slice(
+        0,
+        migrations.indexOf(postVoteActionsMigration),
+      );
+      await applyMigrations(scopedConnectionString, preVoteActionMigrations);
+      const now = new Date();
+      await admin.query({
+        text: "INSERT INTO communities (community_id, display_name, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $4)",
+        values: ["vote-guard-community", "Vote guard", "vote-guard-user", now],
+      });
+      await admin.query({
+        text: "INSERT INTO posts (community_id, post_id, author_user_id, body, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $5)",
+        values: ["vote-guard-community", "vote-guard-post", "vote-guard-user", "post", now],
+      });
+      await admin.query({
+        text: "INSERT INTO post_votes (community_id, post_vote_id, post_id, user_id, vote_value, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $6)",
+        values: [
+          "vote-guard-community",
+          "vote-guard-vote",
+          "vote-guard-post",
+          "vote-guard-user",
+          1,
+          now,
+        ],
+      });
+
+      const guarded = await applyMigrations(scopedConnectionString, migrations).catch(
+        (error: unknown) => error,
+      );
+      expect(guarded).toMatchObject({
+        _tag: "ControlPlaneStatementFailed",
+        label: "postgres.migrations.0040_post_vote_actions.sql.apply",
+        sqlState: "P0001",
+      });
+      const applied = await admin.query<{ readonly version: string }>(
+        "SELECT version FROM schema_migrations ORDER BY version",
+      );
+      expect(applied.rows.at(-1)?.version).toBe(commentsRepliesRuntimeMigration.version);
+      const installed = await admin.query<{ readonly exists: boolean }>(
+        `SELECT to_regclass('post_vote_actions') IS NOT NULL AS exists`,
+      );
+      expect(installed.rows[0]?.exists).toBe(false);
     });
     completedTestCount += 1;
   });
