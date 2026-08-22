@@ -173,7 +173,29 @@ configuration must be reintroduced deliberately.
    now Wrangler vars; their Infisical root duplicates were deleted. The
    development declarations remain a known classification gap until a real
    development configuration is sourced.
-5. Infisical staging carries no funding RPC. The staging Worker uses the
+5. **Infisical is not a complete source for the staging Worker.**
+   `/services/api-next` holds three runtime secrets; the deployed staging
+   Worker has seven. The four absent from Infisical are
+   `ZKPASSPORT_VERIFIER_SHARED_SECRET`,
+   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET`,
+   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID`, and
+   `VERY_WEB_SEALING_KEY`. They exist only as installed Cloudflare secrets.
+
+   Consequence: a Worker rebuilt from `/services/api-next` today would be
+   missing all four. `ZKPASSPORT_ENABLED` is `true` in staging, so ZKPassport
+   verification would fail closed, and the Very web flow would lose its sealing
+   key. The service-path sync cannot be rehearsed end to end until these four
+   are stored.
+
+   This is the oldest unresolved item in the lane. The three ZKPassport names
+   were recorded as Cloudflare-only in the very first inventory and were never
+   given an Infisical home; `VERY_WEB_SEALING_KEY` was installed later and
+   never stored at all. Sourcing them is not a value-discovery problem — the
+   values exist on the Worker — it is a copy that has not been done, with the
+   exception of the key ID, which additionally needs its public form resolved
+   under item 2.
+
+6. Infisical staging carries no funding RPC. The staging Worker uses the
    fail-closed sentinel `https://rpc.invalid/`. An authorized real staging RPC
    is required before any money-flow verification.
 
