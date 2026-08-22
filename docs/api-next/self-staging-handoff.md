@@ -1,9 +1,9 @@
 # Self staging enablement handoff
 
-Status: Cloudflare canonical-account cutover is pending. The developer/mock-
-document deployment and probes recorded below occurred in a misplaced account,
-not canonical staging. The first canonical real-document ceremony is pending.
-Corrected 2026-08-22.
+Status: Cloudflare canonical-account cutover completed on 2026-08-23. The
+developer/mock-document deployment and probes recorded below remain historical
+misplaced-account evidence. The first canonical real-document ceremony is
+pending.
 
 This is the durable handoff for enabling the self-hosted Self Pass adapter in
 staging. It records observed external state, not assumptions. Secret values
@@ -13,17 +13,20 @@ are intentionally omitted.
 
 The Cloudflare evidence below was collected from non-canonical account
 `ff375d61cdc0c5dc946837f3e37725e0` after commit `5251933` incorrectly made an
-ambient Wrangler OAuth identity authoritative. It does not establish the
-current state of canonical account `08a4c22cf52e2ecae883e36f80a33f4a`.
+ambient Wrangler OAuth identity authoritative. It did not establish the state
+of canonical account `08a4c22cf52e2ecae883e36f80a33f4a`.
 
 Metadata-only re-inventory proved that the canonical account already contains
 the staging HTTP and jobs Workers and staging Hyperdrive `api-next-staging`
 (`8cb7658a0f7143359c1becfec6a15c23`). The later deployments and Hyperdrive
 `11c1ad1806004f3b87fa771833093132` are in the misplaced account. Repository
-pins have been corrected, but no canonical-account deploy or misplaced-account
-deletion has been performed. Treat every later Cloudflare version, probe, and
-Hyperdrive claim in this document as misplaced-account historical evidence
-until a canonical cutover is separately recorded.
+pins were corrected in `abe19d6`. The canonical HTTP and jobs Workers were
+synchronized and deployed from published commit `306db31` on 2026-08-23 with
+Hyperdrive `8cb7658a0f7143359c1becfec6a15c23`. The name-only Cloudflare audit
+reports zero violations, health and JWKS probes pass, and the live JWK matches
+the Infisical private key. Misplaced-account resources remain retained. Treat
+later pre-correction versions and probes in this document as historical
+misplaced-account evidence unless explicitly labeled canonical.
 
 ## Current staging gate
 

@@ -1,12 +1,13 @@
 # api-next secrets contract
 
-Status: Infisical is audited and organized. Cloudflare account reconciliation
-is open after the 2026-08-22 audit proved that the later staging cleanup and
-deployments targeted a non-canonical account. No remote resource has been
-deleted, and the canonical account has not been redeployed during this
-correction. Infisical confidential values were not rendered in tool output.
+Status: Infisical is audited and organized. The canonical Cloudflare staging
+Workers were synchronized and deployed on 2026-08-23, and the Cloudflare
+name-only audit now reports zero violations. Production remains disabled and
+the Infisical audit reports one production-only finding. The misplaced
+account resources remain retained as rollback evidence. Infisical confidential
+values were not rendered in tool output.
 
-Date of inventory: 2026-08-22.
+Date of inventory: 2026-08-23.
 
 ## Sources of truth
 
@@ -14,8 +15,8 @@ Date of inventory: 2026-08-22.
 | --- | --- | --- |
 | Infisical, api-next project | project `fac45f92-9450-42fb-8c2f-f20d043fdfab`, organization `d9615445-c0d4-445a-ad58-1d55d365635a` | Reachable. `api-next/.infisical.json` now pins this project, so commands run anywhere in the api-next tree resolve it without `--projectId`. See "Local project selection" below. |
 | Infisical, historical project | workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71` | Reachable. Historical reference only. Its `/services/api` folder deliberately mixes API runtime, HNS, Spaces, media, Story, and operator credentials; that mixing is the boundary defect this contract corrects. Do not copy it wholesale. |
-| Cloudflare Worker secrets, canonical | account `08a4c22cf52e2ecae883e36f80a33f4a` | Reachable through the `api-next-canonical` Wrangler profile. The staging HTTP Worker has ten legacy secret names and the staging jobs Worker has none. Both production Workers are absent. |
-| Cloudflare Worker secrets, misplaced | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable through the retained default Wrangler profile. The later staging HTTP and jobs deployments, public-config cleanup, seven-secret HTTP inventory, and one-secret jobs inventory occurred here. Retain until a canonical-account cutover is proven. |
+| Cloudflare Worker secrets, canonical | account `08a4c22cf52e2ecae883e36f80a33f4a` | Reachable through the `api-next-canonical` Wrangler profile. The staging HTTP Worker has exactly six declared confidential names and the staging jobs Worker has its one declared funding name. Both production Workers are absent. |
+| Cloudflare Worker secrets, misplaced | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable through the retained default Wrangler profile. The later staging HTTP and jobs deployments, public-config cleanup, seven-secret HTTP inventory, and one-secret jobs inventory occurred here. The canonical cutover is proven; these resources remain retained pending an explicit retirement decision. |
 | Declared Wrangler contract | `api-next/apps/http-worker/wrangler.jsonc` and `api-next/apps/jobs-worker/wrangler.jsonc` | In repository. Both Workers are in scope; earlier revisions of this document covered only the http Worker. `secrets.required` is a real Wrangler property — it drives type generation and local-dev warnings, but does not gate a deploy. See D9. |
 
 Environments are Infisical environments. Never encode an environment into a
@@ -35,19 +36,39 @@ The same error inverted the staging Hyperdrive inventory. Canonical account
 (`11c1ad1806004f3b87fa771833093132`) was created in the misplaced account.
 Both staging Worker bindings now point back to the canonical Hyperdrive.
 
-Name-only remote inventory found this split:
+Pre-cutover name-only remote inventory found this split:
 
 | Account | HTTP staging | Jobs staging | Staging Hyperdrive |
 | --- | --- | --- | --- |
 | canonical `08a4…` | present; last deployment 2026-08-16; ten legacy secret names | present; last deployment 2026-08-16; zero secrets | `api-next-staging` (`8cb7658a…`) |
 | misplaced `ff375…` | present; later 2026-08-22 deployment; six confidential names plus the misclassified public key ID | present; later 2026-08-22 deployment; one intended secret name | `pirate-control-plane-staging` (`11c1ad18…`) |
 
-The canonical HTTP account still contains the three junk
+Before cutover, the canonical HTTP account contained the three junk
 `AUTH_UPSTREAM_JWT_*` names plus seven stale JWT/Privy classifications. The
-repository audit must therefore fail against the canonical account until the
-reviewed staging values are installed there. Do not allowlist this drift. Do
-not delete the misplaced Workers or Hyperdrive until the canonical deployment,
-secret-name audit, health/JWKS probes, and key-pair proof all pass.
+repository audit correctly failed rather than allowlisting that drift.
+
+On 2026-08-23, the six reviewed staging runtime secrets were synchronized from
+Infisical `/services/api-next` to the canonical HTTP Worker and the funding RPC
+was synchronized to the canonical jobs Worker. Published, CI-green commit
+`306db31` was then deployed with canonical Hyperdrive `8cb7658a…`. The jobs
+version is `a45e9420-4311-4008-b82a-a79f59c8997c`; the HTTP version is
+`0f4bbb36-567c-4456-9b85-b0d160bf7451`. Wrangler replaced the five public-name
+collisions with vars during deployment. The three `AUTH_UPSTREAM_JWT_*` names
+were then deleted in one reviewed bulk request.
+
+The resulting Cloudflare audit reports zero violations. The canonical health
+endpoint returns `{"status":"ok"}`, the live JWKS contains one RS256 signing
+key, and an in-memory derivation from the Infisical private key matches that
+live JWK. The verifier health endpoint also returns healthy. The misplaced
+Workers and Hyperdrive remain retained; their custom API route is no longer the
+canonical deployment target.
+
+Two un-routed Workers were created while the synchronization command's target
+selection was being made explicit: `pirate-http-worker-staging-staging` from
+combining an environment-suffixed name with `--env`, and `api-next-staging`
+from root-config discovery. Each contained only the six synchronized copies,
+was deleted immediately, and was subsequently confirmed absent. No existing
+Worker was deleted.
 
 Every Cloudflare deployment, probe, collision cleanup, and seven-secret claim
 recorded later in this document before this correction refers to the misplaced
@@ -77,8 +98,8 @@ returns a 404.
 | Environment | Current folder tree and root inventory |
 | --- | --- |
 | `dev` | no folders and no secrets |
-| `staging` | `/services/api-next` has 4 runtime entries; `/services/api-next/operator` has 2 operator entries; root is empty |
-| `prod` | `/services/api-next` has 2 runtime entries; `/services/api-next/operator` has 2 operator entries; root retains only four alert placeholders |
+| `staging` | `/services/api-next` has 6 runtime entries; `/services/api-next/operator` has 2 operator entries; root is empty |
+| `prod` | `/services/api-next` has 2 runtime entries; `/services/api-next/operator` has 2 operator entries; root is empty |
 
 No HNS path was created because no approved HNS entry exists. The approved
 Very sealing key is stored under `/services/api-next`; no separate Very path
@@ -87,23 +108,20 @@ locations.
 Cloudflare synchronization must use those paths explicitly on the next
 authorized deployment; Infisical does not infer path changes.
 
-The post-cleanup inventory was confirmed across all three environments.
-`dev` is empty. `staging` has no root entries. `prod` has only the four
-`API_NEXT_ALERT_*` placeholders; it has no funding RPC or self-callback token.
-
-Prod therefore has two runtime entries where staging has four. The missing
-one is `COMMUNITY_PURCHASE_FUNDING_RPC_URL`, which does not exist in prod. This
-is expected rather than a partial copy, but it means prod cannot satisfy the
-runtime contract until an authorized production funding RPC is sourced.
-Staging has the name but its value is the fail-closed sentinel
+The final inventory was confirmed across all three environments. Every root is
+empty. Production has no alert placeholders, funding RPC, or self-callback
+token. Its enabled runtime policy would require
+`COMMUNITY_PURCHASE_FUNDING_RPC_URL`, so production cannot satisfy the runtime
+contract until an authorized value is sourced. Staging has the name but its
+value is the fail-closed sentinel
 `https://rpc.invalid/`, so neither environment can currently serve a money
 flow.
 
 ## Classification of api-next project entries
 
-The staging root currently holds seventeen entries. Production holds nineteen,
-including four alerting entries not present in staging. They are not all
-runtime secrets.
+The initial staging root held seventeen entries and the initial production root
+held nineteen, including four alert placeholders not present in staging. The
+classification below drove the migration. Both roots are now empty.
 
 ### Runtime secrets — belong on the Worker
 
@@ -112,6 +130,9 @@ runtime secrets.
 | `PIRATE_APP_JWT_PRIVATE_KEY` | yes | staging and prod |
 | `PRIVY_APP_SECRET` | yes | staging and prod |
 | `COMMUNITY_PURCHASE_FUNDING_RPC_URL` | yes | staging only; absent in prod |
+| `VERY_WEB_SEALING_KEY` | yes | staging only; disabled in prod |
+| `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET` | yes | staging only; disabled in prod |
+| `ZKPASSPORT_VERIFIER_SHARED_SECRET` | yes | staging only; disabled in prod |
 
 ### Operator and migration only — never synchronized to a Worker
 
@@ -183,16 +204,16 @@ configuration must be reintroduced deliberately.
 
 ## Known drift
 
-1. Production retains four `API_NEXT_ALERT_*` root entries. They are active
-   source bindings, but all four values are placeholders and no production jobs
-   Worker is deployed. The two URLs need real HTTPS endpoints and the two
-   tokens need real credentials before production can be enabled; the entries
-   remain isolated from the api-next runtime path until then.
+1. Production has no `API_NEXT_ALERT_*` entries and no production jobs Worker.
+   The four names are active source bindings when production is enabled. The
+   two URLs need real HTTPS endpoints and the two tokens need real credentials
+   before a production deployment; the invalid root placeholders were deleted
+   rather than normalized into the service path.
 2. The verifier provisioning evidence records the active key ID as
    `staging-2026-08-18-01`. It is now a staging Wrangler var and has been
-   removed from `secrets.required`. The misplaced-account Worker still holds
-   the historical same-named secret; the canonical account does not receive
-   the var until cutover. The previous-key rotation fields remain optional:
+   removed from `secrets.required`. The canonical Worker now receives it as a
+   var. The misplaced-account Worker still holds the historical same-named
+   secret. The previous-key rotation fields remain optional:
    the two public fields are explicitly empty until a rotation is active, and
    the previous secret is not required until then.
    `VERY_WEB_SEALING_KEY` is now declared in staging `secrets.required`.
@@ -216,14 +237,13 @@ configuration must be reintroduced deliberately.
    both names as created. The CLI's encrypted cache was then deleted again.
 
    The path now has the six intended confidential names. The public key ID is
-   a Wrangler var, not an Infisical secret. A fresh name-only REST audit remains
-   pending after the Infisical session revocation described below.
+   a Wrangler var, not an Infisical secret. A fresh name-only REST audit on
+   2026-08-23 confirmed the exact six-name runtime set and two-name operator
+   set without reading values.
 
    The two ZKPassport secret names were recorded as Cloudflare-only in the
-   very first inventory and were never given an Infisical home. Sourcing them
-   is not a value-discovery problem — the values exist on the Worker — it is a
-   copy that has not been done. The key ID additionally needs its public form
-   resolved under item 2.
+   very first inventory and initially had no Infisical home. They are now stored
+   at the runtime path and synchronized to the canonical Worker.
 
 6. Infisical staging now contains `COMMUNITY_PURCHASE_FUNDING_RPC_URL`. The
    staging Worker still uses the fail-closed sentinel `https://rpc.invalid/`.
@@ -271,11 +291,12 @@ statements in this document that `VERY_APP_ID` and `VERY_WEB_SEALING_KEY` had
 no consumer were true when written and are now obsolete. Both are consumed.
 Rule 5 still applies to them; see D7.
 
-### Confirmed not junk
+### Confirmed source names
 
-- The four `API_NEXT_ALERT_*` production entries are consumed by
+- The four `API_NEXT_ALERT_*` production names are consumed by
   `packages/platform-cf/src/alert-config.ts`, which requires them whenever
-  `API_NEXT_ENV` is `production`.
+  `API_NEXT_ENV` is `production`. The names are not junk, but the deleted root
+  placeholder entries were not valid configuration.
 - The four `REGISTRATION_*` vars looked undeclared-and-unused against the
   Worker bindings, but are consumed by `RegistrationRateLimiterEnvironment`
   inside the Durable Object. They are correct as declared.
@@ -295,11 +316,11 @@ staging and prod, then re-inventoried.
 
 ### Open defects
 
-**D1 — production alert configuration is incomplete.** `pirate-jobs-worker`
+**D1 — production alert configuration is absent.** `pirate-jobs-worker`
 consumes all four `API_NEXT_ALERT_*` names in production. D1a is complete: the
 two token names are declared in its production `secrets.required` list. D1b and
-D1c remain open because the two URLs are placeholders and the two tokens have
-no authorized real values; no production jobs Worker is deployed. This
+D1c remain open because no authorized URLs or token values exist; no production
+jobs Worker is deployed. The invalid root placeholders were deleted. This
 document previously described only the http Worker, which was the omission
 that let D1 hide.
 
@@ -307,7 +328,8 @@ that let D1 hide.
 `API_NEXT_ALERT_WEBHOOK_URL` are endpoint URLs and belong in `vars`;
 `API_NEXT_ALERT_EMAIL_TOKEN` and `API_NEXT_ALERT_WEBHOOK_TOKEN` are bearer
 credentials and belong in `secrets.required`. They are currently stored
-undifferentiated. Breaks rule 2.
+nowhere while production is disabled. A future production configuration must
+preserve this classification. The deleted root placeholders broke rule 2.
 
 **D3 — the ZKPassport rotation secret is intentionally inactive but not
 predeclared.**
@@ -521,22 +543,19 @@ key-pair defect.
 The temporary local token artifact was deleted after the check. No token
 value belongs in this contract.
 
-## Tier C gate — partially exercised
+## Tier C gate — service path exercised
 
-The staging root is now empty and the prod root holds only the four alert
-placeholders. That means the Tier C root copies — the runtime secrets and the
-two database URLs — were deleted before the gate this document set for them:
-one Worker deploy sourced from `/services/api-next` and one migration sourced
-from `/services/api-next/operator`. Neither has happened.
+The staging and production roots are empty. On 2026-08-23, all six staging
+runtime names were exported from
+`/services/api-next` through a validated in-memory pipeline and installed on
+the canonical HTTP Worker; the funding RPC alone was selected for the jobs
+Worker. The post-deploy audit proves exact source-to-Worker name parity. The
+CLI encrypted cache created by the export was deleted afterward.
 
-The misplaced-account staging Worker was deployed successfully, but the
-deployment used the explicit Wrangler configuration and existing Cloudflare
-runtime secrets; it did not exercise an Infisical-to-Cloudflare synchronization
-from `/services/api-next`. No migration has been run from
-`/services/api-next/operator`. The folders are confirmed present and their
-contents were hash-verified before root cleanup. This remains accepted risk:
-the first service-path synchronization and first operator migration are still
-unrehearsed and should happen before relying on those paths operationally.
+The operator path has been exercised only through the non-mutating migration
+dry run described below. No real migration has been run from
+`/services/api-next/operator`; that remains an operator procedure rather than a
+runtime-secret completeness defect.
 
 ## Cloudflare remote drift audit
 
@@ -560,8 +579,10 @@ violations in the canonical account: three undeclared junk names, five
 var/secret collisions, five missing HTTP secrets, and one missing jobs secret.
 After moving the ZKPassport key ID to a var, the audit reports thirteen: the
 same three junk names and five collisions, four missing HTTP secrets, and one
-missing jobs secret. No entry is allowlisted. This failure is the required gate
-until cutover.
+missing jobs secret. No entry was allowlisted. After synchronization,
+deployment, and deletion of the three junk names, the 2026-08-23 audit reports
+zero violations. The only accepted entries are the intentionally absent
+production Workers.
 
 The Cloudflare-side audit runs from the dedicated `.github/workflows/secret-
 drift.yml` workflow on pushes to `main` and by manual dispatch, alongside the
@@ -592,8 +613,10 @@ removed, sourced, or explicitly corrected. The first live run on 2026-08-22
 found nine violations, including `VERY_APP_ID`; after deleting that entry and
 removing the public key ID from the Infisical runtime policy, the follow-up run
 found seven violations and zero accepted entries. The two staging ZKPassport
-secrets have since been sourced, so the next live audit should report only the
-five production-disabled findings. That read-back is pending a fresh login.
+secrets were then sourced. The four invalid production root placeholders were
+deleted on 2026-08-23. The final live read-back reports exactly one finding:
+the missing production funding RPC. Staging and development report no
+Infisical drift, and all three roots are empty.
 
 ## Local project selection — corrected 2026-08-22
 
@@ -619,7 +642,7 @@ committed: `infisical run --env=staging
 the two operator entries, loaded the repository migration plan, and opened no
 database connection. A real migration remains intentionally unrun.
 
-## Session hygiene — current session revoked
+## Session hygiene — complete
 
 During the migration session an earlier diagnostic printed an active Infisical
 email-session token into tool output. A later REST-audit attempt on 2026-08-22
@@ -629,15 +652,16 @@ included the then-current session token. No Infisical secret value was
 rendered, and neither token was written into the repository, command text, or
 shell history.
 
-The current disclosed session was revoked server-side through Infisical's
-authenticated `DELETE /api/v2/users/me/sessions/:sessionId` endpoint, which
-returned HTTP 200 with `Successfully revoked session`. `infisical reset` then
-removed the local keyring credential. The encrypted CLI cache was deleted and
-the home and repository project pins still target the canonical api-next
-project.
+The disclosed current session was first revoked server-side through Infisical's
+authenticated `DELETE /api/v2/users/me/sessions/:sessionId` endpoint. A later
+login reused an older server session, so all six sessions that predated the
+correction were enumerated by ID and revoked, with HTTP 200 returned for every
+deletion. `infisical reset` then removed the local keyring credential and the
+encrypted CLI cache was deleted.
 
-A fresh interactive login is required before the final name-only Infisical
-read-back. After login, enumerate server sessions and revoke any older session
-that predates this correction; this closes the earlier incident as well as the
-current one. No rotation of stored application secrets is indicated because no
-secret value was exposed.
+The final interactive login created one new session on 2026-08-22 at
+19:57:53Z. Server metadata confirmed that it was the sole remaining session and
+matched the CLI token's session ID. The final name-only audit completed through
+that session. The export cache created during synchronization was deleted again
+and remains absent. No rotation of stored application secrets is indicated
+because no application secret value was exposed.

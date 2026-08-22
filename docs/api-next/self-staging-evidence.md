@@ -1,8 +1,8 @@
 # Self staging incident and restart record
 
-Status: Cloudflare canonical-account cutover is pending. The developer/mock-
-document deployment in this record exists in a misplaced account. The physical
-real-document ceremony remains pending. Corrected 2026-08-22.
+Status: Cloudflare canonical-account cutover completed on 2026-08-23. The
+developer/mock-document deployment in this record remains misplaced-account
+history. The physical real-document ceremony remains pending.
 
 This is the durable, redacted record for the Self staging tranche. It preserves
 the earlier incident and containment history, then records the verified
@@ -17,9 +17,13 @@ that account from the ambient Wrangler OAuth identity. Canonical account
 `08a4c22cf52e2ecae883e36f80a33f4a` instead contains the older staging Workers
 and Hyperdrive `api-next-staging` (`8cb7658a0f7143359c1becfec6a15c23`).
 
-This document remains evidence of what happened in the misplaced account; it
-is not proof of canonical staging state. No resource has been deleted, and no
-canonical-account cutover has been performed during this correction.
+This document remains evidence of what happened in the misplaced account; its
+historical versions are not proof of canonical staging state. Canonical HTTP
+and jobs Workers were synchronized and deployed from published commit
+`306db31` on 2026-08-23 using Hyperdrive `8cb7658a0f7143359c1becfec6a15c23`.
+The canonical Cloudflare audit reports zero violations, health and JWKS probes
+pass, and the live JWK matches the Infisical private key. Misplaced-account
+resources remain retained.
 
 ## Current M3 mode override — 2026-08-19
 
