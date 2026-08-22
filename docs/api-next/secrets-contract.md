@@ -1,9 +1,12 @@
 # api-next secrets contract
 
-Status: audited and organized. Confidential values were not rendered in tool
-output. The approved confidential entries were copied server-side within
-Infisical into their target paths, and the old root duplicates were removed
-after hash verification. Public configuration was moved to repository vars.
+Status: audited and organized. Infisical confidential values were not rendered
+in tool output. The approved confidential entries were copied server-side
+within Infisical into their target paths, and the old root duplicates were
+removed after hash verification. Public configuration was moved to repository
+vars. An already-expired staging session token was briefly rendered by the
+key-pair diagnostic; its local artifact was removed immediately and it was not
+an Infisical value.
 
 Date of inventory: 2026-08-22.
 
@@ -397,14 +400,62 @@ returns seven intended secrets and no public-name collisions. The staging
 `VERY_WEB_SEALING_KEY` was also added to staging `secrets.required`; it remains
 installed because it is a genuine source-consumed secret, not junk.
 
+### Independently verified 2026-08-22
+
+| Check | Result |
+| --- | --- |
+| installed staging secrets | 7, exactly the intended set; none of the four collided names present |
+| `api-next-staging`, the accidental root-config Worker | no longer resolves |
+| `GET /health` | 200, `{"status":"ok"}` |
+| `GET /.well-known/jwks.json` | 200, one 2048-bit RS256 key, `use: sig`, `key_ops: ["verify"]`, `kid` present |
+
+The seven are `COMMUNITY_PURCHASE_FUNDING_RPC_URL`,
+`PIRATE_APP_JWT_PRIVATE_KEY`, `PRIVY_APP_SECRET`, `VERY_WEB_SEALING_KEY`,
+`ZKPASSPORT_VERIFIER_SHARED_SECRET`,
+`ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET`, and
+`ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID`. The last is still a secret and
+should be a var — the one open D5 instance.
+
+Declared staging secrets number eight: the seven above plus
+`ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET`, declared for the D3
+rotation path with no value yet. That difference is intended, not drift.
+
+A live JWKS proves `PIRATE_APP_JWT_PUBLIC_KEY` is now served from the var,
+since the same-named secret is gone. That is the verification the collision
+would have rendered meaningless.
+
+### Key-pair check — cryptographic pairing proven
+
+`session-crypto.ts:318` builds the JWKS from `PIRATE_APP_JWT_PUBLIC_KEY`
+alone. Signing uses `PIRATE_APP_JWT_PRIVATE_KEY`, a separate binding. The two
+are never compared anywhere in the code.
+
+If the public key that moved into `vars` is not the mate of the private key
+still installed as a secret, then `/health` returns 200, the JWKS returns 200
+and a well-formed 2048-bit key, every check above passes — and every session
+token this Worker issues fails verification by every client. No check performed
+so far can distinguish that case.
+
+A staging session token issued before the cutover was verified against the
+live `/.well-known/jwks.json`: its RS256 signature validated with the live
+JWKS key selected by `kid`, and its `iat`/`exp` claims were structurally valid.
+This proves that the public key now served from the Wrangler var is the mate of
+the private signing key used by the staging Worker. The token had expired by
+the time of the check, so the protected endpoint correctly returned 401. A
+fresh post-cutover login was not re-run because the disposable test identity's
+email/OTP was not available; that is a session-flow freshness follow-up, not a
+key-pair defect.
+
+The temporary local token artifact was deleted after the check. No token
+value belongs in this contract.
+
 ## Tier C gate — partially exercised
 
 The staging root is now empty and the prod root holds only the four alert
 placeholders. That means the Tier C root copies — the runtime secrets and the
 two database URLs — were deleted before the gate this document set for them:
 one Worker deploy sourced from `/services/api-next` and one migration sourced
-from `/services/api-next/operator`. Neither has happened; no Cloudflare deploy
-was performed at all.
+from `/services/api-next/operator`. Neither has happened.
 
 The staging Worker was deployed successfully, but the deployment used the
 explicit Wrangler configuration and existing Cloudflare runtime secrets; it
