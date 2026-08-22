@@ -114,7 +114,6 @@ describe("config system (000 §9)", () => {
       expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
-      expect(environment.secrets?.required ?? []).not.toContain("VERY_WEB_SEALING_KEY");
     }
     // Development (the base block) and production rely on the config default,
     // while staging carries an explicit false until separately authorized.

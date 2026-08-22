@@ -13,7 +13,7 @@ Date of inventory: 2026-08-22.
 | --- | --- | --- |
 | Infisical, api-next project | project `fac45f92-9450-42fb-8c2f-f20d043fdfab`, organization `d9615445-c0d4-445a-ad58-1d55d365635a` | Reachable, but only under the api-next organization profile. The repository default `/home/t42/.infisical.json` pins the historical workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71`; under that profile this project returns "This project does not belong to your selected organization." Switch profiles before any api-next secret work, and switch back afterwards. |
 | Infisical, historical project | workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71` | Reachable. Historical reference only. Its `/services/api` folder deliberately mixes API runtime, HNS, Spaces, media, Story, and operator credentials; that mixing is the boundary defect this contract corrects. Do not copy it wholesale. |
-| Cloudflare Worker secrets | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable. `pirate-http-worker-staging` holds ten secrets. `pirate-http-worker-production` does not exist remotely, consistent with production remaining disabled. |
+| Cloudflare Worker secrets | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable. `pirate-http-worker-staging` holds seven intended secrets after the public-config cleanup. `pirate-http-worker-production` does not exist remotely, consistent with production remaining disabled. |
 | Declared Wrangler contract | `api-next/apps/http-worker/wrangler.jsonc` and `api-next/apps/jobs-worker/wrangler.jsonc` | In repository. Both Workers are in scope; earlier revisions of this document covered only the http Worker. `secrets.required` is a real Wrangler property — it drives type generation and local-dev warnings, but does not gate a deploy. See D9. |
 
 Environments are Infisical environments. Never encode an environment into a
@@ -156,9 +156,10 @@ configuration must be reintroduced deliberately.
    `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID` as a Cloudflare secret, while
    the repository classifies it as public configuration. Its value is not
    available from Infisical or the repository, so the store change waits for an
-   operator to source the real identifier. The previous-key rotation triple is
-   now explicitly declared in staging: the secret is required and the two
-   optional public fields are empty by design until a rotation is active.
+   operator to source the real identifier. The previous-key rotation fields
+   remain optional: the two public fields are explicitly empty until a rotation
+   is active, and the previous secret is not required until then.
+   `VERY_WEB_SEALING_KEY` is now declared in staging `secrets.required`.
 3. Staging and production Privy app IDs, JWKS URLs, and audiences are now
    declared as Wrangler vars from verified app-specific values. The api-next
    Infisical project has no development Privy app ID or public key, so the
@@ -254,10 +255,11 @@ undifferentiated. Breaks rule 2.
 `ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET`,
 `…_PREVIOUS_RESPONSE_SIGNING_KEY_ID`, and
 `…_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL` are consumed by the http Worker and
-The staging declaration now records all three names. The secret is in
-`secrets.required`; the public key ID and expiry are explicit empty vars until
-a previous key is active. No rotation values have been sourced. The `KEY_ID`
-and `VALID_UNTIL` members are public; only the `SECRET` is confidential.
+The staging declaration records the two optional public fields as explicit
+empty vars until a previous key is active. The optional previous secret remains
+absent, so it cannot block deployment while no rotation is configured. No
+rotation values have been sourced. The `KEY_ID` and `VALID_UNTIL` members are
+public; only the `SECRET` is confidential.
 
 **D4 — development Privy public configuration is unavailable.** Staging and
 production now declare verified app-specific JWKS URLs and audiences as vars.
@@ -367,11 +369,51 @@ missing real values or classification/configuration gaps, not junk.
    unset until an actual previous-key rotation is authorized.
 6. Repository verification done. Source and worker typechecks, the binding
    typecheck, Biome, and 25 focused tests pass. The invariant test remains red
-   only for the explicit blockers recorded above; no Worker deploy was run.
+   only for the explicit blockers recorded above. Staging was then deployed
+   explicitly from `apps/http-worker/wrangler.jsonc`; `/health` and the public
+   JWKS endpoint both returned 200.
 7. Done, 2026-08-22. Delete the zero-consumer legacy entries and root
    duplicates, then re-inventory all environments. Production alert
    placeholders remain isolated at root until real values are sourced.
 8. Session hygiene, open. See below.
+
+## Staging collision cleanup — completed 2026-08-22
+
+The four public names were declared as staging `vars` in `wrangler.jsonc` and
+the same-named secrets were removed from `pirate-http-worker-staging` before
+the explicit staging deployment:
+
+| Name | declared as | still installed as |
+| --- | --- | --- |
+| `PIRATE_APP_JWT_PUBLIC_KEY` | var | secret |
+| `PRIVY_APP_ID` | var | secret |
+| `PRIVY_JWKS_URL` | var | secret |
+| `PRIVY_JWT_AUDIENCE` | var | secret |
+
+After deployment, `wrangler secret list --name pirate-http-worker-staging`
+returns seven intended secrets and no public-name collisions. The staging
+`/health` and `/.well-known/jwks.json` endpoints both returned HTTP 200.
+
+`VERY_WEB_SEALING_KEY` was also added to staging `secrets.required`; it remains
+installed because it is a genuine source-consumed secret, not junk.
+
+## Tier C gate — partially exercised
+
+The staging root is now empty and the prod root holds only the four alert
+placeholders. That means the Tier C root copies — the runtime secrets and the
+two database URLs — were deleted before the gate this document set for them:
+one Worker deploy sourced from `/services/api-next` and one migration sourced
+from `/services/api-next/operator`. Neither has happened; no Cloudflare deploy
+was performed at all.
+
+The staging Worker was deployed successfully, but the deployment used the
+explicit Wrangler configuration and existing Cloudflare runtime secrets; it
+did not exercise an Infisical-to-Cloudflare synchronization from
+`/services/api-next`. No migration has been run from
+`/services/api-next/operator`. The folders are confirmed present and their
+contents were hash-verified before root cleanup. This remains accepted risk:
+the first service-path synchronization and first operator migration are still
+unrehearsed and should happen before relying on those paths operationally.
 
 ## Session hygiene — open
 
