@@ -526,10 +526,12 @@ belong to the Infisical-side policy below. The live run on 2026-08-22 found
 zero unallowlisted Cloudflare violations: both staging Workers matched their
 declared secret sets.
 
-The Cloudflare-side audit runs from the dedicated `secrets-drift` GitHub
-Actions job hourly and by manual dispatch. It receives only the repository
-`CLOUDFLARE_API_TOKEN` secret, never runs for pull requests, and continues to
-fail on unallowlisted drift.
+The Cloudflare-side audit runs from the dedicated `.github/workflows/secret-
+drift.yml` workflow on pushes to `main` and by manual dispatch, alongside the
+trusted mainline CI event. It never runs for pull requests: passing the token
+to arbitrary PR code would expose it to untrusted changes. The repository
+`CLOUDFLARE_API_TOKEN` should be scoped to Cloudflare `Workers Scripts:Read`;
+the audit only lists script secret names and does not need write permission.
 
 ## Infisical remote drift audit
 

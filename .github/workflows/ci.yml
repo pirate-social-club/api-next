@@ -3,27 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "17 * * * *"
-  workflow_dispatch:
 
 jobs:
-  secrets-drift:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.4.0
-      - run: bun install --frozen-lockfile
-      - run: bun run audit:secrets
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-
   check:
     runs-on: ubuntu-latest
     steps:
