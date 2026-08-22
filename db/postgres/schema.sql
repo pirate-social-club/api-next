@@ -1784,6 +1784,14 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_community_route_lifecycle_transition_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'community route lifecycle transitions are append-only';
+END;
+$$;
+
 CREATE FUNCTION reject_namespace_ownership_evidence_snapshot_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2128,6 +2136,63 @@ BEGIN
   END IF;
 
   RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION validate_community_route_lifecycle_transition_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  community_record communities%ROWTYPE;
+  binding_record community_canonical_route_bindings%ROWTYPE;
+  evidence_record community_route_ownership_evidence%ROWTYPE;
+BEGIN
+  IF NEW.transitioned_at > clock_timestamp() THEN
+    RAISE EXCEPTION 'route lifecycle transition time is in the future';
+  END IF;
+
+  SELECT * INTO community_record
+    FROM communities
+   WHERE community_id = NEW.community_id;
+  IF NOT FOUND
+    OR community_record.status <> 'active'
+    OR community_record.canonical_route_binding_id <> NEW.route_binding_id THEN
+    RAISE EXCEPTION 'route lifecycle transition community authority mismatch';
+  END IF;
+
+  SELECT * INTO binding_record
+    FROM community_canonical_route_bindings
+   WHERE community_id = NEW.community_id
+     AND route_binding_id = NEW.route_binding_id;
+  IF NOT FOUND
+    OR binding_record.family <> NEW.family
+    OR binding_record.root_label <> NEW.root_label
+    OR binding_record.root_label_display <> NEW.root_label_display
+    OR binding_record.path_segment <> NEW.path_segment
+    OR binding_record.binding_generation <> NEW.resulting_binding_generation
+    OR binding_record.verified_evidence_ref IS NOT NULL
+    OR binding_record.ownership_status <> NEW.ownership_status
+    OR binding_record.route_lifecycle_status <> NEW.route_lifecycle_status
+    OR binding_record.updated_at <> NEW.transitioned_at THEN
+    RAISE EXCEPTION 'route lifecycle transition resulting binding mismatch';
+  END IF;
+
+  SELECT * INTO evidence_record
+    FROM community_route_ownership_evidence
+   WHERE evidence_ref = NEW.expected_verified_evidence_ref;
+  IF NOT FOUND
+    OR evidence_record.family <> NEW.family
+    OR evidence_record.root_label <> NEW.root_label
+    OR evidence_record.root_label_display <> NEW.root_label_display
+    OR evidence_record.path_segment <> NEW.path_segment
+    OR evidence_record.binding_generation <> NEW.expected_binding_generation
+    OR evidence_record.expires_at IS NULL
+    OR evidence_record.expires_at <> NEW.observed_evidence_expires_at
+    OR evidence_record.expires_at > NEW.transitioned_at THEN
+    RAISE EXCEPTION 'route lifecycle transition evidence authority mismatch';
+  END IF;
+
+  RETURN NEW;
 END;
 $$;
 
@@ -4490,6 +4555,37 @@ CREATE TABLE community_route_app_host_health (
     CONSTRAINT community_route_app_host_health_health_status_check CHECK ((health_status = ANY (ARRAY['unconfigured'::text, 'pending'::text, 'healthy'::text, 'unhealthy'::text, 'stale'::text])))
 );
 
+CREATE TABLE community_route_lifecycle_transitions (
+    route_lifecycle_transition_id text NOT NULL,
+    version text NOT NULL,
+    transition_kind text NOT NULL,
+    community_id text NOT NULL,
+    route_binding_id text NOT NULL,
+    principal_kind text NOT NULL,
+    principal_id text NOT NULL,
+    family text NOT NULL,
+    root_label text NOT NULL,
+    root_label_display text NOT NULL,
+    path_segment text NOT NULL,
+    expected_binding_generation bigint NOT NULL,
+    resulting_binding_generation bigint NOT NULL,
+    expected_verified_evidence_ref text NOT NULL,
+    observed_evidence_expires_at timestamp with time zone NOT NULL,
+    ownership_status text NOT NULL,
+    route_lifecycle_status text NOT NULL,
+    transitioned_at timestamp with time zone NOT NULL,
+    CONSTRAINT community_route_lifecycle_transition_generation_check CHECK (((expected_binding_generation > 0) AND (resulting_binding_generation = (expected_binding_generation + 1)))),
+    CONSTRAINT community_route_lifecycle_transition_identity_check CHECK (((btrim(route_lifecycle_transition_id) <> ''::text) AND (route_lifecycle_transition_id = btrim(route_lifecycle_transition_id)) AND (octet_length(route_lifecycle_transition_id) <= 512) AND (btrim(principal_id) <> ''::text) AND (principal_id = btrim(principal_id)) AND (octet_length(principal_id) <= 256))),
+    CONSTRAINT community_route_lifecycle_transition_kind_check CHECK (((version = 'pirate-community-route-lifecycle-transition-v1'::text) AND (transition_kind = 'database_time_expired'::text) AND (principal_kind = 'system'::text) AND (ownership_status = 'expired'::text) AND (route_lifecycle_status = 'suspended'::text))),
+    CONSTRAINT community_route_lifecycle_transition_route_check CHECK (((is_community_route_root_label(family, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE) AND (path_segment =
+CASE family
+    WHEN 'hns'::text THEN ('app.'::text || root_label)
+    WHEN 'spaces'::text THEN ('@'::text || root_label)
+    ELSE NULL::text
+END))),
+    CONSTRAINT community_route_lifecycle_transition_time_check CHECK ((observed_evidence_expires_at <= transitioned_at))
+);
+
 CREATE TABLE community_route_ownership_evidence (
     evidence_ref text NOT NULL,
     creation_ceremony_intent_id text,
@@ -5820,6 +5916,12 @@ ALTER TABLE ONLY community_purchase_verification_snapshots
 ALTER TABLE ONLY community_route_app_host_health
     ADD CONSTRAINT community_route_app_host_health_pkey PRIMARY KEY (route_binding_id);
 
+ALTER TABLE ONLY community_route_lifecycle_transitions
+    ADD CONSTRAINT community_route_lifecycle_transition_generation_unique UNIQUE (route_binding_id, expected_binding_generation);
+
+ALTER TABLE ONLY community_route_lifecycle_transitions
+    ADD CONSTRAINT community_route_lifecycle_transitions_pkey PRIMARY KEY (route_lifecycle_transition_id);
+
 ALTER TABLE ONLY community_route_ownership_evidence
     ADD CONSTRAINT community_route_ownership_evidence_pkey PRIMARY KEY (evidence_ref);
 
@@ -6181,6 +6283,10 @@ CREATE UNIQUE INDEX community_purchase_intents_open_unique ON community_purchase
 
 CREATE INDEX community_purchase_quote_actor_status_idx ON community_purchase_quotes USING btree (actor_id, status, expires_at, quote_id);
 
+CREATE INDEX community_route_lifecycle_transitions_time_idx ON community_route_lifecycle_transitions USING btree (transitioned_at, route_binding_id, expected_binding_generation);
+
+CREATE INDEX community_route_ownership_evidence_expiry_idx ON community_route_ownership_evidence USING btree (expires_at, evidence_ref) WHERE (expires_at IS NOT NULL);
+
 CREATE UNIQUE INDEX community_route_ownership_evidence_revalidation_attempt_uidx ON community_route_ownership_evidence USING btree (route_revalidation_attempt_id) WHERE (origin = 'route_revalidation'::text);
 
 CREATE INDEX community_route_revalidation_attempts_lease_idx ON community_route_revalidation_completion_attempts USING btree (state, lease_expires_at);
@@ -6392,6 +6498,10 @@ CREATE TRIGGER community_purchase_route_snapshot_append_only BEFORE DELETE OR UP
 CREATE TRIGGER community_purchase_settlement_snapshot_append_only BEFORE DELETE OR UPDATE ON community_purchase_settlement_snapshots FOR EACH ROW EXECUTE FUNCTION reject_community_commerce_immutable_change();
 
 CREATE TRIGGER community_purchase_verification_snapshot_append_only BEFORE DELETE OR UPDATE ON community_purchase_verification_snapshots FOR EACH ROW EXECUTE FUNCTION reject_community_commerce_immutable_change();
+
+CREATE TRIGGER community_route_lifecycle_transition_append_only BEFORE DELETE OR UPDATE ON community_route_lifecycle_transitions FOR EACH ROW EXECUTE FUNCTION reject_community_route_lifecycle_transition_change();
+
+CREATE TRIGGER community_route_lifecycle_transition_insert_guard BEFORE INSERT ON community_route_lifecycle_transitions FOR EACH ROW EXECUTE FUNCTION validate_community_route_lifecycle_transition_insert();
 
 CREATE TRIGGER community_route_ownership_evidence_append_only BEFORE DELETE OR UPDATE ON community_route_ownership_evidence FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
 
@@ -6859,6 +6969,12 @@ ALTER TABLE ONLY community_purchase_verification_snapshots
 
 ALTER TABLE ONLY community_route_app_host_health
     ADD CONSTRAINT community_route_app_host_health_route_fk FOREIGN KEY (route_binding_id, family) REFERENCES community_canonical_route_bindings(route_binding_id, family);
+
+ALTER TABLE ONLY community_route_lifecycle_transitions
+    ADD CONSTRAINT community_route_lifecycle_transition_binding_fk FOREIGN KEY (community_id, route_binding_id) REFERENCES community_canonical_route_bindings(community_id, route_binding_id);
+
+ALTER TABLE ONLY community_route_lifecycle_transitions
+    ADD CONSTRAINT community_route_lifecycle_transition_evidence_fk FOREIGN KEY (expected_verified_evidence_ref) REFERENCES community_route_ownership_evidence(evidence_ref);
 
 ALTER TABLE ONLY community_route_ownership_evidence
     ADD CONSTRAINT community_route_ownership_evidence_creation_ceremony_fk FOREIGN KEY (creation_ceremony_intent_id) REFERENCES community_creation_ceremony_attempts(ceremony_intent_id) DEFERRABLE INITIALLY DEFERRED;

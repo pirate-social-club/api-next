@@ -54,6 +54,11 @@ export {
   makeControlPlaneCommunityStore,
 } from "./community-repository";
 export {
+  COMMUNITY_ROUTE_EXPIRY_CANDIDATES_SQL,
+  CommunityRouteExpiryStorageInvariant,
+  makeControlPlaneCommunityRouteExpiryStore,
+} from "./community-route-expiry-repository";
+export {
   type CanonicalCommunityRouteRepository,
   makeControlPlaneCanonicalCommunityRouteRepository,
   makeControlPlaneCanonicalCommunityRouteStore,
@@ -96,6 +101,8 @@ export {
   makeHnsOwnerAdapter,
 } from "./namespace-ownership/hns-owner";
 export {
+  HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
+  HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS,
   type HnsOwnerRouteRevalidationTransport,
   makeHnsOwnerRouteRevalidationTransport,
 } from "./namespace-ownership/hns-owner-service-binding";

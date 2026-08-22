@@ -7,12 +7,21 @@ mock.module("cloudflare:workers", () => ({
 }));
 
 const {
+  HNS_ROUTE_EXPIRY_BATCH_LIMIT,
+  HNS_ROUTE_EXPIRY_PRINCIPAL_ID,
+  HNS_ROUTE_JOB_TIMEOUT_MS,
+  HNS_ROUTE_PROVIDER_BUDGET_MARGIN_MS,
+  HNS_ROUTE_RECOVERY_BACKOFF_SECONDS,
   HNS_ROUTE_REVALIDATION_BATCH_LIMIT,
   HNS_ROUTE_REVALIDATION_PENDING_SESSIONS_SQL,
+  HNS_ROUTE_REVALIDATION_READS,
   HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL,
+  HNS_ROUTE_REVALIDATION_WRITES,
+  hasHnsRouteProviderBudget,
   makeHnsRouteRevalidationComposition,
   runBoundedHnsRouteRevalidationBatch,
 } = await import("./hns-route-revalidation");
+const { COMMUNITY_ROUTE_EXPIRY_CANDIDATES_SQL } = await import("@pirate/platform-cf");
 const { HnsRouteRevalidationProviderFailed, HnsRouteRevalidationStartStorageFailed } = await import(
   "@pirate/application"
 );
@@ -195,6 +204,28 @@ describe("jobs-worker HNS route-revalidation composition", () => {
         HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL.indexOf("LIMIT $2"),
       );
     }
+  });
+
+  test("prioritizes a bounded database-time expiry phase with separate authority", () => {
+    expect(HNS_ROUTE_EXPIRY_BATCH_LIMIT).toBe(1);
+    expect(HNS_ROUTE_EXPIRY_PRINCIPAL_ID).toBe("route-expiry-scheduler");
+    expect(HNS_ROUTE_PROVIDER_BUDGET_MARGIN_MS).toBe(3_000);
+    expect(HNS_ROUTE_JOB_TIMEOUT_MS).toBe(45_000);
+    expect(hasHnsRouteProviderBudget(11_999, 30_000)).toBe(true);
+    expect(hasHnsRouteProviderBudget(12_000, 30_000)).toBe(false);
+    expect(HNS_ROUTE_RECOVERY_BACKOFF_SECONDS).toBe(24 * 60 * 60);
+    expect(COMMUNITY_ROUTE_EXPIRY_CANDIDATES_SQL).toContain("evidence.expires_at <= db_clock.now");
+    expect(COMMUNITY_ROUTE_EXPIRY_CANDIDATES_SQL).toContain("b.route_lifecycle_status = 'active'");
+    expect(COMMUNITY_ROUTE_EXPIRY_CANDIDATES_SQL).toContain("b.ownership_status = 'verified'");
+    expect(COMMUNITY_ROUTE_EXPIRY_CANDIDATES_SQL).toContain(
+      "ORDER BY evidence.expires_at, b.route_binding_id",
+    );
+    expect(HNS_ROUTE_REVALIDATION_READS).toContain(
+      "postgres:community_route_lifecycle_transitions",
+    );
+    expect(HNS_ROUTE_REVALIDATION_WRITES).toContain(
+      "postgres:community_route_lifecycle_transitions",
+    );
   });
 
   test("filters exhausted pending sessions before consuming the SQL poll limit", () => {

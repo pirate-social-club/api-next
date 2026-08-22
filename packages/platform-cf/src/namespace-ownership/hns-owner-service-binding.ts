@@ -15,8 +15,8 @@ const START_REQUEST_MAX_BYTES = 8_192;
 const START_RESPONSE_MAX_BYTES = 65_536;
 const POLL_REQUEST_MAX_BYTES = 32_768;
 const POLL_RESPONSE_MAX_BYTES = 1_048_576;
-const START_DEADLINE_MS = 5_000;
-const POLL_DEADLINE_MS = 15_000;
+export const HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS = 5_000;
+export const HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS = 15_000;
 
 export type HnsOwnerServiceBinding = Readonly<{
   readonly fetch: (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -237,7 +237,7 @@ export function makeHnsOwnerServiceBindingTransport(
         body,
         "application/json",
         context.namespace_session_id,
-        START_DEADLINE_MS,
+        HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS,
         "start",
         START_RESPONSE_MAX_BYTES,
       );
@@ -250,7 +250,7 @@ export function makeHnsOwnerServiceBindingTransport(
         body,
         "application/octet-stream",
         context.namespace_session_id,
-        POLL_DEADLINE_MS,
+        HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
         "complete",
         POLL_RESPONSE_MAX_BYTES,
       );
@@ -306,7 +306,7 @@ export function makeHnsOwnerRouteRevalidationTransport(
         body,
         "application/json",
         wire.revalidation_session_id,
-        START_DEADLINE_MS,
+        HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS,
         "start",
         START_RESPONSE_MAX_BYTES,
       );
@@ -327,7 +327,7 @@ export function makeHnsOwnerRouteRevalidationTransport(
         body,
         "application/octet-stream",
         session.revalidation_session_id,
-        POLL_DEADLINE_MS,
+        HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
         "complete",
         POLL_RESPONSE_MAX_BYTES,
       );

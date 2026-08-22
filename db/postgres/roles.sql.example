@@ -24,6 +24,7 @@ REVOKE UPDATE, DELETE ON
   community_purchase_funding_transitions,
   community_purchase_funding_receipts,
   community_purchase_funding_reconciliation_operator_actions,
+  community_route_lifecycle_transitions,
   community_creation_intent_revisions,
   community_policy_provider_bindings,
   community_creation_quota_approvals,

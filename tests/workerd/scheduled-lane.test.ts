@@ -127,6 +127,35 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     }
   });
 
+  it("declares database-time expiry under the sole HNS route-binding writer when enabled", () => {
+    const hns = makeHnsRouteRevalidationComposition({
+      HNS_OWNER_VERIFIER: {
+        fetch: async () => new Response(null, { status: 204 }),
+      },
+      HNS_OWNERSHIP_ENABLED: "true",
+      HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "hns-owner-test",
+      HNS_OWNERSHIP_CONFIGURATION_VERSION: "hns-owner-config-v1",
+    });
+    expect(hns.enabled).toBe(true);
+    const sink = { email: () => Effect.void, webhook: () => Effect.void };
+    const declarations = makeJobsWorkerDeclarations(
+      sink,
+      "https://rpc.invalid/",
+      hns,
+      "development",
+    );
+    const hnsJob = declarations.find(
+      (declaration) => declaration.name === HNS_ROUTE_REVALIDATION_JOB,
+    );
+    expect(hnsJob?.writes).toContain("postgres:community_route_lifecycle_transitions");
+    expect(hnsJob?.writes).toContain("postgres:community_canonical_route_bindings");
+    expect(
+      declarations.filter((declaration) =>
+        declaration.writes.includes("postgres:community_canonical_route_bindings"),
+      ),
+    ).toEqual([hnsJob]);
+  });
+
   it("fails closed before scheduling when HNS is enabled without its verifier authority", async () => {
     const waits: Promise<unknown>[] = [];
     const workerEnv = scheduledWorkerEnv({ HNS_OWNERSHIP_ENABLED: "true" });

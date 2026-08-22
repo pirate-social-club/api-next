@@ -1,7 +1,9 @@
 import { afterAll, describe, expect, test } from "bun:test";
+import { expireCommunityRouteEvidence } from "@pirate/application";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { makeControlPlaneCommunityRouteExpiryStore } from "./community-route-expiry-repository.ts";
 import { makeControlPlaneCanonicalCommunityRouteStore } from "./community-route-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
@@ -348,6 +350,22 @@ async function seedRoute(admin: Client, route: RouteSeed): Promise<void> {
   await admin.query("COMMIT");
 }
 
+function expireHnsRoutes(connection: string, limit = 25) {
+  const store = makeControlPlaneCommunityRouteExpiryStore(
+    makeDirectPostgresControlPlaneLayer(connection),
+  );
+  return Effect.runPromise(
+    expireCommunityRouteEvidence(
+      {
+        family: "hns",
+        limit,
+        principal_id: "route-expiry-scheduler",
+      },
+      { store },
+    ),
+  );
+}
+
 suite("canonical community route Postgres repository", () => {
   test("resolves a live verified HNS IDN binding with no legacy fallback", async () => {
     await withSchema(async (connection, admin) => {
@@ -402,6 +420,11 @@ suite("canonical community route Postgres repository", () => {
           binding_generation: "1",
         },
       ]);
+      await expect(expireHnsRoutes(connection)).resolves.toEqual({
+        selected: 0,
+        transitioned: 0,
+        stale: 0,
+      });
       await expect(
         Effect.runPromise(
           Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.legacy-route" })),
@@ -428,7 +451,7 @@ suite("canonical community route Postgres repository", () => {
     });
   }, 30_000);
 
-  test("fails an expired route closed before a lifecycle writer suspends it", async () => {
+  test("fails expired evidence closed, then records one database-time lifecycle transition", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
       await admin.query(
@@ -471,6 +494,112 @@ suite("canonical community route Postgres repository", () => {
           binding_generation: "1",
         },
       ]);
+
+      const futureTransitionAt = new Date(Date.now() + 24 * 60 * 60 * 1_000);
+      await admin.query("BEGIN");
+      try {
+        await admin.query(
+          `UPDATE community_canonical_route_bindings
+              SET verified_evidence_ref = NULL,
+                  ownership_status = 'expired',
+                  route_lifecycle_status = 'suspended',
+                  binding_generation = 2,
+                  updated_at = $1
+            WHERE route_binding_id = 'binding-route-expiry'`,
+          [futureTransitionAt],
+        );
+        await expect(
+          admin.query(
+            `INSERT INTO community_route_lifecycle_transitions (
+               route_lifecycle_transition_id, version, transition_kind,
+               community_id, route_binding_id, principal_kind, principal_id,
+               family, root_label, root_label_display, path_segment,
+               expected_binding_generation, resulting_binding_generation,
+               expected_verified_evidence_ref, observed_evidence_expires_at,
+               ownership_status, route_lifecycle_status, transitioned_at
+             )
+             SELECT 'future-transition', 'pirate-community-route-lifecycle-transition-v1',
+                    'database_time_expired', 'community-route-expiry',
+                    'binding-route-expiry', 'system', 'route-expiry-scheduler',
+                    'hns', 'expiry-route', 'expiry-route', 'app.expiry-route',
+                    1, 2, evidence_ref, expires_at, 'expired', 'suspended', $1
+               FROM community_route_ownership_evidence
+              WHERE evidence_ref = 'evidence-expiry'`,
+            [futureTransitionAt],
+          ),
+        ).rejects.toMatchObject({ code: "P0001" });
+      } finally {
+        await admin.query("ROLLBACK");
+      }
+
+      await expect(expireHnsRoutes(connection)).resolves.toEqual({
+        selected: 1,
+        transitioned: 1,
+        stale: 0,
+      });
+      const transitioned = await admin.query(
+        `SELECT version, transition_kind, community_id, route_binding_id,
+                principal_kind, principal_id, family, root_label,
+                expected_binding_generation, resulting_binding_generation,
+                expected_verified_evidence_ref, ownership_status,
+                route_lifecycle_status,
+                observed_evidence_expires_at <= transitioned_at AS expired_at_transition
+           FROM community_route_lifecycle_transitions`,
+      );
+      expect(transitioned.rows).toEqual([
+        {
+          version: "pirate-community-route-lifecycle-transition-v1",
+          transition_kind: "database_time_expired",
+          community_id: "community-route-expiry",
+          route_binding_id: "binding-route-expiry",
+          principal_kind: "system",
+          principal_id: "route-expiry-scheduler",
+          family: "hns",
+          root_label: "expiry-route",
+          expected_binding_generation: "1",
+          resulting_binding_generation: "2",
+          expected_verified_evidence_ref: "evidence-expiry",
+          ownership_status: "expired",
+          route_lifecycle_status: "suspended",
+          expired_at_transition: true,
+        },
+      ]);
+      const durableBinding = await admin.query(
+        `SELECT ownership_status, route_lifecycle_status, binding_generation,
+                verified_evidence_ref
+           FROM community_canonical_route_bindings
+          WHERE route_binding_id = 'binding-route-expiry'`,
+      );
+      expect(durableBinding.rows).toEqual([
+        {
+          ownership_status: "expired",
+          route_lifecycle_status: "suspended",
+          binding_generation: "2",
+          verified_evidence_ref: null,
+        },
+      ]);
+      await expect(expireHnsRoutes(connection)).resolves.toEqual({
+        selected: 0,
+        transitioned: 0,
+        stale: 0,
+      });
+      const providerArtifacts = await admin.query(
+        `SELECT
+           (SELECT count(*)::integer FROM community_route_revalidation_completion_attempts)
+             AS attempts,
+           (SELECT count(*)::integer FROM community_route_revalidation_evidence_snapshots)
+             AS snapshots`,
+      );
+      expect(providerArtifacts.rows).toEqual([{ attempts: 0, snapshots: 0 }]);
+      await expect(
+        admin.query(
+          `UPDATE community_route_lifecycle_transitions
+              SET principal_id = 'changed'`,
+        ),
+      ).rejects.toMatchObject({ code: "P0001" });
+      await expect(
+        admin.query("DELETE FROM community_route_lifecycle_transitions"),
+      ).rejects.toMatchObject({ code: "P0001" });
       completedTestCount += 1;
     });
   }, 30_000);
@@ -499,12 +628,121 @@ suite("canonical community route Postgres repository", () => {
           Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.null-expiry-route" })),
         ),
       ).resolves.toBeNull();
+      await expect(expireHnsRoutes(connection)).resolves.toEqual({
+        selected: 0,
+        transitioned: 0,
+        stale: 0,
+      });
+      completedTestCount += 1;
+    });
+  }, 30_000);
+
+  test("orders a bounded expiry batch by evidence expiry before binding id", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      await admin.query(
+        `INSERT INTO users (user_id, status, account) VALUES ('route-actor', 'active', '{}'::jsonb)`,
+      );
+      const expiryBase = Date.now();
+      await seedRoute(admin, {
+        suffix: "later-expiry",
+        family: "hns",
+        rootLabel: "later-expiry",
+        rootLabelDisplay: "later-expiry",
+        pathSegment: "app.later-expiry",
+        communityId: "community-later-expiry",
+        bindingId: "binding-a-later-expiry",
+        evidenceExpiresAt: new Date(expiryBase + 3_500),
+      });
+      await seedRoute(admin, {
+        suffix: "earlier-expiry",
+        family: "hns",
+        rootLabel: "earlier-expiry",
+        rootLabelDisplay: "earlier-expiry",
+        pathSegment: "app.earlier-expiry",
+        communityId: "community-earlier-expiry",
+        bindingId: "binding-z-earlier-expiry",
+        evidenceExpiresAt: new Date(expiryBase + 2_500),
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, expiryBase + 3_600 - Date.now())),
+      );
+
+      await expect(expireHnsRoutes(connection, 1)).resolves.toEqual({
+        selected: 1,
+        transitioned: 1,
+        stale: 0,
+      });
+      const bindings = await admin.query(
+        `SELECT route_binding_id, binding_generation, route_lifecycle_status
+           FROM community_canonical_route_bindings
+          ORDER BY route_binding_id`,
+      );
+      expect(bindings.rows).toEqual([
+        {
+          route_binding_id: "binding-a-later-expiry",
+          binding_generation: "1",
+          route_lifecycle_status: "active",
+        },
+        {
+          route_binding_id: "binding-z-earlier-expiry",
+          binding_generation: "2",
+          route_lifecycle_status: "suspended",
+        },
+      ]);
+      completedTestCount += 1;
+    });
+  }, 30_000);
+
+  test("fences concurrent expiry writers to one generation advance and audit row", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      await admin.query(
+        `INSERT INTO users (user_id, status, account) VALUES ('route-actor', 'active', '{}'::jsonb)`,
+      );
+      const expiresAt = Date.now() + 2_000;
+      await seedRoute(admin, {
+        suffix: "concurrent-expiry",
+        family: "hns",
+        rootLabel: "concurrent-expiry",
+        rootLabelDisplay: "concurrent-expiry",
+        pathSegment: "app.concurrent-expiry",
+        communityId: "community-concurrent-expiry",
+        bindingId: "binding-concurrent-expiry",
+        evidenceExpiresAt: new Date(expiresAt),
+      });
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.max(0, expiresAt + 100 - Date.now())),
+      );
+
+      const summaries = await Promise.all([
+        expireHnsRoutes(connection, 1),
+        expireHnsRoutes(connection, 1),
+      ]);
+      expect(summaries.reduce((total, summary) => total + summary.transitioned, 0)).toBe(1);
+      const durable = await admin.query(
+        `SELECT binding_generation, ownership_status, route_lifecycle_status,
+                verified_evidence_ref,
+                (SELECT count(*)::integer
+                   FROM community_route_lifecycle_transitions) AS transition_count
+           FROM community_canonical_route_bindings
+          WHERE route_binding_id = 'binding-concurrent-expiry'`,
+      );
+      expect(durable.rows).toEqual([
+        {
+          binding_generation: "2",
+          ownership_status: "expired",
+          route_lifecycle_status: "suspended",
+          verified_evidence_ref: null,
+          transition_count: 1,
+        },
+      ]);
       completedTestCount += 1;
     });
   }, 30_000);
 });
 
 afterAll(async () => {
-  if (connectionString === undefined || completedTestCount !== 3) return;
+  if (connectionString === undefined || completedTestCount !== 5) return;
   await Bun.write(sentinelPath, sentinelContents);
 });

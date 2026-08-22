@@ -73,6 +73,11 @@ const migrationFiles = [
   "0034_effective_active_route.sql",
   "0035_route_revalidation_persistence.sql",
   "0036_route_revalidation_completion_outcome_guard.sql",
+  "0037_text_submission_response_snapshot.sql",
+  "0038_community_creation_very_web_evidence.sql",
+  "0039_comments_replies_runtime.sql",
+  "0040_post_vote_actions.sql",
+  "0041_community_route_database_expiry.sql",
 ] as const;
 const migrations: readonly PostgresMigration[] = await Promise.all(
   migrationFiles.map(async (version) => {

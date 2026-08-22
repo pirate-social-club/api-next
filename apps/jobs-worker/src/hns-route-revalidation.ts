@@ -2,6 +2,7 @@ import {
   AlertCollector,
   ControlPlaneDb,
   completeHnsRouteRevalidation,
+  expireCommunityRouteEvidence,
   HnsRouteRevalidationCompletionRejected,
   HnsRouteRevalidationCompletionStorageFailed,
   HnsRouteRevalidationProviderFailed,
@@ -15,6 +16,9 @@ import type {
 } from "@pirate/application/route-revalidation";
 import type { AlertSink } from "@pirate/platform-cf";
 import {
+  HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
+  HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS,
+  makeControlPlaneCommunityRouteExpiryStore,
   makeControlPlaneRouteRevalidationCompletionStore,
   makeControlPlaneRouteRevalidationStartStore,
   makeHnsOwnerRouteRevalidationTransport,
@@ -36,7 +40,11 @@ export const HNS_ROUTE_REVALIDATION_LANE = "hns-route-revalidation";
 export const HNS_ROUTE_REVALIDATION_SCHEDULE = "*/5 * * * *";
 export const HNS_ROUTE_REVALIDATION_TIMEOUT = "45 seconds";
 export const HNS_ROUTE_REVALIDATION_PRINCIPAL_ID = "route-revalidation-scheduler";
-export const HNS_ROUTE_REVALIDATION_LEAD_SECONDS = 24 * 60 * 60;
+export const HNS_ROUTE_RECOVERY_BACKOFF_SECONDS = 24 * 60 * 60;
+export const HNS_ROUTE_EXPIRY_PRINCIPAL_ID = "route-expiry-scheduler";
+export const HNS_ROUTE_EXPIRY_BATCH_LIMIT = 1;
+export const HNS_ROUTE_PROVIDER_BUDGET_MARGIN_MS = 3_000;
+export const HNS_ROUTE_JOB_TIMEOUT_MS = 45_000;
 /**
  * The start and poll transports have 5s and 15s deadlines respectively. Keep
  * the total number of provider operations per cron tick at two so a worst-case
@@ -54,6 +62,7 @@ export const HNS_ROUTE_REVALIDATION_READS = [
   "postgres:community_route_revalidation_start_reservations",
   "postgres:community_route_revalidation_sessions",
   "postgres:community_route_revalidation_completion_attempts",
+  "postgres:community_route_lifecycle_transitions",
 ] as const satisfies readonly TableKey[];
 
 export const HNS_ROUTE_REVALIDATION_WRITES = [
@@ -63,10 +72,12 @@ export const HNS_ROUTE_REVALIDATION_WRITES = [
   "postgres:community_route_revalidation_evidence_snapshots",
   "postgres:community_route_ownership_evidence",
   "postgres:community_canonical_route_bindings",
+  "postgres:community_route_lifecycle_transitions",
 ] as const satisfies readonly TableKey[];
 
 export const HNS_ROUTE_REVALIDATION_SEVERITY: SeverityMapping = {
   expectedFailure: {
+    CommunityRouteExpiryStorageFailed: "high",
     HnsRouteRevalidationStartRejected: "medium",
     HnsRouteRevalidationStartStorageFailed: "high",
     HnsRouteRevalidationProviderFailed: "medium",
@@ -173,6 +184,28 @@ function emitBatchFailureAlert(
     key: `hns-route-revalidation:${phase}-item-failures`,
     severity: summary.high_severity_failures > 0 ? "high" : "medium",
     body: `HNS route-revalidation ${phase} item failed; it remains eligible for a later sweep.`,
+    entity: `batch:${phase}`,
+  });
+}
+
+export function hasHnsRouteProviderBudget(elapsedMs: number, providerDeadlineMs: number): boolean {
+  return (
+    elapsedMs + providerDeadlineMs + HNS_ROUTE_PROVIDER_BUDGET_MARGIN_MS < HNS_ROUTE_JOB_TIMEOUT_MS
+  );
+}
+
+function hasProviderBudget(startedAt: number, providerDeadlineMs: number): boolean {
+  return hasHnsRouteProviderBudget(performance.now() - startedAt, providerDeadlineMs);
+}
+
+function emitProviderBudgetAlert(
+  collector: AlertCollector["Service"],
+  phase: "start" | "poll",
+): Effect.Effect<void> {
+  return collector.emit({
+    key: `hns-route-revalidation:${phase}-budget-deferred`,
+    severity: "medium",
+    body: `HNS route-revalidation ${phase} was deferred because database-time expiry consumed its reserved deadline budget.`,
     entity: `batch:${phase}`,
   });
 }
@@ -523,9 +556,22 @@ export function makeHnsRouteRevalidationJob(
   options: HnsRouteRevalidationJobOptions,
 ): JobDeclaration<unknown, ControlPlaneDb | AlertCollector> {
   const run = Effect.gen(function* () {
+    const startedAt = performance.now();
     const db = yield* ControlPlaneDb;
     const collector = yield* AlertCollector;
+    // Database-time expiry is provider-independent and must run before any
+    // challenge recovery work. A racing old completion loses the same
+    // generation/evidence compare-and-set; expiry never polls the provider.
     const runtime = Layer.succeed(ControlPlaneDb, db);
+    const expiryStore = makeControlPlaneCommunityRouteExpiryStore(runtime);
+    yield* expireCommunityRouteEvidence(
+      {
+        family: "hns",
+        limit: HNS_ROUTE_EXPIRY_BATCH_LIMIT,
+        principal_id: HNS_ROUTE_EXPIRY_PRINCIPAL_ID,
+      },
+      { store: expiryStore },
+    );
     const startStore = makeControlPlaneRouteRevalidationStartStore(runtime);
     const completionStore = makeControlPlaneRouteRevalidationCompletionStore(runtime);
     // The provider start returns a challenge for the owner to publish. Do not
@@ -537,7 +583,7 @@ export function makeHnsRouteRevalidationJob(
       label: "jobs.hns-route-revalidation.start-candidates",
       text: HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL,
       values: [
-        HNS_ROUTE_REVALIDATION_LEAD_SECONDS,
+        HNS_ROUTE_RECOVERY_BACKOFF_SECONDS,
         HNS_ROUTE_REVALIDATION_PHASE_LIMIT,
         HNS_ROUTE_REVALIDATION_PRINCIPAL_ID,
         options.force?.route_binding_id ?? null,
@@ -557,6 +603,17 @@ export function makeHnsRouteRevalidationJob(
           candidate.provider_configuration.reference === options.configuration.reference &&
           candidate.provider_configuration.version === options.configuration.version,
       );
+    if (
+      startCandidates.length > 0 &&
+      !hasProviderBudget(
+        startedAt,
+        HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS +
+          HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
+      )
+    ) {
+      yield* emitProviderBudgetAlert(collector, "start");
+      return;
+    }
     const startSummary = yield* runBoundedHnsRouteRevalidationBatch(
       startCandidates,
       HNS_ROUTE_REVALIDATION_PHASE_LIMIT,
@@ -591,6 +648,13 @@ export function makeHnsRouteRevalidationJob(
     const pendingLimit = HNS_ROUTE_REVALIDATION_BATCH_LIMIT - startSummary.processed;
     if (pendingLimit === 0) return;
 
+    if (
+      !hasProviderBudget(startedAt, pendingLimit * HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS)
+    ) {
+      yield* emitProviderBudgetAlert(collector, "poll");
+      return;
+    }
+
     const pending = yield* db.execute<Row>({
       label: "jobs.hns-route-revalidation.pending-sessions",
       text: HNS_ROUTE_REVALIDATION_PENDING_SESSIONS_SQL,
@@ -611,20 +675,46 @@ export function makeHnsRouteRevalidationJob(
           session.consumed_attempts < 3 &&
           !startedSessionIds.has(session.revalidation_session_id),
       );
+    if (
+      !hasProviderBudget(
+        startedAt,
+        Math.min(pendingSessions.length, pendingLimit) *
+          HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
+      )
+    ) {
+      yield* emitProviderBudgetAlert(collector, "poll");
+      return;
+    }
+    let remainingPolls = Math.min(pendingSessions.length, pendingLimit);
+    let pollBudgetDeferred = false;
     const pollSummary = yield* runBoundedHnsRouteRevalidationBatch(
       pendingSessions,
       pendingLimit,
       (session) =>
-        completeHnsRouteRevalidation(
-          {
-            route_revalidation_id: session.route_revalidation_id,
-            revalidation_session_id: session.revalidation_session_id,
-            expected_binding_generation: session.expected_binding_generation,
-            idempotency_key: `hns-route-revalidation-poll:${session.consumed_attempts + 1}`,
-            channel: "poll_result",
-          },
-          { store: completionStore, provider: options.provider },
-        ).pipe(Effect.asVoid),
+        Effect.gen(function* () {
+          if (pollBudgetDeferred) return;
+          if (
+            !hasProviderBudget(
+              startedAt,
+              remainingPolls * HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
+            )
+          ) {
+            pollBudgetDeferred = true;
+            yield* emitProviderBudgetAlert(collector, "poll");
+            return;
+          }
+          remainingPolls -= 1;
+          yield* completeHnsRouteRevalidation(
+            {
+              route_revalidation_id: session.route_revalidation_id,
+              revalidation_session_id: session.revalidation_session_id,
+              expected_binding_generation: session.expected_binding_generation,
+              idempotency_key: `hns-route-revalidation-poll:${session.consumed_attempts + 1}`,
+              channel: "poll_result",
+            },
+            { store: completionStore, provider: options.provider },
+          );
+        }),
     );
     yield* emitBatchFailureAlert(collector, "poll", pollSummary);
   }).pipe(
@@ -640,6 +730,7 @@ export function makeHnsRouteRevalidationJob(
     timeout: HNS_ROUTE_REVALIDATION_TIMEOUT,
     retry: defaultRetrySchedule,
     expectedFailures: [
+      "CommunityRouteExpiryStorageFailed",
       "HnsRouteRevalidationStartRejected",
       "HnsRouteRevalidationStartStorageFailed",
       "HnsRouteRevalidationProviderFailed",
