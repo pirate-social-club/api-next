@@ -262,11 +262,13 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       email: (digest: AlertDigest) => Effect.sync(() => emails.push(digest)),
       webhook: (alerts: readonly Alert[]) => Effect.sync(() => void webhooks.push([...alerts])),
     };
-    const job = makeCommunityCatalogIntegrityJob(sink, {
-      timeout: 5_000,
-    });
+    const job = {
+      ...makeCommunityCatalogIntegrityJob(sink, { timeout: 5_000 }),
+      // Workerd test files share the DO namespace and can run concurrently.
+      lane: "workerd-routing-audit-renewal",
+    };
 
-    const result = await handleScheduled(env, job.lane, job, 1_000_000, {
+    const result = await handleScheduled(env, job.lane, job, Date.now(), {
       runtime: Layer.succeed(ControlPlaneDb, db),
       // Keep enough expiry margin for loaded CI runners while the short
       // renewal cadence still proves that the heartbeat runs during the job.
