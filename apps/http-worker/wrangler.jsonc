@@ -62,6 +62,7 @@
     "PIRATE_APP_JWT_ISSUER": "api-next-session-development",
     "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-development",
     "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-development",
+    "PRIVY_JWT_ISSUER": "privy.io",
     "PRIVY_API_URL": "https://auth.privy.io"
   },
   "secrets": {
@@ -118,24 +119,32 @@
         "SELF_PASS_MOCK_PASSPORT": "true",
         "VERY_OAUTH_ENABLED": "false",
         "VERY_WEB_ENABLED": "false",
-        "VERY_APP_ID": "",
-        "VERY_API_URL": "https://api.very.org/api/v1",
-        "VERY_VERIFY_URL": "https://verify.very.org/api/v1/verify",
-        "VERY_BRIDGE_API_URL": "https://bridge.very.org/api/v1",
+        "VERY_WEB_API_URL": "https://api.very.org/api/v1",
+        "VERY_WEB_VERIFY_URL": "https://verify.very.org/api/v1/verify",
+        "VERY_WEB_BRIDGE_API_URL": "https://bridge.very.org/api/v1",
         "HNS_OWNERSHIP_ENABLED": "false",
         "ZKPASSPORT_ENABLED": "true",
         "ZKPASSPORT_DOMAIN": "web-next-staging.pirate.sc",
         "ZKPASSPORT_NAME": "Pirate",
         "ZKPASSPORT_LOGO": "",
         "ZKPASSPORT_VERIFIER_URL": "https://zkpassport-verifier-staging.pirate.sc",
+        // Empty rotation fields explicitly mean that no previous signing key
+        // is active. Before rotating a key, add
+        // ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET to this
+        // environment's secrets.required and populate the complete triple in
+        // one reviewed change. The inactive path is intentionally undeclared.
+        "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID": "",
+        "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL": "",
         "ZKPASSPORT_DEV_MODE": "true",
         "PIRATE_APP_JWT_ISSUER": "api-next-session-staging",
         "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-staging",
         "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-staging",
         "PIRATE_APP_JWT_TTL_SECONDS": "3600",
+        "PIRATE_APP_JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAx03V3E/gbfe4WWMdKXDZ\ny7oFf/uofI2NnIZYBVbppPZWe0LdiYLDH8OAJCr0g4Zsk+um5BC3W5aV/UzkfyTF\nxgv7TK3fsKfLcf/iGDGWXouKXGPfZjI2OLBxeQiFxmXPoALoxXLJplgCo9blRdGZ\nw13Z/5B9U/bpXA5n6qOhbMXaSDFpdTIn5FV8HEo2XHd3LxA96pNoI5UioO9xgzcl\nb6FDCxtDLGgq10tJFPbpUSv6gfGtv6qeNfwP+eqdeh521U2nOw4NrI+dKotq4MTv\nqDf9+mxKFYsi2coWNnJwXp2+wX4n9f3Kqb0wkIDUaXfS9sdNzxnhVv27seGy2LKq\nAwIDAQAB\n-----END PUBLIC KEY-----",
+        "PRIVY_APP_ID": "cmsw5pis300b80cladbxx7bsr",
+        "PRIVY_JWKS_URL": "https://auth.privy.io/api/v1/apps/cmsw5pis300b80cladbxx7bsr/jwks.json",
+        "PRIVY_JWT_AUDIENCE": "cmsw5pis300b80cladbxx7bsr",
         "PRIVY_JWT_ISSUER": "privy.io",
-        // PRIVY_JWKS_URL and PRIVY_JWT_AUDIENCE are derived from the
-        // staging Privy app and are injected at deployment time.
         // Reviewed inventory: staging currently has no additional internal
         // credential headers beyond the platform denylist.
         "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
@@ -144,9 +153,8 @@
       "secrets": {
         "required": [
           "PIRATE_APP_JWT_PRIVATE_KEY",
-          "PIRATE_APP_JWT_PUBLIC_KEY",
-          "PRIVY_APP_ID",
           "PRIVY_APP_SECRET",
+          "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID",
@@ -191,6 +199,11 @@
         "PIRATE_APP_JWT_ISSUER": "api-next-session-production",
         "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-production",
         "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-production",
+        "PIRATE_APP_JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtJV3ZoN9cXcnkhYR+awL\nWSM/YKLrgx5QrJM9H9Lh8HKWcV3Fghd1GYNziYBOVlccPSs9kv7aAYvNnb4OEIe5\nKJmOJ8gZPc7u4tlCmrNUNHtRJdF7CL7r3lPXrm8MyGX6RtSvfabaVUAuII0Fvfn1\nDv8AKXqUbktdMejJjFCHMHtomzTZ16erl+fK92+G67EYA2cXsJMPHTaxXCa/yo4S\nUFxt27m+GTcC0b3itUpLiwJ93IUHHXcKGcQ9boJX9jTb7xg5CvuVxFYy089jnsUJ\nQ8og2diKehMWTMZfSD1phKXdptXhUwOTACuegqtDPmWzyUDC79kMUFz9P111vYEV\n8QIDAQAB\n-----END PUBLIC KEY-----",
+        "PRIVY_APP_ID": "cmnbdx9xk00ty0clapn2q8pdj",
+        "PRIVY_JWKS_URL": "https://auth.privy.io/api/v1/apps/cmnbdx9xk00ty0clapn2q8pdj/jwks.json",
+        "PRIVY_JWT_AUDIENCE": "cmnbdx9xk00ty0clapn2q8pdj",
+        "PRIVY_JWT_ISSUER": "privy.io",
         // Reviewed inventory: production currently has no additional internal
         // credential headers beyond the platform denylist.
         "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS": "",
@@ -199,8 +212,6 @@
       "secrets": {
         "required": [
           "PIRATE_APP_JWT_PRIVATE_KEY",
-          "PIRATE_APP_JWT_PUBLIC_KEY",
-          "PRIVY_APP_ID",
           "PRIVY_APP_SECRET",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
         ]

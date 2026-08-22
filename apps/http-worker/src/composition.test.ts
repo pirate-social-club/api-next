@@ -76,10 +76,10 @@ function withVeryWeb(bindings: HttpWorkerBindings): HttpWorkerBindings {
   return {
     ...bindings,
     VERY_WEB_ENABLED: "true",
-    VERY_APP_ID: "pirate-web-staging",
-    VERY_API_URL: "https://api.very.org/api/v1",
-    VERY_VERIFY_URL: "https://verify.very.org/api/v1/verify",
-    VERY_BRIDGE_API_URL: "https://bridge.very.org/api/v1",
+    VERY_WEB_APP_ID: "pirate-web-staging",
+    VERY_WEB_API_URL: "https://api.very.org/api/v1",
+    VERY_WEB_VERIFY_URL: "https://verify.very.org/api/v1/verify",
+    VERY_WEB_BRIDGE_API_URL: "https://bridge.very.org/api/v1",
     VERY_WEB_SEALING_KEY: "w".repeat(32),
   };
 }
@@ -262,10 +262,10 @@ describe("HTTP production composition", () => {
   test("fails closed before registering Very web when required configuration is incomplete", async () => {
     const configured = withVeryWeb(await bindings());
     for (const setting of [
-      "VERY_APP_ID",
-      "VERY_API_URL",
-      "VERY_VERIFY_URL",
-      "VERY_BRIDGE_API_URL",
+      "VERY_WEB_APP_ID",
+      "VERY_WEB_API_URL",
+      "VERY_WEB_VERIFY_URL",
+      "VERY_WEB_BRIDGE_API_URL",
       "VERY_WEB_SEALING_KEY",
     ] as const) {
       await expect(

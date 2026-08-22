@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["bun"]
+  },
+  "include": [
+    "scripts/binding-contract-invariant.test.ts",
+    "scripts/secret-drift-audit.ts",
+    "scripts/secret-drift-audit.test.ts",
+    "scripts/infisical-secret-drift-audit.ts",
+    "scripts/infisical-secret-drift-audit.test.ts"
+  ]
+}

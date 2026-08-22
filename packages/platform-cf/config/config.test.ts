@@ -74,10 +74,10 @@ describe("config system (000 §9)", () => {
       VERY_OAUTH_CLIENT_ID: "",
       VERY_OAUTH_REDIRECT_URI: "",
       VERY_WEB_ENABLED: false,
-      VERY_APP_ID: "",
-      VERY_API_URL: "",
-      VERY_VERIFY_URL: "",
-      VERY_BRIDGE_API_URL: "",
+      VERY_WEB_APP_ID: "",
+      VERY_WEB_API_URL: "",
+      VERY_WEB_VERIFY_URL: "",
+      VERY_WEB_BRIDGE_API_URL: "",
       HNS_OWNERSHIP_ENABLED: false,
       HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "",
       HNS_OWNERSHIP_CONFIGURATION_VERSION: "",
@@ -114,7 +114,6 @@ describe("config system (000 §9)", () => {
       expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
-      expect(environment.secrets?.required ?? []).not.toContain("VERY_WEB_SEALING_KEY");
     }
     // Development (the base block) and production rely on the config default,
     // while staging carries an explicit false until separately authorized.
