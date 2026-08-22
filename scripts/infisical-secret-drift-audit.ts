@@ -24,13 +24,6 @@ const OPERATOR_SECRET_NAMES = [
   "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
 ] as const;
 
-const PRODUCTION_ALERT_NAMES = [
-  "API_NEXT_ALERT_EMAIL_TOKEN",
-  "API_NEXT_ALERT_EMAIL_URL",
-  "API_NEXT_ALERT_WEBHOOK_TOKEN",
-  "API_NEXT_ALERT_WEBHOOK_URL",
-] as const;
-
 export type InfisicalPolicy = Readonly<{
   environment: InfisicalEnvironment;
   path: InfisicalPath;
@@ -59,7 +52,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     environment: "prod",
     path: "/",
     requiredNames: [],
-    allowedNames: [...PRODUCTION_ALERT_NAMES],
+    allowedNames: [],
   },
   {
     environment: "prod",
@@ -90,22 +83,7 @@ export type InfisicalExpectedDrift = Readonly<{
   reason: string;
 }>;
 
-export const EXPECTED_INFISICAL_DRIFT: readonly InfisicalExpectedDrift[] = [
-  ...PRODUCTION_ALERT_NAMES.map((name) => ({
-    environment: "prod" as const,
-    path: "/" as const,
-    kind: "unexpected-secret" as const,
-    name,
-    reason: "Production is disabled; the alert placeholder remains isolated at root.",
-  })),
-  {
-    environment: "prod",
-    path: "/services/api-next",
-    kind: "missing-required-secret",
-    name: "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
-    reason: "No authorized production funding RPC has been sourced.",
-  },
-];
+export const EXPECTED_INFISICAL_DRIFT: readonly InfisicalExpectedDrift[] = [];
 
 export type InfisicalSnapshot = Readonly<{
   environment: InfisicalEnvironment;
@@ -329,9 +307,14 @@ export async function fetchInfisicalSnapshots(input: {
   const snapshots: InfisicalSnapshot[] = [];
   for (const environment of INFISICAL_ENVIRONMENTS) {
     const folders = await listInfisicalFolderPaths({ ...input, environment });
+    const observedFolders = new Set(folders.map(normalisePath));
     const policies = INFISICAL_POLICIES.filter((policy) => policy.environment === environment);
     const secrets = {} as Record<InfisicalPath, readonly string[]>;
     for (const policy of policies) {
+      if (policy.path !== "/" && !observedFolders.has(policy.path)) {
+        secrets[policy.path] = [];
+        continue;
+      }
       secrets[policy.path] = await listInfisicalSecretNames({
         ...input,
         environment,

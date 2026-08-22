@@ -174,30 +174,30 @@ configuration must be reintroduced deliberately.
    development declarations remain a known classification gap until a real
    development configuration is sourced.
 5. **Infisical is not a complete source for the staging Worker.**
-   `/services/api-next` holds three runtime secrets; the deployed staging
-   Worker has seven. The four absent from Infisical are
-   `ZKPASSPORT_VERIFIER_SHARED_SECRET`,
-   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET`,
-   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID`, and
-   `VERY_WEB_SEALING_KEY`. They exist only as installed Cloudflare secrets.
+   The live name-only audit found five entries at `/services/api-next`: the
+   three previously copied runtime secrets, `VERY_WEB_SEALING_KEY`, and the
+   unexpected public-config name `VERY_APP_ID`. The three missing runtime names
+   are `ZKPASSPORT_VERIFIER_SHARED_SECRET`,
+   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET`, and
+   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID`. They remain only as
+   installed Cloudflare secrets.
 
    Consequence: a Worker rebuilt from `/services/api-next` today would be
-   missing all four. `ZKPASSPORT_ENABLED` is `true` in staging, so ZKPassport
-   verification would fail closed, and the Very web flow would lose its sealing
-   key. The service-path sync cannot be rehearsed end to end until these four
-   are stored.
+   missing the three ZKPassport values. `ZKPASSPORT_ENABLED` is `true` in
+   staging, so verification would fail closed. The Very sealing key is now
+   present in Infisical; `VERY_APP_ID` is not a secret and should be removed
+   from Infisical rather than retained under either the old or new name.
 
-   This is the oldest unresolved item in the lane. The three ZKPassport names
-   were recorded as Cloudflare-only in the very first inventory and were never
-   given an Infisical home; `VERY_WEB_SEALING_KEY` was installed later and
-   never stored at all. Sourcing them is not a value-discovery problem — the
-   values exist on the Worker — it is a copy that has not been done, with the
-   exception of the key ID, which additionally needs its public form resolved
-   under item 2.
+   The three ZKPassport names were recorded as Cloudflare-only in the very
+   first inventory and were never given an Infisical home. Sourcing them is not
+   a value-discovery problem — the values exist on the Worker — it is a copy
+   that has not been done, with the exception of the key ID, which additionally
+   needs its public form resolved under item 2.
 
-6. Infisical staging carries no funding RPC. The staging Worker uses the
-   fail-closed sentinel `https://rpc.invalid/`. An authorized real staging RPC
-   is required before any money-flow verification.
+6. Infisical staging now contains `COMMUNITY_PURCHASE_FUNDING_RPC_URL`. The
+   staging Worker still uses the fail-closed sentinel `https://rpc.invalid/`.
+   An authorized real staging RPC is required before any money-flow
+   verification; the live audit did not read the value.
 
 ## Naming and classification rules
 
@@ -535,12 +535,12 @@ the CLI's local value cache. Folder requests are metadata-only and read only
 use `INFISICAL_API_URL` for the regional API base URL. It never reads the
 local Infisical profile, project pin, or cached credential.
 
-Known accepted drift is narrow and explicit: the four disabled-production
-alert placeholders at root, and the missing production funding RPC until an
-authorized endpoint exists. A live Infisical run is intentionally still
-pending fresh session hygiene and a fresh name-only audit credential. The
-fixture-backed logic is committed and ready; no Infisical values have been
-rendered or changed by this audit.
+No current Infisical drift is allowlisted. The disabled-production alert
+placeholders, missing production funding RPC, missing staging ZKPassport
+names, and unexpected `VERY_APP_ID` are all reported as failures until they
+are removed, sourced, or explicitly corrected. The first live run on
+2026-08-22 found nine violations and zero accepted entries. It read names and
+folder metadata only; no Infisical value was rendered or changed.
 
 ## Local project selection — corrected 2026-08-22
 

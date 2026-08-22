@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   auditInfisicalSnapshots,
+  fetchInfisicalSnapshots,
   type InfisicalSnapshot,
   listInfisicalSecretNames,
   parseInfisicalFolderPaths,
@@ -34,7 +35,7 @@ describe("Infisical secret drift audit", () => {
     ]);
   });
 
-  test("requires the four missing staging runtime secrets and accepts known prod drift", () => {
+  test("reports missing runtime secrets and root drift as failures", () => {
     const stagingBase = emptySnapshot("staging");
     const staging: InfisicalSnapshot = {
       ...stagingBase,
@@ -77,8 +78,13 @@ describe("Infisical secret drift audit", () => {
       "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID",
       "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
       "ZKPASSPORT_VERIFIER_SHARED_SECRET",
+      "API_NEXT_ALERT_EMAIL_TOKEN",
+      "API_NEXT_ALERT_EMAIL_URL",
+      "API_NEXT_ALERT_WEBHOOK_TOKEN",
+      "API_NEXT_ALERT_WEBHOOK_URL",
+      "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
     ]);
-    expect(report.acceptedDrift).toHaveLength(5);
+    expect(report.acceptedDrift).toHaveLength(0);
   });
 
   test("detects unexpected folders and stored names", () => {
@@ -148,5 +154,45 @@ describe("Infisical secret drift audit", () => {
     expect(query.get("viewSecretValue")).toBe("false");
     expect(query.get("recursive")).toBe("false");
     expect(names).toEqual(["SAFE_NAME"]);
+  });
+
+  test("does not query secret paths under absent folders", async () => {
+    const requestedUrls: string[] = [];
+    const snapshots = await fetchInfisicalSnapshots({
+      baseUrl: "https://infisical.example/api",
+      projectId: "project",
+      token: "test-token",
+      request: async (url) => {
+        requestedUrls.push(url);
+        const parsed = new URL(url);
+        if (parsed.pathname.endsWith("/folders")) {
+          const environment = parsed.searchParams.get("environment");
+          return new Response(
+            JSON.stringify({
+              folders:
+                environment === "dev"
+                  ? []
+                  : [
+                      { relativePath: "/services" },
+                      { relativePath: "/services/api-next" },
+                      { relativePath: "/services/api-next/operator" },
+                    ],
+            }),
+          );
+        }
+        return new Response(JSON.stringify({ secrets: [] }));
+      },
+    });
+
+    expect(snapshots).toHaveLength(3);
+    expect(
+      requestedUrls.filter((url) => url.includes("/v4/secrets") && url.includes("environment=dev")),
+    ).toHaveLength(1);
+    expect(
+      requestedUrls.some(
+        (url) =>
+          url.includes("environment=dev") && url.includes("secretPath=%2Fservices%2Fapi-next"),
+      ),
+    ).toBe(false);
   });
 });
