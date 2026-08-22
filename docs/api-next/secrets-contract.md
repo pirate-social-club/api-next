@@ -560,27 +560,21 @@ Infisical value was rendered.
 
 ## Local project selection — corrected 2026-08-22
 
-`/home/t42/.infisical.json` **still exists** and still pins the historical
-workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71`. A scan after the credential
-reset reported it as absent; that was incorrect. The credential reset cleared
-the login and the offline cache — `~/.infisical/secrets-backup/` is confirmed
-gone — but it did not touch the home-directory project pin, which is
-configuration rather than credential.
+Both the repository pin at `api-next/.infisical.json` and the home-directory
+pin at `/home/t42/.infisical.json` now point to
+`fac45f92-9450-42fb-8c2f-f20d043fdfab`. The home pin previously targeted the
+historical workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71`; that active trap
+was corrected after the credential reset. The old project identifier remains
+only in historical/reference material and is not an active project
+selection. `~/.infisical/secrets-backup/` is confirmed absent.
 
-That pin is an active trap. Any `infisical` command run outside a directory
-with its own `.infisical.json` silently targets the legacy project, whose
-`/services/api` folder holds a similarly named but unrelated set of database
-URLs on the same PlanetScale instance.
+Verified from outside the repository with no `--projectId`:
+`infisical secrets folders get --env=staging --path=/services` resolves the
+new `/services/api-next` folder. A project ID is not a secret. The repository
+pin is committed in `0893585`; the home pin is local machine configuration.
 
-Fix applied: `api-next/.infisical.json` now pins
-`fac45f92-9450-42fb-8c2f-f20d043fdfab`. Verified — `infisical secrets folders
-get --env=staging --path=/services` with no `--projectId` resolves
-`/services/api-next` correctly. A project ID is not a secret, so this file
-is committed in `0893585` rather than ignored.
-
-This makes the correct project the default for anyone working in the tree and
-removes the reliance on remembering `--projectId` or on which profile happens
-to be selected.
+This removes the reliance on remembering `--projectId` or on which profile
+happens to be selected for commands in the repository or its parent tree.
 
 The operator path was rehearsed in non-mutating mode after the pin was
 committed: `infisical run --env=staging
