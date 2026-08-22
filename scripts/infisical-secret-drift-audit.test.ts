@@ -75,7 +75,6 @@ describe("Infisical secret drift audit", () => {
     const report = auditInfisicalSnapshots([emptySnapshot("dev"), staging, prod]);
     expect(report.violations.map(({ name }) => name)).toEqual([
       "VERY_WEB_SEALING_KEY",
-      "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID",
       "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
       "ZKPASSPORT_VERIFIER_SHARED_SECRET",
       "API_NEXT_ALERT_EMAIL_TOKEN",
@@ -115,7 +114,6 @@ describe("Infisical secret drift audit", () => {
           "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
-          "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID",
         ],
         "/services/api-next/operator": [
           "CONTROL_PLANE_POSTGRES_ADMIN_URL",

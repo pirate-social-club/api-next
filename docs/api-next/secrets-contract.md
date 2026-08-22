@@ -4,9 +4,10 @@ Status: audited and organized. Infisical confidential values were not rendered
 in tool output. The approved confidential entries were copied server-side
 within Infisical into their target paths, and the old root duplicates were
 removed after hash verification. Public configuration was moved to repository
-vars. An already-expired staging session token was briefly rendered by the
-key-pair diagnostic; its local artifact was removed immediately and it was not
-an Infisical value.
+vars. The incorrectly stored `VERY_APP_ID` public-config entry was deleted
+after source verification. An already-expired staging session token was
+briefly rendered by the key-pair diagnostic; its local artifact was removed
+immediately and it was not an Infisical value.
 
 Date of inventory: 2026-08-22.
 
@@ -176,23 +177,24 @@ configuration must be reintroduced deliberately.
 5. **Infisical is not a complete source for the staging Worker.**
    The live name-only audit found five entries at `/services/api-next`: the
    three previously copied runtime secrets, `VERY_WEB_SEALING_KEY`, and the
-   unexpected public-config name `VERY_APP_ID`. The three missing runtime names
-   are `ZKPASSPORT_VERIFIER_SHARED_SECRET`,
-   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET`, and
-   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID`. They remain only as
-   installed Cloudflare secrets.
+   unexpected public-config name `VERY_APP_ID`. The two missing confidential
+   runtime names are `ZKPASSPORT_VERIFIER_SHARED_SECRET` and
+   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET`. The public key ID is not an
+   Infisical runtime secret; it remains an installed Cloudflare value until
+   its real value is sourced and moved to the Wrangler var declaration.
 
    Consequence: a Worker rebuilt from `/services/api-next` today would be
-   missing the three ZKPassport values. `ZKPASSPORT_ENABLED` is `true` in
-   staging, so verification would fail closed. The Very sealing key is now
-   present in Infisical; `VERY_APP_ID` is not a secret and should be removed
-   from Infisical rather than retained under either the old or new name.
+   missing the two ZKPassport confidential values. `ZKPASSPORT_ENABLED` is
+   `true` in staging, so verification would fail closed. The Very sealing key
+   is now present in Infisical; `VERY_APP_ID` was not a secret and has been
+   removed from Infisical rather than retained under either the old or new
+   name.
 
-   The three ZKPassport names were recorded as Cloudflare-only in the very
-   first inventory and were never given an Infisical home. Sourcing them is not
-   a value-discovery problem — the values exist on the Worker — it is a copy
-   that has not been done, with the exception of the key ID, which additionally
-   needs its public form resolved under item 2.
+   The two ZKPassport secret names were recorded as Cloudflare-only in the
+   very first inventory and were never given an Infisical home. Sourcing them
+   is not a value-discovery problem — the values exist on the Worker — it is a
+   copy that has not been done. The key ID additionally needs its public form
+   resolved under item 2.
 
 6. Infisical staging now contains `COMMUNITY_PURCHASE_FUNDING_RPC_URL`. The
    staging Worker still uses the fail-closed sentinel `https://rpc.invalid/`.
@@ -297,12 +299,13 @@ The api-next Infisical project has no development app ID or public key, so the
 development values were not invented. The invariant test remains red for the
 two missing development Privy names.
 
-**D5 — public configuration still has two unresolved declarations.**
+**D5 — public configuration still has unresolved declarations.**
 `PIRATE_APP_JWT_PUBLIC_KEY` and `PRIVY_APP_ID` are vars in staging and
 production. Development still has them in `secrets.required` because no real
 development values are available. The staging
-`ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID` also remains in the secret store
-until its real Cloudflare value is sourced.
+`ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID` remains a Cloudflare secret
+temporarily; its real value must be sourced before moving it to the Wrangler
+var declaration. It is intentionally not an Infisical runtime secret.
 
 **D6 — the HNS ownership configuration pair is undeclared.**
 `HNS_OWNERSHIP_CONFIGURATION_REFERENCE` and
@@ -314,7 +317,8 @@ Breaks rule 3 the moment the flag flips.
 `VERY_WEB_APP_ID`, `VERY_WEB_API_URL`, `VERY_WEB_VERIFY_URL`, and
 `VERY_WEB_BRIDGE_API_URL` in source, tests, the binding manifest, and staging
 Wrangler vars. The empty `VERY_APP_ID` declaration was removed. The invariant
-namespace check passes, and no Very value was added to Infisical.
+namespace check passes. No Very public configuration is stored in Infisical;
+the confidential `VERY_WEB_SEALING_KEY` is the sole Very runtime entry there.
 
 **D8 — environment vocabulary is inconsistent across systems.** Infisical uses
 the slug `prod`; Wrangler uses the env key `production`; `alert-config.ts`
@@ -536,11 +540,13 @@ use `INFISICAL_API_URL` for the regional API base URL. It never reads the
 local Infisical profile, project pin, or cached credential.
 
 No current Infisical drift is allowlisted. The disabled-production alert
-placeholders, missing production funding RPC, missing staging ZKPassport
-names, and unexpected `VERY_APP_ID` are all reported as failures until they
-are removed, sourced, or explicitly corrected. The first live run on
-2026-08-22 found nine violations and zero accepted entries. It read names and
-folder metadata only; no Infisical value was rendered or changed.
+placeholders, missing production funding RPC, and missing staging ZKPassport
+names are all reported as failures until they are removed, sourced, or
+explicitly corrected. The first live run on 2026-08-22 found nine violations,
+including `VERY_APP_ID`; after deleting that entry and removing the public key
+ID from the Infisical runtime policy, the follow-up run found seven violations
+and zero accepted entries. It read names and folder metadata only; no
+Infisical value was rendered.
 
 ## Local project selection — corrected 2026-08-22
 
