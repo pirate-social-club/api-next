@@ -1,8 +1,9 @@
 # api-next secrets contract
 
-Status: inventory and target layout. Secret values were not printed or locally
-copied. The approved confidential entries were copied server-side within
-Infisical into their target paths; no root entry was changed or deleted.
+Status: audited and organized. Confidential values were not rendered in tool
+output. The approved confidential entries were copied server-side within
+Infisical into their target paths, and the old root duplicates were removed
+after hash verification. Public configuration was moved to repository vars.
 
 Date of inventory: 2026-08-22.
 
@@ -20,11 +21,11 @@ secret name.
 
 ## Observed state
 
-Metadata only for inventory. Verified 2026-08-22 with the folder endpoint and
-the Infisical secrets list API using `viewSecretValue=false`. No command
-returned secret values to a terminal, and the approved path copies used
-Infisical's server-side duplicate operation, so no value passed through this
-workspace.
+Metadata only for the initial inventory. During the cleanup, public
+configuration values were read to populate Wrangler vars and confidential
+values were compared by SHA-256 without rendering them. The approved path
+copies used Infisical's server-side duplicate operation, so no confidential
+value passed through this workspace.
 
 Values were nevertheless written to disk. The CLI maintains an offline cache at
 `~/.infisical/secrets-backup/`, and
@@ -39,27 +40,26 @@ The project defines exactly three environment slugs: `dev`, `staging`, and
 `prod`. Note that the slug is `prod`, not `production`; `--env=production`
 returns a 404.
 
-| Environment | Current folder tree and name-only inventory |
+| Environment | Current folder tree and root inventory |
 | --- | --- |
 | `dev` | no folders and no secrets |
-| `staging` | `/services/api-next` has 3 copied runtime entries; `/services/api-next/operator` has 2 copied operator entries; 17 root entries remain |
-| `prod` | `/services/api-next` has 2 copied runtime entries; `/services/api-next/operator` has 2 copied operator entries; 19 root entries remain |
+| `staging` | `/services/api-next` has 3 runtime entries; `/services/api-next/operator` has 2 operator entries; root is empty |
+| `prod` | `/services/api-next` has 2 runtime entries; `/services/api-next/operator` has 2 operator entries; root retains only four alert placeholders |
 
-The root entries remain pending the session-hygiene step and the later cutover.
-The copies are the migration staging point; the four zero-consumer legacy
-entries are approved for deletion once the fresh Infisical session is ready.
 No HNS or Very path was created, because no approved HNS or Very entry exists.
+The service and operator copies remain the canonical Infisical locations.
+Cloudflare synchronization must use those paths explicitly on the next
+authorized deployment; Infisical does not infer path changes.
 
-The complete name-only inventory was confirmed across all three environments.
-`dev` is empty. `staging` has the seventeen names previously reported. `prod`
-has those applicable names plus four `API_NEXT_ALERT_*` entries; it has no
-funding RPC or self-callback token.
+The post-cleanup inventory was confirmed across all three environments.
+`dev` is empty. `staging` has no root entries. `prod` has only the four
+`API_NEXT_ALERT_*` placeholders; it has no funding RPC or self-callback token.
 
-Prod therefore received two runtime entries where staging received three. The
-missing one is `COMMUNITY_PURCHASE_FUNDING_RPC_URL`, which does not exist in
-prod. This is expected rather than a partial copy, but it means prod cannot
-satisfy the runtime contract until an authorized production funding RPC is
-sourced. Staging has the name but its value is the fail-closed sentinel
+Prod therefore has two runtime entries where staging has three. The missing
+one is `COMMUNITY_PURCHASE_FUNDING_RPC_URL`, which does not exist in prod. This
+is expected rather than a partial copy, but it means prod cannot satisfy the
+runtime contract until an authorized production funding RPC is sourced.
+Staging has the name but its value is the fail-closed sentinel
 `https://rpc.invalid/`, so neither environment can currently serve a money
 flow.
 
@@ -95,18 +95,18 @@ in the operator path and are used by migrations and by human operators only.
 | `PIRATE_APP_JWT_AUDIENCE` | yes | already a Wrangler var in all three environments |
 | `PIRATE_APP_JWT_ISSUER` | yes | already a Wrangler var in all three environments |
 | `PIRATE_APP_JWT_TTL_SECONDS` | yes | already a Wrangler var in staging |
-| `PIRATE_APP_JWT_PUBLIC_KEY` | yes | still declared as a Worker secret |
-| `PRIVY_APP_ID` | yes | still declared as a Worker secret |
-| `PRIVY_JWKS_URL` | yes | undeclared; see drift below |
-| `PRIVY_JWT_AUDIENCE` | yes | undeclared; see drift below |
-| `PRIVY_JWT_ISSUER` | yes | already a Wrangler var in staging |
+| `PIRATE_APP_JWT_PUBLIC_KEY` | yes | Wrangler var in staging and prod; development value unavailable |
+| `PRIVY_APP_ID` | yes | Wrangler var in staging and prod; development value unavailable |
+| `PRIVY_JWKS_URL` | yes | Wrangler var in staging and prod; development value unavailable |
+| `PRIVY_JWT_AUDIENCE` | yes | Wrangler var in staging and prod; development value unavailable |
+| `PRIVY_JWT_ISSUER` | yes | Wrangler var in all three environments |
 
 These values are public or derived. A public key, an app identifier, an
 audience, an issuer, and a JWKS URL are all disclosed to clients or discoverable
 from the upstream provider. Treating them as secrets hides real configuration
 behind an access boundary without adding protection.
 
-### Legacy entries — approved cleanup candidates
+### Legacy entries — deleted
 
 | Name | Referenced in source |
 | --- | --- |
@@ -116,13 +116,13 @@ behind an access boundary without adding protection.
 | `AUTH_UPSTREAM_JWT_JWKS_URL` | no |
 
 The Self callback capture seam was parked and its Durable Object class was
-retired by Wrangler migration `v3`. Its token has no current consumer. The
-`AUTH_UPSTREAM_*` names are legacy JWT audience, issuer, and JWKS configuration
-from the prior auth-upstream integration; they have no current consumer and
-`pirate-app-staging` has no current workspace reference. None of these four
-names enters a target path. Delete them from the api-next project after the
-session-hygiene step is complete. If the auth-upstream integration is ever
-revived, its public configuration must be reintroduced deliberately.
+retired by Wrangler migration `v3`. Its token had no current consumer. The
+`AUTH_UPSTREAM_*` names were legacy JWT audience, issuer, and JWKS
+configuration from the prior auth-upstream integration; they had no current
+consumer and `pirate-app-staging` had no current workspace reference. All four
+were deleted from staging and prod and are absent from the post-cleanup
+inventory. If the auth-upstream integration is ever revived, its public
+configuration must be reintroduced deliberately.
 
 ## Target path layout
 
@@ -132,7 +132,7 @@ revived, its public configuration must be reintroduced deliberately.
 | api-next migrations and operators | `/services/api-next/operator` | never |
 | HNS verifier runtime | `/services/hns-verifier` | verifier Worker only |
 | Public configuration | Wrangler `vars` or repository configuration | not a secret |
-| Legacy candidates | left where they are, pending review | never |
+| Deleted legacy names | absent | never |
 
 ```
 /services/api-next
@@ -147,39 +147,29 @@ revived, its public configuration must be reintroduced deliberately.
 
 ## Known drift
 
-1. Production has four additional root entries —
-   `API_NEXT_ALERT_EMAIL_TOKEN`, `API_NEXT_ALERT_EMAIL_URL`,
-   `API_NEXT_ALERT_WEBHOOK_TOKEN`, and `API_NEXT_ALERT_WEBHOOK_URL` — that are
-   not present in staging. They are active bindings in
-   `packages/platform-cf/src/alert-config.ts`: the two tokens are runtime
-   secrets and the two endpoint URLs are configuration. They are not junk;
-   keep them at root while production is disabled, then place them under the
-   production runtime/configuration contract before enabling production.
-2. Staging Cloudflare holds three ZKPassport verifier secrets —
-   `ZKPASSPORT_VERIFIER_SHARED_SECRET`,
-   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET`, and
-   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID` — that appear nowhere in the
-   staging Infisical inventory. They must either be added to an approved
-   Infisical runtime path or explicitly documented as separately sourced. They
-   must not remain Cloudflare-only. `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID`
-   is an identifier, not a secret, and belongs with public configuration.
-3. `PRIVY_JWKS_URL` and `PRIVY_JWT_AUDIENCE` are installed on the staging Worker
-   and referenced by source, but are declared in neither the Wrangler `secrets`
-   contract nor the staging `vars` block. The staging `vars` comment records
-   that they are injected at deployment time. Undeclared deployment-time
-   injection is not a contract; both should become declared per-environment
-   `vars`.
-4. `PIRATE_APP_JWT_PUBLIC_KEY` and `PRIVY_APP_ID` are declared as required
-   Worker secrets in all three environments while being public values.
+1. Production retains four `API_NEXT_ALERT_*` root entries. They are active
+   source bindings, but all four values are placeholders and no production jobs
+   Worker is deployed. The two URLs need real HTTPS endpoints and the two
+   tokens need real credentials before production can be enabled; the entries
+   remain isolated from the api-next runtime path until then.
+2. The staging Worker has the current
+   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID` as a Cloudflare secret, while
+   the repository classifies it as public configuration. Its value is not
+   available from Infisical or the repository, so the store change waits for an
+   operator to source the real identifier. The previous-key rotation triple is
+   now explicitly declared in staging: the secret is required and the two
+   optional public fields are empty by design until a rotation is active.
+3. Staging and production Privy app IDs, JWKS URLs, and audiences are now
+   declared as Wrangler vars from verified app-specific values. The api-next
+   Infisical project has no development Privy app ID or public key, so the
+   development vars remain unresolved rather than receiving placeholders.
+4. Staging and production `PIRATE_APP_JWT_PUBLIC_KEY` and `PRIVY_APP_ID` are
+   now Wrangler vars; their Infisical root duplicates were deleted. The
+   development declarations remain a known classification gap until a real
+   development configuration is sourced.
 5. Infisical staging carries no funding RPC. The staging Worker uses the
    fail-closed sentinel `https://rpc.invalid/`. An authorized real staging RPC
    is required before any money-flow verification.
-
-Drift items 2 and 3 are deliberately not yet applied to
-`api-next/apps/http-worker/wrangler.jsonc`. Moving a name from `secrets` to
-`vars` requires deleting the installed Worker secret in the same change;
-changing the declaration alone would desynchronize the declared contract from
-the deployed staging Worker. Both land with the Infisical path migration.
 
 ## Naming and classification rules
 
@@ -231,7 +221,7 @@ Rule 5 still applies to them; see D7.
   Worker bindings, but are consumed by `RegistrationRateLimiterEnvironment`
   inside the Durable Object. They are correct as declared.
 
-### Confirmed junk — delete
+### Confirmed junk — deleted
 
 | Name | Environments | Rule |
 | --- | --- | --- |
@@ -241,18 +231,18 @@ Rule 5 still applies to them; see D7.
 | `SELF_CALLBACK_CAPTURE_ACCESS_TOKEN` | staging | 7 |
 
 Zero consumers in the workspace. The Self capture seam's Durable Object class
-was retired by http-worker migration `v3`. Delete after the Infisical session
-is rotated, then re-inventory.
+was retired by http-worker migration `v3`. All four entries were deleted from
+staging and prod, then re-inventoried.
 
 ### Open defects
 
-**D1 — the jobs Worker is missing from every contract.** `pirate-jobs-worker`
-consumes all four `API_NEXT_ALERT_*` names in production, and its
-`wrangler.jsonc` declares none of them in any environment. The four exist in
-the Infisical prod root but were not copied into `/services/api-next`, so the
-approved runtime path cannot satisfy production. Breaks rules 3 and 7. This
-document previously described only the http Worker; that was the omission that
-let D1 hide.
+**D1 — production alert configuration is incomplete.** `pirate-jobs-worker`
+consumes all four `API_NEXT_ALERT_*` names in production. D1a is complete: the
+two token names are declared in its production `secrets.required` list. D1b and
+D1c remain open because the two URLs are placeholders and the two tokens have
+no authorized real values; no production jobs Worker is deployed. This
+document previously described only the http Worker, which was the omission
+that let D1 hide.
 
 **D2 — the alert four are not one class.** `API_NEXT_ALERT_EMAIL_URL` and
 `API_NEXT_ALERT_WEBHOOK_URL` are endpoint URLs and belong in `vars`;
@@ -260,22 +250,27 @@ let D1 hide.
 credentials and belong in `secrets.required`. They are currently stored
 undifferentiated. Breaks rule 2.
 
-**D3 — the ZKPassport rotation triple is unreachable.**
+**D3 — the ZKPassport rotation triple was undeclared.**
 `ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET`,
 `…_PREVIOUS_RESPONSE_SIGNING_KEY_ID`, and
 `…_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL` are consumed by the http Worker and
-declared in no environment and stored in no Infisical path. Signing-key
-rotation cannot currently be performed without an unrecorded manual injection.
-Breaks rule 3. The `KEY_ID` and `VALID_UNTIL` members are public; only the
-`SECRET` is confidential.
+The staging declaration now records all three names. The secret is in
+`secrets.required`; the public key ID and expiry are explicit empty vars until
+a previous key is active. No rotation values have been sourced. The `KEY_ID`
+and `VALID_UNTIL` members are public; only the `SECRET` is confidential.
 
-**D4 — `PRIVY_JWKS_URL` and `PRIVY_JWT_AUDIENCE` remain undeclared** in staging
-while installed on the staging Worker and consumed by source. Breaks rule 3.
-Previously recorded as drift item 2; still open.
+**D4 — development Privy public configuration is unavailable.** Staging and
+production now declare verified app-specific JWKS URLs and audiences as vars.
+The api-next Infisical project has no development app ID or public key, so the
+development values were not invented. The invariant test remains red for the
+two missing development Privy names.
 
-**D5 — `PIRATE_APP_JWT_PUBLIC_KEY` and `PRIVY_APP_ID` are still declared as
-secrets** in all three http-worker environments. Both are public. Breaks
-rule 2. Previously drift item 3; still open.
+**D5 — public configuration still has two unresolved declarations.**
+`PIRATE_APP_JWT_PUBLIC_KEY` and `PRIVY_APP_ID` are vars in staging and
+production. Development still has them in `secrets.required` because no real
+development values are available. The staging
+`ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID` also remains in the secret store
+until its real Cloudflare value is sourced.
 
 **D6 — the HNS ownership configuration pair is undeclared.**
 `HNS_OWNERSHIP_CONFIGURATION_REFERENCE` and
@@ -283,17 +278,11 @@ rule 2. Previously drift item 3; still open.
 Latent only because `HNS_OWNERSHIP_ENABLED` is `false` in every environment.
 Breaks rule 3 the moment the flag flips.
 
-**D7 — the Very names violate the namespace rule.** Thirteen `VERY_*` names are
-consumed across two flows. The OAuth flow is consistently `VERY_OAUTH_*`. The
-browser flow is not: `VERY_WEB_ENABLED` and `VERY_WEB_SEALING_KEY` carry the
-infix, but `VERY_APP_ID`, `VERY_API_URL`, `VERY_VERIFY_URL`, and
-`VERY_BRIDGE_API_URL` do not, so they read as integration-wide when they are
-web-flow-specific. Rename to `VERY_WEB_APP_ID`, `VERY_WEB_API_URL`,
-`VERY_WEB_VERIFY_URL`, and `VERY_WEB_BRIDGE_API_URL`. Breaks rule 5. Do this
-before any Very value is stored in Infisical, so the rename never has to touch
-a secret store. Eleven of the thirteen are also undeclared in staging, and
-`VERY_APP_ID` is declared as an empty-string var, which is a third state
-distinct from present and absent — remove it rather than declaring it empty.
+**D7 — the Very namespace was inconsistent.** The browser-flow names are now
+`VERY_WEB_APP_ID`, `VERY_WEB_API_URL`, `VERY_WEB_VERIFY_URL`, and
+`VERY_WEB_BRIDGE_API_URL` in source, tests, the binding manifest, and staging
+Wrangler vars. The empty `VERY_APP_ID` declaration was removed. The invariant
+namespace check passes, and no Very value was added to Infisical.
 
 **D8 — environment vocabulary is inconsistent across systems.** Infisical uses
 the slug `prod`; Wrangler uses the env key `production`; `alert-config.ts`
@@ -336,23 +325,27 @@ What it does and does not do matters for the rule set:
 | Detects a public value misdeclared as a secret | no |
 
 So rule 3 is partially enforced for secrets in local dev, and not at all for
-`vars`, for deploys, or for the source-to-config direction. D1, D3, D4, and D6
-would all pass every check that exists today.
+`vars`, for deploys, or in the source-to-config direction. The new
+`scripts/binding-contract-invariant.test.ts` covers both Wrangler configs and
+is compile-checked by `check:binding-contract`; it currently fails only on the
+known development Privy gaps, the staging ZK key-ID classification, and the
+missing production alert URLs.
 
 The schema also notes that `secrets` is **not** inherited from the top-level
 environment and must be repeated in every named environment. Both configs do
 repeat it, so no defect there — but it means the jobs Worker's omission of the
 alert names is an omission in each of its three environments independently.
 
-A test reconciling the binding interfaces against both Wrangler configs would
-convert D1, D3, D4, and D6 into build failures. The money-path invariant test
-named in the root `wrangler.jsonc` is the existing precedent for that pattern.
+A test reconciling the binding interfaces against both Wrangler configs now
+exists. It uses `satisfies BindingManifest<T>` so newly added source bindings
+fail the typecheck until classified. The money-path invariant test named in
+the root `wrangler.jsonc` is the existing precedent for that pattern.
 
 ### Junk count
 
-Four junk entries, all in Infisical, all listed above. Zero junk in the Wrangler
-configs. Zero declared-but-unconsumed names in source. The remaining defects are
-misclassification, non-declaration, and naming — not junk.
+Zero junk entries remain in Infisical or the Wrangler configs. Zero
+declared-but-unconsumed names remain in source. The remaining defects are
+missing real values or classification/configuration gaps, not junk.
 
 ## Sequence for the migration
 
@@ -360,18 +353,24 @@ misclassification, non-declaration, and naming — not junk.
    project, and confirm the environment slugs and folder tree. See
    "Observed state" above.
 2. Done, 2026-08-22. Take a metadata-only inventory across all three
-   environments: environment, path, name, and type. No values were printed or
-   locally stored.
+   environments: environment, path, name, and type. Confidential values were
+   not rendered; the CLI did create encrypted local cache files, recorded in
+   "Observed state".
 3. Done, 2026-08-22. Create the target paths and copy only the approved runtime
    and operator entries into them with Infisical's server-side duplicate
-   operation. Root entries remain intact.
-4. Move public configuration into per-environment Wrangler `vars`, deleting the
-   corresponding installed Worker secrets in the same change.
-5. Resolve the ZKPassport drift.
-6. Verify staging.
-7. Delete the approved zero-consumer legacy entries after session hygiene, then
-   re-inventory all environments. Do not delete public configuration or the
-   unclassified production alert entries under this approval.
+   operation. Hash verification confirmed the copies before root cleanup.
+4. Done for staging and production in the repository. Public configuration is
+   now declared as Wrangler `vars`; the development values remain unsourced.
+   The installed staging Worker secret for the ZK key ID still needs an
+   operator-sourced value before its store can be changed.
+5. Partially done. The ZKPassport rotation names are declared; values remain
+   unset until an actual previous-key rotation is authorized.
+6. Repository verification done. Source and worker typechecks, the binding
+   typecheck, Biome, and 25 focused tests pass. The invariant test remains red
+   only for the explicit blockers recorded above; no Worker deploy was run.
+7. Done, 2026-08-22. Delete the zero-consumer legacy entries and root
+   duplicates, then re-inventory all environments. Production alert
+   placeholders remain isolated at root until real values are sourced.
 8. Session hygiene, open. See below.
 
 ## Session hygiene — open

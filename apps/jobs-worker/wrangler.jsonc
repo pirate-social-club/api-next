@@ -79,7 +79,11 @@
         "API_NEXT_ENV": "production"
       },
       "secrets": {
-        "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
+        "required": [
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "API_NEXT_ALERT_EMAIL_TOKEN",
+          "API_NEXT_ALERT_WEBHOOK_TOKEN"
+        ]
       }
     }
   },

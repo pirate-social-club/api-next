@@ -126,10 +126,10 @@ export interface HttpWorkerBindings {
   readonly VERY_OAUTH_REDIRECT_URI?: string;
   readonly VERY_OAUTH_SEALING_KEY?: string;
   readonly VERY_WEB_ENABLED?: string;
-  readonly VERY_APP_ID?: string;
-  readonly VERY_API_URL?: string;
-  readonly VERY_VERIFY_URL?: string;
-  readonly VERY_BRIDGE_API_URL?: string;
+  readonly VERY_WEB_APP_ID?: string;
+  readonly VERY_WEB_API_URL?: string;
+  readonly VERY_WEB_VERIFY_URL?: string;
+  readonly VERY_WEB_BRIDGE_API_URL?: string;
   readonly VERY_WEB_SEALING_KEY?: string;
   readonly HNS_OWNERSHIP_ENABLED?: string;
   readonly HNS_OWNERSHIP_CONFIGURATION_REFERENCE?: string;
@@ -214,10 +214,10 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     VERY_OAUTH_REDIRECT_URI: bindings.VERY_OAUTH_REDIRECT_URI,
     VERY_OAUTH_SEALING_KEY: bindings.VERY_OAUTH_SEALING_KEY,
     VERY_WEB_ENABLED: bindings.VERY_WEB_ENABLED,
-    VERY_APP_ID: bindings.VERY_APP_ID,
-    VERY_API_URL: bindings.VERY_API_URL,
-    VERY_VERIFY_URL: bindings.VERY_VERIFY_URL,
-    VERY_BRIDGE_API_URL: bindings.VERY_BRIDGE_API_URL,
+    VERY_WEB_APP_ID: bindings.VERY_WEB_APP_ID,
+    VERY_WEB_API_URL: bindings.VERY_WEB_API_URL,
+    VERY_WEB_VERIFY_URL: bindings.VERY_WEB_VERIFY_URL,
+    VERY_WEB_BRIDGE_API_URL: bindings.VERY_WEB_BRIDGE_API_URL,
     VERY_WEB_SEALING_KEY: bindings.VERY_WEB_SEALING_KEY,
     HNS_OWNERSHIP_ENABLED: bindings.HNS_OWNERSHIP_ENABLED,
     HNS_OWNERSHIP_CONFIGURATION_REFERENCE: bindings.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
@@ -398,10 +398,10 @@ export async function createProductionHttpWorker(
   }
   const veryWebOptions = config.VERY_WEB_ENABLED
     ? {
-        app_id: config.VERY_APP_ID,
-        api_url: config.VERY_API_URL,
-        verify_url: config.VERY_VERIFY_URL,
-        bridge_api_url: config.VERY_BRIDGE_API_URL,
+        app_id: config.VERY_WEB_APP_ID,
+        api_url: config.VERY_WEB_API_URL,
+        verify_url: config.VERY_WEB_VERIFY_URL,
+        bridge_api_url: config.VERY_WEB_BRIDGE_API_URL,
         sealing_key: veryWebSealingKey ?? new Uint8Array(),
       }
     : undefined;
