@@ -88,7 +88,7 @@ describe("config system (000 §9)", () => {
     expect(Redacted.value(configured.VERY_WEB_SEALING_KEY)).toBe("");
   });
 
-  test("Wrangler keeps external ownership providers disabled in every environment", async () => {
+  test("Wrangler enables Very web only in staging and keeps other ownership providers disabled", async () => {
     const config = BunRuntime.JSONC.parse(
       await BunRuntime.file(
         new URL("../../../apps/http-worker/wrangler.jsonc", import.meta.url),
@@ -115,10 +115,12 @@ describe("config system (000 §9)", () => {
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_CLIENT_SECRET");
       expect(environment.secrets?.required ?? []).not.toContain("VERY_OAUTH_SEALING_KEY");
     }
-    // Development (the base block) and production rely on the config default,
-    // while staging carries an explicit false until separately authorized.
+    // Development (the base block) and production rely on the fail-closed
+    // default. Staging alone carries the operator-authorized Very web app.
     expect(config.vars?.VERY_WEB_ENABLED).toBeUndefined();
-    expect(staging?.vars?.VERY_WEB_ENABLED).toBe("false");
+    expect(staging?.vars?.VERY_WEB_ENABLED).toBe("true");
+    expect(staging?.vars?.VERY_WEB_APP_ID).toBe("fa6bb1db-51dd-4673-915a-b945e7a895a0");
     expect(production?.vars?.VERY_WEB_ENABLED).toBeUndefined();
+    expect(production?.vars?.VERY_WEB_APP_ID).toBeUndefined();
   });
 });

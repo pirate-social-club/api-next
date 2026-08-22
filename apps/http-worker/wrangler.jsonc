@@ -118,7 +118,8 @@
         // authorized live-document deployment is required for physical proof.
         "SELF_PASS_MOCK_PASSPORT": "true",
         "VERY_OAUTH_ENABLED": "false",
-        "VERY_WEB_ENABLED": "false",
+        "VERY_WEB_ENABLED": "true",
+        "VERY_WEB_APP_ID": "fa6bb1db-51dd-4673-915a-b945e7a895a0",
         "VERY_WEB_API_URL": "https://api.very.org/api/v1",
         "VERY_WEB_VERIFY_URL": "https://verify.very.org/api/v1/verify",
         "VERY_WEB_BRIDGE_API_URL": "https://bridge.very.org/api/v1",
