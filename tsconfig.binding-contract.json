@@ -3,5 +3,9 @@
   "compilerOptions": {
     "types": ["bun"]
   },
-  "include": ["scripts/binding-contract-invariant.test.ts"]
+  "include": [
+    "scripts/binding-contract-invariant.test.ts",
+    "scripts/secret-drift-audit.ts",
+    "scripts/secret-drift-audit.test.ts"
+  ]
 }

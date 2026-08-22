@@ -497,6 +497,25 @@ contents were hash-verified before root cleanup. This remains accepted risk:
 the first service-path synchronization and first operator migration are still
 unrehearsed and should happen before relying on those paths operationally.
 
+## Cloudflare remote drift audit
+
+`bun run audit:secrets` is deliberately outside `bun run check`: it requires
+Cloudflare authentication and performs remote reads. It invokes
+`wrangler secret list --format json` for the named staging and production
+Workers, consumes names only, and never reads secret values. Its fixture-backed
+logic reports four Cloudflare-side classes: a declared var installed as a
+secret, an installed secret with no declaration, a declared secret absent from
+the Worker, and an internally colliding var/secret declaration. It exits
+non-zero only for unallowlisted drift.
+
+The current allowlist records the intentional absence of both production
+Workers while production is disabled. The accepted development Privy gap and
+the production alert placeholders are not Cloudflare-side observations; they
+remain outside this first axis and will belong in the future name-only
+Infisical REST audit. The live run on 2026-08-22 found zero unallowlisted
+Cloudflare violations: both staging Workers matched their declared secret
+sets.
+
 ## Local project selection — corrected 2026-08-22
 
 `/home/t42/.infisical.json` **still exists** and still pins the historical
