@@ -134,6 +134,12 @@ and deliberately source the runtime database URL, migrator URL, JWT keys,
 `PRIVY_APP_ID`, and `PRIVY_APP_SECRET`. Do not make api-next implicitly depend
 on old service folder names.
 
+Superseded by `secrets-contract.md`, which records the current api-next
+Infisical project, the classification of its seventeen root entries, and the
+target path layout. `PRIVY_APP_ID` is classified there as public configuration
+rather than a secret, and the database URLs are confined to an operator path
+that is never synchronized to a Worker.
+
 ### Cloudflare and Hyperdrive
 
 - Authenticated account: `hippiehecton`, account ID
