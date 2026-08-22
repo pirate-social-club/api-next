@@ -43,6 +43,7 @@ import {
   moderateCaseAction,
   reportComment,
 } from "../../packages/application/src/use-cases/content/comment-moderation.ts";
+import { createCommentReply } from "../../packages/application/src/use-cases/content/comments-replies.ts";
 
 export {
   RegistrationApplicationRateLimiterDO,
@@ -61,7 +62,7 @@ function toPem(label: "PRIVATE KEY" | "PUBLIC KEY", bytes: ArrayBuffer): string 
   return `-----BEGIN ${label}-----\n${lines}\n-----END ${label}-----`;
 }
 
-async function sessionCrypto() {
+async function sessionCryptos() {
   const pair = await crypto.subtle.generateKey(
     {
       name: "RSASSA-PKCS1-v1_5",
@@ -72,13 +73,27 @@ async function sessionCrypto() {
     true,
     ["sign", "verify"],
   );
-  return makeSessionCrypto({
-    privateKeyPem: toPem("PRIVATE KEY", await crypto.subtle.exportKey("pkcs8", pair.privateKey)),
-    publicKeyPem: toPem("PUBLIC KEY", await crypto.subtle.exportKey("spki", pair.publicKey)),
+  const privateKeyPem = toPem(
+    "PRIVATE KEY",
+    await crypto.subtle.exportKey("pkcs8", pair.privateKey),
+  );
+  const publicKeyPem = toPem("PUBLIC KEY", await crypto.subtle.exportKey("spki", pair.publicKey));
+  const common = {
+    privateKeyPem,
+    publicKeyPem,
     issuer: "api-next-session-workerd",
     audience: "api-next-browser-workerd",
-    defaultScope: "moderator",
-  });
+  };
+  return {
+    browser: await makeSessionCrypto({
+      ...common,
+      defaultScope: "browser",
+    }),
+    moderator: await makeSessionCrypto({
+      ...common,
+      defaultScope: "moderator",
+    }),
+  };
 }
 
 const account: IdentityAccountDocument = {
@@ -162,15 +177,46 @@ const identityStore: IdentityStore["Service"] = {
     }),
 };
 
-const sessionCryptoInstance = await sessionCrypto();
-const tokenVerifier = makeRs256SessionTokenVerifier(sessionCryptoInstance, identityStore);
+const sessionCryptoInstances = await sessionCryptos();
+const browserTokenVerifier = makeRs256SessionTokenVerifier(
+  sessionCryptoInstances.browser,
+  identityStore,
+);
+const moderatorTokenVerifier = makeRs256SessionTokenVerifier(
+  sessionCryptoInstances.moderator,
+  identityStore,
+);
+const tokenVerifier = {
+  verify: (input: Parameters<typeof browserTokenVerifier.verify>[0]) =>
+    browserTokenVerifier
+      .verify(input)
+      .pipe(Effect.catch(() => moderatorTokenVerifier.verify(input))),
+};
+const browserTokenMinter = makeRs256SessionTokenMinter(sessionCryptoInstances.browser);
+const moderatorTokenMinter = makeRs256SessionTokenMinter(sessionCryptoInstances.moderator);
+const moderatorWalletAddress = "0x1111111111111111111111111111111111111111";
 const sessionExchange: SessionExchangeServices = {
   proofVerifier: {
-    verifyPrivy: () =>
-      Effect.succeed({ sourceUserId: "usr_workerd_source", classification: "user" }),
+    verifyPrivy: ({ accessToken }) =>
+      Effect.succeed({
+        sourceUserId: "usr_workerd_source",
+        classification: "user" as const,
+        ...(accessToken === "workerd-moderator-proof"
+          ? { walletAddress: moderatorWalletAddress }
+          : {}),
+      }),
   },
   identityStore: makeSessionIdentityStore(identityStore),
-  tokenMinter: makeRs256SessionTokenMinter(sessionCryptoInstance),
+  tokenMinter: {
+    scope: browserTokenMinter.scope,
+    ...(browserTokenMinter.ttlSeconds === undefined
+      ? {}
+      : { ttlSeconds: browserTokenMinter.ttlSeconds }),
+    mint: (input) =>
+      input.walletAddress === moderatorWalletAddress
+        ? moderatorTokenMinter.mint({ ...input, scope: moderatorTokenMinter.scope })
+        : browserTokenMinter.mint(input),
+  },
 };
 
 const namespaceRoute = {
@@ -323,10 +369,35 @@ const namespaceCompletion: NamespaceOwnershipCompletionServices = {
 };
 
 const moderationFixture: TextPostStore["Service"] = {
-  checkAuthority: () => Effect.succeed(undefined),
-  replay: () => Effect.succeed({ kind: "none" as const }),
+  checkAuthority: ({ communityId }) =>
+    communityId === "community_nonmember"
+      ? Effect.fail(
+          new TextPostRepositoryError({ operation: "authority", reason: "membership-required" }),
+        )
+      : communityId === "community_ineffective"
+        ? Effect.fail(new TextPostRepositoryError({ operation: "authority", reason: "not-found" }))
+        : Effect.succeed(undefined),
+  replay: ({ idempotencyKey }) =>
+    Effect.succeed(
+      idempotencyKey === "workerd-comment-conflict"
+        ? { kind: "conflict" as const, submissionId: "submission-comment-winner" }
+        : { kind: "none" as const },
+    ),
   commitTerminal: () => Effect.die("unused moderation fixture operation"),
   getForAuthor: () => Effect.succeed(null),
+  resolveCommentTarget: ({ targetId }) =>
+    Effect.succeed({
+      kind: "ready" as const,
+      communityId:
+        targetId === "post_nonmember"
+          ? "community_nonmember"
+          : targetId === "post_ineffective"
+            ? "community_ineffective"
+            : "community_workerd",
+      postId: targetId,
+      parentCommentId: null,
+      parentDepth: -1,
+    }),
   reportComment: () =>
     Effect.succeed({
       reportId: "report_workerd",
@@ -372,6 +443,23 @@ const app = createHttpWorker({
     },
     CastPostVote: () => ({ post: "post_1", value: 1 }),
     ClearPostVote: () => ({ post: "post_1", value: null }),
+    CreateComment: (request) =>
+      Effect.runPromise(
+        createCommentReply(
+          {
+            surface: "comment",
+            targetId: String(moderationParams(request).postId),
+            actor: moderationActor(request),
+            body: request.body,
+          },
+          {
+            textPostStore: moderationFixture,
+            textModeration: {
+              evaluate: () => Effect.die("comment route fixture must fail before moderation"),
+            },
+          },
+        ),
+      ),
     ReportComment: (request) =>
       Effect.runPromise(
         reportComment(
@@ -396,7 +484,7 @@ const app = createHttpWorker({
       ),
     CreatePost: () => textSubmission,
     GetTextContentSubmission: () => textSubmission,
-    GetJwks: () => sessionCryptoInstance.jwks(),
+    GetJwks: () => sessionCryptoInstances.browser.jwks(),
   },
   profile: ({ principal }) =>
     Effect.runPromise(getMyProfile({ userId: principal?.subject ?? "" }, { identityStore })),

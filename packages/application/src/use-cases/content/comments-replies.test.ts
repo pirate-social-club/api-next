@@ -178,6 +178,45 @@ describe("comments and replies application", () => {
     });
   });
 
+  test("age_gate_required commits a comment as manual_review", async () => {
+    let committed: TextPostModerationEvaluation | undefined;
+    const held = {
+      ...published,
+      status: "manual_review" as const,
+      result: { decision: "manual_review" as const, reason_code: "review_required" as const },
+      published_resource: null,
+      review_ref: "review-comment-age-gate",
+    };
+    const result = await run(
+      createCommentReply(
+        { surface: "comment", targetId: "post-comments", actor, body },
+        {
+          textPostStore: commentStore({
+            commitTerminal: ({ evaluation: value }) => {
+              committed = value;
+              return Effect.succeed({ kind: "created" as const, snapshot: held });
+            },
+          }),
+          textModeration: {
+            evaluate: () =>
+              Effect.succeed({
+                ...evaluation("comment", "manual_review"),
+                reason_codes: ["age_gate_required"],
+              }),
+          },
+        },
+      ),
+    );
+
+    expect(Exit.isSuccess(result) ? result.value : undefined).toEqual(held);
+    expect(committed).toMatchObject({
+      surface: "comment",
+      decision: "manual_review",
+      reason_codes: ["age_gate_required"],
+      input_sha256: inputSha(),
+    });
+  });
+
   test("checks route and membership authority before invoking moderation", async () => {
     let moderationCalls = 0;
     const result = await run(

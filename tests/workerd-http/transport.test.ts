@@ -174,12 +174,90 @@ describe("real HTTP worker transport", () => {
     });
   });
 
-  it("drives report and moderation action routes through the real Workerd handler fixture", async () => {
+  it("maps comment-route authority, routing, and idempotency failures on the wire", async () => {
     const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
       method: "POST",
       headers: { "content-type": "application/json", origin: "https://solid.test" },
       body: JSON.stringify({
         proof: { type: "privy_access_token", privy_access_token: "workerd-proof" },
+      }),
+    });
+    const browser = browserCookies(exchange);
+    const headers = {
+      cookie: browser.cookie,
+      "content-type": "application/json",
+      origin: "https://solid.test",
+      "x-csrf-token": browser.csrf,
+    };
+
+    const nonmember = await SELF.fetch("https://worker.test/posts/post_nonmember/comments", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ idempotency_key: "workerd-comment-nonmember", body: "hello" }),
+    });
+    expect(nonmember.status).toBe(403);
+    expect(await nonmember.json()).toMatchObject({
+      error: { code: "membership_required" },
+    });
+
+    const ineffectiveRoute = await SELF.fetch(
+      "https://worker.test/posts/post_ineffective/comments",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ idempotency_key: "workerd-comment-ineffective", body: "hello" }),
+      },
+    );
+    expect(ineffectiveRoute.status).toBe(404);
+    expect(await ineffectiveRoute.json()).toMatchObject({ error: { code: "not_found" } });
+
+    const conflict = await SELF.fetch("https://worker.test/posts/post_conflict/comments", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ idempotency_key: "workerd-comment-conflict", body: "hello" }),
+    });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({
+      error: {
+        code: "conflict",
+        details: {
+          reason_code: "idempotency_conflict",
+          submission_id: "submission-comment-winner",
+        },
+      },
+    });
+  });
+
+  it("drives report and moderation action routes through the real Workerd handler fixture", async () => {
+    const ordinaryExchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "workerd-proof" },
+      }),
+    });
+    const ordinaryBrowser = browserCookies(ordinaryExchange);
+    const ordinaryAction = await SELF.fetch(
+      "https://worker.test/moderation/cases/case_workerd/actions",
+      {
+        method: "POST",
+        headers: {
+          cookie: ordinaryBrowser.cookie,
+          "content-type": "application/json",
+          origin: "https://solid.test",
+          "x-csrf-token": ordinaryBrowser.csrf,
+        },
+        body: JSON.stringify({ idempotency_key: "workerd-action-unprivileged", action: "hide" }),
+      },
+    );
+    expect(ordinaryAction.status).toBe(404);
+    expect(await ordinaryAction.json()).toMatchObject({ error: { code: "not_found" } });
+
+    const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "workerd-moderator-proof" },
       }),
     });
     const browser = browserCookies(exchange);

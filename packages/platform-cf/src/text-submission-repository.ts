@@ -920,28 +920,39 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
         Effect.gen(function* () {
           const comment = yield* transaction.execute<Row>({
             label: "comment-report.lock-comment",
-            text: `SELECT c.community_id, c.comment_id, c.status, s.submission_id
-                     FROM comments AS c
-                     JOIN text_content_submissions AS s
-                       ON s.community_id = c.community_id
-                      AND s.published_comment_id = c.comment_id
-                    WHERE c.comment_id = $1
-                    FOR UPDATE OF c, s`,
+            text: `SELECT community_id, comment_id, status
+                     FROM comments
+                    WHERE comment_id = $1
+                    FOR UPDATE`,
             values: [input.commentId],
             readonly: false,
           });
           const commentRow = comment.rows[0] as Row | undefined;
           const communityId =
             commentRow === undefined ? null : stringValue(commentRow, "community_id");
-          const submissionId =
-            commentRow === undefined ? input.commentId : stringValue(commentRow, "submission_id");
           if (
             comment.rows.length !== 1 ||
             commentRow === undefined ||
             communityId === null ||
-            submissionId === null ||
             !["published", "hidden", "removed"].includes(stringValue(commentRow, "status") ?? "")
           )
+            return yield* Effect.fail(
+              failureWithSubmission("report", "not-found", input.commentId),
+            );
+          const submission = yield* transaction.execute<Row>({
+            label: "comment-report.lock-submission",
+            text: `SELECT submission_id
+                     FROM text_content_submissions
+                    WHERE community_id = $1 AND published_comment_id = $2
+                    FOR UPDATE`,
+            values: [communityId, input.commentId],
+            readonly: false,
+          });
+          const submissionId =
+            submission.rows.length === 1
+              ? stringValue(submission.rows[0] as Row, "submission_id")
+              : null;
+          if (submissionId === null)
             return yield* Effect.fail(
               failureWithSubmission("report", "not-found", input.commentId),
             );
@@ -1101,7 +1112,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                     WHERE action.case_ref = $1
                       AND action.actor_user_id = $2
                       AND action.idempotency_key = $3
-                    FOR UPDATE`,
+                    FOR UPDATE OF action`,
             values: [input.caseRef, input.actor.userId, input.idempotencyKey],
             readonly: false,
           });
@@ -1135,6 +1146,52 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             }
             return { actionId, caseRef, action, targetStatus };
           }
+          const caseTarget = yield* transaction.execute<Row>({
+            label: "moderation-action.resolve-lock-target",
+            text: `SELECT cmc.community_id, cmc.submission_id,
+                          COALESCE(cmc.comment_id, s.published_comment_id) AS comment_id
+                     FROM comment_moderation_cases AS cmc
+                     JOIN text_content_submissions AS s
+                       ON s.community_id = cmc.community_id
+                      AND s.submission_id = cmc.submission_id
+                    WHERE cmc.case_ref = $1`,
+            values: [input.caseRef],
+            readonly: true,
+          });
+          const targetRow = caseTarget.rows[0] as Row | undefined;
+          if (caseTarget.rows.length !== 1 || targetRow === undefined)
+            return yield* Effect.fail(failure("action", "not-found"));
+          const targetCommunityId = stringValue(targetRow, "community_id");
+          const targetSubmissionId = stringValue(targetRow, "submission_id");
+          const targetCommentId = stringValue(targetRow, "comment_id");
+          if (targetCommunityId === null || targetSubmissionId === null)
+            return yield* Effect.fail(failure("action", "invalid-row"));
+          let lockedCommentRow: Row | undefined;
+          if (targetCommentId !== null) {
+            const lockedComment = yield* transaction.execute<Row>({
+              label: "moderation-action.lock-comment",
+              text: `SELECT comment_id, post_id, parent_comment_id, status
+                       FROM comments
+                      WHERE community_id = $1 AND comment_id = $2
+                      FOR UPDATE`,
+              values: [targetCommunityId, targetCommentId],
+              readonly: false,
+            });
+            lockedCommentRow = lockedComment.rows[0] as Row | undefined;
+            if (lockedComment.rows.length !== 1 || lockedCommentRow === undefined)
+              return yield* Effect.fail(failure("action", "not-found"));
+          }
+          const lockedSubmission = yield* transaction.execute<Row>({
+            label: "moderation-action.lock-submission",
+            text: `SELECT submission_id
+                     FROM text_content_submissions
+                    WHERE community_id = $1 AND submission_id = $2
+                    FOR UPDATE`,
+            values: [targetCommunityId, targetSubmissionId],
+            readonly: false,
+          });
+          if (lockedSubmission.rows.length !== 1)
+            return yield* Effect.fail(failure("action", "not-found"));
           const caseRows = yield* transaction.execute<Row>({
             label: "moderation-action.lock-case",
             text: `SELECT cmc.community_id, cmc.case_ref, cmc.status AS comment_case_status,
@@ -1157,7 +1214,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                      LEFT JOIN comments AS c
                        ON c.community_id = s.community_id AND c.comment_id = s.published_comment_id
                     WHERE cmc.case_ref = $1
-                    FOR UPDATE OF cmc, s`,
+                    FOR UPDATE OF cmc`,
             values: [input.caseRef],
             readonly: false,
           });
@@ -1178,6 +1235,8 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             !validHash(submissionRequestHash) ||
             !["comment", "reply"].includes(surface ?? "")
           )
+            return yield* Effect.fail(failure("action", "invalid-row"));
+          if (communityId !== targetCommunityId || submissionId !== targetSubmissionId)
             return yield* Effect.fail(failure("action", "invalid-row"));
           const textCaseId = stringValue(row, "text_case_id");
           const isModerator = input.actor.scopes?.includes("moderator") === true;
@@ -1205,22 +1264,12 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           let commentPostId = stringValue(row, "post_id");
           let commentParentId = stringValue(row, "parent_comment_id");
           if (commentId !== null) {
-            const lockedComment = yield* transaction.execute<Row>({
-              label: "moderation-action.lock-comment",
-              text: `SELECT comment_id, post_id, parent_comment_id, status
-                       FROM comments
-                      WHERE community_id = $1 AND comment_id = $2
-                      FOR UPDATE`,
-              values: [communityId, commentId],
-              readonly: false,
-            });
-            const lockedRow = lockedComment.rows[0] as Row | undefined;
-            if (lockedComment.rows.length !== 1 || lockedRow === undefined)
-              return yield* Effect.fail(failure("action", "not-found"));
-            commentId = stringValue(lockedRow, "comment_id");
-            commentStatus = stringValue(lockedRow, "status");
-            commentPostId = stringValue(lockedRow, "post_id");
-            commentParentId = stringValue(lockedRow, "parent_comment_id");
+            if (lockedCommentRow === undefined || targetCommentId !== commentId)
+              return yield* Effect.fail(failure("action", "invalid-row"));
+            commentId = stringValue(lockedCommentRow, "comment_id");
+            commentStatus = stringValue(lockedCommentRow, "status");
+            commentPostId = stringValue(lockedCommentRow, "post_id");
+            commentParentId = stringValue(lockedCommentRow, "parent_comment_id");
           }
           const currentStatus =
             submissionStatus === "manual_review"

@@ -787,7 +787,7 @@ suite("Postgres 17 terminal text submission repository", () => {
     });
   }, 30_000);
 
-  test("reply parent closure, cross-thread, and depth checks happen at commit", async () => {
+  test("reply parent closure, cross-thread, depth, and reply_count invariants hold at commit", async () => {
     await withSchema(async (admin, connection) => {
       await insertCommentPost(admin);
       await insertCommentPost(admin, "text-order6-other-post");
@@ -929,10 +929,14 @@ suite("Postgres 17 terminal text submission repository", () => {
         kind: "created",
         snapshot: { status: "published", published_resource: { kind: "comment" } },
       });
+      const parentCounter = await admin.query<{ readonly reply_count: number }>(
+        "SELECT reply_count FROM comments WHERE comment_id = 'text-order6-max-parent'",
+      );
+      expect(parentCounter.rows).toEqual([{ reply_count: 1 }]);
     });
   }, 30_000);
 
-  test("reports coalesce and moderator approval projects a held comment atomically", async () => {
+  test("reports coalesce, held state and approval are atomic, and invalid visibility pairs fail", async () => {
     await withSchema(async (admin, connection) => {
       await insertCommentPost(admin);
       const requestHash = await commentRequestHash("comment-order6-report", commentBody.body);
@@ -1040,11 +1044,31 @@ suite("Postgres 17 terminal text submission repository", () => {
       const heldCaseRef = heldResult.snapshot.review_ref;
       const heldCounts = await admin.query(
         `SELECT
-           (SELECT count(*)::int FROM comments) AS comments,
+           (SELECT count(*)::int FROM text_content_held_revisions
+             WHERE submission_id = $1) AS held_revisions,
+           (SELECT count(*)::int FROM text_moderation_cases
+             WHERE submission_id = $1 AND status = 'open') AS open_text_cases,
+           (SELECT count(*)::int FROM comment_moderation_cases
+             WHERE submission_id = $1 AND status = 'open') AS open_comment_cases,
+           (SELECT count(*)::int
+              FROM text_content_submissions AS s
+              JOIN comments AS c
+                ON c.community_id = s.community_id
+               AND c.comment_id = s.published_comment_id
+             WHERE s.submission_id = $1) AS comments,
            (SELECT comment_count FROM posts WHERE post_id = 'text-order6-post') AS comment_count,
-           (SELECT count(*)::int FROM content_publication_outbox) AS outbox`,
+           (SELECT count(*)::int FROM content_publication_outbox
+             WHERE submission_id = $1) AS outbox`,
+        [heldResult.snapshot.submission_id],
       );
-      expect(heldCounts.rows[0]).toEqual({ comments: 1, comment_count: 1, outbox: 3 });
+      expect(heldCounts.rows[0]).toEqual({
+        held_revisions: 1,
+        open_text_cases: 1,
+        open_comment_cases: 1,
+        comments: 0,
+        comment_count: 1,
+        outbox: 0,
+      });
       const actionHash = (key: string, action: string) =>
         Effect.runPromise(
           canonicalBodyHash({
@@ -1180,6 +1204,17 @@ suite("Postgres 17 terminal text submission repository", () => {
           }),
         );
       };
+      const expectActionConflict = async (caseRef: string, key: string, action: string) => {
+        let actionFailure: unknown = await runAction(caseRef, key, action).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        while (Array.isArray(actionFailure)) actionFailure = actionFailure[0];
+        expect(actionFailure).toMatchObject({
+          _tag: "TextPostRepositoryError",
+          reason: "action-conflict",
+        });
+      };
       const resolvedCaseHash = await awaitActionHash(
         report.caseRef,
         "action-order6-resolved-case",
@@ -1216,6 +1251,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         }),
       );
       expect(afterHideReport).toMatchObject({ status: "open" });
+      await expectActionConflict(afterHideReport.caseRef, "action-order6-hide-hidden", "hide");
       const restored = await runAction(
         afterHideReport.caseRef,
         "action-order6-restore-hidden",
@@ -1232,6 +1268,11 @@ suite("Postgres 17 terminal text submission repository", () => {
           requestHash: afterRestoreHash,
         }),
       );
+      await expectActionConflict(
+        afterRestoreReport.caseRef,
+        "action-order6-restore-published",
+        "restore",
+      );
       const removed = await runAction(afterRestoreReport.caseRef, "action-order6-remove", "remove");
       expect(removed).toMatchObject({ targetStatus: "removed" });
       const afterRemoveHash = await reportHash("report-order6-5");
@@ -1243,6 +1284,11 @@ suite("Postgres 17 terminal text submission repository", () => {
           reasonCode: "spam",
           requestHash: afterRemoveHash,
         }),
+      );
+      await expectActionConflict(
+        afterRemoveReport.caseRef,
+        "action-order6-remove-removed",
+        "remove",
       );
       const restoredRemoved = await runAction(
         afterRemoveReport.caseRef,
