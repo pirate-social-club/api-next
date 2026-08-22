@@ -415,6 +415,8 @@ export const HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL = `
       AND prior_session.provider_configuration_kind = 'managed'
       AND prior_session.protocol_version = 'hns-txt-v1'
       AND prior_session.family = 'hns'
+      AND prior_session.status = 'failed'
+      AND prior_session.terminal_at IS NOT NULL
     ORDER BY attempt.route_binding_id, attempt.expected_binding_generation, attempt.terminal_at DESC
   ), candidates AS (
     SELECT
@@ -425,62 +427,7 @@ export const HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL = `
       c.community_id,
       b.route_binding_id,
       b.binding_generation,
-      b.verified_evidence_ref,
-      requirement.requirement_hash AS authority_requirement_hash,
-      requirement.provider_id,
-      evidence.provider_binding_hash,
-      requirement.provider_configuration_kind,
-      requirement.provider_configuration_ref AS provider_configuration_reference,
-      requirement.provider_configuration_version,
-      'hns-txt-v1' AS protocol_version,
-      $6::text AS environment,
-      b.root_label,
-      b.root_label_display,
-      b.path_segment
-    FROM communities AS c
-    JOIN community_canonical_route_bindings AS b
-      ON b.community_id = c.community_id
-     AND b.family = 'hns'
-     AND b.route_lifecycle_status = 'active'
-     AND b.ownership_status = 'verified'
-     AND b.verified_evidence_ref IS NOT NULL
-    JOIN community_route_ownership_evidence AS evidence
-      ON evidence.evidence_ref = b.verified_evidence_ref
-     AND evidence.family = 'hns'
-     AND evidence.root_label = b.root_label
-     AND evidence.root_label_display = b.root_label_display
-     AND evidence.path_segment = b.path_segment
-     AND evidence.binding_generation = b.binding_generation
-     AND evidence.provider_id = 'hns.owner.v1'
-    JOIN community_creation_subject_claims AS claim
-      ON claim.community_id = c.community_id
-    JOIN community_creation_requirement_states AS requirement
-      ON requirement.intent_id = claim.intent_id
-     AND requirement.requirement_kind = 'namespace_ownership'
-     AND requirement.status = 'satisfied'
-     AND requirement.route_family = 'hns'
-     AND requirement.route_root_label = b.root_label
-     AND requirement.route_root_label_display = b.root_label_display
-     AND requirement.route_path_segment = b.path_segment
-     AND requirement.provider_id = 'hns.owner.v1'
-     AND requirement.provider_configuration_kind = 'managed'
-     AND requirement.provider_binding_hash = evidence.provider_binding_hash
-     AND requirement.provider_configuration_version = evidence.provider_configuration_version
-    WHERE c.status = 'active'
-      AND (
-        ($4::text IS NULL AND $5::bigint IS NULL
-          AND evidence.expires_at IS NOT NULL
-          AND evidence.expires_at <= clock_timestamp() + ($1 * INTERVAL '1 second'))
-        OR (b.route_binding_id = $4 AND b.binding_generation = $5)
-      )
-    UNION ALL
-    SELECT
-      'hns-route-revalidation:' || b.route_binding_id || ':' || b.binding_generation,
-      'hns-route-revalidation-session:' || b.route_binding_id || ':' || b.binding_generation,
-      c.community_id,
-      b.route_binding_id,
-      b.binding_generation,
-      NULL,
+      NULL AS verified_evidence_ref,
       prior.authority_requirement_hash,
       prior.provider_id,
       prior.provider_binding_hash,
@@ -514,16 +461,29 @@ export const HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL = `
         )
         OR (b.route_binding_id = $4 AND b.binding_generation = $5)
       )
+      AND (
+        $4::text IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1
+            FROM community_route_revalidation_sessions AS open_session
+           WHERE open_session.route_binding_id = b.route_binding_id
+             AND open_session.expected_binding_generation = b.binding_generation
+             AND open_session.status = 'pending'
+        )
+      )
   )
   SELECT *
     FROM candidates
    WHERE provider_id = 'hns.owner.v1'
      AND provider_configuration_kind = 'managed'
+     AND provider_configuration_reference = $7
+     AND provider_configuration_version = $8
      AND protocol_version = 'hns-txt-v1'
+     AND environment = $6
    ORDER BY route_binding_id
    LIMIT $2`;
 
-const pendingSessionsSql = `
+export const HNS_ROUTE_REVALIDATION_PENDING_SESSIONS_SQL = `
   SELECT
     s.route_revalidation_id,
     s.revalidation_session_id,
@@ -543,6 +503,7 @@ const pendingSessionsSql = `
     AND s.provider_configuration_version = $3
     AND s.environment = $4
   GROUP BY s.route_revalidation_id, s.revalidation_session_id, s.expected_binding_generation
+  HAVING COUNT(a.route_revalidation_attempt_id) FILTER (WHERE a.state = 'consumed') < 3
   ORDER BY s.route_revalidation_id
   LIMIT $5`;
 
@@ -582,6 +543,8 @@ export function makeHnsRouteRevalidationJob(
         options.force?.route_binding_id ?? null,
         options.force?.expected_generation ?? null,
         options.environment,
+        options.configuration.reference,
+        options.configuration.version,
       ],
       readonly: true,
     });
@@ -630,7 +593,7 @@ export function makeHnsRouteRevalidationJob(
 
     const pending = yield* db.execute<Row>({
       label: "jobs.hns-route-revalidation.pending-sessions",
-      text: pendingSessionsSql,
+      text: HNS_ROUTE_REVALIDATION_PENDING_SESSIONS_SQL,
       values: [
         HNS_ROUTE_REVALIDATION_PRINCIPAL_ID,
         options.configuration.reference,

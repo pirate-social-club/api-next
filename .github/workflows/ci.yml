@@ -115,6 +115,7 @@ jobs:
           packages/platform-cf/src/community-repository.pg.test.ts
           packages/platform-cf/src/community-creation-repository.pg.test.ts
           packages/platform-cf/src/community-route-repository.pg.test.ts
+          packages/platform-cf/src/hns-route-revalidation-scheduler.pg.test.ts
           packages/platform-cf/src/gates-v2-community.pg.test.ts
           packages/platform-cf/src/feed-repository.pg.test.ts
           packages/platform-cf/src/content-repository.pg.test.ts

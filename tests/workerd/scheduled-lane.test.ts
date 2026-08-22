@@ -12,16 +12,43 @@ import {
 } from "../../apps/jobs-worker/src/community-purchase-funding";
 import {
   defaultRetrySchedule,
+  HNS_ROUTE_REVALIDATION_JOB,
   handleScheduled,
   type JobDefinition,
   type JobsWorkerEnv,
   default as jobsWorker,
   makeCommunityCatalogIntegrityJob,
+  makeHnsRouteRevalidationComposition,
   makeJobsWorkerDeclarations,
   runScheduled,
 } from "../../apps/jobs-worker/src/index";
 
 const env = testEnv as unknown as JobsWorkerEnv;
+
+const nonDueScheduledEvent = {
+  scheduledTime: Date.UTC(2026, 7, 19, 0, 1),
+  cron: "*/5 * * * *",
+} as ScheduledEvent;
+
+function scheduledWorkerEnv(hns: Partial<JobsWorkerEnv> = {}): JobsWorkerEnv {
+  return {
+    CRON_LOCK: env.CRON_LOCK,
+    CONTROL_PLANE: {
+      connectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
+    },
+    API_NEXT_ENV: "development",
+    COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.invalid/",
+    ...hns,
+  };
+}
+
+function recordingContext(waits: Promise<unknown>[]): ExecutionContext {
+  return {
+    waitUntil: (promise: Promise<unknown>) => {
+      waits.push(promise);
+    },
+  } as unknown as ExecutionContext;
+}
 
 describe("scheduled lane holding a DO lease (workerd)", () => {
   it("registers the bounded funding reconciler as the only writer for its tables", () => {
@@ -68,6 +95,46 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
         context,
       ),
     ).rejects.toThrow("Jobs worker configuration is incomplete or invalid");
+  });
+
+  it("keeps HNS disabled when scheduled without HNS configuration or a verifier binding", async () => {
+    const waits: Promise<unknown>[] = [];
+    const workerEnv = scheduledWorkerEnv();
+
+    await jobsWorker.scheduled(nonDueScheduledEvent, workerEnv, recordingContext(waits));
+    expect(waits).toHaveLength(1);
+    await Promise.all(waits);
+
+    const hns = makeHnsRouteRevalidationComposition(workerEnv);
+    expect(hns).toEqual({ enabled: false });
+    const sink = { email: () => Effect.void, webhook: () => Effect.void };
+    const declarations = makeJobsWorkerDeclarations(
+      sink,
+      "https://rpc.invalid/",
+      hns,
+      "development",
+    );
+    expect(
+      declarations.some((declaration) => declaration.name === HNS_ROUTE_REVALIDATION_JOB),
+    ).toBe(false);
+    for (const binding of [
+      "HNS_OWNER_VERIFIER",
+      "HNS_OWNERSHIP_ENABLED",
+      "HNS_OWNERSHIP_CONFIGURATION_REFERENCE",
+      "HNS_OWNERSHIP_CONFIGURATION_VERSION",
+    ]) {
+      expect(binding in workerEnv).toBe(false);
+    }
+  });
+
+  it("fails closed before scheduling when HNS is enabled without its verifier authority", async () => {
+    const waits: Promise<unknown>[] = [];
+    const workerEnv = scheduledWorkerEnv({ HNS_OWNERSHIP_ENABLED: "true" });
+
+    await expect(
+      jobsWorker.scheduled(nonDueScheduledEvent, workerEnv, recordingContext(waits)),
+    ).rejects.toThrow("Jobs worker HNS route-revalidation configuration is incomplete or invalid");
+    expect(waits).toHaveLength(0);
   });
 
   it("runs exactly one concurrent tick per lane; loser runs nothing", async () => {

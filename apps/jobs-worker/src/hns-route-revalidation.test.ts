@@ -7,6 +7,7 @@ mock.module("cloudflare:workers", () => ({
 
 const {
   HNS_ROUTE_REVALIDATION_BATCH_LIMIT,
+  HNS_ROUTE_REVALIDATION_PENDING_SESSIONS_SQL,
   HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL,
   makeHnsRouteRevalidationComposition,
   runBoundedHnsRouteRevalidationBatch,
@@ -146,13 +147,7 @@ describe("jobs-worker HNS route-revalidation composition", () => {
     }
   });
 
-  test("keeps active expiry and suspended same-root recovery in the scheduler query", () => {
-    expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain(
-      "requirement.provider_configuration_ref AS provider_configuration_reference",
-    );
-    expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain(
-      "requirement.provider_configuration_kind = 'managed'",
-    );
+  test("limits challenge-shaped starts to suspended same-root recovery", () => {
     expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain("WITH prior_recovery AS");
     expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain(
       "attempt.expected_binding_generation + 1 AS binding_generation",
@@ -166,6 +161,12 @@ describe("jobs-worker HNS route-revalidation composition", () => {
     expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain(
       "b.verified_evidence_ref IS NULL",
     );
+    expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).not.toContain(
+      "b.route_lifecycle_status = 'active'",
+    );
+    expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain(
+      "prior_session.status = 'failed'",
+    );
     expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain(
       "prior_session.terminal_at AS prior_terminal_at",
     );
@@ -173,10 +174,34 @@ describe("jobs-worker HNS route-revalidation composition", () => {
       "prior.prior_terminal_at <= clock_timestamp() - ($1 * INTERVAL '1 second')",
     );
     expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain(
-      "evidence.expires_at <= clock_timestamp() + ($1 * INTERVAL '1 second')",
+      "b.route_binding_id = $4 AND b.binding_generation = $5",
     );
     expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain(
-      "b.route_binding_id = $4 AND b.binding_generation = $5",
+      "$4::text IS NOT NULL\n        OR NOT EXISTS (",
+    );
+    expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain(
+      "open_session.expected_binding_generation = b.binding_generation",
+    );
+    expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL).toContain(
+      "open_session.status = 'pending'",
+    );
+    for (const predicate of [
+      "provider_configuration_reference = $7",
+      "provider_configuration_version = $8",
+      "environment = $6",
+    ]) {
+      expect(HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL.indexOf(predicate)).toBeLessThan(
+        HNS_ROUTE_REVALIDATION_START_CANDIDATES_SQL.indexOf("LIMIT $2"),
+      );
+    }
+  });
+
+  test("filters exhausted pending sessions before consuming the SQL poll limit", () => {
+    expect(HNS_ROUTE_REVALIDATION_PENDING_SESSIONS_SQL).toContain(
+      "HAVING COUNT(a.route_revalidation_attempt_id) FILTER (WHERE a.state = 'consumed') < 3",
+    );
+    expect(HNS_ROUTE_REVALIDATION_PENDING_SESSIONS_SQL.indexOf("HAVING COUNT")).toBeLessThan(
+      HNS_ROUTE_REVALIDATION_PENDING_SESSIONS_SQL.indexOf("LIMIT $5"),
     );
   });
 
