@@ -14,7 +14,7 @@ Date of inventory: 2026-08-22.
 
 | Source | Identifier | Access from this workspace |
 | --- | --- | --- |
-| Infisical, api-next project | project `fac45f92-9450-42fb-8c2f-f20d043fdfab`, organization `d9615445-c0d4-445a-ad58-1d55d365635a` | Reachable, but only under the api-next organization profile. The repository default `/home/t42/.infisical.json` pins the historical workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71`; under that profile this project returns "This project does not belong to your selected organization." Switch profiles before any api-next secret work, and switch back afterwards. |
+| Infisical, api-next project | project `fac45f92-9450-42fb-8c2f-f20d043fdfab`, organization `d9615445-c0d4-445a-ad58-1d55d365635a` | Reachable. `api-next/.infisical.json` now pins this project, so commands run anywhere in the api-next tree resolve it without `--projectId`. See "Local project selection" below. |
 | Infisical, historical project | workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71` | Reachable. Historical reference only. Its `/services/api` folder deliberately mixes API runtime, HNS, Spaces, media, Story, and operator credentials; that mixing is the boundary defect this contract corrects. Do not copy it wholesale. |
 | Cloudflare Worker secrets | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable. `pirate-http-worker-staging` holds seven intended secrets after the public-config cleanup. `pirate-http-worker-production` does not exist remotely, consistent with production remaining disabled. |
 | Declared Wrangler contract | `api-next/apps/http-worker/wrangler.jsonc` and `api-next/apps/jobs-worker/wrangler.jsonc` | In repository. Both Workers are in scope; earlier revisions of this document covered only the http Worker. `secrets.required` is a real Wrangler property — it drives type generation and local-dev warnings, but does not gate a deploy. See D9. |
@@ -475,6 +475,36 @@ contents were hash-verified before root cleanup. This remains accepted risk:
 the first service-path synchronization and first operator migration are still
 unrehearsed and should happen before relying on those paths operationally.
 
+## Local project selection — corrected 2026-08-22
+
+`/home/t42/.infisical.json` **still exists** and still pins the historical
+workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71`. A scan after the credential
+reset reported it as absent; that was incorrect. The credential reset cleared
+the login and the offline cache — `~/.infisical/secrets-backup/` is confirmed
+gone — but it did not touch the home-directory project pin, which is
+configuration rather than credential.
+
+That pin is an active trap. Any `infisical` command run outside a directory
+with its own `.infisical.json` silently targets the legacy project, whose
+`/services/api` folder holds a similarly named but unrelated set of database
+URLs on the same PlanetScale instance.
+
+Fix applied: `api-next/.infisical.json` now pins
+`fac45f92-9450-42fb-8c2f-f20d043fdfab`. Verified — `infisical secrets folders
+get --env=staging --path=/services` with no `--projectId` resolves
+`/services/api-next` correctly. A project ID is not a secret, so this file
+is committed in `0893585` rather than ignored.
+
+This makes the correct project the default for anyone working in the tree and
+removes the reliance on remembering `--projectId` or on which profile happens
+to be selected.
+
+The operator path was rehearsed in non-mutating mode after the pin was
+committed: `infisical run --env=staging
+--path=/services/api-next/operator -- bun run db:migrate --dry-run` injected
+the two operator entries, loaded the repository migration plan, and opened no
+database connection. A real migration remains intentionally unrun.
+
 ## Session hygiene — open
 
 During the migration session a diagnostic printed the active Infisical
@@ -484,16 +514,17 @@ session scratchpad, and the shell histories found no token-shaped string
 matching it. Infisical could not renew the session, because renewal supports
 identity tokens only.
 
-Required, in order:
+Local hygiene is complete: `infisical reset` cleared the local credential, the
+encrypted offline cache was removed, and a fresh interactive login selected
+the api-next organization profile. The previously disclosed server session
+has not been confirmed revoked; that remains the only open hygiene step.
+
+Remaining server-side action:
 
 1. Revoke the session server-side, in the Infisical web console under personal
    settings. `infisical logout` clears the local credential from the OS
    keyring; on its own it does not invalidate a token that has already been
    disclosed. Revoke first, then log out and back in.
-2. Clear the offline cache: `rm -rf ~/.infisical/secrets-backup/`. Its entries
-   are encrypted under the local credential, so rotating that credential
-   without clearing the cache leaves stale encrypted copies of both the staging
-   and prod roots on disk for no operational benefit.
-3. Treat the exposure as scoped to the session token, not to the secrets. No
-   secret value was rendered. No rotation of the seventeen entries is indicated
-   by this event alone.
+For completeness, the exposure remains scoped to the session token, not to
+the secrets. No secret value was rendered. No rotation of the seventeen
+entries is indicated by this event alone.
