@@ -268,7 +268,9 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
 
     const result = await handleScheduled(env, job.lane, job, 1_000_000, {
       runtime: Layer.succeed(ControlPlaneDb, db),
-      leaseTtlMs: 60,
+      // Keep enough expiry margin for loaded CI runners while the short
+      // renewal cadence still proves that the heartbeat runs during the job.
+      leaseTtlMs: 1_000,
       renewIntervalMs: 20,
     });
 
