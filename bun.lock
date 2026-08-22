@@ -22,6 +22,10 @@
         "wrangler": "^4.123.0",
       },
     },
+    "apps/hns-owner-verifier": {
+      "name": "@pirate/hns-owner-verifier",
+      "version": "0.0.0",
+    },
     "apps/http-worker": {
       "name": "@pirate/http-worker",
       "version": "0.0.0",
@@ -38,7 +42,7 @@
     },
     "packages/api-client": {
       "name": "@pirate/api-client",
-      "version": "0.8.0",
+      "version": "0.11.1",
     },
     "packages/application": {
       "name": "@pirate/application",
@@ -497,6 +501,8 @@
     "@pirate/contracts": ["@pirate/contracts@workspace:packages/contracts"],
 
     "@pirate/domain": ["@pirate/domain@workspace:packages/domain"],
+
+    "@pirate/hns-owner-verifier": ["@pirate/hns-owner-verifier@workspace:apps/hns-owner-verifier"],
 
     "@pirate/http-worker": ["@pirate/http-worker@workspace:apps/http-worker"],
 
