@@ -38,6 +38,17 @@ export const VERY_WEB_SESSION_TTL_SECONDS = 300 as const;
 export const VERY_WEB_MAX_RESPONSE_BYTES = 1_048_576 as const;
 export const VERY_WEB_MAX_SEALED_SESSION_REF_CHARS = 16_384 as const;
 const VERY_WEB_CURATED_POLICY_VERSION = "curated-human-membership-v1" as const;
+const VERY_WEB_CONTEXT = "VeryAI - Palm Verification Timestamp" as const;
+// The current app requires the VeryAI launch context, while its issued palm
+// credential and public proof retain the legacy Veros context ID.
+const VERY_WEB_PROOF_CONTEXT_ID = "1034873066642566601948846461572930273212113570698" as const;
+const VERY_WEB_TYPE_ID = "3" as const;
+const VERY_WEB_EXPIRED_AT_LOWER_BOUND = "1743436800" as const;
+const VERY_WEB_EQUAL_CHECK_ID = "0" as const;
+const VERY_WEB_CONDITION_FROM = "1743436800" as const;
+const VERY_WEB_CONDITION_TO = "2043436800" as const;
+const BN128_SCALAR_FIELD =
+  21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
 const VERY_WEB_CLAIMS = [
   "human.personhood",
@@ -56,6 +67,23 @@ const VERY_WEB_PURPOSE_LABELS: Readonly<Record<VeryWebIntentType, string>> = {
   commerce_pricing: "Commerce Pricing",
   qualifier_disclosure: "Qualifier Disclosure",
   profile_verification: "Profile Verification",
+};
+
+/**
+ * Decimal BabyZK external nullifiers produced by
+ * @galxe-identity-protocol/sdk 1.0.9 computeExternalNullifier over each
+ * resolved purpose label, including the curated join-policy suffix. Very
+ * rejects the human-readable labels before proof generation.
+ */
+const VERY_WEB_EXTERNAL_NULLIFIERS: Readonly<Record<VeryWebIntentType, string>> = {
+  community_creation: "1351226003881404976665755614907410091657079916364",
+  community_join: "264217990274801941962267316944909823304321904290",
+  post_create: "1130186571920992206920222068154402116909834677867",
+  comment_create: "600509826650900921912548340700802417809492076305",
+  post_access_18_plus: "240689530234826735324118665110663312342478700442",
+  commerce_pricing: "1330493323786221074162205161881223097918780727136",
+  qualifier_disclosure: "289261659585639184594635947972356808520624143995",
+  profile_verification: "432214632282659501678128554546141871339416635754",
 };
 
 export const VERY_WEB_MANIFEST: ProofProviderManifest = {
@@ -162,9 +190,43 @@ type SealedSession = Readonly<{
   bridge_session_id: string;
   bridge_key: string;
   binding_value: string;
+  proof_external_nullifier: string;
 }>;
 
 type ClientSubmission = Readonly<{ mode: "widget"; proof: string }> | Readonly<{ mode: "bridge" }>;
+
+const VeryWebFieldElementSchema = Schema.String.check(
+  Schema.isPattern(/^(0|[1-9][0-9]*)$/u),
+  Schema.isMaxLength(77),
+  Schema.makeFilter((value) =>
+    BigInt(value) < BN128_SCALAR_FIELD ? undefined : "Expected a BN128 scalar field element",
+  ),
+);
+const VeryWebProofSchema = Schema.fromJsonString(
+  Schema.Struct({
+    proof: Schema.Struct({
+      pi_a: Schema.Tuple([
+        VeryWebFieldElementSchema,
+        VeryWebFieldElementSchema,
+        VeryWebFieldElementSchema,
+      ]),
+      pi_b: Schema.Tuple([
+        Schema.Tuple([VeryWebFieldElementSchema, VeryWebFieldElementSchema]),
+        Schema.Tuple([VeryWebFieldElementSchema, VeryWebFieldElementSchema]),
+        Schema.Tuple([VeryWebFieldElementSchema, VeryWebFieldElementSchema]),
+      ]),
+      pi_c: Schema.Tuple([
+        VeryWebFieldElementSchema,
+        VeryWebFieldElementSchema,
+        VeryWebFieldElementSchema,
+      ]),
+      protocol: Schema.Literal("groth16"),
+      curve: Schema.Literal("bn128"),
+    }),
+    publicSignals: Schema.Array(VeryWebFieldElementSchema).check(Schema.isLengthBetween(10, 10)),
+  }),
+);
+const VeryWebVerifierResponseSchema = Schema.Struct({ status: Schema.String });
 
 const SESSION_AAD = "pirate-api-next/very.web/session/v1";
 const SESSION_PREFIX = "very.web.v1";
@@ -231,17 +293,41 @@ function exactClaims(
 }
 
 function externalNullifier(purpose: VeryWebPurpose): string {
-  const label = VERY_WEB_PURPOSE_LABELS[purpose.intent];
-  return purpose.policy_id === undefined
-    ? `Pirate - ${label}`
-    : `Pirate - ${label} - ${purpose.policy_id}`;
+  return VERY_WEB_EXTERNAL_NULLIFIERS[purpose.intent];
+}
+
+function bytesToBigInt(bytes: Uint8Array): bigint {
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+  return value;
+}
+
+/**
+ * The live Very BabyZK circuit exposes the query external nullifier as the
+ * SHA-256 digest of its canonical decimal encoding, reduced into the BN128
+ * scalar field. This mapping was confirmed across independent live proofs.
+ */
+function proofExternalNullifier(
+  queryExternalNullifier: string,
+): Effect.Effect<string, VerificationProviderFailure> {
+  return Effect.tryPromise({
+    try: async () => {
+      const digest = new Uint8Array(
+        await crypto.subtle.digest("SHA-256", new TextEncoder().encode(queryExternalNullifier)),
+      );
+      return (bytesToBigInt(digest) % BN128_SCALAR_FIELD).toString();
+    },
+    catch: () => invalid("start"),
+  });
 }
 
 function purposeSupported(purpose: VeryWebPurpose | undefined): boolean {
   return (
     purpose !== undefined &&
     VERY_WEB_PURPOSE_LABELS[purpose.intent] !== undefined &&
-    (purpose.policy_id === undefined || purpose.policy_id === VERY_WEB_CURATED_POLICY_VERSION)
+    (purpose.policy_id === undefined ||
+      (purpose.intent === "community_join" &&
+        purpose.policy_id === VERY_WEB_CURATED_POLICY_VERSION))
   );
 }
 
@@ -416,6 +502,7 @@ function unsealSession(
           bridge_session_id: Schema.NonEmptyString,
           bridge_key: Schema.NonEmptyString,
           binding_value: Schema.NonEmptyString,
+          proof_external_nullifier: Schema.NonEmptyString,
         }),
       )(decodeJson(plaintext));
       if (Option.isNone(decoded)) throw new Error("invalid");
@@ -437,6 +524,12 @@ function randomBytes(
     },
     catch: () => invalid("start"),
   });
+}
+
+function fieldElementFromRandomBytes(bytes: Uint8Array): string | undefined {
+  let value = 0n;
+  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
+  return value === 0n ? undefined : value.toString();
 }
 
 function strictSubmission(
@@ -484,40 +577,36 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-function stringField(value: Record<string, unknown>, keys: readonly string[]): string | undefined {
-  for (const key of keys) {
-    const candidate = value[key];
-    if (typeof candidate === "string" && candidate.trim() !== "") return candidate.trim();
-  }
-  return undefined;
+function verifyResult(value: unknown): Effect.Effect<void, VerificationProviderFailure> {
+  const decoded = Schema.decodeUnknownOption(VeryWebVerifierResponseSchema)(value);
+  if (Option.isNone(decoded)) return Effect.fail(invalid("complete"));
+  if (["pending", "processing", "received"].includes(decoded.value.status))
+    return Effect.fail(unavailable("complete"));
+  if (decoded.value.status !== "valid") return Effect.fail(rejected("complete"));
+  return Effect.void;
 }
 
-function verifyResult(
-  value: unknown,
+function verifiedProofSubject(
+  proof: string,
   expectedBinding: string,
+  expectedExternalNullifier: string,
 ): Effect.Effect<string, VerificationProviderFailure> {
-  const root = record(value) ?? {};
-  const status = typeof root.status === "string" ? root.status : "";
-  if (["pending", "processing", "received"].includes(status))
-    return Effect.fail(unavailable("complete"));
-  // @veryai/widget 1.0.22 checks the top-level verifier status strictly
-  // against "valid". Do not accept guessed boolean or nested success shapes.
-  if (status !== "valid") return Effect.fail(rejected("complete"));
-  const actualBinding = stringField(root, [
-    "pseudonym",
-    "challenge",
-    "externalNullifier",
-    "external_nullifier",
-  ]);
-  if (actualBinding === undefined || actualBinding !== expectedBinding)
+  const decoded = Schema.decodeUnknownOption(VeryWebProofSchema)(proof);
+  if (Option.isNone(decoded)) return Effect.fail(invalid("complete"));
+  const signals = decoded.value.publicSignals;
+  if (
+    signals[0] !== VERY_WEB_TYPE_ID ||
+    signals[1] !== VERY_WEB_PROOF_CONTEXT_ID ||
+    signals[3] !== expectedExternalNullifier ||
+    signals[4] !== expectedBinding ||
+    signals[5] !== VERY_WEB_EXPIRED_AT_LOWER_BOUND ||
+    (signals[7] !== VERY_WEB_EQUAL_CHECK_ID && signals[7] !== "1") ||
+    signals[8] !== VERY_WEB_CONDITION_FROM ||
+    signals[9] !== VERY_WEB_CONDITION_TO
+  ) {
     return Effect.fail(rejected("complete"));
-  const subject = stringField(root, [
-    "subject",
-    "sub",
-    "nullifier_hash",
-    "nullifierHash",
-    "external_user_id",
-  ]);
+  }
+  const subject = signals[2];
   if (subject === undefined || subject === "0") return Effect.fail(invalid("complete"));
   return Effect.succeed(subject);
 }
@@ -534,13 +623,21 @@ function bridgeProof(
   const iv = typeof response?.iv === "string" ? decodeBase64(response.iv) : undefined;
   const payload =
     typeof response?.payload === "string" ? decodeBase64(response.payload) : undefined;
-  if (status !== "completed" || iv === undefined || payload === undefined)
+  if (
+    status !== "completed" ||
+    iv === undefined ||
+    iv.byteLength !== 12 ||
+    payload === undefined ||
+    payload.byteLength < 16 ||
+    payload.byteLength > VERY_WEB_MAX_RESPONSE_BYTES
+  )
     return Effect.fail(invalid("complete"));
   return Effect.tryPromise({
     try: async () => {
       const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
       const plaintext = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, payload);
-      return new TextDecoder().decode(plaintext);
+      if (plaintext.byteLength > VERY_WEB_MAX_RESPONSE_BYTES) throw new Error("invalid proof");
+      return new TextDecoder("utf-8", { fatal: true }).decode(plaintext);
     },
     catch: () => invalid("complete"),
   });
@@ -662,12 +759,16 @@ function evidenceBundle(
 function payloadQuery(purpose: VeryWebPurpose, bindingValue: string) {
   return {
     conditions: [
-      { identifier: "val", operation: "IN", value: { from: "1743436800", to: "2043436800" } },
+      {
+        identifier: "val",
+        operation: "IN",
+        value: { from: VERY_WEB_CONDITION_FROM, to: VERY_WEB_CONDITION_TO },
+      },
     ],
     options: {
-      expiredAtLowerBound: "1743436800",
+      expiredAtLowerBound: VERY_WEB_EXPIRED_AT_LOWER_BOUND,
       externalNullifier: externalNullifier(purpose),
-      equalCheckId: "0",
+      equalCheckId: VERY_WEB_EQUAL_CHECK_ID,
       pseudonym: bindingValue,
     },
   };
@@ -807,13 +908,18 @@ export function makeVeryWebProvider(options: VeryWebAdapterOptions): Verificatio
       const expires_at = options.clock.expiresAt(issued_at);
       if (!exactSessionExpiry(issued_at, expires_at)) return Effect.fail(rejected("start"));
       const sessionId = options.identifiers.next("session");
-      const bindingValue = sessionId;
       return Effect.all({
         keyBytes: randomBytes(options.randomness, 32),
         ivBytes: randomBytes(options.randomness, 12),
+        bindingBytes: randomBytes(options.randomness, 31),
       }).pipe(
-        Effect.flatMap(({ keyBytes, ivBytes }) =>
+        Effect.flatMap(({ keyBytes, ivBytes, bindingBytes }) =>
           Effect.gen(function* () {
+            const bindingValue = fieldElementFromRandomBytes(bindingBytes);
+            if (bindingValue === undefined) return yield* Effect.fail(invalid("start"));
+            const queryExternalNullifier = externalNullifier(purpose);
+            const expectedProofExternalNullifier =
+              yield* proofExternalNullifier(queryExternalNullifier);
             const key = yield* Effect.tryPromise({
               try: () => crypto.subtle.importKey("raw", keyBytes, "AES-GCM", true, ["encrypt"]),
               catch: () => invalid("start"),
@@ -821,8 +927,8 @@ export function makeVeryWebProvider(options: VeryWebAdapterOptions): Verificatio
             const query = payloadQuery(purpose, bindingValue);
             const launch = {
               app_id: options.app_id,
-              context: "Veros - Palm Verification Timestamp",
-              type_id: "3",
+              context: VERY_WEB_CONTEXT,
+              type_id: VERY_WEB_TYPE_ID,
               query,
             };
             const payload = yield* encryptedLaunch(key, ivBytes, launch);
@@ -852,6 +958,7 @@ export function makeVeryWebProvider(options: VeryWebAdapterOptions): Verificatio
                 bridge_session_id: bridgeSessionId,
                 bridge_key: keyBase64,
                 binding_value: bindingValue,
+                proof_external_nullifier: expectedProofExternalNullifier,
               },
               options.sealing_key,
               options.randomness,
@@ -950,16 +1057,21 @@ export function makeVeryWebProvider(options: VeryWebAdapterOptions): Verificatio
                   );
           return proof.pipe(
             Effect.flatMap((value) =>
-              options.transport
-                .verify({
+              Effect.gen(function* () {
+                const subject = yield* verifiedProofSubject(
+                  value,
+                  sealed.binding_value,
+                  sealed.proof_external_nullifier,
+                );
+                const response = yield* options.transport.verify({
                   url: options.verify_url,
                   proof: value,
                   timeout_ms: VERY_WEB_HTTP_TIMEOUT_MS,
-                })
-                .pipe(
-                  Effect.flatMap((response) => responseBody(response, "complete")),
-                  Effect.flatMap((body) => verifyResult(body, sealed.binding_value)),
-                ),
+                });
+                const body = yield* responseBody(response, "complete");
+                yield* verifyResult(body);
+                return subject;
+              }),
             ),
           );
         }),
