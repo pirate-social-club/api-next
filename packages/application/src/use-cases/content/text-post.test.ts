@@ -4,6 +4,7 @@ import { Cause, Effect, Exit, Result } from "effect";
 import {
   TextModerationProviderError,
   type TextPostModerationEvaluation,
+  TextPostRepositoryError,
   type TextPostStore,
 } from "../../ports.ts";
 import { createTextPost, getTextContentSubmission } from "./text-post.ts";
@@ -45,6 +46,7 @@ const evaluation = (
 });
 
 const store = (overrides: Partial<TextPostStore["Service"]> = {}): TextPostStore["Service"] => ({
+  checkAuthority: () => Effect.succeed(undefined),
   replay: () => Effect.succeed({ kind: "none" as const }),
   commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: published }),
   getForAuthor: () => Effect.succeed(published),
@@ -176,5 +178,34 @@ describe("moderated text post application", () => {
       getTextContentSubmission({ submissionId: "submission_1", actor }, { textPostStore: store() }),
     );
     expect(Exit.isSuccess(result) ? result.value : undefined).toEqual(published);
+  });
+
+  test("checks community authority before invoking moderation", async () => {
+    let moderationCalls = 0;
+    const result = await run(
+      createTextPost(
+        { communityId: "community_1", actor, body },
+        {
+          textPostStore: store({
+            checkAuthority: () =>
+              Effect.fail(
+                new TextPostRepositoryError({ operation: "authority", reason: "not-found" }),
+              ),
+          }),
+          textModeration: {
+            evaluate: () => {
+              moderationCalls += 1;
+              return Effect.succeed(evaluation());
+            },
+          },
+        },
+      ),
+    );
+    expect(moderationCalls).toBe(0);
+    if (Exit.isSuccess(result)) throw new Error("expected authority failure");
+    const failure = Cause.findError(result.cause);
+    expect(Result.isSuccess(failure) ? failure.success : undefined).toMatchObject({
+      _tag: "NotFound",
+    });
   });
 });

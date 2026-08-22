@@ -84,8 +84,6 @@ CREATE TABLE content_publication_outbox (
   CONSTRAINT content_publication_outbox_comment_fk
     FOREIGN KEY (community_id, comment_id)
     REFERENCES comments (community_id, comment_id),
-  CONSTRAINT content_publication_outbox_effect_unique
-    UNIQUE (submission_id, event_type),
   CONSTRAINT content_publication_outbox_effect_key_unique
     UNIQUE (effect_key),
   CONSTRAINT content_publication_outbox_time_shape CHECK (
@@ -98,12 +96,21 @@ CREATE INDEX content_publication_outbox_pending_idx
   ON content_publication_outbox (state, created_at, outbox_event_id)
   WHERE state IN ('pending', 'failed');
 
+CREATE UNIQUE INDEX content_publication_outbox_publish_effect_unique
+  ON content_publication_outbox (submission_id, event_type)
+  WHERE event_type IN ('comment_published', 'comment_notification');
+
+ALTER TABLE text_moderation_cases
+  ADD CONSTRAINT text_moderation_cases_community_case_unique
+  UNIQUE (community_id, case_id);
+
 CREATE TABLE comment_moderation_cases (
   case_ref TEXT PRIMARY KEY,
   community_id TEXT NOT NULL,
   submission_id TEXT NOT NULL,
   comment_id TEXT,
   source TEXT NOT NULL CHECK (source IN ('automated', 'report')),
+  text_case_id TEXT,
   status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'approved', 'dismissed', 'blocked')),
   resolved_by_user_id TEXT,
   created_at TIMESTAMPTZ NOT NULL,
@@ -114,17 +121,24 @@ CREATE TABLE comment_moderation_cases (
   CONSTRAINT comment_moderation_cases_comment_fk
     FOREIGN KEY (community_id, comment_id)
     REFERENCES comments (community_id, comment_id),
+  CONSTRAINT comment_moderation_cases_text_case_fk
+    FOREIGN KEY (community_id, text_case_id)
+    REFERENCES text_moderation_cases (community_id, case_id),
   CONSTRAINT comment_moderation_cases_source_shape CHECK (
-    (source = 'automated' AND comment_id IS NULL)
-    OR (source = 'report' AND comment_id IS NOT NULL)
+    (source = 'automated' AND comment_id IS NULL AND text_case_id = case_ref)
+    OR (source = 'report' AND comment_id IS NOT NULL AND text_case_id IS NULL)
   ),
   CONSTRAINT comment_moderation_cases_resolution_shape CHECK (
     (status = 'open' AND resolved_by_user_id IS NULL)
     OR (status <> 'open' AND resolved_by_user_id IS NOT NULL)
   ),
   CONSTRAINT comment_moderation_cases_time_order CHECK (updated_at >= created_at),
-  CONSTRAINT comment_moderation_cases_source_submission_unique UNIQUE (source, submission_id)
+  CONSTRAINT comment_moderation_cases_community_ref_unique UNIQUE (community_id, case_ref)
 );
+
+CREATE UNIQUE INDEX comment_moderation_cases_open_source_submission_unique
+  ON comment_moderation_cases (source, submission_id)
+  WHERE status = 'open';
 
 CREATE INDEX comment_moderation_cases_open_target_idx
   ON comment_moderation_cases (community_id, comment_id, created_at, case_ref)
@@ -147,8 +161,8 @@ CREATE TABLE comment_reports (
     FOREIGN KEY (community_id, comment_id)
     REFERENCES comments (community_id, comment_id),
   CONSTRAINT comment_reports_case_fk
-    FOREIGN KEY (case_ref)
-    REFERENCES comment_moderation_cases (case_ref),
+    FOREIGN KEY (community_id, case_ref)
+    REFERENCES comment_moderation_cases (community_id, case_ref),
   CONSTRAINT comment_reports_reporter_key_unique
     UNIQUE (reporter_user_id, comment_id, idempotency_key)
 );
@@ -168,8 +182,8 @@ CREATE TABLE comment_moderation_actions (
   target_status TEXT NOT NULL CHECK (target_status IN ('held', 'published', 'hidden', 'removed')),
   created_at TIMESTAMPTZ NOT NULL,
   CONSTRAINT comment_moderation_actions_case_fk
-    FOREIGN KEY (case_ref)
-    REFERENCES comment_moderation_cases (case_ref),
+    FOREIGN KEY (community_id, case_ref)
+    REFERENCES comment_moderation_cases (community_id, case_ref),
   CONSTRAINT comment_moderation_actions_actor_key_unique
     UNIQUE (case_ref, actor_user_id, idempotency_key)
 );

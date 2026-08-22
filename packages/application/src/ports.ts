@@ -400,6 +400,7 @@ export type TextPostCommitOutcome =
     };
 
 export type TextPostRepositoryOperation =
+  | "authority"
   | "replay"
   | "commit"
   | "get"
@@ -425,6 +426,12 @@ export class TextPostRepositoryError extends Data.TaggedError("TextPostRepositor
 export type TextPostRepositoryFailure = TextPostRepositoryError | ControlPlaneError;
 
 export interface TextPostStoreService {
+  /** Read-only authority preflight used before sending text to moderation. */
+  readonly checkAuthority: (input: {
+    readonly communityId: string;
+    readonly actor: M2Actor;
+  }) => Effect.Effect<void, TextPostRepositoryFailure>;
+
   /** Exact same-key/same-hash replay lookup. Must precede moderation. */
   readonly replay: (input: {
     readonly communityId: string;

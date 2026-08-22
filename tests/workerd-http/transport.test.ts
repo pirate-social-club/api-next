@@ -174,6 +174,48 @@ describe("real HTTP worker transport", () => {
     });
   });
 
+  it("drives report and moderation action routes through the real Workerd handler fixture", async () => {
+    const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "workerd-proof" },
+      }),
+    });
+    const browser = browserCookies(exchange);
+    const headers = {
+      cookie: browser.cookie,
+      "content-type": "application/json",
+      origin: "https://solid.test",
+      "x-csrf-token": browser.csrf,
+    };
+
+    const report = await SELF.fetch("https://worker.test/comments/comment_workerd/reports", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ idempotency_key: "workerd-report", reason_code: "spam" }),
+    });
+    expect(report.status).toBe(201);
+    expect(await report.json()).toEqual({
+      report_id: "report_workerd",
+      case_ref: "case_workerd",
+      status: "open",
+    });
+
+    const action = await SELF.fetch("https://worker.test/moderation/cases/case_workerd/actions", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ idempotency_key: "workerd-action", action: "hide" }),
+    });
+    expect(action.status).toBe(200);
+    expect(await action.json()).toEqual({
+      action_id: "action_workerd",
+      case_ref: "case_workerd",
+      action: "hide",
+      target_status: "hidden",
+    });
+  });
+
   it("keeps namespace providers disabled while preserving exact durable replays", async () => {
     const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
       method: "POST",

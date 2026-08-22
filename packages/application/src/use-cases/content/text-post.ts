@@ -257,6 +257,10 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
     if (replay.kind === "replay") return replay.snapshot;
     if (replay.kind === "conflict") return yield* idempotencyConflict(replay.submissionId);
 
+    yield* store
+      .checkAuthority({ communityId: input.communityId, actor: input.actor })
+      .pipe(Effect.mapError(mapStoreFailure));
+
     // The provider is deliberately outside the repository transaction. A
     // stale policy result is discarded by commitTerminal and evaluated again.
     const evaluation = yield* moderation.evaluate(text.input).pipe(

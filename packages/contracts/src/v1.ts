@@ -1162,7 +1162,16 @@ export const ModerateCaseAction = endpoint({
   },
   response: ModerationCaseActionResponseV1,
   successStatus: 200,
-  errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
+  errors: [
+    AuthError,
+    BadRequest,
+    CommentsLocked,
+    Conflict,
+    IdempotencyConflict,
+    NotFound,
+    RateLimited,
+    ReplyDepthExceeded,
+  ],
 });
 
 // --- home feed -------------------------------------------------------------

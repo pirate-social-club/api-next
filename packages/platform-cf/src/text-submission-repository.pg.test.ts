@@ -898,6 +898,37 @@ suite("Postgres 17 terminal text submission repository", () => {
         _tag: "TextPostRepositoryError",
         reason: "reply-depth-exceeded",
       });
+
+      await insertParentComment(admin, "text-order6-post", "text-order6-max-parent", 7);
+      const allowedHash = await commentRequestHash(
+        "reply-order6-max-allowed",
+        replyBody.body,
+        "text-order6-post",
+        "reply",
+        "text-order6-max-parent",
+      );
+      const allowed = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId: "text-community",
+          actor,
+          body: { ...replyBody, idempotency_key: "reply-order6-max-allowed" },
+          moderationInput: replyInput,
+          idempotencyKey: "reply-order6-max-allowed",
+          requestHash: allowedHash,
+          operationId: "operation_reply_max_allowed",
+          evaluation: replyEvaluation,
+          target: {
+            surface: "reply",
+            communityId: "text-community",
+            postId: "text-order6-post",
+            parentCommentId: "text-order6-max-parent",
+          },
+        }),
+      );
+      expect(allowed).toMatchObject({
+        kind: "created",
+        snapshot: { status: "published", published_resource: { kind: "comment" } },
+      });
     });
   }, 30_000);
 
@@ -1007,6 +1038,13 @@ suite("Postgres 17 terminal text submission repository", () => {
       if (heldResult.kind !== "created" || heldResult.snapshot.review_ref === null)
         throw new Error("expected held comment");
       const heldCaseRef = heldResult.snapshot.review_ref;
+      const heldCounts = await admin.query(
+        `SELECT
+           (SELECT count(*)::int FROM comments) AS comments,
+           (SELECT comment_count FROM posts WHERE post_id = 'text-order6-post') AS comment_count,
+           (SELECT count(*)::int FROM content_publication_outbox) AS outbox`,
+      );
+      expect(heldCounts.rows[0]).toEqual({ comments: 1, comment_count: 1, outbox: 3 });
       const actionHash = (key: string, action: string) =>
         Effect.runPromise(
           canonicalBodyHash({
@@ -1016,6 +1054,23 @@ suite("Postgres 17 terminal text submission repository", () => {
           }),
         );
       const moderator = { ...actor, scopes: ["moderator"] };
+      const authorApproveHash = await actionHash("action-order6-author-approve", "approve");
+      const authorApproveFailure = await runStore(connection, (store) =>
+        store.moderateCaseAction({
+          caseRef: heldCaseRef,
+          actor,
+          idempotencyKey: "action-order6-author-approve",
+          action: "approve",
+          requestHash: authorApproveHash,
+        }),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(authorApproveFailure).toMatchObject({
+        _tag: "TextPostRepositoryError",
+        reason: "not-found",
+      });
       const dismissHash = await actionHash("action-order6-dismiss", "dismiss");
       const dismissFailure = await runStore(connection, (store) =>
         store.moderateCaseAction({
@@ -1058,6 +1113,35 @@ suite("Postgres 17 terminal text submission repository", () => {
         }),
       );
       expect(approvedReplay).toEqual(approved);
+      const approvedSubmissionReplay = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId: "text-community",
+          actor,
+          body: { idempotency_key: heldKey, body: "held comment" },
+          moderationInput: heldInput,
+          idempotencyKey: heldKey,
+          requestHash: heldHash,
+          operationId: "operation_comment_held_replay",
+          evaluation: {
+            ...commentEvaluation,
+            decision: "manual_review",
+            reason_codes: ["provider_unavailable"],
+            input_sha256: heldCanonical.sha256,
+          },
+          target: { surface: "comment", communityId: "text-community", postId: "text-order6-post" },
+        }),
+      );
+      expect(approvedSubmissionReplay).toMatchObject({
+        kind: "replay",
+        snapshot: { status: "manual_review", published_resource: null },
+      });
+      const approvedRead = await runStore(connection, (store) =>
+        store.getForAuthor({ submissionId: heldResult.snapshot.submission_id, actor }),
+      );
+      expect(approvedRead).toMatchObject({
+        status: "published",
+        published_resource: { kind: "comment" },
+      });
       const counts = await admin.query(
         `SELECT
            (SELECT count(*)::int FROM comment_reports) AS reports,
@@ -1075,6 +1159,109 @@ suite("Postgres 17 terminal text submission repository", () => {
         comment_count: 2,
         outbox: 6,
       });
+
+      const awaitActionHash = (caseRef: string, key: string, action: string) =>
+        Effect.runPromise(
+          canonicalBodyHash({
+            endpoint: "POST /moderation/cases/:caseRef/actions",
+            case_ref: caseRef,
+            body: { idempotency_key: key, action },
+          }),
+        );
+      const runAction = async (caseRef: string, key: string, action: string) => {
+        const requestHash = await awaitActionHash(caseRef, key, action);
+        return runStore(connection, (store) =>
+          store.moderateCaseAction({
+            caseRef,
+            actor: moderator,
+            idempotencyKey: key,
+            action: action as "approve" | "dismiss" | "hide" | "remove" | "restore",
+            requestHash,
+          }),
+        );
+      };
+      const resolvedCaseHash = await awaitActionHash(
+        report.caseRef,
+        "action-order6-resolved-case",
+        "restore",
+      );
+      const resolvedCaseAction = await runStore(connection, (store) =>
+        store.moderateCaseAction({
+          caseRef: report.caseRef,
+          actor: moderator,
+          idempotencyKey: "action-order6-resolved-case",
+          action: "restore",
+          requestHash: resolvedCaseHash,
+        }),
+      ).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      let resolvedCaseFailure: unknown = resolvedCaseAction;
+      while (Array.isArray(resolvedCaseFailure)) resolvedCaseFailure = resolvedCaseFailure[0];
+      expect(resolvedCaseFailure).toMatchObject({
+        _tag: "TextPostRepositoryError",
+        reason: "action-conflict",
+      });
+      const hidden = await runAction(report.caseRef, "action-order6-hide", "hide");
+      expect(hidden).toMatchObject({ targetStatus: "hidden" });
+      const afterHideHash = await reportHash("report-order6-3");
+      const afterHideReport = await runStore(connection, (store) =>
+        store.reportComment({
+          commentId,
+          actor,
+          idempotencyKey: "report-order6-3",
+          reasonCode: "spam",
+          requestHash: afterHideHash,
+        }),
+      );
+      expect(afterHideReport).toMatchObject({ status: "open" });
+      const restored = await runAction(
+        afterHideReport.caseRef,
+        "action-order6-restore-hidden",
+        "restore",
+      );
+      expect(restored).toMatchObject({ targetStatus: "published" });
+      const afterRestoreHash = await reportHash("report-order6-4");
+      const afterRestoreReport = await runStore(connection, (store) =>
+        store.reportComment({
+          commentId,
+          actor,
+          idempotencyKey: "report-order6-4",
+          reasonCode: "spam",
+          requestHash: afterRestoreHash,
+        }),
+      );
+      const removed = await runAction(afterRestoreReport.caseRef, "action-order6-remove", "remove");
+      expect(removed).toMatchObject({ targetStatus: "removed" });
+      const afterRemoveHash = await reportHash("report-order6-5");
+      const afterRemoveReport = await runStore(connection, (store) =>
+        store.reportComment({
+          commentId,
+          actor,
+          idempotencyKey: "report-order6-5",
+          reasonCode: "spam",
+          requestHash: afterRemoveHash,
+        }),
+      );
+      const restoredRemoved = await runAction(
+        afterRemoveReport.caseRef,
+        "action-order6-restore-removed",
+        "restore",
+      );
+      expect(restoredRemoved).toMatchObject({ targetStatus: "published" });
+      const visibilityEffects = await admin.query<{
+        readonly event_type: string;
+        readonly effect_key: string;
+      }>(
+        `SELECT event_type, effect_key
+           FROM content_publication_outbox
+          WHERE submission_id = $1 AND event_type = 'comment_cache_invalidation'
+          ORDER BY effect_key`,
+        [publishedResult.snapshot.submission_id],
+      );
+      expect(visibilityEffects.rows).toHaveLength(5);
+      expect(new Set(visibilityEffects.rows.map((row) => row.effect_key)).size).toBe(5);
     });
   }, 30_000);
 });

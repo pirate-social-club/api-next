@@ -3683,13 +3683,14 @@ CREATE TABLE comment_moderation_cases (
     submission_id text NOT NULL,
     comment_id text,
     source text NOT NULL,
+    text_case_id text,
     status text DEFAULT 'open'::text NOT NULL,
     resolved_by_user_id text,
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
     CONSTRAINT comment_moderation_cases_resolution_shape CHECK ((((status = 'open'::text) AND (resolved_by_user_id IS NULL)) OR ((status <> 'open'::text) AND (resolved_by_user_id IS NOT NULL)))),
     CONSTRAINT comment_moderation_cases_source_check CHECK ((source = ANY (ARRAY['automated'::text, 'report'::text]))),
-    CONSTRAINT comment_moderation_cases_source_shape CHECK ((((source = 'automated'::text) AND (comment_id IS NULL)) OR ((source = 'report'::text) AND (comment_id IS NOT NULL)))),
+    CONSTRAINT comment_moderation_cases_source_shape CHECK ((((source = 'automated'::text) AND (comment_id IS NULL) AND (text_case_id = case_ref)) OR ((source = 'report'::text) AND (comment_id IS NOT NULL) AND (text_case_id IS NULL)))),
     CONSTRAINT comment_moderation_cases_status_check CHECK ((status = ANY (ARRAY['open'::text, 'approved'::text, 'dismissed'::text, 'blocked'::text]))),
     CONSTRAINT comment_moderation_cases_time_order CHECK ((updated_at >= created_at))
 );
@@ -5544,10 +5545,10 @@ ALTER TABLE ONLY comment_moderation_actions
     ADD CONSTRAINT comment_moderation_actions_pkey PRIMARY KEY (action_id);
 
 ALTER TABLE ONLY comment_moderation_cases
-    ADD CONSTRAINT comment_moderation_cases_pkey PRIMARY KEY (case_ref);
+    ADD CONSTRAINT comment_moderation_cases_community_ref_unique UNIQUE (community_id, case_ref);
 
 ALTER TABLE ONLY comment_moderation_cases
-    ADD CONSTRAINT comment_moderation_cases_source_submission_unique UNIQUE (source, submission_id);
+    ADD CONSTRAINT comment_moderation_cases_pkey PRIMARY KEY (case_ref);
 
 ALTER TABLE ONLY comment_publication_projection
     ADD CONSTRAINT comment_publication_projection_pkey PRIMARY KEY (community_id, comment_id);
@@ -5850,9 +5851,6 @@ ALTER TABLE ONLY content_publication_outbox
     ADD CONSTRAINT content_publication_outbox_effect_key_unique UNIQUE (effect_key);
 
 ALTER TABLE ONLY content_publication_outbox
-    ADD CONSTRAINT content_publication_outbox_effect_unique UNIQUE (submission_id, event_type);
-
-ALTER TABLE ONLY content_publication_outbox
     ADD CONSTRAINT content_publication_outbox_pkey PRIMARY KEY (outbox_event_id);
 
 ALTER TABLE ONLY decision_records
@@ -6030,6 +6028,9 @@ ALTER TABLE ONLY text_content_submissions
     ADD CONSTRAINT text_content_submissions_pkey PRIMARY KEY (submission_id);
 
 ALTER TABLE ONLY text_moderation_cases
+    ADD CONSTRAINT text_moderation_cases_community_case_unique UNIQUE (community_id, case_id);
+
+ALTER TABLE ONLY text_moderation_cases
     ADD CONSTRAINT text_moderation_cases_pkey PRIMARY KEY (case_id);
 
 ALTER TABLE ONLY text_moderation_cases
@@ -6090,6 +6091,8 @@ CREATE INDEX assertion_revalidation_receipt_idx ON assertion_revalidation_events
 CREATE INDEX assertions_binding_claim_idx ON assertions USING btree (binding_group_id, claim_id);
 
 CREATE INDEX assertions_user_claim_observed_idx ON assertions USING btree (user_id, claim_id, observed_at DESC);
+
+CREATE UNIQUE INDEX comment_moderation_cases_open_source_submission_unique ON comment_moderation_cases USING btree (source, submission_id) WHERE (status = 'open'::text);
 
 CREATE INDEX comment_moderation_cases_open_target_idx ON comment_moderation_cases USING btree (community_id, comment_id, created_at, case_ref) WHERE (status = 'open'::text);
 
@@ -6160,6 +6163,8 @@ CREATE UNIQUE INDEX community_route_revalidation_one_leased_attempt_uidx ON comm
 CREATE INDEX community_route_revalidation_start_lease_idx ON community_route_revalidation_start_reservations USING btree (state, lease_expires_at);
 
 CREATE INDEX content_publication_outbox_pending_idx ON content_publication_outbox USING btree (state, created_at, outbox_event_id) WHERE (state = ANY (ARRAY['pending'::text, 'failed'::text]));
+
+CREATE UNIQUE INDEX content_publication_outbox_publish_effect_unique ON content_publication_outbox USING btree (submission_id, event_type) WHERE (event_type = ANY (ARRAY['comment_published'::text, 'comment_notification'::text]));
 
 CREATE INDEX cpf_attempt_operator_actions_operation_idx ON community_purchase_funding_reconciliation_operator_actions USING btree (operation_id, action_id);
 
@@ -6542,13 +6547,16 @@ ALTER TABLE ONLY assertions
     ADD CONSTRAINT assertions_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY comment_moderation_actions
-    ADD CONSTRAINT comment_moderation_actions_case_fk FOREIGN KEY (case_ref) REFERENCES comment_moderation_cases(case_ref);
+    ADD CONSTRAINT comment_moderation_actions_case_fk FOREIGN KEY (community_id, case_ref) REFERENCES comment_moderation_cases(community_id, case_ref);
 
 ALTER TABLE ONLY comment_moderation_cases
     ADD CONSTRAINT comment_moderation_cases_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);
 
 ALTER TABLE ONLY comment_moderation_cases
     ADD CONSTRAINT comment_moderation_cases_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);
+
+ALTER TABLE ONLY comment_moderation_cases
+    ADD CONSTRAINT comment_moderation_cases_text_case_fk FOREIGN KEY (community_id, text_case_id) REFERENCES text_moderation_cases(community_id, case_id);
 
 ALTER TABLE ONLY comment_publication_projection
     ADD CONSTRAINT comment_publication_projection_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);
@@ -6560,7 +6568,7 @@ ALTER TABLE ONLY comment_publication_projection
     ADD CONSTRAINT comment_publication_projection_post_fk FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
 
 ALTER TABLE ONLY comment_reports
-    ADD CONSTRAINT comment_reports_case_fk FOREIGN KEY (case_ref) REFERENCES comment_moderation_cases(case_ref);
+    ADD CONSTRAINT comment_reports_case_fk FOREIGN KEY (community_id, case_ref) REFERENCES comment_moderation_cases(community_id, case_ref);
 
 ALTER TABLE ONLY comment_reports
     ADD CONSTRAINT comment_reports_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);

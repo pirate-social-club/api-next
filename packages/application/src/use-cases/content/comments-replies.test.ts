@@ -4,6 +4,7 @@ import { Cause, Effect, Exit, Result } from "effect";
 import {
   TextModerationProviderError,
   type TextPostModerationEvaluation,
+  TextPostRepositoryError,
   type TextPostStore,
 } from "../../ports.ts";
 import { createCommentReply } from "./comments-replies.ts";
@@ -58,6 +59,7 @@ const evaluation = (
 const commentStore = (
   overrides: Partial<TextPostStore["Service"]> = {},
 ): TextPostStore["Service"] => ({
+  checkAuthority: () => Effect.succeed(undefined),
   replay: () => Effect.succeed({ kind: "none" as const }),
   commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: published }),
   getForAuthor: () => Effect.succeed(published),
@@ -173,6 +175,36 @@ describe("comments and replies application", () => {
       decision: "manual_review",
       reason_codes: ["provider_unavailable"],
       input_sha256: inputSha(),
+    });
+  });
+
+  test("checks route and membership authority before invoking moderation", async () => {
+    let moderationCalls = 0;
+    const result = await run(
+      createCommentReply(
+        { surface: "comment", targetId: "post-comments", actor, body },
+        {
+          textPostStore: commentStore({
+            checkAuthority: () =>
+              Effect.fail(
+                new TextPostRepositoryError({ operation: "authority", reason: "not-found" }),
+              ),
+          }),
+          textModeration: {
+            evaluate: () => {
+              moderationCalls += 1;
+              return Effect.succeed(evaluation());
+            },
+          },
+        },
+      ),
+    );
+
+    expect(moderationCalls).toBe(0);
+    if (Exit.isSuccess(result)) throw new Error("expected authority failure");
+    const failure = Cause.findError(result.cause);
+    expect(Result.isSuccess(failure) ? failure.success : undefined).toMatchObject({
+      _tag: "NotFound",
     });
   });
 });

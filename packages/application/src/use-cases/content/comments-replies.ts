@@ -220,6 +220,10 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
     if (replay.kind === "replay") return replay.snapshot;
     if (replay.kind === "conflict") return yield* idempotencyConflict(replay.submissionId);
 
+    yield* store
+      .checkAuthority({ communityId: target.communityId, actor: input.actor })
+      .pipe(Effect.mapError(mapStoreFailure));
+
     const evaluation = yield* moderation.evaluate(normalized.input).pipe(
       Effect.map((result) => safeEvaluation(result, normalized.input, canonical.sha256)),
       Effect.catchTag("TextModerationProviderError", (failure) =>

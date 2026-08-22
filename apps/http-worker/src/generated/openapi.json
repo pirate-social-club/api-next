@@ -29250,7 +29250,8 @@
               }
             },
             "x-error-codes": [
-              "bad_request"
+              "bad_request",
+              "reply_depth_exceeded"
             ]
           },
           "401": {
@@ -29304,6 +29305,59 @@
             },
             "x-error-codes": [
               "auth_error"
+            ]
+          },
+          "403": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "comments_locked"
             ]
           },
           "404": {
@@ -29483,10 +29537,12 @@
         "x-errors": [
           "AuthError",
           "BadRequest",
+          "CommentsLocked",
           "Conflict",
           "IdempotencyConflict",
           "NotFound",
-          "RateLimited"
+          "RateLimited",
+          "ReplyDepthExceeded"
         ]
       }
     },

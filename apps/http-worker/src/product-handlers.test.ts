@@ -111,6 +111,7 @@ function stores(
       ...overrides.content,
     } as unknown as ContentStore,
     textPostStore: {
+      checkAuthority: () => Effect.succeed(undefined),
       replay: () => Effect.succeed({ kind: "none" as const }),
       commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: textSubmission }),
       getForAuthor: () => Effect.succeed(textSubmission),
@@ -128,6 +129,49 @@ function stores(
 }
 
 describe("HTTP product handlers", () => {
+  test("maps comment report and moderation action outcomes to contract response shapes", async () => {
+    const handlers = makeProductHandlers(
+      stores({
+        textPost: {
+          reportComment: () =>
+            Effect.succeed({ reportId: "report-a", caseRef: "case-a", status: "open" as const }),
+          moderateCaseAction: ({ action }) =>
+            Effect.succeed({
+              actionId: "action-a",
+              caseRef: "case-a",
+              action,
+              targetStatus: "hidden" as const,
+            }),
+        },
+      }),
+    );
+    const principal = { kind: "admin" as const, subject: "admin-a", scopes: ["moderator"] };
+
+    await expect(
+      handlers.ReportComment(
+        request({
+          params: { commentId: "comment-a" },
+          principal,
+          body: { idempotency_key: "report-key", reason_code: "spam" },
+        }),
+      ),
+    ).resolves.toEqual({ report_id: "report-a", case_ref: "case-a", status: "open" });
+    await expect(
+      handlers.ModerateCaseAction(
+        request({
+          params: { caseRef: "case-a" },
+          principal,
+          body: { idempotency_key: "action-key", action: "hide" },
+        }),
+      ),
+    ).resolves.toEqual({
+      action_id: "action-a",
+      case_ref: "case-a",
+      action: "hide",
+      target_status: "hidden",
+    });
+  });
+
   test("maps decoded community path, query, principal, and default join body", async () => {
     const observed: {
       preview: unknown[];

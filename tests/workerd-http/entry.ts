@@ -1,4 +1,9 @@
-import type { IdentityStore } from "@pirate/application";
+import {
+  type IdentityStore,
+  type M2Actor,
+  TextPostRepositoryError,
+  type TextPostStore,
+} from "@pirate/application";
 import { getCurrentUser } from "@pirate/application/use-cases/current-user";
 import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import {
@@ -29,7 +34,15 @@ import {
 import { makePlatformNamespaceOwnershipProviderRegistry } from "@pirate/platform-cf/namespace-ownership-provider-registry";
 import { Effect } from "effect";
 import { makeNamespaceOwnershipHandlers } from "../../apps/http-worker/src/namespace-ownership-handlers.ts";
-import { createHttpWorker, type Principal } from "../../apps/http-worker/src/transport.ts";
+import {
+  createHttpWorker,
+  type DecodedRequest,
+  type Principal,
+} from "../../apps/http-worker/src/transport.ts";
+import {
+  moderateCaseAction,
+  reportComment,
+} from "../../packages/application/src/use-cases/content/comment-moderation.ts";
 
 export {
   RegistrationApplicationRateLimiterDO,
@@ -64,7 +77,7 @@ async function sessionCrypto() {
     publicKeyPem: toPem("PUBLIC KEY", await crypto.subtle.exportKey("spki", pair.publicKey)),
     issuer: "api-next-session-workerd",
     audience: "api-next-browser-workerd",
-    defaultScope: "api-next-browser-session-workerd",
+    defaultScope: "moderator",
   });
 }
 
@@ -309,6 +322,40 @@ const namespaceCompletion: NamespaceOwnershipCompletionServices = {
   },
 };
 
+const moderationFixture: TextPostStore["Service"] = {
+  checkAuthority: () => Effect.succeed(undefined),
+  replay: () => Effect.succeed({ kind: "none" as const }),
+  commitTerminal: () => Effect.die("unused moderation fixture operation"),
+  getForAuthor: () => Effect.succeed(null),
+  reportComment: () =>
+    Effect.succeed({
+      reportId: "report_workerd",
+      caseRef: "case_workerd",
+      status: "open" as const,
+    }),
+  moderateCaseAction: ({ actor, action }) =>
+    actor.kind === "admin" || actor.scopes?.includes("moderator") === true
+      ? Effect.succeed({
+          actionId: "action_workerd",
+          caseRef: "case_workerd",
+          action,
+          targetStatus: action === "hide" ? ("hidden" as const) : ("published" as const),
+        })
+      : Effect.fail(new TextPostRepositoryError({ operation: "action", reason: "not-found" })),
+};
+const moderationActor = (request: DecodedRequest): M2Actor => {
+  const principal = request.principal;
+  if (principal === null || (principal.kind !== "user" && principal.kind !== "admin"))
+    throw new AuthError({ message: "Authorization required" });
+  return {
+    userId: principal.subject,
+    kind: principal.kind,
+    ...(principal.scopes === undefined ? {} : { scopes: principal.scopes }),
+  };
+};
+const moderationParams = (request: DecodedRequest): Record<string, unknown> =>
+  request.params as Record<string, unknown>;
+
 const app = createHttpWorker({
   config: { corsOrigin: "https://solid.test" },
   sessionExchange,
@@ -325,6 +372,28 @@ const app = createHttpWorker({
     },
     CastPostVote: () => ({ post: "post_1", value: 1 }),
     ClearPostVote: () => ({ post: "post_1", value: null }),
+    ReportComment: (request) =>
+      Effect.runPromise(
+        reportComment(
+          {
+            commentId: String(moderationParams(request).commentId),
+            actor: moderationActor(request),
+            body: request.body,
+          },
+          { textPostStore: moderationFixture },
+        ),
+      ),
+    ModerateCaseAction: (request) =>
+      Effect.runPromise(
+        moderateCaseAction(
+          {
+            caseRef: String(moderationParams(request).caseRef),
+            actor: moderationActor(request),
+            body: request.body,
+          },
+          { textPostStore: moderationFixture },
+        ),
+      ),
     CreatePost: () => textSubmission,
     GetTextContentSubmission: () => textSubmission,
     GetJwks: () => sessionCryptoInstance.jwks(),

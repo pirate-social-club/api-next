@@ -55,6 +55,7 @@ const textSubmission = {
 const textPostStore = (
   overrides: Partial<TextPostStore["Service"]> = {},
 ): TextPostStore["Service"] => ({
+  checkAuthority: () => Effect.succeed(undefined),
   replay: () => Effect.succeed({ kind: "none" as const }),
   commitTerminal: () => Effect.succeed({ kind: "created" as const, snapshot: textSubmission }),
   getForAuthor: () => Effect.succeed(textSubmission),

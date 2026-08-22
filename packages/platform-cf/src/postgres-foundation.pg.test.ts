@@ -212,6 +212,9 @@ const communityCreationVeryWebEvidenceMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const commentsRepliesRuntimeMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0039_comments_replies_runtime.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -409,6 +412,11 @@ const communityCreationVeryWebEvidenceMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0038_community_creation_very_web_evidence.sql"] ?? "",
   sql: communityCreationVeryWebEvidenceMigrationSql,
 };
+const commentsRepliesRuntimeMigration: PostgresMigration = {
+  version: "0039_comments_replies_runtime.sql",
+  checksum: checksumManifest.migrations["0039_comments_replies_runtime.sql"] ?? "",
+  sql: commentsRepliesRuntimeMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -448,6 +456,7 @@ const migrations: readonly PostgresMigration[] = [
   routeRevalidationCompletionMigration,
   textSubmissionResponseSnapshotMigration,
   communityCreationVeryWebEvidenceMigration,
+  commentsRepliesRuntimeMigration,
 ];
 
 function checksum(value: string): string {
@@ -675,6 +684,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(communityCreationVeryWebEvidenceMigrationSql)).toBe(
         communityCreationVeryWebEvidenceMigration.checksum,
       );
+      expect(checksum(commentsRepliesRuntimeMigrationSql)).toBe(
+        commentsRepliesRuntimeMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -703,6 +715,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "assertion_bindings",
         "assertion_revalidation_events",
         "assertions",
+        "comment_moderation_actions",
+        "comment_moderation_cases",
+        "comment_publication_projection",
+        "comment_reports",
         "comments",
         "communities",
         "community_canonical_route_bindings",
@@ -753,6 +769,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_route_revalidation_evidence_snapshots",
         "community_route_revalidation_sessions",
         "community_route_revalidation_start_reservations",
+        "content_publication_outbox",
         "decision_records",
         "evidence_receipts",
         "home_feed_projection",
@@ -2627,7 +2644,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
 
   test("requires the 0037 text tables to be empty before adding response snapshots", async () => {
     await withSchema(async (admin, scopedConnectionString) => {
-      const preSnapshotMigrations = migrations.slice(0, -1);
+      const preSnapshotMigrations = migrations.slice(0, -3);
       await applyMigrations(scopedConnectionString, preSnapshotMigrations);
       await admin.query("INSERT INTO users (user_id) VALUES ('text-order5-guard-actor')");
       await admin.query(
