@@ -6673,25 +6673,19 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "idempotency_key": {
+                    "type": "string"
+                  },
                   "value": {
                     "type": "number",
                     "enum": [
                       -1,
                       1
                     ]
-                  },
-                  "altcha": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
                   }
                 },
                 "required": [
+                  "idempotency_key",
                   "value"
                 ],
                 "additionalProperties": false
@@ -6707,7 +6701,7 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "post": {
+                    "post_id": {
                       "type": "string"
                     },
                     "value": {
@@ -6719,7 +6713,7 @@
                     }
                   },
                   "required": [
-                    "post",
+                    "post_id",
                     "value"
                   ],
                   "additionalProperties": false
@@ -6883,9 +6877,7 @@
               }
             },
             "x-error-codes": [
-              "verification_required",
-              "membership_required",
-              "gate_unsatisfied"
+              "membership_required"
             ]
           },
           "404": {
@@ -6939,6 +6931,59 @@
             },
             "x-error-codes": [
               "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
             ]
           },
           "429": {
@@ -6998,15 +7043,13 @@
         "x-auth": {
           "policy": {
             "kind": "userOrAdmin"
-          },
-          "altcha": "vote"
+          }
         },
         "x-errors": [
           "AuthError",
           "BadRequest",
-          "VerificationRequired",
+          "Conflict",
           "MembershipRequired",
-          "GateUnsatisfied",
           "NotFound",
           "RateLimited"
         ]
@@ -7026,23 +7069,19 @@
           }
         ],
         "requestBody": {
-          "required": false,
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
                 "properties": {
-                  "altcha": {
-                    "anyOf": [
-                      {
-                        "type": "string"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
+                  "idempotency_key": {
+                    "type": "string"
                   }
                 },
+                "required": [
+                  "idempotency_key"
+                ],
                 "additionalProperties": false
               }
             }
@@ -7056,15 +7095,18 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "post": {
+                    "post_id": {
                       "type": "string"
                     },
                     "value": {
-                      "type": "null"
+                      "type": "number",
+                      "enum": [
+                        0
+                      ]
                     }
                   },
                   "required": [
-                    "post",
+                    "post_id",
                     "value"
                   ],
                   "additionalProperties": false
@@ -7228,9 +7270,7 @@
               }
             },
             "x-error-codes": [
-              "verification_required",
-              "membership_required",
-              "gate_unsatisfied"
+              "membership_required"
             ]
           },
           "404": {
@@ -7284,6 +7324,59 @@
             },
             "x-error-codes": [
               "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict"
             ]
           },
           "429": {
@@ -7343,15 +7436,13 @@
         "x-auth": {
           "policy": {
             "kind": "userOrAdmin"
-          },
-          "altcha": "vote"
+          }
         },
         "x-errors": [
           "AuthError",
           "BadRequest",
-          "VerificationRequired",
+          "Conflict",
           "MembershipRequired",
-          "GateUnsatisfied",
           "NotFound",
           "RateLimited"
         ]

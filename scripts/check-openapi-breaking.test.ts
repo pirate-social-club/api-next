@@ -80,4 +80,48 @@ describe("OpenAPI clean-break allowance", () => {
       }),
     ).toEqual(["error code removed on GET /unrelated status 400: old_error"]);
   });
+
+  test("admits a required request body only for its named clean-break operation", () => {
+    const oldDocument: OpenApiDocument = {
+      openapi: "3.1.0",
+      info: { title: "test", version: "1" },
+      paths: {
+        "/posts/{postId}/clear_vote": {
+          post: {
+            operationId: "post_postsPostIdClearVote",
+            requestBody: { required: false, content: { "application/json": { schema: {} } } },
+            responses: { "200": { description: "ok" } },
+          },
+        },
+      },
+    };
+    const newDocument: OpenApiDocument = {
+      ...oldDocument,
+      paths: {
+        "/posts/{postId}/clear_vote": {
+          post: {
+            ...oldDocument.paths["/posts/{postId}/clear_vote"]?.post,
+            requestBody: { required: true, content: { "application/json": { schema: {} } } },
+          },
+        },
+      },
+    };
+
+    expect(
+      filterAllowedBreakingChanges(oldDocument, newDocument, {
+        deprecatedOperations: [],
+        cleanBreakOperations: [
+          {
+            operationId: "post_postsPostIdClearVote",
+            reason: "ratified post-vote amendment",
+          },
+        ],
+      }),
+    ).toEqual([]);
+    expect(
+      filterAllowedBreakingChanges(oldDocument, newDocument, {
+        deprecatedOperations: [],
+      }),
+    ).toEqual(["request body became required on POST /posts/{postId}/clear_vote"]);
+  });
 });

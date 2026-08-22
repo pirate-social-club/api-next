@@ -1069,31 +1069,30 @@ export const CreateComment = endpoint({
 });
 
 const VoteRequest = Schema.Struct({
+  idempotency_key: Schema.String,
   value: Schema.Literals([-1, 1]),
-  altcha: Schema.optional(Schema.String),
 });
 const VoteResponse = Schema.Struct({
-  post: Schema.String,
+  post_id: Schema.String,
   value: Schema.Literals([-1, 1]),
 });
 const ClearVoteResponse = Schema.Struct({
-  post: Schema.String,
-  value: Schema.Null,
+  post_id: Schema.String,
+  value: Schema.Literal(0),
 });
 
 export const CastPostVote = endpoint({
   method: "POST",
   path: "/posts/:postId/vote",
-  auth: Auth.userOrAdmin({ altcha: "vote" }),
+  auth: Auth.userOrAdmin(),
   request: { path: PathPost, body: VoteRequest },
   response: VoteResponse,
   successStatus: 200,
   errors: [
     AuthError,
     BadRequest,
-    VerificationRequired,
+    Conflict,
     MembershipRequired,
-    GateUnsatisfied,
     NotFound,
     RateLimited,
   ],
@@ -1102,20 +1101,18 @@ export const CastPostVote = endpoint({
 export const ClearPostVote = endpoint({
   method: "POST",
   path: "/posts/:postId/clear_vote",
-  auth: Auth.userOrAdmin({ altcha: "vote" }),
+  auth: Auth.userOrAdmin(),
   request: {
     path: PathPost,
-    body: Schema.Struct({ altcha: Schema.optional(Schema.String) }),
-    bodyRequired: false,
+    body: Schema.Struct({ idempotency_key: Schema.String }),
   },
   response: ClearVoteResponse,
   successStatus: 200,
   errors: [
     AuthError,
     BadRequest,
-    VerificationRequired,
+    Conflict,
     MembershipRequired,
-    GateUnsatisfied,
     NotFound,
     RateLimited,
   ],

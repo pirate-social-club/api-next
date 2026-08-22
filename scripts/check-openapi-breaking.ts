@@ -57,6 +57,8 @@ export function filterAllowedBreakingChanges(
   }
 
   const operationKey = (violation: string): string | undefined => {
+    const requiredBody = violation.match(/^request body became required on ([A-Z]+ \/[^\s:]+)$/);
+    if (requiredBody?.[1] !== undefined) return requiredBody[1];
     const match = violation.match(
       /^(?:operation removed: |operation id changed on |request |response status removed on |response |error code removed on )([A-Z]+ \/[^\s:]+)(?: status \d+)?(?::|$)/,
     );
