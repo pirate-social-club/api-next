@@ -278,15 +278,18 @@ that let D1 hide.
 credentials and belong in `secrets.required`. They are currently stored
 undifferentiated. Breaks rule 2.
 
-**D3 — the ZKPassport rotation triple was undeclared.**
+**D3 — the ZKPassport rotation secret is intentionally inactive but not
+predeclared.**
 `ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET`,
 `…_PREVIOUS_RESPONSE_SIGNING_KEY_ID`, and
 `…_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL` are consumed by the http Worker and
-The staging declaration records the two optional public fields as explicit
-empty vars until a previous key is active. The optional previous secret remains
-absent, so it cannot block deployment while no rotation is configured. No
-rotation values have been sourced. The `KEY_ID` and `VALID_UNTIL` members are
-public; only the `SECRET` is confidential.
+the staging declaration records the two optional public fields as explicit
+empty vars until a previous key is active. The optional previous secret is
+absent from `secrets.required` while rotation is inactive, so the current
+invariant cannot warn about a future half-declared rotation. Before rotating a
+key, add the secret name to `secrets.required` and provide the complete triple
+in one reviewed change. The `KEY_ID` and `VALID_UNTIL` members are public;
+only the `SECRET` is confidential.
 
 **D4 — development Privy public configuration is unavailable.** Staging and
 production now declare verified app-specific JWKS URLs and audiences as vars.
@@ -440,9 +443,10 @@ The seven are `COMMUNITY_PURCHASE_FUNDING_RPC_URL`,
 `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID`. The last is still a secret and
 should be a var — the one open D5 instance.
 
-Declared staging secrets number eight: the seven above plus
-`ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET`, declared for the D3
-rotation path with no value yet. That difference is intended, not drift.
+Declared staging secrets number seven. The optional previous-response signing
+secret is intentionally absent until a rotation is active; the Wrangler
+comment and D3 rule above make adding it part of the rotation change rather
+than an undeclared deployment-time dependency.
 
 A live JWKS proves `PIRATE_APP_JWT_PUBLIC_KEY` is now served from the var,
 since the same-named secret is gone. That is the verification the collision
@@ -511,10 +515,32 @@ non-zero only for unallowlisted drift.
 The current allowlist records the intentional absence of both production
 Workers while production is disabled. The accepted development Privy gap and
 the production alert placeholders are not Cloudflare-side observations; they
-remain outside this first axis and will belong in the future name-only
-Infisical REST audit. The live run on 2026-08-22 found zero unallowlisted
-Cloudflare violations: both staging Workers matched their declared secret
-sets.
+belong to the Infisical-side policy below. The live run on 2026-08-22 found
+zero unallowlisted Cloudflare violations: both staging Workers matched their
+declared secret sets.
+
+## Infisical remote drift audit
+
+`bun run audit:infisical` is deliberately separate from both `bun run check`
+and the Cloudflare audit. It scans the `dev`, `staging`, and `prod`
+environments in the api-next project, checks the expected service and operator
+folders, and reports root entries, misplaced entries, missing required names,
+and unexpected folders. It exits non-zero for unallowlisted drift.
+
+The audit uses the Infisical REST API directly. Secret-name requests set
+`viewSecretValue=false`, `expandSecretReferences=false`, and `recursive=false`;
+the script reads only `secretKey` metadata and never invokes the CLI or writes
+the CLI's local value cache. Folder requests are metadata-only and read only
+`relativePath`. The audit requires an explicit `INFISICAL_AUDIT_TOKEN` and may
+use `INFISICAL_API_URL` for the regional API base URL. It never reads the
+local Infisical profile, project pin, or cached credential.
+
+Known accepted drift is narrow and explicit: the four disabled-production
+alert placeholders at root, and the missing production funding RPC until an
+authorized endpoint exists. A live Infisical run is intentionally still
+pending fresh session hygiene and a fresh name-only audit credential. The
+fixture-backed logic is committed and ready; no Infisical values have been
+rendered or changed by this audit.
 
 ## Local project selection — corrected 2026-08-22
 

@@ -129,7 +129,10 @@
         "ZKPASSPORT_LOGO": "",
         "ZKPASSPORT_VERIFIER_URL": "https://zkpassport-verifier-staging.pirate.sc",
         // Empty rotation fields explicitly mean that no previous signing key
-        // is active. Populate the complete triple before rotating a key.
+        // is active. Before rotating a key, add
+        // ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET to this
+        // environment's secrets.required and populate the complete triple in
+        // one reviewed change. The inactive path is intentionally undeclared.
         "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_KEY_ID": "",
         "ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_VALID_UNTIL": "",
         "ZKPASSPORT_DEV_MODE": "true",
