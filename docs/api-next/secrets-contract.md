@@ -442,7 +442,14 @@ A staging session token issued before the cutover was verified against the
 live `/.well-known/jwks.json`: its RS256 signature validated with the live
 JWKS key selected by `kid`, and its `iat`/`exp` claims were structurally valid.
 This proves that the public key now served from the Wrangler var is the mate of
-the private signing key used by the staging Worker. The token had expired by
+the private signing key used by the staging Worker.
+
+A pre-cutover token is sufficient evidence for the post-cutover state because
+`PIRATE_APP_JWT_PRIVATE_KEY` was never touched by the cutover: it was not among
+the four deleted collisions and remains an installed Worker secret. The signing
+key is therefore the same key before and after, so a signature it produced
+verifying against the new var-sourced JWKS establishes present pairing, not
+merely historical pairing. The token had expired by
 the time of the check, so the protected endpoint correctly returned 401. A
 fresh post-cutover login was not re-run because the disposable test identity's
 email/OTP was not available; that is a session-flow freshness follow-up, not a
