@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.10.0",
+  "releaseType": "order-6-comment-replies-contract",
+  "wireContract": "wire-v2",
+  "sourceCommit": "71016d5",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.10.0.tgz",
+    "sha256": "bbce018c78ef4df56c0ec795fad514f23cbdace1ef01b5ac3c2583ced0275cee",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@604d2109957dacec63909cfe0cd764979e449c8ffac0090cc1803c495de394cc",
+    "openapiSha256": "604d2109957dacec63909cfe0cd764979e449c8ffac0090cc1803c495de394cc",
+    "clientSha256": "44b37b6d8277f1e929ebba3d2a02c217ab8d88f16c6f85134aa6f614756e081b"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "658589b",
+      "reason": "The dated Order 6 amendment explicitly accepts the comment/reply request and response break; the legacy reply runtime remains fail-closed until its generator-gated implementation lands."
+    },
+    "focusedTextContractTests": "32 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}
