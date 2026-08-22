@@ -874,12 +874,12 @@ DECLARE
   db_now TIMESTAMPTZ;
   session_record community_route_revalidation_sessions%ROWTYPE;
   consumed_count INTEGER;
+  semantic_contradiction BOOLEAN;
 BEGIN
   db_now := clock_timestamp();
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'route revalidation completion attempts cannot be deleted';
   END IF;
-
   SELECT * INTO session_record
     FROM community_route_revalidation_sessions
    WHERE route_revalidation_id = COALESCE(NEW.route_revalidation_id, OLD.route_revalidation_id)
@@ -894,8 +894,7 @@ BEGIN
     NEW.updated_at := db_now;
     SELECT count(*)::integer INTO consumed_count
       FROM community_route_revalidation_completion_attempts
-     WHERE route_revalidation_id = NEW.route_revalidation_id
-       AND state = 'consumed';
+     WHERE route_revalidation_id = NEW.route_revalidation_id AND state = 'consumed';
     IF session_record.status <> 'pending'
       OR session_record.expires_at <= db_now
       OR NEW.route_binding_id IS DISTINCT FROM session_record.route_binding_id
@@ -908,9 +907,9 @@ BEGIN
       OR NEW.lease_expires_at <= db_now
       OR NEW.lease_expires_at > db_now + INTERVAL '16 seconds'
       OR NEW.lease_expires_at > session_record.expires_at
-    THEN
-      RAISE EXCEPTION 'route revalidation completion attempt is not admissible';
-    END IF;
+      OR NEW.terminal_result_document IS NOT NULL
+      OR NEW.terminal_observed_expires_at IS NOT NULL
+    THEN RAISE EXCEPTION 'route revalidation completion attempt is not admissible'; END IF;
     RETURN NEW;
   END IF;
 
@@ -926,59 +925,60 @@ BEGIN
     OLD.expected_binding_generation, OLD.expected_verified_evidence_ref,
     OLD.attempt_number, OLD.idempotency_key, OLD.completion_request_hash,
     OLD.evidence_ref, OLD.created_at
-  ) THEN
-    RAISE EXCEPTION 'route revalidation completion attempt authority is immutable';
-  END IF;
+  ) THEN RAISE EXCEPTION 'route revalidation completion attempt authority is immutable'; END IF;
 
-  IF OLD.state = 'leased'
-    AND NEW.state = 'released'
-    AND NEW.fence_token = OLD.fence_token
-    AND NEW.lease_expires_at = OLD.lease_expires_at
-    AND NEW.consumption_kind IS NULL
-    AND NEW.result_hash IS NULL
-    AND NEW.terminal_at IS NULL
-  THEN
-    NEW.updated_at := db_now;
-    RETURN NEW;
-  END IF;
-  IF OLD.state IN ('released', 'leased')
-    AND NEW.state = 'leased'
+  IF OLD.state = 'leased' AND NEW.state = 'released'
+    AND NEW.fence_token = OLD.fence_token AND NEW.lease_expires_at = OLD.lease_expires_at
+    AND NEW.consumption_kind IS NULL AND NEW.result_hash IS NULL
+    AND NEW.terminal_result_document IS NULL
+    AND NEW.terminal_observed_expires_at IS NULL AND NEW.terminal_at IS NULL
+  THEN NEW.updated_at := db_now; RETURN NEW; END IF;
+  IF OLD.state IN ('released', 'leased') AND NEW.state = 'leased'
     AND NEW.fence_token = OLD.fence_token + 1
     AND NEW.lease_expires_at > db_now
     AND NEW.lease_expires_at <= db_now + INTERVAL '16 seconds'
     AND NEW.lease_expires_at <= session_record.expires_at
     AND (OLD.state = 'released' OR OLD.lease_expires_at <= db_now)
-    AND NEW.consumption_kind IS NULL
-    AND NEW.result_hash IS NULL
-    AND NEW.terminal_at IS NULL
-  THEN
+    AND NEW.consumption_kind IS NULL AND NEW.result_hash IS NULL
+    AND NEW.terminal_result_document IS NULL
+    AND NEW.terminal_observed_expires_at IS NULL AND NEW.terminal_at IS NULL
+  THEN NEW.updated_at := db_now; RETURN NEW; END IF;
+
+  semantic_contradiction := OLD.state = 'leased' AND NEW.state = 'consumed'
+    AND NEW.consumption_kind = 'challenge_mismatch' AND NEW.result_hash IS NULL
+    AND NEW.terminal_result_document IS NULL
+    AND NEW.terminal_observed_expires_at IS NULL
+    AND session_record.status = 'pending';
+  IF semantic_contradiction THEN
+    IF NEW.fence_token <> OLD.fence_token OR NEW.lease_expires_at <> OLD.lease_expires_at
+       OR OLD.lease_expires_at <= db_now OR NEW.terminal_at IS NULL OR NEW.terminal_at > db_now
+    THEN RAISE EXCEPTION 'semantic contradiction attempt transition is not allowed'; END IF;
     NEW.updated_at := db_now;
     RETURN NEW;
   END IF;
-  IF OLD.state = 'leased'
-    AND NEW.state = 'consumed'
-    AND NEW.fence_token = OLD.fence_token
-    AND NEW.lease_expires_at = OLD.lease_expires_at
-    AND NEW.consumption_kind IS NOT NULL
-    AND NEW.result_hash IS NOT NULL
-    AND NEW.terminal_at IS NOT NULL
-    AND NEW.terminal_at <= db_now
+
+  IF OLD.state = 'leased' AND NEW.state = 'consumed'
+    AND NEW.fence_token = OLD.fence_token AND NEW.lease_expires_at = OLD.lease_expires_at
+    AND NEW.consumption_kind IS NOT NULL AND NEW.result_hash IS NOT NULL
+    AND NEW.terminal_result_document IS NOT NULL AND NEW.terminal_at IS NOT NULL
     AND (
-      (
-        NEW.consumption_kind <> 'session_expired'
-        AND OLD.lease_expires_at > db_now
-        AND session_record.status = 'pending'
-        AND session_record.expires_at > db_now
-      )
-      OR (
-        NEW.consumption_kind = 'session_expired'
-        AND session_record.expires_at <= db_now
-      )
+      (NEW.consumption_kind = 'database_time_expired'
+       AND NEW.terminal_observed_expires_at IS NOT NULL
+       AND NEW.terminal_observed_expires_at <= db_now)
+      OR (NEW.consumption_kind <> 'database_time_expired'
+          AND NEW.terminal_observed_expires_at IS NULL)
     )
-  THEN
-    NEW.updated_at := db_now;
-    RETURN NEW;
-  END IF;
+    AND NEW.terminal_at <= db_now
+    AND ((NEW.consumption_kind <> 'session_expired' AND OLD.lease_expires_at > db_now
+          AND session_record.status = 'pending' AND session_record.expires_at > db_now)
+      OR (NEW.consumption_kind = 'session_expired' AND session_record.expires_at <= db_now))
+    AND validate_community_route_revalidation_terminal_document(
+      NEW.terminal_result_document, NEW.result_hash, NEW.consumption_kind,
+      NEW.route_revalidation_id, NEW.revalidation_session_id,
+      NEW.route_revalidation_attempt_id, NEW.route_binding_id,
+      NEW.expected_binding_generation, NEW.idempotency_key,
+      NEW.completion_request_hash)
+  THEN NEW.updated_at := db_now; RETURN NEW; END IF;
   RAISE EXCEPTION 'route revalidation completion attempt transition is not allowed: % -> %',
     OLD.state, NEW.state;
 END;
@@ -1582,52 +1582,44 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_text_content_submission_response_snapshot() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.response_snapshot_bytes IS DISTINCT FROM OLD.response_snapshot_bytes
+    OR NEW.response_snapshot_sha256 IS DISTINCT FROM OLD.response_snapshot_sha256
+  THEN
+    RAISE EXCEPTION 'text content submission response snapshot is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_text_content_submission_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
   IF ROW(
-    NEW.community_id,
-    NEW.submission_id,
-    NEW.actor_user_id,
-    NEW.surface,
-    NEW.idempotency_key,
-    NEW.request_hash,
-    NEW.moderation_decision,
-    NEW.policy_revision_id,
-    NEW.policy_hash,
-    NEW.input_sha256,
-    NEW.internal_reason_codes,
-    NEW.evidence_ref,
-    NEW.created_at
+    NEW.community_id, NEW.submission_id, NEW.operation_id, NEW.actor_user_id,
+    NEW.surface, NEW.idempotency_key, NEW.request_hash, NEW.moderation_decision,
+    NEW.policy_revision_id, NEW.policy_hash, NEW.input_sha256,
+    NEW.internal_reason_codes, NEW.evidence_ref, NEW.created_at,
+    NEW.response_snapshot_bytes, NEW.response_snapshot_sha256
   ) IS DISTINCT FROM ROW(
-    OLD.community_id,
-    OLD.submission_id,
-    OLD.actor_user_id,
-    OLD.surface,
-    OLD.idempotency_key,
-    OLD.request_hash,
-    OLD.moderation_decision,
-    OLD.policy_revision_id,
-    OLD.policy_hash,
-    OLD.input_sha256,
-    OLD.internal_reason_codes,
-    OLD.evidence_ref,
-    OLD.created_at
+    OLD.community_id, OLD.submission_id, OLD.operation_id, OLD.actor_user_id,
+    OLD.surface, OLD.idempotency_key, OLD.request_hash, OLD.moderation_decision,
+    OLD.policy_revision_id, OLD.policy_hash, OLD.input_sha256,
+    OLD.internal_reason_codes, OLD.evidence_ref, OLD.created_at,
+    OLD.response_snapshot_bytes, OLD.response_snapshot_sha256
   ) THEN
-    RAISE EXCEPTION 'text content submission evidence is immutable';
+    RAISE EXCEPTION 'text content submission evidence and creation snapshot are immutable';
   END IF;
-
   IF OLD.status <> 'manual_review' OR NEW.status NOT IN ('published', 'blocked') THEN
-    RAISE EXCEPTION 'text content submission transition is not allowed: % -> %',
-      OLD.status,
-      NEW.status;
+    RAISE EXCEPTION 'text content submission transition is not allowed: % -> %', OLD.status, NEW.status;
   END IF;
-
   IF NEW.updated_at <= OLD.updated_at THEN
     RAISE EXCEPTION 'text content submission updated_at must advance';
   END IF;
-
   RETURN NEW;
 END;
 $$;
@@ -2330,89 +2322,57 @@ CREATE FUNCTION validate_community_route_revalidation_attempt_session() RETURNS 
 DECLARE
   session_record community_route_revalidation_sessions%ROWTYPE;
   consumed_count INTEGER;
-  invalid_consumption BOOLEAN;
-  missing_result_hash BOOLEAN;
-  has_evidence BOOLEAN;
+  leased_exists BOOLEAN;
+  invalid_pending_consumption BOOLEAN;
+  mismatched_terminal BOOLEAN;
 BEGIN
-  SELECT * INTO session_record
-    FROM community_route_revalidation_sessions
+  SELECT * INTO session_record FROM community_route_revalidation_sessions
    WHERE revalidation_session_id = NEW.revalidation_session_id;
   IF session_record.revalidation_session_id IS NULL THEN
     RAISE EXCEPTION 'route revalidation attempt has no session';
   END IF;
-
-  SELECT count(*)::integer,
-         COALESCE(bool_or(
-           consumption_kind IS NULL
-           OR result_hash IS NULL
-           OR (
-             session_record.status = 'completed'
-             AND consumption_kind <> 'verified'
-           )
-           OR (
-             session_record.status = 'expired'
-             AND consumption_kind <> 'session_expired'
-           )
-           OR (
-             session_record.status = 'failed'
-             AND consumption_kind NOT IN (
-               'missing_root', 'control_failed', 'challenge_mismatch',
-               'insufficient_expiry', 'disputed', 'revoked',
-               'database_time_expired', 'stale_cas'
-             )
-           )
-         ), false),
-         COALESCE(bool_or(result_hash IS NULL), false)
-    INTO consumed_count, invalid_consumption, missing_result_hash
+  SELECT count(*) FILTER (WHERE state = 'consumed' AND NOT (
+           consumption_kind = 'challenge_mismatch'
+           AND result_hash IS NULL
+           AND terminal_result_document IS NULL
+           AND terminal_observed_expires_at IS NULL
+         ))::integer,
+         COALESCE(bool_or(state = 'leased'), false),
+         COALESCE(bool_or(state = 'consumed' AND NOT (
+           consumption_kind = 'challenge_mismatch'
+           AND result_hash IS NULL
+           AND terminal_result_document IS NULL
+           AND terminal_observed_expires_at IS NULL
+         ) AND (
+           consumption_kind <> 'challenge_mismatch'
+           OR result_hash IS NOT NULL OR terminal_result_document IS NOT NULL
+           OR terminal_observed_expires_at IS NOT NULL
+         )), false),
+         COALESCE(bool_or(state = 'consumed' AND (
+           (session_record.status = 'completed' AND consumption_kind <> 'verified')
+           OR (session_record.status = 'expired' AND consumption_kind <> 'session_expired')
+           OR (session_record.status = 'failed' AND consumption_kind NOT IN (
+             'missing_root', 'control_failed', 'challenge_mismatch',
+             'insufficient_expiry', 'disputed', 'revoked',
+             'database_time_expired', 'stale_cas'
+           ))
+         )), false)
+    INTO consumed_count, leased_exists, invalid_pending_consumption, mismatched_terminal
     FROM community_route_revalidation_completion_attempts
-   WHERE route_revalidation_id = session_record.route_revalidation_id
-     AND revalidation_session_id = session_record.revalidation_session_id
-     AND state = 'consumed';
-
-  SELECT EXISTS (
-    SELECT 1
-      FROM community_route_revalidation_evidence_snapshots AS snapshot
-     WHERE snapshot.route_revalidation_id = session_record.route_revalidation_id
-       AND snapshot.revalidation_session_id = session_record.revalidation_session_id
-  ) OR EXISTS (
-    SELECT 1
-      FROM community_route_ownership_evidence AS evidence
-      JOIN community_route_revalidation_completion_attempts AS evidence_attempt
-        ON evidence_attempt.route_revalidation_attempt_id = evidence.route_revalidation_attempt_id
-     WHERE evidence.origin = 'route_revalidation'
-       AND evidence_attempt.route_revalidation_id = session_record.route_revalidation_id
-       AND evidence_attempt.revalidation_session_id = session_record.revalidation_session_id
-  ) INTO has_evidence;
-
-  IF session_record.status = 'pending' THEN
-    IF consumed_count <> 0 THEN
-      RAISE EXCEPTION 'pending route revalidation session cannot retain a consumed attempt';
-    END IF;
-    RETURN NULL;
+   WHERE revalidation_session_id = NEW.revalidation_session_id;
+  IF session_record.status <> 'pending' AND leased_exists THEN
+    RAISE EXCEPTION 'terminal route revalidation session cannot retain a lease';
   END IF;
-
-  IF session_record.status = 'completed' THEN
-    IF consumed_count <> 1 OR invalid_consumption OR missing_result_hash THEN
-      RAISE EXCEPTION 'completed route revalidation session requires exactly one verified attempt with a result hash';
-    END IF;
-    RETURN NULL;
+  IF session_record.status = 'pending' AND invalid_pending_consumption THEN
+    RAISE EXCEPTION 'pending route revalidation session has a terminal consumed attempt';
   END IF;
-
-  IF session_record.status = 'expired' THEN
-    IF consumed_count <> 1 OR invalid_consumption OR missing_result_hash OR has_evidence THEN
-      RAISE EXCEPTION 'expired route revalidation session requires one session_expired attempt with no evidence';
-    END IF;
-    RETURN NULL;
+  IF session_record.status IN ('completed', 'failed', 'expired') AND consumed_count <> 1 THEN
+    RAISE EXCEPTION 'terminal route revalidation session requires exactly one consumed attempt';
   END IF;
-
-  IF session_record.status = 'failed' THEN
-    IF consumed_count <> 1 OR invalid_consumption OR missing_result_hash OR has_evidence THEN
-      RAISE EXCEPTION 'failed route revalidation session requires one closed negative attempt with no evidence';
-    END IF;
-    RETURN NULL;
+  IF mismatched_terminal THEN
+    RAISE EXCEPTION 'route revalidation session status contradicts its consumed outcome';
   END IF;
-
-  RAISE EXCEPTION 'unknown route revalidation session status: %', session_record.status;
+  RETURN NULL;
 END;
 $$;
 
@@ -2649,6 +2609,116 @@ BEGIN
   RETURN NULL;
 END;
 $$;
+
+CREATE FUNCTION validate_community_route_revalidation_terminal_document(document_text text, expected_result_hash text, expected_status text, expected_route_revalidation_id text, expected_session_id text, expected_attempt_id text, expected_binding_id text, expected_generation bigint, expected_idempotency_key text, expected_completion_request_hash text) RETURNS boolean
+    LANGUAGE plpgsql IMMUTABLE
+    AS $_$
+DECLARE
+  document JSONB;
+  canonical_document TEXT;
+  ownership TEXT;
+  lifecycle TEXT;
+BEGIN
+  IF document_text IS NULL OR expected_result_hash IS NULL THEN RETURN FALSE; END IF;
+  IF octet_length(document_text) NOT BETWEEN 1 AND 8192 THEN RETURN FALSE; END IF;
+  document := document_text::jsonb;
+  IF jsonb_typeof(document) <> 'array' OR jsonb_array_length(document) <> 14 THEN
+    RETURN FALSE;
+  END IF;
+  SELECT '[' || string_agg(value::TEXT, ',' ORDER BY ordinal) || ']'
+    INTO canonical_document
+    FROM jsonb_array_elements(document) WITH ORDINALITY AS item(value, ordinal);
+  IF document_text IS DISTINCT FROM canonical_document THEN RETURN FALSE; END IF;
+  IF jsonb_typeof(document -> 0) <> 'string'
+     OR document ->> 0 <> 'pirate-hns-route-revalidation-result-v1'
+     OR jsonb_typeof(document -> 1) <> 'string'
+     OR document ->> 1 IS DISTINCT FROM expected_route_revalidation_id
+     OR jsonb_typeof(document -> 2) <> 'string'
+     OR document ->> 2 IS DISTINCT FROM expected_session_id
+     OR jsonb_typeof(document -> 3) <> 'string'
+     OR document ->> 3 IS DISTINCT FROM expected_attempt_id
+     OR jsonb_typeof(document -> 4) <> 'string'
+     OR document ->> 4 IS DISTINCT FROM expected_binding_id
+     OR jsonb_typeof(document -> 5) <> 'number'
+     OR (document -> 5)::text !~ '^(0|[1-9][0-9]*)$'
+     OR (document ->> 5)::bigint IS DISTINCT FROM expected_generation
+     OR jsonb_typeof(document -> 6) <> 'string'
+     OR document ->> 6 IS DISTINCT FROM expected_idempotency_key
+     OR jsonb_typeof(document -> 7) <> 'string'
+     OR document ->> 7 IS DISTINCT FROM expected_completion_request_hash
+     OR jsonb_typeof(document -> 8) <> 'string'
+     OR document ->> 8 IS DISTINCT FROM expected_status
+  THEN RETURN FALSE; END IF;
+
+  IF jsonb_typeof(document -> 9) = 'null'
+     AND jsonb_typeof(document -> 10) = 'null'
+     AND jsonb_typeof(document -> 11) = 'null'
+  THEN
+    NULL;
+  ELSIF jsonb_typeof(document -> 9) = 'string'
+     AND jsonb_typeof(document -> 10) = 'string'
+     AND jsonb_typeof(document -> 11) = 'string'
+     AND document ->> 9 ~ '^[^[:cntrl:]]+$'
+     AND document ->> 10 ~ '^[0-9a-f]{64}$'
+     AND document ->> 11 ~ '^[0-9a-f]{64}$'
+  THEN
+    NULL;
+  ELSE
+    RETURN FALSE;
+  END IF;
+
+  IF jsonb_typeof(document -> 12) = 'null'
+     AND jsonb_typeof(document -> 13) = 'null'
+  THEN
+    ownership := NULL;
+    lifecycle := NULL;
+  ELSIF jsonb_typeof(document -> 12) = 'string'
+     AND jsonb_typeof(document -> 13) = 'string'
+  THEN
+    ownership := document ->> 12;
+    lifecycle := document ->> 13;
+  ELSE
+    RETURN FALSE;
+  END IF;
+
+  IF expected_status = 'verified' THEN
+    IF jsonb_typeof(document -> 9) <> 'string'
+       OR jsonb_typeof(document -> 10) <> 'string'
+       OR jsonb_typeof(document -> 11) <> 'string'
+       OR ownership <> 'verified' OR lifecycle <> 'active'
+    THEN RETURN FALSE; END IF;
+  ELSIF expected_status IN ('missing_root', 'revoked') THEN
+    IF jsonb_typeof(document -> 9) <> 'null'
+       OR jsonb_typeof(document -> 10) <> 'null'
+       OR jsonb_typeof(document -> 11) <> 'null'
+       OR ownership <> 'revoked' OR lifecycle <> 'suspended'
+    THEN RETURN FALSE; END IF;
+  ELSIF expected_status IN ('control_failed', 'challenge_mismatch', 'disputed') THEN
+    IF jsonb_typeof(document -> 9) <> 'null'
+       OR jsonb_typeof(document -> 10) <> 'null'
+       OR jsonb_typeof(document -> 11) <> 'null'
+       OR ownership <> 'disputed' OR lifecycle <> 'suspended'
+    THEN RETURN FALSE; END IF;
+  ELSIF expected_status IN ('insufficient_expiry', 'database_time_expired') THEN
+    IF jsonb_typeof(document -> 9) <> 'null'
+       OR jsonb_typeof(document -> 10) <> 'null'
+       OR jsonb_typeof(document -> 11) <> 'null'
+       OR ownership <> 'expired' OR lifecycle <> 'suspended'
+    THEN RETURN FALSE; END IF;
+  ELSIF expected_status IN ('session_expired', 'stale_cas') THEN
+    IF jsonb_typeof(document -> 9) <> 'null'
+       OR jsonb_typeof(document -> 10) <> 'null'
+       OR jsonb_typeof(document -> 11) <> 'null'
+       OR ownership IS NOT NULL OR lifecycle IS NOT NULL
+    THEN RETURN FALSE; END IF;
+  ELSE
+    RETURN FALSE;
+  END IF;
+  RETURN encode(sha256(convert_to(document_text, 'UTF8')), 'hex') = expected_result_hash;
+EXCEPTION WHEN others THEN
+  RETURN FALSE;
+END;
+$_$;
 
 CREATE FUNCTION validate_namespace_ownership_attempt_session_coherence() RETURNS trigger
     LANGUAGE plpgsql
@@ -4411,8 +4481,10 @@ CREATE TABLE community_route_revalidation_completion_attempts (
     terminal_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    terminal_result_document text,
+    terminal_observed_expires_at timestamp with time zone,
     CONSTRAINT community_route_revalidation_attempts_identifiers_not_blank CHECK (((btrim(route_revalidation_attempt_id) <> ''::text) AND (route_revalidation_attempt_id = btrim(route_revalidation_attempt_id)) AND (octet_length(route_revalidation_attempt_id) <= 256) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 256) AND (btrim(evidence_ref) <> ''::text) AND (evidence_ref = btrim(evidence_ref)) AND (octet_length(evidence_ref) <= 512))),
-    CONSTRAINT community_route_revalidation_attempts_result_shape CHECK ((((state = 'consumed'::text) AND (consumption_kind IS NOT NULL) AND (result_hash IS NOT NULL) AND (terminal_at IS NOT NULL)) OR ((state = ANY (ARRAY['leased'::text, 'released'::text])) AND (consumption_kind IS NULL) AND (result_hash IS NULL) AND (terminal_at IS NULL)))),
+    CONSTRAINT community_route_revalidation_attempts_result_shape CHECK ((((state = 'consumed'::text) AND (consumption_kind IS NOT NULL) AND (terminal_at IS NOT NULL) AND (((consumption_kind = 'challenge_mismatch'::text) AND (result_hash IS NULL) AND (terminal_result_document IS NULL)) OR ((result_hash IS NOT NULL) AND (terminal_result_document IS NOT NULL) AND (((consumption_kind = 'database_time_expired'::text) AND (terminal_observed_expires_at IS NOT NULL)) OR ((consumption_kind <> 'database_time_expired'::text) AND (terminal_observed_expires_at IS NULL)))))) OR ((state = ANY (ARRAY['leased'::text, 'released'::text])) AND (consumption_kind IS NULL) AND (result_hash IS NULL) AND (terminal_result_document IS NULL) AND (terminal_observed_expires_at IS NULL) AND (terminal_at IS NULL)))),
     CONSTRAINT community_route_revalidation_attempts_time_order CHECK (((updated_at >= created_at) AND ((terminal_at IS NULL) OR (terminal_at >= created_at)))),
     CONSTRAINT community_route_revalidation_comp_completion_request_hash_check CHECK ((completion_request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_revalidation_completion__consumption_kind_check CHECK ((consumption_kind = ANY (ARRAY['verified'::text, 'missing_root'::text, 'control_failed'::text, 'challenge_mismatch'::text, 'insufficient_expiry'::text, 'disputed'::text, 'revoked'::text, 'database_time_expired'::text, 'session_expired'::text, 'stale_cas'::text]))),
@@ -5182,13 +5254,20 @@ CREATE TABLE text_content_submissions (
     review_ref text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    operation_id text NOT NULL,
+    response_snapshot_bytes bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
     CONSTRAINT text_content_submissions_identifiers_not_blank CHECK (((btrim(submission_id) <> ''::text) AND (submission_id = btrim(submission_id)) AND (btrim(actor_user_id) <> ''::text) AND (actor_user_id = btrim(actor_user_id)) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND ((review_ref IS NULL) OR ((btrim(review_ref) <> ''::text) AND (review_ref = btrim(review_ref)))))),
     CONSTRAINT text_content_submissions_input_sha256_check CHECK ((input_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_moderation_decision_check CHECK ((moderation_decision = ANY (ARRAY['allow'::text, 'manual_review'::text, 'blocked'::text]))),
+    CONSTRAINT text_content_submissions_operation_id_not_blank CHECK (((btrim(operation_id) <> ''::text) AND (operation_id = btrim(operation_id)))),
     CONSTRAINT text_content_submissions_policy_hash_check CHECK ((policy_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_public_reason_code_check CHECK (((public_reason_code IS NULL) OR (public_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text, 'policy_violation'::text])))),
     CONSTRAINT text_content_submissions_reasons_array CHECK ((valid_text_moderation_reason_codes(internal_reason_codes) AND (((moderation_decision = 'allow'::text) AND (jsonb_array_length(internal_reason_codes) = 0)) OR ((moderation_decision = 'manual_review'::text) AND (jsonb_array_length(internal_reason_codes) > 0) AND (NOT (internal_reason_codes ? 'sexual_minors'::text))) OR ((moderation_decision = 'blocked'::text) AND (jsonb_array_length(internal_reason_codes) > 0) AND (NOT (internal_reason_codes ?| ARRAY['age_gate_required'::text, 'provider_unavailable'::text, 'provider_timeout'::text, 'provider_invalid'::text])))))),
     CONSTRAINT text_content_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT text_content_submissions_response_snapshot_hash CHECK ((encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256)),
+    CONSTRAINT text_content_submissions_response_snapshot_nonempty CHECK ((octet_length(response_snapshot_bytes) > 0)),
+    CONSTRAINT text_content_submissions_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_status_check CHECK ((status = ANY (ARRAY['published'::text, 'manual_review'::text, 'blocked'::text]))),
     CONSTRAINT text_content_submissions_status_shape CHECK ((((status = 'published'::text) AND (public_reason_code IS NULL) AND (review_ref IS NULL) AND (((surface = 'text_post'::text) AND (published_post_id IS NOT NULL) AND (published_comment_id IS NULL)) OR ((surface = ANY (ARRAY['comment'::text, 'reply'::text])) AND (published_post_id IS NULL) AND (published_comment_id IS NOT NULL)))) OR ((status = 'manual_review'::text) AND (public_reason_code IS NOT NULL) AND (public_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text])) AND (review_ref IS NOT NULL) AND (published_post_id IS NULL) AND (published_comment_id IS NULL)) OR ((status = 'blocked'::text) AND (public_reason_code IS NOT NULL) AND (public_reason_code = 'policy_violation'::text) AND (review_ref IS NULL) AND (published_post_id IS NULL) AND (published_comment_id IS NULL)))),
     CONSTRAINT text_content_submissions_surface_check CHECK ((surface = ANY (ARRAY['text_post'::text, 'comment'::text, 'reply'::text]))),
@@ -5825,10 +5904,10 @@ ALTER TABLE ONLY text_content_held_revisions
     ADD CONSTRAINT text_content_held_revisions_submission_id_key UNIQUE (submission_id);
 
 ALTER TABLE ONLY text_content_submissions
-    ADD CONSTRAINT text_content_submissions_actor_idempotency_unique UNIQUE (community_id, actor_user_id, surface, idempotency_key);
+    ADD CONSTRAINT text_content_submissions_community_id_unique UNIQUE (community_id, submission_id);
 
 ALTER TABLE ONLY text_content_submissions
-    ADD CONSTRAINT text_content_submissions_community_id_unique UNIQUE (community_id, submission_id);
+    ADD CONSTRAINT text_content_submissions_operation_id_unique UNIQUE (operation_id);
 
 ALTER TABLE ONLY text_content_submissions
     ADD CONSTRAINT text_content_submissions_pkey PRIMARY KEY (submission_id);
@@ -6026,6 +6105,8 @@ CREATE INDEX subject_keys_scope_created_idx ON subject_keys USING btree (issuer,
 CREATE INDEX text_content_submissions_actor_created_idx ON text_content_submissions USING btree (actor_user_id, created_at DESC, submission_id);
 
 CREATE INDEX text_content_submissions_review_idx ON text_content_submissions USING btree (community_id, status, created_at, submission_id) WHERE (status = 'manual_review'::text);
+
+CREATE UNIQUE INDEX text_content_submissions_text_post_actor_key_unique ON text_content_submissions USING btree (actor_user_id, idempotency_key) WHERE (surface = 'text_post'::text);
 
 CREATE INDEX text_moderation_cases_open_idx ON text_moderation_cases USING btree (community_id, created_at, case_id) WHERE (status = 'open'::text);
 
@@ -6250,6 +6331,8 @@ CREATE TRIGGER text_content_held_revisions_append_only BEFORE DELETE OR UPDATE O
 CREATE TRIGGER text_content_submission_delete_guard BEFORE DELETE ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
 CREATE CONSTRAINT TRIGGER text_content_submission_relations_guard AFTER INSERT OR UPDATE ON text_content_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_text_content_submission_relations();
+
+CREATE TRIGGER text_content_submission_response_snapshot_guard BEFORE UPDATE ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_text_content_submission_response_snapshot();
 
 CREATE TRIGGER text_content_submission_update_guard BEFORE UPDATE ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_text_content_submission_update();
 
@@ -6776,9 +6859,6 @@ ALTER TABLE ONLY text_content_submissions
 
 ALTER TABLE ONLY text_content_submissions
     ADD CONSTRAINT text_content_submissions_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
-
-ALTER TABLE ONLY text_content_submissions
-    ADD CONSTRAINT text_content_submissions_evidence_fk FOREIGN KEY (evidence_ref) REFERENCES text_moderation_evidence(evidence_ref);
 
 ALTER TABLE ONLY text_content_submissions
     ADD CONSTRAINT text_content_submissions_policy_fk FOREIGN KEY (policy_revision_id, policy_hash) REFERENCES text_moderation_policy_revisions(policy_revision_id, policy_hash);
