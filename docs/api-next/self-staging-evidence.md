@@ -1,17 +1,30 @@
 # Self staging incident and restart record
 
-Status: staging infrastructure is provisioned and currently uses the
-staging-only developer/mock-document mode. The physical real-document
-ceremony remains pending. Updated 2026-08-19.
+Status: Cloudflare canonical-account cutover is pending. The developer/mock-
+document deployment in this record exists in a misplaced account. The physical
+real-document ceremony remains pending. Corrected 2026-08-22.
 
 This is the durable, redacted record for the Self staging tranche. It preserves
 the earlier incident and containment history, then records the verified
 post-restart state. No secret value is recorded here.
 
+## Cloudflare account correction — 2026-08-22
+
+All Cloudflare deployment versions, probes, and Hyperdrive identifiers in this
+record were produced in non-canonical account
+`ff375d61cdc0c5dc946837f3e37725e0`. Commit `5251933` had incorrectly pinned
+that account from the ambient Wrangler OAuth identity. Canonical account
+`08a4c22cf52e2ecae883e36f80a33f4a` instead contains the older staging Workers
+and Hyperdrive `api-next-staging` (`8cb7658a0f7143359c1becfec6a15c23`).
+
+This document remains evidence of what happened in the misplaced account; it
+is not proof of canonical staging state. No resource has been deleted, and no
+canonical-account cutover has been performed during this correction.
+
 ## Current M3 mode override — 2026-08-19
 
 The historical post-restart real-document deployment described below is not
-the current staging mode. Canonical api-next commit `a9bbd337` sets
+the current staging mode. Api-next commit `a9bbd337` sets
 `SELF_PASS_MOCK_PASSPORT=true` in staging only, and was deployed to
 `pirate-http-worker-staging` as version
 `7d680db5-90f1-4628-9bb5-3adbbe1665a7`. Development and production remain

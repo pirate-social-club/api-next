@@ -1,6 +1,6 @@
 {
   "name": "pirate-http-worker",
-  "account_id": "ff375d61cdc0c5dc946837f3e37725e0",
+  "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -100,7 +100,7 @@
         {
           "binding": "CONTROL_PLANE",
           // Staging-only Hyperdrive; never reuse the production resource.
-          "id": "11c1ad1806004f3b87fa771833093132",
+          "id": "8cb7658a0f7143359c1becfec6a15c23",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],

@@ -1,13 +1,10 @@
 # api-next secrets contract
 
-Status: audited and organized. Infisical confidential values were not rendered
-in tool output. The approved confidential entries were copied server-side
-within Infisical into their target paths, and the old root duplicates were
-removed after hash verification. Public configuration was moved to repository
-vars. The incorrectly stored `VERY_APP_ID` public-config entry was deleted
-after source verification. An already-expired staging session token was
-briefly rendered by the key-pair diagnostic; its local artifact was removed
-immediately and it was not an Infisical value.
+Status: Infisical is audited and organized. Cloudflare account reconciliation
+is open after the 2026-08-22 audit proved that the later staging cleanup and
+deployments targeted a non-canonical account. No remote resource has been
+deleted, and the canonical account has not been redeployed during this
+correction. Infisical confidential values were not rendered in tool output.
 
 Date of inventory: 2026-08-22.
 
@@ -17,11 +14,44 @@ Date of inventory: 2026-08-22.
 | --- | --- | --- |
 | Infisical, api-next project | project `fac45f92-9450-42fb-8c2f-f20d043fdfab`, organization `d9615445-c0d4-445a-ad58-1d55d365635a` | Reachable. `api-next/.infisical.json` now pins this project, so commands run anywhere in the api-next tree resolve it without `--projectId`. See "Local project selection" below. |
 | Infisical, historical project | workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71` | Reachable. Historical reference only. Its `/services/api` folder deliberately mixes API runtime, HNS, Spaces, media, Story, and operator credentials; that mixing is the boundary defect this contract corrects. Do not copy it wholesale. |
-| Cloudflare Worker secrets | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable. `pirate-http-worker-staging` holds seven intended secrets after the public-config cleanup. `pirate-http-worker-production` does not exist remotely, consistent with production remaining disabled. |
+| Cloudflare Worker secrets, canonical | account `08a4c22cf52e2ecae883e36f80a33f4a` | Reachable through the `api-next-canonical` Wrangler profile. The staging HTTP Worker has ten legacy secret names and the staging jobs Worker has none. Both production Workers are absent. |
+| Cloudflare Worker secrets, misplaced | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable through the retained default Wrangler profile. The later staging HTTP and jobs deployments, public-config cleanup, seven-secret HTTP inventory, and one-secret jobs inventory occurred here. Retain until a canonical-account cutover is proven. |
 | Declared Wrangler contract | `api-next/apps/http-worker/wrangler.jsonc` and `api-next/apps/jobs-worker/wrangler.jsonc` | In repository. Both Workers are in scope; earlier revisions of this document covered only the http Worker. `secrets.required` is a real Wrangler property — it drives type generation and local-dev warnings, but does not gate a deploy. See D9. |
 
 Environments are Infisical environments. Never encode an environment into a
 secret name.
+
+## Cloudflare account correction — 2026-08-22
+
+The canonical Cloudflare account is `08a4c22cf52e2ecae883e36f80a33f4a`.
+Commit `5251933` pinned `ff375d61cdc0c5dc946837f3e37725e0` after treating
+the ambient Wrangler OAuth identity as authority. That inference was wrong.
+All three Wrangler account pins now target the canonical account.
+
+The same error inverted the staging Hyperdrive inventory. Canonical account
+`08a4…` already has `api-next-staging`
+(`8cb7658a0f7143359c1becfec6a15c23`). The later
+`pirate-control-plane-staging` configuration
+(`11c1ad1806004f3b87fa771833093132`) was created in the misplaced account.
+Both staging Worker bindings now point back to the canonical Hyperdrive.
+
+Name-only remote inventory found this split:
+
+| Account | HTTP staging | Jobs staging | Staging Hyperdrive |
+| --- | --- | --- | --- |
+| canonical `08a4…` | present; last deployment 2026-08-16; ten legacy secret names | present; last deployment 2026-08-16; zero secrets | `api-next-staging` (`8cb7658a…`) |
+| misplaced `ff375…` | present; later 2026-08-22 deployment; seven intended secret names | present; later 2026-08-22 deployment; one intended secret name | `pirate-control-plane-staging` (`11c1ad18…`) |
+
+The canonical HTTP account still contains the three junk
+`AUTH_UPSTREAM_JWT_*` names plus seven stale JWT/Privy classifications. The
+repository audit must therefore fail against the canonical account until the
+reviewed staging values are installed there. Do not allowlist this drift. Do
+not delete the misplaced Workers or Hyperdrive until the canonical deployment,
+secret-name audit, health/JWKS probes, and key-pair proof all pass.
+
+Every Cloudflare deployment, probe, collision cleanup, and seven-secret claim
+recorded later in this document before this correction refers to the misplaced
+account unless a paragraph explicitly says canonical account.
 
 ## Observed state
 
@@ -499,10 +529,10 @@ two database URLs — were deleted before the gate this document set for them:
 one Worker deploy sourced from `/services/api-next` and one migration sourced
 from `/services/api-next/operator`. Neither has happened.
 
-The staging Worker was deployed successfully, but the deployment used the
-explicit Wrangler configuration and existing Cloudflare runtime secrets; it
-did not exercise an Infisical-to-Cloudflare synchronization from
-`/services/api-next`. No migration has been run from
+The misplaced-account staging Worker was deployed successfully, but the
+deployment used the explicit Wrangler configuration and existing Cloudflare
+runtime secrets; it did not exercise an Infisical-to-Cloudflare synchronization
+from `/services/api-next`. No migration has been run from
 `/services/api-next/operator`. The folders are confirmed present and their
 contents were hash-verified before root cleanup. This remains accepted risk:
 the first service-path synchronization and first operator migration are still
@@ -522,9 +552,13 @@ non-zero only for unallowlisted drift.
 The current allowlist records the intentional absence of both production
 Workers while production is disabled. The accepted development Privy gap and
 the production alert placeholders are not Cloudflare-side observations; they
-belong to the Infisical-side policy below. The live run on 2026-08-22 found
-zero unallowlisted Cloudflare violations: both staging Workers matched their
-declared secret sets.
+belong to the Infisical-side policy below. The first live run on 2026-08-22
+found zero unallowlisted Cloudflare violations only because it queried the
+misplaced account. After correcting the account pins and binding the canonical
+Wrangler profile to this repository, the same name-only audit found fourteen
+violations in the canonical account: three undeclared junk names, five
+var/secret collisions, five missing HTTP secrets, and one missing jobs secret.
+No entry is allowlisted. This failure is the required gate until cutover.
 
 The Cloudflare-side audit runs from the dedicated `.github/workflows/secret-
 drift.yml` workflow on pushes to `main` and by manual dispatch, alongside the

@@ -1,12 +1,29 @@
 # Self staging enablement handoff
 
-Status: staging infrastructure is provisioned and Self is enabled in staging
-only in developer/mock-document mode; the first real-document ceremony is
-pending. Updated 2026-08-19.
+Status: Cloudflare canonical-account cutover is pending. The developer/mock-
+document deployment and probes recorded below occurred in a misplaced account,
+not canonical staging. The first canonical real-document ceremony is pending.
+Corrected 2026-08-22.
 
 This is the durable handoff for enabling the self-hosted Self Pass adapter in
 staging. It records observed external state, not assumptions. Secret values
 are intentionally omitted.
+
+## Cloudflare account correction — 2026-08-22
+
+The Cloudflare evidence below was collected from non-canonical account
+`ff375d61cdc0c5dc946837f3e37725e0` after commit `5251933` incorrectly made an
+ambient Wrangler OAuth identity authoritative. It does not establish the
+current state of canonical account `08a4c22cf52e2ecae883e36f80a33f4a`.
+
+Metadata-only re-inventory proved that the canonical account already contains
+the staging HTTP and jobs Workers and staging Hyperdrive `api-next-staging`
+(`8cb7658a0f7143359c1becfec6a15c23`). The later deployments and Hyperdrive
+`11c1ad1806004f3b87fa771833093132` are in the misplaced account. Repository
+pins have been corrected, but no canonical-account deploy or misplaced-account
+deletion has been performed. Treat every later Cloudflare version, probe, and
+Hyperdrive claim in this document as misplaced-account historical evidence
+until a canonical cutover is separately recorded.
 
 ## Current staging gate
 
@@ -18,7 +35,7 @@ The real ceremony has not begun.
 
 ### Current M3 mode override
 
-For the current M3 staging state, api-next commit `a9bbd337` sets
+For the misplaced-account M3 state, api-next commit `a9bbd337` sets
 `SELF_PASS_MOCK_PASSPORT=true` in staging only and was deployed as Worker
 version `7d680db5-90f1-4628-9bb5-3adbbe1665a7`. Development and production use
 `SELF_PASS_MOCK_PASSPORT=false`; production remains
@@ -142,17 +159,17 @@ that is never synchronized to a Worker.
 
 ### Cloudflare and Hyperdrive
 
-- Authenticated account: `hippiehecton`, account ID
-  `ff375d61cdc0c5dc946837f3e37725e0`. The Wrangler configs now pin this ID;
-  before this commit Wrangler silently selected an unrelated account.
+- This inventory used non-canonical account
+  `ff375d61cdc0c5dc946837f3e37725e0`; it cannot justify canonical resource
+  selection. The account correction above supersedes its conclusions.
 - The only existing Hyperdrive configuration is
   `pirate-control-plane-production` (`7e457bc33b414671833ee4436548d9ee`),
   connected to production. Never reuse it for staging.
 - The checked-in pre-provisioning staging Hyperdrive ID
-  `8cb7658a0f7143359c1becfec6a15c23` does not exist and must be replaced in
-  both Worker configs after a staging configuration is created.
-- `pirate-http-worker-staging` does not exist, so it has no installed Worker
-  secrets yet.
+  `8cb7658a0f7143359c1becfec6a15c23` appeared absent only because the wrong
+  account was queried. It exists in the canonical account.
+- `pirate-http-worker-staging` appeared absent only in the queried account at
+  that time. It already existed in the canonical account.
 - `staging.pirate.sc` already resolves and serves another application. Its
   `/health` is not api-next. Do not claim or overwrite that hostname without
   an explicit routing decision.
