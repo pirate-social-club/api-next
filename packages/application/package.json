@@ -9,6 +9,7 @@
     "./namespace-ownership-start": "./src/namespace-ownership/start.ts",
     "./namespace-ownership-completion": "./src/namespace-ownership/completion.ts",
     "./namespace-ownership-hns-evidence": "./src/namespace-ownership/hns-evidence.ts",
+    "./namespace-ownership-hns-active-lease-renewal": "./src/namespace-ownership/hns-active-lease-renewal.ts",
     "./route-revalidation": "./src/route-revalidation/index.ts",
     "./route-revalidation-hashes": "./src/route-revalidation/hashes.ts",
     "./route-revalidation/hashes": "./src/route-revalidation/hashes.ts",
