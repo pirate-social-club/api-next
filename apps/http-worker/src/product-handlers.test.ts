@@ -4,7 +4,6 @@ import { Effect } from "effect";
 import {
   castPostVoteInputFrom,
   clearPostVoteInputFrom,
-  createCommentReplyInputFrom,
   createPostInputFrom,
   followCommunityInputFrom,
   makeProductHandlers,
@@ -107,7 +106,6 @@ function stores(
       resolveComment: () => Effect.succeed(null),
       createPost: () => Effect.succeed(null),
       getPost: () => Effect.succeed(null),
-      createCommentReply: () => Effect.succeed(null),
       castPostVote: () => Effect.succeed(null),
       clearPostVote: () => Effect.succeed(null),
       ...overrides.content,
@@ -295,23 +293,11 @@ describe("HTTP product handlers", () => {
     ]);
   });
 
-  test("maps content mutation paths, bodies, actors, parent resolution, and vote operations", async () => {
+  test("maps content mutation paths, bodies, actors, and vote operations", async () => {
     const observed: unknown[] = [];
     const handlers = makeProductHandlers(
       stores({
         content: {
-          resolveComment: (input) => {
-            observed.push({ resolveComment: input });
-            return Effect.succeed({
-              communityId: "community-a",
-              postId: "post-a",
-              commentId: input.commentId,
-            });
-          },
-          createCommentReply: (input) => {
-            observed.push({ createCommentReply: input });
-            return Effect.succeed({} as never);
-          },
           resolvePost: (input) => {
             observed.push({ resolvePost: input });
             return Effect.succeed({ communityId: "community-a", postId: input.postId });
@@ -341,10 +327,6 @@ describe("HTTP product handlers", () => {
       authorship_mode: "human_direct" as const,
       identity_mode: "public" as const,
     };
-    const replyBody = {
-      body: "reply",
-      idempotency_key: "reply-key",
-    };
     const voteBody = { value: -1 as const, altcha: "proof" };
     const clearBody = { altcha: "proof" };
 
@@ -358,15 +340,6 @@ describe("HTTP product handlers", () => {
       body: postBody,
     });
     expect(
-      createCommentReplyInputFrom(
-        request({ params: { commentId: "comment-a" }, body: replyBody, principal }),
-      ),
-    ).toEqual({
-      parentCommentId: "comment-a",
-      actor: { userId: "user-a", kind: "user" },
-      body: replyBody,
-    });
-    expect(
       castPostVoteInputFrom(request({ params: { postId: "post-a" }, body: voteBody, principal })),
     ).toEqual({ postId: "post-a", actor: { userId: "user-a", kind: "user" }, body: voteBody });
     expect(
@@ -376,11 +349,6 @@ describe("HTTP product handlers", () => {
     await handlers.CreatePost(
       request({ params: { communityId: "community-a" }, body: postBody, principal }),
     );
-    await expect(
-      handlers.CreateCommentReply(
-        request({ params: { commentId: "comment-a" }, body: replyBody, principal }),
-      ),
-    ).rejects.toMatchObject({ code: "bad_request" });
     await handlers.CastPostVote(
       request({ params: { postId: "post-a" }, body: voteBody, principal }),
     );
@@ -423,12 +391,7 @@ describe("HTTP product handlers", () => {
 
   test("fails closed for null, device, and agent principals on every content mutation", async () => {
     const handlers = makeProductHandlers(stores());
-    const requests = [
-      handlers.CreatePost,
-      handlers.CreateCommentReply,
-      handlers.CastPostVote,
-      handlers.ClearPostVote,
-    ];
+    const requests = [handlers.CreatePost, handlers.CastPostVote, handlers.ClearPostVote];
     for (const principal of [
       null,
       { kind: "device" as const, subject: "device-a" },
@@ -474,7 +437,6 @@ describe("HTTP product handlers", () => {
         "resolveComment",
         "createPost",
         "getPost",
-        "createCommentReply",
         "castPostVote",
         "clearPostVote",
       ].map((name) => [

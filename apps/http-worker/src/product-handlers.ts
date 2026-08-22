@@ -18,10 +18,6 @@ import {
   clearPostVote,
 } from "@pirate/application/use-cases/content/clear-post-vote";
 import {
-  type CreateCommentReplyInput,
-  createCommentReply,
-} from "@pirate/application/use-cases/content/create-comment-reply";
-import {
   type CreatePostInput,
   createPost,
 } from "@pirate/application/use-cases/content/create-post";
@@ -66,7 +62,6 @@ export type ProductHandlers = Readonly<{
   readonly CreatePost: EndpointHandler;
   readonly GetTextContentSubmission: EndpointHandler;
   readonly GetPost: EndpointHandler;
-  readonly CreateCommentReply: EndpointHandler;
   readonly CastPostVote: EndpointHandler;
   readonly ClearPostVote: EndpointHandler;
   readonly GetPublicHomeFeed: EndpointHandler;
@@ -75,7 +70,6 @@ export type ProductHandlers = Readonly<{
 
 type CommunityPath = Readonly<{ readonly communityId: string }>;
 type PostPath = Readonly<{ readonly postId: string }>;
-type CommentPath = Readonly<{ readonly commentId: string }>;
 type SubmissionPath = Readonly<{ readonly submissionId: string }>;
 type LocaleQuery = Readonly<{ readonly locale?: string }>;
 type JoinBody = Schema.Schema.Type<(typeof JoinCommunity.request)["body"]>;
@@ -83,8 +77,6 @@ type JoinBody = Schema.Schema.Type<(typeof JoinCommunity.request)["body"]>;
 const communityPath = (request: DecodedRequest): CommunityPath => request.params as CommunityPath;
 
 const postPath = (request: DecodedRequest): PostPath => request.params as PostPath;
-
-const commentPath = (request: DecodedRequest): CommentPath => request.params as CommentPath;
 
 const submissionPath = (request: DecodedRequest): SubmissionPath =>
   request.params as SubmissionPath;
@@ -144,15 +136,6 @@ export const createPostInputFrom = (request: DecodedRequest): CreatePostInput =>
   const { communityId } = communityPath(request);
   return {
     communityId,
-    actor: communityActor(request.principal),
-    body: request.body,
-  };
-};
-
-export const createCommentReplyInputFrom = (request: DecodedRequest): CreateCommentReplyInput => {
-  const { commentId } = commentPath(request);
-  return {
-    parentCommentId: commentId,
     actor: communityActor(request.principal),
     body: request.body,
   };
@@ -266,16 +249,6 @@ const getTextContentSubmissionHandler = async (
   );
 };
 
-const createCommentReplyHandler = async (
-  request: DecodedRequest,
-  services: ProductHandlerServices,
-) =>
-  Effect.runPromise(
-    createCommentReply(createCommentReplyInputFrom(request), {
-      contentStore: services.contentStore,
-    }),
-  );
-
 const castPostVoteHandler = async (request: DecodedRequest, services: ProductHandlerServices) =>
   Effect.runPromise(
     castPostVote(castPostVoteInputFrom(request), { contentStore: services.contentStore }),
@@ -309,7 +282,6 @@ export const makeProductHandlers = (services: ProductHandlerServices): ProductHa
   CreatePost: (request) => createPostHandler(request, services),
   GetTextContentSubmission: (request) => getTextContentSubmissionHandler(request, services),
   GetPost: (request) => post(request, services),
-  CreateCommentReply: (request) => createCommentReplyHandler(request, services),
   CastPostVote: (request) => castPostVoteHandler(request, services),
   ClearPostVote: (request) => clearPostVoteHandler(request, services),
   GetPublicHomeFeed: (request) => publicHomeFeed(request, services),

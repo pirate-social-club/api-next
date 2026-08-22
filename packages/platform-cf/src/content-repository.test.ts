@@ -203,26 +203,6 @@ describe("M2 content repository row and lock defenses", () => {
     expect(fake.calls[3]?.text).toContain("FOR UPDATE");
   });
 
-  test("fails closed before the legacy comment repository is reached", async () => {
-    const fake = fakeDb([]);
-    const result = await runWith(
-      makeControlPlaneContentRepository().createCommentReply({
-        communityId: "community_1",
-        postId: "post_1",
-        parentCommentId: "comment_parent",
-        actor: { userId: "usr_alice", kind: "user" },
-        body: { body: "reply", idempotency_key: "reply-key" },
-        idempotencyBodyHash: "a".repeat(64),
-      }),
-      fake.db,
-    );
-    expect(failureOf(result)).toMatchObject({
-      operation: "create-comment-reply",
-      reason: "constraint",
-    });
-    expect(fake.calls).toHaveLength(0);
-  });
-
   test.each([
     ["malformed vote value", { vote_value: "1" }],
     ["malformed vote id", { post_vote_id: "" }],
@@ -413,21 +393,5 @@ describe("M2 content repository row and lock defenses", () => {
       fakeDb([]).db,
     );
     expect(failureOf(postResult)).toMatchObject({ operation: "create-post", reason: "constraint" });
-
-    const replyResult = await runWith(
-      repository.createCommentReply({
-        communityId: "community_1",
-        postId: "post_1",
-        parentCommentId: "comment_parent",
-        actor: { userId: "usr_alice", kind: "user" },
-        body: { body: "reply", idempotency_key: "reply-key" },
-        idempotencyBodyHash: "A".repeat(64),
-      }),
-      fakeDb([]).db,
-    );
-    expect(failureOf(replyResult)).toMatchObject({
-      operation: "create-comment-reply",
-      reason: "constraint",
-    });
   });
 });

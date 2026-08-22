@@ -30,7 +30,6 @@
     "./use-cases/community/unfollow-community": "./src/use-cases/community/unfollow-community.ts",
     "./use-cases/content/cast-post-vote": "./src/use-cases/content/cast-post-vote.ts",
     "./use-cases/content/clear-post-vote": "./src/use-cases/content/clear-post-vote.ts",
-    "./use-cases/content/create-comment-reply": "./src/use-cases/content/create-comment-reply.ts",
     "./use-cases/content/create-post": "./src/use-cases/content/create-post.ts",
     "./use-cases/content/get-post": "./src/use-cases/content/get-post.ts",
     "./use-cases/content/text-post": "./src/use-cases/content/text-post.ts",

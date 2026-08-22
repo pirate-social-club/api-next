@@ -842,11 +842,10 @@ describe("contracts-generated HTTP worker", () => {
 
   it("returns not_found for an uninstalled route instead of undeclared not_implemented", async () => {
     for (const [path, method] of [
-      ["/posts/post_1", "GET"],
-      ["/communities/community_1/posts", "POST"],
+      ["/posts/post_1/comments", "POST"],
       ["/comments/comment_1/replies", "POST"],
-      ["/posts/post_1/vote", "POST"],
-      ["/posts/post_1/clear_vote", "POST"],
+      ["/comments/comment_1/reports", "POST"],
+      ["/moderation/cases/case_1/actions", "POST"],
     ] as const) {
       const response = await createHttpWorker().request(`http://worker.test${path}`, { method });
 

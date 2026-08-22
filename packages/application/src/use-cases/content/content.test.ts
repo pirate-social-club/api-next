@@ -8,7 +8,6 @@ import {
   type TextPostStore,
 } from "../../ports.ts";
 import { castPostVote } from "./cast-post-vote.ts";
-import { createCommentReply } from "./create-comment-reply.ts";
 import { createPost } from "./create-post.ts";
 import { getPost } from "./get-post.ts";
 
@@ -35,7 +34,6 @@ const fakeStore = (overrides: Partial<ContentStore["Service"]> = {}) => {
     resolveComment: () => Effect.succeed(null),
     createPost: () => Effect.succeed(fakeDocument),
     getPost: () => Effect.succeed(null),
-    createCommentReply: () => Effect.succeed({}),
     castPostVote: () => Effect.succeed({ post: "post_1", value: 1 as const }),
     clearPostVote: () => Effect.succeed({ post: "post_1", value: null }),
   } as unknown as ContentStore["Service"];
@@ -211,38 +209,6 @@ describe("M2 content use cases", () => {
       ),
     );
     expect(failureOf(result)).toMatchObject({ _tag: "BadRequest" });
-  });
-
-  test("fails closed before the legacy comment store is reached", async () => {
-    let resolveCalls = 0;
-    let createCalls = 0;
-    const store = fakeStore({
-      resolveComment: () => {
-        resolveCalls += 1;
-        return Effect.succeed({
-          communityId: "community_1",
-          postId: "post_1",
-          commentId: "comment_1",
-        });
-      },
-      createCommentReply: () => {
-        createCalls += 1;
-        return Effect.succeed({} as never);
-      },
-    });
-    const result = await run(
-      createCommentReply(
-        {
-          parentCommentId: "comment_1",
-          actor,
-          body: { idempotency_key: "reply-key", body: "reply" },
-        },
-        { contentStore: store },
-      ),
-    );
-    expect(failureOf(result)).toMatchObject({ _tag: "BadRequest" });
-    expect(resolveCalls).toBe(0);
-    expect(createCalls).toBe(0);
   });
 
   test("resolves global post IDs for reads and votes, and maps absence to not_found", async () => {

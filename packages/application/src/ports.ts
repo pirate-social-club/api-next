@@ -6,7 +6,6 @@ import type {
   TextContentSubmissionV1 as ContractTextContentSubmissionV1,
   TextModerationEvaluationV1 as ContractTextModerationEvaluationV1,
   TextModerationInputV1 as ContractTextModerationInputV1,
-  CreateCommentReply,
   CreateCommunityCreationIntent,
   CreatePost,
   FollowCommunity,
@@ -322,12 +321,11 @@ export class CanonicalCommunityRouteStore extends Context.Service<
 >()("CanonicalCommunityRouteStore") {}
 
 export type CreatePostBody = Schema.Schema.Type<(typeof CreatePost.request)["body"]>;
-export type CreateCommentBody = Schema.Schema.Type<(typeof CreateCommentReply.request)["body"]>;
 export type VoteBody = Schema.Schema.Type<(typeof CastPostVote.request)["body"]>;
 export type ClearVoteBody = Schema.Schema.Type<(typeof ClearPostVote.request)["body"]>;
 
 /**
- * Text-post persistence is intentionally a separate seam from the legacy M2
+ * Text-post persistence is intentionally a separate seam from the pre-moderation M2
  * content repository. It owns the submission ledger, policy fence, and the
  * immutable creation snapshot; it never asks the application to infer a
  * replay from a Post row.
@@ -409,7 +407,6 @@ export class TextPostStore extends Context.Service<TextPostStore, TextPostStoreS
  */
 export type PostDocument = ContractPostDocument;
 export type LocalizedPostDocument = Schema.Schema.Type<typeof GetPost.response>;
-export type CommentDocument = Schema.Schema.Type<typeof CreateCommentReply.response>;
 export type VoteDocument = Schema.Schema.Type<typeof CastPostVote.response>;
 export type ClearVoteDocument = Schema.Schema.Type<typeof ClearPostVote.response>;
 export type HomeFeedQuery = Schema.Schema.Type<(typeof GetPublicHomeFeed.request)["query"]>;
@@ -434,7 +431,6 @@ export type ContentRepositoryOperation =
   | "resolve-comment"
   | "create-post"
   | "get-post"
-  | "create-comment-reply"
   | "cast-vote"
   | "clear-vote";
 
@@ -617,15 +613,6 @@ export interface ContentStoreService {
     readonly viewerUserId: string;
     readonly locale?: string;
   }) => Effect.Effect<LocalizedPostDocument | null, ContentRepositoryFailure>;
-
-  readonly createCommentReply: (input: {
-    readonly communityId: string;
-    readonly postId: string;
-    readonly parentCommentId: string;
-    readonly actor: M2Actor;
-    readonly body: CreateCommentBody;
-    readonly idempotencyBodyHash?: string;
-  }) => Effect.Effect<CommentDocument, ContentRepositoryFailure>;
 
   readonly castPostVote: (input: {
     readonly communityId: string;
