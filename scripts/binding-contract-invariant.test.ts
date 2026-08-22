@@ -80,12 +80,18 @@ const ALERT_BINDING_KINDS = {
 const JOBS_BINDING_KINDS = {
   CRON_LOCK: "platform",
   CONTROL_PLANE: "platform",
+  HNS_OWNER_VERIFIER: "platform",
   API_NEXT_ENV: "var",
   API_NEXT_ALERT_EMAIL_URL: "var",
   API_NEXT_ALERT_WEBHOOK_URL: "var",
   API_NEXT_ALERT_EMAIL_TOKEN: "secret",
   API_NEXT_ALERT_WEBHOOK_TOKEN: "secret",
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: "secret",
+  HNS_OWNERSHIP_ENABLED: "var",
+  HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "var",
+  HNS_OWNERSHIP_CONFIGURATION_VERSION: "var",
+  HNS_REVALIDATION_FORCE_ROUTE_BINDING_ID: "var",
+  HNS_REVALIDATION_FORCE_EXPECTED_GENERATION: "var",
 } as const satisfies BindingManifest<JobsWorkerEnv>;
 
 const REGISTRATION_BINDING_KINDS = {
@@ -234,6 +240,11 @@ const HTTP_REGISTRATION_REQUIRED = [
 
 const JOBS_ALWAYS_REQUIRED = ["API_NEXT_ENV", "COMMUNITY_PURCHASE_FUNDING_RPC_URL"] as const;
 
+const JOBS_HNS_REQUIRED = [
+  "HNS_OWNERSHIP_CONFIGURATION_REFERENCE",
+  "HNS_OWNERSHIP_CONFIGURATION_VERSION",
+] as const;
+
 const JOBS_PRODUCTION_ALERT_REQUIRED = [
   "API_NEXT_ALERT_EMAIL_URL",
   "API_NEXT_ALERT_WEBHOOK_URL",
@@ -263,9 +274,10 @@ const requiredNamesFor = (
 ): readonly string[] => {
   if (worker === "jobs") {
     const apiEnvironment = environment.vars.API_NEXT_ENV;
-    return apiEnvironment === "production"
-      ? [...JOBS_ALWAYS_REQUIRED, ...JOBS_PRODUCTION_ALERT_REQUIRED]
-      : JOBS_ALWAYS_REQUIRED;
+    const required: string[] = [...JOBS_ALWAYS_REQUIRED];
+    if (apiEnvironment === "production") required.push(...JOBS_PRODUCTION_ALERT_REQUIRED);
+    if (environment.vars.HNS_OWNERSHIP_ENABLED === "true") required.push(...JOBS_HNS_REQUIRED);
+    return required;
   }
 
   const required: string[] = [...HTTP_ALWAYS_REQUIRED, ...HTTP_REGISTRATION_REQUIRED];
