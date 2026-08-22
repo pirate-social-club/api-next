@@ -22,8 +22,11 @@ historical versions are not proof of canonical staging state. Canonical HTTP
 and jobs Workers were synchronized and deployed from published commit
 `306db31` on 2026-08-23 using Hyperdrive `8cb7658a0f7143359c1becfec6a15c23`.
 The canonical Cloudflare audit reports zero violations, health and JWKS probes
-pass, and the live JWK matches the Infisical private key. Misplaced-account
-resources remain retained.
+pass, and the live JWK matches the Infisical private key. The three misplaced
+staging Workers, their nine installed secrets, and misplaced staging
+Hyperdrive were retired on 2026-08-23. The misplaced account still owns the
+`pirate.sc` zone, so a managed bridge with no bindings or secrets temporarily
+forwards the public hostname to the canonical `workers.dev` origin.
 
 ## Current M3 mode override — 2026-08-19
 

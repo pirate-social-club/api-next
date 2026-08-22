@@ -77,7 +77,11 @@
   "env": {
     "staging": {
       "name": "pirate-http-worker-staging",
-      "workers_dev": false,
+      // The pirate.sc zone is not yet in the canonical account. This endpoint
+      // is the origin for the secret-free, temporary zone bridge under
+      // infra/cloudflare/api-next-staging-zone-bridge.
+      "workers_dev": true,
+      "preview_urls": false,
       "durable_objects": {
         "bindings": [
           {
@@ -90,12 +94,6 @@
           }
         ]
       },
-      "routes": [
-        {
-          "pattern": "api-next-staging.pirate.sc",
-          "custom_domain": true
-        }
-      ],
       "hyperdrive": [
         {
           "binding": "CONTROL_PLANE",

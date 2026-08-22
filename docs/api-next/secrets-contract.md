@@ -3,9 +3,11 @@
 Status: Infisical is audited and organized. The canonical Cloudflare staging
 Workers were synchronized and deployed on 2026-08-23, and the Cloudflare
 name-only audit now reports zero violations. Production remains disabled and
-the Infisical audit reports one production-only finding. The misplaced
-account resources remain retained as rollback evidence. Infisical confidential
-values were not rendered in tool output.
+the Infisical audit reports one production-only finding. All misplaced-account
+staging secrets, Workers, and Hyperdrive resources have been retired. A
+secret-free zone bridge remains temporarily because that account still owns
+the `pirate.sc` zone. Infisical confidential values were not rendered in tool
+output.
 
 Date of inventory: 2026-08-23.
 
@@ -16,7 +18,7 @@ Date of inventory: 2026-08-23.
 | Infisical, api-next project | project `fac45f92-9450-42fb-8c2f-f20d043fdfab`, organization `d9615445-c0d4-445a-ad58-1d55d365635a` | Reachable. `api-next/.infisical.json` now pins this project, so commands run anywhere in the api-next tree resolve it without `--projectId`. See "Local project selection" below. |
 | Infisical, historical project | workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71` | Reachable. Historical reference only. Its `/services/api` folder deliberately mixes API runtime, HNS, Spaces, media, Story, and operator credentials; that mixing is the boundary defect this contract corrects. Do not copy it wholesale. |
 | Cloudflare Worker secrets, canonical | account `08a4c22cf52e2ecae883e36f80a33f4a` | Reachable through the `api-next-canonical` Wrangler profile. The staging HTTP Worker has exactly six declared confidential names and the staging jobs Worker has its one declared funding name. Both production Workers are absent. |
-| Cloudflare Worker secrets, misplaced | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable through the retained default Wrangler profile. The later staging HTTP and jobs deployments, public-config cleanup, seven-secret HTTP inventory, and one-secret jobs inventory occurred here. The canonical cutover is proven; these resources remain retained pending an explicit retirement decision. |
+| Cloudflare zone bridge, temporary | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable through the retained default Wrangler profile. The three misplaced staging Workers, their nine installed secrets, and the misplaced staging Hyperdrive were retired on 2026-08-23. Only the managed, secret-free `api-next-staging-zone-bridge` remains in api-next scope because this account still owns the `pirate.sc` zone. An unrelated production Hyperdrive was not changed. |
 | Declared Wrangler contract | `api-next/apps/http-worker/wrangler.jsonc` and `api-next/apps/jobs-worker/wrangler.jsonc` | In repository. Both Workers are in scope; earlier revisions of this document covered only the http Worker. `secrets.required` is a real Wrangler property — it drives type generation and local-dev warnings, but does not gate a deploy. See D9. |
 
 Environments are Infisical environments. Never encode an environment into a
@@ -59,16 +61,37 @@ were then deleted in one reviewed bulk request.
 The resulting Cloudflare audit reports zero violations. The canonical health
 endpoint returns `{"status":"ok"}`, the live JWKS contains one RS256 signing
 key, and an in-memory derivation from the Infisical private key matches that
-live JWK. The verifier health endpoint also returns healthy. The misplaced
-Workers and Hyperdrive remain retained; their custom API route is no longer the
-canonical deployment target.
+live JWK. The verifier health endpoint also returns healthy.
+
+Retirement inventory found three misplaced staging Workers, not two: HTTP,
+jobs, and HNS owner verifier. Their nine installed secret names were deleted
+before the Workers were deleted. Misplaced staging Hyperdrive `11c1ad18…` was
+then deleted. Exact re-inventory confirmed all four staging resources absent.
+The unrelated `pirate-control-plane-production` Hyperdrive (`7e457bc3…`) was
+outside scope and remains untouched.
+
+Deleting the misplaced HTTP Worker also removed the public custom-domain DNS,
+proving that `pirate.sc` is still owned by the misplaced account. The canonical
+HTTP Worker now deliberately exposes its `workers.dev` origin. Managed Worker
+`api-next-staging-zone-bridge` in the zone-owning account contains no bindings
+or secrets and forwards the custom domain to that origin. Public health and
+JWKS both return 200 through the bridge. Move the zone to the canonical account
+and retire the bridge as a separate DNS migration.
+
+The retirement exposed one value-integrity defect: the canonical
+`PIRATE_APP_JWT_PRIVATE_KEY` copied from Infisical had one trailing newline.
+The value was normalized without rendering it, updated in Infisical, and
+resynchronized to the canonical Worker. Structural metadata confirmed the
+expected PKCS8 boundaries and trim-stable form. Health and JWKS passed after
+the update.
 
 Two un-routed Workers were created while the synchronization command's target
 selection was being made explicit: `pirate-http-worker-staging-staging` from
 combining an environment-suffixed name with `--env`, and `api-next-staging`
 from root-config discovery. Each contained only the six synchronized copies,
 was deleted immediately, and was subsequently confirmed absent. No existing
-Worker was deleted.
+Worker was deleted during that earlier target-selection cleanup; the deliberate
+misplaced-account retirement described above happened later.
 
 Every Cloudflare deployment, probe, collision cleanup, and seven-secret claim
 recorded later in this document before this correction refers to the misplaced
@@ -212,8 +235,8 @@ configuration must be reintroduced deliberately.
 2. The verifier provisioning evidence records the active key ID as
    `staging-2026-08-18-01`. It is now a staging Wrangler var and has been
    removed from `secrets.required`. The canonical Worker now receives it as a
-   var. The misplaced-account Worker still holds the historical same-named
-   secret. The previous-key rotation fields remain optional:
+   var. The historical misplaced-account copy was deleted during retirement.
+   The previous-key rotation fields remain optional:
    the two public fields are explicitly empty until a rotation is active, and
    the previous secret is not required until then.
    `VERY_WEB_SEALING_KEY` is now declared in staging `secrets.required`.

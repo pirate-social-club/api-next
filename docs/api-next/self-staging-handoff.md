@@ -24,8 +24,12 @@ pins were corrected in `abe19d6`. The canonical HTTP and jobs Workers were
 synchronized and deployed from published commit `306db31` on 2026-08-23 with
 Hyperdrive `8cb7658a0f7143359c1becfec6a15c23`. The name-only Cloudflare audit
 reports zero violations, health and JWKS probes pass, and the live JWK matches
-the Infisical private key. Misplaced-account resources remain retained. Treat
-later pre-correction versions and probes in this document as historical
+the Infisical private key. The three misplaced staging Workers, their nine
+installed secrets, and misplaced staging Hyperdrive were retired on
+2026-08-23. Because the misplaced account still owns the `pirate.sc` zone, the
+public hostname temporarily reaches the canonical `workers.dev` origin through
+the managed, secret-free `api-next-staging-zone-bridge`. Treat later
+pre-correction versions and probes in this document as historical
 misplaced-account evidence unless explicitly labeled canonical.
 
 ## Current staging gate
