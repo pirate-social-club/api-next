@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.11.0",
+  "releaseType": "post-votes-contract",
+  "wireContract": "wire-v2",
+  "sourceCommit": "a92d1b8",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.11.0.tgz",
+    "sha256": "322f1919d1e905ed9323b524249b7e9871741a47ab81dccb9178a29d3957668d",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@395b1940ee6b4b3ae42026dbce843b99334493f9f4b7c1767e5d2bae12826db8",
+    "openapiSha256": "395b1940ee6b4b3ae42026dbce843b99334493f9f4b7c1767e5d2bae12826db8",
+    "clientSha256": "ef50367469ba548aa137664a824ecf9a2604c5576278ca129c2a1a065e5f46fb"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "0893585",
+      "reason": "The dated post-votes amendment explicitly accepts the request, response, authentication, and error-surface break for replay-safe post votes."
+    },
+    "focusedPostVoteContractTests": "3 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "focused contract gates passed; full runtime tranche gate pending"
+  }
+}
