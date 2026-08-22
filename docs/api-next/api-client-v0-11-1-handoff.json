@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.11.1",
+  "releaseType": "post-votes-typed-conflict-correction",
+  "wireContract": "wire-v2",
+  "sourceCommit": "13cf239",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.11.1.tgz",
+    "sha256": "dba66aa6c138ed97d9801c59e02df4157353046847aa14c44d6c764c0264e509",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@44029b7e36eea443f3ea95009b5225b51042d512c72cbdaa52c1ea5b6dcfef0d",
+    "openapiSha256": "44029b7e36eea443f3ea95009b5225b51042d512c72cbdaa52c1ea5b6dcfef0d",
+    "clientSha256": "74559b056b9acc97d701b8d3312c6d1f0ff6faa5d76fd320f5ddd7704ef0408c"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "0893585",
+      "reason": "The dated post-votes amendment accepts the typed replay-conflict action identity."
+    },
+    "focusedPostVoteContractTests": "3 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "check passed; unit 1043 passed and 183 skipped; Workerd 28, 16, and 2 passed; Postgres 149 passed, 2 expected skips, and 0 failed; breaking, fresh baseline, and migration-worktree checks passed"
+  }
+}
