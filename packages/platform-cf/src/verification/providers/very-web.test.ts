@@ -58,6 +58,10 @@ const START_INPUT: VerificationProviderStartInput = {
   subject_binding_intent: "establish",
   protocol_version: VERY_WEB_PROTOCOL_VERSION,
   environment: "test",
+  verification_purpose: {
+    intent: "community_join",
+    policy_id: "curated-human-membership-v1",
+  },
 };
 
 type Calls = {
@@ -141,6 +145,7 @@ function planInput(
     subject_binding_intent: START_INPUT.subject_binding_intent,
     protocol_version: START_INPUT.protocol_version,
     environment: START_INPUT.environment,
+    verification_purpose: START_INPUT.verification_purpose,
     ...overrides,
   };
 }
@@ -196,6 +201,46 @@ describe("Very web provider", () => {
       mobile: { uri: expect.stringContaining("veros://verify") },
     });
     expect(JSON.stringify(start.presentation)).not.toContain("777");
+  });
+
+  test("keeps the legacy external nullifier stable across ceremonies", async () => {
+    const configured = options();
+    const adapter = makeVeryWebProvider(configured.value);
+    const first = await Effect.runPromise(adapter.start(START_INPUT));
+    const second = await Effect.runPromise(
+      adapter.start({
+        ...START_INPUT,
+        intent_id: "intent-2",
+        request_hash: "e".repeat(64),
+      }),
+    );
+
+    const query = (start: typeof first) => {
+      if (start.presentation.kind !== "embedded_sdk") {
+        throw new Error("expected embedded presentation");
+      }
+      const payload = start.presentation.payload;
+      if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+        throw new Error("expected embedded payload object");
+      }
+      const encodedQuery = (payload as Record<string, unknown>).query;
+      if (typeof encodedQuery !== "string") throw new Error("expected serialized query");
+      return JSON.parse(encodedQuery) as {
+        readonly options: Readonly<{
+          readonly externalNullifier: string;
+          readonly pseudonym: string;
+        }>;
+      };
+    };
+
+    const firstQuery = query(first);
+    const secondQuery = query(second);
+    expect(firstQuery.options.externalNullifier).toBe(
+      "Pirate - Community Join - curated-human-membership-v1",
+    );
+    expect(secondQuery.options.externalNullifier).toBe(firstQuery.options.externalNullifier);
+    expect(firstQuery.options.pseudonym).toBe("session-1");
+    expect(secondQuery.options.pseudonym).toBe("session-2");
   });
 
   test("verifies a desktop widget proof server-side and mints scoped evidence", async () => {

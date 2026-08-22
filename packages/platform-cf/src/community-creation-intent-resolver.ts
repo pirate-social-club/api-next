@@ -169,6 +169,9 @@ function plan(environment: string): unknown {
     subject_binding_intent: "establish",
     protocol_version: VERY_WEB_PROTOCOL_VERSION,
     environment,
+    verification_purpose: {
+      intent: "community_creation",
+    },
   };
 }
 

@@ -51,6 +51,29 @@ export const VerificationSubmission = Schema.Struct({
 });
 export type VerificationSubmission = Schema.Schema.Type<typeof VerificationSubmission>;
 
+/**
+ * Internal purpose metadata used to scope provider identity proofs. This is
+ * resolved server-side from the action intent and is not part of the public
+ * verification wire contract.
+ */
+export const VerificationIntentType = Schema.Literals([
+  "community_creation",
+  "community_join",
+  "post_create",
+  "comment_create",
+  "post_access_18_plus",
+  "commerce_pricing",
+  "qualifier_disclosure",
+  "profile_verification",
+]);
+export type VerificationIntentType = Schema.Schema.Type<typeof VerificationIntentType>;
+
+export const VerificationProviderPurpose = Schema.Struct({
+  intent: VerificationIntentType,
+  policy_id: Schema.optional(Schema.NonEmptyString),
+});
+export type VerificationProviderPurpose = Schema.Schema.Type<typeof VerificationProviderPurpose>;
+
 export const VerificationProviderStartInput = Schema.Struct({
   actor_id: Schema.NonEmptyString,
   intent_id: Schema.NonEmptyString,
@@ -64,6 +87,7 @@ export const VerificationProviderStartInput = Schema.Struct({
   subject_binding_intent: SubjectBindingIntent,
   protocol_version: Schema.NonEmptyString,
   environment: Schema.NonEmptyString,
+  verification_purpose: Schema.optional(VerificationProviderPurpose),
 });
 export type VerificationProviderStartInput = Schema.Schema.Type<
   typeof VerificationProviderStartInput
@@ -77,6 +101,7 @@ export const VerificationProviderPlanInput = Schema.Struct({
   subject_binding_intent: SubjectBindingIntent,
   protocol_version: Schema.NonEmptyString,
   environment: Schema.NonEmptyString,
+  verification_purpose: Schema.optional(VerificationProviderPurpose),
 });
 export type VerificationProviderPlanInput = Schema.Schema.Type<
   typeof VerificationProviderPlanInput

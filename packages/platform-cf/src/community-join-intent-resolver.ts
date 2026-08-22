@@ -104,6 +104,10 @@ function plan(environment: string): unknown {
     subject_binding_intent: "establish",
     protocol_version: VERY_WEB_PROTOCOL_VERSION,
     environment,
+    verification_purpose: {
+      intent: "community_join",
+      policy_id: CURATED_HUMAN_MEMBERSHIP_POLICY.policy_version_id,
+    },
   };
 }
 

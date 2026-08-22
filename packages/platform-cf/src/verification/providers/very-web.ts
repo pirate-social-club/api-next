@@ -37,11 +37,26 @@ export const VERY_WEB_HTTP_TIMEOUT_MS = 15_000 as const;
 export const VERY_WEB_SESSION_TTL_SECONDS = 300 as const;
 export const VERY_WEB_MAX_RESPONSE_BYTES = 1_048_576 as const;
 export const VERY_WEB_MAX_SEALED_SESSION_REF_CHARS = 16_384 as const;
+const VERY_WEB_CURATED_POLICY_VERSION = "curated-human-membership-v1" as const;
 
 const VERY_WEB_CLAIMS = [
   "human.personhood",
   "credential.subject_unique",
 ] as const satisfies readonly CanonicalClaimIdentifier[];
+
+type VeryWebPurpose = NonNullable<VerificationProviderStartInput["verification_purpose"]>;
+type VeryWebIntentType = VeryWebPurpose["intent"];
+
+const VERY_WEB_PURPOSE_LABELS: Readonly<Record<VeryWebIntentType, string>> = {
+  community_creation: "Community Creation",
+  community_join: "Community Join",
+  post_create: "Post Create",
+  comment_create: "Comment Create",
+  post_access_18_plus: "18+ Post Access",
+  commerce_pricing: "Commerce Pricing",
+  qualifier_disclosure: "Qualifier Disclosure",
+  profile_verification: "Profile Verification",
+};
 
 export const VERY_WEB_MANIFEST: ProofProviderManifest = {
   provider_id: VERY_WEB_PROVIDER_ID,
@@ -215,6 +230,21 @@ function exactClaims(
   );
 }
 
+function externalNullifier(purpose: VeryWebPurpose): string {
+  const label = VERY_WEB_PURPOSE_LABELS[purpose.intent];
+  return purpose.policy_id === undefined
+    ? `Pirate - ${label}`
+    : `Pirate - ${label} - ${purpose.policy_id}`;
+}
+
+function purposeSupported(purpose: VeryWebPurpose | undefined): boolean {
+  return (
+    purpose !== undefined &&
+    VERY_WEB_PURPOSE_LABELS[purpose.intent] !== undefined &&
+    (purpose.policy_id === undefined || purpose.policy_id === VERY_WEB_CURATED_POLICY_VERSION)
+  );
+}
+
 function configRef(): ProviderConfigurationRef {
   return {
     kind: "dynamic",
@@ -240,7 +270,8 @@ function requestSupported(value: VeryWebPlanInput): boolean {
     value.subject_binding_intent !== "none" &&
     value.protocol_version === VERY_WEB_PROTOCOL_VERSION &&
     ["test", "development", "staging", "production"].includes(value.environment) &&
-    sameScope(value.scope, expectedScope())
+    sameScope(value.scope, expectedScope()) &&
+    purposeSupported(value.verification_purpose)
   );
 }
 
@@ -628,14 +659,14 @@ function evidenceBundle(
   });
 }
 
-function payloadQuery(session: VerificationProviderStartInput, bindingValue: string) {
+function payloadQuery(purpose: VeryWebPurpose, bindingValue: string) {
   return {
     conditions: [
       { identifier: "val", operation: "IN", value: { from: "1743436800", to: "2043436800" } },
     ],
     options: {
       expiredAtLowerBound: "1743436800",
-      externalNullifier: `Pirate - ${session.intent_id}`,
+      externalNullifier: externalNullifier(purpose),
       equalCheckId: "0",
       pseudonym: bindingValue,
     },
@@ -768,6 +799,10 @@ export function makeVeryWebProvider(options: VeryWebAdapterOptions): Verificatio
       ) {
         return Effect.fail(rejected("start"));
       }
+      const purpose = input.verification_purpose;
+      if (purpose === undefined || !purposeSupported(purpose)) {
+        return Effect.fail(rejected("start"));
+      }
       const issued_at = options.clock.now();
       const expires_at = options.clock.expiresAt(issued_at);
       if (!exactSessionExpiry(issued_at, expires_at)) return Effect.fail(rejected("start"));
@@ -783,7 +818,7 @@ export function makeVeryWebProvider(options: VeryWebAdapterOptions): Verificatio
               try: () => crypto.subtle.importKey("raw", keyBytes, "AES-GCM", true, ["encrypt"]),
               catch: () => invalid("start"),
             });
-            const query = payloadQuery(input, bindingValue);
+            const query = payloadQuery(purpose, bindingValue);
             const launch = {
               app_id: options.app_id,
               context: "Veros - Palm Verification Timestamp",

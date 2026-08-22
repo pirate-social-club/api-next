@@ -102,6 +102,9 @@ describe("community creation verification intent resolver", () => {
       subject_binding_intent: "establish",
       protocol_version: "very-web-v1",
       environment: "test",
+      verification_purpose: {
+        intent: "community_creation",
+      },
     });
     expect(statements).toHaveLength(1);
     expect(statements[0]).toMatchObject({
