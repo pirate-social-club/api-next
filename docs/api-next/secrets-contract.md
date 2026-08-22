@@ -158,10 +158,12 @@ configuration must be reintroduced deliberately.
 2. The staging Worker has the current
    `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID` as a Cloudflare secret, while
    the repository classifies it as public configuration. Its value is not
-   available from Infisical or the repository, so the store change waits for an
-   operator to source the real identifier. The previous-key rotation fields
-   remain optional: the two public fields are explicitly empty until a rotation
-   is active, and the previous secret is not required until then.
+   available from Infisical or the repository, and the verifier's public
+   `/health` endpoint exposes only service metadata, not the active key ID. The
+   store change therefore waits for an operator to source the real identifier.
+   The previous-key rotation fields remain optional: the two public fields are
+   explicitly empty until a rotation is active, and the previous secret is not
+   required until then.
    `VERY_WEB_SEALING_KEY` is now declared in staging `secrets.required`.
 3. Staging and production Privy app IDs, JWKS URLs, and audiences are now
    declared as Wrangler vars from verified app-specific values. The api-next
