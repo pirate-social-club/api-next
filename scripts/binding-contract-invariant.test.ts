@@ -392,9 +392,6 @@ describe("source-to-Wrangler binding contract", () => {
     // Blocked: no development Privy application has been provisioned.
     "http/development: PIRATE_APP_JWT_PUBLIC_KEY must be a var",
     "http/development: PRIVY_APP_ID must be a var",
-    // Blocked: the verifier operator must supply the real signing key ID before
-    // it can move from a Cloudflare secret to a var.
-    "http/staging: ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID must be a var",
   ] as const;
 
   const KNOWN_OPEN_REQUIRED_VIOLATIONS = [

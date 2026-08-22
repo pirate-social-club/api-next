@@ -129,6 +129,7 @@
         "ZKPASSPORT_NAME": "Pirate",
         "ZKPASSPORT_LOGO": "",
         "ZKPASSPORT_VERIFIER_URL": "https://zkpassport-verifier-staging.pirate.sc",
+        "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID": "staging-2026-08-18-01",
         // Empty rotation fields explicitly mean that no previous signing key
         // is active. Before rotating a key, add
         // ZKPASSPORT_VERIFIER_PREVIOUS_RESPONSE_SIGNING_SECRET to this
@@ -158,7 +159,6 @@
           "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
-          "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
         ]
       }

@@ -40,7 +40,7 @@ Name-only remote inventory found this split:
 | Account | HTTP staging | Jobs staging | Staging Hyperdrive |
 | --- | --- | --- | --- |
 | canonical `08a4…` | present; last deployment 2026-08-16; ten legacy secret names | present; last deployment 2026-08-16; zero secrets | `api-next-staging` (`8cb7658a…`) |
-| misplaced `ff375…` | present; later 2026-08-22 deployment; seven intended secret names | present; later 2026-08-22 deployment; one intended secret name | `pirate-control-plane-staging` (`11c1ad18…`) |
+| misplaced `ff375…` | present; later 2026-08-22 deployment; six confidential names plus the misclassified public key ID | present; later 2026-08-22 deployment; one intended secret name | `pirate-control-plane-staging` (`11c1ad18…`) |
 
 The canonical HTTP account still contains the three junk
 `AUTH_UPSTREAM_JWT_*` names plus seven stale JWT/Privy classifications. The
@@ -188,15 +188,13 @@ configuration must be reintroduced deliberately.
    Worker is deployed. The two URLs need real HTTPS endpoints and the two
    tokens need real credentials before production can be enabled; the entries
    remain isolated from the api-next runtime path until then.
-2. The staging Worker has the current
-   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID` as a Cloudflare secret, while
-   the repository classifies it as public configuration. Its value is not
-   available from Infisical or the repository, and the verifier's public
-   `/health` endpoint exposes only service metadata, not the active key ID. The
-   store change therefore waits for an operator to source the real identifier.
-   The previous-key rotation fields remain optional: the two public fields are
-   explicitly empty until a rotation is active, and the previous secret is not
-   required until then.
+2. The verifier provisioning evidence records the active key ID as
+   `staging-2026-08-18-01`. It is now a staging Wrangler var and has been
+   removed from `secrets.required`. The misplaced-account Worker still holds
+   the historical same-named secret; the canonical account does not receive
+   the var until cutover. The previous-key rotation fields remain optional:
+   the two public fields are explicitly empty until a rotation is active, and
+   the previous secret is not required until then.
    `VERY_WEB_SEALING_KEY` is now declared in staging `secrets.required`.
 3. Staging and production Privy app IDs, JWKS URLs, and audiences are now
    declared as Wrangler vars from verified app-specific values. The api-next
@@ -206,22 +204,20 @@ configuration must be reintroduced deliberately.
    now Wrangler vars; their Infisical root duplicates were deleted. The
    development declarations remain a known classification gap until a real
    development configuration is sourced.
-5. **Infisical is not a complete source for the staging Worker.**
+5. **Infisical is now a complete source for the staging Worker's confidential
+   runtime contract.**
    The initial live name-only audit found five entries at `/services/api-next`:
    the three previously copied runtime secrets, `VERY_WEB_SEALING_KEY`, and
    the unexpected public-config name `VERY_APP_ID`. After its deletion, the
-   current path contains four intended entries. The two missing confidential
-   runtime names are `ZKPASSPORT_VERIFIER_SHARED_SECRET` and
-   `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET`. The public key ID is not an
-   Infisical runtime secret; it remains an installed Cloudflare value until
-   its real value is sourced and moved to the Wrangler var declaration.
+   path held four intended entries. On 2026-08-22 the two missing confidential
+   values were streamed directly from the verifier's root-only environment
+   file into Infisical with `--file /dev/stdin`; neither value appeared in an
+   argument, terminal output, or local plaintext file. Infisical acknowledged
+   both names as created. The CLI's encrypted cache was then deleted again.
 
-   Consequence: a Worker rebuilt from `/services/api-next` today would be
-   missing the two ZKPassport confidential values. `ZKPASSPORT_ENABLED` is
-   `true` in staging, so verification would fail closed. The Very sealing key
-   is now present in Infisical; `VERY_APP_ID` was not a secret and has been
-   removed from Infisical rather than retained under either the old or new
-   name.
+   The path now has the six intended confidential names. The public key ID is
+   a Wrangler var, not an Infisical secret. A fresh name-only REST audit remains
+   pending after the Infisical session revocation described below.
 
    The two ZKPassport secret names were recorded as Cloudflare-only in the
    very first inventory and were never given an Infisical home. Sourcing them
@@ -336,9 +332,9 @@ two missing development Privy names.
 `PIRATE_APP_JWT_PUBLIC_KEY` and `PRIVY_APP_ID` are vars in staging and
 production. Development still has them in `secrets.required` because no real
 development values are available. The staging
-`ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID` remains a Cloudflare secret
-temporarily; its real value must be sourced before moving it to the Wrangler
-var declaration. It is intentionally not an Infisical runtime secret.
+`ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID` is now a Wrangler var with the
+identifier recorded by the verifier provisioning evidence. It is intentionally
+not an Infisical runtime secret.
 
 **D6 — the HNS ownership configuration pair is undeclared.**
 `HNS_OWNERSHIP_CONFIGURATION_REFERENCE` and
@@ -457,9 +453,11 @@ the explicit staging deployment:
 | `PRIVY_JWKS_URL` | var | secret |
 | `PRIVY_JWT_AUDIENCE` | var | secret |
 
-After deployment, `wrangler secret list --name pirate-http-worker-staging`
-returns seven intended secrets and no public-name collisions. The staging
-`/health` and `/.well-known/jwks.json` endpoints both returned HTTP 200.
+After the misplaced-account deployment,
+`wrangler secret list --name pirate-http-worker-staging` returned seven names
+and no public-name collisions. Six were confidential runtime values; the
+signing key ID remained misclassified as a secret. The staging `/health` and
+`/.well-known/jwks.json` endpoints both returned HTTP 200.
 
 `VERY_WEB_SEALING_KEY` was also added to staging `secrets.required`; it remains
 installed because it is a genuine source-consumed secret, not junk.
@@ -468,7 +466,7 @@ installed because it is a genuine source-consumed secret, not junk.
 
 | Check | Result |
 | --- | --- |
-| installed staging secrets | 7, exactly the intended set; none of the four collided names present |
+| installed staging secrets | 7; six confidential values plus the misclassified key ID; none of the four collided names present |
 | `api-next-staging`, the accidental root-config Worker | no longer resolves |
 | `GET /health` | 200, `{"status":"ok"}` |
 | `GET /.well-known/jwks.json` | 200, one 2048-bit RS256 key, `use: sig`, `key_ops: ["verify"]`, `kid` present |
@@ -478,12 +476,14 @@ The seven are `COMMUNITY_PURCHASE_FUNDING_RPC_URL`,
 `ZKPASSPORT_VERIFIER_SHARED_SECRET`,
 `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET`, and
 `ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_KEY_ID`. The last is still a secret and
-should be a var — the one open D5 instance.
+should be a var in that historical deployment. The current repository has
+corrected it to a var for the canonical-account cutover.
 
-Declared staging secrets number seven. The optional previous-response signing
-secret is intentionally absent until a rotation is active; the Wrangler
-comment and D3 rule above make adding it part of the rotation change rather
-than an undeclared deployment-time dependency.
+The current canonical-account config declares six staging secrets and carries
+the key ID as a var. The optional previous-response signing secret is
+intentionally absent until a rotation is active; the Wrangler comment and D3
+rule above make adding it part of the rotation change rather than an undeclared
+deployment-time dependency.
 
 A live JWKS proves `PIRATE_APP_JWT_PUBLIC_KEY` is now served from the var,
 since the same-named secret is gone. That is the verification the collision
@@ -558,7 +558,10 @@ misplaced account. After correcting the account pins and binding the canonical
 Wrangler profile to this repository, the same name-only audit found fourteen
 violations in the canonical account: three undeclared junk names, five
 var/secret collisions, five missing HTTP secrets, and one missing jobs secret.
-No entry is allowlisted. This failure is the required gate until cutover.
+After moving the ZKPassport key ID to a var, the audit reports thirteen: the
+same three junk names and five collisions, four missing HTTP secrets, and one
+missing jobs secret. No entry is allowlisted. This failure is the required gate
+until cutover.
 
 The Cloudflare-side audit runs from the dedicated `.github/workflows/secret-
 drift.yml` workflow on pushes to `main` and by manual dispatch, alongside the
@@ -584,13 +587,13 @@ use `INFISICAL_API_URL` for the regional API base URL. It never reads the
 local Infisical profile, project pin, or cached credential.
 
 No current Infisical drift is allowlisted. The disabled-production alert
-placeholders, missing production funding RPC, and missing staging ZKPassport
-names are all reported as failures until they are removed, sourced, or
-explicitly corrected. The first live run on 2026-08-22 found nine violations,
-including `VERY_APP_ID`; after deleting that entry and removing the public key
-ID from the Infisical runtime policy, the follow-up run found seven violations
-and zero accepted entries. It read names and folder metadata only; no
-Infisical value was rendered.
+placeholders and missing production funding RPC remain failures until they are
+removed, sourced, or explicitly corrected. The first live run on 2026-08-22
+found nine violations, including `VERY_APP_ID`; after deleting that entry and
+removing the public key ID from the Infisical runtime policy, the follow-up run
+found seven violations and zero accepted entries. The two staging ZKPassport
+secrets have since been sourced, so the next live audit should report only the
+five production-disabled findings. That read-back is pending a fresh login.
 
 ## Local project selection — corrected 2026-08-22
 
@@ -616,26 +619,25 @@ committed: `infisical run --env=staging
 the two operator entries, loaded the repository migration plan, and opened no
 database connection. A real migration remains intentionally unrun.
 
-## Session hygiene — open
+## Session hygiene — current session revoked
 
-During the migration session a diagnostic printed the active Infisical
-email-session token into tool output. The token was not written to a file and
-not repeated; a scan of this repository's docs, the agent memory directory, the
-session scratchpad, and the shell histories found no token-shaped string
-matching it. Infisical could not renew the session, because renewal supports
-identity tokens only.
+During the migration session an earlier diagnostic printed an active Infisical
+email-session token into tool output. A later REST-audit attempt on 2026-08-22
+repeated the class of error by using formatted `infisical user get token`
+output where the script required the `--plain` form. That formatted output
+included the then-current session token. No Infisical secret value was
+rendered, and neither token was written into the repository, command text, or
+shell history.
 
-Local hygiene is complete: `infisical reset` cleared the local credential, the
-encrypted offline cache was removed, and a fresh interactive login selected
-the api-next organization profile. The previously disclosed server session
-has not been confirmed revoked; that remains the only open hygiene step.
+The current disclosed session was revoked server-side through Infisical's
+authenticated `DELETE /api/v2/users/me/sessions/:sessionId` endpoint, which
+returned HTTP 200 with `Successfully revoked session`. `infisical reset` then
+removed the local keyring credential. The encrypted CLI cache was deleted and
+the home and repository project pins still target the canonical api-next
+project.
 
-Remaining server-side action:
-
-1. Revoke the session server-side, in the Infisical web console under personal
-   settings. `infisical logout` clears the local credential from the OS
-   keyring; on its own it does not invalidate a token that has already been
-   disclosed. Revoke first, then log out and back in.
-For completeness, the exposure remains scoped to the session token, not to
-the secrets. No secret value was rendered. No rotation of the seventeen
-entries is indicated by this event alone.
+A fresh interactive login is required before the final name-only Infisical
+read-back. After login, enumerate server sessions and revoke any older session
+that predates this correction; this closes the earlier incident as well as the
+current one. No rotation of stored application secrets is indicated because no
+secret value was exposed.
