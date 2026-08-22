@@ -8273,7 +8273,8 @@
               }
             },
             "x-error-codes": [
-              "bad_request"
+              "bad_request",
+              "reply_depth_exceeded"
             ]
           },
           "401": {
@@ -8567,7 +8568,8 @@
           "IdempotencyConflict",
           "MembershipRequired",
           "NotFound",
-          "RateLimited"
+          "RateLimited",
+          "ReplyDepthExceeded"
         ]
       }
     },

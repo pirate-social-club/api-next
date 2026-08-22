@@ -1,10 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import type {
-  ClearVoteBody,
-  CreateCommentBody,
-  CreatePostBody,
-  M2Actor,
-} from "@pirate/application";
+import type { ClearVoteBody, CreatePostBody, M2Actor } from "@pirate/application";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
@@ -65,14 +60,6 @@ function failureOf<A, E>(exit: Exit.Exit<A, E>): E | undefined {
 const actor: M2Actor = { userId: "usr_alice", kind: "user" };
 const postBody = (key: string, body = "hello"): CreatePostBody =>
   ({ post_type: "text", idempotency_key: key, body }) as CreatePostBody;
-const commentBody = (key: string, body = "reply"): CreateCommentBody =>
-  ({
-    body,
-    idempotency_key: key,
-    authorship_mode: "human_direct",
-    identity_mode: "public",
-  }) as CreateCommentBody;
-
 type RouteState = "active" | "suspended" | "expired";
 
 async function seedEffectiveRoute(admin: Client, state: RouteState): Promise<void> {
@@ -373,130 +360,6 @@ suite("Postgres 17 content repository", () => {
     completedTestCount += 1;
   });
 
-  test("resolves global IDs and creates body-only replies with zero response counts", async () => {
-    await withSchema(async (connection, admin) => {
-      await apply(connection);
-      await seed(admin);
-      const store = await storeFor(connection);
-      await expect(
-        Effect.runPromise(Effect.scoped(store.resolvePost({ postId: "post_parent" }))),
-      ).resolves.toEqual({ communityId: "community_1", postId: "post_parent" });
-      await expect(
-        Effect.runPromise(Effect.scoped(store.resolveComment({ commentId: "comment_parent" }))),
-      ).resolves.toEqual({
-        communityId: "community_1",
-        postId: "post_parent",
-        commentId: "comment_parent",
-      });
-      const reply = await Effect.runPromise(
-        Effect.scoped(
-          store.createCommentReply({
-            communityId: "community_1",
-            postId: "post_parent",
-            parentCommentId: "comment_parent",
-            actor,
-            body: commentBody("comment-key"),
-            idempotencyBodyHash: "c".repeat(64),
-          }),
-        ),
-      );
-      expect(reply.parent_comment).toBe("comment_parent");
-      expect(reply.id.startsWith("cmt_")).toBe(true);
-      expect(reply.depth).toBe(1);
-      expect(reply.upvote_count).toBe(0);
-      expect(reply.downvote_count).toBe(0);
-      expect(reply.direct_reply_count).toBe(0);
-      const replay = await Effect.runPromise(
-        Effect.scoped(
-          store.createCommentReply({
-            communityId: "community_1",
-            postId: "post_parent",
-            parentCommentId: "comment_parent",
-            actor,
-            body: commentBody("comment-key"),
-            idempotencyBodyHash: "c".repeat(64),
-          }),
-        ),
-      );
-      expect(replay.id).toBe(reply.id);
-      const commentConflict = await Effect.runPromiseExit(
-        Effect.scoped(
-          store.createCommentReply({
-            communityId: "community_1",
-            postId: "post_parent",
-            parentCommentId: "comment_parent",
-            actor,
-            body: commentBody("comment-key", "different"),
-            idempotencyBodyHash: "e".repeat(64),
-          }),
-        ),
-      );
-      expect(failureOf(commentConflict)).toMatchObject({
-        _tag: "ContentRepositoryError",
-        operation: "create-comment-reply",
-        reason: "idempotency-conflict",
-      });
-      const wrongScope = await Effect.runPromiseExit(
-        Effect.scoped(
-          store.createCommentReply({
-            communityId: "other-community",
-            postId: "post_parent",
-            parentCommentId: "comment_parent",
-            actor,
-            body: commentBody("other-key"),
-            idempotencyBodyHash: "d".repeat(64),
-          }),
-        ),
-      );
-      expect(failureOf(wrongScope)).toMatchObject({ reason: "not-found" });
-      const rows = await admin.query<{ count: string }>(
-        "SELECT COUNT(*) AS count FROM comments WHERE idempotency_key = 'other-key'",
-      );
-      expect(rows.rows[0]?.count).toBe("0");
-
-      const nested = await Effect.runPromise(
-        Effect.scoped(
-          store.createCommentReply({
-            communityId: "community_1",
-            postId: "post_parent",
-            parentCommentId: reply.id,
-            actor,
-            body: commentBody("nested-key"),
-            idempotencyBodyHash: "f".repeat(64),
-          }),
-        ),
-      );
-      expect(nested.depth).toBe(2);
-
-      const keyless = await Effect.runPromise(
-        Effect.scoped(
-          store.createCommentReply({
-            communityId: "community_1",
-            postId: "post_parent",
-            parentCommentId: "comment_parent",
-            actor,
-            body: {
-              body: "keyless reply",
-              authorship_mode: "human_direct",
-              identity_mode: "public",
-            },
-            idempotencyBodyHash: "a".repeat(64),
-          }),
-        ),
-      );
-      expect(keyless.idempotency_key).toBeNull();
-      const keylessRow = await admin.query<{
-        idempotency_key: string;
-        idempotency_body_hash: string | null;
-      }>("SELECT idempotency_key, idempotency_body_hash FROM comments WHERE comment_id = $1", [
-        keyless.id,
-      ]);
-      expect(keylessRow.rows[0]?.idempotency_key).toBe("");
-      expect(keylessRow.rows[0]?.idempotency_body_hash).toBeNull();
-    });
-    completedTestCount += 1;
-  });
-
   test("replaces votes atomically, counts them, and clears them", async () => {
     await withSchema(async (connection, admin) => {
       await apply(connection);
@@ -594,20 +457,6 @@ suite("Postgres 17 content repository", () => {
         ),
       );
       expect(failureOf(vote)).toMatchObject({ reason: "membership-required" });
-      const reply = await Effect.runPromiseExit(
-        Effect.scoped(
-          store.createCommentReply({
-            communityId: "community_1",
-            postId: "post_parent",
-            parentCommentId: "comment_parent",
-            actor: nonmember,
-            body: commentBody("nonmember-comment"),
-            idempotencyBodyHash: "2".repeat(64),
-          }),
-        ),
-      );
-      expect(failureOf(reply)).toMatchObject({ reason: "membership-required" });
-
       const delegated = await Effect.runPromiseExit(
         Effect.scoped(
           store.createPost({
@@ -696,36 +545,6 @@ suite("Postgres 17 content repository", () => {
     completedTestCount += 1;
   });
 
-  test("blocks replies on locked posts and preserves transactional state", async () => {
-    await withSchema(async (connection, admin) => {
-      await apply(connection);
-      await seed(admin);
-      const store = await storeFor(connection);
-      await admin.query("UPDATE posts SET comments_locked = TRUE WHERE post_id = 'post_parent'");
-      const result = await Effect.runPromiseExit(
-        Effect.scoped(
-          store.createCommentReply({
-            communityId: "community_1",
-            postId: "post_parent",
-            parentCommentId: "comment_parent",
-            actor,
-            body: commentBody("locked-key"),
-            idempotencyBodyHash: "4".repeat(64),
-          }),
-        ),
-      );
-      expect(failureOf(result)).toMatchObject({
-        _tag: "ContentRepositoryError",
-        reason: "comments-locked",
-      });
-      const rows = await admin.query<{ count: string }>(
-        "SELECT COUNT(*) AS count FROM comments WHERE idempotency_key = 'locked-key'",
-      );
-      expect(rows.rows[0]?.count).toBe("0");
-    });
-    completedTestCount += 1;
-  });
-
   test("requires an effective active route before creating a post", async () => {
     for (const routeState of ["active", "suspended", "expired"] as const) {
       await withSchema(async (connection, admin) => {
@@ -755,46 +574,6 @@ suite("Postgres 17 content repository", () => {
             `SELECT COUNT(*)::text AS count,
                     COUNT(*) FILTER (WHERE idempotency_key = $1)::text AS keyed
                FROM posts WHERE community_id = 'community_1'`,
-            [key],
-          );
-          expect(unchanged.rows[0]).toEqual({ count: "1", keyed: "0" });
-        }
-      });
-    }
-    completedTestCount += 1;
-  }, 20_000);
-
-  test("requires an effective active route before creating a reply", async () => {
-    for (const routeState of ["active", "suspended", "expired"] as const) {
-      await withSchema(async (connection, admin) => {
-        await apply(connection);
-        await seed(admin, routeState);
-        const store = await storeFor(connection);
-        await waitForEffectiveRouteState(routeState);
-        const key = `route-reply-${routeState}`;
-        const operation = store.createCommentReply({
-          communityId: "community_1",
-          postId: "post_parent",
-          parentCommentId: "comment_parent",
-          actor,
-          body: commentBody(key),
-          idempotencyBodyHash: "2".repeat(64),
-        });
-        if (routeState === "active") {
-          await expect(Effect.runPromise(Effect.scoped(operation))).resolves.toMatchObject({
-            depth: 1,
-          });
-          const created = await admin.query<{ count: string }>(
-            "SELECT COUNT(*) AS count FROM comments WHERE community_id = 'community_1'",
-          );
-          expect(created.rows[0]?.count).toBe("2");
-        } else {
-          const result = await Effect.runPromiseExit(Effect.scoped(operation));
-          expect(failureOf(result)).toMatchObject({ reason: "not-found" });
-          const unchanged = await admin.query<{ count: string; keyed: string }>(
-            `SELECT COUNT(*)::text AS count,
-                    COUNT(*) FILTER (WHERE idempotency_key = $1)::text AS keyed
-               FROM comments WHERE community_id = 'community_1'`,
             [key],
           );
           expect(unchanged.rows[0]).toEqual({ count: "1", keyed: "0" });

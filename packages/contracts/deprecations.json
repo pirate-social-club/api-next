@@ -98,7 +98,7 @@
     },
     {
       "operationId": "post_commentsCommentIdReplies",
-      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+      "reason": "2026-08-22 Order 6 amendment: returns TextContentSubmissionV1 with HTTP 201, requires {idempotency_key, body}, and removes delegated-agent and legacy comment fields."
     },
     {
       "operationId": "post_communitiesCommunityIdPosts",

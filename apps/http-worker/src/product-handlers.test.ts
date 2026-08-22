@@ -344,8 +344,6 @@ describe("HTTP product handlers", () => {
     const replyBody = {
       body: "reply",
       idempotency_key: "reply-key",
-      authorship_mode: "human_direct" as const,
-      identity_mode: "public" as const,
     };
     const voteBody = { value: -1 as const, altcha: "proof" };
     const clearBody = { altcha: "proof" };
@@ -378,9 +376,11 @@ describe("HTTP product handlers", () => {
     await handlers.CreatePost(
       request({ params: { communityId: "community-a" }, body: postBody, principal }),
     );
-    await handlers.CreateCommentReply(
-      request({ params: { commentId: "comment-a" }, body: replyBody, principal }),
-    );
+    await expect(
+      handlers.CreateCommentReply(
+        request({ params: { commentId: "comment-a" }, body: replyBody, principal }),
+      ),
+    ).rejects.toMatchObject({ code: "bad_request" });
     await handlers.CastPostVote(
       request({ params: { postId: "post-a" }, body: voteBody, principal }),
     );
@@ -400,17 +400,6 @@ describe("HTTP product handlers", () => {
       },
     });
     expect(observed.slice(1)).toEqual([
-      { resolveComment: { commentId: "comment-a" } },
-      {
-        createCommentReply: {
-          communityId: "community-a",
-          postId: "post-a",
-          parentCommentId: "comment-a",
-          actor: { userId: "user-a", kind: "user" },
-          body: replyBody,
-          idempotencyBodyHash: expect.any(String),
-        },
-      },
       { resolvePost: { postId: "post-a" } },
       {
         castPostVote: {

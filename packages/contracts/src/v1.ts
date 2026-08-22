@@ -12,6 +12,7 @@ import {
   MembershipRequired,
   NotFound,
   RateLimited,
+  ReplyDepthExceeded,
   VerificationRequired,
 } from "./errors.ts";
 import { TextContentSubmissionV1 } from "./text-moderation.ts";
@@ -1137,6 +1138,7 @@ export const CreateCommentReply = endpoint({
     MembershipRequired,
     NotFound,
     RateLimited,
+    ReplyDepthExceeded,
   ],
 });
 

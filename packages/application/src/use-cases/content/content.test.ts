@@ -213,15 +213,20 @@ describe("M2 content use cases", () => {
     expect(failureOf(result)).toMatchObject({ _tag: "BadRequest" });
   });
 
-  test("resolves the parent comment globally before creating a body-only reply", async () => {
-    const calls: string[] = [];
+  test("fails closed before the legacy comment store is reached", async () => {
+    let resolveCalls = 0;
+    let createCalls = 0;
     const store = fakeStore({
-      resolveComment: ({ commentId }) => {
-        calls.push(`resolve:${commentId}`);
-        return Effect.succeed({ communityId: "community_1", postId: "post_1", commentId });
+      resolveComment: () => {
+        resolveCalls += 1;
+        return Effect.succeed({
+          communityId: "community_1",
+          postId: "post_1",
+          commentId: "comment_1",
+        });
       },
-      createCommentReply: (input) => {
-        calls.push(`create:${input.communityId}/${input.postId}/${input.parentCommentId}`);
+      createCommentReply: () => {
+        createCalls += 1;
         return Effect.succeed({} as never);
       },
     });
@@ -230,28 +235,14 @@ describe("M2 content use cases", () => {
         {
           parentCommentId: "comment_1",
           actor,
-          body: { body: "reply", authorship_mode: "human_direct", identity_mode: "public" },
+          body: { idempotency_key: "reply-key", body: "reply" },
         },
         { contentStore: store },
       ),
     );
-    expect(Exit.isSuccess(result)).toBe(true);
-    expect(calls).toEqual(["resolve:comment_1", "create:community_1/post_1/comment_1"]);
-  });
-
-  test("rejects rich or anonymous replies before resolving a parent", async () => {
-    const resolveComment = () => Effect.succeed({ communityId: "c", postId: "p", commentId: "x" });
-    const store = fakeStore({ resolveComment });
-    for (const body of [
-      { body: "reply", identity_mode: "anonymous" },
-      { body: "reply", media_refs: [{ ref: "m" }] },
-      { body: null },
-    ]) {
-      const result = await run(
-        createCommentReply({ parentCommentId: "comment_1", actor, body }, { contentStore: store }),
-      );
-      expect(failureOf(result)).toMatchObject({ _tag: "BadRequest" });
-    }
+    expect(failureOf(result)).toMatchObject({ _tag: "BadRequest" });
+    expect(resolveCalls).toBe(0);
+    expect(createCalls).toBe(0);
   });
 
   test("resolves global post IDs for reads and votes, and maps absence to not_found", async () => {

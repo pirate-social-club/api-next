@@ -129,14 +129,7 @@ const directTextBody = (body: CreatePostBody): boolean =>
   body.idempotency_key.trim().length > 0;
 
 const directCommentBody = (body: CreateCommentBody): boolean =>
-  (body.authorship_mode === undefined || body.authorship_mode === "human_direct") &&
-  (body.identity_mode === undefined || body.identity_mode === "public") &&
-  body.agent_id == null &&
-  body.agent_action_proof == null &&
-  body.anonymous_scope == null &&
-  (body.media_refs === undefined || body.media_refs.length === 0) &&
-  typeof body.body === "string" &&
-  body.body.trim().length > 0;
+  body.body.trim().length > 0 && body.idempotency_key.trim().length > 0;
 
 const stringValue = (row: Row, key: string): string | null => {
   const value = row[key];
@@ -206,6 +199,8 @@ const allowedMembershipStatus = (
 const validIdempotencyHash = (value: string | null): value is string =>
   value !== null && /^[0-9a-f]{64}$/u.test(value);
 
+const legacyCommentRuntimeEnabled = (): boolean => false;
+
 const postFromRow = (row: Row): PostDocument | null => {
   const id = stringValue(row, "post_id");
   const community = stringValue(row, "community_id");
@@ -256,58 +251,7 @@ const postFromRow = (row: Row): PostDocument | null => {
   };
 };
 
-const commentFromRow = (row: Row): CommentDocument | null => {
-  const id = stringValue(row, "comment_id");
-  const community = stringValue(row, "community_id");
-  const post = stringValue(row, "post_id");
-  const parent = stringValue(row, "parent_comment_id");
-  const status = stringValue(row, "status");
-  const created = epochValue(row, "created_at");
-  const author = stringValue(row, "author_user_id");
-  if (
-    id === null ||
-    community === null ||
-    post === null ||
-    !validId(id) ||
-    !validId(community) ||
-    !validId(post) ||
-    (parent !== null && !validId(parent)) ||
-    status === null ||
-    !["published", "hidden", "removed", "deleted"].includes(status) ||
-    created === null ||
-    (author !== null && !validId(author)) ||
-    nonNegativeIntegerValue(row, "depth") === null
-  ) {
-    return null;
-  }
-  return {
-    id,
-    object: "comment",
-    community,
-    thread_root_post: post,
-    parent_comment: parent,
-    author_user: author,
-    author_public_handle: null,
-    authorship_mode: "human_direct",
-    agent: null,
-    agent_ownership_record: null,
-    identity_mode: "public",
-    anonymous_scope: null,
-    anonymous_label: null,
-    body: stringValue(row, "body"),
-    status: status as CommentDocument["status"],
-    depth: nonNegativeIntegerValue(row, "depth") as number,
-    direct_reply_count: 0,
-    descendant_count: 0,
-    upvote_count: 0,
-    downvote_count: 0,
-    score: 0,
-    content_hash: null,
-    swarm_body_ref: null,
-    idempotency_key: stringValue(row, "idempotency_key") || null,
-    created,
-  };
-};
+const commentFromRow = (_row: Row): CommentDocument | null => null;
 
 const rowAt = <T extends Row>(rows: readonly T[]): T | null => rows[0] ?? null;
 
@@ -575,7 +519,7 @@ type CommentState = Readonly<{
   readonly communityId: string;
   readonly commentId: string;
   readonly postId: string;
-  readonly status: CommentDocument["status"];
+  readonly status: "published" | "hidden" | "removed" | "deleted";
   readonly depth: number;
 }>;
 
@@ -610,7 +554,7 @@ const commentStateFromRow = (row: Row, operation: ContentRepositoryOperation) =>
     communityId,
     commentId,
     postId,
-    status: status as CommentDocument["status"],
+    status: status as CommentState["status"],
     depth,
   } satisfies CommentState);
 };
@@ -980,6 +924,12 @@ export function makeControlPlaneContentRepository(): ContentRepository {
     idempotencyBodyHash,
   }) =>
     Effect.gen(function* () {
+      // The former M2 comment writer cannot produce the Order 6 submission
+      // snapshot. Keep this seam fail-closed until the ledger-owned runtime
+      // implementation lands; in particular, do not touch legacy comments.
+      if (!legacyCommentRuntimeEnabled()) {
+        return yield* constraint("create-comment-reply");
+      }
       if (
         actor.kind === "agent" ||
         !validId(communityId) ||

@@ -55,29 +55,20 @@ const post = {
   age_gate_policy: "none" as const,
   created: 1_700_000_000,
 };
-const comment = {
-  id: "comment_1",
-  object: "comment" as const,
-  community: "community_1",
-  thread_root_post: "post_1",
-  parent_comment: "comment_parent",
-  author_user: "user_1",
-  authorship_mode: "human_direct" as const,
-  identity_mode: "public" as const,
-  anonymous_scope: null,
-  anonymous_label: null,
-  body: "reply",
+const commentSubmission = {
+  submission_id: "submission_comment_1",
+  href: "/text-content-submissions/submission_comment_1",
+  surface: "reply" as const,
   status: "published" as const,
-  depth: 1,
-  direct_reply_count: 0,
-  descendant_count: 0,
-  upvote_count: 0,
-  downvote_count: 0,
-  score: 0,
-  content_hash: null,
-  swarm_body_ref: null,
-  idempotency_key: "reply-key",
-  created: 1_700_000_000,
+  result: { decision: "allow" as const, reason_code: null },
+  published_resource: {
+    kind: "comment" as const,
+    comment_id: "comment_1",
+    href: "/comments/comment_1",
+  },
+  review_ref: null,
+  created_at: "2026-08-22T00:00:00.000Z",
+  updated_at: "2026-08-22T00:00:00.000Z",
 };
 
 const sessionServices: SessionExchangeServices = {
@@ -868,7 +859,7 @@ describe("contracts-generated HTTP worker", () => {
     const app = createHttpWorker({
       handlers: {
         CreatePost: () => withEndpointResult(post, 201),
-        CreateCommentReply: () => withEndpointResult(comment, 201),
+        CreateCommentReply: () => withEndpointResult(commentSubmission, 201),
         CastPostVote: () => vote,
         ClearPostVote: () => clearedVote,
       },
@@ -902,7 +893,7 @@ describe("contracts-generated HTTP worker", () => {
     expect(postResponse.status).toBe(500);
     expect(await postResponse.json()).toMatchObject({ error: { code: "internal_error" } });
     expect(replyResponse.status).toBe(201);
-    expect(await replyResponse.json()).toEqual(comment);
+    expect(await replyResponse.json()).toEqual(commentSubmission);
     expect(voteResponse.status).toBe(200);
     expect(await voteResponse.json()).toEqual(vote);
     expect(clearResponse.status).toBe(200);

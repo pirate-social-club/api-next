@@ -12,7 +12,6 @@ import {
   ContentRepositoryError,
   type ContentRepositoryFailure,
   type ContentStore,
-  type CreateCommentBody,
   type CreatePostBody,
   type M2Actor,
   type TextModeration,
@@ -131,14 +130,6 @@ export const validPublicHumanDirectPost = (body: CreatePostBody): boolean =>
   body.source_community == null &&
   body.crosspost_source == null &&
   body.lyrics == null;
-
-export const validPublicHumanDirectComment = (body: CreateCommentBody): boolean =>
-  (body.authorship_mode === undefined || body.authorship_mode === "human_direct") &&
-  (body.identity_mode === undefined || body.identity_mode === "public") &&
-  body.agent_id == null &&
-  body.agent_action_proof == null &&
-  body.anonymous_scope == null &&
-  (body.media_refs === undefined || body.media_refs.length === 0);
 
 export const validateIdentifier = (
   value: string,

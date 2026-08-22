@@ -71,6 +71,12 @@ export class CommentsLocked extends Data.TaggedError("CommentsLocked")<WireArgs>
   readonly retryable = false as const;
 }
 
+export class ReplyDepthExceeded extends Data.TaggedError("ReplyDepthExceeded")<WireArgs> {
+  readonly status = 400 as const;
+  readonly code = "reply_depth_exceeded" as const;
+  readonly retryable = false as const;
+}
+
 export class GateUnsatisfied extends Data.TaggedError("GateUnsatisfied")<WireArgs> {
   readonly status = 403 as const;
   readonly code = "gate_unsatisfied" as const;
@@ -268,6 +274,7 @@ export type ApiError =
   | MembershipRequired
   | Banned
   | CommentsLocked
+  | ReplyDepthExceeded
   | GateUnsatisfied
   | GateFailed
   | RateLimited

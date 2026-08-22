@@ -165,47 +165,6 @@ describe("M2 content repository row and lock defenses", () => {
     });
   });
 
-  test("rejects numeric-string parent depth as an invalid row", async () => {
-    const fake = fakeDb([
-      [{ community_id: "community_1", status: "active" }],
-      [{ status: "member" }],
-      [resolvedPost],
-      [
-        {
-          community_id: "community_1",
-          post_id: "post_1",
-          comment_id: "comment_parent",
-          status: "published",
-          community_status: "active",
-        },
-      ],
-      [{ ...validPost }],
-      [
-        {
-          community_id: "community_1",
-          comment_id: "comment_parent",
-          post_id: "post_1",
-          status: "published",
-          depth: "0",
-        },
-      ],
-    ]);
-    const result = await runWith(
-      makeControlPlaneContentRepository().createCommentReply({
-        communityId: "community_1",
-        postId: "post_1",
-        parentCommentId: "comment_parent",
-        actor: { userId: "usr_alice", kind: "user" },
-        body: { body: "reply" },
-      }),
-      fake.db,
-    );
-    expect(failureOf(result)).toMatchObject({
-      operation: "create-comment-reply",
-      reason: "invalid-row",
-    });
-  });
-
   test("locks membership and authoritative post state before a vote", async () => {
     const fake = fakeDb([
       [{ community_id: "community_1", status: "active" }],
@@ -244,59 +203,10 @@ describe("M2 content repository row and lock defenses", () => {
     expect(fake.calls[3]?.text).toContain("FOR UPDATE");
   });
 
-  test("locks the parent comment after the post before inserting a reply", async () => {
-    const fake = fakeDb([
-      [{ community_id: "community_1", status: "active" }],
-      [{ status: "member" }],
-      [resolvedPost],
-      [
-        {
-          community_id: "community_1",
-          post_id: "post_1",
-          comment_id: "comment_parent",
-          status: "published",
-          community_status: "active",
-        },
-      ],
-      [
-        {
-          community_id: "community_1",
-          post_id: "post_1",
-          author_user_id: "usr_alice",
-          status: "published",
-          visibility: "public",
-          comments_locked: false,
-        },
-      ],
-      [
-        {
-          community_id: "community_1",
-          comment_id: "comment_parent",
-          post_id: "post_1",
-          status: "published",
-          depth: 0,
-        },
-      ],
-      [],
-      [
-        {
-          community_id: "community_1",
-          comment_id: "comment_reply",
-          post_id: "post_1",
-          parent_comment_id: "comment_parent",
-          author_user_id: "usr_alice",
-          status: "published",
-          body: "reply",
-          idempotency_key: "reply-key",
-          idempotency_body_hash: "a".repeat(64),
-          depth: 1,
-          created_at: new Date("2026-01-01T00:00:00Z"),
-        },
-      ],
-    ]);
-    const repository = makeControlPlaneContentRepository();
+  test("fails closed before the legacy comment repository is reached", async () => {
+    const fake = fakeDb([]);
     const result = await runWith(
-      repository.createCommentReply({
+      makeControlPlaneContentRepository().createCommentReply({
         communityId: "community_1",
         postId: "post_1",
         parentCommentId: "comment_parent",
@@ -306,22 +216,11 @@ describe("M2 content repository row and lock defenses", () => {
       }),
       fake.db,
     );
-    expect(Exit.isSuccess(result)).toBe(true);
-    expect(fake.calls.map((call) => call.label)).toEqual([
-      "content.communities.lock-active",
-      "content.community-memberships.lock-active",
-      "content.posts.resolve-global",
-      "content.comments.resolve-global",
-      "content.posts.state",
-      "content.comments.state",
-      "content.communities.require-effective-route",
-      "content.comments.find-idempotency",
-      "content.comments.insert",
-    ]);
-    expect(fake.calls[4]).toMatchObject({ readonly: false });
-    expect(fake.calls[4]?.text).toContain("FOR UPDATE");
-    expect(fake.calls[5]).toMatchObject({ readonly: false });
-    expect(fake.calls[5]?.text).toContain("FOR UPDATE");
+    expect(failureOf(result)).toMatchObject({
+      operation: "create-comment-reply",
+      reason: "constraint",
+    });
+    expect(fake.calls).toHaveLength(0);
   });
 
   test.each([
@@ -467,54 +366,6 @@ describe("M2 content repository row and lock defenses", () => {
       operation: "create-post",
       reason: "invalid-row",
     });
-
-    const depthFake = fakeDb([
-      [{ community_id: "community_1", status: "active" }],
-      [{ status: "member" }],
-      [resolvedPost],
-      [
-        {
-          community_id: "community_1",
-          post_id: "post_1",
-          comment_id: "comment_parent",
-          status: "published",
-          community_status: "active",
-        },
-      ],
-      [
-        {
-          community_id: "community_1",
-          post_id: "post_1",
-          author_user_id: "usr_alice",
-          status: "published",
-          visibility: "public",
-          comments_locked: false,
-        },
-      ],
-      [
-        {
-          community_id: "community_1",
-          comment_id: "comment_parent",
-          post_id: "post_1",
-          status: "published",
-          depth: -1,
-        },
-      ],
-    ]);
-    const depthResult = await runWith(
-      repository.createCommentReply({
-        communityId: "community_1",
-        postId: "post_1",
-        parentCommentId: "comment_parent",
-        actor: { userId: "usr_alice", kind: "user" },
-        body: { body: "reply" },
-      }),
-      depthFake.db,
-    );
-    expect(failureOf(depthResult)).toMatchObject({
-      operation: "create-comment-reply",
-      reason: "invalid-row",
-    });
   });
 
   test("treats malformed persisted post hashes as invalid rows", async () => {
@@ -578,153 +429,5 @@ describe("M2 content repository row and lock defenses", () => {
       operation: "create-comment-reply",
       reason: "constraint",
     });
-  });
-
-  test("persists no-key replies with an empty key and null hash", async () => {
-    const fake = fakeDb([
-      [{ community_id: "community_1", status: "active" }],
-      [{ status: "member" }],
-      [resolvedPost],
-      [
-        {
-          community_id: "community_1",
-          post_id: "post_1",
-          comment_id: "comment_parent",
-          status: "published",
-          community_status: "active",
-        },
-      ],
-      [{ ...validPost }],
-      [
-        {
-          community_id: "community_1",
-          comment_id: "comment_parent",
-          post_id: "post_1",
-          status: "published",
-          depth: 0,
-        },
-      ],
-      [
-        {
-          community_id: "community_1",
-          comment_id: "comment_reply",
-          post_id: "post_1",
-          parent_comment_id: "comment_parent",
-          author_user_id: "usr_alice",
-          status: "published",
-          body: "reply",
-          idempotency_key: "",
-          idempotency_body_hash: null,
-          depth: 1,
-          created_at: new Date("2026-01-01T00:00:00Z"),
-        },
-      ],
-    ]);
-    const result = await runWith(
-      makeControlPlaneContentRepository().createCommentReply({
-        communityId: "community_1",
-        postId: "post_1",
-        parentCommentId: "comment_parent",
-        actor: { userId: "usr_alice", kind: "user" },
-        body: { body: "reply" },
-        idempotencyBodyHash: "not-a-hash",
-      }),
-      fake.db,
-    );
-    expect(Exit.isSuccess(result)).toBe(true);
-    const insert = fake.calls.find((call) => call.label === "content.comments.insert");
-    expect(insert?.values.at(-2)).toBe("");
-    expect(insert?.values.at(-1)).toBeNull();
-  });
-
-  test("rejects a fresh keyed reply whose returned hash differs", async () => {
-    const fake = fakeDb([
-      [{ community_id: "community_1", status: "active" }],
-      [{ status: "member" }],
-      [resolvedPost],
-      [
-        {
-          community_id: "community_1",
-          post_id: "post_1",
-          comment_id: "comment_parent",
-          status: "published",
-          community_status: "active",
-        },
-      ],
-      [{ ...validPost }],
-      [
-        {
-          community_id: "community_1",
-          comment_id: "comment_parent",
-          post_id: "post_1",
-          status: "published",
-          depth: 0,
-        },
-      ],
-      [],
-      [
-        {
-          community_id: "community_1",
-          comment_id: "comment_reply",
-          post_id: "post_1",
-          parent_comment_id: "comment_parent",
-          author_user_id: "usr_alice",
-          status: "published",
-          body: "reply",
-          idempotency_key: "reply-key",
-          idempotency_body_hash: "b".repeat(64),
-          depth: 1,
-          created_at: new Date("2026-01-01T00:00:00Z"),
-        },
-      ],
-    ]);
-    const result = await runWith(
-      makeControlPlaneContentRepository().createCommentReply({
-        communityId: "community_1",
-        postId: "post_1",
-        parentCommentId: "comment_parent",
-        actor: { userId: "usr_alice", kind: "user" },
-        body: { body: "reply", idempotency_key: "reply-key" },
-        idempotencyBodyHash: "a".repeat(64),
-      }),
-      fake.db,
-    );
-    expect(failureOf(result)).toMatchObject({
-      operation: "create-comment-reply",
-      reason: "invalid-row",
-    });
-  });
-
-  test.each([
-    ["hidden parent", { status: "hidden", depth: 0 }, "not-found"],
-    ["malformed parent", { status: "published", depth: "0" }, "invalid-row"],
-  ])("validates parent before honoring a locked post: %s", async (_label, parent, reason) => {
-    const fake = fakeDb([
-      [{ community_id: "community_1", status: "active" }],
-      [{ status: "member" }],
-      [resolvedPost],
-      [
-        {
-          community_id: "community_1",
-          post_id: "post_1",
-          comment_id: "comment_parent",
-          status: "published",
-          community_status: "active",
-        },
-      ],
-      [{ ...validPost, comments_locked: true }],
-      [{ community_id: "community_1", post_id: "post_1", ...parent, comment_id: "comment_parent" }],
-    ]);
-    const result = await runWith(
-      makeControlPlaneContentRepository().createCommentReply({
-        communityId: "community_1",
-        postId: "post_1",
-        parentCommentId: "comment_parent",
-        actor: { userId: "usr_alice", kind: "user" },
-        body: { body: "reply" },
-      }),
-      fake.db,
-    );
-    expect(failureOf(result)).toMatchObject({ operation: "create-comment-reply", reason });
   });
 });

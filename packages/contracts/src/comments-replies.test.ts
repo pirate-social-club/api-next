@@ -4,6 +4,7 @@ import {
   CreateComment,
   CreateCommentReply,
   ModerateCaseAction,
+  ReplyDepthExceeded,
   ReportComment,
   schemaToOpenApi,
 } from "./index.ts";
@@ -41,6 +42,7 @@ describe("comments and replies contracts", () => {
     expect(CreateCommentReply.response).toBe(TextContentSubmissionV1);
     expect(CreateComment.successStatus).toBe(201);
     expect(CreateCommentReply.successStatus).toBe(201);
+    expect(CreateCommentReply.errors).toContain(ReplyDepthExceeded);
   });
 
   test("requires only idempotency_key and body and rejects legacy fields", () => {
