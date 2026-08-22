@@ -17,7 +17,8 @@
     }
   ],
   "vars": {
-    "API_NEXT_ENV": "development"
+    "API_NEXT_ENV": "development",
+    "HNS_OWNERSHIP_ENABLED": "false"
   },
   "secrets": {
     "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
@@ -44,15 +45,9 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
-      "services": [
-        {
-          "binding": "HNS_OWNER_VERIFIER",
-          "service": "pirate-hns-owner-verifier-staging"
-        }
-      ],
       "vars": {
         "API_NEXT_ENV": "staging",
-        "HNS_OWNERSHIP_ENABLED": "true",
+        "HNS_OWNERSHIP_ENABLED": "false",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1"
         // Staging uses the local alert sink. If external delivery is enabled,
@@ -85,7 +80,8 @@
         }
       ],
       "vars": {
-        "API_NEXT_ENV": "production"
+        "API_NEXT_ENV": "production",
+        "HNS_OWNERSHIP_ENABLED": "false"
       },
       "secrets": {
         "required": [

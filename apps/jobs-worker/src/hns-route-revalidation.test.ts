@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from "bun:test";
+import * as BunRuntime from "bun";
 import { Effect } from "effect";
 
 mock.module("cloudflare:workers", () => ({
@@ -205,19 +206,28 @@ describe("jobs-worker HNS route-revalidation composition", () => {
     );
   });
 
-  test("keeps HNS enablement and verifier binding staging-only", async () => {
-    const wrangler = await Bun.file(new URL("../wrangler.jsonc", import.meta.url)).text();
-    const stagingStart = wrangler.indexOf('"staging"');
-    const productionStart = wrangler.indexOf('"production"');
-    expect(stagingStart).toBeGreaterThanOrEqual(0);
-    expect(productionStart).toBeGreaterThan(stagingStart);
-    expect(wrangler.slice(stagingStart, productionStart)).toContain('"HNS_OWNER_VERIFIER"');
-    expect(wrangler.slice(stagingStart, productionStart)).toContain(
-      '"HNS_OWNERSHIP_ENABLED": "true"',
-    );
-    expect(wrangler.slice(0, stagingStart)).not.toContain("HNS_OWNER_VERIFIER");
-    expect(wrangler.slice(productionStart)).not.toContain("HNS_OWNER_VERIFIER");
-    expect(wrangler.slice(0, stagingStart)).not.toContain("HNS_OWNERSHIP_ENABLED");
-    expect(wrangler.slice(productionStart)).not.toContain("HNS_OWNERSHIP_ENABLED");
+  test("keeps HNS disabled and the verifier unbound in every Wrangler environment", async () => {
+    const wrangler = BunRuntime.JSONC.parse(
+      await BunRuntime.file(new URL("../wrangler.jsonc", import.meta.url)).text(),
+    ) as {
+      readonly vars?: Record<string, string>;
+      readonly services?: readonly Readonly<{ binding: string; service: string }>[];
+      readonly env?: Readonly<
+        Record<
+          string,
+          {
+            readonly vars?: Record<string, string>;
+            readonly services?: readonly Readonly<{ binding: string; service: string }>[];
+          }
+        >
+      >;
+    };
+
+    for (const environment of [wrangler, ...Object.values(wrangler.env ?? {})]) {
+      expect(environment.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
+      expect(environment.services ?? []).not.toContainEqual(
+        expect.objectContaining({ binding: "HNS_OWNER_VERIFIER" }),
+      );
+    }
   });
 });
