@@ -526,6 +526,11 @@ belong to the Infisical-side policy below. The live run on 2026-08-22 found
 zero unallowlisted Cloudflare violations: both staging Workers matched their
 declared secret sets.
 
+The Cloudflare-side audit runs from the dedicated `secrets-drift` GitHub
+Actions job hourly and by manual dispatch. It receives only the repository
+`CLOUDFLARE_API_TOKEN` secret, never runs for pull requests, and continues to
+fail on unallowlisted drift.
+
 ## Infisical remote drift audit
 
 `bun run audit:infisical` is deliberately separate from both `bun run check`
