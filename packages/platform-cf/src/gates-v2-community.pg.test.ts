@@ -47,6 +47,13 @@ function connectionForSchema(raw: string, schema: string): string {
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 }
 
+function connectionForRole(raw: string, role: string): string {
+  const connection = new URL(raw);
+  const options = connection.searchParams.get("options") ?? "";
+  connection.searchParams.set("options", `${options} -c role=${role}`.trim());
+  return connection.toString();
+}
+
 async function withSchema<A>(use: (connection: string, admin: Client) => Promise<A>): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   const schema = schemaIdentifier();
@@ -876,6 +883,45 @@ suite("Gates v2 curated age community vertical", () => {
     completedTestCount += 1;
   }, 30_000);
 
+  test("issues a Very intent when the runtime role cannot update policy metadata", async () => {
+    await withSchema(async (connection, admin) => {
+      await prepareHumanCommunity(admin, "community-runtime-policy-reader");
+      const schemaResult = await admin.query<{ current_schema: string }>(
+        "SELECT current_schema() AS current_schema",
+      );
+      const schema = schemaResult.rows[0]?.current_schema;
+      if (schema === undefined) throw new Error("expected a test schema");
+      const role = `api_next_gates_runtime_${Math.random().toString(36).slice(2)}`;
+      await admin.query(`CREATE ROLE ${quoteIdentifier(role)} NOLOGIN`);
+      try {
+        await admin.query(
+          `GRANT USAGE ON SCHEMA ${quoteIdentifier(schema)} TO ${quoteIdentifier(role)}`,
+        );
+        await admin.query(
+          `GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA ${quoteIdentifier(schema)} TO ${quoteIdentifier(role)}`,
+        );
+        await admin.query(
+          `REVOKE UPDATE ON policy_versions, community_policy_current, community_policy_provider_bindings FROM ${quoteIdentifier(role)}`,
+        );
+
+        const eligibility = await runStore(connectionForRole(connection, role), (store) =>
+          store.getJoinEligibility({
+            communityId: "community-runtime-policy-reader",
+            userId: "user-a",
+          }),
+        );
+        expect(eligibility).toMatchObject({
+          status: "verification_required",
+          next_action: { kind: "start_verification", provider_id: "very.web" },
+        });
+      } finally {
+        await admin.query(`DROP OWNED BY ${quoteIdentifier(role)}`);
+        await admin.query(`DROP ROLE ${quoteIdentifier(role)}`);
+      }
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
   test("does not treat a Very creation ceremony as join evidence", async () => {
     await withSchema(async (connection, admin) => {
       await prepareHumanCommunity(admin, "community-creation-evidence");
@@ -1085,7 +1131,7 @@ suite("Gates v2 curated age community vertical", () => {
   }, 30_000);
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 13) {
+    if (connectionString !== undefined && completedTestCount === 14) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

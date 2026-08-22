@@ -319,12 +319,13 @@ const loadPolicy = (transaction: ControlPlaneTransaction, communityId: string) =
     return policy;
   });
 
-const loadHumanPolicy = (
-  transaction: ControlPlaneTransaction,
-  communityId: string,
-  lock: boolean,
-) =>
+const loadHumanPolicy = (transaction: ControlPlaneTransaction, communityId: string) =>
   Effect.gen(function* () {
+    // Policy versions and their current pointer are control-plane metadata.
+    // The runtime may read but cannot update them, so row-locking this join
+    // would reject the normal eligibility path. Mutable ceremony evidence is
+    // locked separately after a passing evaluation. Any future writer that
+    // advances the current-policy pointer must first lock the community row.
     const result = yield* transaction.execute<Row>({
       label: "community.gates.human-policy.load",
       text: `SELECT p.policy_version_id, p.policy_key, p.revision, p.policy_hash, p.policy
@@ -358,8 +359,7 @@ const loadHumanPolicy = (
                  AND binding.issuer_rp_scope = $16
                  AND binding.issuer_rp_action_scope IS NULL
                  AND binding.request_mode = 'dynamic'
-                 AND binding.evaluator_id = $3
-              ${lock ? "FOR UPDATE OF current_policy, p, binding" : ""}`,
+                 AND binding.evaluator_id = $3`,
       values: [
         communityId,
         CURATED_HUMAN_MEMBERSHIP_POLICY.policy_key,
@@ -378,7 +378,7 @@ const loadHumanPolicy = (
         VERY_WEB_ISSUER,
         VERY_WEB_RP_SCOPE,
       ],
-      readonly: !lock,
+      readonly: true,
     });
     if (result.rows.length !== 1) {
       return yield* Effect.fail(new GatesV2CommunityDataInvalid({ source: "policy" }));
@@ -710,7 +710,7 @@ export const loadCuratedHumanMembershipEvaluation = Effect.fn(
   ControlPlaneError | GatesV2CommunityDataInvalid
 > {
   const lock = input.lock === true;
-  const policy = yield* loadHumanPolicy(transaction, input.communityId, lock);
+  const policy = yield* loadHumanPolicy(transaction, input.communityId);
   const evidence = yield* loadHumanEvidence(transaction, {
     communityId: input.communityId,
     userId: input.userId,
