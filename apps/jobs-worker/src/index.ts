@@ -382,7 +382,12 @@ const runScheduledEffect = Effect.fn("runScheduled")(function* <
       const leaseLoss = yield* Deferred.make<void, LaneLeaseLost>();
       const renewal = Effect.repeat(
         Effect.sleep(renewIntervalMs).pipe(
-          Effect.flatMap(() => renewLaneLease(stub, state, leaseTtlMs, owner)),
+          // A Durable Object RPC can still commit after an interrupted
+          // Promise stops notifying its caller. Drain an in-flight renewal so
+          // release always uses the generation that the DO actually stored.
+          Effect.flatMap(() =>
+            Effect.uninterruptible(renewLaneLease(stub, state, leaseTtlMs, owner)),
+          ),
         ),
         Schedule.forever,
       ).pipe(

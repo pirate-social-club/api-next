@@ -240,6 +240,66 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     expect(result.leaseAfterRun).toBeNull();
   });
 
+  it("drains an in-flight renewal before releasing its latest fence", async () => {
+    let renewalStarted!: () => void;
+    const renewalStartedPromise = new Promise<void>((resolve) => {
+      renewalStarted = resolve;
+    });
+    let renewalCompleted = false;
+    let releasedGeneration: number | null = null;
+    const stub = {
+      tryAcquireWithFence: async (_ttlMs: number, owner: string, now: number) => ({
+        owner,
+        expiresAt: now + 1_000,
+        generation: 1,
+      }),
+      renew: async (_ttlMs: number, owner: string, generation: number, now: number) => {
+        expect(generation).toBe(1);
+        renewalStarted();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        renewalCompleted = true;
+        return { owner, expiresAt: now + 1_000, generation: 2 };
+      },
+      releaseWithFence: async (_owner: string, generation: number) => {
+        expect(renewalCompleted).toBe(true);
+        releasedGeneration = generation;
+        return generation === 2;
+      },
+      currentLease: async () => null,
+    };
+    const fakeEnv = {
+      CRON_LOCK: {
+        getByName: () => stub,
+      },
+    } as unknown as JobsWorkerEnv;
+    const job: JobDefinition = {
+      name: "spike.in-flight-renewal",
+      lane: "in-flight-renewal-lane",
+      schedule: "*/5 * * * *",
+      timeout: 5_000,
+      retry: defaultRetrySchedule,
+      expectedFailures: [],
+      severity: {
+        expectedFailure: {},
+        timeout: "medium",
+        transactionOutcomeUnknown: "high",
+        defect: "high",
+      },
+      reads: [],
+      writes: [],
+      run: Effect.promise(() => renewalStartedPromise),
+    };
+
+    const result = await handleScheduled(fakeEnv, job.lane, job, Date.now(), {
+      leaseTtlMs: 1_000,
+      renewIntervalMs: 1,
+    });
+
+    expect(result.acquired).toBe(true);
+    expect(releasedGeneration).toBe(2);
+    expect(result.leaseAfterRun).toBeNull();
+  });
+
   it("runs the real routing audit, renews its lease, and aggregates alerts", async () => {
     const statements: Array<{ readonly readonly: boolean; readonly text: string }> = [];
     const emails: AlertDigest[] = [];
