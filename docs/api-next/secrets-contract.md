@@ -2,8 +2,9 @@
 
 Status: Infisical is audited and organized. The canonical Cloudflare staging
 Workers were synchronized and deployed on 2026-08-23, and the Cloudflare
-name-only audit now reports zero violations. Production remains disabled and
-the Infisical audit reports one production-only finding. All misplaced-account
+name-only audit now reports zero violations. Production remains explicitly
+disabled, so its dormant runtime path is constrained but not completeness-gated;
+the Infisical audit reports zero violations. All misplaced-account
 staging secrets, Workers, and Hyperdrive resources have been retired. A
 secret-free zone bridge remains temporarily for resolvers that cache the old
 delegation. The `pirate.sc` zone moved to the canonical account on 2026-08-23,
@@ -665,9 +666,13 @@ immutable repository subject for `main` and audience
 audit may use `INFISICAL_API_URL` for the regional API base URL and never reads
 the local Infisical profile, project pin, or cached credential.
 
-No current Infisical drift is allowlisted. The disabled-production alert
-placeholders and missing production funding RPC remain failures until they are
-removed, sourced, or explicitly corrected. The first live run on 2026-08-22
+No current Infisical drift is allowlisted. Runtime completeness is enabled only
+for staging. Production remains explicitly disabled: its runtime path may hold
+only the three reviewed JWT, Privy, and funding names, but none is required
+until production is enabled. Root cleanliness, folder layout, operator-path
+completeness, and rejection of every other stored name remain enforced for
+production. Enabling production requires changing that policy flag, which will
+immediately make the funding RPC mandatory. The first live run on 2026-08-22
 found nine violations, including `VERY_APP_ID`; after deleting that entry and
 removing the public key ID from the Infisical runtime policy, the follow-up run
 found seven violations and zero accepted entries. The two staging ZKPassport
@@ -681,7 +686,9 @@ authenticated successfully and reproduced that exact name-only result. The
 Cloudflare step reported zero violations; the Infisical step exited non-zero
 only for the missing production `COMMUNITY_PURCHASE_FUNDING_RPC_URL`. No secret
 value appeared in the log. The red workflow is therefore active drift signal,
-not an authentication or response-parser failure.
+not an authentication or response-parser failure. It is superseded by the
+explicit disabled-runtime policy above; no drift entry was allowlisted to make
+the workflow green.
 
 ## Local project selection — corrected 2026-08-22
 

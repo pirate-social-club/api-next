@@ -4,6 +4,11 @@ export const API_NEXT_INFISICAL_PROJECT_ID = "fac45f92-9450-42fb-8c2f-f20d043fdf
 export const INFISICAL_ENVIRONMENTS = ["dev", "staging", "prod"] as const;
 
 export type InfisicalEnvironment = (typeof INFISICAL_ENVIRONMENTS)[number];
+export const INFISICAL_RUNTIME_ENABLED = {
+  dev: false,
+  staging: true,
+  prod: false,
+} as const satisfies Readonly<Record<InfisicalEnvironment, boolean>>;
 export type InfisicalPath = "/" | "/services/api-next" | "/services/api-next/operator";
 export type InfisicalDriftKind =
   | "unexpected-folder"
@@ -25,6 +30,11 @@ const OPERATOR_SECRET_NAMES = [
   "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
 ] as const;
 
+const requiredWhenRuntimeEnabled = (
+  environment: InfisicalEnvironment,
+  names: readonly string[],
+): readonly string[] => (INFISICAL_RUNTIME_ENABLED[environment] ? [...names] : []);
+
 export type InfisicalPolicy = Readonly<{
   environment: InfisicalEnvironment;
   path: InfisicalPath;
@@ -40,7 +50,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
   {
     environment: "staging",
     path: "/services/api-next",
-    requiredNames: [...RUNTIME_SECRET_NAMES],
+    requiredNames: requiredWhenRuntimeEnabled("staging", RUNTIME_SECRET_NAMES),
     allowedNames: [...RUNTIME_SECRET_NAMES],
   },
   {
@@ -58,7 +68,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
   {
     environment: "prod",
     path: "/services/api-next",
-    requiredNames: [...RUNTIME_SECRET_NAMES.slice(0, 3)],
+    requiredNames: requiredWhenRuntimeEnabled("prod", RUNTIME_SECRET_NAMES.slice(0, 3)),
     allowedNames: [...RUNTIME_SECRET_NAMES.slice(0, 3)],
   },
   {

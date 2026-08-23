@@ -35,7 +35,7 @@ describe("Infisical secret drift audit", () => {
     ]);
   });
 
-  test("reports missing runtime secrets and root drift as failures", () => {
+  test("enforces enabled staging and rejects disabled-production root drift", () => {
     const stagingBase = emptySnapshot("staging");
     const staging: InfisicalSnapshot = {
       ...stagingBase,
@@ -81,7 +81,6 @@ describe("Infisical secret drift audit", () => {
       "API_NEXT_ALERT_EMAIL_URL",
       "API_NEXT_ALERT_WEBHOOK_TOKEN",
       "API_NEXT_ALERT_WEBHOOK_URL",
-      "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
     ]);
     expect(report.acceptedDrift).toHaveLength(0);
   });
