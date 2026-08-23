@@ -300,6 +300,42 @@ describe("HNS parent-chain HSD observer", () => {
     }
   });
 
+  test("retains the exact bounded prefix and maps a transport overflow marker to capacity", async () => {
+    const responseMaxBytes = 64;
+    const observed = await observe({}, { response_max_bytes: responseMaxBytes });
+    const decoded = await decodeHnsControlObservationResultBytes(
+      observed.result.result_bytes,
+      requestValue,
+    );
+    expect(decoded.result).toMatchObject({
+      status: "unavailable",
+      reason_code: "observer_capacity",
+      diagnostic_ref: snapshotReference,
+    });
+    expect(observed.result.transcript).toHaveLength(1);
+    const retained = observed.result.transcript[0];
+    const fullResponse = rpc({
+      chain: "regtest",
+      blocks: 123_456,
+      headers: 123_456,
+      bestblockhash: anchorHash,
+      mediantime: databaseSeconds - 60,
+      verificationprogress: 1,
+    });
+    const expectedPrefix = fullResponse.slice(0, responseMaxBytes);
+    const expectedHash = Array.from(
+      new Uint8Array(await crypto.subtle.digest("SHA-256", expectedPrefix)),
+      (byte) => byte.toString(16).padStart(2, "0"),
+    ).join("");
+    expect(retained).toMatchObject({
+      method_or_view_id: "getblockchaininfo",
+      transport_outcome: "response",
+      transport_status: 200,
+      response_sha256: expectedHash,
+    });
+    expect(retained?.response_bytes).toEqual(expectedPrefix);
+  });
+
   test("keeps driver incompatibility and whole-operation abort outside semantic results", async () => {
     await expect(observe({ rpcErrorCode: -32_601 })).rejects.toMatchObject({
       reason: "misconfigured",

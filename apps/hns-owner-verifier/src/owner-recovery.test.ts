@@ -15,7 +15,7 @@ import {
   type HnsOwnerRecoveryAuthorityV1,
   hnsOwnerRecoveryPublicStartHash,
 } from "@pirate/application/route-revalidation";
-import { type Env, handleRequest } from "./index.ts";
+import { app, type Env, handleRequest } from "./index.ts";
 import { HnsTargetObserverPortError, type HnsTargetObserverRuntime } from "./target-observer.ts";
 
 const encoder = new TextEncoder();
@@ -275,6 +275,26 @@ async function observerResult(
 }
 
 describe("HNS owner verifier recovery target-observer seam", () => {
+  test("keeps the default Worker composition target-observer-free", async () => {
+    const providerStart = await buildHnsOwnerRecoveryProviderStart({
+      route_recovery_id: "route-recovery-disabled-1",
+      session_id: "recovery-session-disabled-1",
+      authority,
+      database_started_at: databaseStartedAt,
+    });
+    const response = await app.fetch(
+      request(
+        "/internal/hns-owner/v1/start",
+        await encodeHnsOwnerRecoveryProviderStart(providerStart),
+        providerStart.session_id,
+        "application/json",
+      ),
+      env,
+    );
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: "provider_misconfigured" });
+  });
+
   test("echoes the database-authorized recovery deadline and never falls back to legacy", async () => {
     let legacyCalls = 0;
     const targetObserver = runtime(async () => {
