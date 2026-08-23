@@ -98,41 +98,6 @@ const directTextBody = (body: CreatePostBody): boolean =>
   body.post_type === "text" &&
   (body.authorship_mode === undefined || body.authorship_mode === "human_direct") &&
   (body.identity_mode === undefined || body.identity_mode === "public") &&
-  body.agent_id == null &&
-  body.agent_action_proof == null &&
-  body.anonymous_scope == null &&
-  (body.disclosed_qualifier_ids === undefined ||
-    body.disclosed_qualifier_ids === null ||
-    body.disclosed_qualifier_ids.length === 0) &&
-  body.parent_post_id == null &&
-  body.label_id == null &&
-  (body.media_refs === undefined || body.media_refs.length === 0) &&
-  body.caption == null &&
-  body.link_url == null &&
-  body.creator_relation == null &&
-  body.promotion_disclosure == null &&
-  body.translation_policy == null &&
-  body.age_gate_policy == null &&
-  body.access_mode == null &&
-  body.asset_id == null &&
-  body.file_upload == null &&
-  body.song_artifact_bundle == null &&
-  body.song_mode == null &&
-  body.rights_basis == null &&
-  (body.upstream_asset_refs === undefined ||
-    body.upstream_asset_refs === null ||
-    body.upstream_asset_refs.length === 0) &&
-  body.license_preset == null &&
-  body.commercial_rev_share_pct == null &&
-  (body.royalty_allocations === undefined ||
-    body.royalty_allocations === null ||
-    body.royalty_allocations.length === 0) &&
-  body.source_post == null &&
-  body.source_community == null &&
-  body.crosspost_source == null &&
-  body.event == null &&
-  body.listing_draft == null &&
-  body.lyrics == null &&
   typeof body.body === "string" &&
   body.body.trim().length > 0 &&
   body.idempotency_key.trim().length > 0;

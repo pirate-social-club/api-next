@@ -45,44 +45,6 @@ export {
 const exactParseOptions = { onExcessProperty: "error" } as const;
 const MAX_POLICY_RETRIES = 3;
 
-const hasUnsupportedTextMetadata = (body: CreatePostBody): boolean => {
-  const disallowed = [
-    "agent_id",
-    "agent_action_proof",
-    "anonymous_scope",
-    "disclosed_qualifier_ids",
-    "parent_post_id",
-    "label_id",
-    "caption",
-    "link_url",
-    "media_refs",
-    "creator_relation",
-    "promotion_disclosure",
-    "asset_id",
-    "file_upload",
-    "song_artifact_bundle",
-    "song_mode",
-    "rights_basis",
-    "upstream_asset_refs",
-    "license_preset",
-    "commercial_rev_share_pct",
-    "royalty_allocations",
-    "lyrics",
-    "source_post",
-    "source_community",
-    "crosspost_source",
-    "event",
-    "listing_draft",
-    "age_gate_policy",
-    "access_mode",
-    "translation_policy",
-  ];
-  return disallowed.some((key) => {
-    const value = (body as Record<string, unknown>)[key];
-    return value !== undefined && value !== null && !(Array.isArray(value) && value.length === 0);
-  });
-};
-
 export class TextPostPolicyStale extends Data.TaggedError("TextPostPolicyStale")<{
   readonly attempts: number;
 }> {}
@@ -229,11 +191,7 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
   yield* validateIdentifier(input.communityId, "Invalid community identifier");
   yield* validateHumanDirectActor(input.actor);
   const body = yield* decodeTextPostBody(input.body);
-  if (
-    !validPublicHumanDirectPost(body) ||
-    hasUnsupportedTextMetadata(body) ||
-    body.post_type !== "text"
-  )
+  if (!validPublicHumanDirectPost(body) || body.post_type !== "text")
     return yield* new BadRequest({ message: "Only public human text posts are supported" });
   const text = yield* normalizeTextInput(body);
   const requestHash = yield* canonicalBodyHash({

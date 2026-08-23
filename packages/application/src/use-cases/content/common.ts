@@ -126,21 +126,7 @@ export const validateHumanDirectActor = (actor: M2Actor): Effect.Effect<void, Ba
 export const validPublicHumanDirectPost = (body: CreatePostBody): boolean =>
   body.post_type === "text" &&
   (body.authorship_mode === undefined || body.authorship_mode === "human_direct") &&
-  (body.identity_mode === undefined || body.identity_mode === "public") &&
-  body.agent_id == null &&
-  body.agent_action_proof == null &&
-  body.anonymous_scope == null &&
-  (body.media_refs === undefined || body.media_refs.length === 0) &&
-  body.caption == null &&
-  body.link_url == null &&
-  body.asset_id == null &&
-  body.file_upload == null &&
-  body.song_artifact_bundle == null &&
-  body.song_mode == null &&
-  body.source_post == null &&
-  body.source_community == null &&
-  body.crosspost_source == null &&
-  body.lyrics == null;
+  (body.identity_mode === undefined || body.identity_mode === "public");
 
 export const validateIdentifier = (
   value: string,

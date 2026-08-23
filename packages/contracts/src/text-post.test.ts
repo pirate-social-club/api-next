@@ -34,13 +34,11 @@ describe("text CreatePost contract", () => {
 
   test("removes publish_mode from every declared request branch and strict decoding rejects it", () => {
     const requestSchema = schemaToOpenApi(CreatePost.request?.body);
-    const branches = Array.isArray(requestSchema.anyOf) ? requestSchema.anyOf : [];
-    expect(branches.length).toBeGreaterThan(0);
-    for (const branch of branches) {
-      expect(
-        Object.hasOwn((branch as Record<string, unknown>).properties ?? {}, "publish_mode"),
-      ).toBe(false);
-    }
+    const branches = Array.isArray(requestSchema.anyOf) ? requestSchema.anyOf : [requestSchema];
+    expect(branches.length).toBe(1);
+    expect(
+      Object.hasOwn((branches[0] as Record<string, unknown>).properties ?? {}, "publish_mode"),
+    ).toBe(false);
     const body = {
       post_type: "text",
       idempotency_key: "key_1",

@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { endpoint } from "./endpoint.ts";
 import {
@@ -14,6 +14,7 @@ import {
   PostVoteIdempotencyConflict,
   RateLimited,
   ReplyDepthExceeded,
+  RetryableConflict,
 } from "./errors.ts";
 import { TextContentSubmissionV1 } from "./text-moderation.ts";
 
@@ -60,6 +61,7 @@ const PathCommunity = Schema.Struct({ communityId: Schema.String });
 const PathPublicCommunity = Schema.Struct({ communityRef: Schema.String });
 const PathPost = Schema.Struct({ postId: Schema.String });
 const PathComment = Schema.Struct({ commentId: Schema.String });
+const PathMediaSubmission = Schema.Struct({ submissionId: Schema.String });
 
 const LocaleQuery = Schema.Struct({
   locale: Schema.optional(Schema.String),
@@ -80,13 +82,6 @@ const PublicCommunityThreadsQuery = Schema.Struct({
   sort: Schema.Literal("new"),
   cursor: Schema.optional(Schema.String),
   locale: Schema.optional(Schema.String),
-});
-
-const AgentActionProof = Schema.Struct({
-  nonce: Schema.String,
-  signed_at: Schema.String,
-  canonical_request_hash: Schema.String,
-  signature: Schema.String,
 });
 
 const AuthProof = Schema.Union([
@@ -657,80 +652,309 @@ const PublicCommunityThreadsResponse = Schema.Struct({
 const CreatePostCommon = {
   idempotency_key: Schema.String,
   authorship_mode: Schema.optional(Schema.Literals(["human_direct", "user_agent"])),
-  agent_id: Schema.optional(Schema.NullOr(Schema.String)),
-  agent_action_proof: Schema.optional(Schema.NullOr(AgentActionProof)),
   identity_mode: Schema.optional(Schema.Literals(["public", "anonymous"])),
-  anonymous_scope: Schema.optional(Schema.NullOr(Schema.String)),
-  disclosed_qualifier_ids: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
-  parent_post_id: Schema.optional(Schema.NullOr(Schema.String)),
-  label_id: Schema.optional(Schema.NullOr(Schema.String)),
   body: Schema.optional(Schema.NullOr(Schema.String)),
-  caption: Schema.optional(Schema.NullOr(Schema.String)),
-  link_url: Schema.optional(Schema.NullOr(Schema.String)),
-  media_refs: Schema.optional(Schema.Array(JsonValue)),
-  creator_relation: Schema.optional(Schema.NullOr(JsonObject)),
-  promotion_disclosure: Schema.optional(Schema.NullOr(JsonObject)),
-  translation_policy: Schema.optional(
-    Schema.Literals(["none", "machine_allowed", "human_only", "hybrid"]),
-  ),
   visibility: Schema.optional(Schema.Literals(["public", "members_only"])),
-  age_gate_policy: Schema.optional(Schema.NullOr(Schema.Literals(["none", "18_plus"]))),
-  access_mode: Schema.optional(Schema.NullOr(Schema.Literals(["public", "locked"]))),
-  asset_id: Schema.optional(Schema.NullOr(Schema.String)),
-  file_upload: Schema.optional(Schema.NullOr(Schema.String)),
-  song_artifact_bundle: Schema.optional(Schema.NullOr(Schema.String)),
-  song_mode: Schema.optional(Schema.NullOr(Schema.Literals(["original", "remix"]))),
-  rights_basis: Schema.optional(
-    Schema.NullOr(Schema.Literals(["none", "original", "derivative", "attribution_only"])),
-  ),
-  upstream_asset_refs: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
-  license_preset: Schema.optional(
-    Schema.NullOr(Schema.Literals(["non-commercial", "commercial-use", "commercial-remix"])),
-  ),
-  commercial_rev_share_pct: Schema.optional(Schema.NullOr(Schema.Number)),
-  royalty_allocations: Schema.optional(Schema.NullOr(Schema.Array(JsonObject))),
-  lyrics: Schema.optional(Schema.NullOr(Schema.String)),
-  source_post: Schema.optional(Schema.NullOr(Schema.String)),
-  source_community: Schema.optional(Schema.NullOr(Schema.String)),
-  crosspost_source: Schema.optional(Schema.NullOr(JsonObject)),
-  event: Schema.optional(Schema.NullOr(JsonObject)),
-  listing_draft: Schema.optional(Schema.NullOr(JsonObject)),
   title: Schema.optional(Schema.NullOr(Schema.String)),
 };
 
-const CreatePostRequest = Schema.Union([
-  Schema.Struct({ ...CreatePostCommon, post_type: Schema.Literal("text") }),
+const CreatePostRequest = Schema.Struct({ ...CreatePostCommon, post_type: Schema.Literal("text") });
+
+const PositiveSafeInteger = Schema.Int.check(
+  Schema.makeFilter((value) =>
+    value > 0 && Number.isSafeInteger(value) ? undefined : "Expected a positive safe integer",
+  ),
+);
+const NonNegativeBasisPoints = Schema.Int.check(
+  Schema.makeFilter((value) =>
+    value >= 0 && value <= 10_000
+      ? undefined
+      : "Expected an integer basis-point value from 0 through 10000",
+  ),
+);
+const CommercialRevShareBps = NonNegativeBasisPoints.check(
+  Schema.makeFilter(() => undefined, { toJsonSchema: () => ({ default: 1000 }) }),
+).pipe(Schema.withDecodingDefaultKey(Effect.succeed(1000)));
+const PositiveBasisPoints = Schema.Int.check(
+  Schema.makeFilter((value) =>
+    value > 0 && value <= 10_000
+      ? undefined
+      : "Expected a positive integer basis-point value from 1 through 10000",
+  ),
+);
+const PositiveRevision = Schema.Int.check(
+  Schema.makeFilter((value) => (value > 0 ? undefined : "Expected a positive revision")),
+);
+const Sha256Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+const SongAuthorString = Schema.NonEmptyString;
+const RoyaltyAllocations = Schema.Array(
   Schema.Struct({
-    ...CreatePostCommon,
-    post_type: Schema.Literal("image"),
-    media_refs: Schema.Array(JsonValue),
+    recipient_id: SongAuthorString,
+    share_bps: PositiveBasisPoints,
+  }),
+).check(
+  Schema.makeFilter((allocations) => {
+    const recipients = new Set(allocations.map(({ recipient_id }) => recipient_id));
+    const total = allocations.reduce((sum, { share_bps }) => sum + share_bps, 0);
+    return recipients.size === allocations.length && total === 10_000
+      ? undefined
+      : "Royalty allocations must contain unique recipients totaling 10000 basis points";
+  }),
+);
+
+const SongAuthorInputCommon = {
+  version: Schema.Literal("song-author-input-v1"),
+  title: SongAuthorString,
+  lyrics: Schema.NullOr(Schema.String),
+  audio_reservation_id: SongAuthorString,
+  rights_declaration: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("original") }),
+    Schema.Struct({ kind: Schema.Literal("derivative"), upstream_asset_id: SongAuthorString }),
+  ]),
+  royalty_allocations: RoyaltyAllocations,
+  access_mode: Schema.Literal("public"),
+};
+
+/** The author-controlled song bundle; trusted analysis never enters this schema. */
+const SongAuthorInputV1 = Schema.Union([
+  Schema.Struct({
+    ...SongAuthorInputCommon,
+    license_preset: Schema.Literals(["non-commercial", "commercial-use"]),
   }),
   Schema.Struct({
-    ...CreatePostCommon,
-    post_type: Schema.Literal("video"),
-    media_refs: Schema.Array(JsonValue),
-  }),
-  Schema.Struct({
-    ...CreatePostCommon,
-    post_type: Schema.Literal("link"),
-    link_url: Schema.String,
-  }),
-  Schema.Struct({ ...CreatePostCommon, post_type: Schema.Literal("song") }),
-  Schema.Struct({
-    ...CreatePostCommon,
-    post_type: Schema.Literal("file"),
-    title: Schema.String,
-    file_upload: Schema.String,
-    access_mode: Schema.Literals(["public", "locked"]),
-  }),
-  Schema.Struct({
-    ...CreatePostCommon,
-    post_type: Schema.Literal("crosspost"),
-    title: Schema.String,
-    source_post: Schema.String,
-    source_community: Schema.String,
+    ...SongAuthorInputCommon,
+    license_preset: Schema.Literal("commercial-remix"),
+    commercial_rev_share_bps: CommercialRevShareBps,
   }),
 ]);
+export type SongAuthorInputV1 = Schema.Schema.Type<typeof SongAuthorInputV1>;
+
+const ReserveSongAudioV1 = Schema.Struct({
+  idempotency_key: SongAuthorString,
+  track: Schema.Literal("song"),
+  slot: Schema.Literal("primary_audio"),
+  expected_content_type: Schema.String.check(
+    Schema.makeFilter((value) =>
+      /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u.test(value)
+        ? undefined
+        : "Expected a lowercase media type without parameters",
+    ),
+  ),
+  expected_size_bytes: PositiveSafeInteger,
+  expected_sha256: Schema.optional(Sha256Hex),
+});
+export type ReserveSongAudioV1 = Schema.Schema.Type<typeof ReserveSongAudioV1>;
+
+const RequiredUploadHeader = Schema.Struct({ name: SongAuthorString, value: SongAuthorString });
+const SongAudioReservationV1 = Schema.Struct({
+  reservation_id: SongAuthorString,
+  track: Schema.Literal("song"),
+  slot: Schema.Literal("primary_audio"),
+  status: Schema.Literal("awaiting_upload"),
+  upload: Schema.Struct({
+    method: Schema.Literal("PUT"),
+    url: SongAuthorString,
+    required_headers: Schema.Array(RequiredUploadHeader),
+    expires_at: SongAuthorString,
+  }),
+});
+export type SongAudioReservationV1 = Schema.Schema.Type<typeof SongAudioReservationV1>;
+
+const CreateSongSubmissionV1 = Schema.Union([
+  Schema.Struct({
+    ...SongAuthorInputCommon,
+    license_preset: Schema.Literals(["non-commercial", "commercial-use"]),
+    idempotency_key: SongAuthorString,
+  }),
+  Schema.Struct({
+    ...SongAuthorInputCommon,
+    license_preset: Schema.Literal("commercial-remix"),
+    commercial_rev_share_bps: CommercialRevShareBps,
+    idempotency_key: SongAuthorString,
+  }),
+]);
+export type CreateSongSubmissionV1 = Schema.Schema.Type<typeof CreateSongSubmissionV1>;
+
+const FinalizeSongUploadV1 = Schema.Struct({
+  idempotency_key: SongAuthorString,
+  expected_creation_revision: PositiveRevision,
+  reservation_id: SongAuthorString,
+});
+export type FinalizeSongUploadV1 = Schema.Schema.Type<typeof FinalizeSongUploadV1>;
+
+const BindSongReferenceV1 = Schema.Struct({
+  idempotency_key: SongAuthorString,
+  expected_creation_revision: PositiveRevision,
+  reference_request_ref: SongAuthorString,
+  upstream_asset_id: SongAuthorString,
+});
+export type BindSongReferenceV1 = Schema.Schema.Type<typeof BindSongReferenceV1>;
+
+const RetryOrCancelSongSubmissionV1 = Schema.Struct({
+  idempotency_key: SongAuthorString,
+  expected_creation_revision: PositiveRevision,
+});
+export type RetryOrCancelSongSubmissionV1 = Schema.Schema.Type<
+  typeof RetryOrCancelSongSubmissionV1
+>;
+
+const ModerateSongSubmissionV1 = Schema.Union([
+  Schema.Struct({
+    idempotency_key: SongAuthorString,
+    expected_creation_revision: PositiveRevision,
+    action: Schema.Literal("approve"),
+    approval_kind: Schema.Literal("standard"),
+  }),
+  Schema.Struct({
+    idempotency_key: SongAuthorString,
+    expected_creation_revision: PositiveRevision,
+    action: Schema.Literal("approve"),
+    approval_kind: Schema.Literal("acr_override"),
+    evidence_ref: SongAuthorString,
+    reason_code: Schema.Literals(["acr_inconclusive", "acr_exhausted", "acr_skipped"]),
+  }),
+  Schema.Struct({
+    idempotency_key: SongAuthorString,
+    expected_creation_revision: PositiveRevision,
+    action: Schema.Literal("block"),
+    evidence_ref: SongAuthorString,
+    reason_code: Schema.Literal("policy_violation"),
+  }),
+]);
+export type ModerateSongSubmissionV1 = Schema.Schema.Type<typeof ModerateSongSubmissionV1>;
+
+const PostProcessingPhase = Schema.Literals([
+  "reserve",
+  "awaiting_upload",
+  "finalize",
+  "analysis",
+  "decision",
+  "publish",
+]);
+
+const MediaSubmissionCommon = {
+  submission_id: SongAuthorString,
+  href: SongAuthorString,
+  track: Schema.Literal("song"),
+  creation_revision: Schema.Int,
+  updated_at: SongAuthorString,
+};
+const MediaPostSubmissionV1 = Schema.Union([
+  Schema.Struct({
+    ...MediaSubmissionCommon,
+    status: Schema.Literal("processing"),
+    phase: PostProcessingPhase,
+  }),
+  Schema.Struct({
+    ...MediaSubmissionCommon,
+    status: Schema.Literal("action_required"),
+    action: Schema.Struct({
+      kind: Schema.Literal("reference_required"),
+      expires_at: SongAuthorString,
+      reference_request_ref: SongAuthorString,
+    }),
+  }),
+  Schema.Struct({
+    ...MediaSubmissionCommon,
+    status: Schema.Literal("manual_review"),
+    reason_code: Schema.Literals(["review_required", "moderation_unavailable"]),
+    review_ref: SongAuthorString,
+  }),
+  Schema.Struct({
+    ...MediaSubmissionCommon,
+    status: Schema.Literal("published"),
+    published_resource: Schema.Struct({ post_id: SongAuthorString, href: SongAuthorString }),
+  }),
+  Schema.Struct({
+    ...MediaSubmissionCommon,
+    status: Schema.Literal("blocked"),
+    reason_code: Schema.Literal("policy_violation"),
+  }),
+  Schema.Struct({
+    ...MediaSubmissionCommon,
+    status: Schema.Literal("processing_failed"),
+    reason_code: Schema.Literals([
+      "invalid_media",
+      "unsupported_media",
+      "probe_failed",
+      "hash_failed",
+      "transform_failed",
+      "publication_failed",
+      "upload_seal_conflict",
+    ]),
+    retry_count: Schema.Literals([0, 1, 2, 3]),
+    retryable: Schema.Boolean,
+  }),
+  Schema.Struct({
+    ...MediaSubmissionCommon,
+    status: Schema.Literal("abandoned"),
+    reason_code: Schema.Literals([
+      "upload_reservation_expired",
+      "upload_expectation_mismatch",
+      "upload_source_changed_before_finalize",
+      "reference_window_expired",
+      "author_cancelled_before_finalize",
+    ]),
+  }),
+]);
+export type MediaPostSubmissionV1 = Schema.Schema.Type<typeof MediaPostSubmissionV1>;
+
+const SealUploadResultV1 = Schema.Union([
+  Schema.Struct({
+    outcome: Schema.Literal("sealed"),
+    immutable_ref: SongAuthorString,
+    etag: SongAuthorString,
+    version: SongAuthorString,
+    size_bytes: PositiveSafeInteger,
+  }),
+  Schema.Struct({ outcome: Schema.Literal("source_missing") }),
+  Schema.Struct({ outcome: Schema.Literal("source_precondition_failed") }),
+  Schema.Struct({ outcome: Schema.Literal("expectation_mismatch") }),
+  Schema.Struct({ outcome: Schema.Literal("destination_conflict") }),
+]);
+export type SealUploadResultV1 = Schema.Schema.Type<typeof SealUploadResultV1>;
+
+const SongTrustedAnalysisV1 = Schema.Struct({
+  version: Schema.Literal("song-trusted-analysis-v1"),
+  operation_id: SongAuthorString,
+  creation_revision: Schema.Int,
+  finalized_audio_ref: SongAuthorString,
+  canonical_audio_sha256: Sha256Hex,
+  probe_evidence_ref: SongAuthorString,
+  acr: Schema.Struct({
+    decision: Schema.Literals(["allow", "requires_reference", "inconclusive", "skipped"]),
+    evidence_ref: SongAuthorString,
+    policy_revision: SongAuthorString,
+    adapter_revision: SongAuthorString,
+  }),
+  lyrics_safety: Schema.Literals(["skipped", "allow", "review_required", "blocked"]),
+  media_safety: Schema.Literals(["allow", "draft", "review_required", "blocked"]),
+  bound_reference: Schema.NullOr(
+    Schema.Struct({
+      asset_id: SongAuthorString,
+      evidence_creation_revision: Schema.Int,
+      upstream_commercial_rev_share_bps: Schema.NullOr(NonNegativeBasisPoints),
+    }),
+  ),
+});
+export type SongTrustedAnalysisV1 = Schema.Schema.Type<typeof SongTrustedAnalysisV1>;
+
+const SongPublishedProjectionV1 = Schema.Struct({
+  version: Schema.Literal("song-published-projection-v1"),
+  submission_id: SongAuthorString,
+  post_id: SongAuthorString,
+  creation_revision: Schema.Int,
+  audio_asset_ref: SongAuthorString,
+  analysis_badges: Schema.Union([
+    Schema.Tuple([]),
+    Schema.Tuple([Schema.Literal("reference_bound")]),
+  ]),
+  language_detection: Schema.Literals(["pending", "ready", "unavailable"]),
+  alignment: Schema.Literals(["pending", "ready", "unavailable"]),
+  data_registration: Schema.Literals(["pending", "registered", "failed"]),
+  locked_delivery: Schema.Literals(["not_required", "preparing", "ready", "failed"]),
+});
+export type SongPublishedProjectionV1 = Schema.Schema.Type<typeof SongPublishedProjectionV1>;
 
 const TextCommentReplyRequestV1 = Schema.Struct({
   idempotency_key: Schema.String,
@@ -1026,6 +1250,98 @@ export const CreatePost = endpoint({
   response: TextContentSubmissionV1,
   successStatus: 201,
   errors: [AuthError, BadRequest, IdempotencyConflict, MembershipRequired, NotFound, RateLimited],
+});
+
+// --- song media R0 --------------------------------------------------------
+
+export const CreateMediaUploadReservation = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/media-upload-reservations",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathCommunity, body: ReserveSongAudioV1 },
+  response: SongAudioReservationV1,
+  successStatus: 201,
+  errors: [
+    AuthError,
+    BadRequest,
+    Conflict,
+    IdempotencyConflict,
+    MembershipRequired,
+    NotFound,
+    RateLimited,
+  ],
+});
+
+export const CreateMediaPostSubmission = endpoint({
+  method: "POST",
+  path: "/communities/:communityId/media-post-submissions",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathCommunity, body: CreateSongSubmissionV1 },
+  response: MediaPostSubmissionV1,
+  successStatus: 201,
+  errors: [
+    AuthError,
+    BadRequest,
+    Conflict,
+    IdempotencyConflict,
+    MembershipRequired,
+    NotFound,
+    RateLimited,
+  ],
+});
+
+export const FinalizeMediaPostSubmission = endpoint({
+  method: "POST",
+  path: "/media-post-submissions/:submissionId/finalize",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathMediaSubmission, body: FinalizeSongUploadV1 },
+  response: MediaPostSubmissionV1,
+  errors: [AuthError, BadRequest, Conflict, RetryableConflict, NotFound, RateLimited],
+});
+
+export const GetMediaPostSubmission = endpoint({
+  method: "GET",
+  path: "/media-post-submissions/:submissionId",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathMediaSubmission },
+  response: MediaPostSubmissionV1,
+  errors: [AuthError, NotFound, InternalError],
+});
+
+export const BindMediaPostSubmissionReference = endpoint({
+  method: "POST",
+  path: "/media-post-submissions/:submissionId/reference",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathMediaSubmission, body: BindSongReferenceV1 },
+  response: MediaPostSubmissionV1,
+  errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
+});
+
+export const RetryMediaPostSubmission = endpoint({
+  method: "POST",
+  path: "/media-post-submissions/:submissionId/retry",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathMediaSubmission, body: RetryOrCancelSongSubmissionV1 },
+  response: MediaPostSubmissionV1,
+  errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
+});
+
+export const CancelMediaPostSubmission = endpoint({
+  method: "POST",
+  path: "/media-post-submissions/:submissionId/cancel",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathMediaSubmission, body: RetryOrCancelSongSubmissionV1 },
+  response: MediaPostSubmissionV1,
+  errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
+});
+
+export const ModerateMediaPostSubmission = endpoint({
+  method: "POST",
+  path: "/moderation/media-post-submissions/:submissionId/actions",
+  auth: Auth.admin("moderation"),
+  request: { path: PathMediaSubmission, body: ModerateSongSubmissionV1 },
+  response: MediaPostSubmissionV1,
+  errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
 });
 
 export const GetTextContentSubmission = endpoint({
