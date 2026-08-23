@@ -13,6 +13,7 @@ import {
   type MediaSubmissionCommand,
   type MediaSubmissionState,
   type ModeratorApprovalEvidence,
+  type ModeratorBlockEvidence,
   type ProcessingFailure,
   type PublicationDecision,
   type ReviewCase,
@@ -240,7 +241,7 @@ export type RetryInput = CommandInput & Readonly<{ expectedCreationRevision: num
 export type FailureInput = CommandInput &
   Readonly<{ expectedCreationRevision: number; failure: ProcessingFailure }>;
 export type AbandonInput = CommandInput &
-  Readonly<{ expectedCreationRevision: number; nowEpochMs?: number }>;
+  Readonly<{ expectedCreationRevision: number; nowEpochMs?: number; evidenceRef?: string }>;
 export type PublishInput = CommandInput &
   Readonly<{
     expectedCreationRevision: number;
@@ -684,14 +685,22 @@ function decodeState(
     moderatorApproval:
       row.moderator_action_id === null
         ? null
-        : {
-            actionId: row.moderator_action_id as string,
-            moderatorActorId: row.moderator_actor_id as string,
-            evidenceRef: row.moderator_evidence_ref as string,
-            approvalKind: row.moderator_approval_kind as "standard" | "acr_override",
-            reasonCode: row.moderator_reason_code as ModeratorApprovalEvidence["reasonCode"],
-            heldRevision: integer(row.held_revision) ?? creationRevision,
-          },
+        : row.moderator_reason_code === "policy_violation"
+          ? ({
+              actionId: row.moderator_action_id as string,
+              moderatorActorId: row.moderator_actor_id as string,
+              evidenceRef: row.moderator_evidence_ref as string,
+              reasonCode: "policy_violation",
+              heldRevision: integer(row.held_revision) ?? creationRevision,
+            } satisfies ModeratorBlockEvidence)
+          : {
+              actionId: row.moderator_action_id as string,
+              moderatorActorId: row.moderator_actor_id as string,
+              evidenceRef: row.moderator_evidence_ref as string,
+              approvalKind: row.moderator_approval_kind as "standard" | "acr_override",
+              reasonCode: row.moderator_reason_code as ModeratorApprovalEvidence["reasonCode"],
+              heldRevision: integer(row.held_revision) ?? creationRevision,
+            },
     failure,
     abandonment:
       row.abandonment_reason === null
@@ -775,13 +784,15 @@ const insertReplay = (
   tx: ControlPlaneTransaction,
   input: CommandInput | (SubmissionInput & { endpointTemplate: string }),
   operationId: string,
+  submissionActorUserId = input.actorUserId,
 ) =>
   tx.execute({
     label: "media-submission.replay.insert",
-    text: "INSERT INTO media_submission_command_replays (community_id, actor_user_id, endpoint_template, idempotency_key, request_hash, submission_id, operation_id, response_snapshot_bytes, response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,COALESCE($6,(SELECT submission_id FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$2 AND operation_id=$7)),$7,$8,$9)",
+    text: "INSERT INTO media_submission_command_replays (community_id,actor_user_id,submission_actor_user_id,endpoint_template,idempotency_key,request_hash,submission_id,operation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,(SELECT submission_id FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$3 AND operation_id=$8)),$8,$9,$10)",
     values: [
       input.communityId,
       input.actorUserId,
+      submissionActorUserId,
       input.endpointTemplate,
       input.idempotencyKey,
       input.requestHash,
@@ -1045,7 +1056,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             return yield* Effect.fail(fail("create", "constraint", { submissionId }));
           const claimed = yield* tx.execute({
             label: "media-reservation.claim",
-            text: "UPDATE media_upload_reservations SET state='claimed',submission_id=$1,operation_id=$2,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND reservation_id=$5 AND state='issued' AND expires_at>clock_timestamp()",
+            text: "UPDATE media_upload_reservations SET state='claimed',submission_id=$1,operation_id=$2,claim_fence=claim_fence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND reservation_id=$5 AND state='issued' AND expires_at>clock_timestamp()",
             values: [
               submissionId,
               operationId,
@@ -1623,7 +1634,15 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     update: (
       next: MediaSubmissionState,
       current: MediaSubmissionState,
-    ) => { readonly text: string; readonly values: readonly unknown[]; readonly event: string },
+    ) => {
+      readonly text: string;
+      readonly values: readonly unknown[];
+      readonly event: string;
+      readonly reservationRejection?: Readonly<{
+        reason: "expectation_mismatch" | "source_precondition_failed" | "destination_conflict";
+        evidenceRef: string;
+      }>;
+    },
   ) =>
     Effect.gen(function* () {
       if (!validCommand(input))
@@ -1675,6 +1694,28 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             );
           const sequence = integer(updated.rows[0]?.event_sequence);
           if (sequence === null) return yield* Effect.fail(fail(operation, "invalid-row"));
+          if (projection.reservationRejection !== undefined) {
+            const rejected = yield* tx.execute({
+              label: "media-upload-reservation.reject",
+              text: "UPDATE media_upload_reservations SET state='rejected',terminal_reason=$1,terminal_evidence_ref=$2,terminal_evidence_digest=$3,terminal_at=clock_timestamp(),terminal_fence=$4,updated_at=clock_timestamp() WHERE community_id=$5 AND actor_user_id=$6 AND reservation_id=$7 AND submission_id=$8 AND operation_id=$9 AND state='claimed'",
+              values: [
+                projection.reservationRejection.reason,
+                projection.reservationRejection.evidenceRef,
+                sha256Text(projection.reservationRejection.evidenceRef),
+                sequence,
+                current.communityId,
+                current.actorId,
+                current.reservationId,
+                current.submissionId,
+                current.operationId,
+              ],
+              readonly: false,
+            });
+            if (rejected.rowCount !== 1)
+              return yield* Effect.fail(
+                fail(operation, "constraint", { submissionId: current.submissionId }),
+              );
+          }
           if (operation === "review") {
             yield* tx.execute({
               label: "media-moderation.open",
@@ -1830,7 +1871,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             return yield* Effect.fail(
               fail("moderation", "not-found", { submissionId: input.submissionId }),
             );
-          const replayInput = { ...authorityInput, actorUserId: ownerId };
+          const replayInput = { ...authorityInput, actorUserId: actorId };
           const prior = yield* replayInTx(tx, replayInput, "moderation");
           if (prior !== null) return prior;
           const authority = yield* tx.execute<Row>({
@@ -1867,6 +1908,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                   actionId: moderatorActionId,
                   moderatorActorId: actorId,
                   evidenceRef: moderatorEvidenceRef,
+                  reasonCode: "policy_violation",
                 };
           const next = yield* reduce("moderation", current, command);
           if (input.action === "approve") {
@@ -1903,11 +1945,13 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               actorId,
               input.action,
               approval?.approvalKind ?? null,
-              approval?.reasonCode ?? null,
+              input.action === "approve" ? (approval?.reasonCode ?? null) : "policy_violation",
               current.review?.heldRevision ?? current.creationRevision,
               input.action === "approve" ? next.decisionRevision : null,
               moderatorEvidenceRef,
-              input.action === "approve" ? json(input.decision) : null,
+              input.action === "approve"
+                ? json(input.decision)
+                : json({ reasonCode: "policy_violation" }),
             ],
             readonly: false,
           });
@@ -1916,7 +1960,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             text:
               input.action === "approve"
                 ? "UPDATE media_post_submissions SET status='processing',phase='publish',review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,held_revision=NULL,moderator_action_id=$1,moderator_actor_id=$2,moderator_evidence_ref=$3,moderator_approval_kind=$4,moderator_reason_code=$5,decision_revision=$6,current_decision_revision=$6,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$7 AND actor_user_id=$8 AND submission_id=$9 AND creation_revision=$10 RETURNING event_sequence"
-                : "UPDATE media_post_submissions SET status='blocked',phase=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,held_revision=NULL,moderator_action_id=$1,moderator_actor_id=$2,moderator_evidence_ref=$3,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND creation_revision=$7 RETURNING event_sequence",
+                : "UPDATE media_post_submissions SET status='blocked',phase=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,held_revision=NULL,moderator_action_id=$1,moderator_actor_id=$2,moderator_evidence_ref=$3,moderator_reason_code=$4,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$5 AND actor_user_id=$6 AND submission_id=$7 AND creation_revision=$8 RETURNING event_sequence",
             values:
               input.action === "approve"
                 ? [
@@ -1935,6 +1979,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                     moderatorActionId,
                     actorId,
                     moderatorEvidenceRef,
+                    "policy_violation",
                     current.communityId,
                     current.actorId,
                     current.submissionId,
@@ -1972,9 +2017,9 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             next,
             sequence,
             input.action === "approve" ? "moderator_approved" : "moderator_blocked",
-            {},
+            input.action === "approve" ? {} : { reason_code: "policy_violation" },
           );
-          yield* insertReplay(tx, replayInput, current.operationId);
+          yield* insertReplay(tx, replayInput, current.operationId, current.actorId);
           return { kind: "committed", submissionId: current.submissionId } as const;
         }),
       );
@@ -2029,6 +2074,14 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           current.submissionId,
           current.creationRevision,
         ],
+        ...(event === "seal_conflict_recorded"
+          ? {
+              reservationRejection: {
+                reason: "destination_conflict" as const,
+                evidenceRef: input.failure.evidenceRef ?? "",
+              },
+            }
+          : {}),
       }),
     );
   const recordMediaFailure: MediaSubmissionStore["recordMediaFailure"] = (input) =>
@@ -2067,6 +2120,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               reason: "upload_expectation_mismatch" as const,
               retentionDisposition: "retain_for_reconciliation" as const,
             },
+            evidenceRef: input.evidenceRef ?? "",
           };
         if (event === "upload_source_precondition_failed")
           return {
@@ -2077,6 +2131,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               reason: "upload_source_changed_before_finalize" as const,
               retentionDisposition: "retain_for_reconciliation" as const,
             },
+            evidenceRef: input.evidenceRef ?? "",
           };
         return {
           event,
@@ -2108,6 +2163,18 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           current.submissionId,
           current.creationRevision,
         ],
+        ...(event === "upload_expectation_mismatch_recorded" ||
+        event === "upload_source_precondition_failed"
+          ? {
+              reservationRejection: {
+                reason:
+                  event === "upload_expectation_mismatch_recorded"
+                    ? ("expectation_mismatch" as const)
+                    : ("source_precondition_failed" as const),
+                evidenceRef: input.evidenceRef ?? "",
+              },
+            }
+          : {}),
       }),
     );
   const actionDeadlineElapsed: MediaSubmissionStore["actionDeadlineElapsed"] = (input) =>

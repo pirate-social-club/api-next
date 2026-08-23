@@ -141,6 +141,7 @@ export type ProcessingFailure = Readonly<{
   retryable: boolean;
   retryCount: 0 | 1 | 2 | 3;
   lastSafePhase: Exclude<MediaSubmissionPhase, null>;
+  evidenceRef?: string;
 }>;
 export type Abandonment = Readonly<{
   reason:
@@ -172,6 +173,13 @@ export type ModeratorApprovalEvidence = Readonly<{
   reasonCode: "acr_inconclusive" | "acr_exhausted" | "acr_skipped" | null;
   heldRevision: number;
 }>;
+export type ModeratorBlockEvidence = Readonly<{
+  actionId: string;
+  moderatorActorId: string;
+  evidenceRef: string;
+  reasonCode: "policy_violation";
+  heldRevision: number;
+}>;
 export type MediaSubmissionState = Readonly<{
   submissionId: string;
   operationId: string;
@@ -195,7 +203,7 @@ export type MediaSubmissionState = Readonly<{
   decision: PublicationDecision | null;
   action: RequiredAction | null;
   review: ReviewCase | null;
-  moderatorApproval: ModeratorApprovalEvidence | null;
+  moderatorApproval: ModeratorApprovalEvidence | ModeratorBlockEvidence | null;
   failure: ProcessingFailure | null;
   abandonment: Abandonment | null;
   postId: string | null;
@@ -320,6 +328,7 @@ export type MediaSubmissionCommand =
         actionId: string;
         moderatorActorId: string;
         evidenceRef: string;
+        reasonCode: "policy_violation";
       }>)
   | (RevisionCommand &
       Readonly<{
@@ -337,9 +346,17 @@ export type MediaSubmissionCommand =
   | (RevisionCommand & Readonly<{ event: "author_cancelled" }>)
   | (RevisionCommand & Readonly<{ event: "reservation_expired" }>)
   | (RevisionCommand &
-      Readonly<{ event: "upload_expectation_mismatch_recorded"; abandonment: Abandonment }>)
+      Readonly<{
+        event: "upload_expectation_mismatch_recorded";
+        abandonment: Abandonment;
+        evidenceRef: string;
+      }>)
   | (RevisionCommand &
-      Readonly<{ event: "upload_source_precondition_failed"; abandonment: Abandonment }>)
+      Readonly<{
+        event: "upload_source_precondition_failed";
+        abandonment: Abandonment;
+        evidenceRef: string;
+      }>)
   | (RevisionCommand & Readonly<{ event: "seal_conflict_recorded"; failure: ProcessingFailure }>);
 
 export type MediaSubmissionRejection =
@@ -868,7 +885,10 @@ export function transitionMediaSubmission(
         current.status !== "processing" ||
         command.failure.retryCount > 3 ||
         (command.event === "seal_conflict_recorded" &&
-          (command.failure.code !== "upload_seal_conflict" || command.failure.retryable))
+          (current.phase !== "finalize" ||
+            command.failure.code !== "upload_seal_conflict" ||
+            command.failure.retryable ||
+            !validId(command.failure.evidenceRef)))
       )
         return reject({
           _tag: "transition_not_allowed",
@@ -1096,7 +1116,8 @@ export function transitionMediaSubmission(
         current.status !== "manual_review" ||
         !validId(command.actionId) ||
         !validId(command.moderatorActorId) ||
-        !validId(command.evidenceRef)
+        !validId(command.evidenceRef) ||
+        command.reasonCode !== "policy_violation"
       )
         return reject({ _tag: "actor_not_authorized", reasonCode: "moderator_role_required" });
       next = {
@@ -1105,7 +1126,13 @@ export function transitionMediaSubmission(
         phase: null,
         review: null,
         action: null,
-        moderatorApproval: null,
+        moderatorApproval: {
+          actionId: command.actionId,
+          moderatorActorId: command.moderatorActorId,
+          evidenceRef: command.evidenceRef,
+          reasonCode: command.reasonCode,
+          heldRevision: current.creationRevision,
+        },
       };
       break;
     }
@@ -1198,7 +1225,8 @@ export function transitionMediaSubmission(
         current.audioRevision > 0 ||
         (command.event === "upload_expectation_mismatch_recorded"
           ? !["awaiting_upload", "finalize"].includes(current.phase ?? "")
-          : current.phase !== "finalize")
+          : current.phase !== "finalize") ||
+        !validId(command.evidenceRef)
       )
         return reject({
           _tag: "transition_not_allowed",

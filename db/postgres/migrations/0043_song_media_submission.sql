@@ -20,6 +20,12 @@ CREATE TABLE media_upload_reservations (
   state TEXT NOT NULL DEFAULT 'issued' CHECK (state IN ('issued', 'claimed', 'sealed', 'rejected', 'expired')),
   submission_id TEXT,
   operation_id TEXT,
+  claim_fence BIGINT NOT NULL DEFAULT 0 CHECK (claim_fence >= 0),
+  terminal_reason TEXT CHECK (terminal_reason IS NULL OR terminal_reason IN ('expectation_mismatch', 'source_precondition_failed', 'destination_conflict')),
+  terminal_evidence_ref TEXT CHECK (terminal_evidence_ref IS NULL OR btrim(terminal_evidence_ref) <> ''),
+  terminal_evidence_digest TEXT CHECK (terminal_evidence_digest IS NULL OR terminal_evidence_digest ~ '^[0-9a-f]{64}$'),
+  terminal_at TIMESTAMPTZ,
+  terminal_fence BIGINT CHECK (terminal_fence IS NULL OR terminal_fence > 0),
   response_snapshot_bytes BYTEA NOT NULL,
   response_snapshot_sha256 TEXT NOT NULL CHECK (response_snapshot_sha256 ~ '^[0-9a-f]{64}$'),
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -31,6 +37,14 @@ CREATE TABLE media_upload_reservations (
   CONSTRAINT media_upload_reservations_state_shape CHECK (
     (state IN ('issued', 'expired') AND submission_id IS NULL AND operation_id IS NULL)
     OR (state IN ('claimed', 'sealed', 'rejected') AND submission_id IS NOT NULL AND operation_id IS NOT NULL)
+  ),
+  CONSTRAINT media_upload_reservations_claim_shape CHECK (
+    (state IN ('issued', 'expired') AND claim_fence = 0)
+    OR (state IN ('claimed', 'sealed', 'rejected') AND claim_fence > 0)
+  ),
+  CONSTRAINT media_upload_reservations_terminal_shape CHECK (
+    (state = 'rejected' AND terminal_reason IS NOT NULL AND terminal_evidence_ref IS NOT NULL AND terminal_evidence_digest IS NOT NULL AND terminal_at IS NOT NULL AND terminal_fence IS NOT NULL)
+    OR (state <> 'rejected' AND terminal_reason IS NULL AND terminal_evidence_ref IS NULL AND terminal_evidence_digest IS NULL AND terminal_at IS NULL AND terminal_fence IS NULL)
   ),
   CONSTRAINT media_upload_reservations_expiry_shape CHECK (
     state <> 'expired' OR expires_at <= updated_at
@@ -104,7 +118,7 @@ CREATE TABLE media_post_submissions (
   moderator_actor_id TEXT,
   moderator_evidence_ref TEXT,
   moderator_approval_kind TEXT CHECK (moderator_approval_kind IS NULL OR moderator_approval_kind IN ('standard', 'acr_override')),
-  moderator_reason_code TEXT CHECK (moderator_reason_code IS NULL OR moderator_reason_code IN ('acr_inconclusive', 'acr_exhausted', 'acr_skipped')),
+  moderator_reason_code TEXT CHECK (moderator_reason_code IS NULL OR moderator_reason_code IN ('acr_inconclusive', 'acr_exhausted', 'acr_skipped', 'policy_violation')),
   abandonment_reason TEXT CHECK (abandonment_reason IS NULL OR abandonment_reason IN ('author_cancelled', 'reservation_expired', 'action_deadline_elapsed', 'upload_expectation_mismatch', 'upload_source_changed_before_finalize')),
   retention_disposition TEXT CHECK (retention_disposition IS NULL OR retention_disposition IN ('no_object', 'retain_for_reconciliation', 'retain_until_expiry')),
   response_snapshot_bytes BYTEA NOT NULL,
@@ -150,6 +164,7 @@ CREATE INDEX media_post_submissions_author_idx
 CREATE TABLE media_submission_command_replays (
   community_id TEXT NOT NULL,
   actor_user_id TEXT NOT NULL,
+  submission_actor_user_id TEXT NOT NULL,
   endpoint_template TEXT NOT NULL CHECK (btrim(endpoint_template) <> ''),
   idempotency_key TEXT NOT NULL CHECK (btrim(idempotency_key) <> ''),
   request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
@@ -160,7 +175,7 @@ CREATE TABLE media_submission_command_replays (
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   PRIMARY KEY (community_id, actor_user_id, endpoint_template, idempotency_key),
   CONSTRAINT media_submission_command_replays_submission_fk FOREIGN KEY (
-    community_id, actor_user_id, submission_id, operation_id
+    community_id, submission_actor_user_id, submission_id, operation_id
   ) REFERENCES media_post_submissions (community_id, actor_user_id, submission_id, operation_id),
   CONSTRAINT media_submission_command_replays_response_hash CHECK (
     octet_length(response_snapshot_bytes) > 0
@@ -459,7 +474,7 @@ CREATE TABLE media_moderation_actions (
   authority_actor_user_id TEXT NOT NULL REFERENCES users (user_id),
   action_kind TEXT NOT NULL CHECK (action_kind IN ('approve', 'block')),
   approval_kind TEXT CHECK (approval_kind IS NULL OR approval_kind IN ('standard', 'acr_override')),
-  reason_code TEXT CHECK (reason_code IS NULL OR reason_code IN ('acr_inconclusive', 'acr_exhausted', 'acr_skipped')),
+  reason_code TEXT CHECK (reason_code IS NULL OR reason_code IN ('acr_inconclusive', 'acr_exhausted', 'acr_skipped', 'policy_violation')),
   held_revision BIGINT NOT NULL,
   decision_revision BIGINT,
   evidence_ref TEXT NOT NULL CHECK (btrim(evidence_ref) <> ''),
@@ -470,8 +485,9 @@ CREATE TABLE media_moderation_actions (
   FOREIGN KEY (submission_id, decision_revision)
     REFERENCES media_publication_decisions (submission_id, decision_revision),
   CONSTRAINT media_moderation_action_shape CHECK (
-    (action_kind = 'approve' AND approval_kind IS NOT NULL AND decision_revision IS NOT NULL AND decision_snapshot IS NOT NULL AND jsonb_typeof(decision_snapshot) = 'object')
-    OR (action_kind = 'block' AND approval_kind IS NULL AND reason_code IS NULL AND decision_revision IS NULL AND decision_snapshot IS NULL)
+    ((action_kind = 'approve' AND approval_kind = 'acr_override' AND reason_code IN ('acr_inconclusive', 'acr_exhausted', 'acr_skipped')) OR (action_kind = 'approve' AND approval_kind = 'standard' AND reason_code IS NULL))
+      AND decision_revision IS NOT NULL AND decision_snapshot IS NOT NULL AND jsonb_typeof(decision_snapshot) = 'object'
+    OR (action_kind = 'block' AND approval_kind IS NULL AND reason_code = 'policy_violation' AND decision_revision IS NULL AND decision_snapshot = '{"reasonCode":"policy_violation"}'::jsonb)
   ),
   UNIQUE (community_id, authority_actor_user_id, action_id)
 );
@@ -697,7 +713,7 @@ BEGIN
   IF submission_record.submission_id IS NULL THEN RAISE EXCEPTION 'moderation projection submission is missing'; END IF;
   IF NEW.status = 'open' AND (submission_record.status <> 'manual_review' OR NEW.review_ref IS DISTINCT FROM submission_record.review_ref OR NEW.held_revision IS DISTINCT FROM submission_record.held_revision OR NEW.review_exhaustion_code IS DISTINCT FROM submission_record.review_exhaustion_code OR NEW.review_exhaustion_attempt_id IS DISTINCT FROM submission_record.review_exhaustion_attempt_id OR NEW.action_kind IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.action_evidence_ref IS NOT NULL) THEN RAISE EXCEPTION 'open moderation projection does not match its held submission'; END IF;
   IF NEW.status = 'approved' AND (submission_record.status <> 'processing' OR submission_record.phase <> 'publish' OR NEW.decision_revision IS DISTINCT FROM submission_record.decision_revision OR NEW.review_ref IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.moderator_action_id IS DISTINCT FROM submission_record.moderator_action_id OR NEW.moderator_actor_id IS DISTINCT FROM submission_record.moderator_actor_id OR NEW.action_evidence_ref IS DISTINCT FROM submission_record.moderator_evidence_ref OR NEW.action_kind <> 'approve') THEN RAISE EXCEPTION 'approved moderation projection does not match its submission action'; END IF;
-  IF NEW.status = 'blocked' AND (submission_record.status <> 'blocked' OR NEW.decision_revision IS NOT NULL OR NEW.review_ref IS DISTINCT FROM OLD.review_ref OR NEW.held_revision IS DISTINCT FROM OLD.held_revision OR NEW.review_ref IS NULL OR NEW.held_revision IS NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.moderator_action_id IS DISTINCT FROM submission_record.moderator_action_id OR NEW.moderator_actor_id IS DISTINCT FROM submission_record.moderator_actor_id OR NEW.action_evidence_ref IS DISTINCT FROM submission_record.moderator_evidence_ref OR NEW.action_kind <> 'block') THEN RAISE EXCEPTION 'blocked moderation projection does not match its submission action'; END IF;
+  IF NEW.status = 'blocked' AND (submission_record.status <> 'blocked' OR NEW.decision_revision IS DISTINCT FROM submission_record.decision_revision OR NEW.review_ref IS DISTINCT FROM OLD.review_ref OR NEW.held_revision IS DISTINCT FROM OLD.held_revision OR NEW.review_ref IS NULL OR NEW.held_revision IS NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.moderator_action_id IS DISTINCT FROM submission_record.moderator_action_id OR NEW.moderator_actor_id IS DISTINCT FROM submission_record.moderator_actor_id OR NEW.action_evidence_ref IS DISTINCT FROM submission_record.moderator_evidence_ref OR NEW.action_kind IS DISTINCT FROM 'block') THEN RAISE EXCEPTION 'blocked moderation projection does not match its submission action'; END IF;
   IF NEW.status = 'closed' AND (submission_record.status NOT IN ('processing','action_required','manual_review') OR NEW.decision_revision IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.action_evidence_ref IS NOT NULL) THEN RAISE EXCEPTION 'closed moderation projection is not an exact supersession'; END IF;
   RETURN NEW;
 END;
@@ -705,10 +721,29 @@ $$;
 CREATE TRIGGER media_moderation_projection_update_guard BEFORE UPDATE ON media_moderation_projections FOR EACH ROW EXECUTE FUNCTION guard_media_moderation_projection_update();
 
 CREATE FUNCTION guard_media_reservation_update() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE submission_record media_post_submissions%ROWTYPE;
 BEGIN
   IF ROW(NEW.reservation_id, NEW.community_id, NEW.actor_user_id, NEW.endpoint_template, NEW.idempotency_key, NEW.request_hash, NEW.expected_content_type, NEW.expected_size_bytes, NEW.expected_sha256, NEW.upload_url, NEW.upload_headers, NEW.expires_at, NEW.response_snapshot_bytes, NEW.response_snapshot_sha256, NEW.created_at) IS DISTINCT FROM ROW(OLD.reservation_id, OLD.community_id, OLD.actor_user_id, OLD.endpoint_template, OLD.idempotency_key, OLD.request_hash, OLD.expected_content_type, OLD.expected_size_bytes, OLD.expected_sha256, OLD.upload_url, OLD.upload_headers, OLD.expires_at, OLD.response_snapshot_bytes, OLD.response_snapshot_sha256, OLD.created_at) THEN RAISE EXCEPTION 'media reservation authority is immutable'; END IF;
   IF OLD.state IN ('sealed', 'rejected', 'expired') OR NOT ((OLD.state = 'issued' AND NEW.state = 'claimed') OR (OLD.state = 'issued' AND NEW.state = 'expired' AND OLD.expires_at <= clock_timestamp()) OR (OLD.state = 'claimed' AND NEW.state IN ('sealed', 'rejected'))) OR NEW.updated_at <= OLD.updated_at THEN RAISE EXCEPTION 'media reservation transition is not allowed'; END IF;
+  IF OLD.state = 'issued' AND NEW.state = 'claimed' AND (NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.terminal_reason IS NOT NULL OR NEW.terminal_evidence_ref IS NOT NULL OR NEW.terminal_evidence_digest IS NOT NULL OR NEW.terminal_at IS NOT NULL OR NEW.terminal_fence IS NOT NULL) THEN RAISE EXCEPTION 'media reservation claim fence is not exact'; END IF;
   IF OLD.state = 'claimed' AND (NEW.submission_id IS DISTINCT FROM OLD.submission_id OR NEW.operation_id IS DISTINCT FROM OLD.operation_id) THEN RAISE EXCEPTION 'media reservation claim identity is immutable'; END IF;
+  IF OLD.state = 'claimed' AND NEW.state = 'rejected' THEN
+    SELECT * INTO submission_record FROM media_post_submissions
+      WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+        AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id FOR SHARE;
+    IF submission_record.submission_id IS NULL
+       OR NEW.claim_fence IS DISTINCT FROM OLD.claim_fence
+       OR NEW.terminal_fence IS DISTINCT FROM submission_record.event_sequence
+       OR NEW.terminal_at IS NULL
+       OR NEW.terminal_evidence_ref IS NULL
+       OR NEW.terminal_evidence_digest IS DISTINCT FROM encode(sha256(NEW.terminal_evidence_ref::bytea), 'hex')
+       OR (submission_record.status = 'abandoned' AND NEW.terminal_reason IS DISTINCT FROM CASE submission_record.abandonment_reason WHEN 'upload_expectation_mismatch' THEN 'expectation_mismatch' WHEN 'upload_source_changed_before_finalize' THEN 'source_precondition_failed' ELSE NULL END)
+       OR (submission_record.status = 'processing_failed' AND (NEW.terminal_reason IS DISTINCT FROM 'destination_conflict' OR submission_record.failure_code IS DISTINCT FROM 'upload_seal_conflict'))
+       OR submission_record.status NOT IN ('abandoned', 'processing_failed')
+       THEN
+      RAISE EXCEPTION 'media reservation rejection is not bound to its terminal submission';
+    END IF;
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -743,13 +778,13 @@ BEGIN
     OR (OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.status = 'processing' AND NEW.phase IN ('analysis', 'decision')
       AND NEW.analysis_revision = OLD.analysis_revision + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.creation_revision = OLD.creation_revision
       AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)
-    OR (OLD.status = 'processing' AND OLD.phase IN ('analysis', 'decision') AND NEW.status = 'processing' AND NEW.phase = 'publish'
+    OR (OLD.status = 'processing' AND OLD.phase = 'decision' AND NEW.status = 'processing' AND NEW.phase = 'publish'
       AND NEW.decision_revision = OLD.decision_revision + 1 AND NEW.current_decision_revision = NEW.decision_revision AND NEW.creation_revision = OLD.creation_revision
       AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.post_id IS NULL)
     OR (OLD.status = 'processing' AND OLD.phase IN ('analysis', 'decision') AND NEW.status = 'manual_review' AND NEW.phase IS NULL
       AND NEW.decision_revision = OLD.decision_revision + 1 AND NEW.current_decision_revision = NEW.decision_revision AND NEW.creation_revision = OLD.creation_revision
       AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.post_id IS NULL)
-    OR (OLD.status = 'processing' AND OLD.phase IN ('analysis', 'decision') AND NEW.status = 'blocked' AND NEW.phase IS NULL
+    OR (OLD.status = 'processing' AND OLD.phase = 'decision' AND NEW.status = 'blocked' AND NEW.phase IS NULL
       AND NEW.decision_revision = OLD.decision_revision + 1 AND NEW.current_decision_revision = NEW.decision_revision AND NEW.creation_revision = OLD.creation_revision
       AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.post_id IS NULL)
     OR (OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.status = 'manual_review' AND NEW.phase IS NULL
@@ -768,11 +803,12 @@ BEGIN
     OR (OLD.status = 'manual_review' AND OLD.phase IS NULL AND NEW.status = 'blocked' AND NEW.phase IS NULL
       AND NEW.creation_revision = OLD.creation_revision AND NEW.decision_revision = OLD.decision_revision AND NEW.post_id IS NULL)
     OR (OLD.status = 'processing' AND OLD.phase = 'publish' AND NEW.status = 'published' AND NEW.phase IS NULL
-      AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.post_id IS NOT NULL AND NEW.decision_revision = OLD.decision_revision AND NEW.creation_revision = OLD.creation_revision)
+      AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.post_id IS NOT NULL AND NEW.decision_revision = OLD.decision_revision AND NEW.current_decision_revision = NEW.decision_revision AND NEW.creation_revision = OLD.creation_revision)
     OR (OLD.status = 'processing' AND OLD.phase IN ('reserve', 'awaiting_upload', 'finalize', 'analysis', 'decision', 'publish') AND NEW.status = 'processing_failed' AND NEW.phase IS NULL
       AND NEW.creation_revision = OLD.creation_revision AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision
-      AND NEW.failure_code IS NOT NULL AND NEW.failure_retry_count IS NOT NULL AND NEW.last_safe_phase IS NOT NULL)
-    OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.retryable = TRUE AND OLD.failure_retry_count < 3 AND OLD.retry_count < 3 AND NEW.status = 'processing' AND NEW.phase = NEW.last_safe_phase
+      AND NEW.failure_code IS NOT NULL AND NEW.failure_retry_count IS NOT NULL AND NEW.last_safe_phase IS NOT NULL
+      AND (NEW.failure_code IS DISTINCT FROM 'upload_seal_conflict' OR OLD.phase = 'finalize'))
+    OR (OLD.status = 'processing_failed' AND OLD.phase IS NULL AND OLD.retryable = TRUE AND OLD.failure_retry_count < 3 AND OLD.retry_count < 3 AND NEW.status = 'processing' AND NEW.phase = OLD.last_safe_phase
       AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.retry_count = OLD.retry_count + 1 AND NEW.audio_revision = OLD.audio_revision AND NEW.analysis_revision = OLD.analysis_revision
       AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.workflow_revision = OLD.workflow_revision)
     OR (OLD.status = 'action_required' AND OLD.phase IS NULL AND NEW.status = 'abandoned' AND NEW.phase IS NULL AND OLD.action_kind = 'reference_required'
@@ -785,17 +821,17 @@ BEGIN
       AND NEW.abandonment_reason = 'upload_expectation_mismatch' AND NEW.post_id IS NULL)
     OR (OLD.status = 'processing' AND OLD.phase = 'finalize' AND OLD.audio_revision = 0 AND NEW.status = 'abandoned' AND NEW.phase IS NULL
       AND NEW.abandonment_reason = 'upload_source_changed_before_finalize' AND NEW.post_id IS NULL);
-  IF NOT allowed THEN RAISE EXCEPTION 'media submission transition is not allowed'; END IF;
+  IF allowed IS NOT TRUE THEN RAISE EXCEPTION 'media submission transition is not allowed'; END IF;
   IF (((OLD.status = 'processing' AND OLD.phase IN ('awaiting_upload', 'finalize', 'analysis', 'decision')) OR (OLD.status IN ('action_required', 'manual_review') AND OLD.phase IS NULL)) AND NEW.status = 'processing' AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.current_terms_revision = NEW.creation_revision) THEN
     SELECT * INTO terms_record FROM media_submission_terms WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND creation_revision=NEW.creation_revision FOR SHARE;
-    IF terms_record.submission_id IS NULL OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.bound_reference_asset_id IS DISTINCT FROM OLD.bound_reference_asset_id OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.post_id IS NOT NULL OR terms_record.license_preset IS NULL OR terms_record.access_mode <> 'public' THEN RAISE EXCEPTION 'terms transition evidence is not exact'; END IF;
+    IF terms_record.submission_id IS NULL OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.post_id IS NOT NULL OR terms_record.license_preset IS NULL OR terms_record.access_mode <> 'public' THEN RAISE EXCEPTION 'terms transition evidence is not exact'; END IF;
   ELSIF OLD.status = 'processing' AND OLD.phase = 'awaiting_upload' AND NEW.status = 'processing' AND NEW.audio_revision = OLD.audio_revision + 1 THEN
     SELECT * INTO audio_record FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision FOR SHARE;
     IF audio_record.submission_id IS NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> OLD.decision_revision OR NEW.current_decision_revision IS DISTINCT FROM OLD.current_decision_revision OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.current_immutable_ref IS DISTINCT FROM audio_record.immutable_ref OR NEW.phase <> 'analysis' OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.post_id IS NOT NULL THEN RAISE EXCEPTION 'audio transition evidence is not exact'; END IF;
   ELSIF OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.status = 'processing' AND NEW.analysis_revision = OLD.analysis_revision + 1 THEN
     SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=NEW.analysis_revision FOR SHARE;
     IF analysis_record.submission_id IS NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.current_analysis_revision <> NEW.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.phase NOT IN ('analysis','decision') OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.post_id IS NOT NULL OR analysis_record.audio_revision <> NEW.audio_revision OR analysis_record.canonical_audio_sha256 IS DISTINCT FROM (SELECT canonical_sha256 FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision) THEN RAISE EXCEPTION 'analysis transition evidence is not exact'; END IF;
-  ELSIF OLD.status = 'processing' AND OLD.phase IN ('analysis', 'decision') AND NEW.decision_revision = OLD.decision_revision + 1 THEN
+  ELSIF OLD.status = 'processing' AND (OLD.phase = 'decision' OR (OLD.phase = 'analysis' AND NEW.status = 'manual_review')) AND NEW.decision_revision = OLD.decision_revision + 1 THEN
     SELECT * INTO decision_record FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision=NEW.decision_revision FOR SHARE;
     IF decision_record.submission_id IS NULL
        OR NEW.creation_revision <> OLD.creation_revision
@@ -807,6 +843,7 @@ BEGIN
        OR ROW(NEW.bound_reference_asset_id, NEW.bound_reference_evidence_ref, NEW.bound_reference_audio_revision, NEW.bound_reference_analysis_revision, NEW.bound_reference_audio_sha256, NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id, OLD.bound_reference_evidence_ref, OLD.bound_reference_audio_revision, OLD.bound_reference_analysis_revision, OLD.bound_reference_audio_sha256, OLD.bound_reference_upstream_share_bps)
        OR NEW.workflow_revision <> OLD.workflow_revision
        OR NEW.retry_count <> OLD.retry_count
+       OR NEW.post_id IS DISTINCT FROM OLD.post_id
        OR NEW.failure_code IS DISTINCT FROM OLD.failure_code
        OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count
        OR NEW.retryable IS DISTINCT FROM OLD.retryable
@@ -814,16 +851,17 @@ BEGIN
        OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason
        OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition
        OR NEW.current_decision_revision <> NEW.decision_revision
+       OR NEW.post_id IS DISTINCT FROM OLD.post_id
        OR decision_record.creation_revision <> NEW.creation_revision
        OR decision_record.audio_revision <> NEW.audio_revision
        OR decision_record.analysis_revision <> NEW.analysis_revision
        OR decision_record.canonical_audio_sha256 IS DISTINCT FROM (SELECT canonical_sha256 FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision)
-       OR (decision_record.outcome = 'allow' AND (NEW.status <> 'processing' OR NEW.phase <> 'publish' OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL))
-       OR (decision_record.outcome = 'manual_review' AND (NEW.status <> 'manual_review' OR NEW.phase IS NOT NULL OR NEW.review_ref IS NULL OR NEW.review_reason_code <> 'review_required' OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision <> NEW.creation_revision OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL))
-       OR (decision_record.outcome = 'block' AND (NEW.status <> 'blocked' OR NEW.phase IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL)) THEN RAISE EXCEPTION 'decision transition evidence is not exact'; END IF;
+       OR (decision_record.outcome = 'allow' AND (NEW.status <> 'processing' OR NEW.phase <> 'publish' OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL))
+       OR (decision_record.outcome = 'manual_review' AND (NEW.status <> 'manual_review' OR NEW.phase IS NOT NULL OR NEW.review_ref IS NULL OR NEW.review_reason_code <> 'review_required' OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision <> NEW.creation_revision OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL))
+       OR (decision_record.outcome = 'block' AND (NEW.status <> 'blocked' OR NEW.phase IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL)) THEN RAISE EXCEPTION 'decision transition evidence is not exact'; END IF;
   ELSIF OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.status = 'manual_review' AND NEW.decision_revision = 0 AND NEW.review_exhaustion_code = 'acr_exhausted' THEN
     SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=NEW.analysis_revision FOR SHARE;
-    IF analysis_record.submission_id IS NULL OR NOT EXISTS (SELECT 1 FROM media_submission_terms t WHERE t.community_id=NEW.community_id AND t.actor_user_id=NEW.actor_user_id AND t.submission_id=NEW.submission_id AND t.operation_id=NEW.operation_id AND t.creation_revision=NEW.creation_revision) OR analysis_record.acr_decision <> 'inconclusive' OR NEW.review_exhaustion_attempt_id IS NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NOT EXISTS (SELECT 1 FROM media_processing_attempts a WHERE a.attempt_id=NEW.review_exhaustion_attempt_id AND a.community_id=NEW.community_id AND a.actor_user_id=NEW.actor_user_id AND a.submission_id=NEW.submission_id AND a.operation_id=NEW.operation_id AND a.stage='acr' AND a.input_kind='audio' AND a.audio_revision=NEW.audio_revision AND a.analysis_revision=NEW.analysis_revision AND a.input_revision=NEW.audio_revision AND a.input_hash=(SELECT canonical_sha256 FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision) AND a.state='exhausted' AND a.retryable=FALSE AND a.failure_code IS NOT NULL AND a.attempt_number=3 AND NOT EXISTS (SELECT 1 FROM media_processing_attempts later WHERE later.community_id=a.community_id AND later.actor_user_id=a.actor_user_id AND later.submission_id=a.submission_id AND later.operation_id=a.operation_id AND later.stage='acr' AND later.attempt_number>a.attempt_number)) THEN RAISE EXCEPTION 'ACR exhaustion evidence is not exact'; END IF;
+    IF analysis_record.submission_id IS NULL OR NOT EXISTS (SELECT 1 FROM media_submission_terms t WHERE t.community_id=NEW.community_id AND t.actor_user_id=NEW.actor_user_id AND t.submission_id=NEW.submission_id AND t.operation_id=NEW.operation_id AND t.creation_revision=NEW.creation_revision) OR analysis_record.acr_decision <> 'inconclusive' OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision OR NEW.current_decision_revision IS NOT NULL OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps) OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.retry_count <> OLD.retry_count OR NEW.failure_code IS DISTINCT FROM OLD.failure_code OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count OR NEW.retryable IS DISTINCT FROM OLD.retryable OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition OR NEW.post_id IS DISTINCT FROM OLD.post_id OR NEW.review_exhaustion_attempt_id IS NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NOT EXISTS (SELECT 1 FROM media_processing_attempts a WHERE a.attempt_id=NEW.review_exhaustion_attempt_id AND a.community_id=NEW.community_id AND a.actor_user_id=NEW.actor_user_id AND a.submission_id=NEW.submission_id AND a.operation_id=NEW.operation_id AND a.stage='acr' AND a.input_kind='audio' AND a.audio_revision=NEW.audio_revision AND a.analysis_revision=NEW.analysis_revision AND a.input_revision=NEW.audio_revision AND a.input_hash=(SELECT canonical_sha256 FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision) AND a.state='exhausted' AND a.retryable=FALSE AND a.failure_code IS NOT NULL AND a.attempt_number=3 AND NOT EXISTS (SELECT 1 FROM media_processing_attempts later WHERE later.community_id=a.community_id AND later.actor_user_id=a.actor_user_id AND later.submission_id=a.submission_id AND later.operation_id=a.operation_id AND later.stage='acr' AND later.attempt_number>a.attempt_number)) THEN RAISE EXCEPTION 'ACR exhaustion evidence is not exact'; END IF;
   ELSIF OLD.status = 'processing' AND OLD.phase = 'decision' AND NEW.status = 'action_required' THEN
     IF NEW.phase IS NOT NULL OR NEW.action_kind <> 'reference_required' OR NEW.action_expires_at <= clock_timestamp() OR NEW.held_revision <> OLD.creation_revision OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.post_id IS NOT NULL THEN RAISE EXCEPTION 'reference action evidence is not exact'; END IF;
   ELSIF OLD.status = 'action_required' AND OLD.phase IS NULL AND NEW.status = 'processing' AND NEW.bound_reference_asset_id IS NOT NULL THEN
@@ -847,11 +885,45 @@ BEGIN
        OR moderation_action.held_revision IS DISTINCT FROM OLD.held_revision
        OR moderation_action.evidence_ref IS DISTINCT FROM NEW.moderator_evidence_ref
        OR (moderation_action.action_kind = 'approve' AND (NEW.status <> 'processing' OR NEW.phase <> 'publish' OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR moderation_action.decision_revision IS DISTINCT FROM NEW.decision_revision OR moderation_action.approval_kind IS DISTINCT FROM NEW.moderator_approval_kind OR moderation_action.reason_code IS DISTINCT FROM NEW.moderator_reason_code OR moderation_action.decision_snapshot IS DISTINCT FROM (SELECT decision_snapshot FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision=NEW.decision_revision)))
-       OR (moderation_action.action_kind = 'block' AND (NEW.status <> 'blocked' OR NEW.phase IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR moderation_action.decision_revision IS NOT NULL OR moderation_action.approval_kind IS NOT NULL OR moderation_action.reason_code IS NOT NULL OR NEW.decision_revision <> OLD.decision_revision)) THEN RAISE EXCEPTION 'moderation action evidence is not exact'; END IF;
+       OR (moderation_action.action_kind = 'block' AND (NEW.status <> 'blocked' OR NEW.phase IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS DISTINCT FROM 'policy_violation' OR moderation_action.decision_revision IS NOT NULL OR moderation_action.approval_kind IS NOT NULL OR moderation_action.reason_code IS DISTINCT FROM 'policy_violation' OR NEW.decision_revision <> OLD.decision_revision)) THEN RAISE EXCEPTION 'moderation action evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND OLD.phase = 'publish' AND NEW.status = 'published' THEN
+    IF NEW.creation_revision <> OLD.creation_revision
+       OR NEW.audio_revision <> OLD.audio_revision
+       OR NEW.analysis_revision <> OLD.analysis_revision
+       OR NEW.decision_revision <> OLD.decision_revision
+       OR NEW.current_decision_revision IS DISTINCT FROM NEW.decision_revision
+       OR NEW.workflow_revision <> OLD.workflow_revision + 1
+       OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref
+       OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision
+       OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision
+       OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps)
+       OR NEW.retry_count <> OLD.retry_count
+       OR NEW.failure_code IS NOT NULL
+       OR NEW.failure_retry_count IS NOT NULL
+       OR NEW.retryable IS NOT NULL
+       OR NEW.last_safe_phase IS NOT NULL
+       OR NEW.action_kind IS NOT NULL
+       OR NEW.action_reference_request_ref IS NOT NULL
+       OR NEW.action_expires_at IS NOT NULL
+       OR NEW.review_ref IS NOT NULL
+       OR NEW.review_reason_code IS NOT NULL
+       OR NEW.review_exhaustion_code IS NOT NULL
+       OR NEW.review_exhaustion_attempt_id IS NOT NULL
+       OR NEW.held_revision IS NOT NULL
+       OR NEW.abandonment_reason IS NOT NULL
+       OR NEW.retention_disposition IS NOT NULL
+       OR NEW.moderator_action_id IS DISTINCT FROM OLD.moderator_action_id
+       OR NEW.moderator_actor_id IS DISTINCT FROM OLD.moderator_actor_id
+       OR NEW.moderator_evidence_ref IS DISTINCT FROM OLD.moderator_evidence_ref
+       OR NEW.moderator_approval_kind IS DISTINCT FROM OLD.moderator_approval_kind
+       OR NEW.moderator_reason_code IS DISTINCT FROM OLD.moderator_reason_code
+       OR NEW.post_id IS NULL THEN
+      RAISE EXCEPTION 'publication transition evidence is not exact';
+    END IF;
   ELSIF OLD.status = 'processing' AND OLD.phase IN ('reserve', 'awaiting_upload', 'finalize', 'analysis', 'decision', 'publish') AND NEW.status = 'processing_failed' THEN
     IF NEW.phase IS NOT NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.failure_code IS NULL OR NEW.failure_retry_count IS NULL OR NEW.last_safe_phase IS NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL OR NEW.abandonment_reason IS NOT NULL OR NEW.retention_disposition IS NOT NULL THEN RAISE EXCEPTION 'media failure evidence is not exact'; END IF;
   ELSIF OLD.status = 'processing_failed' AND NEW.status = 'processing' THEN
-    IF OLD.retryable IS DISTINCT FROM TRUE OR OLD.failure_retry_count IS NULL OR OLD.failure_retry_count >= 3 OR OLD.retry_count >= 3 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase IS NULL OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'retry transition evidence is not exact'; END IF;
+    IF OLD.retryable IS DISTINCT FROM TRUE OR OLD.failure_retry_count IS NULL OR OLD.failure_retry_count >= 3 OR OLD.retry_count >= 3 OR NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase IS DISTINCT FROM OLD.last_safe_phase OR NEW.failure_code IS NOT NULL OR NEW.failure_retry_count IS NOT NULL OR NEW.retryable IS NOT NULL OR NEW.last_safe_phase IS NOT NULL OR NEW.action_kind IS NOT NULL OR NEW.action_reference_request_ref IS NOT NULL OR NEW.action_expires_at IS NOT NULL OR NEW.review_ref IS NOT NULL OR NEW.review_reason_code IS NOT NULL OR NEW.review_exhaustion_code IS NOT NULL OR NEW.review_exhaustion_attempt_id IS NOT NULL OR NEW.held_revision IS NOT NULL OR NEW.moderator_action_id IS NOT NULL OR NEW.moderator_actor_id IS NOT NULL OR NEW.moderator_evidence_ref IS NOT NULL OR NEW.moderator_approval_kind IS NOT NULL OR NEW.moderator_reason_code IS NOT NULL THEN RAISE EXCEPTION 'retry transition evidence is not exact'; END IF;
   END IF;
   IF NEW.bound_reference_asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM media_reference_evidence r WHERE r.community_id = NEW.community_id AND r.actor_user_id = NEW.actor_user_id AND r.submission_id = NEW.submission_id AND r.operation_id = NEW.operation_id AND r.asset_id = NEW.bound_reference_asset_id AND r.evidence_ref = NEW.bound_reference_evidence_ref AND r.evidence_audio_revision = NEW.bound_reference_audio_revision AND r.evidence_analysis_revision = NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256 = NEW.bound_reference_audio_sha256 AND r.upstream_commercial_rev_share_bps IS NOT DISTINCT FROM NEW.bound_reference_upstream_share_bps) THEN RAISE EXCEPTION 'bound reference evidence is missing'; END IF;
   IF (NEW.status = 'processing' AND NEW.phase = 'publish') OR NEW.status = 'published' THEN
@@ -876,12 +948,13 @@ $$;
 CREATE TRIGGER media_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW EXECUTE FUNCTION guard_media_submission_update();
 
 CREATE FUNCTION validate_media_submission_event_pair() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE expected_event TEXT; event_record media_submission_events%ROWTYPE;
+DECLARE expected_event TEXT; event_record media_submission_events%ROWTYPE; reservation_record media_upload_reservations%ROWTYPE;
 BEGIN
   IF (((OLD.status = 'processing' AND OLD.phase IN ('awaiting_upload', 'finalize', 'analysis', 'decision')) OR (OLD.status IN ('action_required', 'manual_review') AND OLD.phase IS NULL)) AND NEW.status = 'processing' AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.current_terms_revision = NEW.creation_revision) THEN expected_event := 'song_terms_bound';
   ELSIF OLD.status = 'processing' AND OLD.phase = 'awaiting_upload' AND NEW.audio_revision = OLD.audio_revision + 1 THEN expected_event := 'upload_finalized';
   ELSIF OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.analysis_revision = OLD.analysis_revision + 1 THEN expected_event := 'blocking_analysis_completed';
-  ELSIF OLD.status = 'processing' AND OLD.phase IN ('analysis', 'decision') AND NEW.decision_revision = OLD.decision_revision + 1 THEN expected_event := CASE NEW.status WHEN 'processing' THEN 'publication_allowed' WHEN 'manual_review' THEN 'review_required' WHEN 'blocked' THEN 'policy_blocked' ELSE NULL END;
+  ELSIF OLD.status = 'processing' AND OLD.phase = 'decision' AND NEW.decision_revision = OLD.decision_revision + 1 THEN expected_event := CASE NEW.status WHEN 'processing' THEN 'publication_allowed' WHEN 'manual_review' THEN 'review_required' WHEN 'blocked' THEN 'policy_blocked' ELSE NULL END;
+  ELSIF OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.status = 'manual_review' AND NEW.decision_revision = OLD.decision_revision + 1 THEN expected_event := 'review_required';
   ELSIF OLD.status = 'processing' AND OLD.phase = 'analysis' AND NEW.review_exhaustion_code = 'acr_exhausted' THEN expected_event := 'review_exhaustion_recorded';
   ELSIF OLD.status = 'processing' AND OLD.phase = 'decision' AND NEW.status = 'action_required' THEN expected_event := 'reference_required';
   ELSIF OLD.status = 'action_required' AND NEW.status = 'processing' AND NEW.bound_reference_asset_id IS NOT NULL THEN expected_event := 'reference_bound';
@@ -902,8 +975,28 @@ BEGIN
   IF event_record.community_id IS DISTINCT FROM NEW.community_id OR event_record.actor_user_id IS DISTINCT FROM NEW.actor_user_id OR event_record.operation_id IS DISTINCT FROM NEW.operation_id OR event_record.creation_revision IS DISTINCT FROM NEW.creation_revision OR event_record.audio_revision IS DISTINCT FROM NEW.audio_revision OR event_record.analysis_revision IS DISTINCT FROM NEW.analysis_revision OR event_record.decision_revision IS DISTINCT FROM NEW.decision_revision OR event_record.workflow_revision IS DISTINCT FROM NEW.workflow_revision THEN RAISE EXCEPTION 'media submission event lineage does not match'; END IF;
   IF expected_event <> 'failure' AND event_record.event_kind IS DISTINCT FROM expected_event THEN RAISE EXCEPTION 'media submission transition requires its exact event'; END IF;
   IF event_record.evidence->>'event_kind' IS DISTINCT FROM event_record.event_kind OR (event_record.event_kind = 'review_exhaustion_recorded' AND event_record.evidence->>'exhaustion_attempt_id' IS DISTINCT FROM NEW.review_exhaustion_attempt_id) THEN RAISE EXCEPTION 'media submission event evidence does not match'; END IF;
+  IF event_record.event_kind = 'moderator_blocked' AND event_record.evidence->>'reason_code' IS DISTINCT FROM 'policy_violation' THEN RAISE EXCEPTION 'moderator block event evidence is not exact'; END IF;
   IF expected_event = 'failure' AND event_record.event_kind NOT IN ('media_failure_recorded','technical_exhaustion_recorded','seal_conflict_recorded') THEN RAISE EXCEPTION 'media failure transition event is not exact'; END IF;
-  IF event_record.event_kind = 'seal_conflict_recorded' AND (NEW.failure_code IS DISTINCT FROM 'upload_seal_conflict' OR NEW.retryable IS DISTINCT FROM FALSE) THEN RAISE EXCEPTION 'seal conflict event evidence is not exact'; END IF;
+  IF NEW.failure_code IS NOT DISTINCT FROM 'upload_seal_conflict' AND (OLD.phase IS DISTINCT FROM 'finalize' OR event_record.event_kind IS DISTINCT FROM 'seal_conflict_recorded') THEN RAISE EXCEPTION 'seal conflict event evidence is not exact'; END IF;
+  IF event_record.event_kind = 'seal_conflict_recorded' AND (OLD.phase IS DISTINCT FROM 'finalize' OR NEW.failure_code IS DISTINCT FROM 'upload_seal_conflict' OR NEW.retryable IS DISTINCT FROM FALSE) THEN RAISE EXCEPTION 'seal conflict event evidence is not exact'; END IF;
+  IF (NEW.status = 'abandoned' AND NEW.abandonment_reason IN ('upload_expectation_mismatch', 'upload_source_changed_before_finalize')) OR (NEW.status = 'processing_failed' AND NEW.failure_code = 'upload_seal_conflict') THEN
+    SELECT * INTO reservation_record FROM media_upload_reservations
+      WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND reservation_id=NEW.audio_reservation_id
+      AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id FOR SHARE;
+    IF reservation_record.reservation_id IS NULL
+       OR reservation_record.state IS DISTINCT FROM 'rejected'
+       OR reservation_record.terminal_fence IS DISTINCT FROM NEW.event_sequence
+       OR reservation_record.terminal_at IS NULL
+       OR reservation_record.terminal_evidence_ref IS NULL
+       OR reservation_record.terminal_evidence_digest IS DISTINCT FROM encode(sha256(reservation_record.terminal_evidence_ref::bytea), 'hex')
+       OR reservation_record.terminal_reason IS DISTINCT FROM (CASE
+         WHEN NEW.abandonment_reason = 'upload_expectation_mismatch' THEN 'expectation_mismatch'
+         WHEN NEW.abandonment_reason = 'upload_source_changed_before_finalize' THEN 'source_precondition_failed'
+         ELSE 'destination_conflict'
+       END) THEN
+      RAISE EXCEPTION 'terminal upload reservation is not paired with its submission failure';
+    END IF;
+  END IF;
   IF expected_event = 'publication_committed' AND (
     NOT EXISTS (SELECT 1 FROM posts p WHERE p.community_id=NEW.community_id AND p.post_id=NEW.post_id AND p.author_user_id=NEW.actor_user_id AND p.post_type='song' AND p.status='published' AND p.visibility='public' AND p.title=NEW.title)
     OR NOT EXISTS (SELECT 1 FROM media_publication_projections p WHERE p.community_id=NEW.community_id AND p.actor_user_id=NEW.actor_user_id AND p.submission_id=NEW.submission_id AND p.operation_id=NEW.operation_id AND p.post_id=NEW.post_id AND p.creation_revision=NEW.creation_revision AND p.audio_revision=NEW.audio_revision AND p.analysis_revision=NEW.analysis_revision AND p.decision_revision=NEW.decision_revision AND p.canonical_audio_sha256=(SELECT canonical_sha256 FROM media_audio_revisions a WHERE a.community_id=NEW.community_id AND a.actor_user_id=NEW.actor_user_id AND a.submission_id=NEW.submission_id AND a.operation_id=NEW.operation_id AND a.audio_revision=NEW.audio_revision) AND p.alignment='pending')
@@ -1068,6 +1161,7 @@ BEGIN
   ELSIF NEW.event_type = 'publication' THEN expected := ARRAY['kind','operation_id','post_id','submission_id','workflow_instance_id','workflow_revision'];
   ELSE expected := ARRAY['kind','operation_id','post_id','submission_id','workflow_instance_id','workflow_revision']; END IF;
   IF keys IS DISTINCT FROM expected THEN RAISE EXCEPTION 'media outbox payload is not a closed identifier union'; END IF;
+  IF NEW.payload->>'kind' IS DISTINCT FROM NEW.event_type THEN RAISE EXCEPTION 'media outbox payload kind does not match event type'; END IF;
   SELECT * INTO submission_record FROM media_post_submissions WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id AND submission_id = NEW.submission_id FOR SHARE;
   IF submission_record.submission_id IS NULL OR NEW.operation_id <> submission_record.operation_id OR NEW.creation_revision <> submission_record.creation_revision OR NEW.audio_revision <> submission_record.audio_revision OR NEW.analysis_revision <> submission_record.analysis_revision OR NEW.workflow_revision <> submission_record.workflow_revision OR NEW.workflow_instance_id <> 'media-' || NEW.operation_id || '-r' || NEW.workflow_revision::text THEN RAISE EXCEPTION 'media outbox row lineage does not match submission'; END IF;
   IF NEW.event_type = 'analysis_launch' AND (NOT EXISTS (SELECT 1 FROM media_audio_revisions a WHERE a.community_id=NEW.community_id AND a.actor_user_id=NEW.actor_user_id AND a.submission_id=NEW.submission_id AND a.operation_id=NEW.operation_id AND a.audio_revision=NEW.audio_revision AND a.immutable_ref=submission_record.current_immutable_ref) OR (NEW.payload->>'submission_id') <> NEW.submission_id OR (NEW.payload->>'operation_id') <> NEW.operation_id OR (NEW.payload->>'audio_revision')::bigint <> NEW.audio_revision OR (NEW.payload->>'analysis_revision')::bigint <> NEW.analysis_revision OR (NEW.payload->>'workflow_revision')::bigint <> NEW.workflow_revision OR (NEW.payload->>'workflow_instance_id') <> NEW.workflow_instance_id) THEN RAISE EXCEPTION 'media analysis outbox payload values do not match row'; END IF;
@@ -1109,6 +1203,7 @@ CREATE FUNCTION guard_media_processing_attempt_update() RETURNS trigger LANGUAGE
 BEGIN
   IF ROW(NEW.attempt_id, NEW.submission_id, NEW.community_id, NEW.actor_user_id, NEW.operation_id, NEW.audio_revision, NEW.analysis_revision, NEW.stage, NEW.attempt_number, NEW.input_hash, NEW.provider_idempotency_key, NEW.input_kind, NEW.input_revision, NEW.policy_revision, NEW.adapter_revision, NEW.created_at) IS DISTINCT FROM ROW(OLD.attempt_id, OLD.submission_id, OLD.community_id, OLD.actor_user_id, OLD.operation_id, OLD.audio_revision, OLD.analysis_revision, OLD.stage, OLD.attempt_number, OLD.input_hash, OLD.provider_idempotency_key, OLD.input_kind, OLD.input_revision, OLD.policy_revision, OLD.adapter_revision, OLD.created_at) THEN RAISE EXCEPTION 'media processing attempt identity is immutable'; END IF;
   IF NEW.updated_at <= OLD.updated_at THEN RAISE EXCEPTION 'media processing attempt timestamp must advance'; END IF;
+  IF NEW.state = 'retry_wait' AND NEW.attempt_number >= 3 THEN RAISE EXCEPTION 'media processing attempt retry bound is exhausted'; END IF;
   IF OLD.state = 'retry_wait' AND (OLD.next_eligible_at IS NULL OR OLD.next_eligible_at > clock_timestamp()) THEN RAISE EXCEPTION 'media processing attempt retry is not yet eligible'; END IF;
   IF (OLD.state = 'pending' OR OLD.state = 'retry_wait') AND (NEW.state <> 'running' OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp()) THEN RAISE EXCEPTION 'media processing attempt claim is not allowed'; END IF;
   IF OLD.state = 'running' AND NEW.state = 'running' AND (OLD.lease_expires_at > clock_timestamp() OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp()) THEN RAISE EXCEPTION 'media processing attempt reclaim is not allowed'; END IF;

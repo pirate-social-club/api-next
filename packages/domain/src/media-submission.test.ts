@@ -512,8 +512,28 @@ describe("song media Spec 013 machine", () => {
           reason: "upload_source_changed_before_finalize",
           retentionDisposition: "retain_for_reconciliation",
         },
+        evidenceRef: "source-precondition-evidence",
       }),
     ).toMatchObject({ ok: false, rejection: { _tag: "transition_not_allowed" } });
+    for (const phase of ["awaiting_upload", "analysis", "decision", "publish"] as const) {
+      expect(
+        transitionMediaSubmission(
+          { ...analyzed(), phase },
+          {
+            event: "seal_conflict_recorded",
+            actorId,
+            expectedCreationRevision: 2,
+            failure: {
+              code: "upload_seal_conflict",
+              retryable: false,
+              retryCount: 0,
+              lastSafePhase: "finalize",
+              evidenceRef: "seal-conflict-evidence",
+            },
+          },
+        ),
+      ).toMatchObject({ ok: false, rejection: { _tag: "transition_not_allowed" } });
+    }
     expect(
       ok(
         transitionMediaSubmission(withTerms, {
@@ -524,13 +544,14 @@ describe("song media Spec 013 machine", () => {
             reason: "upload_expectation_mismatch",
             retentionDisposition: "retain_for_reconciliation",
           },
+          evidenceRef: "upload-mismatch-evidence",
         }),
       ),
     ).toMatchObject({
       status: "abandoned",
       abandonment: { retentionDisposition: "retain_for_reconciliation" },
     });
-    const analyzedState = analyzed();
+    const analyzedState = { ...analyzed(), phase: "finalize" as const };
     expect(
       ok(
         transitionMediaSubmission(analyzedState, {
@@ -542,6 +563,7 @@ describe("song media Spec 013 machine", () => {
             retryable: false,
             retryCount: 0,
             lastSafePhase: "finalize",
+            evidenceRef: "seal-conflict-evidence",
           },
         }),
       ),

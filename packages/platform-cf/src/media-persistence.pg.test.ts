@@ -25,7 +25,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 12;
+const testCount = 14;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -570,6 +570,87 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
+  test("persists policy-violation moderator blocks and scopes replay to authority", async () => {
+    await withSchema(async (admin, connection) => {
+      await createThroughDecision(connection, reviewDecision);
+      const endpointTemplate = "/media-post-submissions/:submissionId/moderate";
+      const idempotencyKey = "moderator-block-key";
+      expect(
+        await run(connection, (store) =>
+          store.moderate({
+            ...command(endpointTemplate, idempotencyKey),
+            expectedCreationRevision: 2,
+            action: "block",
+            actor: { userId: moderator, kind: "admin", scopes: ["moderation"] },
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,moderator_reason_code FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ status: "blocked", moderator_reason_code: "policy_violation" });
+      expect(
+        (
+          await admin.query(
+            "SELECT action_kind,reason_code,authority_actor_user_id,decision_snapshot FROM media_moderation_actions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({
+        action_kind: "block",
+        reason_code: "policy_violation",
+        authority_actor_user_id: moderator,
+        decision_snapshot: { reasonCode: "policy_violation" },
+      });
+      expect(
+        await run(connection, (store) =>
+          store.getForAuthor({
+            communityId: community,
+            submissionId: submission,
+            actorUserId: actor,
+          }),
+        ),
+      ).toMatchObject({
+        status: "blocked",
+        moderatorApproval: { reasonCode: "policy_violation", moderatorActorId: moderator },
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT event_kind,evidence->>'reason_code' AS reason_code FROM media_submission_events WHERE submission_id=$1 ORDER BY event_sequence DESC LIMIT 1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ event_kind: "moderator_blocked", reason_code: "policy_violation" });
+      expect(
+        await run(connection, (store) =>
+          store.replay({
+            communityId: community,
+            actorUserId: moderator,
+            endpointTemplate,
+            idempotencyKey,
+            requestHash,
+          }),
+        ),
+      ).toMatchObject({ kind: "replay", submissionId: submission });
+      expect(
+        await run(connection, (store) =>
+          store.replay({
+            communityId: community,
+            actorUserId: "media_pg_other_moderator",
+            endpointTemplate,
+            idempotencyKey,
+            requestHash,
+          }),
+        ),
+      ).toEqual({ kind: "none" });
+    });
+    completedTestCount += 1;
+  }, 40_000);
   test("records bounded typed failure retries and exact abandonment reasons", async () => {
     await withSchema(async (admin, connection) => {
       await createThroughDecision(connection);
@@ -621,6 +702,14 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         _tag: "MediaSubmissionRepositoryError",
         reason: "transition-rejected",
       });
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "UPDATE media_post_submissions SET phase='analysis',last_safe_phase=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+          [submission],
+        ),
+      ).rejects.toThrow();
+      await admin.query("ROLLBACK");
       const events = await admin.query<{ event_kind: string }>(
         "SELECT event_kind FROM media_submission_events WHERE submission_id=$1 ORDER BY event_sequence",
         [submission],
@@ -732,6 +821,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           store.uploadExpectationMismatch({
             ...command("/media-post-submissions/:submissionId/upload-mismatch", "mismatch-key"),
             expectedCreationRevision: 1,
+            evidenceRef: "upload-mismatch-evidence",
           }),
         ),
       ).toMatchObject({ kind: "committed" });
@@ -755,6 +845,20 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           )
         ).rows[0],
       ).toEqual({ event_kind: "upload_expectation_mismatch_recorded" });
+      expect(
+        (
+          await admin.query(
+            "SELECT state,terminal_reason,terminal_evidence_ref,terminal_evidence_digest,terminal_fence FROM media_upload_reservations WHERE reservation_id=$1",
+            [reservation],
+          )
+        ).rows[0],
+      ).toEqual({
+        state: "rejected",
+        terminal_reason: "expectation_mismatch",
+        terminal_evidence_ref: "upload-mismatch-evidence",
+        terminal_evidence_digest: sha256(new TextEncoder().encode("upload-mismatch-evidence")),
+        terminal_fence: "2",
+      });
     });
     completedTestCount += 1;
   }, 40_000);
@@ -768,6 +872,28 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         admin.query(
           "UPDATE media_post_submissions SET review_exhaustion_code='acr_exhausted',review_exhaustion_attempt_id='forged',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
           [submission],
+        ),
+      ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ('hostile-kind',$1,$2,$3,$4,2,1,1,1,$5,'publication','hostile-kind-effect',$6::jsonb)",
+          [
+            submission,
+            community,
+            actor,
+            operation,
+            `media-${operation}-r1`,
+            JSON.stringify({
+              kind: "analysis_launch",
+              operation_id: operation,
+              post_id: "media-post",
+              submission_id: submission,
+              workflow_revision: 1,
+              workflow_instance_id: `media-${operation}-r1`,
+            }),
+          ],
         ),
       ).rejects.toThrow();
       await admin.query("ROLLBACK");
@@ -893,9 +1019,10 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       await admin.query("BEGIN");
       await expect(
         admin.query(
-          "INSERT INTO media_submission_command_replays (community_id,actor_user_id,endpoint_template,idempotency_key,request_hash,submission_id,operation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
+          "INSERT INTO media_submission_command_replays (community_id,actor_user_id,submission_actor_user_id,endpoint_template,idempotency_key,request_hash,submission_id,operation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
           [
             community,
+            moderator,
             moderator,
             "/media-post-submissions/:submissionId/replay-hostile",
             "cross-actor",
@@ -1195,6 +1322,26 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           }),
         ),
       ).toBeNull();
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("rejects a third processing attempt from entering retry_wait", async () => {
+    await withSchema(async (admin, connection) => {
+      await createThroughDecision(connection);
+      await admin.query(
+        "INSERT INTO media_processing_attempts (attempt_id,submission_id,community_id,actor_user_id,operation_id,audio_revision,analysis_revision,stage,attempt_number,input_hash,provider_idempotency_key,input_kind,input_revision,policy_revision,adapter_revision,state) VALUES ('media_pg_third_attempt',$1,$2,$3,$4,1,1,'acr',3,$5,'media-pg-third-provider','audio',1,'acr-policy','acr-adapter','pending')",
+        [submission, community, actor, operation, audioSha256],
+      );
+      await admin.query(
+        "UPDATE media_processing_attempts SET state='running',claim_owner='third-worker',claim_fence=1,lease_expires_at=clock_timestamp()+interval '30 seconds',updated_at=clock_timestamp() WHERE attempt_id='media_pg_third_attempt'",
+      );
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "UPDATE media_processing_attempts SET state='retry_wait',claim_owner=NULL,lease_expires_at=NULL,retryable=TRUE,next_eligible_at=clock_timestamp()+interval '1 minute',updated_at=clock_timestamp() WHERE attempt_id='media_pg_third_attempt'",
+        ),
+      ).rejects.toThrow();
+      await admin.query("ROLLBACK");
     });
     completedTestCount += 1;
   }, 40_000);
