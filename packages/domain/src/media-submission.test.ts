@@ -4,7 +4,6 @@ import {
   createMediaSubmissionState,
   deterministicMediaWorkflowInstanceId,
   type ImmutableAudio,
-  mediaSubmissionInvariant,
   type PublicationDecision,
   type SongTerms,
   type TrustedSongAnalysis,
@@ -12,83 +11,71 @@ import {
 } from "./media-submission.ts";
 
 const actorId = "media_actor";
-const canonicalAudioSha256 = "a".repeat(64);
-const artifactSha256 = "b".repeat(64);
-const transcriptSha256 = "c".repeat(64);
+const operationId = "media_operation";
+const audioHash = "a".repeat(64);
+const audio: ImmutableAudio = {
+  audioRevision: 1,
+  immutableRef: "immutable_audio",
+  canonicalSha256: audioHash,
+  contentType: "audio/mpeg",
+  sizeBytes: 1024,
+};
+const terms: SongTerms = {
+  licensePreset: "non-commercial",
+  commercialRemixShareBps: 0,
+  royaltyAllocations: [{ recipientId: actorId, shareBps: 10_000 }],
+  accessMode: "public",
+};
+const analysis = (
+  acrDecision: TrustedSongAnalysis["acrDecision"] = "allow",
+): TrustedSongAnalysis => ({
+  version: "song-trusted-analysis-v1",
+  operationId,
+  analysisRevision: 1,
+  audioRevision: 1,
+  canonicalAudioSha256: audioHash,
+  finalizedAudioRef: audio.immutableRef,
+  probeEvidenceRef: "probe",
+  embeddedMetadataEvidenceRef: "metadata",
+  embeddedTitle: null,
+  embeddedTitleProvenance: "absent",
+  cover: { status: "absent", reasonCode: "not_embedded" },
+  speech: {
+    status: "no_speech",
+    explicitness: "no_lyrics",
+    evidenceRef: "speech",
+    policyRevision: "speech-v1",
+    adapterRevision: "speech-adapter-v1",
+  },
+  acrDecision,
+  acrEvidenceRef: "acr",
+  acrPolicyRevision: "acr-policy-v1",
+  acrAdapterRevision: "acr-adapter-v1",
+  mediaSafety: "allow",
+  lyricsSafety: "skipped",
+  boundReference: null,
+});
 
 const created = createMediaSubmissionState({
-  event: "submission_created",
+  event: "submission_reserved",
   actorId,
   expectedCreationRevision: 0,
   submissionId: "media_submission",
-  operationId: "media_operation",
+  operationId,
   communityId: "media_community",
   title: "Author title",
   songType: "original",
   reservationId: "media_reservation",
 });
 
-const terms: SongTerms = {
-  licensePreset: "commercial-remix",
-  commercialRemixShareBps: 0,
-  royaltyAllocations: [{ recipientId: actorId, shareBps: 10_000 }],
-  accessMode: "public",
-};
-
-const audio: ImmutableAudio = {
-  audioRevision: 1,
-  immutableRef: "media_immutable_audio",
-  canonicalSha256: canonicalAudioSha256,
-  contentType: "audio/mpeg",
-  sizeBytes: 1234,
-};
-
-const analysis = (analysisRevision = 1): TrustedSongAnalysis => ({
-  analysisRevision,
-  audioRevision: 1,
-  canonicalAudioSha256,
-  finalizedAudioRef: audio.immutableRef,
-  probeEvidenceRef: "probe_evidence",
-  embeddedMetadataEvidenceRef: "embedded_metadata_evidence",
-  embeddedTitle: "Embedded title",
-  cover: {
-    status: "ready",
-    artifactRef: "cover_artifact",
-    artifactSha256,
-    mediaType: "image/jpeg",
-    normalizationRevision: "cover_normalization_v1",
-    safetyPolicyRevision: "cover_safety_v1",
-  },
-  speech: {
-    status: "ready",
-    transcriptArtifactRef: "transcript_artifact",
-    transcriptSha256,
-    explicitness: "not_explicit",
-    primaryLanguageBcp47: "en-US",
-    secondaryLanguageBcp47: null,
-    evidenceRef: "speech_evidence",
-    policyRevision: "speech_policy_v1",
-    adapterRevision: "speech_adapter_v1",
-  },
-  acrDecision: "allow",
-  acrEvidenceRef: "acr_evidence",
-  acrPolicyRevision: "acr_policy_v1",
-  acrAdapterRevision: "acr_adapter_v1",
-  mediaSafety: "allow",
-  lyricsSafety: "allow",
-});
-
-function expectState(
-  result: ReturnType<typeof transitionMediaSubmission>,
-): Extract<typeof result, { readonly ok: true }>["state"] {
+function ok<A extends ReturnType<typeof transitionMediaSubmission>>(result: A) {
   expect(result.ok).toBe(true);
-  if (!result.ok) throw new Error(result.rejection.tag);
-  expect(mediaSubmissionInvariant(result.state)).toBeNull();
+  if (!result.ok) throw new Error(result.rejection._tag);
   return result.state;
 }
 
-function analyzedState() {
-  const withTerms = expectState(
+function analyzed() {
+  const withTerms = ok(
     transitionMediaSubmission(created, {
       event: "terms_bound",
       actorId,
@@ -96,143 +83,218 @@ function analyzedState() {
       terms,
     }),
   );
-  const finalized = expectState(
+  const finalized = ok(
     transitionMediaSubmission(withTerms, {
-      event: "audio_finalized",
+      event: "upload_finalized",
       actorId,
       expectedCreationRevision: 2,
       expectedAudioRevision: 0,
       audio,
     }),
   );
-  return expectState(
+  return ok(
     transitionMediaSubmission(finalized, {
       event: "analysis_accepted",
       actorId,
       expectedAudioRevision: 1,
-      expectedCanonicalAudioSha256: canonicalAudioSha256,
+      expectedCanonicalAudioSha256: audioHash,
       analysis: analysis(),
     }),
   );
 }
 
-describe("song media submission persistence machine", () => {
-  test("starts with only form-light author facts", () => {
+describe("song media Spec 013 machine", () => {
+  test("starts form-light and uses the exact workflow identity", () => {
     expect(created).toMatchObject({
+      status: "processing",
+      phase: "awaiting_upload",
       creationRevision: 1,
       audioRevision: 0,
-      analysisRevision: 0,
-      decisionRevision: 0,
-      workflowRevision: 0,
-      status: "awaiting_upload",
-      terms: null,
-      audio: null,
     });
-    expect(created).not.toHaveProperty("lyrics");
-    expect(created).not.toHaveProperty("language");
-    expect(created).not.toHaveProperty("commentary");
+    expect(deterministicMediaWorkflowInstanceId(operationId, 1)).toBe("media-media_operation-r1");
   });
 
-  test("separates mutable terms from immutable audio and analysis revisions", () => {
-    const analyzed = analyzedState();
-    expect(analyzed).toMatchObject({
+  test("binds terms separately and accepts the correct initial analysis revision", () => {
+    const state = analyzed();
+    expect(state).toMatchObject({
+      status: "processing",
+      phase: "decision",
       creationRevision: 2,
       audioRevision: 1,
       analysisRevision: 1,
-      workflowRevision: 1,
-      status: "decision_pending",
     });
-
-    const changedTerms = expectState(
-      transitionMediaSubmission(analyzed, {
-        event: "terms_bound",
+    expect(
+      transitionMediaSubmission(state, {
+        event: "analysis_accepted",
         actorId,
-        expectedCreationRevision: 2,
-        terms: { ...terms, commercialRemixShareBps: 1000 },
+        expectedAudioRevision: 1,
+        expectedCanonicalAudioSha256: audioHash,
+        analysis: { ...analysis(), analysisRevision: 3 },
       }),
-    );
-    expect(changedTerms).toMatchObject({
-      creationRevision: 3,
-      audioRevision: 1,
-      analysisRevision: 1,
-      decisionRevision: 0,
-      analysis: { canonicalAudioSha256 },
-    });
+    ).toMatchObject({ ok: false, rejection: { _tag: "analysis_evidence_stale" } });
   });
 
-  test("rejects analysis copied across audio revision or hash identity", () => {
-    const finalized = expectState(
-      transitionMediaSubmission(created, {
-        event: "audio_finalized",
+  test("requires exact reference evidence before remix publication", () => {
+    const remix = createMediaSubmissionState({
+      event: "submission_reserved",
+      actorId,
+      expectedCreationRevision: 0,
+      submissionId: "media_submission",
+      operationId,
+      communityId: "media_community",
+      title: "Fixture",
+      songType: "remix",
+      reservationId: "media_reservation",
+    });
+    const withTerms = ok(
+      transitionMediaSubmission(remix, {
+        event: "terms_bound",
         actorId,
         expectedCreationRevision: 1,
+        terms,
+      }),
+    );
+    const finalized = ok(
+      transitionMediaSubmission(withTerms, {
+        event: "upload_finalized",
+        actorId,
+        expectedCreationRevision: 2,
         expectedAudioRevision: 0,
         audio,
       }),
     );
-    expect(
+    const match = ok(
       transitionMediaSubmission(finalized, {
         event: "analysis_accepted",
         actorId,
         expectedAudioRevision: 1,
-        expectedCanonicalAudioSha256: "d".repeat(64),
-        analysis: analysis(),
-      }),
-    ).toEqual({ ok: false, rejection: { tag: "audio_identity_mismatch" } });
-    expect(
-      transitionMediaSubmission(finalized, {
-        event: "analysis_accepted",
-        actorId,
-        expectedAudioRevision: 1,
-        expectedCanonicalAudioSha256: canonicalAudioSha256,
-        analysis: { ...analysis(), audioRevision: 2 },
-      }),
-    ).toEqual({ ok: false, rejection: { tag: "audio_identity_mismatch" } });
-  });
-
-  test("allows a later stage-analysis revision without rerunning unchanged audio", () => {
-    const first = analyzedState();
-    const second = expectState(
-      transitionMediaSubmission(first, {
-        event: "analysis_accepted",
-        actorId,
-        expectedAudioRevision: 1,
-        expectedCanonicalAudioSha256: canonicalAudioSha256,
-        analysis: analysis(2),
+        expectedCanonicalAudioSha256: audioHash,
+        analysis: analysis("requires_reference"),
       }),
     );
-    expect(second).toMatchObject({
-      creationRevision: 2,
-      audioRevision: 1,
-      analysisRevision: 2,
-      workflowRevision: 1,
+    const action = ok(
+      transitionMediaSubmission(match, {
+        event: "reference_required",
+        actorId,
+        expectedCreationRevision: 2,
+        expectedAudioRevision: 1,
+        expectedAnalysisRevision: 1,
+        referenceRequestRef: "ref-request",
+        actionExpiresAt: "2999-01-01T00:00:00.000Z",
+      }),
+    );
+    expect(action.status).toBe("action_required");
+    const bound = ok(
+      transitionMediaSubmission(action, {
+        event: "reference_bound",
+        actorId,
+        expectedCreationRevision: 2,
+        nowEpochMs: Date.parse("2998-01-01T00:00:00.000Z"),
+        reference: {
+          assetId: "upstream",
+          evidenceAudioRevision: 1,
+          evidenceAnalysisRevision: 1,
+          evidenceAudioSha256: audioHash,
+          upstreamCommercialRevShareBps: 1000,
+        },
+      }),
+    );
+    expect(bound).toMatchObject({
+      status: "processing",
+      phase: "analysis",
+      creationRevision: 3,
+      boundReference: { assetId: "upstream" },
     });
   });
 
-  test("binds decisions to exact current terms and evidence revisions", () => {
-    const analyzed = analyzedState();
+  test("records review and moderator evidence, and bounds technical retries at three", () => {
+    const state = analyzed();
+    const review = ok(
+      transitionMediaSubmission(state, {
+        event: "review_required",
+        actorId,
+        expectedCreationRevision: 2,
+        review: { reviewRef: "review", heldRevision: 2, reasonCode: "moderation_unavailable" },
+      }),
+    );
+    const approved = ok(
+      transitionMediaSubmission(review, {
+        event: "moderator_approved",
+        actorId,
+        expectedCreationRevision: 2,
+        communityActive: true,
+        membershipActive: true,
+        approval: {
+          actionId: "moderator-action",
+          moderatorActorId: "moderator",
+          evidenceRef: "review-evidence",
+          reasonCode: "acr_inconclusive",
+          heldRevision: 2,
+        },
+      }),
+    );
+    expect(approved).toMatchObject({ status: "processing", phase: "publish" });
+    let failed = ok(
+      transitionMediaSubmission(state, {
+        event: "technical_exhaustion_recorded",
+        actorId,
+        expectedCreationRevision: 2,
+        failure: {
+          code: "probe_failed",
+          retryable: true,
+          retryCount: 0,
+          lastSafePhase: "analysis",
+        },
+      }),
+    );
+    for (const retryCount of [1, 2, 3] as const) {
+      const retried = ok(
+        transitionMediaSubmission(failed, {
+          event: "retry_authorized",
+          actorId,
+          expectedCreationRevision: failed.creationRevision,
+        }),
+      );
+      failed = ok(
+        transitionMediaSubmission(retried, {
+          event: "technical_exhaustion_recorded",
+          actorId,
+          expectedCreationRevision: retried.creationRevision,
+          failure: {
+            code: "probe_failed",
+            retryable: retryCount < 3,
+            retryCount,
+            lastSafePhase: "analysis",
+          },
+        }),
+      );
+    }
+    expect(
+      transitionMediaSubmission(failed, {
+        event: "retry_authorized",
+        actorId,
+        expectedCreationRevision: failed.creationRevision,
+      }),
+    ).toMatchObject({
+      ok: false,
+      rejection: { _tag: "retry_not_allowed", reasonCode: "failure_not_retryable" },
+    });
+  });
+
+  test("requires active community membership at publication", () => {
+    const state = analyzed();
     const decision: PublicationDecision = {
       decisionRevision: 1,
       outcome: "allow",
       creationRevision: 2,
       audioRevision: 1,
       analysisRevision: 1,
-      canonicalAudioSha256,
-      policyRevision: "publication_policy_v1",
-      evidenceRef: "publication_decision_evidence",
+      canonicalAudioSha256: audioHash,
+      policyRevision: "publication-v1",
+      evidenceRef: "decision-evidence",
     };
-    expect(
-      transitionMediaSubmission(analyzed, {
-        event: "decision_recorded",
-        actorId,
-        expectedCreationRevision: 2,
-        expectedAudioRevision: 1,
-        expectedAnalysisRevision: 1,
-        decision: { ...decision, creationRevision: 1 },
-      }),
-    ).toEqual({ ok: false, rejection: { tag: "decision_evidence_incomplete" } });
-    const decided = expectState(
-      transitionMediaSubmission(analyzed, {
+    const ready = ok(
+      transitionMediaSubmission(state, {
         event: "decision_recorded",
         actorId,
         expectedCreationRevision: 2,
@@ -241,32 +303,8 @@ describe("song media submission persistence machine", () => {
         decision,
       }),
     );
-    expect(decided).toMatchObject({ status: "ready_to_publish", decisionRevision: 1 });
-  });
-
-  test("rechecks active community effect before publication", () => {
-    const analyzed = analyzedState();
-    const decided = expectState(
-      transitionMediaSubmission(analyzed, {
-        event: "decision_recorded",
-        actorId,
-        expectedCreationRevision: 2,
-        expectedAudioRevision: 1,
-        expectedAnalysisRevision: 1,
-        decision: {
-          decisionRevision: 1,
-          outcome: "allow",
-          creationRevision: 2,
-          audioRevision: 1,
-          analysisRevision: 1,
-          canonicalAudioSha256,
-          policyRevision: "publication_policy_v1",
-          evidenceRef: "publication_decision_evidence",
-        },
-      }),
-    );
     expect(
-      transitionMediaSubmission(decided, {
+      transitionMediaSubmission(ready, {
         event: "publication_committed",
         actorId,
         expectedCreationRevision: 2,
@@ -275,32 +313,23 @@ describe("song media submission persistence machine", () => {
         expectedDecisionRevision: 1,
         communityActive: true,
         membershipActive: false,
-        postId: "media_post",
+        postId: "media-post-media_operation",
       }),
-    ).toEqual({ ok: false, rejection: { tag: "inactive_community_effect" } });
-    const published = expectState(
-      transitionMediaSubmission(decided, {
-        event: "publication_committed",
-        actorId,
-        expectedCreationRevision: 2,
-        expectedAudioRevision: 1,
-        expectedAnalysisRevision: 1,
-        expectedDecisionRevision: 1,
-        communityActive: true,
-        membershipActive: true,
-        postId: "media_post",
-      }),
-    );
-    expect(published).toMatchObject({
-      status: "published",
-      workflowRevision: 2,
-      postId: "media_post",
-    });
-  });
-
-  test("derives deterministic workflow identity from operation and revision", () => {
-    expect(deterministicMediaWorkflowInstanceId("media_operation", 1)).toBe(
-      "media_operation:workflow:1",
-    );
+    ).toMatchObject({ ok: false, rejection: { _tag: "actor_not_authorized" } });
+    expect(
+      ok(
+        transitionMediaSubmission(ready, {
+          event: "publication_committed",
+          actorId,
+          expectedCreationRevision: 2,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          communityActive: true,
+          membershipActive: true,
+          postId: "media-post-media_operation",
+        }),
+      ).status,
+    ).toBe("published");
   });
 });
