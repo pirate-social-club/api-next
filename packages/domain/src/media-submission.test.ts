@@ -27,7 +27,7 @@ const terms: SongTerms = {
   accessMode: "public",
 };
 const analysis = (
-  acrDecision: TrustedSongAnalysis["acrDecision"] = "allow",
+  acrDecision: TrustedSongAnalysis["acr"]["decision"] = "allow",
 ): TrustedSongAnalysis => ({
   version: "song-trusted-analysis-v1",
   operationId,
@@ -36,21 +36,25 @@ const analysis = (
   canonicalAudioSha256: audioHash,
   finalizedAudioRef: audio.immutableRef,
   probeEvidenceRef: "probe",
-  embeddedMetadataEvidenceRef: "metadata",
-  embeddedTitle: null,
-  embeddedTitleProvenance: "absent",
-  cover: { status: "absent", reasonCode: "not_embedded" },
-  speech: {
+  embeddedMetadata: {
+    evidenceRef: "metadata",
+    adapterRevision: "metadata-adapter-v1",
+    trackTitle: null,
+    cover: { status: "absent", reasonCode: "not_embedded" },
+  },
+  speechLyrics: {
     status: "no_speech",
     explicitness: "no_lyrics",
     evidenceRef: "speech",
     policyRevision: "speech-v1",
     adapterRevision: "speech-adapter-v1",
   },
-  acrDecision,
-  acrEvidenceRef: "acr",
-  acrPolicyRevision: "acr-policy-v1",
-  acrAdapterRevision: "acr-adapter-v1",
+  acr: {
+    decision: acrDecision,
+    evidenceRef: "acr",
+    policyRevision: "acr-policy-v1",
+    adapterRevision: "acr-adapter-v1",
+  },
   mediaSafety: "allow",
   lyricsSafety: "skipped",
   boundReference: null,
@@ -77,7 +81,7 @@ function ok<A extends ReturnType<typeof transitionMediaSubmission>>(result: A) {
 function analyzed() {
   const withTerms = ok(
     transitionMediaSubmission(created, {
-      event: "terms_bound",
+      event: "song_terms_bound",
       actorId,
       expectedCreationRevision: 1,
       terms,
@@ -94,7 +98,7 @@ function analyzed() {
   );
   return ok(
     transitionMediaSubmission(finalized, {
-      event: "analysis_accepted",
+      event: "blocking_analysis_completed",
       actorId,
       expectedAudioRevision: 1,
       expectedCanonicalAudioSha256: audioHash,
@@ -125,7 +129,7 @@ describe("song media Spec 013 machine", () => {
     });
     expect(
       transitionMediaSubmission(state, {
-        event: "analysis_accepted",
+        event: "blocking_analysis_completed",
         actorId,
         expectedAudioRevision: 1,
         expectedCanonicalAudioSha256: audioHash,
@@ -148,7 +152,7 @@ describe("song media Spec 013 machine", () => {
     });
     const withTerms = ok(
       transitionMediaSubmission(remix, {
-        event: "terms_bound",
+        event: "song_terms_bound",
         actorId,
         expectedCreationRevision: 1,
         terms,
@@ -165,7 +169,7 @@ describe("song media Spec 013 machine", () => {
     );
     const match = ok(
       transitionMediaSubmission(finalized, {
-        event: "analysis_accepted",
+        event: "blocking_analysis_completed",
         actorId,
         expectedAudioRevision: 1,
         expectedCanonicalAudioSha256: audioHash,
@@ -192,6 +196,7 @@ describe("song media Spec 013 machine", () => {
         nowEpochMs: Date.parse("2998-01-01T00:00:00.000Z"),
         reference: {
           assetId: "upstream",
+          evidenceRef: "reference-evidence",
           evidenceAudioRevision: 1,
           evidenceAnalysisRevision: 1,
           evidenceAudioSha256: audioHash,
@@ -211,7 +216,7 @@ describe("song media Spec 013 machine", () => {
     const state = analyzed();
     const review = ok(
       transitionMediaSubmission(state, {
-        event: "review_required",
+        event: "review_exhaustion_recorded",
         actorId,
         expectedCreationRevision: 2,
         review: { reviewRef: "review", heldRevision: 2, reasonCode: "moderation_unavailable" },
@@ -228,8 +233,19 @@ describe("song media Spec 013 machine", () => {
           actionId: "moderator-action",
           moderatorActorId: "moderator",
           evidenceRef: "review-evidence",
-          reasonCode: "acr_inconclusive",
+          approvalKind: "standard",
+          reasonCode: null,
           heldRevision: 2,
+        },
+        decision: {
+          decisionRevision: 1,
+          outcome: "allow",
+          creationRevision: 2,
+          audioRevision: 1,
+          analysisRevision: 1,
+          canonicalAudioSha256: audioHash,
+          policyRevision: "publication-v1",
+          evidenceRef: "moderator-decision",
         },
       }),
     );
@@ -281,6 +297,32 @@ describe("song media Spec 013 machine", () => {
     });
   });
 
+  test("supersedes held review terms with a new creation revision", () => {
+    const held = ok(
+      transitionMediaSubmission(analyzed(), {
+        event: "review_exhaustion_recorded",
+        actorId,
+        expectedCreationRevision: 2,
+        review: { reviewRef: "held-review", heldRevision: 2, reasonCode: "review_required" },
+      }),
+    );
+    const replaced = ok(
+      transitionMediaSubmission(held, {
+        event: "song_terms_bound",
+        actorId,
+        expectedCreationRevision: 2,
+        terms,
+      }),
+    );
+    expect(replaced).toMatchObject({
+      creationRevision: 3,
+      status: "processing",
+      phase: "analysis",
+      review: null,
+      action: null,
+    });
+  });
+
   test("requires active community membership at publication", () => {
     const state = analyzed();
     const decision: PublicationDecision = {
@@ -295,7 +337,7 @@ describe("song media Spec 013 machine", () => {
     };
     const ready = ok(
       transitionMediaSubmission(state, {
-        event: "decision_recorded",
+        event: "publication_allowed",
         actorId,
         expectedCreationRevision: 2,
         expectedAudioRevision: 1,

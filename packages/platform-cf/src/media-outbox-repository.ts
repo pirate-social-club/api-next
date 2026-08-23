@@ -73,8 +73,9 @@ const payloadMatchesInput = (
   payload.workflow_instance_id === input.workflowInstanceId &&
   payload.workflow_revision === input.workflowRevision &&
   (payload.kind === "analysis_launch"
-    ? payload.audio_revision === input.audioRevision
-    : validId(payload.post_id));
+    ? payload.audio_revision === input.audioRevision &&
+      payload.analysis_revision === input.analysisRevision
+    : validId(input.postId) && payload.post_id === input.postId);
 
 export class MediaOutboxRepositoryError extends Data.TaggedError("MediaOutboxRepositoryError")<{
   readonly operation: "enqueue" | "get" | "claim" | "deliver" | "fail";
@@ -101,7 +102,7 @@ export type MediaOutboxRecord = Readonly<{
   eventType: EventType;
   effectIdentity: string;
   payload: MediaOutboxPayload;
-  state: "pending" | "claimed" | "delivered" | "failed";
+  state: "pending" | "running" | "delivered" | "failed" | "exhausted";
   deliveryAttempts: number;
   claimOwner: string | null;
   claimFence: number;
@@ -119,6 +120,7 @@ export type MediaOutboxEnqueueInput = Readonly<{
   workflowInstanceId: string;
   eventType: EventType;
   effectIdentity: string;
+  postId?: string;
   payload: MediaOutboxPayload;
 }>;
 export type MediaOutboxClaimInput = Readonly<{
@@ -134,6 +136,10 @@ export type MediaOutboxCompletionInput = Readonly<{
   workerId: string;
   claimFence: number;
 }>;
+export type MediaOutboxFailureCode =
+  | "provider_unavailable"
+  | "provider_timeout"
+  | "provider_invalid";
 export type MediaOutboxStore = {
   enqueue(
     input: MediaOutboxEnqueueInput,
@@ -152,7 +158,10 @@ export type MediaOutboxStore = {
     input: MediaOutboxCompletionInput,
   ): Effect.Effect<boolean, MediaOutboxRepositoryFailure, ControlPlaneDb>;
   markFailed(
-    input: MediaOutboxCompletionInput & { failureCode: string; nextEligibleAt: string },
+    input: MediaOutboxCompletionInput & {
+      failureCode: MediaOutboxFailureCode;
+      nextEligibleAt: string;
+    },
   ): Effect.Effect<boolean, MediaOutboxRepositoryFailure, ControlPlaneDb>;
 };
 const fail = (
@@ -206,11 +215,19 @@ function decodeRecord(
       deterministicMediaWorkflowInstanceId(String(row.operation_id), workflowRevision) ||
     !["analysis_launch", "publication", "alignment"].includes(eventType) ||
     payload === null ||
+    payload.submission_id !== row.submission_id ||
+    payload.operation_id !== row.operation_id ||
+    payload.workflow_revision !== workflowRevision ||
+    payload.workflow_instance_id !== row.workflow_instance_id ||
+    (payload.kind === "analysis_launch" &&
+      (payload.audio_revision !== audioRevision ||
+        payload.analysis_revision !== analysisRevision)) ||
     attempts === null ||
     attempts < 0 ||
+    attempts > 3 ||
     fence === null ||
     fence < 0 ||
-    !["pending", "claimed", "delivered", "failed"].includes(String(row.state)) ||
+    !["pending", "running", "delivered", "failed", "exhausted"].includes(String(row.state)) ||
     (row.claim_owner !== null && !validId(row.claim_owner))
   )
     throw fail(
@@ -357,7 +374,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "media-outbox.claim",
-        text: "UPDATE media_submission_outbox SET state='claimed',delivery_attempts=delivery_attempts+1,claim_owner=$1,claim_fence=claim_fence+1,lease_expires_at=clock_timestamp()+make_interval(secs=>$2),next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp() WHERE outbox_event_id=$3 AND workflow_revision=$4 AND (state='pending' OR (state='failed' AND next_eligible_at<=clock_timestamp()) OR (state='claimed' AND lease_expires_at<=clock_timestamp())) RETURNING *",
+        text: "UPDATE media_submission_outbox SET state='running',delivery_attempts=delivery_attempts+1,claim_owner=$1,claim_fence=claim_fence+1,lease_expires_at=clock_timestamp()+make_interval(secs=>$2),next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp() WHERE outbox_event_id=$3 AND workflow_revision=$4 AND delivery_attempts < 3 AND (state='pending' OR (state='failed' AND next_eligible_at<=clock_timestamp()) OR (state='running' AND lease_expires_at<=clock_timestamp())) RETURNING *",
         values: [input.workerId, input.leaseSeconds, input.outboxEventId, input.workflowRevision],
         readonly: false,
       });
@@ -381,7 +398,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute({
         label: "media-outbox.deliver",
-        text: "UPDATE media_submission_outbox SET state='delivered',claim_owner=NULL,lease_expires_at=NULL,delivered_at=clock_timestamp(),failure_code=NULL,next_eligible_at=NULL,updated_at=clock_timestamp() WHERE outbox_event_id=$1 AND workflow_revision=$2 AND workflow_instance_id=$3 AND state='claimed' AND claim_owner=$4 AND claim_fence=$5 AND lease_expires_at>clock_timestamp()",
+        text: "UPDATE media_submission_outbox SET state='delivered',claim_owner=NULL,lease_expires_at=NULL,delivered_at=clock_timestamp(),failure_code=NULL,next_eligible_at=NULL,updated_at=clock_timestamp() WHERE outbox_event_id=$1 AND workflow_revision=$2 AND workflow_instance_id=$3 AND state='running' AND claim_owner=$4 AND claim_fence=$5 AND lease_expires_at>clock_timestamp()",
         values: [
           input.outboxEventId,
           input.workflowRevision,
@@ -410,7 +427,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute({
         label: "media-outbox.fail",
-        text: "UPDATE media_submission_outbox SET state='failed',claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,next_eligible_at=$2::timestamptz,updated_at=clock_timestamp() WHERE outbox_event_id=$3 AND workflow_revision=$4 AND workflow_instance_id=$5 AND state='claimed' AND claim_owner=$6 AND claim_fence=$7 AND lease_expires_at>clock_timestamp()",
+        text: "UPDATE media_submission_outbox SET state=CASE WHEN delivery_attempts >= 3 THEN 'exhausted' ELSE 'failed' END,claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,next_eligible_at=CASE WHEN delivery_attempts >= 3 THEN NULL ELSE $2::timestamptz END,updated_at=clock_timestamp() WHERE outbox_event_id=$3 AND workflow_revision=$4 AND workflow_instance_id=$5 AND state='running' AND claim_owner=$6 AND claim_fence=$7 AND lease_expires_at>clock_timestamp()",
         values: [
           input.failureCode,
           input.nextEligibleAt,

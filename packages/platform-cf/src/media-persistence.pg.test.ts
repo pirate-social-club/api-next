@@ -25,9 +25,10 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 3;
+const testCount = 7;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
+  moderator = "media_pg_moderator",
   community = "media_pg_community",
   operation = "media_pg_operation",
   submission = "media_pg_submission",
@@ -52,21 +53,25 @@ const analysis: TrustedSongAnalysis = {
   canonicalAudioSha256: audioSha256,
   finalizedAudioRef: "media_pg_immutable",
   probeEvidenceRef: "probe_evidence_1",
-  embeddedMetadataEvidenceRef: "metadata_evidence_1",
-  embeddedTitle: null,
-  embeddedTitleProvenance: "absent",
-  cover: { status: "absent", reasonCode: "not_embedded" },
-  speech: {
+  embeddedMetadata: {
+    evidenceRef: "metadata_evidence_1",
+    adapterRevision: "metadata_adapter_1",
+    trackTitle: null,
+    cover: { status: "absent", reasonCode: "not_embedded" },
+  },
+  speechLyrics: {
     status: "no_speech",
     explicitness: "no_lyrics",
     evidenceRef: "speech_evidence_1",
     policyRevision: "speech_policy_1",
     adapterRevision: "speech_adapter_1",
   },
-  acrDecision: "allow",
-  acrEvidenceRef: "acr_evidence_1",
-  acrPolicyRevision: "acr_policy_1",
-  acrAdapterRevision: "acr_adapter_1",
+  acr: {
+    decision: "allow",
+    evidenceRef: "acr_evidence_1",
+    policyRevision: "acr_policy_1",
+    adapterRevision: "acr_adapter_1",
+  },
   mediaSafety: "allow",
   lyricsSafety: "skipped",
   boundReference: null,
@@ -81,6 +86,7 @@ const decision: PublicationDecision = {
   policyRevision: "publication_policy_1",
   evidenceRef: "publication_evidence_1",
 };
+const reviewDecision: PublicationDecision = { ...decision, outcome: "manual_review" };
 function schemaName(): string {
   return `api_next_media_${Date.now()}_${crypto.randomUUID().replaceAll("-", "")}`;
 }
@@ -139,6 +145,7 @@ async function withSchema<A>(
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     if (populated) {
       await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor]);
+      await admin.query("INSERT INTO users (user_id) VALUES ($1)", [moderator]);
       await admin.query(
         "INSERT INTO communities (community_id,display_name,status,created_by_user_id,created_at,updated_at) VALUES ($1,'Media fixture','active',$2,now(),now())",
         [community, actor],
@@ -146,6 +153,10 @@ async function withSchema<A>(
       await admin.query(
         "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_membership',$2,'member',now(),now(),now())",
         [community, actor],
+      );
+      await admin.query(
+        "INSERT INTO community_memberships (community_id,membership_id,user_id,status,joined_at,created_at,updated_at) VALUES ($1,'media_pg_moderator_membership',$2,'member',now(),now(),now())",
+        [community, moderator],
       );
       await seedHnsState(admin);
     }
@@ -188,7 +199,10 @@ const command = (endpointTemplate: string, idempotencyKey: string) => ({
   responseBytes,
   responseSha256,
 });
-async function createThroughDecision(connection: string): Promise<void> {
+async function createThroughDecision(
+  connection: string,
+  selectedDecision: PublicationDecision = decision,
+): Promise<void> {
   expect(
     await run(connection, (store) =>
       store.reserve({
@@ -282,7 +296,7 @@ async function createThroughDecision(connection: string): Promise<void> {
         expectedCreationRevision: 2,
         expectedAudioRevision: 1,
         expectedAnalysisRevision: 1,
-        decision,
+        decision: selectedDecision,
       }),
     ),
   ).toEqual({ kind: "committed", submissionId: submission });
@@ -346,9 +360,47 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             outcome: "ready",
             artifact: {
               artifactRef: "media_pg_timed_lyrics",
-              artifactSha256: "b".repeat(64),
-              artifact: { version: "timed-lyrics-v1" },
+              artifactSha256: sha256(
+                new TextEncoder().encode('{"version":"timed-lyrics-v1","segments":[]}'),
+              ),
+              artifact: { version: "timed-lyrics-v1", segments: [] },
             },
+          }),
+        ),
+      ).toBeUndefined();
+      expect(
+        await run(connection, (store) =>
+          store.recordAlignment({
+            communityId: community,
+            submissionId: submission,
+            actorUserId: actor,
+            postId,
+            audioRevision: 1,
+            analysisRevision: 1,
+            canonicalAudioSha256: audioSha256,
+            outcome: "ready",
+            artifact: {
+              artifactRef: "media_pg_timed_lyrics_v2",
+              artifactRevision: 2,
+              artifactSha256: sha256(
+                new TextEncoder().encode('{"version":"timed-lyrics-v1","segments":[]}'),
+              ),
+              artifact: { version: "timed-lyrics-v1", segments: [] },
+            },
+          }),
+        ),
+      ).toBeUndefined();
+      expect(
+        await run(connection, (store) =>
+          store.recordAlignment({
+            communityId: community,
+            submissionId: submission,
+            actorUserId: actor,
+            postId,
+            audioRevision: 1,
+            analysisRevision: 1,
+            canonicalAudioSha256: audioSha256,
+            outcome: "unavailable",
           }),
         ),
       ).toBeUndefined();
@@ -366,7 +418,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         events: "6",
         effects: "2",
         publications: "1",
-        alignment: "ready",
+        alignment: "unavailable",
         hns: "1",
       });
       expect(
@@ -403,6 +455,10 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             audioRevision: 1,
             analysisRevision: 1,
             stage: "probe",
+            inputKind: "audio",
+            inputRevision: 1,
+            policyRevision: "probe-policy-1",
+            adapterRevision: "probe-adapter-1",
             inputHash: "c".repeat(64),
           }),
         ),
@@ -422,7 +478,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             attemptId: "media_pg_attempt",
             workerId: "attempt_worker",
             claimFence: 1,
-            failureCode: "probe_timeout",
+            failureCode: "probe_failed",
             retryable: true,
             nextEligibleAt: new Date(Date.now() + 1_000).toISOString(),
           }),
@@ -436,7 +492,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           leaseSeconds: 1,
         }),
       );
-      expect(first).toMatchObject({ state: "claimed", claimOwner: "worker_a", claimFence: 1 });
+      expect(first).toMatchObject({ state: "running", claimOwner: "worker_a", claimFence: 1 });
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       const second = await run(connection, (_store, outbox) =>
         outbox.claim({
@@ -446,7 +502,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           leaseSeconds: 30,
         }),
       );
-      expect(second).toMatchObject({ state: "claimed", claimOwner: "worker_b", claimFence: 2 });
+      expect(second).toMatchObject({ state: "running", claimOwner: "worker_b", claimFence: 2 });
       expect(
         await run(connection, (_store, outbox) =>
           outbox.markDelivered({
@@ -469,6 +525,213 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           }),
         ),
       ).toBe(true);
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("derives moderator authority and persists an approval decision path", async () => {
+    await withSchema(async (_admin, connection) => {
+      await createThroughDecision(connection, reviewDecision);
+      expect(
+        await run(connection, (store) =>
+          store.moderate({
+            ...command("/media-post-submissions/:submissionId/moderate", "moderate-key"),
+            expectedCreationRevision: 2,
+            action: "approve",
+            actor: { userId: moderator, kind: "admin", scopes: ["moderation"] },
+            approval: {
+              actionId: "moderator-action",
+              moderatorActorId: actor,
+              evidenceRef: "moderator-evidence",
+              approvalKind: "standard",
+              reasonCode: null,
+              heldRevision: 2,
+            },
+            decision: { ...decision, decisionRevision: 2 },
+          }),
+        ),
+      ).toEqual({ kind: "committed", submissionId: submission });
+      const state = await run(connection, (store) =>
+        store.getForAuthor({
+          communityId: community,
+          submissionId: submission,
+          actorUserId: actor,
+        }),
+      );
+      expect(state).toMatchObject({ status: "processing", phase: "publish", decisionRevision: 2 });
+      const persisted = await _admin.query(
+        "SELECT moderator_actor_id,decision_revision FROM media_moderation_projections WHERE submission_id=$1",
+        [submission],
+      );
+      expect(persisted.rows[0]).toEqual({ moderator_actor_id: moderator, decision_revision: "2" });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("records bounded typed failure retries and exact abandonment reasons", async () => {
+    await withSchema(async (admin, connection) => {
+      await createThroughDecision(connection);
+      for (const retryCount of [0, 1, 2] as const) {
+        expect(
+          await run(connection, (store) =>
+            store.recordMediaFailure({
+              ...command("/media-post-submissions/:submissionId/failure", `failure-${retryCount}`),
+              expectedCreationRevision: retryCount + 2,
+              failure: {
+                code: "probe_failed",
+                retryable: true,
+                retryCount,
+                lastSafePhase: "analysis",
+              },
+            }),
+          ),
+        ).toMatchObject({ kind: "committed" });
+        expect(
+          await run(connection, (store) =>
+            store.retry({
+              ...command("/media-post-submissions/:submissionId/retry", `retry-${retryCount}`),
+              expectedCreationRevision: retryCount + 2,
+            }),
+          ),
+        ).toMatchObject({ kind: "committed" });
+      }
+      expect(
+        await run(connection, (store) =>
+          store.recordMediaFailure({
+            ...command("/media-post-submissions/:submissionId/failure", "failure-fourth"),
+            expectedCreationRevision: 5,
+            failure: {
+              code: "probe_failed",
+              retryable: true,
+              retryCount: 3,
+              lastSafePhase: "analysis",
+            },
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      await expect(
+        run(connection, (store) =>
+          store.retry({
+            ...command("/media-post-submissions/:submissionId/retry", "retry-fourth"),
+            expectedCreationRevision: 5,
+          }),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "MediaSubmissionRepositoryError",
+        reason: "transition-rejected",
+      });
+      const events = await admin.query<{ event_kind: string }>(
+        "SELECT event_kind FROM media_submission_events WHERE submission_id=$1 ORDER BY event_sequence",
+        [submission],
+      );
+      expect(events.rows.map((row) => row.event_kind)).toContain("media_failure_recorded");
+      expect(events.rows.map((row) => row.event_kind)).toContain("retry_authorized");
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("persists author cancellation with typed retention", async () => {
+    await withSchema(async (admin, connection) => {
+      expect(
+        await run(connection, (store) =>
+          store.reserve({
+            communityId: community,
+            actorUserId: actor,
+            idempotencyKey: "cancel-reserve",
+            requestHash,
+            expectedContentType: "audio/mpeg",
+            expectedSizeBytes: audioBytes.byteLength,
+            expectedSha256: audioSha256,
+            uploadUrl: "https://upload.test/media",
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            responseBytes,
+            responseSha256,
+            reservationId: reservation,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.createSubmission({
+            communityId: community,
+            actorUserId: actor,
+            idempotencyKey: "cancel-create",
+            requestHash,
+            title: "Fixture song",
+            songType: "original",
+            reservationId: reservation,
+            submissionId: submission,
+            operationId: operation,
+            responseBytes,
+            responseSha256,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.authorCancel({
+            ...command("/media-post-submissions/:submissionId/cancel", "cancel-key"),
+            expectedCreationRevision: 1,
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,abandonment_reason,retention_disposition FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "abandoned",
+        abandonment_reason: "author_cancelled",
+        retention_disposition: "no_object",
+      });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("parks an outbox effect after the third bounded delivery attempt", async () => {
+    await withSchema(async (_admin, connection) => {
+      await createThroughDecision(connection);
+      for (const attempt of [1, 2, 3] as const) {
+        const claimed = await run(connection, (_store, outbox) =>
+          outbox.claim({
+            outboxEventId: "media_pg_analysis_outbox",
+            workflowRevision: 1,
+            workerId: `delivery-worker-${attempt}`,
+            leaseSeconds: 30,
+          }),
+        );
+        expect(claimed).toMatchObject({
+          state: "running",
+          claimFence: attempt,
+          deliveryAttempts: attempt,
+        });
+        expect(
+          await run(connection, (_store, outbox) =>
+            outbox.markFailed({
+              outboxEventId: "media_pg_analysis_outbox",
+              workflowRevision: 1,
+              workflowInstanceId: `media-${operation}-r1`,
+              workerId: `delivery-worker-${attempt}`,
+              claimFence: attempt,
+              failureCode: "provider_unavailable",
+              nextEligibleAt: new Date(Date.now() - 1_000).toISOString(),
+            }),
+          ),
+        ).toBe(true);
+      }
+      expect(
+        await run(connection, (_store, outbox) =>
+          outbox.claim({
+            outboxEventId: "media_pg_analysis_outbox",
+            workflowRevision: 1,
+            workerId: "delivery-worker-4",
+            leaseSeconds: 30,
+          }),
+        ),
+      ).toBeNull();
+      const parked = await run(connection, (_store, outbox) =>
+        outbox.get("media_pg_analysis_outbox"),
+      );
+      expect(parked).toMatchObject({ state: "exhausted", deliveryAttempts: 3, claimOwner: null });
     });
     completedTestCount += 1;
   }, 40_000);
