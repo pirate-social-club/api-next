@@ -77,11 +77,16 @@
   "env": {
     "staging": {
       "name": "pirate-http-worker-staging",
-      // The pirate.sc zone is not yet in the canonical account. This endpoint
-      // is the origin for the secret-free, temporary zone bridge under
-      // infra/cloudflare/api-next-staging-zone-bridge.
+      // Keep workers.dev as an operator fallback while the canonical custom
+      // domain is the public staging origin.
       "workers_dev": true,
       "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "api-next-staging.pirate.sc",
+          "custom_domain": true
+        }
+      ],
       "durable_objects": {
         "bindings": [
           {
