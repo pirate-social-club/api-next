@@ -777,6 +777,7 @@ export async function observeHnsParentChain(
   const transcript: HnsControlObserverTranscriptEntryV1[] = [];
   const transcriptContext = {
     ownership_source: input.request.ownership_source,
+    root_label: input.request.root_label,
     hsd_driver_reference: input.configuration.chain.driver_reference,
     hsd_response_max_bytes: input.configuration.chain.response_max_bytes,
     authoritative_dns_driver_reference:

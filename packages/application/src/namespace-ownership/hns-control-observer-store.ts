@@ -1,5 +1,9 @@
 import { Sha256Hex, type Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
 import { Predicate, Schema } from "effect";
+import {
+  classifyHnsAuthoritativeDnsResponseV1,
+  decodeHnsAuthoritativeDnsQueryV1,
+} from "./hns-authoritative-dns.ts";
 import type { HnsOwnershipSource } from "./hns-control-observer.ts";
 
 export const HNS_CONTROL_OBSERVER_TRANSCRIPT_MAX_ENTRIES = 16 as const;
@@ -152,25 +156,16 @@ export type HnsControlObserverHsdTransportPort = Readonly<{
   ) => Promise<HnsControlObserverHsdTransportResponse>;
 }>;
 
-export type HnsControlObserverAuthoritativeDnsTransportPort = Readonly<{
-  readonly query: (
-    input: Readonly<{
-      readonly driver_reference: string;
-      readonly view_id: string;
-      readonly name: string;
-      readonly response_max_bytes: number;
-      readonly signal: AbortSignal;
-    }>,
-  ) => Promise<Uint8Array>;
-}>;
-
 export type HnsControlObserverTranscriptValidationContext = Readonly<{
   readonly ownership_source: HnsOwnershipSource;
+  readonly root_label: string;
   readonly hsd_driver_reference: string;
   readonly hsd_response_max_bytes: number;
   readonly authoritative_dns_driver_reference: string | null;
   readonly authoritative_dns_response_max_bytes: number | null;
   readonly required_view_ids: ReadonlyArray<string>;
+  readonly terminal_status?: "verified" | "rejected" | "unavailable";
+  readonly terminal_reason_code?: string | null;
 }>;
 
 export class HnsControlObserverTranscriptError extends Error {
@@ -310,7 +305,12 @@ export async function validateHnsControlObserverTranscript(
 
   let aggregateBytes = 0;
   const retained: HnsControlObserverTranscriptEntryV1[] = [];
-  for (const raw of input.transcript) {
+  let dnsStarted = false;
+  let dnsTerminalPrefix = false;
+  let nextDnsViewIndex = 0;
+  let nextDnsQueryKind: "dnskey" | "control_txt" = "dnskey";
+  for (let entryIndex = 0; entryIndex < input.transcript.length; entryIndex += 1) {
+    const raw = input.transcript[entryIndex];
     if (!Predicate.isObject(raw) || Array.isArray(raw)) {
       return failTranscript("HNS observer transcript entry must be an object");
     }
@@ -347,6 +347,30 @@ export async function validateHnsControlObserverTranscript(
     if ((await sha256Bytes(requestBytes)) !== entry.request_sha256) {
       return failTranscript("HNS observer transcript request hash does not match its bytes");
     }
+    if (isHsdEntry && dnsStarted) {
+      return failTranscript("HNS observer HSD transcript entry follows authoritative DNS");
+    }
+    if (isDnsEntry) {
+      dnsStarted = true;
+      if (dnsTerminalPrefix) {
+        return failTranscript("HNS observer DNS transcript continues after a terminal prefix");
+      }
+      let query: ReturnType<typeof decodeHnsAuthoritativeDnsQueryV1>;
+      try {
+        query = decodeHnsAuthoritativeDnsQueryV1(requestBytes);
+      } catch {
+        return failTranscript("HNS observer DNS transcript request wire is invalid");
+      }
+      const expectedView = input.context.required_view_ids[nextDnsViewIndex];
+      if (
+        expectedView === undefined ||
+        entry.method_or_view_id !== expectedView ||
+        query.root_label !== input.context.root_label ||
+        query.query_kind !== nextDnsQueryKind
+      ) {
+        return failTranscript("HNS observer DNS transcript pair order is invalid");
+      }
+    }
     if (
       entry.transport_outcome !== "response" &&
       entry.transport_outcome !== "timeout" &&
@@ -354,6 +378,9 @@ export async function validateHnsControlObserverTranscript(
       entry.transport_outcome !== "aborted"
     ) {
       return failTranscript("HNS observer transcript transport outcome is invalid");
+    }
+    if (entry.transport_outcome === "aborted") {
+      return failTranscript("HNS observer aborted transcript cannot finalize");
     }
 
     let responseBytes: Uint8Array | null = null;
@@ -396,6 +423,59 @@ export async function validateHnsControlObserverTranscript(
       return failTranscript("HNS observer no-response outcome contains response authority");
     }
 
+    if (isDnsEntry) {
+      const isCapacityPrefix =
+        entry.transport_outcome === "response" &&
+        input.context.terminal_status === "unavailable" &&
+        input.context.terminal_reason_code === "observer_capacity" &&
+        entryIndex === input.transcript.length - 1 &&
+        responseBytes?.byteLength === input.context.authoritative_dns_response_max_bytes;
+      const dnsQuery = decodeHnsAuthoritativeDnsQueryV1(requestBytes);
+      const classifiedResponse =
+        entry.transport_outcome === "response" && responseBytes !== null
+          ? classifyHnsAuthoritativeDnsResponseV1({
+              request_bytes: requestBytes,
+              response_bytes: responseBytes,
+            })
+          : null;
+      const classifiedFailureBeforeTerminal =
+        input.context.terminal_status === "unavailable" &&
+        entryIndex !== input.transcript.length - 1 &&
+        ((input.context.terminal_reason_code === "authoritative_dns_servfail" &&
+          classifiedResponse?.kind === "servfail") ||
+          (input.context.terminal_reason_code === "authoritative_dns_inconclusive" &&
+            classifiedResponse?.kind === "inconclusive"));
+      if (classifiedFailureBeforeTerminal) {
+        return failTranscript("HNS observer DNS transcript continues after a terminal response");
+      }
+      const isClassifiedTerminalPrefix =
+        entry.transport_outcome === "response" &&
+        input.context.terminal_status === "unavailable" &&
+        entryIndex === input.transcript.length - 1 &&
+        classifiedResponse !== null &&
+        ((input.context.terminal_reason_code === "authoritative_dns_servfail" &&
+          classifiedResponse.kind === "servfail") ||
+          (input.context.terminal_reason_code === "authoritative_dns_inconclusive" &&
+            (classifiedResponse.kind === "inconclusive" ||
+              (dnsQuery.query_kind === "control_txt" && classifiedResponse.kind !== "servfail"))) ||
+          (input.context.terminal_reason_code === "authoritative_dns_insecure" &&
+            dnsQuery.query_kind === "control_txt" &&
+            classifiedResponse.kind !== "servfail" &&
+            classifiedResponse.kind !== "inconclusive"));
+      const isTerminalPrefix = isCapacityPrefix || isClassifiedTerminalPrefix;
+      if (nextDnsQueryKind === "dnskey") {
+        if (entry.transport_outcome === "response" && !isTerminalPrefix) {
+          nextDnsQueryKind = "control_txt";
+        } else {
+          dnsTerminalPrefix = true;
+        }
+      } else {
+        nextDnsViewIndex += 1;
+        nextDnsQueryKind = "dnskey";
+        if (entry.transport_outcome !== "response" || isTerminalPrefix) dnsTerminalPrefix = true;
+      }
+    }
+
     aggregateBytes += requestBytes.byteLength + (responseBytes?.byteLength ?? 0);
     if (
       !Number.isSafeInteger(aggregateBytes) ||
@@ -414,6 +494,86 @@ export async function validateHnsControlObserverTranscript(
       response_bytes: responseBytes,
       response_sha256: responseHash,
     });
+  }
+  if (dnsStarted && nextDnsQueryKind === "control_txt" && !dnsTerminalPrefix) {
+    return failTranscript("HNS observer DNS transcript ends after a successful DNSKEY response");
+  }
+  if (
+    input.context.ownership_source === "owner_authoritative_dns_txt" &&
+    input.context.terminal_status !== undefined &&
+    input.context.terminal_status !== "unavailable" &&
+    (dnsTerminalPrefix || nextDnsViewIndex !== input.context.required_view_ids.length)
+  ) {
+    return failTranscript("HNS observer terminal DNS result lacks every configured view pair");
+  }
+  if (
+    input.context.ownership_source === "owner_authoritative_dns_txt" &&
+    input.context.terminal_status === "unavailable"
+  ) {
+    const finalEntry = retained.at(-1);
+    const finalEntryIsDns =
+      finalEntry !== undefined &&
+      finalEntry.driver_reference === input.context.authoritative_dns_driver_reference &&
+      input.context.required_view_ids.includes(finalEntry.method_or_view_id);
+    const finalEntryIsHsd =
+      finalEntry !== undefined &&
+      finalEntry.driver_reference === input.context.hsd_driver_reference &&
+      (HNS_CONTROL_OBSERVER_HSD_METHODS as ReadonlyArray<string>).includes(
+        finalEntry.method_or_view_id,
+      );
+    const finalClassification =
+      finalEntryIsDns &&
+      finalEntry?.transport_outcome === "response" &&
+      finalEntry.response_bytes !== null
+        ? classifyHnsAuthoritativeDnsResponseV1({
+            request_bytes: finalEntry.request_bytes,
+            response_bytes: finalEntry.response_bytes,
+          })
+        : null;
+    if (
+      finalClassification?.kind === "servfail" &&
+      input.context.terminal_reason_code !== "authoritative_dns_servfail"
+    ) {
+      return failTranscript("HNS observer terminal DNS reason contradicts SERVFAIL wire");
+    }
+    if (
+      finalClassification?.kind === "inconclusive" &&
+      finalEntry?.response_bytes?.byteLength !==
+        input.context.authoritative_dns_response_max_bytes &&
+      input.context.terminal_reason_code !== "authoritative_dns_inconclusive"
+    ) {
+      return failTranscript("HNS observer terminal DNS reason contradicts inconclusive wire");
+    }
+    if (
+      finalEntryIsDns &&
+      finalEntry?.transport_outcome === "response" &&
+      finalEntry.response_bytes?.byteLength ===
+        input.context.authoritative_dns_response_max_bytes &&
+      input.context.terminal_reason_code !== "observer_capacity"
+    ) {
+      return failTranscript("HNS observer terminal DNS reason contradicts capacity wire");
+    }
+    if (
+      input.context.terminal_reason_code === "authoritative_dns_timeout" &&
+      (!finalEntryIsDns || finalEntry?.transport_outcome !== "timeout")
+    ) {
+      return failTranscript("HNS observer DNS timeout lacks its terminal transport event");
+    }
+    if (input.context.terminal_reason_code === "authoritative_dns_servfail") {
+      if (finalClassification?.kind !== "servfail") {
+        return failTranscript("HNS observer DNS SERVFAIL lacks its terminal response");
+      }
+    }
+    if (
+      input.context.terminal_reason_code === "observer_capacity" &&
+      ((!finalEntryIsDns && !finalEntryIsHsd) ||
+        finalEntry?.transport_outcome !== "response" ||
+        (finalEntryIsDns &&
+          finalEntry.response_bytes?.byteLength !==
+            input.context.authoritative_dns_response_max_bytes))
+    ) {
+      return failTranscript("HNS observer capacity lacks its bounded terminal prefix");
+    }
   }
   return retained;
 }
