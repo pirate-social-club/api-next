@@ -31,6 +31,15 @@ function failed(reason: "unavailable" | "misconfigured" | "invalid_response") {
   return new HnsOwnerRecoveryProviderFailed({ reason });
 }
 
+function canonicalIdentifier(value: string): boolean {
+  if (value.length === 0 || value.trim() !== value) return false;
+  if (new TextEncoder().encode(value).byteLength > 256) return false;
+  return [...value].every((character) => {
+    const point = character.codePointAt(0) ?? 0;
+    return point >= 0x20 && !(point >= 0x7f && point <= 0x9f);
+  });
+}
+
 async function mappedInternalError(response: Response): Promise<never> {
   if (response.headers.get("content-type")?.toLowerCase() !== "application/json") {
     await discardHnsOwnerServiceBindingResponse(response);
@@ -90,6 +99,7 @@ function boundRequest(
     readonly body: Uint8Array;
     readonly accept: "application/json" | "application/octet-stream";
     readonly session_id: string;
+    readonly observation_id?: string;
     readonly deadline_ms: number;
     readonly max_response_bytes: number;
   }>,
@@ -99,13 +109,17 @@ function boundRequest(
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), input.deadline_ms);
       try {
+        const headers: Array<[string, string]> = [
+          ["Content-Type", "application/json"],
+          ["Accept", input.accept],
+          ["Pirate-Namespace-Session-Id", input.session_id],
+        ];
+        if (input.observation_id !== undefined) {
+          headers.push(["Pirate-HNS-Observation-Id", input.observation_id]);
+        }
         const response = await binding.fetch(input.url, {
           method: "POST",
-          headers: [
-            ["Content-Type", "application/json"],
-            ["Accept", input.accept],
-            ["Pirate-Namespace-Session-Id", input.session_id],
-          ],
+          headers,
           body: input.body,
           redirect: "manual",
           signal: controller.signal,
@@ -158,6 +172,9 @@ export function makeHnsOwnerRecoveryServiceBindingProvider(
       if (options.deadline_ms !== HNS_OWNER_RECOVERY_POLL_DEADLINE_MS) {
         return Effect.fail(failed("misconfigured"));
       }
+      if (!canonicalIdentifier(options.observation_id)) {
+        return Effect.fail(failed("invalid_response"));
+      }
       return Effect.try({
         try: () => encodeHnsOwnerRecoveryProviderPollRequest(request),
         catch: () => failed("invalid_response"),
@@ -168,6 +185,7 @@ export function makeHnsOwnerRecoveryServiceBindingProvider(
             body,
             accept: "application/octet-stream",
             session_id: request.session.session_id,
+            observation_id: options.observation_id,
             deadline_ms: options.deadline_ms,
             max_response_bytes: POLL_RESPONSE_MAX_BYTES,
           }),

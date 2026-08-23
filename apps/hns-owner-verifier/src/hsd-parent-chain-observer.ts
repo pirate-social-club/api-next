@@ -1,0 +1,1190 @@
+import {
+  decodeHnsControlObservationRequestBytes,
+  decodeHnsControlObservationResultBytes,
+  decodeStrictHnsJsonBytes,
+  HNS_CONTROL_OBSERVER_DRIVER_REQUEST_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_TRANSCRIPT_MAX_BYTES,
+  type HnsChainAuthorityRecord,
+  type HnsControlObservationRejectedReason,
+  type HnsControlObservationRequestV1,
+  type HnsControlObservationResultV1,
+  type HnsControlObservationUnavailableReason,
+  HnsControlObserverConfigurationError,
+  type HnsControlObserverConfigurationResolverPort,
+  type HnsControlObserverConfigurationV1,
+  HnsControlObserverHsdTransportError,
+  type HnsControlObserverHsdTransportPort,
+  type HnsControlObserverHsdTransportResponse,
+  type HnsControlObserverRuntimeCapabilities,
+  type HnsControlObserverSnapshotStorePort,
+  type HnsControlObserverTranscriptEntryV1,
+  HnsControlObserverTranscriptError,
+  type HnsEvidenceLeasePolicy,
+  hnsChainAuthorityDigest,
+  hnsChainAuthorityRecords,
+  hnsControlIdentityDigest,
+  hnsControlObservationRequestHash,
+  hnsControlObserverSnapshotLogicalByteLength,
+  hnsControlObserverTranscriptByteLength,
+  hnsObservedTxtValuesDigest,
+  isHnsControlObserverSnapshotReference,
+  resolveHnsControlObserverConfiguration,
+  validateHnsControlObserverTranscript,
+} from "@pirate/application/namespace-ownership";
+import { Predicate } from "effect";
+import { type HnsTargetObserverPort, HnsTargetObserverPortError } from "./target-observer.ts";
+
+type Sha256HexValue = HnsControlObservationRequestV1["provider_configuration_digest"];
+
+const encoder = new TextEncoder();
+const jsonContentTypePattern = /^application\/json(?:\s*;\s*charset=utf-8)?$/iu;
+const hsdMethodNotFound = -32_601;
+const hsdInvalidParams = -32_602;
+
+type ChainAnchor = Readonly<{
+  network: string;
+  height: number;
+  best_block_hash: Sha256HexValue;
+  median_time: number;
+  header_time: number;
+  confirmations: number;
+}>;
+
+type RootDecision =
+  | Readonly<{ readonly kind: "root_absent"; readonly expiry_height: null }>
+  | Readonly<{ readonly kind: "root_inactive"; readonly expiry_height: number | null }>
+  | Readonly<{
+      readonly kind: "active";
+      readonly expiry_height: number;
+    }>;
+
+export type HnsParentChainObserverResult = Readonly<{
+  readonly result_bytes: Uint8Array;
+  readonly result_sha256: Sha256HexValue;
+  readonly semantic_facts_bytes: Uint8Array;
+  readonly transcript: ReadonlyArray<HnsControlObserverTranscriptEntryV1>;
+}>;
+
+export class HnsParentChainObserverError extends HnsTargetObserverPortError {
+  override readonly name = "HnsParentChainObserverError";
+
+  constructor(
+    readonly reason:
+      | "invalid_request"
+      | "misconfigured"
+      | "transport_unavailable"
+      | "invalid_response",
+    message: string,
+  ) {
+    super(reason, message);
+  }
+}
+
+class HsdSemanticUnavailable extends Error {
+  readonly name = "HsdSemanticUnavailable";
+
+  constructor(readonly reason: HnsControlObservationUnavailableReason) {
+    super(reason);
+  }
+}
+
+function safeInteger(value: unknown): number | null {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
+function canonicalInstant(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(Date.parse(value)).toISOString() === value
+  );
+}
+
+function sameLeasePolicy(
+  expected: HnsEvidenceLeasePolicy,
+  configuration: HnsControlObserverConfigurationV1,
+): boolean {
+  return (
+    expected.expected_block_interval_seconds ===
+      configuration.chain.expected_block_interval_seconds &&
+    expected.minimum_safe_remaining_blocks === configuration.chain.minimum_safe_remaining_blocks &&
+    expected.expiry_safety_blocks === configuration.chain.expiry_safety_blocks &&
+    expected.evidence_lease_seconds === configuration.evidence_lease_seconds
+  );
+}
+
+function sha256Bytes(bytes: Uint8Array): Promise<Sha256HexValue> {
+  return crypto.subtle.digest("SHA-256", bytes).then((digest) => {
+    const value = Array.from(new Uint8Array(digest), (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    return value as Sha256HexValue;
+  });
+}
+
+function requireObject(value: unknown): Record<string, unknown> {
+  if (!Predicate.isObject(value) || Array.isArray(value)) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  return value as Record<string, unknown>;
+}
+
+function requireKeys(value: Record<string, unknown>, expected: ReadonlyArray<string>): void {
+  const actual = Object.keys(value);
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+}
+
+function readHash(value: unknown): Sha256HexValue {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/u.test(value)) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  return value as Sha256HexValue;
+}
+
+function hsdName(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value !== value.toLowerCase() ||
+    !value.endsWith(".") ||
+    value.endsWith("..")
+  ) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  const canonical = value.slice(0, -1);
+  hnsChainAuthorityRecords("owner_authoritative_dns_txt", [["NS", canonical]]);
+  return canonical;
+}
+
+function validateResourceRecord(value: unknown): ReadonlyArray<string> | null {
+  const record = requireObject(value);
+  switch (record.type) {
+    case "TXT": {
+      requireKeys(record, ["type", "txt"]);
+      if (!Array.isArray(record.txt) || record.txt.length === 0) {
+        throw new HsdSemanticUnavailable("chain_response_invalid");
+      }
+      const chunks: string[] = [];
+      for (const chunk of record.txt) {
+        if (
+          typeof chunk !== "string" ||
+          encoder.encode(chunk).byteLength > 255 ||
+          [...chunk].some((character) => {
+            const point = character.codePointAt(0) ?? 0;
+            return point >= 0xd800 && point <= 0xdfff;
+          })
+        ) {
+          throw new HsdSemanticUnavailable("chain_response_invalid");
+        }
+        chunks.push(chunk);
+      }
+      return chunks;
+    }
+    case "NS": {
+      requireKeys(record, ["type", "ns"]);
+      hsdName(record.ns);
+      return null;
+    }
+    case "GLUE4":
+    case "GLUE6": {
+      requireKeys(record, ["type", "ns", "address"]);
+      const name = hsdName(record.ns);
+      if (typeof record.address !== "string") {
+        throw new HsdSemanticUnavailable("chain_response_invalid");
+      }
+      const authority: HnsChainAuthorityRecord =
+        record.type === "GLUE4" ? ["GLUE4", name, record.address] : ["GLUE6", name, record.address];
+      hnsChainAuthorityRecords("owner_authoritative_dns_txt", [authority]);
+      return null;
+    }
+    case "SYNTH4":
+    case "SYNTH6": {
+      requireKeys(record, ["type", "address"]);
+      if (typeof record.address !== "string") {
+        throw new HsdSemanticUnavailable("chain_response_invalid");
+      }
+      const authority: HnsChainAuthorityRecord =
+        record.type === "SYNTH4"
+          ? ["GLUE4", "synth.invalid", record.address]
+          : ["GLUE6", "synth.invalid", record.address];
+      hnsChainAuthorityRecords("owner_authoritative_dns_txt", [authority]);
+      return null;
+    }
+    case "DS": {
+      requireKeys(record, ["type", "keyTag", "algorithm", "digestType", "digest"]);
+      if (
+        typeof record.keyTag !== "number" ||
+        typeof record.algorithm !== "number" ||
+        typeof record.digestType !== "number" ||
+        typeof record.digest !== "string"
+      ) {
+        throw new HsdSemanticUnavailable("chain_response_invalid");
+      }
+      hnsChainAuthorityRecords("owner_authoritative_dns_txt", [
+        ["DS", record.keyTag, record.algorithm, record.digestType, record.digest],
+      ]);
+      return null;
+    }
+    default:
+      throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+}
+
+function parseResource(value: unknown): ReadonlyArray<ReadonlyArray<string>> {
+  if (value === null) return [];
+  const resource = requireObject(value);
+  requireKeys(resource, ["records"]);
+  if (!Array.isArray(resource.records)) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  const txtRecords: Array<ReadonlyArray<string>> = [];
+  for (const record of resource.records) {
+    const txt = validateResourceRecord(record);
+    if (txt !== null) txtRecords.push(txt);
+  }
+  return txtRecords;
+}
+
+function parseChainInfo(
+  value: unknown,
+  configuration: HnsControlObserverConfigurationV1,
+): {
+  readonly network: string;
+  readonly height: number;
+  readonly best_block_hash: Sha256HexValue;
+  readonly median_time: number;
+} {
+  const result = requireObject(value);
+  const height = safeInteger(result.blocks);
+  const headers = safeInteger(result.headers);
+  const medianTime = safeInteger(result.mediantime);
+  const progress = result.verificationprogress;
+  if (
+    result.chain !== configuration.chain.network ||
+    height === null ||
+    headers === null ||
+    medianTime === null ||
+    typeof progress !== "number" ||
+    !Number.isFinite(progress) ||
+    progress < 0 ||
+    progress > 1
+  ) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  const bestBlockHash = readHash(result.bestblockhash);
+  if (
+    height !== headers ||
+    Math.floor(progress * 1_000_000) < configuration.chain.minimum_verification_progress_millionths
+  ) {
+    throw new HsdSemanticUnavailable("chain_unsynchronized");
+  }
+  return {
+    network: configuration.chain.network,
+    height,
+    best_block_hash: bestBlockHash,
+    median_time: medianTime,
+  };
+}
+
+function parseBestHeader(
+  value: unknown,
+  expected: Readonly<{
+    readonly hash: Sha256HexValue;
+    readonly height: number;
+    readonly median_time: number;
+  }>,
+): Readonly<{ readonly time: number; readonly confirmations: number }> {
+  const header = requireObject(value);
+  const height = safeInteger(header.height);
+  const medianTime = safeInteger(header.mediantime);
+  const time = safeInteger(header.time);
+  const confirmations = safeInteger(header.confirmations);
+  if (
+    readHash(header.hash) !== expected.hash ||
+    height !== expected.height ||
+    medianTime !== expected.median_time ||
+    time === null ||
+    confirmations === null ||
+    confirmations < 1
+  ) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  return { time, confirmations };
+}
+
+function parseGenesisHeader(value: unknown, configuredHash: Sha256HexValue): void {
+  const header = requireObject(value);
+  if (readHash(header.hash) !== configuredHash || safeInteger(header.height) !== 0) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+}
+
+function parseRootDecision(value: unknown, anchorHeight: number): RootDecision {
+  const envelope = requireObject(value);
+  if (!("info" in envelope)) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  if (envelope.info === null) return { kind: "root_absent", expiry_height: null };
+  const info = requireObject(envelope.info);
+  if (
+    typeof info.state !== "string" ||
+    typeof info.registered !== "boolean" ||
+    typeof info.expired !== "boolean"
+  ) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  const state = info.state;
+  if (
+    state === "LOCKED" ||
+    !["OPENING", "BIDDING", "REVEAL", "CLOSED", "REVOKED"].includes(state)
+  ) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  const active = state === "CLOSED" && info.registered && !info.expired;
+  const stats = info.stats;
+  if (active) {
+    const values = requireObject(stats);
+    const expiryHeight = safeInteger(values.renewalPeriodEnd);
+    const blocksUntilExpire = safeInteger(values.blocksUntilExpire);
+    if (
+      expiryHeight === null ||
+      blocksUntilExpire === null ||
+      blocksUntilExpire !== expiryHeight - anchorHeight
+    ) {
+      throw new HsdSemanticUnavailable("chain_response_invalid");
+    }
+    return { kind: "active", expiry_height: expiryHeight };
+  }
+  if (stats === undefined || stats === null) {
+    return { kind: "root_inactive", expiry_height: null };
+  }
+  const values = requireObject(stats);
+  const expiryHeight = safeInteger(values.renewalPeriodEnd);
+  const blocksUntilExpire = safeInteger(values.blocksUntilExpire);
+  if (
+    expiryHeight === null ||
+    blocksUntilExpire === null ||
+    blocksUntilExpire !== expiryHeight - anchorHeight
+  ) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  return { kind: "root_inactive", expiry_height: expiryHeight };
+}
+
+async function transcriptEntry(
+  input: Readonly<{
+    readonly method: HnsControlObserverTranscriptEntryV1["method_or_view_id"];
+    readonly request_bytes: Uint8Array;
+    readonly outcome: HnsControlObserverTranscriptEntryV1["transport_outcome"];
+    readonly status: number | null;
+    readonly response_bytes: Uint8Array | null;
+    readonly driver_reference: string;
+  }>,
+): Promise<HnsControlObserverTranscriptEntryV1> {
+  return {
+    driver_reference: input.driver_reference,
+    ownership_source: "hns_parent_chain_txt",
+    method_or_view_id: input.method,
+    request_bytes: new Uint8Array(input.request_bytes),
+    request_sha256: await sha256Bytes(input.request_bytes),
+    transport_outcome: input.outcome,
+    transport_status: input.status,
+    response_bytes: input.response_bytes === null ? null : new Uint8Array(input.response_bytes),
+    response_sha256: input.response_bytes === null ? null : await sha256Bytes(input.response_bytes),
+  };
+}
+
+async function hsdRpc(
+  input: Readonly<{
+    readonly method: "getblockchaininfo" | "getblockheader" | "getnameinfo" | "getnameresource";
+    readonly params: ReadonlyArray<unknown>;
+    readonly configuration: HnsControlObserverConfigurationV1;
+    readonly transport: HnsControlObserverHsdTransportPort;
+    readonly signal: AbortSignal;
+    readonly transcript: HnsControlObserverTranscriptEntryV1[];
+  }>,
+): Promise<unknown> {
+  const requestBytes = encoder.encode(
+    JSON.stringify({ method: input.method, params: input.params }),
+  );
+  if (requestBytes.byteLength > HNS_CONTROL_OBSERVER_DRIVER_REQUEST_MAX_BYTES) {
+    throw new HsdSemanticUnavailable("observer_capacity");
+  }
+  const aggregateBeforeResponse =
+    hnsControlObserverTranscriptByteLength(input.transcript) + requestBytes.byteLength;
+  if (aggregateBeforeResponse > HNS_CONTROL_OBSERVER_TRANSCRIPT_MAX_BYTES) {
+    throw new HsdSemanticUnavailable("observer_capacity");
+  }
+  let response: HnsControlObserverHsdTransportResponse;
+  try {
+    response = await input.transport.exchange({
+      driver_reference: input.configuration.chain.driver_reference,
+      method: input.method,
+      request_bytes: new Uint8Array(requestBytes),
+      response_max_bytes: input.configuration.chain.response_max_bytes,
+      signal: input.signal,
+    });
+    if (input.signal.aborted) {
+      throw new HnsParentChainObserverError(
+        "transport_unavailable",
+        "HNS parent-chain driver returned after its deadline",
+      );
+    }
+  } catch (error) {
+    if (error instanceof HnsParentChainObserverError) throw error;
+    const outcome =
+      error instanceof HnsControlObserverHsdTransportError
+        ? error.outcome
+        : input.signal.aborted
+          ? "aborted"
+          : "transport_error";
+    input.transcript.push(
+      await transcriptEntry({
+        method: input.method,
+        request_bytes: requestBytes,
+        outcome,
+        status: null,
+        response_bytes: null,
+        driver_reference: input.configuration.chain.driver_reference,
+      }),
+    );
+    if (outcome === "aborted") {
+      throw new HnsParentChainObserverError(
+        "transport_unavailable",
+        "HNS parent-chain observation was aborted",
+      );
+    }
+    throw new HsdSemanticUnavailable("chain_transport_unavailable");
+  }
+  if (!(response.response_bytes instanceof Uint8Array)) {
+    throw new HnsParentChainObserverError(
+      "invalid_response",
+      "HNS transport returned non-byte response authority",
+    );
+  }
+  const responseBytes = response.response_bytes.slice(
+    0,
+    Math.min(
+      input.configuration.chain.response_max_bytes,
+      HNS_CONTROL_OBSERVER_TRANSCRIPT_MAX_BYTES - aggregateBeforeResponse,
+    ),
+  );
+  if (responseBytes.byteLength === 0) {
+    throw new HsdSemanticUnavailable("observer_capacity");
+  }
+  input.transcript.push(
+    await transcriptEntry({
+      method: input.method,
+      request_bytes: requestBytes,
+      outcome: "response",
+      status: response.status,
+      response_bytes: responseBytes,
+      driver_reference: input.configuration.chain.driver_reference,
+    }),
+  );
+  if (
+    response.response_bytes.byteLength > input.configuration.chain.response_max_bytes ||
+    response.response_bytes.byteLength > responseBytes.byteLength
+  ) {
+    throw new HsdSemanticUnavailable("observer_capacity");
+  }
+  if (response.status !== 200) {
+    throw new HsdSemanticUnavailable("chain_transport_unavailable");
+  }
+  if (
+    response.content_type === null ||
+    !jsonContentTypePattern.test(response.content_type.trim())
+  ) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  let decoded: unknown;
+  try {
+    decoded = decodeStrictHnsJsonBytes(responseBytes, input.configuration.chain.response_max_bytes);
+  } catch {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  const envelope = requireObject(decoded);
+  requireKeys(envelope, ["result", "error", "id"]);
+  if (envelope.id !== null) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  if (envelope.error === null && envelope.result !== null) return envelope.result;
+  if (envelope.result !== null || envelope.error === null) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  const rpcError = requireObject(envelope.error);
+  requireKeys(rpcError, ["message", "code"]);
+  if (typeof rpcError.message !== "string" || !Number.isSafeInteger(rpcError.code)) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  if (rpcError.code === hsdMethodNotFound || rpcError.code === hsdInvalidParams) {
+    throw new HnsParentChainObserverError(
+      "misconfigured",
+      "HNS HSD driver does not implement the pinned RPC contract",
+    );
+  }
+  throw new HsdSemanticUnavailable("chain_transport_unavailable");
+}
+
+async function chainAnchor(
+  input: Readonly<{
+    readonly configuration: HnsControlObserverConfigurationV1;
+    readonly transport: HnsControlObserverHsdTransportPort;
+    readonly signal: AbortSignal;
+    readonly transcript: HnsControlObserverTranscriptEntryV1[];
+    readonly reservation_database_time: string;
+  }>,
+): Promise<ChainAnchor> {
+  const chain = parseChainInfo(
+    await hsdRpc({
+      method: "getblockchaininfo",
+      params: [],
+      ...input,
+    }),
+    input.configuration,
+  );
+  const header = parseBestHeader(
+    await hsdRpc({
+      method: "getblockheader",
+      params: [chain.best_block_hash, true],
+      ...input,
+    }),
+    {
+      hash: chain.best_block_hash,
+      height: chain.height,
+      median_time: chain.median_time,
+    },
+  );
+  const databaseTime = Date.parse(input.reservation_database_time);
+  if (
+    !Number.isFinite(databaseTime) ||
+    new Date(databaseTime).toISOString() !== input.reservation_database_time
+  ) {
+    throw new HnsParentChainObserverError(
+      "invalid_response",
+      "HNS observer reservation database time is invalid",
+    );
+  }
+  const ageSeconds = Math.floor(databaseTime / 1_000) - header.time;
+  if (ageSeconds > input.configuration.chain.maximum_tip_age_seconds) {
+    throw new HsdSemanticUnavailable("chain_view_stale");
+  }
+  if (ageSeconds < -input.configuration.chain.maximum_future_tip_seconds) {
+    throw new HsdSemanticUnavailable("chain_response_invalid");
+  }
+  return {
+    network: chain.network,
+    height: chain.height,
+    best_block_hash: chain.best_block_hash,
+    median_time: chain.median_time,
+    header_time: header.time,
+    confirmations: header.confirmations,
+  };
+}
+
+function sameAnchor(left: ChainAnchor, right: ChainAnchor): boolean {
+  return (
+    left.network === right.network &&
+    left.height === right.height &&
+    left.best_block_hash === right.best_block_hash &&
+    left.median_time === right.median_time &&
+    left.header_time === right.header_time &&
+    left.confirmations === right.confirmations
+  );
+}
+
+async function finalizeResult(
+  request: HnsControlObservationRequestV1,
+  result: HnsControlObservationResultV1,
+  transcript: ReadonlyArray<HnsControlObserverTranscriptEntryV1>,
+): Promise<HnsParentChainObserverResult> {
+  const bytes = encoder.encode(JSON.stringify(result));
+  const decoded = await decodeHnsControlObservationResultBytes(bytes, request);
+  return {
+    result_bytes: decoded.result_bytes,
+    result_sha256: decoded.result_sha256,
+    semantic_facts_bytes: new Uint8Array(decoded.result_bytes),
+    transcript,
+  };
+}
+
+function unavailableResult(
+  request: HnsControlObservationRequestV1,
+  requestHash: Sha256HexValue,
+  reason: HnsControlObservationUnavailableReason,
+  snapshotReference: string,
+): HnsControlObservationResultV1 {
+  return {
+    version: "pirate-hns-control-observation-result-v1",
+    observation_id: request.observation_id,
+    request_sha256: requestHash,
+    status: "unavailable",
+    reason_code: reason,
+    retry_after_seconds: null,
+    diagnostic_ref: snapshotReference,
+  };
+}
+
+function rejectedResult(
+  input: Readonly<{
+    readonly request: HnsControlObservationRequestV1;
+    readonly request_hash: Sha256HexValue;
+    readonly reason: HnsControlObservationRejectedReason;
+    readonly expected_txt_value_sha256: Sha256HexValue;
+    readonly observed_txt_values_digest: Sha256HexValue | null;
+    readonly chain_authority_digest: Sha256HexValue;
+    readonly chain_anchor: ChainAnchor;
+    readonly chain_genesis_block_hash: Sha256HexValue;
+    readonly expiry_height: number | null;
+    readonly snapshot_reference: string;
+  }>,
+): HnsControlObservationResultV1 {
+  return {
+    version: "pirate-hns-control-observation-result-v1",
+    observation_id: input.request.observation_id,
+    request_sha256: input.request_hash,
+    status: "rejected",
+    reason_code: input.reason,
+    provider_id: input.request.provider_id,
+    provider_configuration_reference: input.request.provider_configuration_reference,
+    provider_configuration_version: input.request.provider_configuration_version,
+    provider_configuration_digest: input.request.provider_configuration_digest,
+    environment: input.request.environment,
+    ownership_source: input.request.ownership_source,
+    root_label: input.request.root_label,
+    txt_name: input.request.txt_name,
+    expected_txt_value_sha256: input.expected_txt_value_sha256,
+    observed_txt_values_digest: input.observed_txt_values_digest,
+    chain_authority_digest: input.chain_authority_digest,
+    chain_network: input.chain_anchor.network,
+    chain_genesis_block_hash: input.chain_genesis_block_hash,
+    chain_anchor_height: input.chain_anchor.height,
+    chain_anchor_block_hash: input.chain_anchor.best_block_hash,
+    chain_anchor_median_time: input.chain_anchor.median_time,
+    expiry_height: input.expiry_height,
+    provider_evidence_ref: input.snapshot_reference,
+  };
+}
+
+function verifiedResult(
+  input: Readonly<{
+    readonly request: HnsControlObservationRequestV1;
+    readonly request_hash: Sha256HexValue;
+    readonly expected_txt_value_sha256: Sha256HexValue;
+    readonly control_identity_digest: Sha256HexValue;
+    readonly chain_authority_digest: Sha256HexValue;
+    readonly chain_anchor: ChainAnchor;
+    readonly chain_genesis_block_hash: Sha256HexValue;
+    readonly expiry_height: number;
+    readonly snapshot_reference: string;
+  }>,
+): HnsControlObservationResultV1 {
+  return {
+    version: "pirate-hns-control-observation-result-v1",
+    observation_id: input.request.observation_id,
+    request_sha256: input.request_hash,
+    status: "verified",
+    provider_id: input.request.provider_id,
+    provider_configuration_reference: input.request.provider_configuration_reference,
+    provider_configuration_version: input.request.provider_configuration_version,
+    provider_configuration_digest: input.request.provider_configuration_digest,
+    environment: input.request.environment,
+    ownership_source: input.request.ownership_source,
+    root_label: input.request.root_label,
+    txt_name: input.request.txt_name,
+    expected_txt_value_sha256: input.expected_txt_value_sha256,
+    control_identity_digest: input.control_identity_digest,
+    chain_authority_digest: input.chain_authority_digest,
+    root_exists: true,
+    root_control_verified: true,
+    expiry_horizon_sufficient: true,
+    chain_network: input.chain_anchor.network,
+    chain_genesis_block_hash: input.chain_genesis_block_hash,
+    chain_anchor_height: input.chain_anchor.height,
+    chain_anchor_block_hash: input.chain_anchor.best_block_hash,
+    chain_anchor_median_time: input.chain_anchor.median_time,
+    expiry_height: input.expiry_height,
+    provider_evidence_ref: input.snapshot_reference,
+  };
+}
+
+export async function observeHnsParentChain(
+  input: Readonly<{
+    readonly request: HnsControlObservationRequestV1;
+    readonly request_sha256: Sha256HexValue;
+    readonly configuration: HnsControlObserverConfigurationV1;
+    readonly reservation_database_time: string;
+    readonly snapshot_reference: string;
+    readonly transport: HnsControlObserverHsdTransportPort;
+    readonly signal: AbortSignal;
+  }>,
+): Promise<HnsParentChainObserverResult> {
+  if (input.request.ownership_source !== "hns_parent_chain_txt") {
+    throw new HnsParentChainObserverError(
+      "invalid_request",
+      "HNS parent-chain observer received another ownership source",
+    );
+  }
+  const transcript: HnsControlObserverTranscriptEntryV1[] = [];
+  const transcriptContext = {
+    ownership_source: input.request.ownership_source,
+    hsd_driver_reference: input.configuration.chain.driver_reference,
+    hsd_response_max_bytes: input.configuration.chain.response_max_bytes,
+    authoritative_dns_driver_reference:
+      input.configuration.authoritative_dns?.driver_reference ?? null,
+    authoritative_dns_response_max_bytes:
+      input.configuration.authoritative_dns?.response_max_bytes ?? null,
+    required_view_ids: input.configuration.authoritative_dns?.required_view_ids ?? [],
+  } as const;
+  try {
+    const anchorA = await chainAnchor({
+      configuration: input.configuration,
+      transport: input.transport,
+      signal: input.signal,
+      transcript,
+      reservation_database_time: input.reservation_database_time,
+    });
+    parseGenesisHeader(
+      await hsdRpc({
+        method: "getblockheader",
+        params: [input.configuration.chain.genesis_block_hash, true],
+        configuration: input.configuration,
+        transport: input.transport,
+        signal: input.signal,
+        transcript,
+      }),
+      input.configuration.chain.genesis_block_hash,
+    );
+    const root = parseRootDecision(
+      await hsdRpc({
+        method: "getnameinfo",
+        params: [input.request.root_label, false],
+        configuration: input.configuration,
+        transport: input.transport,
+        signal: input.signal,
+        transcript,
+      }),
+      anchorA.height,
+    );
+    const txtRecords =
+      root.kind === "active"
+        ? parseResource(
+            await hsdRpc({
+              method: "getnameresource",
+              params: [input.request.root_label, false],
+              configuration: input.configuration,
+              transport: input.transport,
+              signal: input.signal,
+              transcript,
+            }),
+          )
+        : [];
+    const anchorB = await chainAnchor({
+      configuration: input.configuration,
+      transport: input.transport,
+      signal: input.signal,
+      transcript,
+      reservation_database_time: input.reservation_database_time,
+    });
+    if (!sameAnchor(anchorA, anchorB)) {
+      throw new HsdSemanticUnavailable("chain_view_changed");
+    }
+    const retainedTranscript = await validateHnsControlObserverTranscript({
+      transcript,
+      context: transcriptContext,
+    });
+    const chainAuthorityDigest = await hnsChainAuthorityDigest({
+      chain_network: anchorA.network,
+      chain_genesis_block_hash: input.configuration.chain.genesis_block_hash,
+      root_label: input.request.root_label,
+      ownership_source: input.request.ownership_source,
+      authority_records: [],
+    });
+    const expectedTxtValueSha256 = await sha256Bytes(
+      encoder.encode(input.request.expected_txt_value),
+    );
+    if (root.kind !== "active") {
+      return finalizeResult(
+        input.request,
+        rejectedResult({
+          request: input.request,
+          request_hash: input.request_sha256,
+          reason: root.kind,
+          expected_txt_value_sha256: expectedTxtValueSha256,
+          observed_txt_values_digest: null,
+          chain_authority_digest: chainAuthorityDigest,
+          chain_anchor: anchorA,
+          chain_genesis_block_hash: input.configuration.chain.genesis_block_hash,
+          expiry_height: root.expiry_height,
+          snapshot_reference: input.snapshot_reference,
+        }),
+        retainedTranscript,
+      );
+    }
+    const observedTxtDigest = await hnsObservedTxtValuesDigest(txtRecords);
+    const values = txtRecords.map((chunks) => chunks.join(""));
+    const controlVerified = values.some((value) => value === input.request.expected_txt_value);
+    const safeRemainingBlocks =
+      root.expiry_height - anchorA.height - input.configuration.chain.expiry_safety_blocks;
+    let rejection: HnsControlObservationRejectedReason | null = null;
+    if (txtRecords.length === 0) rejection = "txt_absent";
+    else if (!controlVerified) rejection = "txt_value_mismatch";
+    else if (safeRemainingBlocks < input.configuration.chain.minimum_safe_remaining_blocks) {
+      rejection = "expiry_horizon_insufficient";
+    }
+    if (rejection !== null) {
+      return finalizeResult(
+        input.request,
+        rejectedResult({
+          request: input.request,
+          request_hash: input.request_sha256,
+          reason: rejection,
+          expected_txt_value_sha256: expectedTxtValueSha256,
+          observed_txt_values_digest: observedTxtDigest,
+          chain_authority_digest: chainAuthorityDigest,
+          chain_anchor: anchorA,
+          chain_genesis_block_hash: input.configuration.chain.genesis_block_hash,
+          expiry_height: root.expiry_height,
+          snapshot_reference: input.snapshot_reference,
+        }),
+        retainedTranscript,
+      );
+    }
+    const controlIdentityDigest = await hnsControlIdentityDigest({
+      ownership_source: input.request.ownership_source,
+      txt_name: input.request.txt_name,
+      expected_txt_value: input.request.expected_txt_value,
+      root_label: input.request.root_label,
+      chain_authority_digest: chainAuthorityDigest,
+    });
+    return finalizeResult(
+      input.request,
+      verifiedResult({
+        request: input.request,
+        request_hash: input.request_sha256,
+        expected_txt_value_sha256: expectedTxtValueSha256,
+        control_identity_digest: controlIdentityDigest,
+        chain_authority_digest: chainAuthorityDigest,
+        chain_anchor: anchorA,
+        chain_genesis_block_hash: input.configuration.chain.genesis_block_hash,
+        expiry_height: root.expiry_height,
+        snapshot_reference: input.snapshot_reference,
+      }),
+      retainedTranscript,
+    );
+  } catch (error) {
+    if (error instanceof HnsParentChainObserverError) throw error;
+    const reason =
+      error instanceof HsdSemanticUnavailable
+        ? error.reason
+        : error instanceof HnsControlObserverTranscriptError && error.reason === "observer_capacity"
+          ? "observer_capacity"
+          : error instanceof HnsControlObserverTranscriptError
+            ? "chain_response_invalid"
+            : "observer_internal_error";
+    let retainedTranscript: ReadonlyArray<HnsControlObserverTranscriptEntryV1>;
+    try {
+      retainedTranscript = await validateHnsControlObserverTranscript({
+        transcript,
+        context: transcriptContext,
+      });
+    } catch (transcriptError) {
+      if (
+        transcriptError instanceof HnsControlObserverTranscriptError &&
+        transcriptError.reason === "observer_capacity"
+      ) {
+        return finalizeResult(
+          input.request,
+          unavailableResult(
+            input.request,
+            input.request_sha256,
+            "observer_capacity",
+            input.snapshot_reference,
+          ),
+          [],
+        );
+      }
+      throw new HnsParentChainObserverError(
+        "invalid_response",
+        "HNS parent-chain transcript is invalid",
+      );
+    }
+    return finalizeResult(
+      input.request,
+      unavailableResult(input.request, input.request_sha256, reason, input.snapshot_reference),
+      retainedTranscript,
+    );
+  }
+}
+
+export function makeHnsParentChainTargetObserver(
+  input: Readonly<{
+    readonly configuration_resolver: HnsControlObserverConfigurationResolverPort;
+    readonly capabilities: HnsControlObserverRuntimeCapabilities;
+    readonly snapshot_store: HnsControlObserverSnapshotStorePort;
+    readonly hsd_transport: HnsControlObserverHsdTransportPort;
+  }>,
+): HnsTargetObserverPort {
+  return {
+    observe: async (observation, options) => {
+      if (options.signal.aborted) {
+        throw new HnsParentChainObserverError(
+          "transport_unavailable",
+          "HNS parent-chain observation was already aborted",
+        );
+      }
+      const decodedRequest = await decodeHnsControlObservationRequestBytes(
+        observation.request_bytes,
+      );
+      if (
+        decodedRequest.request_sha256 !==
+          (await hnsControlObservationRequestHash(observation.request)) ||
+        JSON.stringify(decodedRequest.request) !== JSON.stringify(observation.request) ||
+        decodedRequest.request.provider_id !== "hns.owner.v1"
+      ) {
+        throw new HnsParentChainObserverError(
+          "invalid_request",
+          "HNS observer request projection and bytes differ",
+        );
+      }
+      let configuration: Awaited<ReturnType<typeof resolveHnsControlObserverConfiguration>>;
+      try {
+        configuration = await resolveHnsControlObserverConfiguration({
+          authority: {
+            provider_id: decodedRequest.request.provider_id,
+            provider_configuration_reference:
+              decodedRequest.request.provider_configuration_reference,
+            provider_configuration_version: decodedRequest.request.provider_configuration_version,
+            provider_configuration_digest: decodedRequest.request.provider_configuration_digest,
+            environment: decodedRequest.request.environment,
+            ownership_source: decodedRequest.request.ownership_source,
+          },
+          capabilities: input.capabilities,
+          resolver: input.configuration_resolver,
+          deadline_ms: options.deadline_ms,
+          signal: options.signal,
+        });
+      } catch (error) {
+        if (error instanceof HnsControlObserverConfigurationError) {
+          throw new HnsParentChainObserverError(
+            "misconfigured",
+            "HNS observer configuration authority is unavailable or invalid",
+          );
+        }
+        throw new HnsParentChainObserverError(
+          "transport_unavailable",
+          "HNS observer configuration registry is unavailable",
+        );
+      }
+      if (options.deadline_ms !== configuration.configuration.observer_deadline_ms) {
+        throw new HnsParentChainObserverError(
+          "misconfigured",
+          "HNS observer deadline does not match immutable configuration",
+        );
+      }
+      if (!sameLeasePolicy(observation.lease_policy, configuration.configuration)) {
+        throw new HnsParentChainObserverError(
+          "misconfigured",
+          "HNS facade lease policy does not match immutable observer configuration",
+        );
+      }
+      let reservation: Awaited<ReturnType<HnsControlObserverSnapshotStorePort["reserve"]>>;
+      try {
+        reservation = await input.snapshot_store.reserve(
+          {
+            observation_id: decodedRequest.request.observation_id,
+            request_bytes: new Uint8Array(decodedRequest.request_bytes),
+            request_sha256: decodedRequest.request_sha256,
+            configuration_bytes: new Uint8Array(configuration.configuration_bytes),
+            provider_configuration_digest: configuration.configuration_digest,
+            reservation_lease_seconds:
+              configuration.configuration.observer_reservation_lease_seconds,
+          },
+          { deadline_ms: options.deadline_ms, signal: options.signal },
+        );
+      } catch {
+        throw new HnsParentChainObserverError(
+          "transport_unavailable",
+          "HNS observer snapshot reservation is unavailable",
+        );
+      }
+      if (options.signal.aborted) {
+        throw new HnsParentChainObserverError(
+          "transport_unavailable",
+          "HNS observer snapshot reservation completed after its deadline",
+        );
+      }
+      if (reservation.kind === "mismatch") {
+        throw new HnsParentChainObserverError(
+          "invalid_request",
+          "HNS observation id was reused with different authority",
+        );
+      }
+      if (reservation.kind === "busy") {
+        if (
+          !Number.isSafeInteger(reservation.retry_after_seconds) ||
+          reservation.retry_after_seconds < 1 ||
+          reservation.retry_after_seconds > 3_600
+        ) {
+          throw new HnsParentChainObserverError(
+            "invalid_response",
+            "HNS observer busy retry authority is malformed",
+          );
+        }
+        throw new HnsParentChainObserverError(
+          "transport_unavailable",
+          "HNS observation is owned by another live fence",
+        );
+      }
+      if (reservation.kind === "replay") {
+        if (
+          !isHnsControlObserverSnapshotReference(reservation.snapshot_reference) ||
+          !(reservation.result_bytes instanceof Uint8Array)
+        ) {
+          throw new HnsParentChainObserverError(
+            "invalid_response",
+            "HNS observer replay authority is malformed",
+          );
+        }
+        const replay = await decodeHnsControlObservationResultBytes(
+          reservation.result_bytes,
+          decodedRequest.request,
+        );
+        if (
+          replay.result_sha256 !== reservation.result_sha256 ||
+          (replay.result.status === "unavailable"
+            ? replay.result.diagnostic_ref !== reservation.snapshot_reference
+            : replay.result.provider_evidence_ref !== reservation.snapshot_reference)
+        ) {
+          throw new HnsParentChainObserverError(
+            "invalid_response",
+            "HNS observer replay is not cross-pinned to its snapshot",
+          );
+        }
+        return replay.result_bytes;
+      }
+      if (
+        !Number.isSafeInteger(reservation.observer_fence) ||
+        reservation.observer_fence < 1 ||
+        !isHnsControlObserverSnapshotReference(reservation.snapshot_reference) ||
+        !canonicalInstant(reservation.reservation_database_time) ||
+        !canonicalInstant(reservation.lease_expires_at) ||
+        Date.parse(reservation.lease_expires_at) -
+          Date.parse(reservation.reservation_database_time) !==
+          configuration.configuration.observer_reservation_lease_seconds * 1_000
+      ) {
+        throw new HnsParentChainObserverError(
+          "invalid_response",
+          "HNS observer snapshot reservation authority is malformed",
+        );
+      }
+      let observed = await observeHnsParentChain({
+        request: decodedRequest.request,
+        request_sha256: decodedRequest.request_sha256,
+        configuration: configuration.configuration,
+        reservation_database_time: reservation.reservation_database_time,
+        snapshot_reference: reservation.snapshot_reference,
+        transport: input.hsd_transport,
+        signal: options.signal,
+      });
+      if (options.signal.aborted) {
+        throw new HnsParentChainObserverError(
+          "transport_unavailable",
+          "HNS parent-chain observation completed after its deadline",
+        );
+      }
+      const logicalSnapshotBytes = () =>
+        hnsControlObserverSnapshotLogicalByteLength({
+          observation_id: decodedRequest.request.observation_id,
+          observer_fence: reservation.observer_fence,
+          reservation_database_time: reservation.reservation_database_time,
+          lease_expires_at: reservation.lease_expires_at,
+          request_bytes: decodedRequest.request_bytes,
+          request_sha256: decodedRequest.request_sha256,
+          configuration_bytes: configuration.configuration_bytes,
+          provider_configuration_digest: configuration.configuration_digest,
+          snapshot_reference: reservation.snapshot_reference,
+          transcript: observed.transcript,
+          semantic_facts_bytes: observed.semantic_facts_bytes,
+          result_bytes: observed.result_bytes,
+          result_sha256: observed.result_sha256,
+        });
+      let snapshotByteLength = logicalSnapshotBytes();
+      if (snapshotByteLength > HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES) {
+        observed = await finalizeResult(
+          decodedRequest.request,
+          unavailableResult(
+            decodedRequest.request,
+            decodedRequest.request_sha256,
+            "observer_capacity",
+            reservation.snapshot_reference,
+          ),
+          observed.transcript,
+        );
+        snapshotByteLength = logicalSnapshotBytes();
+        if (snapshotByteLength > HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES) {
+          throw new HnsParentChainObserverError(
+            "invalid_response",
+            "HNS observer capacity result cannot fit its retained snapshot bound",
+          );
+        }
+      }
+      let finalized: Awaited<ReturnType<HnsControlObserverSnapshotStorePort["finalize"]>>;
+      try {
+        finalized = await input.snapshot_store.finalize(
+          {
+            observation_id: decodedRequest.request.observation_id,
+            observer_fence: reservation.observer_fence,
+            request_sha256: decodedRequest.request_sha256,
+            provider_configuration_digest: configuration.configuration_digest,
+            snapshot_reference: reservation.snapshot_reference,
+            transcript: observed.transcript,
+            semantic_facts_bytes: new Uint8Array(observed.semantic_facts_bytes),
+            result_bytes: new Uint8Array(observed.result_bytes),
+            result_sha256: observed.result_sha256,
+          },
+          { deadline_ms: options.deadline_ms, signal: options.signal },
+        );
+      } catch {
+        throw new HnsParentChainObserverError(
+          "transport_unavailable",
+          "HNS observer snapshot finalization is unavailable",
+        );
+      }
+      if (options.signal.aborted) {
+        throw new HnsParentChainObserverError(
+          "transport_unavailable",
+          "HNS observer finalization completed after its deadline",
+        );
+      }
+      if (finalized.kind === "lost") {
+        throw new HnsParentChainObserverError(
+          "transport_unavailable",
+          "HNS observer lost its finalization fence",
+        );
+      }
+      if (finalized.kind === "mismatch") {
+        throw new HnsParentChainObserverError(
+          "invalid_response",
+          "HNS observer finalization authority mismatched",
+        );
+      }
+      if (
+        !isHnsControlObserverSnapshotReference(finalized.snapshot_reference) ||
+        !(finalized.result_bytes instanceof Uint8Array) ||
+        finalized.snapshot_reference !== reservation.snapshot_reference ||
+        finalized.result_sha256 !== observed.result_sha256 ||
+        !finalized.result_bytes.every((byte, index) => byte === observed.result_bytes[index]) ||
+        finalized.result_bytes.byteLength !== observed.result_bytes.byteLength
+      ) {
+        throw new HnsParentChainObserverError(
+          "invalid_response",
+          "HNS observer finalization returned different terminal bytes",
+        );
+      }
+      return new Uint8Array(finalized.result_bytes);
+    },
+  };
+}

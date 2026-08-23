@@ -11,6 +11,10 @@ import {
   hnsControlIdentityDigest,
 } from "../namespace-ownership/hns-control-observer.ts";
 import {
+  HNS_CONTROL_OBSERVER_SNAPSHOT_REFERENCE_MAX_BYTES,
+  isHnsControlObserverSnapshotReference,
+} from "../namespace-ownership/hns-control-observer-store.ts";
+import {
   decodeStrictHnsJsonBytes,
   hnsOwnerChallengeName,
   hnsOwnerChallengeValue,
@@ -70,7 +74,16 @@ const Identifier = boundedString(256, "identifier");
 const Reference = boundedString(512, "reference");
 const UpstreamReference = boundedString(16_384, "upstream_session_ref");
 const ChallengeValue = boundedString(16_448, "challenge_value");
-const DiagnosticReference = boundedString(512, "diagnostic_ref");
+const DiagnosticReference = boundedString(
+  HNS_CONTROL_OBSERVER_SNAPSHOT_REFERENCE_MAX_BYTES,
+  "diagnostic_ref",
+).check(
+  Schema.makeFilter((value) =>
+    isHnsControlObserverSnapshotReference(value)
+      ? undefined
+      : "Expected diagnostic_ref to be a reserved observer snapshot reference",
+  ),
+);
 const PositiveSafeInteger = Schema.Int.check(
   Schema.makeFilter((value) =>
     Number.isSafeInteger(value) && value > 0 ? undefined : "Expected a positive safe integer",
@@ -356,7 +369,7 @@ const TargetUnavailableSchema = Schema.Struct({
     "observer_internal_error",
   ]),
   retry_after_seconds: Schema.NullOr(RetrySeconds),
-  diagnostic_ref: Schema.NullOr(DiagnosticReference),
+  diagnostic_ref: DiagnosticReference,
 });
 const PublicStartResponseSchema = Schema.Struct({
   route_recovery_id: Identifier,

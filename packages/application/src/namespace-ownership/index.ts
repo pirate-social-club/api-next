@@ -150,6 +150,58 @@ export {
   mapHnsControlObservationToTargetV2,
 } from "./hns-control-observer.ts";
 export type {
+  HnsControlObserverConfigurationAuthority,
+  HnsControlObserverConfigurationResolverPort,
+  HnsControlObserverConfigurationV1,
+  HnsControlObserverDecodedConfiguration,
+  HnsControlObserverRuntimeCapabilities,
+} from "./hns-control-observer-configuration.ts";
+export {
+  decodeHnsControlObserverConfigurationBytes,
+  encodeHnsControlObserverConfiguration,
+  HNS_CONTROL_OBSERVER_CONFIGURATION_IDENTITY_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_CONFIGURATION_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_CONFIGURATION_REFERENCE_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_CONFIGURATION_VERSION,
+  HNS_CONTROL_OBSERVER_CONFIGURATION_VIEW_MAX_COUNT,
+  HNS_CONTROL_OBSERVER_DEADLINE_MAX_MS,
+  HNS_CONTROL_OBSERVER_DNS_RESPONSE_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_HSD_RESPONSE_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MAX_SECONDS,
+  HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MIN_SECONDS,
+  HnsControlObserverConfigurationError,
+  resolveHnsControlObserverConfiguration,
+} from "./hns-control-observer-configuration.ts";
+export type {
+  HnsControlObserverAuthoritativeDnsTransportPort,
+  HnsControlObserverHsdMethod,
+  HnsControlObserverHsdTransportPort,
+  HnsControlObserverHsdTransportResponse,
+  HnsControlObserverReservationInput,
+  HnsControlObserverReservationOutcome,
+  HnsControlObserverSnapshotFinalizeInput,
+  HnsControlObserverSnapshotFinalizeOutcome,
+  HnsControlObserverSnapshotLogicalPayload,
+  HnsControlObserverSnapshotStorePort,
+  HnsControlObserverTranscriptEntryV1,
+  HnsControlObserverTranscriptValidationContext,
+  HnsControlObserverTransportOutcome,
+} from "./hns-control-observer-store.ts";
+export {
+  HNS_CONTROL_OBSERVER_DRIVER_REQUEST_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_HSD_METHODS,
+  HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_SNAPSHOT_REFERENCE_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_TRANSCRIPT_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_TRANSCRIPT_MAX_ENTRIES,
+  HnsControlObserverHsdTransportError,
+  HnsControlObserverTranscriptError,
+  hnsControlObserverSnapshotLogicalByteLength,
+  hnsControlObserverTranscriptByteLength,
+  isHnsControlObserverSnapshotReference,
+  validateHnsControlObserverTranscript,
+} from "./hns-control-observer-store.ts";
+export type {
   HnsNamespaceStartInput,
   HnsOwnerRawResponse,
   HnsOwnerResponse,

@@ -14,6 +14,7 @@ import {
 const START_PATH = "/internal/hns-owner/v1/start";
 const POLL_PATH = "/internal/hns-owner/v1/poll";
 const SESSION_HEADER = "Pirate-Namespace-Session-Id";
+const OBSERVATION_HEADER = "Pirate-HNS-Observation-Id";
 const START_REQUEST_MAX_BYTES = 8_192;
 const START_RESPONSE_MAX_BYTES = 65_536;
 const POLL_REQUEST_MAX_BYTES = 32_768;
@@ -1060,6 +1061,7 @@ export async function handleRequest(
   if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
   const header = sessionHeader(request);
   if (header === null) return errorResponse(400, "invalid_request");
+  const observationHeader = request.headers.get(OBSERVATION_HEADER);
   const expectedContentType = "application/json";
   if (request.headers.get("content-type") !== expectedContentType)
     return errorResponse(400, "invalid_request");
@@ -1082,6 +1084,7 @@ export async function handleRequest(
     return errorResponse(400, "invalid_request");
   }
   if (url.pathname === START_PATH) {
+    if (observationHeader !== null) return errorResponse(400, "invalid_request");
     if (isObject(decoded) && decoded.operation_kind === "same_root_recovery") {
       let input: HnsOwnerSameRootRecoveryProviderStartV1;
       try {
@@ -1122,6 +1125,9 @@ export async function handleRequest(
       return errorResponse(400, "invalid_request");
     }
     if (header !== poll.session.session_id) return errorResponse(400, "invalid_request");
+    if (observationHeader === null || !safeText(observationHeader, 256)) {
+      return errorResponse(400, "invalid_request");
+    }
     if (options.targetObserver === undefined) {
       return errorResponse(502, "provider_misconfigured");
     }
@@ -1136,7 +1142,11 @@ export async function handleRequest(
     }
     try {
       return bytesResponse(
-        await observeHnsOwnerRecoverySession(poll.session, options.targetObserver),
+        await observeHnsOwnerRecoverySession(
+          poll.session,
+          options.targetObserver,
+          observationHeader,
+        ),
       );
     } catch (error) {
       if (error instanceof HnsTargetObserverFacadeError) {
@@ -1149,6 +1159,7 @@ export async function handleRequest(
       return errorResponse(502, "invalid_response");
     }
   }
+  if (observationHeader !== null) return errorResponse(400, "invalid_request");
   const poll = parsePoll(decoded, header, source);
   if (poll === null) return errorResponse(400, "invalid_request");
   if (!sessionMatchesPinned(poll, pinned)) return errorResponse(422, "provider_rejected");

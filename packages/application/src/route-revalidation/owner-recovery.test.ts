@@ -72,6 +72,7 @@ const pollRequest: HnsOwnerRecoveryPollRequestV1 = {
 };
 const policy: HnsEvidenceLeasePolicy = {
   expected_block_interval_seconds: 600,
+  minimum_safe_remaining_blocks: 1,
   expiry_safety_blocks: 100,
   evidence_lease_seconds: 2_592_000,
 };
@@ -541,7 +542,7 @@ describe("HNS owner-initiated recovery protocol kernel", () => {
           observation_contract_version: "pirate-hns-target-observation-v2",
           reason_code: "observer_capacity",
           retry_after_seconds: null,
-          diagnostic_ref: null,
+          diagnostic_ref: "hns-observer-diagnostic:recovery-capacity-01",
         }),
         policy,
         database_now: "2026-02-02T04:40:00.000Z",

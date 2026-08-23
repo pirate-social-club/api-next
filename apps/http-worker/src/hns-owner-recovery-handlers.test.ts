@@ -74,6 +74,7 @@ const pollInput = {
 } as const;
 const policy = {
   expected_block_interval_seconds: 600,
+  minimum_safe_remaining_blocks: 1,
   expiry_safety_blocks: 100,
   evidence_lease_seconds: 2_592_000,
 };
@@ -291,6 +292,7 @@ function pollServices(
           attempt: {
             recovery_attempt_id: "hns_recovery_attempt_01",
             evidence_ref: "route_evidence_14",
+            observation_id: "hns_observation_01",
             fence_token: 1,
             database_now: options.databaseNow ?? "2026-02-02T04:40:00.000Z",
             lease_expires_at:
@@ -328,6 +330,7 @@ function pollServices(
     ids: {
       attempt: () => "hns_recovery_attempt_01",
       evidence: () => "route_evidence_14",
+      observation: () => "hns_observation_01",
     },
   };
   return { services, loadInput: () => loadInput, reserveInput: () => reserveInput };
@@ -409,7 +412,7 @@ describe("HNS owner-recovery HTTP handlers", () => {
           observation_contract_version: "pirate-hns-target-observation-v2",
           reason_code: "chain_transport_unavailable",
           retry_after_seconds: 17,
-          diagnostic_ref: null,
+          diagnostic_ref: "hns-observer-diagnostic:recovery-unavailable-01",
         },
         503,
         "unavailable",

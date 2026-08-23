@@ -396,6 +396,7 @@ describe("HNS target control observer kernel", () => {
       upstream_session_ref: "nvs_01",
       policy: {
         expected_block_interval_seconds: 600,
+        minimum_safe_remaining_blocks: 144,
         expiry_safety_blocks: 144,
         evidence_lease_seconds: 2_592_000,
       },
@@ -422,6 +423,7 @@ describe("HNS target control observer kernel", () => {
       upstream_session_ref: "nvs_01",
       policy: {
         expected_block_interval_seconds: 600,
+        minimum_safe_remaining_blocks: 144,
         expiry_safety_blocks: 144,
         evidence_lease_seconds: 2_592_000,
       },
@@ -448,6 +450,7 @@ describe("HNS target control observer kernel", () => {
       upstream_session_ref: "nvs_01",
       policy: {
         expected_block_interval_seconds: 600,
+        minimum_safe_remaining_blocks: 144,
         expiry_safety_blocks: 144,
         evidence_lease_seconds: 2_592_000,
       },
@@ -472,6 +475,7 @@ describe("HNS target control observer kernel", () => {
       upstream_session_ref: "nvs_01",
       policy: {
         expected_block_interval_seconds: 600,
+        minimum_safe_remaining_blocks: 144,
         expiry_safety_blocks: 144,
         evidence_lease_seconds: 2_592_000,
       },
@@ -495,6 +499,7 @@ describe("HNS target control observer kernel", () => {
           },
           {
             expected_block_interval_seconds: 600,
+            minimum_safe_remaining_blocks: 144,
             expiry_safety_blocks: 144,
             evidence_lease_seconds: 2_592_000,
           },
@@ -513,6 +518,7 @@ describe("HNS target control observer kernel", () => {
           },
           {
             expected_block_interval_seconds: 600,
+            minimum_safe_remaining_blocks: 1,
             expiry_safety_blocks: 1,
             evidence_lease_seconds: 1_000,
           },
@@ -527,6 +533,7 @@ describe("HNS target control observer kernel", () => {
           },
           {
             expected_block_interval_seconds: 1,
+            minimum_safe_remaining_blocks: 1,
             expiry_safety_blocks: 1,
             evidence_lease_seconds: 100,
           },

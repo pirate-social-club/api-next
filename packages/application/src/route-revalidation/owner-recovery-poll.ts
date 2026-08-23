@@ -68,6 +68,7 @@ export type HnsOwnerRecoveryStoredPoll = HnsOwnerRecoveryStoredStart &
 export type HnsOwnerRecoveryPollAttempt = Readonly<{
   readonly recovery_attempt_id: string;
   readonly evidence_ref: string;
+  readonly observation_id: string;
   readonly fence_token: number;
   readonly database_now: string;
   readonly lease_expires_at: string;
@@ -116,8 +117,9 @@ export interface HnsOwnerRecoveryPollStore {
    * Under community-then-binding lock, re-proves creator and complete session
    * authority, then returns database time and a lease at least `lease_ms`
    * long. A released same-key retry with the same poll hash must reacquire the
-   * same durable attempt and `evidence_ref`; new proposals cannot allocate a
-   * second identity. No transaction may span the provider call.
+   * same durable attempt, `evidence_ref`, and `observation_id`; new proposals
+   * cannot allocate a second identity. No transaction may span the provider
+   * call.
    */
   readonly reserve: (
     input: Readonly<{
@@ -126,6 +128,7 @@ export interface HnsOwnerRecoveryPollStore {
       readonly poll_hash: string;
       readonly recovery_attempt_id: string;
       readonly evidence_ref: string;
+      readonly observation_id: string;
       readonly lease_ms: number;
     }>,
   ) => Effect.Effect<HnsOwnerRecoveryPollReservationOutcome, HnsOwnerRecoveryPollStorageFailed>;
@@ -161,7 +164,7 @@ export interface HnsOwnerRecoveryPollProvider {
   /** Bound-only provider call; the adapter enforces the supplied deadline. */
   readonly poll: (
     request: HnsOwnerSameRootRecoveryProviderPollV1,
-    options: Readonly<{ readonly deadline_ms: number }>,
+    options: Readonly<{ readonly deadline_ms: number; readonly observation_id: string }>,
   ) => Effect.Effect<Uint8Array, HnsOwnerRecoveryProviderFailed>;
 }
 
@@ -172,6 +175,7 @@ export interface HnsOwnerRecoveryPollServices {
   readonly ids?: Readonly<{
     readonly attempt: () => string;
     readonly evidence: () => string;
+    readonly observation: () => string;
   }>;
 }
 
@@ -200,7 +204,10 @@ function decodeInput(
     : Effect.fail(new HnsOwnerRecoveryPollRejected({ reason: "invalid" }));
 }
 
-function generatedId(services: HnsOwnerRecoveryPollServices, kind: "attempt" | "evidence"): string {
+function generatedId(
+  services: HnsOwnerRecoveryPollServices,
+  kind: "attempt" | "evidence" | "observation",
+): string {
   return services.ids?.[kind]() ?? `hns-owner-${kind}_${crypto.randomUUID()}`;
 }
 
@@ -449,6 +456,7 @@ export const pollHnsOwnerRecovery = Effect.fn("pollHnsOwnerRecovery")(function* 
     poll_hash: pollHash,
     recovery_attempt_id: generatedId(services, "attempt"),
     evidence_ref: generatedId(services, "evidence"),
+    observation_id: generatedId(services, "observation"),
     lease_ms: HNS_OWNER_RECOVERY_POLL_LEASE_MS,
   });
   if (reservation.kind === "replay") {
@@ -543,6 +551,7 @@ export const pollHnsOwnerRecovery = Effect.fn("pollHnsOwnerRecovery")(function* 
     try: () =>
       services.provider.poll(plan.request, {
         deadline_ms: HNS_OWNER_RECOVERY_POLL_PROVIDER_DEADLINE_MS,
+        observation_id: attempt.observation_id,
       }),
     catch: () => new HnsOwnerRecoveryProviderFailed({ reason: "invalid_response" }),
   });

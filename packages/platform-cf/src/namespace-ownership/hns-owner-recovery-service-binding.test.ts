@@ -173,7 +173,10 @@ describe("HNS owner-recovery service-binding provider", () => {
       },
     });
     const received = await Effect.runPromise(
-      provider.poll(providerPoll, { deadline_ms: HNS_OWNER_RECOVERY_POLL_DEADLINE_MS }),
+      provider.poll(providerPoll, {
+        deadline_ms: HNS_OWNER_RECOVERY_POLL_DEADLINE_MS,
+        observation_id: "hns_observation_01",
+      }),
     );
     expect(received).toEqual(providerBytes);
     expect(received).not.toBe(providerBytes);
@@ -182,6 +185,7 @@ describe("HNS owner-recovery service-binding provider", () => {
       "content-type": "application/json",
       accept: "application/octet-stream",
       "pirate-namespace-session-id": providerPoll.session.session_id,
+      "pirate-hns-observation-id": "hns_observation_01",
     });
     expect(calls[0]?.init?.redirect).toBe("manual");
     expect([...capturedBody(calls[0]?.init)]).toEqual([
@@ -338,9 +342,30 @@ describe("HNS owner-recovery service-binding provider", () => {
       Effect.runPromise(
         provider.poll(providerPoll, {
           deadline_ms: HNS_OWNER_RECOVERY_POLL_DEADLINE_MS + 1,
+          observation_id: "hns_observation_01",
         }),
       ),
     ).rejects.toMatchObject({ reason: "misconfigured" });
+    expect(calls).toBe(0);
+  });
+
+  test("rejects a noncanonical observation id before touching the binding", async () => {
+    const { providerPoll } = await fixture();
+    let calls = 0;
+    const provider = makeHnsOwnerRecoveryServiceBindingProvider({
+      fetch: async () => {
+        calls += 1;
+        return response(new Uint8Array(), 200, "application/octet-stream");
+      },
+    });
+    await expect(
+      Effect.runPromise(
+        provider.poll(providerPoll, {
+          deadline_ms: HNS_OWNER_RECOVERY_POLL_DEADLINE_MS,
+          observation_id: " observation-1",
+        }),
+      ),
+    ).rejects.toMatchObject({ reason: "invalid_response" });
     expect(calls).toBe(0);
   });
 });

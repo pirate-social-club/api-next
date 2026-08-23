@@ -16,7 +16,7 @@ import {
   hnsOwnerRecoveryPublicStartHash,
 } from "@pirate/application/route-revalidation";
 import { type Env, handleRequest } from "./index.ts";
-import type { HnsTargetObserverRuntime } from "./target-observer.ts";
+import { HnsTargetObserverPortError, type HnsTargetObserverRuntime } from "./target-observer.ts";
 
 const encoder = new TextEncoder();
 const databaseStartedAt = "2026-02-02T03:04:05.000Z";
@@ -69,14 +69,22 @@ function body(bytes: Uint8Array): ArrayBuffer {
   return copy;
 }
 
-function request(path: string, bytes: Uint8Array, sessionId: string, accept: string): Request {
+function request(
+  path: string,
+  bytes: Uint8Array,
+  sessionId: string,
+  accept: string,
+  observationId?: string,
+): Request {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: accept,
+    "Pirate-Namespace-Session-Id": sessionId,
+  };
+  if (observationId !== undefined) headers["Pirate-HNS-Observation-Id"] = observationId;
   return new Request(`https://hns-owner.internal${path}`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: accept,
-      "Pirate-Namespace-Session-Id": sessionId,
-    },
+    headers,
     body: body(bytes),
   });
 }
@@ -96,13 +104,13 @@ function runtime(
       observer_deadline_ms: 12_000,
       lease_policy: {
         expected_block_interval_seconds: 600,
+        minimum_safe_remaining_blocks: 144,
         expiry_safety_blocks: 144,
         evidence_lease_seconds: 2_592_000,
       },
       ...overrides,
     },
     observer: { observe },
-    ids: { observation: () => "observer-recovery-01" },
   };
 }
 
@@ -163,6 +171,7 @@ async function pollRequest(session: Awaited<ReturnType<typeof startRecovery>>["s
     await encodeHnsOwnerRecoveryProviderPoll(poll, sessionAuthority),
     session.session_id,
     "application/octet-stream",
+    "observer-recovery-01",
   );
 }
 
@@ -380,7 +389,7 @@ describe("HNS owner verifier recovery target-observer seam", () => {
 
   test("maps observer transport failure separately from invalid inner bytes", async () => {
     const unavailable = runtime(async () => {
-      throw new Error("observer unavailable");
+      throw new HnsTargetObserverPortError("transport_unavailable", "observer unavailable");
     });
     const started = await startRecovery(unavailable);
     expect(
@@ -413,14 +422,9 @@ describe("HNS owner verifier recovery target-observer seam", () => {
     ).toBe(503);
     expect(aborted).toBe(true);
 
-    const brokenRuntime: HnsTargetObserverRuntime = {
-      ...unavailable,
-      ids: {
-        observation() {
-          throw new Error("observation id unavailable");
-        },
-      },
-    };
+    const brokenRuntime = runtime(async () => {
+      throw new Error("untyped observer defect");
+    });
     expect(
       (
         await handleRequest(await pollRequest(started.session), env, {
@@ -428,5 +432,57 @@ describe("HNS owner verifier recovery target-observer seam", () => {
         })
       ).status,
     ).toBe(502);
+  });
+
+  test("requires a private canonical observation id only on target poll", async () => {
+    const ready = runtime((input) => observerResult(input.request, "verified"));
+    const started = await startRecovery(ready);
+    const poll = await buildHnsOwnerRecoveryProviderPoll(started.session, {
+      expected_route_recovery_id: started.session.route_recovery_id,
+      expected_session_id: started.session.session_id,
+      start_idempotency_key: startIdempotencyKey,
+      expected_public_start_hash: started.session.public_start_hash,
+      expected_upstream_session_ref: started.session.upstream_session_ref,
+      expected_ownership_source: started.session.ownership_source,
+      expected_challenge_expires_at: started.session.challenge_expires_at,
+    });
+    const pollBytes = await encodeHnsOwnerRecoveryProviderPoll(poll, {
+      expected_route_recovery_id: started.session.route_recovery_id,
+      expected_session_id: started.session.session_id,
+      start_idempotency_key: startIdempotencyKey,
+      expected_public_start_hash: started.session.public_start_hash,
+      expected_upstream_session_ref: started.session.upstream_session_ref,
+      expected_ownership_source: started.session.ownership_source,
+      expected_challenge_expires_at: started.session.challenge_expires_at,
+    });
+    expect(
+      (
+        await handleRequest(
+          request(
+            "/internal/hns-owner/v1/poll",
+            pollBytes,
+            started.session.session_id,
+            "application/octet-stream",
+          ),
+          env,
+          { targetObserver: ready },
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await handleRequest(
+          request(
+            "/internal/hns-owner/v1/poll",
+            pollBytes,
+            started.session.session_id,
+            "application/octet-stream",
+            "o".repeat(257),
+          ),
+          env,
+          { targetObserver: ready },
+        )
+      ).status,
+    ).toBe(400);
   });
 });

@@ -75,6 +75,7 @@ const pollInput = {
 } as const;
 const policy: HnsEvidenceLeasePolicy = {
   expected_block_interval_seconds: 600,
+  minimum_safe_remaining_blocks: 1,
   expiry_safety_blocks: 100,
   evidence_lease_seconds: 2_592_000,
 };
@@ -276,8 +277,10 @@ function pollServices(
   let providerCalls = 0;
   let attemptProposalNumber = 0;
   let evidenceProposalNumber = 0;
+  let observationProposalNumber = 0;
   let durableAttemptId: string | undefined;
   let durableEvidenceRef: string | undefined;
+  let durableObservationId: string | undefined;
   let reservedLeaseMs: number | undefined;
   let providerDeadlineMs: number | undefined;
   let finalizedProviderResponseBytes: Uint8Array | null | undefined;
@@ -285,6 +288,9 @@ function pollServices(
   const attemptIds: string[] = [];
   const proposedEvidenceRefs: string[] = [];
   const attemptEvidenceRefs: string[] = [];
+  const proposedObservationIds: string[] = [];
+  const attemptObservationIds: string[] = [];
+  const providerObservationIds: string[] = [];
   const services: HnsOwnerRecoveryPollServices = {
     policy,
     store: {
@@ -297,15 +303,19 @@ function pollServices(
         reservedLeaseMs = input.lease_ms;
         proposedAttemptIds.push(input.recovery_attempt_id);
         proposedEvidenceRefs.push(input.evidence_ref);
+        proposedObservationIds.push(input.observation_id);
         durableAttemptId ??= input.recovery_attempt_id;
         durableEvidenceRef ??= input.evidence_ref;
+        durableObservationId ??= input.observation_id;
         attemptIds.push(durableAttemptId);
         attemptEvidenceRefs.push(durableEvidenceRef);
+        attemptObservationIds.push(durableObservationId);
         return Effect.succeed({
           kind: "acquired",
           attempt: {
             recovery_attempt_id: durableAttemptId,
             evidence_ref: durableEvidenceRef,
+            observation_id: durableObservationId,
             fence_token: 1,
             database_now: databaseNow,
             lease_expires_at: options.leaseExpiresAt ?? "2026-02-02T04:41:00.000Z",
@@ -354,6 +364,7 @@ function pollServices(
         sequence.push("provider");
         providerCalls += 1;
         providerDeadlineMs = providerOptions.deadline_ms;
+        providerObservationIds.push(providerOptions.observation_id);
         if (options.providerDefect === "throw") throw new Error("provider poll defect");
         if (options.providerDefect === "die") return Effect.die("provider poll defect");
         return Effect.succeed(responseBytes);
@@ -372,6 +383,12 @@ function pollServices(
           ? "route_evidence_14"
           : `route_evidence_proposed_${evidenceProposalNumber}`;
       },
+      observation: () => {
+        observationProposalNumber += 1;
+        return observationProposalNumber === 1
+          ? "hns_observation_01"
+          : `hns_observation_proposed_${observationProposalNumber}`;
+      },
     },
   };
   return {
@@ -386,6 +403,9 @@ function pollServices(
     attemptIds,
     proposedEvidenceRefs,
     attemptEvidenceRefs,
+    proposedObservationIds,
+    attemptObservationIds,
+    providerObservationIds,
   };
 }
 
@@ -546,6 +566,12 @@ describe("HNS owner-recovery application orchestration", () => {
       "route_evidence_proposed_2",
     ]);
     expect(fixture.attemptEvidenceRefs).toEqual(["route_evidence_14", "route_evidence_14"]);
+    expect(fixture.proposedObservationIds).toEqual([
+      "hns_observation_01",
+      "hns_observation_proposed_2",
+    ]);
+    expect(fixture.attemptObservationIds).toEqual(["hns_observation_01", "hns_observation_01"]);
+    expect(fixture.providerObservationIds).toEqual(["hns_observation_01", "hns_observation_01"]);
     expect(fixture.sequence).toEqual([
       "load",
       "reserve",
@@ -567,7 +593,7 @@ describe("HNS owner-recovery application orchestration", () => {
         observation_contract_version: "pirate-hns-target-observation-v2",
         reason_code: "chain_transport_unavailable",
         retry_after_seconds: 17,
-        diagnostic_ref: null,
+        diagnostic_ref: "hns-observer-diagnostic:recovery-unavailable-01",
       }),
     );
     const response = await Effect.runPromise(pollHnsOwnerRecovery(pollInput, fixture.services));

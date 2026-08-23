@@ -144,6 +144,7 @@ async function request(): Promise<HnsOwnerActiveLeaseRenewalRequestV1> {
 
 const leasePolicy = {
   expected_block_interval_seconds: 600,
+  minimum_safe_remaining_blocks: 1,
   expiry_safety_blocks: 1,
   evidence_lease_seconds: 2_592_000,
 };
@@ -221,6 +222,7 @@ test("maps a full observer v2 result and reproduces response/evidence/result vec
     upstream_session_ref: "nvs_01",
     policy: {
       expected_block_interval_seconds: 600,
+      minimum_safe_remaining_blocks: 1,
       expiry_safety_blocks: 1,
       evidence_lease_seconds: 2_592_000,
     },
@@ -235,6 +237,7 @@ test("maps a full observer v2 result and reproduces response/evidence/result vec
     control_identity: persistedIdentity,
     policy: {
       expected_block_interval_seconds: 600,
+      minimum_safe_remaining_blocks: 1,
       expiry_safety_blocks: 1,
       evidence_lease_seconds: 2_592_000,
     },
@@ -250,6 +253,7 @@ test("maps a full observer v2 result and reproduces response/evidence/result vec
     binding_generation: 13,
     policy: {
       expected_block_interval_seconds: 600,
+      minimum_safe_remaining_blocks: 1,
       expiry_safety_blocks: 1,
       evidence_lease_seconds: 2_592_000,
     },

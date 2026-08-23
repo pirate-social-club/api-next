@@ -33,6 +33,7 @@ export type HnsTargetObserverPort = Readonly<{
     input: Readonly<{
       readonly request: HnsControlObservationRequestV1;
       readonly request_bytes: Uint8Array;
+      readonly lease_policy: HnsEvidenceLeasePolicy;
     }>,
     options: Readonly<{ readonly deadline_ms: number; readonly signal: AbortSignal }>,
   ) => Promise<Uint8Array>;
@@ -41,8 +42,24 @@ export type HnsTargetObserverPort = Readonly<{
 export type HnsTargetObserverRuntime = Readonly<{
   readonly configuration: HnsTargetObserverConfiguration;
   readonly observer: HnsTargetObserverPort;
-  readonly ids?: Readonly<{ readonly observation: () => string }>;
 }>;
+
+export type HnsTargetObserverPortErrorReason =
+  | "invalid_request"
+  | "misconfigured"
+  | "transport_unavailable"
+  | "invalid_response";
+
+export class HnsTargetObserverPortError extends Error {
+  override readonly name: string = "HnsTargetObserverPortError";
+
+  constructor(
+    readonly reason: HnsTargetObserverPortErrorReason,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 
 export class HnsTargetObserverFacadeError extends Error {
   readonly name = "HnsTargetObserverFacadeError";
@@ -77,6 +94,7 @@ export function matchesHnsTargetObserverRecoveryConfiguration(
     validPositiveInteger(configuration.observer_deadline_ms) &&
     configuration.observer_deadline_ms <= HNS_TARGET_OBSERVER_DEADLINE_MAX_MS &&
     validPositiveInteger(policy.expected_block_interval_seconds) &&
+    validPositiveInteger(policy.minimum_safe_remaining_blocks) &&
     Number.isSafeInteger(policy.expiry_safety_blocks) &&
     policy.expiry_safety_blocks >= 0 &&
     validPositiveInteger(policy.evidence_lease_seconds)
@@ -101,13 +119,17 @@ async function observeWithDeadline(
     let operation: Promise<Uint8Array>;
     try {
       operation = runtime.observer.observe(
-        { request, request_bytes: new Uint8Array(requestBytes) },
+        {
+          request,
+          request_bytes: new Uint8Array(requestBytes),
+          lease_policy: runtime.configuration.lease_policy,
+        },
         { deadline_ms: deadlineMs, signal: controller.signal },
       );
-    } catch {
+    } catch (error) {
       settled = true;
       clearTimeout(timeout);
-      reject(new HnsTargetObserverFacadeError("unavailable"));
+      reject(mapPortError(error));
       return;
     }
     void operation.then(
@@ -121,19 +143,33 @@ async function observeWithDeadline(
         }
         resolve(new Uint8Array(value));
       },
-      () => {
+      (error) => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        reject(new HnsTargetObserverFacadeError("unavailable"));
+        reject(mapPortError(error));
       },
     );
   });
 }
 
+function mapPortError(error: unknown): HnsTargetObserverFacadeError {
+  if (!(error instanceof HnsTargetObserverPortError)) {
+    return new HnsTargetObserverFacadeError("invalid_response");
+  }
+  if (error.reason === "misconfigured") {
+    return new HnsTargetObserverFacadeError("misconfigured");
+  }
+  if (error.reason === "transport_unavailable") {
+    return new HnsTargetObserverFacadeError("unavailable");
+  }
+  return new HnsTargetObserverFacadeError("invalid_response");
+}
+
 export async function observeHnsOwnerRecoverySession(
   session: HnsOwnerRecoveryPersistedSessionV1,
   runtime: HnsTargetObserverRuntime,
+  observationId: string,
 ): Promise<Uint8Array> {
   if (!matchesHnsTargetObserverRecoveryConfiguration(session, runtime)) {
     throw new HnsTargetObserverFacadeError("misconfigured");
@@ -143,7 +179,7 @@ export async function observeHnsOwnerRecoverySession(
   }
   const request: HnsControlObservationRequestV1 = {
     version: "pirate-hns-control-observation-request-v1",
-    observation_id: runtime.ids?.observation() ?? crypto.randomUUID(),
+    observation_id: observationId,
     provider_id: session.provider_id,
     provider_configuration_reference: session.provider_configuration.reference,
     provider_configuration_version: session.provider_configuration.version,

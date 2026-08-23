@@ -2,6 +2,10 @@ import { validCommunityRouteRoot } from "@pirate/domain";
 import { Sha256Hex, type Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
 import { Option, Schema } from "effect";
 import {
+  HNS_CONTROL_OBSERVER_SNAPSHOT_REFERENCE_MAX_BYTES,
+  isHnsControlObserverSnapshotReference,
+} from "./hns-control-observer-store.ts";
+import {
   decodeStrictHnsJsonBytes,
   HnsOwnerResponseDecodeError,
   sha256Utf8,
@@ -124,8 +128,14 @@ const ProviderEvidenceReference = boundedString(
   "provider_evidence_ref",
 );
 const DiagnosticReference = boundedString(
-  HNS_CONTROL_OBSERVATION_DIAGNOSTIC_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_SNAPSHOT_REFERENCE_MAX_BYTES,
   "diagnostic_ref",
+).check(
+  Schema.makeFilter((value) =>
+    isHnsControlObserverSnapshotReference(value)
+      ? undefined
+      : "Expected diagnostic_ref to be a reserved observer snapshot reference",
+  ),
 );
 
 const RequestSchema = Schema.Struct({
@@ -203,7 +213,7 @@ const UnavailableSchema = Schema.Struct({
   status: Schema.Literal("unavailable"),
   reason_code: Schema.Literals(unavailableReasonValues),
   retry_after_seconds: Schema.NullOr(PositiveSafeInteger),
-  diagnostic_ref: Schema.NullOr(DiagnosticReference),
+  diagnostic_ref: DiagnosticReference,
 });
 
 export type HnsControlObservationRequestV1 = Schema.Schema.Type<typeof RequestSchema>;
@@ -229,6 +239,7 @@ export type HnsChainAuthorityRecord =
 
 export type HnsEvidenceLeasePolicy = Readonly<{
   readonly expected_block_interval_seconds: number;
+  readonly minimum_safe_remaining_blocks: number;
   readonly expiry_safety_blocks: number;
   readonly evidence_lease_seconds: number;
 }>;
@@ -296,7 +307,7 @@ export type HnsOwnerTargetUnavailableObservationV2 = Readonly<{
   readonly observation_contract_version: typeof HNS_TARGET_OBSERVATION_VERSION;
   readonly reason_code: HnsControlObservationUnavailableReason;
   readonly retry_after_seconds: number | null;
-  readonly diagnostic_ref: string | null;
+  readonly diagnostic_ref: string;
 }>;
 
 export type HnsOwnerTargetObservationV2 =
@@ -900,6 +911,8 @@ export function deriveHnsEvidenceLease(
   if (
     !Number.isSafeInteger(policy.expected_block_interval_seconds) ||
     policy.expected_block_interval_seconds <= 0 ||
+    !Number.isSafeInteger(policy.minimum_safe_remaining_blocks) ||
+    policy.minimum_safe_remaining_blocks <= 0 ||
     !Number.isSafeInteger(policy.expiry_safety_blocks) ||
     policy.expiry_safety_blocks < 0 ||
     !Number.isSafeInteger(policy.evidence_lease_seconds) ||
@@ -909,7 +922,7 @@ export function deriveHnsEvidenceLease(
   }
   const safe_remaining_blocks =
     result.expiry_height - result.chain_anchor_height - policy.expiry_safety_blocks;
-  if (safe_remaining_blocks <= 0) {
+  if (safe_remaining_blocks < policy.minimum_safe_remaining_blocks) {
     throw new TypeError("HNS evidence expiry horizon is insufficient");
   }
   const chainSafeExpiresAt =
