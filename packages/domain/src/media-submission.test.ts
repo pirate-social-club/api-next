@@ -78,7 +78,7 @@ function ok<A extends ReturnType<typeof transitionMediaSubmission>>(result: A) {
   return result.state;
 }
 
-function analyzed() {
+function analyzed(acrDecision: TrustedSongAnalysis["acr"]["decision"] = "allow") {
   const withTerms = ok(
     transitionMediaSubmission(created, {
       event: "song_terms_bound",
@@ -102,7 +102,7 @@ function analyzed() {
       actorId,
       expectedAudioRevision: 1,
       expectedCanonicalAudioSha256: audioHash,
-      analysis: analysis(),
+      analysis: analysis(acrDecision),
     }),
   );
 }
@@ -295,6 +295,88 @@ describe("song media Spec 013 machine", () => {
       ok: false,
       rejection: { _tag: "retry_not_allowed", reasonCode: "failure_not_retryable" },
     });
+  });
+
+  test("requires the private ACR exhaustion hold for the exhausted override", () => {
+    for (const acrDecision of ["inconclusive", "skipped"] as const) {
+      const held = ok(
+        transitionMediaSubmission(analyzed(acrDecision), {
+          event: "review_exhaustion_recorded",
+          actorId,
+          expectedCreationRevision: 2,
+          review: { reviewRef: "ordinary-review", heldRevision: 2, reasonCode: "review_required" },
+        }),
+      );
+      expect(
+        transitionMediaSubmission(held, {
+          event: "moderator_approved",
+          actorId,
+          expectedCreationRevision: 2,
+          communityActive: true,
+          membershipActive: true,
+          approval: {
+            actionId: "ordinary-acr-action",
+            moderatorActorId: "moderator",
+            evidenceRef: "ordinary-acr-evidence",
+            approvalKind: "acr_override",
+            reasonCode: "acr_exhausted",
+            heldRevision: 2,
+          },
+          decision: {
+            decisionRevision: 1,
+            outcome: "allow",
+            creationRevision: 2,
+            audioRevision: 1,
+            analysisRevision: 1,
+            canonicalAudioSha256: audioHash,
+            policyRevision: "publication-v1",
+            evidenceRef: "ordinary-acr-decision",
+          },
+        }),
+      ).toMatchObject({ ok: false, rejection: { _tag: "decision_evidence_invalid" } });
+    }
+    const exhausted = ok(
+      transitionMediaSubmission(analyzed("inconclusive"), {
+        event: "review_exhaustion_recorded",
+        actorId,
+        expectedCreationRevision: 2,
+        review: {
+          reviewRef: "acr-exhausted-review",
+          heldRevision: 2,
+          reasonCode: "review_required",
+          exhaustionCode: "acr_exhausted",
+        },
+      }),
+    );
+    expect(
+      ok(
+        transitionMediaSubmission(exhausted, {
+          event: "moderator_approved",
+          actorId,
+          expectedCreationRevision: 2,
+          communityActive: true,
+          membershipActive: true,
+          approval: {
+            actionId: "acr-exhausted-action",
+            moderatorActorId: "moderator",
+            evidenceRef: "acr-exhausted-evidence",
+            approvalKind: "acr_override",
+            reasonCode: "acr_exhausted",
+            heldRevision: 2,
+          },
+          decision: {
+            decisionRevision: 1,
+            outcome: "allow",
+            creationRevision: 2,
+            audioRevision: 1,
+            analysisRevision: 1,
+            canonicalAudioSha256: audioHash,
+            policyRevision: "publication-v1",
+            evidenceRef: "acr-exhausted-decision",
+          },
+        }),
+      ).status,
+    ).toBe("processing");
   });
 
   test("supersedes held review terms with a new creation revision", () => {

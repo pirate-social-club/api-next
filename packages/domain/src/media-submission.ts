@@ -36,7 +36,7 @@ export type BoundReference = Readonly<{
   evidenceAudioRevision: number;
   evidenceAnalysisRevision: number;
   evidenceAudioSha256: string;
-  upstreamCommercialRevShareBps: number;
+  upstreamCommercialRevShareBps: number | null;
   evidenceRef: string;
   inheritedLicensePreset?: "non-commercial" | "commercial-use" | "commercial-remix";
   inheritedCommercialRevShareBps?: number | null;
@@ -161,6 +161,7 @@ export type ReviewCase = Readonly<{
   reviewRef: string;
   heldRevision: number;
   reasonCode: "review_required" | "moderation_unavailable";
+  exhaustionCode?: "acr_exhausted";
 }>;
 export type ModeratorApprovalEvidence = Readonly<{
   actionId: string;
@@ -455,9 +456,10 @@ function validReference(reference: BoundReference, state: MediaSubmissionState):
     validRevision(reference.evidenceAudioRevision, 1) &&
     validRevision(reference.evidenceAnalysisRevision, 1) &&
     validHash(reference.evidenceAudioSha256) &&
-    Number.isInteger(reference.upstreamCommercialRevShareBps) &&
-    reference.upstreamCommercialRevShareBps >= 0 &&
-    reference.upstreamCommercialRevShareBps <= 10_000 &&
+    (reference.upstreamCommercialRevShareBps === null ||
+      (Number.isInteger(reference.upstreamCommercialRevShareBps) &&
+        reference.upstreamCommercialRevShareBps >= 0 &&
+        reference.upstreamCommercialRevShareBps <= 10_000)) &&
     state.audio !== null &&
     reference.evidenceAudioRevision === state.audio.audioRevision &&
     reference.evidenceAudioSha256 === state.audio.canonicalSha256 &&
@@ -619,7 +621,9 @@ export function mediaSubmissionInvariant(state: MediaSubmissionState): string | 
     state.status === "manual_review" &&
     (state.phase !== null ||
       state.review === null ||
-      state.review.heldRevision !== state.creationRevision)
+      state.review.heldRevision !== state.creationRevision ||
+      (state.review.exhaustionCode !== undefined &&
+        state.review.exhaustionCode !== "acr_exhausted"))
   )
     return "review_shape";
   if (
@@ -1025,7 +1029,11 @@ export function transitionMediaSubmission(
         !["skipped", "allow"].includes(current.analysis.lyricsSafety) ||
         current.analysis.speechLyrics.status === "unavailable" ||
         !["not_explicit", "no_lyrics"].includes(current.analysis.speechLyrics.explicitness) ||
-        (current.analysis.acr.decision === "requires_reference" && current.boundReference === null)
+        (current.analysis.acr.decision === "requires_reference" &&
+          current.boundReference === null) ||
+        (current.review.exhaustionCode === "acr_exhausted" &&
+          (command.approval.approvalKind !== "acr_override" ||
+            command.approval.reasonCode !== "acr_exhausted"))
       )
         return reject({ _tag: "decision_evidence_invalid", reasonCode: "required_stage_missing" });
       if (
@@ -1040,7 +1048,10 @@ export function transitionMediaSubmission(
       if (
         (current.analysis.acr.decision === "inconclusive" &&
           (command.approval.approvalKind !== "acr_override" ||
-            command.approval.reasonCode !== "acr_inconclusive")) ||
+            command.approval.reasonCode !==
+              (current.review.exhaustionCode === "acr_exhausted"
+                ? "acr_exhausted"
+                : "acr_inconclusive"))) ||
         (current.analysis.acr.decision === "skipped" &&
           (command.approval.approvalKind !== "acr_override" ||
             command.approval.reasonCode !== "acr_skipped")) ||

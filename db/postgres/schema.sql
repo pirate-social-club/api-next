@@ -1269,8 +1269,8 @@ CREATE FUNCTION guard_media_outbox_update() RETURNS trigger
 BEGIN
   IF ROW(NEW.outbox_event_id, NEW.submission_id, NEW.community_id, NEW.actor_user_id, NEW.operation_id, NEW.creation_revision, NEW.audio_revision, NEW.analysis_revision, NEW.workflow_revision, NEW.workflow_instance_id, NEW.event_type, NEW.effect_identity, NEW.payload, NEW.created_at) IS DISTINCT FROM ROW(OLD.outbox_event_id, OLD.submission_id, OLD.community_id, OLD.actor_user_id, OLD.operation_id, OLD.creation_revision, OLD.audio_revision, OLD.analysis_revision, OLD.workflow_revision, OLD.workflow_instance_id, OLD.event_type, OLD.effect_identity, OLD.payload, OLD.created_at) THEN RAISE EXCEPTION 'media outbox effect identity is immutable'; END IF;
   IF NEW.updated_at <= OLD.updated_at OR NEW.claim_fence < OLD.claim_fence OR NEW.delivery_attempts < OLD.delivery_attempts OR NEW.delivery_attempts > 3 THEN RAISE EXCEPTION 'media outbox fence must advance'; END IF;
-  IF (OLD.state IN ('pending', 'failed') AND (NEW.state <> 'running' OR NEW.delivery_attempts <> OLD.delivery_attempts + 1 OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp())) THEN RAISE EXCEPTION 'media outbox claim is not allowed'; END IF;
-  IF OLD.state = 'running' AND NEW.state = 'running' AND (OLD.lease_expires_at > clock_timestamp() OR NEW.delivery_attempts <> OLD.delivery_attempts + 1 OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp()) THEN RAISE EXCEPTION 'media outbox reclaim is not allowed'; END IF;
+  IF (OLD.state IN ('pending', 'failed') AND (NEW.state <> 'running' OR NEW.delivery_attempts <> CASE WHEN OLD.delivery_attempts < 3 THEN OLD.delivery_attempts + 1 ELSE OLD.delivery_attempts END OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp())) THEN RAISE EXCEPTION 'media outbox claim is not allowed'; END IF;
+  IF OLD.state = 'running' AND NEW.state = 'running' AND (OLD.lease_expires_at > clock_timestamp() OR NEW.delivery_attempts <> CASE WHEN OLD.delivery_attempts < 3 THEN OLD.delivery_attempts + 1 ELSE OLD.delivery_attempts END OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp()) THEN RAISE EXCEPTION 'media outbox reclaim is not allowed'; END IF;
   IF OLD.state = 'running' AND NEW.state IN ('delivered', 'failed', 'exhausted') AND (NEW.delivery_attempts <> OLD.delivery_attempts OR OLD.lease_expires_at <= clock_timestamp() OR NEW.claim_fence <> OLD.claim_fence OR NEW.claim_owner IS NOT NULL) THEN RAISE EXCEPTION 'media outbox completion is not allowed'; END IF;
   IF OLD.state NOT IN ('pending', 'failed', 'running') THEN RAISE EXCEPTION 'media outbox is terminal'; END IF;
   RETURN NEW;
@@ -1314,7 +1314,7 @@ $$;
 CREATE FUNCTION guard_media_submission_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-DECLARE allowed BOOLEAN := FALSE; community_active BOOLEAN; membership_active BOOLEAN; analysis_record media_analysis_evidence%ROWTYPE; decision_record media_publication_decisions%ROWTYPE; post_record posts%ROWTYPE;
+DECLARE allowed BOOLEAN := FALSE; community_active BOOLEAN; membership_active BOOLEAN; analysis_record media_analysis_evidence%ROWTYPE; decision_record media_publication_decisions%ROWTYPE; post_record posts%ROWTYPE; audio_record media_audio_revisions%ROWTYPE; terms_record media_submission_terms%ROWTYPE; moderation_action media_moderation_actions%ROWTYPE;
 BEGIN
   IF ROW(NEW.submission_id, NEW.community_id, NEW.actor_user_id, NEW.operation_id, NEW.endpoint_template, NEW.idempotency_key, NEW.request_hash, NEW.title, NEW.song_type, NEW.start_input, NEW.audio_reservation_id, NEW.response_snapshot_bytes, NEW.response_snapshot_sha256, NEW.created_at) IS DISTINCT FROM ROW(OLD.submission_id, OLD.community_id, OLD.actor_user_id, OLD.operation_id, OLD.endpoint_template, OLD.idempotency_key, OLD.request_hash, OLD.title, OLD.song_type, OLD.start_input, OLD.audio_reservation_id, OLD.response_snapshot_bytes, OLD.response_snapshot_sha256, OLD.created_at) THEN RAISE EXCEPTION 'media submission authority is immutable'; END IF;
   IF NEW.event_sequence <> OLD.event_sequence + 1 OR NEW.updated_at <= OLD.updated_at THEN RAISE EXCEPTION 'media submission transition fence did not advance'; END IF;
@@ -1325,6 +1325,7 @@ BEGIN
     OR (OLD.status = 'processing' AND NEW.status = 'processing' AND NEW.audio_revision = OLD.audio_revision + 1 AND NEW.workflow_revision = OLD.workflow_revision + 1 AND NEW.current_immutable_ref IS NOT NULL)
     OR (OLD.status = 'processing' AND NEW.status = 'processing' AND NEW.analysis_revision = OLD.analysis_revision + 1 AND NEW.current_analysis_revision = NEW.analysis_revision)
     OR (OLD.status = 'processing' AND NEW.status IN ('processing', 'manual_review', 'blocked') AND NEW.decision_revision = OLD.decision_revision + 1)
+    OR (OLD.status = 'processing' AND NEW.status = 'manual_review' AND NEW.review_ref IS NOT NULL AND NEW.held_revision = OLD.creation_revision AND NEW.creation_revision = OLD.creation_revision AND NEW.decision_revision = 0)
     OR (OLD.status = 'processing' AND NEW.status = 'action_required' AND NEW.action_kind = 'reference_required' AND NEW.held_revision = OLD.creation_revision AND NEW.action_expires_at IS NOT NULL)
     OR (OLD.status IN ('action_required', 'manual_review') AND NEW.status = 'processing' AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.bound_reference_asset_id IS NOT NULL)
     OR (OLD.status = 'manual_review' AND NEW.status = 'processing' AND NEW.moderator_action_id IS NOT NULL AND NEW.moderator_actor_id IS NOT NULL AND NEW.decision_revision = OLD.decision_revision + 1)
@@ -1335,11 +1336,34 @@ BEGIN
     OR (OLD.status = 'action_required' AND NEW.status = 'abandoned' AND OLD.action_kind = 'reference_required' AND NEW.abandonment_reason = 'action_deadline_elapsed')
     OR (OLD.status = 'processing' AND NEW.status = 'abandoned' AND OLD.audio_revision = 0 AND OLD.phase IN ('reserve', 'awaiting_upload', 'finalize') AND NEW.abandonment_reason IN ('author_cancelled', 'reservation_expired'));
   IF NOT allowed THEN RAISE EXCEPTION 'media submission transition is not allowed'; END IF;
-  IF NEW.bound_reference_asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM media_reference_evidence r WHERE r.community_id = NEW.community_id AND r.actor_user_id = NEW.actor_user_id AND r.submission_id = NEW.submission_id AND r.operation_id = NEW.operation_id AND r.asset_id = NEW.bound_reference_asset_id AND r.evidence_ref = NEW.bound_reference_evidence_ref AND r.evidence_audio_revision = NEW.bound_reference_audio_revision AND r.evidence_analysis_revision = NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256 = NEW.bound_reference_audio_sha256 AND r.upstream_commercial_rev_share_bps = NEW.bound_reference_upstream_share_bps) THEN RAISE EXCEPTION 'bound reference evidence is missing'; END IF;
-  IF NEW.status = 'processing' AND NEW.phase = 'publish' OR NEW.status = 'published' THEN
+  IF OLD.status IN ('processing', 'action_required', 'manual_review') AND NEW.status = 'processing' AND NEW.creation_revision = OLD.creation_revision + 1 AND NEW.current_terms_revision = NEW.creation_revision THEN
+    SELECT * INTO terms_record FROM media_submission_terms WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND creation_revision=NEW.creation_revision FOR SHARE;
+    IF terms_record.submission_id IS NULL OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision OR NEW.bound_reference_asset_id IS DISTINCT FROM OLD.bound_reference_asset_id OR NEW.review_exhaustion_code IS NOT NULL OR NEW.post_id IS NOT NULL OR terms_record.license_preset IS NULL OR terms_record.access_mode <> 'public' THEN RAISE EXCEPTION 'terms transition evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND NEW.status = 'processing' AND NEW.audio_revision = OLD.audio_revision + 1 THEN
+    SELECT * INTO audio_record FROM media_audio_revisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND audio_revision=NEW.audio_revision FOR SHARE;
+    IF audio_record.submission_id IS NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> OLD.decision_revision OR NEW.workflow_revision <> OLD.workflow_revision + 1 OR NEW.current_immutable_ref IS DISTINCT FROM audio_record.immutable_ref OR NEW.phase <> 'analysis' OR NEW.post_id IS NOT NULL THEN RAISE EXCEPTION 'audio transition evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND NEW.status = 'processing' AND NEW.analysis_revision = OLD.analysis_revision + 1 THEN
+    SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=NEW.analysis_revision FOR SHARE;
+    IF analysis_record.submission_id IS NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.current_analysis_revision <> NEW.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref OR NEW.phase NOT IN ('analysis','decision') OR analysis_record.audio_revision <> NEW.audio_revision OR analysis_record.canonical_audio_sha256 IS DISTINCT FROM (SELECT canonical_sha256 FROM media_audio_revisions WHERE submission_id=NEW.submission_id AND audio_revision=NEW.audio_revision) THEN RAISE EXCEPTION 'analysis transition evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND NEW.decision_revision = OLD.decision_revision + 1 THEN
+    SELECT * INTO decision_record FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision=NEW.decision_revision FOR SHARE;
+    IF decision_record.submission_id IS NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.current_decision_revision <> NEW.decision_revision OR decision_record.creation_revision <> NEW.creation_revision OR decision_record.audio_revision <> NEW.audio_revision OR decision_record.analysis_revision <> NEW.analysis_revision OR decision_record.canonical_audio_sha256 IS DISTINCT FROM (SELECT canonical_sha256 FROM media_audio_revisions WHERE submission_id=NEW.submission_id AND audio_revision=NEW.audio_revision) THEN RAISE EXCEPTION 'decision transition evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND NEW.status = 'action_required' THEN
+    IF NEW.phase IS NOT NULL OR NEW.action_kind <> 'reference_required' OR NEW.action_expires_at <= clock_timestamp() OR NEW.held_revision <> OLD.creation_revision OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.post_id IS NOT NULL THEN RAISE EXCEPTION 'reference action evidence is not exact'; END IF;
+  ELSIF OLD.status IN ('action_required','manual_review') AND NEW.status = 'processing' AND NEW.bound_reference_asset_id IS NOT NULL THEN
+    IF NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase <> 'analysis' OR NEW.bound_reference_audio_revision <> NEW.audio_revision OR NEW.bound_reference_analysis_revision > NEW.analysis_revision THEN RAISE EXCEPTION 'bound reference transition evidence is not exact'; END IF;
+  ELSIF OLD.status = 'manual_review' AND NEW.status IN ('processing','blocked') THEN
+    IF NEW.moderator_action_id IS NULL OR NOT EXISTS (SELECT 1 FROM media_moderation_actions WHERE action_id=NEW.moderator_action_id AND community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id) THEN RAISE EXCEPTION 'moderation action evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing' AND NEW.status = 'processing_failed' THEN
+    IF NEW.phase IS NOT NULL OR NEW.creation_revision <> OLD.creation_revision OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> OLD.decision_revision OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.failure_code IS NULL OR NEW.failure_retry_count IS NULL OR NEW.last_safe_phase IS NULL THEN RAISE EXCEPTION 'media failure evidence is not exact'; END IF;
+  ELSIF OLD.status = 'processing_failed' AND NEW.status = 'processing' THEN
+    IF NEW.creation_revision <> OLD.creation_revision + 1 OR NEW.retry_count <> OLD.retry_count + 1 OR NEW.audio_revision <> OLD.audio_revision OR NEW.analysis_revision <> OLD.analysis_revision OR NEW.decision_revision <> 0 OR NEW.current_decision_revision IS NOT NULL OR NEW.workflow_revision <> OLD.workflow_revision OR NEW.phase IS NULL OR NEW.failure_code IS NOT NULL THEN RAISE EXCEPTION 'retry transition evidence is not exact'; END IF;
+  END IF;
+  IF NEW.bound_reference_asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM media_reference_evidence r WHERE r.community_id = NEW.community_id AND r.actor_user_id = NEW.actor_user_id AND r.submission_id = NEW.submission_id AND r.operation_id = NEW.operation_id AND r.asset_id = NEW.bound_reference_asset_id AND r.evidence_ref = NEW.bound_reference_evidence_ref AND r.evidence_audio_revision = NEW.bound_reference_audio_revision AND r.evidence_analysis_revision = NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256 = NEW.bound_reference_audio_sha256 AND r.upstream_commercial_rev_share_bps IS NOT DISTINCT FROM NEW.bound_reference_upstream_share_bps) THEN RAISE EXCEPTION 'bound reference evidence is missing'; END IF;
+  IF (NEW.status = 'processing' AND NEW.phase = 'publish') OR NEW.status = 'published' THEN
     SELECT * INTO analysis_record FROM media_analysis_evidence WHERE submission_id = NEW.submission_id AND analysis_revision = NEW.analysis_revision FOR SHARE;
     SELECT * INTO decision_record FROM media_publication_decisions WHERE submission_id = NEW.submission_id AND decision_revision = NEW.decision_revision FOR SHARE;
-    IF analysis_record.submission_id IS NULL OR decision_record.submission_id IS NULL OR decision_record.outcome <> 'allow' OR decision_record.creation_revision <> NEW.creation_revision OR decision_record.audio_revision <> NEW.audio_revision OR decision_record.analysis_revision <> NEW.analysis_revision OR decision_record.canonical_audio_sha256 <> analysis_record.canonical_audio_sha256 OR analysis_record.media_safety <> 'allow' OR analysis_record.lyrics_safety NOT IN ('skipped', 'allow') OR analysis_record.speech_status = 'unavailable' OR analysis_record.explicitness NOT IN ('not_explicit', 'no_lyrics') OR analysis_record.acr_decision IN ('inconclusive', 'skipped') OR (analysis_record.acr_decision = 'requires_reference' AND NEW.bound_reference_asset_id IS NULL) OR NOT EXISTS (SELECT 1 FROM media_submission_terms WHERE submission_id = NEW.submission_id AND creation_revision = NEW.creation_revision) THEN RAISE EXCEPTION 'media publication evidence is not ratified'; END IF;
+    IF analysis_record.submission_id IS NULL OR decision_record.submission_id IS NULL OR decision_record.outcome <> 'allow' OR decision_record.creation_revision <> NEW.creation_revision OR decision_record.audio_revision <> NEW.audio_revision OR decision_record.analysis_revision <> NEW.analysis_revision OR decision_record.canonical_audio_sha256 <> analysis_record.canonical_audio_sha256 OR analysis_record.media_safety <> 'allow' OR analysis_record.lyrics_safety NOT IN ('skipped', 'allow') OR analysis_record.speech_status = 'unavailable' OR analysis_record.explicitness NOT IN ('not_explicit', 'no_lyrics') OR (analysis_record.acr_decision = 'inconclusive' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code IN ('acr_inconclusive','acr_exhausted'))) OR (analysis_record.acr_decision = 'skipped' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code='acr_skipped')) OR (analysis_record.acr_decision = 'requires_reference' AND NEW.bound_reference_asset_id IS NULL) OR NOT EXISTS (SELECT 1 FROM media_submission_terms WHERE submission_id = NEW.submission_id AND creation_revision = NEW.creation_revision) THEN RAISE EXCEPTION 'media publication evidence is not ratified'; END IF;
   END IF;
   IF NEW.status = 'published' THEN
     SELECT * INTO post_record FROM posts WHERE community_id = NEW.community_id AND post_id = NEW.post_id FOR SHARE;
@@ -3158,9 +3182,39 @@ BEGIN
   ELSIF TG_TABLE_NAME = 'media_analysis_evidence' THEN
     IF NEW.audio_revision <> submission_record.audio_revision OR NEW.analysis_revision <> submission_record.analysis_revision + 1 THEN RAISE EXCEPTION 'analysis revision is not current'; END IF;
     IF ROW(NEW.bound_reference_asset_id,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(submission_record.bound_reference_asset_id,submission_record.bound_reference_audio_revision,submission_record.bound_reference_analysis_revision,submission_record.bound_reference_audio_sha256,submission_record.bound_reference_upstream_share_bps) THEN RAISE EXCEPTION 'analysis bound reference does not match submission'; END IF;
-    IF NEW.bound_reference_asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM media_reference_evidence r WHERE r.community_id = NEW.community_id AND r.actor_user_id = NEW.actor_user_id AND r.submission_id = NEW.submission_id AND r.operation_id = NEW.operation_id AND r.asset_id = NEW.bound_reference_asset_id AND r.evidence_ref = NEW.analysis_snapshot->'boundReference'->>'evidenceRef' AND r.evidence_audio_revision = NEW.bound_reference_audio_revision AND r.evidence_analysis_revision = NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256 = NEW.bound_reference_audio_sha256 AND r.upstream_commercial_rev_share_bps = NEW.bound_reference_upstream_share_bps) THEN RAISE EXCEPTION 'analysis bound reference evidence does not match'; END IF;
+    IF NEW.bound_reference_asset_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM media_reference_evidence r WHERE r.community_id = NEW.community_id AND r.actor_user_id = NEW.actor_user_id AND r.submission_id = NEW.submission_id AND r.operation_id = NEW.operation_id AND r.asset_id = NEW.bound_reference_asset_id AND r.evidence_ref = NEW.analysis_snapshot->'boundReference'->>'evidenceRef' AND r.evidence_audio_revision = NEW.bound_reference_audio_revision AND r.evidence_analysis_revision = NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256 = NEW.bound_reference_audio_sha256 AND r.upstream_commercial_rev_share_bps IS NOT DISTINCT FROM NEW.bound_reference_upstream_share_bps) THEN RAISE EXCEPTION 'analysis bound reference evidence does not match'; END IF;
   ELSIF TG_TABLE_NAME = 'media_publication_decisions' THEN
     IF NEW.creation_revision <> submission_record.creation_revision OR NEW.audio_revision <> submission_record.audio_revision OR NEW.analysis_revision <> submission_record.analysis_revision OR NEW.decision_revision <> submission_record.decision_revision + 1 THEN RAISE EXCEPTION 'decision evidence is not current'; END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_media_moderation_action_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE allowed BOOLEAN; submission_record media_post_submissions%ROWTYPE;
+BEGIN
+  SELECT (c.status = 'active' AND m.status = 'member') INTO allowed
+    FROM communities c
+    JOIN community_memberships m ON m.community_id = c.community_id AND m.user_id = NEW.authority_actor_user_id
+    WHERE c.community_id = NEW.community_id
+    FOR SHARE;
+  IF allowed IS DISTINCT FROM TRUE THEN RAISE EXCEPTION 'moderation action requires active community membership'; END IF;
+  SELECT * INTO submission_record FROM media_post_submissions
+    WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id
+      AND submission_id = NEW.submission_id AND operation_id = NEW.operation_id
+    FOR UPDATE;
+  IF submission_record.submission_id IS NULL OR submission_record.status <> 'manual_review'
+     OR submission_record.held_revision IS DISTINCT FROM NEW.held_revision
+     OR submission_record.review_ref IS NULL THEN
+    RAISE EXCEPTION 'moderation action is not bound to a held review';
+  END IF;
+  IF NEW.reason_code = 'acr_exhausted' AND submission_record.review_exhaustion_code IS DISTINCT FROM 'acr_exhausted' THEN
+    RAISE EXCEPTION 'ACR exhaustion override lacks its private exhaustion hold';
+  END IF;
+  IF NEW.action_kind = 'approve' AND (NEW.decision_revision IS NULL OR NEW.decision_revision <> submission_record.decision_revision + 1) THEN
+    RAISE EXCEPTION 'moderation approval decision revision is not current';
   END IF;
   RETURN NEW;
 END;
@@ -3177,7 +3231,7 @@ BEGIN
   ELSE expected := ARRAY['kind','operation_id','post_id','submission_id','workflow_instance_id','workflow_revision']; END IF;
   IF keys IS DISTINCT FROM expected THEN RAISE EXCEPTION 'media outbox payload is not a closed identifier union'; END IF;
   SELECT * INTO submission_record FROM media_post_submissions WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id AND submission_id = NEW.submission_id FOR SHARE;
-  IF submission_record.submission_id IS NULL OR NEW.operation_id <> submission_record.operation_id OR (NEW.creation_revision <> submission_record.creation_revision AND NEW.event_type <> 'analysis_launch') OR (NEW.audio_revision <> submission_record.audio_revision AND NEW.event_type <> 'analysis_launch') OR (NEW.analysis_revision <> submission_record.analysis_revision AND NEW.event_type <> 'analysis_launch') OR NEW.workflow_revision <= 0 OR NEW.workflow_instance_id <> 'media-' || NEW.operation_id || '-r' || NEW.workflow_revision::text THEN RAISE EXCEPTION 'media outbox row lineage does not match submission'; END IF;
+  IF submission_record.submission_id IS NULL OR NEW.operation_id <> submission_record.operation_id OR NEW.creation_revision <> submission_record.creation_revision OR NEW.audio_revision <> submission_record.audio_revision OR NEW.analysis_revision <> submission_record.analysis_revision OR NEW.workflow_revision <= 0 OR NEW.workflow_instance_id <> 'media-' || NEW.operation_id || '-r' || NEW.workflow_revision::text THEN RAISE EXCEPTION 'media outbox row lineage does not match submission'; END IF;
   IF NEW.event_type = 'analysis_launch' AND ((NEW.payload->>'submission_id') <> NEW.submission_id OR (NEW.payload->>'operation_id') <> NEW.operation_id OR (NEW.payload->>'audio_revision')::bigint <> NEW.audio_revision OR (NEW.payload->>'analysis_revision')::bigint <> NEW.analysis_revision OR (NEW.payload->>'workflow_revision')::bigint <> NEW.workflow_revision OR (NEW.payload->>'workflow_instance_id') <> NEW.workflow_instance_id) THEN RAISE EXCEPTION 'media analysis outbox payload values do not match row'; END IF;
   IF NEW.event_type IN ('publication', 'alignment') AND ((NEW.payload->>'submission_id') <> NEW.submission_id OR (NEW.payload->>'operation_id') <> NEW.operation_id OR (NEW.payload->>'post_id') IS NULL OR (NEW.payload->>'post_id') <> submission_record.post_id OR (NEW.payload->>'workflow_revision')::bigint <> NEW.workflow_revision OR (NEW.payload->>'workflow_instance_id') <> NEW.workflow_instance_id) THEN RAISE EXCEPTION 'media publication outbox payload values do not match row'; END IF;
   RETURN NEW;
@@ -3192,6 +3246,76 @@ BEGIN
   SELECT * INTO submission_record FROM media_post_submissions WHERE community_id = NEW.community_id AND actor_user_id = NEW.actor_user_id AND submission_id = NEW.submission_id FOR SHARE;
   SELECT * INTO post_record FROM posts WHERE community_id = NEW.community_id AND post_id = NEW.post_id FOR SHARE;
   IF submission_record.status <> 'published' OR submission_record.operation_id <> NEW.operation_id OR submission_record.post_id <> NEW.post_id OR post_record.author_user_id <> NEW.actor_user_id OR post_record.post_type <> 'song' OR post_record.status <> 'published' OR post_record.visibility <> 'public' OR post_record.title IS DISTINCT FROM submission_record.title THEN RAISE EXCEPTION 'media publication projection is not owned by its operation'; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_media_snapshot_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'media_submission_terms' THEN
+    IF NEW.terms_snapshot->>'licensePreset' IS DISTINCT FROM NEW.license_preset
+       OR NEW.terms_snapshot->>'accessMode' IS DISTINCT FROM NEW.access_mode
+       OR jsonb_typeof(NEW.terms_snapshot->'commercialRemixShareBps') <> 'number'
+       OR (NEW.terms_snapshot->>'commercialRemixShareBps')::numeric IS DISTINCT FROM NEW.commercial_remix_share_bps
+       OR NEW.terms_snapshot->'royaltyAllocations' IS DISTINCT FROM NEW.royalty_allocations THEN
+      RAISE EXCEPTION 'terms snapshot scalars do not match columns';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'media_publication_decisions' THEN
+    IF jsonb_typeof(NEW.decision_snapshot->'decisionRevision') <> 'number'
+       OR (NEW.decision_snapshot->>'decisionRevision')::numeric IS DISTINCT FROM NEW.decision_revision
+       OR NEW.decision_snapshot->>'outcome' IS DISTINCT FROM NEW.outcome
+       OR (NEW.decision_snapshot->>'creationRevision')::numeric IS DISTINCT FROM NEW.creation_revision
+       OR (NEW.decision_snapshot->>'audioRevision')::numeric IS DISTINCT FROM NEW.audio_revision
+       OR (NEW.decision_snapshot->>'analysisRevision')::numeric IS DISTINCT FROM NEW.analysis_revision
+       OR NEW.decision_snapshot->>'canonicalAudioSha256' IS DISTINCT FROM NEW.canonical_audio_sha256
+       OR NEW.decision_snapshot->>'policyRevision' IS DISTINCT FROM NEW.policy_revision
+       OR NEW.decision_snapshot->>'evidenceRef' IS DISTINCT FROM NEW.evidence_ref THEN
+      RAISE EXCEPTION 'decision snapshot scalars do not match columns';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'media_analysis_evidence' THEN
+    IF NEW.analysis_snapshot->>'version' IS DISTINCT FROM NEW.analysis_version
+       OR NEW.analysis_snapshot->>'operationId' IS DISTINCT FROM NEW.operation_id
+       OR (NEW.analysis_snapshot->>'analysisRevision')::numeric IS DISTINCT FROM NEW.analysis_revision
+       OR (NEW.analysis_snapshot->>'audioRevision')::numeric IS DISTINCT FROM NEW.audio_revision
+       OR NEW.analysis_snapshot->>'canonicalAudioSha256' IS DISTINCT FROM NEW.canonical_audio_sha256
+       OR NEW.analysis_snapshot->>'finalizedAudioRef' IS DISTINCT FROM NEW.finalized_audio_ref
+       OR NEW.analysis_snapshot->>'probeEvidenceRef' IS DISTINCT FROM NEW.probe_evidence_ref
+       OR NEW.analysis_snapshot->'embeddedMetadata'->>'evidenceRef' IS DISTINCT FROM NEW.embedded_metadata_evidence_ref
+       OR NEW.analysis_snapshot->'embeddedMetadata'->>'adapterRevision' IS DISTINCT FROM NEW.embedded_metadata_adapter_revision
+       OR NEW.analysis_snapshot->'embeddedMetadata'->>'trackTitle' IS DISTINCT FROM NEW.embedded_title
+       OR NEW.analysis_snapshot->'embeddedMetadata'->'cover' IS DISTINCT FROM NEW.cover_facts
+       OR NEW.analysis_snapshot->'speechLyrics'->>'status' IS DISTINCT FROM NEW.speech_status
+       OR NEW.analysis_snapshot->'speechLyrics'->>'transcriptArtifactRef' IS DISTINCT FROM NEW.transcript_artifact_ref
+       OR NEW.analysis_snapshot->'speechLyrics'->>'transcriptSha256' IS DISTINCT FROM NEW.transcript_sha256
+       OR NEW.analysis_snapshot->'speechLyrics'->>'explicitness' IS DISTINCT FROM NEW.explicitness
+       OR NEW.analysis_snapshot->'speechLyrics'->>'primaryLanguageBcp47' IS DISTINCT FROM NEW.primary_language_bcp47
+       OR NEW.analysis_snapshot->'speechLyrics'->>'secondaryLanguageBcp47' IS DISTINCT FROM NEW.secondary_language_bcp47
+       OR NEW.analysis_snapshot->'speechLyrics'->>'evidenceRef' IS DISTINCT FROM NEW.speech_evidence_ref
+       OR NEW.analysis_snapshot->'speechLyrics'->>'policyRevision' IS DISTINCT FROM NEW.speech_policy_revision
+       OR NEW.analysis_snapshot->'speechLyrics'->>'adapterRevision' IS DISTINCT FROM NEW.speech_adapter_revision
+       OR NEW.analysis_snapshot->'acr'->>'decision' IS DISTINCT FROM NEW.acr_decision
+       OR NEW.analysis_snapshot->'acr'->>'evidenceRef' IS DISTINCT FROM NEW.acr_evidence_ref
+       OR NEW.analysis_snapshot->'acr'->>'policyRevision' IS DISTINCT FROM NEW.acr_policy_revision
+       OR NEW.analysis_snapshot->'acr'->>'adapterRevision' IS DISTINCT FROM NEW.acr_adapter_revision
+       OR NEW.analysis_snapshot->>'lyricsSafety' IS DISTINCT FROM NEW.lyrics_safety
+       OR NEW.analysis_snapshot->>'mediaSafety' IS DISTINCT FROM NEW.media_safety THEN
+      RAISE EXCEPTION 'analysis snapshot scalars do not match columns';
+    END IF;
+    IF NEW.bound_reference_asset_id IS NULL THEN
+      IF NEW.analysis_snapshot->'boundReference' IS DISTINCT FROM 'null'::jsonb THEN RAISE EXCEPTION 'analysis snapshot bound reference does not match columns'; END IF;
+    ELSIF NEW.analysis_snapshot->'boundReference'->>'assetId' IS DISTINCT FROM NEW.bound_reference_asset_id
+       OR NEW.analysis_snapshot->'boundReference'->>'evidenceAudioRevision' IS DISTINCT FROM NEW.bound_reference_audio_revision::text
+       OR NEW.analysis_snapshot->'boundReference'->>'evidenceAnalysisRevision' IS DISTINCT FROM NEW.bound_reference_analysis_revision::text
+       OR NEW.analysis_snapshot->'boundReference'->>'evidenceAudioSha256' IS DISTINCT FROM NEW.bound_reference_audio_sha256
+       OR NEW.analysis_snapshot->'boundReference'->>'upstreamCommercialRevShareBps' IS DISTINCT FROM NEW.bound_reference_upstream_share_bps::text
+       OR NEW.analysis_snapshot->'boundReference'->>'inheritedLicensePreset' IS DISTINCT FROM (SELECT inherited_license_preset FROM media_reference_evidence r WHERE r.community_id=NEW.community_id AND r.actor_user_id=NEW.actor_user_id AND r.submission_id=NEW.submission_id AND r.operation_id=NEW.operation_id AND r.asset_id=NEW.bound_reference_asset_id AND r.evidence_audio_revision=NEW.bound_reference_audio_revision AND r.evidence_analysis_revision=NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256=NEW.bound_reference_audio_sha256)
+       OR NEW.analysis_snapshot->'boundReference'->>'inheritedCommercialRevShareBps' IS DISTINCT FROM (SELECT inherited_commercial_rev_share_bps::text FROM media_reference_evidence r WHERE r.community_id=NEW.community_id AND r.actor_user_id=NEW.actor_user_id AND r.submission_id=NEW.submission_id AND r.operation_id=NEW.operation_id AND r.asset_id=NEW.bound_reference_asset_id AND r.evidence_audio_revision=NEW.bound_reference_audio_revision AND r.evidence_analysis_revision=NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256=NEW.bound_reference_audio_sha256)
+       OR NEW.analysis_snapshot->'boundReference'->>'evidenceRef' IS DISTINCT FROM (SELECT evidence_ref FROM media_reference_evidence r WHERE r.community_id=NEW.community_id AND r.actor_user_id=NEW.actor_user_id AND r.submission_id=NEW.submission_id AND r.operation_id=NEW.operation_id AND r.asset_id=NEW.bound_reference_asset_id AND r.evidence_audio_revision=NEW.bound_reference_audio_revision AND r.evidence_analysis_revision=NEW.bound_reference_analysis_revision AND r.evidence_audio_sha256=NEW.bound_reference_audio_sha256) THEN
+      RAISE EXCEPTION 'analysis snapshot bound reference does not match columns';
+    END IF;
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -3214,6 +3338,7 @@ CREATE FUNCTION validate_media_timed_lyrics_artifact() RETURNS trigger
     AS $$
 DECLARE segment JSONB; previous_start BIGINT := 0; start_ms BIGINT; end_ms BIGINT;
 BEGIN
+  IF encode(sha256(convert_to(NEW.artifact::text, 'UTF8')), 'hex') <> NEW.artifact_sha256 THEN RAISE EXCEPTION 'timed lyrics artifact hash does not match payload'; END IF;
   IF jsonb_typeof(NEW.artifact->'segments') IS DISTINCT FROM 'array' OR jsonb_array_length(NEW.artifact->'segments') > 10000 THEN RAISE EXCEPTION 'timed lyrics segment bounds are invalid'; END IF;
   FOR segment IN SELECT value FROM jsonb_array_elements(NEW.artifact->'segments') LOOP
     IF jsonb_typeof(segment) <> 'object' OR jsonb_typeof(segment->'start_ms') <> 'number' OR jsonb_typeof(segment->'end_ms') <> 'number' OR jsonb_typeof(segment->'text') <> 'string' OR char_length(segment->>'text') > 4096 THEN RAISE EXCEPTION 'timed lyrics segment shape is invalid'; END IF;
@@ -3228,11 +3353,13 @@ $$;
 CREATE FUNCTION validate_media_transcript_artifact() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-DECLARE segment JSONB; previous_start BIGINT := 0; start_ms BIGINT; end_ms BIGINT;
+DECLARE segment JSONB; previous_start BIGINT := 0; start_ms BIGINT; end_ms BIGINT; total_segment_text BIGINT := 0;
 BEGIN
   IF encode(sha256(convert_to(NEW.transcript_text, 'UTF8')), 'hex') <> NEW.transcript_sha256 THEN RAISE EXCEPTION 'transcript hash does not match payload'; END IF;
   FOR segment IN SELECT value FROM jsonb_array_elements(NEW.segments) LOOP
     IF jsonb_typeof(segment) <> 'object' OR jsonb_typeof(segment->'start_ms') <> 'number' OR jsonb_typeof(segment->'end_ms') <> 'number' OR jsonb_typeof(segment->'text') <> 'string' OR char_length(segment->>'text') > 4096 THEN RAISE EXCEPTION 'transcript segment shape is invalid'; END IF;
+    total_segment_text := total_segment_text + char_length(segment->>'text');
+    IF total_segment_text > 200000 THEN RAISE EXCEPTION 'transcript segment text aggregate exceeds 200000 characters'; END IF;
     start_ms := (segment->>'start_ms')::numeric; end_ms := (segment->>'end_ms')::numeric;
     IF start_ms < 0 OR end_ms < start_ms OR end_ms > 86400000 OR start_ms <> trunc(start_ms) OR end_ms <> trunc(end_ms) OR start_ms < previous_start THEN RAISE EXCEPTION 'transcript segment timing is invalid'; END IF;
     previous_start := start_ms;
@@ -5491,6 +5618,7 @@ CREATE TABLE media_alignment_projections (
     failure_code text,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT media_alignment_artifact_pointer_shape CHECK ((((current_artifact_ref IS NULL) AND (current_artifact_revision IS NULL)) OR ((current_artifact_ref IS NOT NULL) AND (current_artifact_revision > 0)))),
+    CONSTRAINT media_alignment_outcome_shape CHECK ((((status = 'unavailable'::text) AND (failure_code IS NOT NULL) AND (current_artifact_ref IS NULL) AND (current_artifact_revision IS NULL)) OR ((status = ANY (ARRAY['pending'::text, 'ready'::text])) AND (failure_code IS NULL)))),
     CONSTRAINT media_alignment_projections_alignment_revision_check CHECK ((alignment_revision >= 0)),
     CONSTRAINT media_alignment_projections_analysis_revision_check CHECK ((analysis_revision > 0)),
     CONSTRAINT media_alignment_projections_audio_revision_check CHECK ((audio_revision > 0)),
@@ -5570,7 +5698,7 @@ CREATE TABLE media_analysis_evidence (
     CONSTRAINT media_analysis_evidence_speech_policy_revision_check CHECK ((btrim(speech_policy_revision) <> ''::text)),
     CONSTRAINT media_analysis_evidence_speech_status_check CHECK ((speech_status = ANY (ARRAY['ready'::text, 'no_speech'::text, 'unavailable'::text]))),
     CONSTRAINT media_analysis_evidence_transcript_sha256_check CHECK (((transcript_sha256 IS NULL) OR (transcript_sha256 ~ '^[0-9a-f]{64}$'::text))),
-    CONSTRAINT media_analysis_reference_shape CHECK ((((bound_reference_asset_id IS NULL) AND (bound_reference_audio_revision IS NULL) AND (bound_reference_analysis_revision IS NULL) AND (bound_reference_audio_sha256 IS NULL) AND (bound_reference_upstream_share_bps IS NULL)) OR ((bound_reference_asset_id IS NOT NULL) AND (bound_reference_audio_revision = audio_revision) AND (bound_reference_analysis_revision > 0) AND (bound_reference_analysis_revision <= analysis_revision) AND (bound_reference_audio_sha256 = canonical_audio_sha256) AND ((bound_reference_upstream_share_bps >= 0) AND (bound_reference_upstream_share_bps <= 10000))))),
+    CONSTRAINT media_analysis_reference_shape CHECK ((((bound_reference_asset_id IS NULL) AND (bound_reference_audio_revision IS NULL) AND (bound_reference_analysis_revision IS NULL) AND (bound_reference_audio_sha256 IS NULL) AND (bound_reference_upstream_share_bps IS NULL)) OR ((bound_reference_asset_id IS NOT NULL) AND (bound_reference_audio_revision = audio_revision) AND (bound_reference_analysis_revision > 0) AND (bound_reference_analysis_revision <= analysis_revision) AND (bound_reference_audio_sha256 = canonical_audio_sha256) AND ((bound_reference_upstream_share_bps IS NULL) OR ((bound_reference_upstream_share_bps >= 0) AND (bound_reference_upstream_share_bps <= 10000)))))),
     CONSTRAINT media_analysis_speech_shape CHECK ((((speech_status = 'ready'::text) AND (transcript_artifact_ref IS NOT NULL) AND (transcript_sha256 IS NOT NULL) AND (explicitness = ANY (ARRAY['not_explicit'::text, 'explicit'::text, 'uncertain'::text])) AND (primary_language_bcp47 ~ '^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text) AND ((secondary_language_bcp47 IS NULL) OR ((secondary_language_bcp47 ~ '^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'::text) AND (secondary_language_bcp47 IS DISTINCT FROM primary_language_bcp47))) AND (lyrics_safety = ANY (ARRAY['skipped'::text, 'allow'::text]))) OR ((speech_status = 'no_speech'::text) AND (transcript_artifact_ref IS NULL) AND (transcript_sha256 IS NULL) AND (explicitness = 'no_lyrics'::text) AND (primary_language_bcp47 IS NULL) AND (secondary_language_bcp47 IS NULL) AND (lyrics_safety = 'skipped'::text)) OR ((speech_status = 'unavailable'::text) AND (transcript_artifact_ref IS NULL) AND (transcript_sha256 IS NULL) AND (explicitness = 'uncertain'::text) AND (primary_language_bcp47 IS NULL) AND (secondary_language_bcp47 IS NULL) AND (lyrics_safety = 'review_required'::text)))),
     CONSTRAINT media_analysis_title_shape CHECK ((((embedded_title_provenance = 'embedded'::text) AND (embedded_title IS NOT NULL)) OR ((embedded_title_provenance = 'absent'::text) AND (embedded_title IS NULL))))
 );
@@ -5588,6 +5716,7 @@ CREATE TABLE media_audio_revisions (
     finalized_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT media_audio_revisions_audio_revision_check CHECK ((audio_revision > 0)),
     CONSTRAINT media_audio_revisions_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_audio_revisions_content_type_check CHECK ((content_type ~ '^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$'::text)),
     CONSTRAINT media_audio_revisions_size_bytes_check CHECK ((size_bytes > 0))
 );
 
@@ -5614,6 +5743,29 @@ CREATE TABLE media_immutable_objects (
     CONSTRAINT media_immutable_objects_size_bytes_check CHECK ((size_bytes > 0))
 );
 
+CREATE TABLE media_moderation_actions (
+    action_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    authority_actor_user_id text NOT NULL,
+    action_kind text NOT NULL,
+    approval_kind text,
+    reason_code text,
+    held_revision bigint NOT NULL,
+    decision_revision bigint,
+    evidence_ref text NOT NULL,
+    decision_snapshot jsonb,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_moderation_action_shape CHECK ((((action_kind = 'approve'::text) AND (approval_kind IS NOT NULL) AND (decision_revision IS NOT NULL) AND (decision_snapshot IS NOT NULL) AND (jsonb_typeof(decision_snapshot) = 'object'::text)) OR ((action_kind = 'block'::text) AND (approval_kind IS NULL) AND (reason_code IS NULL) AND (decision_revision IS NULL) AND (decision_snapshot IS NULL)))),
+    CONSTRAINT media_moderation_actions_action_id_check CHECK ((btrim(action_id) <> ''::text)),
+    CONSTRAINT media_moderation_actions_action_kind_check CHECK ((action_kind = ANY (ARRAY['approve'::text, 'block'::text]))),
+    CONSTRAINT media_moderation_actions_approval_kind_check CHECK (((approval_kind IS NULL) OR (approval_kind = ANY (ARRAY['standard'::text, 'acr_override'::text])))),
+    CONSTRAINT media_moderation_actions_evidence_ref_check CHECK ((btrim(evidence_ref) <> ''::text)),
+    CONSTRAINT media_moderation_actions_reason_code_check CHECK (((reason_code IS NULL) OR (reason_code = ANY (ARRAY['acr_inconclusive'::text, 'acr_exhausted'::text, 'acr_skipped'::text]))))
+);
+
 CREATE TABLE media_moderation_projections (
     submission_id text NOT NULL,
     community_id text NOT NULL,
@@ -5623,12 +5775,15 @@ CREATE TABLE media_moderation_projections (
     decision_revision bigint,
     review_ref text,
     held_revision bigint,
+    review_exhaustion_code text,
     action_kind text,
     moderator_action_id text,
     moderator_actor_id text,
     action_evidence_ref text,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_moderation_projection_exhaustion_shape CHECK (((review_exhaustion_code IS NULL) OR ((status = 'open'::text) AND (held_revision IS NOT NULL)))),
     CONSTRAINT media_moderation_projections_action_kind_check CHECK (((action_kind IS NULL) OR (action_kind = ANY (ARRAY['approve'::text, 'block'::text])))),
+    CONSTRAINT media_moderation_projections_review_exhaustion_code_check CHECK (((review_exhaustion_code IS NULL) OR (review_exhaustion_code = 'acr_exhausted'::text))),
     CONSTRAINT media_moderation_projections_status_check CHECK ((status = ANY (ARRAY['none'::text, 'open'::text, 'approved'::text, 'blocked'::text, 'closed'::text])))
 );
 
@@ -5674,6 +5829,7 @@ CREATE TABLE media_post_submissions (
     held_revision bigint,
     review_ref text,
     review_reason_code text,
+    review_exhaustion_code text,
     moderator_action_id text,
     moderator_actor_id text,
     moderator_evidence_ref text,
@@ -5701,15 +5857,17 @@ CREATE TABLE media_post_submissions (
     CONSTRAINT media_post_submissions_moderator_reason_code_check CHECK (((moderator_reason_code IS NULL) OR (moderator_reason_code = ANY (ARRAY['acr_inconclusive'::text, 'acr_exhausted'::text, 'acr_skipped'::text])))),
     CONSTRAINT media_post_submissions_operation_id_check CHECK ((btrim(operation_id) <> ''::text)),
     CONSTRAINT media_post_submissions_phase_check CHECK (((phase IS NULL) OR (phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])))),
-    CONSTRAINT media_post_submissions_reference_shape CHECK ((((bound_reference_asset_id IS NULL) AND (bound_reference_evidence_ref IS NULL) AND (bound_reference_audio_revision IS NULL) AND (bound_reference_analysis_revision IS NULL) AND (bound_reference_audio_sha256 IS NULL) AND (bound_reference_upstream_share_bps IS NULL)) OR ((bound_reference_asset_id IS NOT NULL) AND (bound_reference_evidence_ref IS NOT NULL) AND (btrim(bound_reference_evidence_ref) <> ''::text) AND (bound_reference_audio_revision = audio_revision) AND (bound_reference_analysis_revision > 0) AND (bound_reference_analysis_revision <= analysis_revision) AND (bound_reference_audio_sha256 ~ '^[0-9a-f]{64}$'::text) AND ((bound_reference_upstream_share_bps >= 0) AND (bound_reference_upstream_share_bps <= 10000))))),
+    CONSTRAINT media_post_submissions_reference_shape CHECK ((((bound_reference_asset_id IS NULL) AND (bound_reference_evidence_ref IS NULL) AND (bound_reference_audio_revision IS NULL) AND (bound_reference_analysis_revision IS NULL) AND (bound_reference_audio_sha256 IS NULL) AND (bound_reference_upstream_share_bps IS NULL)) OR ((bound_reference_asset_id IS NOT NULL) AND (bound_reference_evidence_ref IS NOT NULL) AND (btrim(bound_reference_evidence_ref) <> ''::text) AND (bound_reference_audio_revision = audio_revision) AND (bound_reference_analysis_revision > 0) AND (bound_reference_analysis_revision <= analysis_revision) AND (bound_reference_audio_sha256 ~ '^[0-9a-f]{64}$'::text) AND ((bound_reference_upstream_share_bps IS NULL) OR ((bound_reference_upstream_share_bps >= 0) AND (bound_reference_upstream_share_bps <= 10000)))))),
     CONSTRAINT media_post_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_post_submissions_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
     CONSTRAINT media_post_submissions_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_post_submissions_retention_disposition_check CHECK (((retention_disposition IS NULL) OR (retention_disposition = ANY (ARRAY['no_object'::text, 'retain_for_reconciliation'::text, 'retain_until_expiry'::text])))),
     CONSTRAINT media_post_submissions_retry_count_check CHECK (((retry_count >= 0) AND (retry_count <= 3))),
+    CONSTRAINT media_post_submissions_review_exhaustion_code_check CHECK (((review_exhaustion_code IS NULL) OR (review_exhaustion_code = 'acr_exhausted'::text))),
+    CONSTRAINT media_post_submissions_review_exhaustion_shape CHECK (((review_exhaustion_code IS NULL) OR (status = 'manual_review'::text))),
     CONSTRAINT media_post_submissions_review_reason_code_check CHECK (((review_reason_code IS NULL) OR (review_reason_code = ANY (ARRAY['review_required'::text, 'moderation_unavailable'::text])))),
     CONSTRAINT media_post_submissions_revision_shape CHECK ((((audio_revision = 0) AND (current_immutable_ref IS NULL)) OR ((audio_revision > 0) AND (current_immutable_ref IS NOT NULL)))),
-    CONSTRAINT media_post_submissions_shape CHECK ((((status = 'processing'::text) AND (phase IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'action_required'::text) AND (phase IS NULL) AND (action_kind = 'reference_required'::text) AND (action_reference_request_ref IS NOT NULL) AND (action_expires_at IS NOT NULL) AND (held_revision = creation_revision) AND (post_id IS NULL)) OR ((status = 'manual_review'::text) AND (phase IS NULL) AND (review_ref IS NOT NULL) AND (held_revision = creation_revision) AND (post_id IS NULL)) OR ((status = 'published'::text) AND (phase IS NULL) AND (post_id IS NOT NULL) AND (failure_code IS NULL)) OR ((status = 'blocked'::text) AND (phase IS NULL) AND (post_id IS NULL)) OR ((status = 'processing_failed'::text) AND (phase IS NULL) AND (failure_code IS NOT NULL) AND (failure_retry_count IS NOT NULL) AND (retryable IS NOT NULL) AND (last_safe_phase IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'abandoned'::text) AND (phase IS NULL) AND (post_id IS NULL) AND (abandonment_reason IS NOT NULL) AND (retention_disposition IS NOT NULL)))),
+    CONSTRAINT media_post_submissions_shape CHECK ((((status = 'processing'::text) AND (phase IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'action_required'::text) AND (phase IS NULL) AND (action_kind = 'reference_required'::text) AND (action_reference_request_ref IS NOT NULL) AND (action_expires_at IS NOT NULL) AND (held_revision = creation_revision) AND (post_id IS NULL)) OR ((status = 'manual_review'::text) AND (phase IS NULL) AND (review_ref IS NOT NULL) AND (held_revision = creation_revision) AND (post_id IS NULL) AND ((review_exhaustion_code IS NULL) OR (review_exhaustion_code = 'acr_exhausted'::text))) OR ((status = 'published'::text) AND (phase IS NULL) AND (post_id IS NOT NULL) AND (failure_code IS NULL)) OR ((status = 'blocked'::text) AND (phase IS NULL) AND (post_id IS NULL)) OR ((status = 'processing_failed'::text) AND (phase IS NULL) AND (failure_code IS NOT NULL) AND (failure_retry_count IS NOT NULL) AND (retryable IS NOT NULL) AND (last_safe_phase IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'abandoned'::text) AND (phase IS NULL) AND (post_id IS NULL) AND (abandonment_reason IS NOT NULL) AND (retention_disposition IS NOT NULL)))),
     CONSTRAINT media_post_submissions_song_type_check CHECK ((song_type = ANY (ARRAY['original'::text, 'remix'::text]))),
     CONSTRAINT media_post_submissions_start_input_check CHECK ((jsonb_typeof(start_input) = 'object'::text)),
     CONSTRAINT media_post_submissions_status_check CHECK ((status = ANY (ARRAY['processing'::text, 'action_required'::text, 'manual_review'::text, 'published'::text, 'blocked'::text, 'processing_failed'::text, 'abandoned'::text]))),
@@ -5832,7 +5990,7 @@ CREATE TABLE media_reference_evidence (
     evidence_analysis_revision bigint NOT NULL,
     evidence_audio_sha256 text NOT NULL,
     evidence_ref text NOT NULL,
-    upstream_commercial_rev_share_bps integer NOT NULL,
+    upstream_commercial_rev_share_bps integer,
     inherited_license_preset text,
     inherited_commercial_rev_share_bps integer,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
@@ -5843,7 +6001,7 @@ CREATE TABLE media_reference_evidence (
     CONSTRAINT media_reference_evidence_evidence_ref_check CHECK ((btrim(evidence_ref) <> ''::text)),
     CONSTRAINT media_reference_evidence_inherited_commercial_rev_share_b_check CHECK (((inherited_commercial_rev_share_bps IS NULL) OR ((inherited_commercial_rev_share_bps >= 0) AND (inherited_commercial_rev_share_bps <= 10000)))),
     CONSTRAINT media_reference_evidence_inherited_license_preset_check CHECK (((inherited_license_preset IS NULL) OR (inherited_license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text])))),
-    CONSTRAINT media_reference_evidence_upstream_commercial_rev_share_bp_check CHECK (((upstream_commercial_rev_share_bps >= 0) AND (upstream_commercial_rev_share_bps <= 10000)))
+    CONSTRAINT media_reference_evidence_upstream_commercial_rev_share_bp_check CHECK (((upstream_commercial_rev_share_bps IS NULL) OR ((upstream_commercial_rev_share_bps >= 0) AND (upstream_commercial_rev_share_bps <= 10000))))
 );
 
 CREATE TABLE media_submission_command_replays (
@@ -7152,6 +7310,9 @@ ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_community_id_actor_user_id_operatio_key UNIQUE (community_id, actor_user_id, operation_id);
 
 ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_community_id_immutable_ref_canonica_key UNIQUE (community_id, immutable_ref, canonical_sha256, content_type, size_bytes);
+
+ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_community_id_immutable_ref_key UNIQUE (community_id, immutable_ref);
 
 ALTER TABLE ONLY media_immutable_objects
@@ -7159,6 +7320,12 @@ ALTER TABLE ONLY media_immutable_objects
 
 ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_pkey PRIMARY KEY (immutable_ref);
+
+ALTER TABLE ONLY media_moderation_actions
+    ADD CONSTRAINT media_moderation_actions_community_id_authority_actor_user__key UNIQUE (community_id, authority_actor_user_id, action_id);
+
+ALTER TABLE ONLY media_moderation_actions
+    ADD CONSTRAINT media_moderation_actions_pkey PRIMARY KEY (action_id);
 
 ALTER TABLE ONLY media_moderation_projections
     ADD CONSTRAINT media_moderation_projections_community_id_actor_user_id_sub_key UNIQUE (community_id, actor_user_id, submission_id, operation_id);
@@ -7827,15 +7994,25 @@ CREATE TRIGGER media_analysis_evidence_append_only BEFORE DELETE OR UPDATE ON me
 
 CREATE TRIGGER media_analysis_lineage_guard BEFORE INSERT ON media_analysis_evidence FOR EACH ROW EXECUTE FUNCTION validate_media_lineage_insert();
 
+CREATE TRIGGER media_analysis_snapshot_guard BEFORE INSERT ON media_analysis_evidence FOR EACH ROW EXECUTE FUNCTION validate_media_snapshot_insert();
+
 CREATE TRIGGER media_audio_lineage_guard BEFORE INSERT ON media_audio_revisions FOR EACH ROW EXECUTE FUNCTION validate_media_lineage_insert();
 
 CREATE TRIGGER media_audio_revisions_append_only BEFORE DELETE OR UPDATE ON media_audio_revisions FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
 CREATE TRIGGER media_decision_lineage_guard BEFORE INSERT ON media_publication_decisions FOR EACH ROW EXECUTE FUNCTION validate_media_lineage_insert();
 
+CREATE TRIGGER media_decision_snapshot_guard BEFORE INSERT ON media_publication_decisions FOR EACH ROW EXECUTE FUNCTION validate_media_snapshot_insert();
+
 CREATE TRIGGER media_immutable_object_insert_guard BEFORE INSERT ON media_immutable_objects FOR EACH ROW EXECUTE FUNCTION validate_media_immutable_object_insert();
 
 CREATE TRIGGER media_immutable_objects_append_only BEFORE DELETE OR UPDATE ON media_immutable_objects FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
+
+CREATE TRIGGER media_moderation_action_append_only BEFORE DELETE OR UPDATE ON media_moderation_actions FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
+
+CREATE TRIGGER media_moderation_action_authority_guard BEFORE INSERT ON media_moderation_actions FOR EACH ROW EXECUTE FUNCTION validate_media_moderation_action_insert();
+
+CREATE TRIGGER media_moderation_actions_append_only BEFORE DELETE OR UPDATE ON media_moderation_actions FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
 CREATE TRIGGER media_outbox_payload_guard BEFORE INSERT ON media_submission_outbox FOR EACH ROW EXECUTE FUNCTION validate_media_outbox_payload();
 
@@ -7864,6 +8041,8 @@ CREATE TRIGGER media_submission_terms_append_only BEFORE DELETE OR UPDATE ON med
 CREATE TRIGGER media_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW EXECUTE FUNCTION guard_media_submission_update();
 
 CREATE TRIGGER media_terms_lineage_guard BEFORE INSERT ON media_submission_terms FOR EACH ROW EXECUTE FUNCTION validate_media_lineage_insert();
+
+CREATE TRIGGER media_terms_snapshot_guard BEFORE INSERT ON media_submission_terms FOR EACH ROW EXECUTE FUNCTION validate_media_snapshot_insert();
 
 CREATE TRIGGER media_timed_lyrics_artifact_shape_guard BEFORE INSERT ON media_timed_lyrics_artifacts FOR EACH ROW EXECUTE FUNCTION validate_media_timed_lyrics_artifact();
 
@@ -8435,13 +8614,22 @@ ALTER TABLE ONLY media_audio_revisions
     ADD CONSTRAINT media_audio_revisions_community_id_actor_user_id_submissio_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_audio_revisions
-    ADD CONSTRAINT media_audio_revisions_community_id_immutable_ref_fkey FOREIGN KEY (community_id, immutable_ref) REFERENCES media_immutable_objects(community_id, immutable_ref);
+    ADD CONSTRAINT media_audio_revisions_community_id_immutable_ref_canonical_fkey FOREIGN KEY (community_id, immutable_ref, canonical_sha256, content_type, size_bytes) REFERENCES media_immutable_objects(community_id, immutable_ref, canonical_sha256, content_type, size_bytes);
 
 ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_community_id_actor_user_id_reserva_fkey FOREIGN KEY (community_id, actor_user_id, reservation_id, submission_id, operation_id) REFERENCES media_upload_reservations(community_id, actor_user_id, reservation_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_community_id_actor_user_id_submiss_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_moderation_actions
+    ADD CONSTRAINT media_moderation_actions_authority_actor_user_id_fkey FOREIGN KEY (authority_actor_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY media_moderation_actions
+    ADD CONSTRAINT media_moderation_actions_community_id_actor_user_id_submis_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_moderation_actions
+    ADD CONSTRAINT media_moderation_actions_submission_id_decision_revision_fkey FOREIGN KEY (submission_id, decision_revision) REFERENCES media_publication_decisions(submission_id, decision_revision);
 
 ALTER TABLE ONLY media_moderation_projections
     ADD CONSTRAINT media_moderation_projections_community_id_actor_user_id_su_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
@@ -8483,7 +8671,7 @@ ALTER TABLE ONLY media_reference_evidence
     ADD CONSTRAINT media_reference_evidence_community_id_actor_user_id_submis_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_submission_command_replays
-    ADD CONSTRAINT media_submission_command_replays_submission_fk FOREIGN KEY (community_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, submission_id, operation_id);
+    ADD CONSTRAINT media_submission_command_replays_submission_fk FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_submission_events
     ADD CONSTRAINT media_submission_events_community_id_actor_user_id_submiss_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);

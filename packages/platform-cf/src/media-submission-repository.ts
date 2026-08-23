@@ -28,6 +28,20 @@ const ID = /^\S(?:.*\S)?$/u;
 const HASH = /^[0-9a-f]{64}$/u;
 const sha256Text = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex");
+const canonicalJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(", ")}]`;
+  if (typeof value === "object" && value !== null)
+    return `{${Object.keys(value as Record<string, unknown>)
+      .sort(
+        (left, right) => left.length - right.length || (left < right ? -1 : left > right ? 1 : 0),
+      )
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}: ${canonicalJson((value as Record<string, unknown>)[key])}`,
+      )
+      .join(", ")}}`;
+  return JSON.stringify(value);
+};
 export const RESERVATION_ENDPOINT = "/communities/:communityId/media-upload-reservations";
 export const SUBMISSION_ENDPOINT = "/communities/:communityId/media-post-submissions";
 
@@ -571,7 +585,10 @@ function decodeState(
           evidenceAudioRevision: integer(row.bound_reference_audio_revision) ?? 0,
           evidenceAnalysisRevision: integer(row.bound_reference_analysis_revision) ?? 0,
           evidenceAudioSha256: row.bound_reference_audio_sha256 as string,
-          upstreamCommercialRevShareBps: integer(row.bound_reference_upstream_share_bps) ?? -1,
+          upstreamCommercialRevShareBps:
+            row.bound_reference_upstream_share_bps === null
+              ? null
+              : (integer(row.bound_reference_upstream_share_bps) ?? -1),
         };
   const projectedAnalysis =
     analysis === null
@@ -596,6 +613,9 @@ function decodeState(
           reviewRef: row.review_ref as string,
           heldRevision: integer(row.held_revision) ?? creationRevision,
           reasonCode: row.review_reason_code as "review_required" | "moderation_unavailable",
+          ...(row.review_exhaustion_code === null
+            ? {}
+            : { exhaustionCode: row.review_exhaustion_code as "acr_exhausted" }),
         };
   const failure =
     row.failure_code === null
@@ -1098,7 +1118,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           });
           const updated = yield* tx.execute<Row>({
             label: "media-terms.project",
-            text: "UPDATE media_post_submissions SET creation_revision=$1,current_terms_revision=$1,decision_revision=0,current_decision_revision=NULL,status=$2,phase=$3,action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,review_ref=NULL,review_reason_code=NULL,held_revision=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,moderator_evidence_ref=NULL,moderator_approval_kind=NULL,moderator_reason_code=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,abandonment_reason=NULL,retention_disposition=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND creation_revision=$7 RETURNING event_sequence",
+            text: "UPDATE media_post_submissions SET creation_revision=$1,current_terms_revision=$1,decision_revision=0,current_decision_revision=NULL,status=$2,phase=$3,action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,held_revision=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,moderator_evidence_ref=NULL,moderator_approval_kind=NULL,moderator_reason_code=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,abandonment_reason=NULL,retention_disposition=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND creation_revision=$7 RETURNING event_sequence",
             values: [
               next.creationRevision,
               next.status,
@@ -1119,7 +1139,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           if (current.status === "action_required" || current.status === "manual_review") {
             yield* tx.execute({
               label: "media-moderation.supersede",
-              text: "UPDATE media_moderation_projections SET status='closed',decision_revision=NULL,review_ref=NULL,held_revision=NULL,action_kind=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,action_evidence_ref=NULL,updated_at=clock_timestamp() WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4",
+              text: "UPDATE media_moderation_projections SET status='closed',decision_revision=NULL,review_ref=NULL,held_revision=NULL,review_exhaustion_code=NULL,action_kind=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,action_evidence_ref=NULL,updated_at=clock_timestamp() WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4",
               values: [
                 current.communityId,
                 current.actorId,
@@ -1267,6 +1287,10 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         (input.analysis.speechLyrics.status === "ready" &&
           (input.transcriptArtifact === undefined ||
             input.transcriptArtifact.transcript.length > 200_000 ||
+            input.transcriptArtifact.segments.reduce(
+              (total, segment) => total + segment.text.length,
+              0,
+            ) > 200_000 ||
             input.transcriptArtifact.segments.length > 10_000 ||
             !input.transcriptArtifact.segments.every(
               (segment, index, all) =>
@@ -1507,7 +1531,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               : [null, null, null];
           const updated = yield* tx.execute<Row>({
             label: "media-decision.project",
-            text: "UPDATE media_post_submissions SET decision_revision=$1,current_decision_revision=$1,status=$2,phase=$3,review_ref=$4,held_revision=$5,review_reason_code=$6,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$7 AND actor_user_id=$8 AND submission_id=$9 AND creation_revision=$10 AND audio_revision=$11 AND analysis_revision=$12 RETURNING event_sequence",
+            text: "UPDATE media_post_submissions SET decision_revision=$1,current_decision_revision=$1,status=$2,phase=$3,review_ref=$4,held_revision=$5,review_reason_code=$6,review_exhaustion_code=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$7 AND actor_user_id=$8 AND submission_id=$9 AND creation_revision=$10 AND audio_revision=$11 AND analysis_revision=$12 RETURNING event_sequence",
             values: [
               next.decisionRevision,
               next.status,
@@ -1531,7 +1555,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           if (input.decision.outcome === "manual_review") {
             yield* tx.execute({
               label: "media-moderation.open-decision",
-              text: "UPDATE media_moderation_projections SET status='open',decision_revision=$1,review_ref=$2,held_revision=$3,action_kind=NULL,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND operation_id=$7",
+              text: "UPDATE media_moderation_projections SET status='open',decision_revision=$1,review_ref=$2,held_revision=$3,review_exhaustion_code=NULL,action_kind=NULL,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND operation_id=$7",
               values: [
                 next.decisionRevision,
                 `review-${input.decision.evidenceRef}`,
@@ -1604,10 +1628,11 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           if (operation === "review") {
             yield* tx.execute({
               label: "media-moderation.open",
-              text: "UPDATE media_moderation_projections SET status='open',decision_revision=NULL,review_ref=$1,held_revision=$2,action_kind=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,action_evidence_ref=NULL,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND operation_id=$6",
+              text: "UPDATE media_moderation_projections SET status='open',decision_revision=NULL,review_ref=$1,held_revision=$2,review_exhaustion_code=$3,action_kind=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,action_evidence_ref=NULL,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND operation_id=$7",
               values: [
                 next.review?.reviewRef ?? null,
                 next.review?.heldRevision ?? null,
+                next.review?.exhaustionCode ?? null,
                 current.communityId,
                 current.actorId,
                 current.submissionId,
@@ -1665,7 +1690,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       }),
       (next, current) => ({
         event: "reference_bound",
-        text: "WITH reference_evidence AS (INSERT INTO media_reference_evidence (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256,evidence_ref,upstream_commercial_rev_share_bps,inherited_license_preset,inherited_commercial_rev_share_bps) VALUES ($10,$11,$12,$13,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256) DO NOTHING) UPDATE media_post_submissions SET creation_revision=$1,bound_reference_asset_id=$2,bound_reference_evidence_ref=$6,bound_reference_audio_revision=$3,bound_reference_analysis_revision=$4,bound_reference_audio_sha256=$5,bound_reference_upstream_share_bps=$7,status='processing',phase='analysis',action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,held_revision=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND creation_revision=$14 AND EXISTS (SELECT 1 FROM media_reference_evidence WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND operation_id=$13 AND asset_id=$2 AND evidence_ref=$6 AND evidence_audio_revision=$3 AND evidence_analysis_revision=$4 AND evidence_audio_sha256=$5 AND upstream_commercial_rev_share_bps=$7)",
+        text: "WITH reference_evidence AS (INSERT INTO media_reference_evidence (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256,evidence_ref,upstream_commercial_rev_share_bps,inherited_license_preset,inherited_commercial_rev_share_bps) VALUES ($10,$11,$12,$13,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256) DO NOTHING) UPDATE media_post_submissions SET creation_revision=$1,bound_reference_asset_id=$2,bound_reference_evidence_ref=$6,bound_reference_audio_revision=$3,bound_reference_analysis_revision=$4,bound_reference_audio_sha256=$5,bound_reference_upstream_share_bps=$7,status='processing',phase='analysis',action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,held_revision=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND creation_revision=$14 AND EXISTS (SELECT 1 FROM media_reference_evidence WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND operation_id=$13 AND asset_id=$2 AND evidence_ref=$6 AND evidence_audio_revision=$3 AND evidence_analysis_revision=$4 AND evidence_audio_sha256=$5 AND upstream_commercial_rev_share_bps IS NOT DISTINCT FROM $7)",
         values: [
           next.creationRevision,
           input.reference.assetId,
@@ -1696,10 +1721,11 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       }),
       (_next, current) => ({
         event: "review_exhaustion_recorded",
-        text: "UPDATE media_post_submissions SET status='manual_review',phase=NULL,review_ref=$1,review_reason_code=$2,held_revision=$3,decision_revision=0,current_decision_revision=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND creation_revision=$7",
+        text: "UPDATE media_post_submissions SET status='manual_review',phase=NULL,review_ref=$1,review_reason_code=$2,review_exhaustion_code=$3,held_revision=$4,decision_revision=0,current_decision_revision=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$5 AND actor_user_id=$6 AND submission_id=$7 AND creation_revision=$8",
         values: [
           input.review.reviewRef,
           input.review.reasonCode,
+          input.review.exhaustionCode ?? null,
           input.review.heldRevision,
           current.communityId,
           current.actorId,
@@ -1728,8 +1754,6 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
-          const prior = yield* replayInTx(tx, authorityInput, "moderation");
-          if (prior !== null) return prior;
           const owner = yield* tx.execute<Row>({
             label: "media-moderation.owner",
             text: "SELECT actor_user_id FROM media_post_submissions WHERE community_id=$1 AND submission_id=$2 FOR UPDATE",
@@ -1754,6 +1778,9 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             return yield* Effect.fail(
               fail("moderation", "not-found", { submissionId: input.submissionId }),
             );
+          const replayInput = { ...authorityInput, actorUserId: ownerId };
+          const prior = yield* replayInTx(tx, replayInput, "moderation");
+          if (prior !== null) return prior;
           const authority = yield* tx.execute<Row>({
             label: "media-moderation.authority",
             text: "SELECT (c.status='active' AND m.status='member') AS allowed FROM communities c JOIN community_memberships m ON m.community_id=c.community_id AND m.user_id=$2 WHERE c.community_id=$1 FOR SHARE",
@@ -1812,12 +1839,32 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               readonly: false,
             });
           }
+          yield* tx.execute({
+            label: "media-moderation.action",
+            text: "INSERT INTO media_moderation_actions (action_id,community_id,actor_user_id,submission_id,operation_id,authority_actor_user_id,action_kind,approval_kind,reason_code,held_revision,decision_revision,evidence_ref,decision_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)",
+            values: [
+              moderatorActionId,
+              current.communityId,
+              current.actorId,
+              current.submissionId,
+              current.operationId,
+              actorId,
+              input.action,
+              approval?.approvalKind ?? null,
+              approval?.reasonCode ?? null,
+              current.review?.heldRevision ?? current.creationRevision,
+              input.action === "approve" ? next.decisionRevision : null,
+              moderatorEvidenceRef,
+              input.action === "approve" ? json(input.decision) : null,
+            ],
+            readonly: false,
+          });
           const updated = yield* tx.execute<Row>({
             label: "media-moderation.project",
             text:
               input.action === "approve"
-                ? "UPDATE media_post_submissions SET status='processing',phase='publish',review_ref=NULL,held_revision=NULL,moderator_action_id=$1,moderator_actor_id=$2,moderator_evidence_ref=$3,moderator_approval_kind=$4,moderator_reason_code=$5,decision_revision=$6,current_decision_revision=$6,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$7 AND actor_user_id=$8 AND submission_id=$9 AND creation_revision=$10 RETURNING event_sequence"
-                : "UPDATE media_post_submissions SET status='blocked',phase=NULL,review_ref=NULL,held_revision=NULL,moderator_action_id=$1,moderator_actor_id=$2,moderator_evidence_ref=$3,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND creation_revision=$7 RETURNING event_sequence",
+                ? "UPDATE media_post_submissions SET status='processing',phase='publish',review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,held_revision=NULL,moderator_action_id=$1,moderator_actor_id=$2,moderator_evidence_ref=$3,moderator_approval_kind=$4,moderator_reason_code=$5,decision_revision=$6,current_decision_revision=$6,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$7 AND actor_user_id=$8 AND submission_id=$9 AND creation_revision=$10 RETURNING event_sequence"
+                : "UPDATE media_post_submissions SET status='blocked',phase=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,held_revision=NULL,moderator_action_id=$1,moderator_actor_id=$2,moderator_evidence_ref=$3,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND creation_revision=$7 RETURNING event_sequence",
             values:
               input.action === "approve"
                 ? [
@@ -1851,7 +1898,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           if (sequence === null) return yield* Effect.fail(fail("moderation", "invalid-row"));
           yield* tx.execute({
             label: "media-moderation.projection",
-            text: "UPDATE media_moderation_projections SET status=$1,decision_revision=$2,review_ref=$3,held_revision=$4,action_kind=$5,moderator_action_id=$6,moderator_actor_id=$7,action_evidence_ref=$8,updated_at=clock_timestamp() WHERE community_id=$9 AND actor_user_id=$10 AND submission_id=$11 AND operation_id=$12",
+            text: "UPDATE media_moderation_projections SET status=$1,decision_revision=$2,review_ref=$3,held_revision=$4,review_exhaustion_code=NULL,action_kind=$5,moderator_action_id=$6,moderator_actor_id=$7,action_evidence_ref=$8,updated_at=clock_timestamp() WHERE community_id=$9 AND actor_user_id=$10 AND submission_id=$11 AND operation_id=$12",
             values: [
               input.action === "approve" ? "approved" : "blocked",
               next.decisionRevision || null,
@@ -1875,7 +1922,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             input.action === "approve" ? "moderator_approved" : "moderator_blocked",
             {},
           );
-          yield* insertReplay(tx, authorityInput, current.operationId);
+          yield* insertReplay(tx, replayInput, current.operationId);
           return { kind: "committed", submissionId: current.submissionId } as const;
         }),
       );
@@ -1892,7 +1939,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       }),
       (next, current) => ({
         event: "retry_authorized",
-        text: "UPDATE media_post_submissions SET creation_revision=$1,retry_count=retry_count+1,status='processing',phase=$2,decision_revision=0,current_decision_revision=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND status='processing_failed'",
+        text: "UPDATE media_post_submissions SET creation_revision=$1,retry_count=retry_count+1,status='processing',phase=$2,decision_revision=0,current_decision_revision=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,review_exhaustion_code=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND status='processing_failed'",
         values: [
           next.creationRevision,
           next.phase,
@@ -1919,7 +1966,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       }),
       (_next, current) => ({
         event,
-        text: "UPDATE media_post_submissions SET status='processing_failed',phase=NULL,failure_code=$1,failure_retry_count=$2,retryable=$3,last_safe_phase=$4,review_ref=NULL,review_reason_code=NULL,held_revision=NULL,action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,moderator_evidence_ref=NULL,moderator_approval_kind=NULL,moderator_reason_code=NULL,abandonment_reason=NULL,retention_disposition=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$5 AND actor_user_id=$6 AND submission_id=$7 AND creation_revision=$8",
+        text: "UPDATE media_post_submissions SET status='processing_failed',phase=NULL,failure_code=$1,failure_retry_count=$2,retryable=$3,last_safe_phase=$4,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,held_revision=NULL,action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,moderator_evidence_ref=NULL,moderator_approval_kind=NULL,moderator_reason_code=NULL,abandonment_reason=NULL,retention_disposition=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$5 AND actor_user_id=$6 AND submission_id=$7 AND creation_revision=$8",
         values: [
           input.failure.code,
           input.failure.retryCount,
@@ -1959,7 +2006,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             },
       (_next, current) => ({
         event,
-        text: "UPDATE media_post_submissions SET status='abandoned',phase=NULL,action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,review_ref=NULL,review_reason_code=NULL,held_revision=NULL,abandonment_reason=$1,retention_disposition=$2,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6",
+        text: "UPDATE media_post_submissions SET status='abandoned',phase=NULL,action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,held_revision=NULL,abandonment_reason=$1,retention_disposition=$2,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6",
         values: [
           event,
           event === "action_deadline_elapsed" && current.audioRevision > 0
@@ -2141,7 +2188,16 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         ![input.communityId, input.submissionId, input.actorUserId, input.postId].every(validId) ||
         !validRevision(input.audioRevision, 1) ||
         !validRevision(input.analysisRevision, 1) ||
-        !validHash(input.canonicalAudioSha256)
+        !validHash(input.canonicalAudioSha256) ||
+        (input.outcome === "ready" &&
+          (input.failureCode !== undefined ||
+            input.artifact === undefined ||
+            !validId(input.artifact.artifactRef) ||
+            !validHash(input.artifact.artifactSha256) ||
+            sha256Text(canonicalJson(input.artifact.artifact)) !==
+              input.artifact.artifactSha256)) ||
+        (input.outcome === "unavailable" &&
+          (input.failureCode === undefined || input.artifact !== undefined))
       )
         return yield* Effect.fail(
           fail("alignment", "invalid-input", { submissionId: input.submissionId }),
@@ -2150,11 +2206,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
           if (input.outcome === "ready") {
-            if (
-              input.artifact === undefined ||
-              !validId(input.artifact.artifactRef) ||
-              !validHash(input.artifact.artifactSha256)
-            )
+            if (input.artifact === undefined)
               return yield* Effect.fail(
                 fail("alignment", "invalid-input", { submissionId: input.submissionId }),
               );
