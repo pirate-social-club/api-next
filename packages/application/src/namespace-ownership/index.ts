@@ -152,6 +152,24 @@ export {
   validateHnsAuthoritativeDnsValidationResultV1,
 } from "./hns-authoritative-dns.ts";
 export type {
+  HnsAuthorityInventoryDecodedV1,
+  HnsAuthorityInventoryDnsWriteCapabilityV1,
+  HnsAuthorityInventoryNameserverGlueV1,
+  HnsAuthorityInventoryV1,
+} from "./hns-authority-inventory.ts";
+export {
+  decodeHnsAuthorityInventoryBytes,
+  encodeHnsAuthorityInventory,
+  HNS_AUTHORITY_CAPABILITY_SET_VERSION,
+  HNS_AUTHORITY_INVENTORY_MAX_BYTES,
+  HNS_AUTHORITY_INVENTORY_MAX_ENTRIES,
+  HNS_AUTHORITY_INVENTORY_VERSION,
+  HnsAuthorityInventoryError,
+  hnsAuthorityCapabilitySetDigest,
+  hnsAuthorityCapabilitySetPreimage,
+  validateHnsAuthorityInventoryAtDatabaseTime,
+} from "./hns-authority-inventory.ts";
+export type {
   HnsChainAuthorityRecord,
   HnsControlObservationDecodedRequest,
   HnsControlObservationDecodedResult,
@@ -203,15 +221,22 @@ export type {
   HnsControlObserverConfigurationAuthority,
   HnsControlObserverConfigurationResolverPort,
   HnsControlObserverConfigurationV1,
+  HnsControlObserverConfigurationV2,
+  HnsControlObserverDecodedCompatibleConfiguration,
   HnsControlObserverDecodedConfiguration,
+  HnsControlObserverDecodedConfigurationV2,
   HnsControlObserverRuntimeCapabilities,
 } from "./hns-control-observer-configuration.ts";
 export {
+  decodeHnsControlObserverCompatibleConfigurationBytes,
   decodeHnsControlObserverConfigurationBytes,
+  decodeHnsControlObserverConfigurationV2Bytes,
   encodeHnsControlObserverConfiguration,
+  encodeHnsControlObserverConfigurationV2,
   HNS_CONTROL_OBSERVER_CONFIGURATION_IDENTITY_MAX_BYTES,
   HNS_CONTROL_OBSERVER_CONFIGURATION_MAX_BYTES,
   HNS_CONTROL_OBSERVER_CONFIGURATION_REFERENCE_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_CONFIGURATION_V2_VERSION,
   HNS_CONTROL_OBSERVER_CONFIGURATION_VERSION,
   HNS_CONTROL_OBSERVER_CONFIGURATION_VIEW_MAX_COUNT,
   HNS_CONTROL_OBSERVER_DEADLINE_MAX_MS,
