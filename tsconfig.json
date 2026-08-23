@@ -37,6 +37,15 @@
       "@pirate/platform-cf/namespace-ownership-provider-registry": [
         "./packages/platform-cf/src/namespace-ownership/provider-registry.ts"
       ],
+      "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport": [
+        "./packages/platform-cf/src/namespace-ownership/hns-control-observer-hsd-private-transport.ts"
+      ],
+      "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres": [
+        "./packages/platform-cf/src/namespace-ownership/hns-control-observer-postgres.ts"
+      ],
+      "@pirate/platform-cf/namespace-ownership-hns-private-driver-transport": [
+        "./packages/platform-cf/src/namespace-ownership/hns-private-driver-transport.ts"
+      ],
       "@pirate/platform-cf/verification-start-repository": [
         "./packages/platform-cf/src/verification-start-repository.ts"
       ],

@@ -209,8 +209,19 @@ export type NamespaceOwnershipProviderCompleteInput = Schema.Schema.Type<
   typeof NamespaceOwnershipProviderCompleteInput
 >;
 
-export const NamespaceOwnershipProviderCompleteContext = NamespaceOwnershipProviderStartContext;
-export type NamespaceOwnershipProviderCompleteContext = NamespaceOwnershipProviderStartContext;
+export const NamespaceOwnershipProviderCompleteContext = Schema.Struct({
+  namespace_session_id: NamespaceOwnershipProviderStartContext.fields.namespace_session_id,
+  observation_id: CanonicalNonEmptyString.check(
+    Schema.makeFilter((value) =>
+      new TextEncoder().encode(value).byteLength <= 256 && isControlFree(value)
+        ? undefined
+        : "Expected a bounded observation id without control characters",
+    ),
+  ),
+});
+export type NamespaceOwnershipProviderCompleteContext = Schema.Schema.Type<
+  typeof NamespaceOwnershipProviderCompleteContext
+>;
 
 export const NamespaceOwnershipProviderCompleteResult = Schema.Union([
   Schema.Struct({ status: Schema.Literal("pending") }),

@@ -24,6 +24,7 @@ const INTERNAL = {
   "apps/http-worker": "@pirate/http-worker",
   "apps/jobs-worker": "@pirate/jobs-worker",
   "apps/hns-owner-verifier": "@pirate/hns-owner-verifier",
+  "apps/hns-observer-driver": "@pirate/hns-observer-driver",
 };
 
 const ALLOWED = {
@@ -54,6 +55,7 @@ const ALLOWED = {
     "@pirate/platform-cf",
   ],
   "@pirate/hns-owner-verifier": [],
+  "@pirate/hns-observer-driver": ["@pirate/application"],
 };
 
 const DOMAIN_EFFECT_ALLOWLIST = new Set([
@@ -66,6 +68,12 @@ const DOMAIN_EFFECT_ALLOWLIST = new Set([
 const HNS_OWNER_VERIFIER_APPLICATION_SEAMS = new Set([
   "@pirate/application/namespace-ownership",
   "@pirate/application/route-revalidation",
+]);
+const HNS_OWNER_VERIFIER_PLATFORM_SEAMS = new Set([
+  "@pirate/platform-cf/postgres",
+  "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport",
+  "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres",
+  "@pirate/platform-cf/namespace-ownership-hns-private-driver-transport",
 ]);
 
 const VERIFICATION_EXPORTS = {
@@ -462,6 +470,9 @@ function isAllowedPackageDependency(pkg, spec) {
   if (spec === "@pirate/http-worker" || spec === "@pirate/jobs-worker") return false;
   if (pkg === "@pirate/hns-owner-verifier" && spec.startsWith("@pirate/application")) {
     return HNS_OWNER_VERIFIER_APPLICATION_SEAMS.has(spec);
+  }
+  if (pkg === "@pirate/hns-owner-verifier" && spec.startsWith("@pirate/platform-cf")) {
+    return HNS_OWNER_VERIFIER_PLATFORM_SEAMS.has(spec);
   }
   return ALLOWED[pkg].some(
     (dependency) => spec === dependency || spec.startsWith(`${dependency}/`),

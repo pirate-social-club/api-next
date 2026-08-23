@@ -36,7 +36,10 @@ const input = {
     app_host: null,
   },
 };
-const context = { namespace_session_id: "namespace-session-1" };
+const context = {
+  namespace_session_id: "namespace-session-1",
+  observation_id: "completion-attempt-1",
+};
 const startDocument = {
   upstream_session_ref: "upstream-1",
   expires_at: "2026-08-22T00:00:00.000Z",
@@ -191,6 +194,7 @@ describe("HNS owner service-binding transport", () => {
     const headers = capturedHeaders(calls[0]?.init);
     expect(headers.accept).toBe("application/octet-stream");
     expect(headers["pirate-namespace-session-id"]).toBe("namespace-session-1");
+    expect(headers["pirate-hns-observation-id"]).toBe("completion-attempt-1");
     expect(new TextDecoder().decode(calls[0]?.init?.body as Uint8Array)).toBe(
       JSON.stringify({ session, payload: {} }),
     );

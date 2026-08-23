@@ -22,6 +22,10 @@
         "wrangler": "^4.123.0",
       },
     },
+    "apps/hns-observer-driver": {
+      "name": "@pirate/hns-observer-driver",
+      "version": "0.0.0",
+    },
     "apps/hns-owner-verifier": {
       "name": "@pirate/hns-owner-verifier",
       "version": "0.0.0",
@@ -501,6 +505,8 @@
     "@pirate/contracts": ["@pirate/contracts@workspace:packages/contracts"],
 
     "@pirate/domain": ["@pirate/domain@workspace:packages/domain"],
+
+    "@pirate/hns-observer-driver": ["@pirate/hns-observer-driver@workspace:apps/hns-observer-driver"],
 
     "@pirate/hns-owner-verifier": ["@pirate/hns-owner-verifier@workspace:apps/hns-owner-verifier"],
 

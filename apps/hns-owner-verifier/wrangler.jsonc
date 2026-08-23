@@ -1,5 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
   "name": "pirate-hns-owner-verifier",
   "main": "src/index.ts",
   "compatibility_date": "2026-08-21",
@@ -29,11 +30,7 @@
         "HNS_EVIDENCE_TTL_SECONDS": "2592000",
         "HNS_PROVIDER_ENVIRONMENT": "staging",
         "HNS_PROVIDER_CONFIGURATION_REFERENCE": "hns-owner-staging",
-        "HNS_PROVIDER_CONFIGURATION_VERSION": "hns-owner-config-v1",
-        "HNS_LEGACY_VERIFIER_URL": "https://verifier.pirate.sc/hns"
-      },
-      "secrets": {
-        "required": ["HNS_LEGACY_VERIFIER_BEARER"]
+        "HNS_PROVIDER_CONFIGURATION_VERSION": "hns-owner-config-v1"
       }
     }
   }

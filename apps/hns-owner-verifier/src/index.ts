@@ -5,9 +5,16 @@ import {
   type HnsOwnerSameRootRecoveryProviderStartV1,
 } from "@pirate/application/route-revalidation";
 import {
+  composeHnsTargetObserverRuntime,
+  type HnsTargetCompositionBindings,
+} from "./composition.ts";
+import {
+  type HnsOwnerCreationTargetSession,
   HnsTargetObserverFacadeError,
   type HnsTargetObserverRuntime,
+  matchesHnsTargetObserverCreationConfiguration,
   matchesHnsTargetObserverRecoveryConfiguration,
+  observeHnsOwnerCreationSession,
   observeHnsOwnerRecoverySession,
 } from "./target-observer.ts";
 
@@ -19,7 +26,6 @@ const START_REQUEST_MAX_BYTES = 8_192;
 const START_RESPONSE_MAX_BYTES = 65_536;
 const POLL_REQUEST_MAX_BYTES = 32_768;
 const POLL_RESPONSE_MAX_BYTES = 1_048_576;
-const LEGACY_TIMEOUT_MS = 12_000;
 const UPSTREAM_REFERENCE_BYTES = 24;
 
 const CREATION_START_KEYS = [
@@ -118,53 +124,15 @@ const REVALIDATION_SESSION_KEYS = [
 const CREATION_POLL_KEYS = ["session", "payload"] as const;
 const REVALIDATION_POLL_KEYS = ["operation_kind", "session", "payload"] as const;
 
-const LEGACY_KEYS = new Set([
-  "verified",
-  "observation_provider",
-  "ownership_source",
-  "failure_reason",
-  "observed_values",
-  "owner_dns_nameservers",
-  "root_exists",
-  "root_control_verified",
-  "expiry_root_exists",
-  "expiry_horizon_sufficient",
-  "expiry_height",
-  "expiry_anchor_height",
-  "expiry_anchor_block_hash",
-  "expiry_anchor_median_time",
-  "expiry_chain_network",
-  "expiry_blocks_remaining",
-  "expiry_horizon_blocks",
-  "expiry_observation_provider",
-  "routing_enabled",
-  "pirate_dns_authority_verified",
-  "control_class",
-  "operation_class",
-  "root_label",
-  "zone_name",
-  "challenge_name",
-  "challenge_value",
-  "challenge_txt_value",
-  "provider_evidence_ref",
-  "chain_network",
-  "chain_anchor_height",
-  "chain_anchor_block_hash",
-  "chain_anchor_median_time",
-  "observed_at",
-  "expires_at",
-]);
-
 export type Env = Readonly<{
   readonly HNS_OWNERSHIP_SOURCE?: string;
   readonly HNS_CHALLENGE_TTL_SECONDS?: string;
   readonly HNS_EVIDENCE_TTL_SECONDS?: string;
-  readonly HNS_LEGACY_VERIFIER_URL?: string;
-  readonly HNS_LEGACY_VERIFIER_BEARER?: string;
   readonly HNS_PROVIDER_ENVIRONMENT?: string;
   readonly HNS_PROVIDER_CONFIGURATION_REFERENCE?: string;
   readonly HNS_PROVIDER_CONFIGURATION_VERSION?: string;
-}>;
+}> &
+  HnsTargetCompositionBindings;
 
 type JsonObject = Record<string, unknown>;
 type Operation = "creation" | "route_revalidation";
@@ -177,7 +145,6 @@ type PollInput = JsonObject & {
   readonly upstream_session_ref: string;
   readonly expires_at: string;
 };
-type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -740,315 +707,10 @@ function recoveryStartResponse(
   );
 }
 
-function legacyUrl(value: string): string | null {
-  try {
-    const url = new URL(value);
-    if (
-      url.protocol !== "https:" ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      !url.origin
-    )
-      return null;
-    const path = url.pathname.replace(/\/+$/u, "");
-    url.pathname = path.endsWith("/verify-txt") ? path : `${path}/verify-txt`;
-    return url.toString();
-  } catch {
-    return null;
-  }
-}
-
-async function boundedResponseBody(response: Response): Promise<Uint8Array | null> {
-  const contentLength = response.headers.get("content-length");
-  if (
-    contentLength !== null &&
-    (!/^\d+$/u.test(contentLength) || Number(contentLength) > POLL_RESPONSE_MAX_BYTES)
-  )
-    return null;
-  if (response.body === null) return null;
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    while (true) {
-      const part = await reader.read();
-      if (part.done) break;
-      total += part.value.byteLength;
-      if (total === 0 || total > POLL_RESPONSE_MAX_BYTES) {
-        await reader.cancel();
-        return null;
-      }
-      chunks.push(part.value);
-    }
-  } catch {
-    return null;
-  } finally {
-    reader.releaseLock();
-  }
-  if (total === 0) return null;
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
-}
-
-function legacyField(value: JsonObject, primary: string, fallback: string): unknown {
-  return value[primary] ?? value[fallback];
-}
-
-function validLegacyShape(value: JsonObject): boolean {
-  return Object.keys(value).every((key) => LEGACY_KEYS.has(key));
-}
-
-function legacyChallengeName(value: unknown, poll: PollInput): boolean {
-  if (typeof value !== "string") return false;
-  const normalized = value.endsWith(".") ? value.slice(0, -1) : value;
-  return normalized === poll.challenge_name;
-}
-
-async function legacyEvidenceReference(bytes: Uint8Array): Promise<string> {
-  const input = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(input).set(bytes);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", input));
-  const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `legacy-ns1:sha256:${hex}`;
-}
-
-type LegacyMapping =
-  | { readonly kind: "bytes"; readonly bytes: Uint8Array }
-  | { readonly kind: "rejected"; readonly reason: string }
-  | { readonly kind: "unavailable" }
-  | { readonly kind: "invalid" };
-
-function legacyRejectionReason(value: JsonObject): string {
-  if (value.root_exists === false || value.failure_reason === "root_not_found")
-    return "missing_root";
-  if (
-    value.failure_reason === "challenge_mismatch" ||
-    value.failure_reason === "challenge_not_published"
-  )
-    return "challenge_mismatch";
-  if (value.expiry_horizon_sufficient === false) return "insufficient_expiry";
-  if (value.root_control_verified === false) return "control_failed";
-  return "disputed";
-}
-
-function expectedObservation(
-  value: JsonObject,
-  poll: PollInput,
-  source: string,
-  observedAt: string,
-  evidenceExpiresAt: string,
-  providerEvidenceRef: string,
-): JsonObject | null {
-  if (
-    !validLegacyShape(value) ||
-    value.verified !== true ||
-    value.ownership_source !== source ||
-    !legacyChallengeName(value.challenge_name, poll)
-  )
-    return null;
-  const expectedChallenge = `pirate-verification=${poll.upstream_session_ref}`;
-  if (value.challenge_value !== undefined && value.challenge_value !== expectedChallenge)
-    return null;
-  if (
-    !Array.isArray(value.observed_values) ||
-    !value.observed_values.every((entry) => typeof entry === "string") ||
-    !value.observed_values.includes(expectedChallenge) ||
-    (value.root_label !== undefined && value.root_label !== poll.root_label) ||
-    (value.zone_name !== undefined && value.zone_name !== `${poll.root_label}.`)
-  )
-    return null;
-  const rootExists = value.root_exists;
-  const rootControlVerified = value.root_control_verified;
-  const expirySufficient = value.expiry_horizon_sufficient;
-  const network = legacyField(value, "chain_network", "expiry_chain_network");
-  const anchorHeight = legacyField(value, "chain_anchor_height", "expiry_anchor_height");
-  const anchorHash = legacyField(value, "chain_anchor_block_hash", "expiry_anchor_block_hash");
-  const anchorMedianTime = legacyField(
-    value,
-    "chain_anchor_median_time",
-    "expiry_anchor_median_time",
-  );
-  if (
-    rootExists !== true ||
-    rootControlVerified !== true ||
-    expirySufficient !== true ||
-    !safeText(network, 256) ||
-    !positiveInteger(anchorHeight) ||
-    !sha256Hex(anchorHash) ||
-    !positiveInteger(anchorMedianTime) ||
-    !positiveInteger(value.expiry_height) ||
-    !canonicalInstant(observedAt) ||
-    !canonicalInstant(evidenceExpiresAt) ||
-    Date.parse(evidenceExpiresAt) <= Date.parse(observedAt) ||
-    !safeText(providerEvidenceRef, 512)
-  )
-    return null;
-  return {
-    ownership_source: source,
-    challenge_name: poll.challenge_name,
-    challenge_value: expectedChallenge,
-    root_exists: true,
-    root_control_verified: true,
-    expiry_horizon_sufficient: true,
-    chain_network: network,
-    chain_anchor_height: anchorHeight,
-    chain_anchor_block_hash: anchorHash,
-    chain_anchor_median_time: anchorMedianTime,
-    expiry_height: value.expiry_height,
-    observed_at: observedAt,
-    expires_at: evidenceExpiresAt,
-    provider_evidence_ref: providerEvidenceRef,
-  };
-}
-
-async function mapLegacy(
-  value: unknown,
-  rawBytes: Uint8Array,
-  poll: PollInput,
-  source: string,
-  evidenceTtl: number,
-): Promise<LegacyMapping> {
-  if (!isObject(value) || !validLegacyShape(value) || typeof value.verified !== "boolean")
-    return { kind: "invalid" };
-  if (value.verified === false) {
-    if (value.ownership_source !== undefined && value.ownership_source !== null)
-      return { kind: "invalid" };
-    if (value.challenge_name !== undefined && !legacyChallengeName(value.challenge_name, poll))
-      return { kind: "invalid" };
-    if (
-      value.challenge_value !== undefined &&
-      value.challenge_value !== `pirate-verification=${poll.upstream_session_ref}`
-    )
-      return { kind: "invalid" };
-    if (
-      value.failure_reason === "root_resource_unavailable" ||
-      value.failure_reason === "ownership_observation_unavailable"
-    ) {
-      return { kind: "unavailable" };
-    }
-    if (
-      poll.operation === "creation" &&
-      (value.failure_reason === "challenge_not_published" ||
-        value.failure_reason === "challenge_mismatch")
-    ) {
-      return {
-        kind: "bytes",
-        bytes: new TextEncoder().encode(JSON.stringify({ status: "pending" })),
-      };
-    }
-    if (poll.operation === "route_revalidation") {
-      return {
-        kind: "bytes",
-        bytes: new TextEncoder().encode(
-          JSON.stringify({ status: "rejected", reason_code: legacyRejectionReason(value) }),
-        ),
-      };
-    }
-    return { kind: "rejected", reason: legacyRejectionReason(value) };
-  }
-  const observedAt = new Date().toISOString();
-  const evidenceExpiresAt = new Date(Date.parse(observedAt) + evidenceTtl * 1_000).toISOString();
-  const providerEvidenceRef = await legacyEvidenceReference(rawBytes);
-  const observation = expectedObservation(
-    value,
-    poll,
-    source,
-    observedAt,
-    evidenceExpiresAt,
-    providerEvidenceRef,
-  );
-  if (observation === null) return { kind: "invalid" };
-  const output =
-    poll.operation === "route_revalidation"
-      ? { status: "verified", observation }
-      : {
-          status: "verified",
-          provider_evidence_ref: observation.provider_evidence_ref,
-          upstream_session_ref: poll.upstream_session_ref,
-          ...observation,
-        };
-  const bytes = new TextEncoder().encode(JSON.stringify(output));
-  return bytes.byteLength > POLL_RESPONSE_MAX_BYTES
-    ? { kind: "invalid" }
-    : { kind: "bytes", bytes };
-}
-
-async function pollLegacy(
-  poll: PollInput,
-  env: Env,
-  source: string,
-  fetcher: Fetcher,
-): Promise<Response> {
-  const url =
-    env.HNS_LEGACY_VERIFIER_URL === undefined ? null : legacyUrl(env.HNS_LEGACY_VERIFIER_URL);
-  const bearer = env.HNS_LEGACY_VERIFIER_BEARER;
-  const ttl = evidenceTtlSeconds(env);
-  if (url === null || bearer === undefined || !safeText(bearer, 16_384) || ttl === null)
-    return errorResponse(502, "provider_misconfigured");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), LEGACY_TIMEOUT_MS);
-  try {
-    const response = await fetcher(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${bearer}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify({
-        root_label: poll.root_label,
-        ...(source === "owner_authoritative_dns_txt"
-          ? { challenge_host: poll.challenge_name }
-          : {}),
-        challenge_txt_value: `pirate-verification=${poll.upstream_session_ref}`,
-      }),
-      redirect: "manual",
-      signal: controller.signal,
-    });
-    if (response.status === 429 || response.status >= 500) {
-      await response.body?.cancel();
-      return errorResponse(503, "provider_unavailable");
-    }
-    if ([400, 404, 409, 422].includes(response.status)) {
-      await response.body?.cancel();
-      return errorResponse(422, "provider_rejected");
-    }
-    if (response.status !== 200 || response.headers.get("content-type") !== "application/json") {
-      await response.body?.cancel();
-      return errorResponse(502, "invalid_response");
-    }
-    const body = await boundedResponseBody(response);
-    if (body === null) return errorResponse(502, "invalid_response");
-    let decoded: unknown;
-    try {
-      decoded = strictJson(body, POLL_RESPONSE_MAX_BYTES);
-    } catch {
-      return errorResponse(502, "invalid_response");
-    }
-    const mapped = await mapLegacy(decoded, body, poll, source, ttl);
-    if (mapped.kind === "invalid") return errorResponse(502, "invalid_response");
-    if (mapped.kind === "unavailable") return errorResponse(503, "provider_unavailable");
-    if (mapped.kind === "rejected") return errorResponse(422, "provider_rejected");
-    return bytesResponse(mapped.bytes);
-  } catch {
-    return errorResponse(503, "provider_unavailable");
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 export async function handleRequest(
   request: Request,
   env: Env,
   options: Readonly<{
-    readonly fetcher?: Fetcher;
     readonly targetObserver?: HnsTargetObserverRuntime;
   }> = {},
 ): Promise<Response> {
@@ -1110,11 +772,19 @@ export async function handleRequest(
     const ttl = challengeTtlSeconds(env);
     if (input === null) return errorResponse(400, "invalid_request");
     if (ttl === null) return errorResponse(502, "provider_misconfigured");
+    if (input.operation !== "creation" || options.targetObserver === undefined) {
+      return errorResponse(502, "provider_misconfigured");
+    }
     if (
       !matchesPinnedConfiguration(input.provider_configuration, pinned) ||
-      input.environment !== pinned.environment
+      input.environment !== pinned.environment ||
+      options.targetObserver.configuration.provider_configuration_reference !== pinned.reference ||
+      options.targetObserver.configuration.provider_configuration_version !== pinned.version ||
+      options.targetObserver.configuration.environment !== pinned.environment ||
+      options.targetObserver.configuration.ownership_source !== source ||
+      options.targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
     )
-      return errorResponse(422, "provider_rejected");
+      return errorResponse(502, "provider_misconfigured");
     return startResponse(input, source, ttl);
   }
   if (isObject(decoded) && decoded.operation_kind === "same_root_recovery") {
@@ -1159,17 +829,59 @@ export async function handleRequest(
       return errorResponse(502, "invalid_response");
     }
   }
-  if (observationHeader !== null) return errorResponse(400, "invalid_request");
+  if (observationHeader === null || !safeText(observationHeader, 256)) {
+    return errorResponse(400, "invalid_request");
+  }
   const poll = parsePoll(decoded, header, source);
   if (poll === null) return errorResponse(400, "invalid_request");
-  if (!sessionMatchesPinned(poll, pinned)) return errorResponse(422, "provider_rejected");
-  const fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
-  return pollLegacy(poll, env, source, fetcher);
+  if (
+    poll.operation !== "creation" ||
+    !sessionMatchesPinned(poll, pinned) ||
+    options.targetObserver === undefined ||
+    options.targetObserver.configuration.ownership_source !== source ||
+    options.targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl ||
+    !matchesHnsTargetObserverCreationConfiguration(
+      poll.session as unknown as HnsOwnerCreationTargetSession,
+      options.targetObserver,
+    )
+  ) {
+    return errorResponse(502, "provider_misconfigured");
+  }
+  try {
+    const output = await observeHnsOwnerCreationSession(
+      poll.session as unknown as HnsOwnerCreationTargetSession,
+      options.targetObserver,
+      observationHeader,
+    );
+    const target = strictJson(output, POLL_RESPONSE_MAX_BYTES);
+    if (!isObject(target)) return errorResponse(502, "invalid_response");
+    if (target.status === "unavailable") return errorResponse(503, "provider_unavailable");
+    if (target.status === "rejected") return errorResponse(422, "provider_rejected");
+    if (target.status !== "pending" && target.status !== "verified") {
+      return errorResponse(502, "invalid_response");
+    }
+    return bytesResponse(output);
+  } catch (error) {
+    if (error instanceof HnsTargetObserverFacadeError) {
+      return error.reason === "unavailable"
+        ? errorResponse(503, "provider_unavailable")
+        : error.reason === "misconfigured"
+          ? errorResponse(502, "provider_misconfigured")
+          : errorResponse(502, "invalid_response");
+    }
+    return errorResponse(502, "invalid_response");
+  }
 }
 
 const app = {
-  fetch(request: Request, env: Env): Promise<Response> {
-    return handleRequest(request, env);
+  async fetch(request: Request, env: Env): Promise<Response> {
+    let targetObserver: HnsTargetObserverRuntime | undefined;
+    try {
+      targetObserver = await composeHnsTargetObserverRuntime(env, request.signal);
+    } catch {
+      targetObserver = undefined;
+    }
+    return handleRequest(request, env, targetObserver === undefined ? {} : { targetObserver });
   },
 };
 

@@ -53,6 +53,7 @@ function configuredHnsAdapter(
   try {
     return makeHnsOwnerAdapter({
       transport: hns.transport,
+      require_target_observation_v2: true,
       provider_configuration: configuration.value,
       environments: hns.environments,
       ...(hns.operation_deadlines === undefined

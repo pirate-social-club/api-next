@@ -192,6 +192,73 @@ describe("HNS ownership evidence ABI", () => {
     expect(() => decodeHnsOwnerResponseBytes(exactMaximum)).toThrow(HnsOwnerResponseDecodeError);
   });
 
+  test("accepts strict target-v2 creation evidence and cross-pins its control authority", async () => {
+    const observerResultSha256 = "a".repeat(64);
+    const chainAuthorityDigest = "b".repeat(64);
+    const challengeValue = hnsOwnerChallengeValue("nvs_01");
+    const expectedTxtValueSha256 = await sha256Utf8(challengeValue);
+    const controlIdentityDigest = await sha256Utf8(
+      JSON.stringify([
+        "pirate-hns-control-identity-v1",
+        "owner_authoritative_dns_txt",
+        "_pirate.xn--pokmon-dva",
+        challengeValue,
+        "xn--pokmon-dva",
+        chainAuthorityDigest,
+      ]),
+    );
+    const target = {
+      status: "verified",
+      observation_contract_version: "pirate-hns-target-observation-v2",
+      provider_evidence_ref: `hns-observer-v1:sha256:${observerResultSha256}:hns-observer:regtest:target-01`,
+      upstream_session_ref: "nvs_01",
+      ownership_source: "owner_authoritative_dns_txt",
+      challenge_name: "_pirate.xn--pokmon-dva",
+      challenge_value: challengeValue,
+      expected_txt_value_sha256: expectedTxtValueSha256,
+      control_identity_digest: controlIdentityDigest,
+      chain_authority_digest: chainAuthorityDigest,
+      observer_result_sha256: observerResultSha256,
+      root_exists: true,
+      root_control_verified: true,
+      expiry_horizon_sufficient: true,
+      chain_network: "regtest",
+      chain_anchor_height: 123456,
+      chain_anchor_block_hash: "5".repeat(64),
+      chain_anchor_median_time: 1769999900,
+      expiry_height: 200000,
+      observed_at: "2026-02-02T00:00:00.000Z",
+      expires_at: "2026-03-04T00:00:00.000Z",
+    } as const;
+    const bytes = new TextEncoder().encode(JSON.stringify(target));
+    expect(decodeHnsOwnerResponseBytes(bytes).response).toEqual(target);
+    await expect(
+      buildHnsOwnershipEvidence(evidenceInput({ raw_response_bytes: bytes })),
+    ).resolves.toMatchObject({
+      provider_evidence_ref: target.provider_evidence_ref,
+      ownership_source: "owner_authoritative_dns_txt",
+    });
+
+    for (const changed of [
+      { ...target, expected_txt_value_sha256: "c".repeat(64) },
+      { ...target, control_identity_digest: "c".repeat(64) },
+      { ...target, provider_evidence_ref: "hns-observer:regtest:uncrosspinned" },
+    ]) {
+      await expect(
+        buildHnsOwnershipEvidence(
+          evidenceInput({ raw_response_bytes: new TextEncoder().encode(JSON.stringify(changed)) }),
+        ),
+      ).rejects.toThrow();
+    }
+    const reordered = JSON.stringify(target).replace(
+      '{"status":"verified","observation_contract_version":"pirate-hns-target-observation-v2"',
+      '{"observation_contract_version":"pirate-hns-target-observation-v2","status":"verified"',
+    );
+    expect(() => decodeHnsOwnerResponseBytes(new TextEncoder().encode(reordered))).toThrow(
+      HnsOwnerResponseDecodeError,
+    );
+  });
+
   test("rejects duplicate JSON object members including escaped aliases", () => {
     expect(() =>
       decodeHnsOwnerResponseBytes(

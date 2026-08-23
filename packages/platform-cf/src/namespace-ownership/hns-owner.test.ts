@@ -37,6 +37,10 @@ const startInput = {
   route,
 };
 const startContext = { namespace_session_id: "namespace-session-1" } as const;
+const completeContext = {
+  namespace_session_id: "namespace-session-1",
+  observation_id: "completion-attempt-1",
+} as const;
 
 function response(overrides: Readonly<Record<string, unknown>> = {}) {
   return new TextEncoder().encode(
@@ -47,6 +51,35 @@ function response(overrides: Readonly<Record<string, unknown>> = {}) {
       ownership_source: "owner_authoritative_dns_txt",
       challenge_name: "_pirate.xn--pokmon-dva",
       challenge_value: "pirate-verification=nvs_01",
+      root_exists: true,
+      root_control_verified: true,
+      expiry_horizon_sufficient: true,
+      chain_network: "regtest",
+      chain_anchor_height: 123456,
+      chain_anchor_block_hash: "4".repeat(64),
+      chain_anchor_median_time: 1769999900,
+      expiry_height: 200000,
+      observed_at: "2026-08-20T11:00:00.000Z",
+      expires_at: "2026-08-20T13:00:00.000Z",
+      ...overrides,
+    }),
+  );
+}
+
+function targetResponse(overrides: Readonly<Record<string, unknown>> = {}) {
+  return new TextEncoder().encode(
+    JSON.stringify({
+      status: "verified",
+      observation_contract_version: "pirate-hns-target-observation-v2",
+      provider_evidence_ref: `hns-observer-v1:sha256:${"5".repeat(64)}:target-1`,
+      upstream_session_ref: "nvs_01",
+      ownership_source: "owner_authoritative_dns_txt",
+      challenge_name: "_pirate.xn--pokmon-dva",
+      challenge_value: "pirate-verification=nvs_01",
+      expected_txt_value_sha256: "6".repeat(64),
+      control_identity_digest: "7".repeat(64),
+      chain_authority_digest: "8".repeat(64),
+      observer_result_sha256: "5".repeat(64),
       root_exists: true,
       root_control_verified: true,
       expiry_horizon_sufficient: true,
@@ -165,7 +198,7 @@ describe("injected HNS owner adapter", () => {
           session: started.session,
           submission: { channel: "poll_result", payload: {} },
         },
-        startContext,
+        completeContext,
       ),
     );
     expect(result).toMatchObject({
@@ -192,7 +225,7 @@ describe("injected HNS owner adapter", () => {
             session: started.session,
             submission: { channel: "client_result", payload: {} },
           },
-          startContext,
+          completeContext,
         ),
       ),
     ).rejects.toBeDefined();
@@ -211,7 +244,7 @@ describe("injected HNS owner adapter", () => {
             session: { ...started.session, upstream_session_ref: "different" },
             submission: { channel: "poll_result", payload: {} },
           },
-          startContext,
+          completeContext,
         ),
       ),
     ).rejects.toBeDefined();
@@ -232,7 +265,7 @@ describe("injected HNS owner adapter", () => {
             session: badExpirySession.session,
             submission: { channel: "poll_result", payload: {} },
           },
-          startContext,
+          completeContext,
         ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
@@ -256,7 +289,7 @@ describe("injected HNS owner adapter", () => {
             session: contradictionSession.session,
             submission: { channel: "poll_result", payload: {} },
           },
-          startContext,
+          completeContext,
         ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderObservationRejected);
@@ -276,7 +309,7 @@ describe("injected HNS owner adapter", () => {
             session: futureSession.session,
             submission: { channel: "poll_result", payload: {} },
           },
-          startContext,
+          completeContext,
         ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
@@ -313,7 +346,7 @@ describe("injected HNS owner adapter", () => {
         Effect.runPromise(
           provider.complete(
             { session: started.session, submission: { channel: "poll_result", payload: {} } },
-            startContext,
+            completeContext,
           ),
         ),
       ).resolves.toMatchObject({ status: "verified" });
@@ -400,5 +433,42 @@ describe("HNS provider platform assembly", () => {
         submission_channels: ["poll_result"],
       }),
     ]);
+  });
+
+  test("requires target-v2 observations in the production registry", async () => {
+    async function completeWith(bytes: Uint8Array) {
+      const registry = await Effect.runPromise(
+        makePlatformNamespaceOwnershipProviderRegistry({
+          now: () => now,
+          hns: {
+            enabled: true,
+            transport: transport({ bytes }),
+            provider_configuration,
+            environments: ["staging"],
+          },
+        }),
+      );
+      const provider = await Effect.runPromise(registry.resolve("hns"));
+      const started = await Effect.runPromise(provider.start(startInput, startContext));
+      return Effect.runPromise(
+        provider.complete(
+          {
+            session: started.session,
+            submission: { channel: "poll_result", payload: {} },
+          },
+          completeContext,
+        ),
+      );
+    }
+
+    await expect(completeWith(response())).rejects.toBeInstanceOf(
+      NamespaceOwnershipProviderInvalidResponse,
+    );
+    await expect(completeWith(targetResponse())).resolves.toMatchObject({
+      status: "verified",
+      observation: {
+        observation_contract_version: "pirate-hns-target-observation-v2",
+      },
+    });
   });
 });

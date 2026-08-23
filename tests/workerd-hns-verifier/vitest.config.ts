@@ -10,12 +10,30 @@ const alias = {
     "../../packages/application/src/route-revalidation/index.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application": new URL("../../packages/application/src/index.ts", import.meta.url)
+    .pathname,
   "@pirate/contracts": new URL("../../packages/contracts/src/index.ts", import.meta.url).pathname,
   "@pirate/domain/verification": new URL(
     "../../packages/domain/src/verification/index.ts",
     import.meta.url,
   ).pathname,
   "@pirate/domain": new URL("../../packages/domain/src/index.ts", import.meta.url).pathname,
+  "@pirate/platform-cf/postgres": new URL(
+    "../../packages/platform-cf/src/postgres.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/hns-control-observer-hsd-private-transport.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/hns-control-observer-postgres.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/namespace-ownership-hns-private-driver-transport": new URL(
+    "../../packages/platform-cf/src/namespace-ownership/hns-private-driver-transport.ts",
+    import.meta.url,
+  ).pathname,
 };
 
 export default defineConfig({
