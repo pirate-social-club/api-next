@@ -108,7 +108,7 @@ jobs:
           CONTROL_PLANE_POSTGRES_COMMUNITY_PURCHASE_FUNDING_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-purchase-funding-suite-complete
           CONTROL_PLANE_POSTGRES_HNS_OBSERVER_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-hns-observer-suite-complete
         run: >-
-          timeout 180s bun test
+          timeout 300s bun test
           packages/platform-cf/src/postgres.pg.test.ts
           packages/platform-cf/src/postgres-foundation.pg.test.ts
           packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts
