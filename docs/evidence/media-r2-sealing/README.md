@@ -84,3 +84,65 @@ Focused tests:
 ```text
 bun test scripts/media/r2-seal-probe.test.ts
 ```
+
+## Disposable staging runner
+
+The same entrypoint has an explicit, mutating acknowledgement for a future
+disposable staging run:
+
+```text
+R2_STAGING_ACCOUNT_ID=... \
+R2_STAGING_ACCESS_KEY_ID=... \
+R2_STAGING_SECRET_ACCESS_KEY=... \
+R2_STAGING_BUCKET=... \
+bun scripts/media/r2-seal-probe.ts --execute-staging
+```
+
+The values above are placeholders and must never be put in shell history,
+source, evidence, or logs. The runner validates the four required environment
+variables without echoing any value. With no arguments the entrypoint always
+uses the local fake transport; the staging flag is the only path that reads
+credentials or calls `fetch`. The staging output is projected through the
+closed [staging schema](./staging-schema.json).
+
+The staging path generates one run-specific prefix and two exact keys. It
+checks both keys before writing and uses `If-None-Match: *` for the source
+upload, so a pre-existing key or an unknown preflight response fails closed.
+It requires an already-existing bucket and never creates or deletes a bucket.
+Mutation candidates are registered before each upload or copy dispatch, so a
+response lost after a provider-side commit remains cleanup-owned and is never
+silently omitted. PutObject signs an exact run marker in custom metadata and
+CopyObject preserves that metadata. Cleanup considers only those exact
+run-prefix candidates, requires the marker, matching size, content type,
+checksum, and an ETag, and deletes with the observed ETag condition. A
+confirmed response ETag is also rechecked when one was available. A marker,
+metadata, or confirmed-ETag mismatch is a residual/inconclusive result and
+fails closed.
+
+The sealing sequence is deliberately narrow: one source `HEAD`, one
+`CopyObject` sent as a destination `PUT` with the observed source ETag in
+`x-amz-copy-source-if-match` and the beta
+`cf-copy-destination-if-none-match: *` condition, and one destination `HEAD`
+only after a successful copy. A 412 is recorded as shared and ambiguous. It
+never triggers a destination `HEAD`, copy retry, or causal source/destination
+guess. ETag, SHA-256 checksum, destination VersionId, and the distinct
+`x-amz-copy-source-version-id` source VersionId are reported as separate
+observations; an ETag is never treated as a checksum. HTTP 408, 425, 429, and
+all 5xx mutation responses are treated as ambiguous delivery, retain their
+cleanup candidates, and preserve the returned status/code.
+
+The live runner has not been authorized to contact a production bucket. The
+current staging account is not entitled to R2, so no `--execute-staging` run
+was performed in this tranche. The local and injected-fetch tests exercise
+signing, request construction, hostile responses, redaction, and cleanup
+without a network call. A future transcript must bind only the run/account/
+bucket/key identities, statuses, parsed codes, timestamps, ETags, checksum and
+version observations, and exact cleanup results. URLs, headers, bodies, media
+bytes, credentials, and raw provider responses are excluded.
+
+`runStagingProbe` also requires the exact `execute-staging` acknowledgement
+parameter; importing it directly without that token reads neither environment
+variables nor a fetch implementation. The CLI supplies the token only when
+the complete argument list is exactly `--execute-staging`. Source-only and
+destination-only guard modes exist only for signed-wire diagnostics; the
+production sealing method always sends both conditional guards.
