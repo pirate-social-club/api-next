@@ -960,31 +960,29 @@ const ReadySpeechAnalysisV1 = Schema.Struct({
   ),
 );
 
-const SongSpeechAnalysisV1 = Schema.Union([
-  ReadySpeechAnalysisV1,
-  Schema.Struct({
-    status: Schema.Literal("no_speech"),
-    transcript_artifact_ref: Schema.Null,
-    transcript_sha256: Schema.Null,
-    explicitness: Schema.Literal("no_lyrics"),
-    primary_language_bcp47: Schema.Null,
-    secondary_language_bcp47: Schema.Null,
-    evidence_ref: EvidenceRef,
-    policy_revision: RevisionIdentifier,
-    adapter_revision: RevisionIdentifier,
-  }),
-  Schema.Struct({
-    status: Schema.Literal("unavailable"),
-    transcript_artifact_ref: Schema.Null,
-    transcript_sha256: Schema.Null,
-    explicitness: Schema.Literal("uncertain"),
-    primary_language_bcp47: Schema.Null,
-    secondary_language_bcp47: Schema.Null,
-    evidence_ref: EvidenceRef,
-    policy_revision: RevisionIdentifier,
-    adapter_revision: RevisionIdentifier,
-  }),
-]);
+const NoSpeechAnalysisV1 = Schema.Struct({
+  status: Schema.Literal("no_speech"),
+  transcript_artifact_ref: Schema.Null,
+  transcript_sha256: Schema.Null,
+  explicitness: Schema.Literal("no_lyrics"),
+  primary_language_bcp47: Schema.Null,
+  secondary_language_bcp47: Schema.Null,
+  evidence_ref: EvidenceRef,
+  policy_revision: RevisionIdentifier,
+  adapter_revision: RevisionIdentifier,
+});
+
+const UnavailableSpeechAnalysisV1 = Schema.Struct({
+  status: Schema.Literal("unavailable"),
+  transcript_artifact_ref: Schema.Null,
+  transcript_sha256: Schema.Null,
+  explicitness: Schema.Literal("uncertain"),
+  primary_language_bcp47: Schema.Null,
+  secondary_language_bcp47: Schema.Null,
+  evidence_ref: EvidenceRef,
+  policy_revision: RevisionIdentifier,
+  adapter_revision: RevisionIdentifier,
+});
 
 const TranscriptSegmentV1 = Schema.Struct({
   start_ms: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 86_400_000 })),
@@ -1008,7 +1006,7 @@ export const SongTranscriptArtifactV1 = Schema.Struct({
 });
 export type SongTranscriptArtifactV1 = Schema.Schema.Type<typeof SongTranscriptArtifactV1>;
 
-export const SongTrustedAnalysisV1 = Schema.Struct({
+const SongTrustedAnalysisCommon = {
   version: Schema.Literal("song-trusted-analysis-v1"),
   operation_id: SongAuthorString,
   audio_revision: PositiveRevision,
@@ -1022,7 +1020,6 @@ export const SongTrustedAnalysisV1 = Schema.Struct({
     track_title: Schema.NullOr(SongTitle),
     cover: EmbeddedCoverAnalysisV1,
   }),
-  speech_lyrics: SongSpeechAnalysisV1,
   acr: Schema.Struct({
     decision: Schema.Literals(["allow", "requires_reference", "inconclusive", "skipped"]),
     evidence_ref: EvidenceRef,
@@ -1039,7 +1036,26 @@ export const SongTrustedAnalysisV1 = Schema.Struct({
       upstream_commercial_rev_share_bps: Schema.NullOr(NonNegativeBasisPoints),
     }),
   ),
-});
+};
+
+/** Explicitness evidence is separate from the still-unratified publication-policy mapping. */
+export const SongTrustedAnalysisV1 = Schema.Union([
+  Schema.Struct({
+    ...SongTrustedAnalysisCommon,
+    speech_lyrics: ReadySpeechAnalysisV1,
+    lyrics_safety: Schema.Literals(["skipped", "allow", "review_required", "blocked"]),
+  }),
+  Schema.Struct({
+    ...SongTrustedAnalysisCommon,
+    speech_lyrics: NoSpeechAnalysisV1,
+    lyrics_safety: Schema.Literal("skipped"),
+  }),
+  Schema.Struct({
+    ...SongTrustedAnalysisCommon,
+    speech_lyrics: UnavailableSpeechAnalysisV1,
+    lyrics_safety: Schema.Literal("review_required"),
+  }),
+]);
 export type SongTrustedAnalysisV1 = Schema.Schema.Type<typeof SongTrustedAnalysisV1>;
 
 export const SongPublishedProjectionV1 = Schema.Struct({

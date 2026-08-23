@@ -395,6 +395,7 @@ describe("song media R1 derived-analysis contracts", () => {
         policy_revision: "acr-policy-v1",
         adapter_revision: "acr-adapter-v1",
       },
+      lyrics_safety: "review_required",
       media_safety: "allow",
       bound_reference: {
         asset_id: "asset_1",
@@ -417,7 +418,7 @@ describe("song media R1 derived-analysis contracts", () => {
     expect(() =>
       decode(SongTrustedAnalysisV1, {
         ...analysis,
-        lyrics_safety: "allow",
+        publication_decision: "allow",
       }),
     ).toThrow();
     expect(() =>
@@ -477,14 +478,36 @@ describe("song media R1 derived-analysis contracts", () => {
       decode(SongTrustedAnalysisV1, {
         ...analysisBase,
         speech_lyrics: { status: "no_speech", explicitness: "no_lyrics", ...commonSpeech },
+        lyrics_safety: "skipped",
       }),
-    ).toMatchObject({ speech_lyrics: { status: "no_speech", explicitness: "no_lyrics" } });
+    ).toMatchObject({
+      speech_lyrics: { status: "no_speech", explicitness: "no_lyrics" },
+      lyrics_safety: "skipped",
+    });
     expect(
       decode(SongTrustedAnalysisV1, {
         ...analysisBase,
         speech_lyrics: { status: "unavailable", explicitness: "uncertain", ...commonSpeech },
+        lyrics_safety: "review_required",
       }),
-    ).toMatchObject({ speech_lyrics: { status: "unavailable", explicitness: "uncertain" } });
+    ).toMatchObject({
+      speech_lyrics: { status: "unavailable", explicitness: "uncertain" },
+      lyrics_safety: "review_required",
+    });
+    expect(() =>
+      decode(SongTrustedAnalysisV1, {
+        ...analysisBase,
+        speech_lyrics: { status: "no_speech", explicitness: "no_lyrics", ...commonSpeech },
+        lyrics_safety: "allow",
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(SongTrustedAnalysisV1, {
+        ...analysisBase,
+        speech_lyrics: { status: "unavailable", explicitness: "uncertain", ...commonSpeech },
+        lyrics_safety: "allow",
+      }),
+    ).toThrow();
     for (const cover of [
       { status: "rejected", artifact_ref: null, reason_code: "unsafe" },
       { status: "rejected", artifact_ref: null, reason_code: "limits_exceeded" },
@@ -494,6 +517,7 @@ describe("song media R1 derived-analysis contracts", () => {
           ...analysisBase,
           embedded_metadata: { ...analysisBase.embedded_metadata, cover },
           speech_lyrics: { status: "no_speech", explicitness: "no_lyrics", ...commonSpeech },
+          lyrics_safety: "skipped",
         }),
       ).toMatchObject({ embedded_metadata: { cover } });
     }
@@ -557,21 +581,25 @@ describe("song media R1 derived-analysis contracts", () => {
         locked_delivery: "not_required",
       }),
     ).toMatchObject({ title: "Author override title", alignment: "pending" });
+    const noSpeechProjection = {
+      version: "song-published-projection-v1",
+      submission_id: "sub_2",
+      post_id: "post_2",
+      creation_revision: 2,
+      title: "Instrumental",
+      audio_asset_ref: "audio_2",
+      cover_artifact_ref: null,
+      analysis_badges: [],
+      language_detection: { status: "no_speech" },
+      lyrics_explicitness: "no_lyrics",
+      alignment: "pending",
+      data_registration: "pending",
+      locked_delivery: "not_required",
+    } as const;
+    expect(decode(SongPublishedProjectionV1, noSpeechProjection)).toEqual(noSpeechProjection);
     expect(() =>
       decode(SongPublishedProjectionV1, {
-        version: "song-published-projection-v1",
-        submission_id: "sub_1",
-        post_id: "post_1",
-        creation_revision: 1,
-        title: "A song",
-        audio_asset_ref: "audio_1",
-        cover_artifact_ref: null,
-        analysis_badges: [],
-        language_detection: { status: "no_speech" },
-        lyrics_explicitness: "no_lyrics",
-        alignment: "unavailable",
-        data_registration: "pending",
-        locked_delivery: "not_required",
+        ...noSpeechProjection,
         transcript_artifact_ref: "private",
       }),
     ).toThrow();
