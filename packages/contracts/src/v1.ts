@@ -14,7 +14,7 @@ import {
   PostVoteIdempotencyConflict,
   RateLimited,
   ReplyDepthExceeded,
-  RetryableConflict,
+  UploadObjectMissing,
 } from "./errors.ts";
 import { TextContentSubmissionV1 } from "./text-moderation.ts";
 
@@ -661,29 +661,15 @@ const CreatePostCommon = {
 const CreatePostRequest = Schema.Struct({ ...CreatePostCommon, post_type: Schema.Literal("text") });
 
 const PositiveSafeInteger = Schema.Int.check(
-  Schema.makeFilter((value) =>
-    value > 0 && Number.isSafeInteger(value) ? undefined : "Expected a positive safe integer",
-  ),
+  Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
-const NonNegativeBasisPoints = Schema.Int.check(
-  Schema.makeFilter((value) =>
-    value >= 0 && value <= 10_000
-      ? undefined
-      : "Expected an integer basis-point value from 0 through 10000",
-  ),
-);
+const NonNegativeBasisPoints = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000 }));
 const CommercialRevShareBps = NonNegativeBasisPoints.check(
   Schema.makeFilter(() => undefined, { toJsonSchema: () => ({ default: 1000 }) }),
 ).pipe(Schema.withDecodingDefaultKey(Effect.succeed(1000)));
-const PositiveBasisPoints = Schema.Int.check(
-  Schema.makeFilter((value) =>
-    value > 0 && value <= 10_000
-      ? undefined
-      : "Expected a positive integer basis-point value from 1 through 10000",
-  ),
-);
+const PositiveBasisPoints = Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10_000 }));
 const PositiveRevision = Schema.Int.check(
-  Schema.makeFilter((value) => (value > 0 ? undefined : "Expected a positive revision")),
+  Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
 const Sha256Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const SongAuthorString = Schema.NonEmptyString;
@@ -693,6 +679,7 @@ const RoyaltyAllocations = Schema.Array(
     share_bps: PositiveBasisPoints,
   }),
 ).check(
+  Schema.isMinLength(1),
   Schema.makeFilter((allocations) => {
     const recipients = new Set(allocations.map(({ recipient_id }) => recipient_id));
     const total = allocations.reduce((sum, { share_bps }) => sum + share_bps, 0);
@@ -716,7 +703,7 @@ const SongAuthorInputCommon = {
 };
 
 /** The author-controlled song bundle; trusted analysis never enters this schema. */
-const SongAuthorInputV1 = Schema.Union([
+export const SongAuthorInputV1 = Schema.Union([
   Schema.Struct({
     ...SongAuthorInputCommon,
     license_preset: Schema.Literals(["non-commercial", "commercial-use"]),
@@ -729,16 +716,12 @@ const SongAuthorInputV1 = Schema.Union([
 ]);
 export type SongAuthorInputV1 = Schema.Schema.Type<typeof SongAuthorInputV1>;
 
-const ReserveSongAudioV1 = Schema.Struct({
+export const ReserveSongAudioV1 = Schema.Struct({
   idempotency_key: SongAuthorString,
   track: Schema.Literal("song"),
   slot: Schema.Literal("primary_audio"),
   expected_content_type: Schema.String.check(
-    Schema.makeFilter((value) =>
-      /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u.test(value)
-        ? undefined
-        : "Expected a lowercase media type without parameters",
-    ),
+    Schema.isPattern(/^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/u),
   ),
   expected_size_bytes: PositiveSafeInteger,
   expected_sha256: Schema.optional(Sha256Hex),
@@ -746,7 +729,7 @@ const ReserveSongAudioV1 = Schema.Struct({
 export type ReserveSongAudioV1 = Schema.Schema.Type<typeof ReserveSongAudioV1>;
 
 const RequiredUploadHeader = Schema.Struct({ name: SongAuthorString, value: SongAuthorString });
-const SongAudioReservationV1 = Schema.Struct({
+export const SongAudioReservationV1 = Schema.Struct({
   reservation_id: SongAuthorString,
   track: Schema.Literal("song"),
   slot: Schema.Literal("primary_audio"),
@@ -760,7 +743,7 @@ const SongAudioReservationV1 = Schema.Struct({
 });
 export type SongAudioReservationV1 = Schema.Schema.Type<typeof SongAudioReservationV1>;
 
-const CreateSongSubmissionV1 = Schema.Union([
+export const CreateSongSubmissionV1 = Schema.Union([
   Schema.Struct({
     ...SongAuthorInputCommon,
     license_preset: Schema.Literals(["non-commercial", "commercial-use"]),
@@ -775,14 +758,14 @@ const CreateSongSubmissionV1 = Schema.Union([
 ]);
 export type CreateSongSubmissionV1 = Schema.Schema.Type<typeof CreateSongSubmissionV1>;
 
-const FinalizeSongUploadV1 = Schema.Struct({
+export const FinalizeSongUploadV1 = Schema.Struct({
   idempotency_key: SongAuthorString,
   expected_creation_revision: PositiveRevision,
   reservation_id: SongAuthorString,
 });
 export type FinalizeSongUploadV1 = Schema.Schema.Type<typeof FinalizeSongUploadV1>;
 
-const BindSongReferenceV1 = Schema.Struct({
+export const BindSongReferenceV1 = Schema.Struct({
   idempotency_key: SongAuthorString,
   expected_creation_revision: PositiveRevision,
   reference_request_ref: SongAuthorString,
@@ -790,7 +773,7 @@ const BindSongReferenceV1 = Schema.Struct({
 });
 export type BindSongReferenceV1 = Schema.Schema.Type<typeof BindSongReferenceV1>;
 
-const RetryOrCancelSongSubmissionV1 = Schema.Struct({
+export const RetryOrCancelSongSubmissionV1 = Schema.Struct({
   idempotency_key: SongAuthorString,
   expected_creation_revision: PositiveRevision,
 });
@@ -798,7 +781,7 @@ export type RetryOrCancelSongSubmissionV1 = Schema.Schema.Type<
   typeof RetryOrCancelSongSubmissionV1
 >;
 
-const ModerateSongSubmissionV1 = Schema.Union([
+export const ModerateSongSubmissionV1 = Schema.Union([
   Schema.Struct({
     idempotency_key: SongAuthorString,
     expected_creation_revision: PositiveRevision,
@@ -823,7 +806,7 @@ const ModerateSongSubmissionV1 = Schema.Union([
 ]);
 export type ModerateSongSubmissionV1 = Schema.Schema.Type<typeof ModerateSongSubmissionV1>;
 
-const PostProcessingPhase = Schema.Literals([
+export const PostProcessingPhase = Schema.Literals([
   "reserve",
   "awaiting_upload",
   "finalize",
@@ -836,10 +819,10 @@ const MediaSubmissionCommon = {
   submission_id: SongAuthorString,
   href: SongAuthorString,
   track: Schema.Literal("song"),
-  creation_revision: Schema.Int,
+  creation_revision: PositiveRevision,
   updated_at: SongAuthorString,
 };
-const MediaPostSubmissionV1 = Schema.Union([
+export const MediaPostSubmissionV1 = Schema.Union([
   Schema.Struct({
     ...MediaSubmissionCommon,
     status: Schema.Literal("processing"),
@@ -899,7 +882,7 @@ const MediaPostSubmissionV1 = Schema.Union([
 ]);
 export type MediaPostSubmissionV1 = Schema.Schema.Type<typeof MediaPostSubmissionV1>;
 
-const SealUploadResultV1 = Schema.Union([
+export const SealUploadResultV1 = Schema.Union([
   Schema.Struct({
     outcome: Schema.Literal("sealed"),
     immutable_ref: SongAuthorString,
@@ -914,10 +897,10 @@ const SealUploadResultV1 = Schema.Union([
 ]);
 export type SealUploadResultV1 = Schema.Schema.Type<typeof SealUploadResultV1>;
 
-const SongTrustedAnalysisV1 = Schema.Struct({
+export const SongTrustedAnalysisV1 = Schema.Struct({
   version: Schema.Literal("song-trusted-analysis-v1"),
   operation_id: SongAuthorString,
-  creation_revision: Schema.Int,
+  creation_revision: PositiveRevision,
   finalized_audio_ref: SongAuthorString,
   canonical_audio_sha256: Sha256Hex,
   probe_evidence_ref: SongAuthorString,
@@ -932,18 +915,18 @@ const SongTrustedAnalysisV1 = Schema.Struct({
   bound_reference: Schema.NullOr(
     Schema.Struct({
       asset_id: SongAuthorString,
-      evidence_creation_revision: Schema.Int,
+      evidence_creation_revision: PositiveRevision,
       upstream_commercial_rev_share_bps: Schema.NullOr(NonNegativeBasisPoints),
     }),
   ),
 });
 export type SongTrustedAnalysisV1 = Schema.Schema.Type<typeof SongTrustedAnalysisV1>;
 
-const SongPublishedProjectionV1 = Schema.Struct({
+export const SongPublishedProjectionV1 = Schema.Struct({
   version: Schema.Literal("song-published-projection-v1"),
   submission_id: SongAuthorString,
   post_id: SongAuthorString,
-  creation_revision: Schema.Int,
+  creation_revision: PositiveRevision,
   audio_asset_ref: SongAuthorString,
   analysis_badges: Schema.Union([
     Schema.Tuple([]),
@@ -1296,7 +1279,15 @@ export const FinalizeMediaPostSubmission = endpoint({
   auth: Auth.userOrAdmin(),
   request: { path: PathMediaSubmission, body: FinalizeSongUploadV1 },
   response: MediaPostSubmissionV1,
-  errors: [AuthError, BadRequest, Conflict, RetryableConflict, NotFound, RateLimited],
+  errors: [
+    AuthError,
+    BadRequest,
+    Conflict,
+    IdempotencyConflict,
+    UploadObjectMissing,
+    NotFound,
+    RateLimited,
+  ],
 });
 
 export const GetMediaPostSubmission = endpoint({
@@ -1530,3 +1521,39 @@ export const GetJwks = endpoint({
   response: Jwks,
   successStatus: 200,
 });
+
+/** Endpoint-only registry boundary; schema exports above must not enter it. */
+export const v1Registry = {
+  SessionExchange,
+  RegisterIdentity,
+  SessionLogout,
+  GetCurrentUser,
+  GetMyProfile,
+  GetPublicProfileByHandle,
+  GetCommunityPreview,
+  GetJoinEligibility,
+  JoinCommunity,
+  FollowCommunity,
+  UnfollowCommunity,
+  CreatePost,
+  CreateMediaUploadReservation,
+  CreateMediaPostSubmission,
+  FinalizeMediaPostSubmission,
+  GetMediaPostSubmission,
+  BindMediaPostSubmissionReference,
+  RetryMediaPostSubmission,
+  CancelMediaPostSubmission,
+  ModerateMediaPostSubmission,
+  GetTextContentSubmission,
+  GetPost,
+  CreateComment,
+  CastPostVote,
+  ClearPostVote,
+  CreateCommentReply,
+  ReportComment,
+  ModerateCaseAction,
+  GetPublicHomeFeed,
+  GetPublicCommunityThreads,
+  GetHomeFeed,
+  GetJwks,
+} as const;

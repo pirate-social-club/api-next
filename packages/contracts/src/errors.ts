@@ -111,6 +111,27 @@ export class RetryableConflict extends Data.TaggedError("RetryableConflict")<Wir
   readonly retryable = true as const;
 }
 
+/** Finalize may be retried when the expected upload object is not present. */
+export class UploadObjectMissing extends Data.TaggedError("UploadObjectMissing")<{
+  readonly message: string;
+  readonly details: {
+    readonly reason_code: "upload_object_missing";
+    readonly submission_id: string;
+    readonly reservation_id: string;
+  };
+}> {
+  static readonly detailsSchema = Schema.Struct({
+    reason_code: Schema.Literal("upload_object_missing"),
+    submission_id: Schema.String,
+    reservation_id: Schema.String,
+  });
+  static readonly detailsRequired = true;
+
+  readonly status = 409 as const;
+  readonly code = "conflict" as const;
+  readonly retryable = true as const;
+}
+
 /** An owner-recovery fence is live; retry only after the declared delay. */
 export class OwnerRecoveryInProgress extends Data.TaggedError("OwnerRecoveryInProgress")<{
   readonly message: string;
@@ -330,6 +351,7 @@ export type ApiError =
   | RateLimited
   | Conflict
   | RetryableConflict
+  | UploadObjectMissing
   | OwnerRecoveryInProgress
   | IdempotencyConflict
   | PostVoteIdempotencyConflict

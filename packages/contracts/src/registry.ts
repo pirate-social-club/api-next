@@ -21,7 +21,7 @@ import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recover
 import { CreateKaraokeAttempt, GetKaraokeAttempt, GetKaraokeLeaderboard } from "./karaoke.ts";
 import { PollNamespaceOwnership, StartNamespaceOwnership } from "./namespace-ownership.ts";
 /** Named registry; the client generator references these exports by name. */
-import * as v1 from "./v1.ts";
+import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
 
 export const registry = {
@@ -33,7 +33,7 @@ export const registry = {
   GetCanonicalCommunityRoute,
   StartHnsOwnerRecovery,
   PollHnsOwnerRecovery,
-  ...v1,
+  ...v1Registry,
   ...verification,
   ...money,
   StartNamespaceOwnership,
