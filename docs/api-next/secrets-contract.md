@@ -696,6 +696,55 @@ zero violations and only the two documented absent-production Worker entries;
 the Infisical axis reported zero violations and zero accepted drift. This is a
 scope correction for a disabled runtime, not a waiver of observed drift.
 
+## Pull request secret boundary
+
+`.github/workflows/secret-boundary.yml` is the trusted check that makes the
+credential boundary survive a no-human merge flow. It runs under
+`pull_request_target`, so GitHub executes the version of the workflow that is
+already on `main`, not the version proposed by the pull request. The job checks
+out `github.event.pull_request.base.sha` with `persist-credentials: false`,
+installs no dependencies, and never executes pull request code. It holds no
+credential other than the read-only `GITHUB_TOKEN`.
+
+`scripts/secret-boundary-check.ts` reads the pull request's changed files and
+their head-side contents through the GitHub REST API and fails the check on:
+
+- any change to the check itself — the workflow, the script, or its test;
+- removing or renaming `.github/workflows/secret-drift.yml` or
+  `scripts/infisical-secret-drift-audit.ts`;
+- dropping or inverting the `viewSecretValue: "false"` and
+  `expandSecretReferences: "false"` literals in any script that talks to the
+  Infisical secrets endpoint;
+- reading the `secretValue` field returned by Infisical;
+- any workflow that both triggers on a pull request and references a repository
+  secret other than `GITHUB_TOKEN`, or requests `id-token: write`;
+- any workflow other than this one that uses `pull_request_target`;
+- `id-token: write` granted workflow wide instead of job scoped;
+- any trigger on the credential-bearing workflow other than `push`, `schedule`,
+  or `workflow_dispatch`;
+- any action reference that is not pinned to a full 40-character commit SHA;
+- an unreadable file or a change list too large to inspect, which fail closed.
+
+Unchanged files are trusted by induction: they are already on `main`, which
+means they passed this check when they merged.
+
+The check is a boundary control, not a general secret scanner. It cannot stop
+audit code that legitimately holds a token from printing something into the
+GitHub log, and it does not inspect dependency behaviour. Those are separate
+concerns: the runtime blast radius is bounded instead by the 900-second token
+TTL, the exact main-branch OIDC subject, and the name-only request.
+
+Because the check refuses changes to its own files, editing it is deliberately
+a break-glass operation: an administrator temporarily relaxes `main` branch
+protection, lands the change, and restores protection. That cost is the point —
+with zero required approvals, the guard is the only thing standing between an
+agent-authored commit and the credential path.
+
+Ordering constraint: `pull_request_target` workflows only run once the workflow
+file exists on the default branch. The pull request that introduces this check
+therefore cannot run it, and `secret-boundary` may only be added to the required
+status checks for `main` after that pull request has merged.
+
 ## Local project selection — corrected 2026-08-22
 
 Both the repository pin at `api-next/.infisical.json` and the home-directory
