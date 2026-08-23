@@ -1,8 +1,8 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import {
-  CommunityCreationRequirementsV2,
   CommunityCreationRequirementsV1,
+  CommunityCreationRequirementsV2,
   CreationVerificationRequirementV1,
 } from "./community-creation-requirements.ts";
 import { CommunityCanonicalRouteV1, CommunityRouteRequestV1 } from "./community-routes.ts";
@@ -186,15 +186,11 @@ export const CommittedCommunityResourceV1 = Schema.Struct({
       : "Committed resource href must equal its canonical route href",
   ),
 );
-export type CommittedCommunityResourceV1 = Schema.Schema.Type<
-  typeof CommittedCommunityResourceV1
->;
+export type CommittedCommunityResourceV1 = Schema.Schema.Type<typeof CommittedCommunityResourceV1>;
 
 export const OptionalRouteCommunityIdV2 = Schema.String.check(
   Schema.makeFilter((value) =>
-    /^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
-      value,
-    )
+    /^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value)
       ? undefined
       : "Expected a generated optional-route community id",
   ),
@@ -213,9 +209,7 @@ export const CommittedCommunityResourceV2 = Schema.Struct({
       : "Committed optional-route href must use its permanent community id",
   ),
 );
-export type CommittedCommunityResourceV2 = Schema.Schema.Type<
-  typeof CommittedCommunityResourceV2
->;
+export type CommittedCommunityResourceV2 = Schema.Schema.Type<typeof CommittedCommunityResourceV2>;
 
 export const CurrentCommunityResourceV2 = Schema.Struct({
   authority_version: Schema.Literal("optional_route_v2"),

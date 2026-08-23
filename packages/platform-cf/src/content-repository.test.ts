@@ -17,9 +17,9 @@ const fakeDb = (responses: readonly (readonly Row[])[]) => {
   let transactionCount = 0;
   const execute = <R>(statement: ControlPlaneStatement) => {
     calls.push(statement);
-    if (statement.label === "content.communities.require-effective-route") {
+    if (statement.label === "content.communities.require-active-community-effect") {
       return Effect.succeed({
-        rows: [{ community_id: "community_1" }] as unknown as readonly R[],
+        rows: [{ allowed: true }] as unknown as readonly R[],
         rowCount: 1,
       });
     }
@@ -261,7 +261,7 @@ describe("M2 content repository row and lock defenses", () => {
       "content.community-memberships.lock-active",
       "content.posts.resolve-global",
       "content.posts.state",
-      "content.communities.require-effective-route",
+      "content.communities.require-active-community-effect",
       "content.post-vote-actions.lock",
       "content.post-votes.lock-actor",
       "content.post-votes.upsert",
@@ -363,7 +363,7 @@ describe("M2 content repository row and lock defenses", () => {
       "content.community-memberships.lock-active",
       "content.posts.resolve-global",
       "content.posts.state",
-      "content.communities.require-effective-route",
+      "content.communities.require-active-community-effect",
       "content.post-vote-actions.lock",
       "content.post-votes.lock-actor",
       "content.post-votes.clear",

@@ -156,6 +156,7 @@ function intentRow(input: {
       provider_binding_hash: humanBindingHash,
       generation: 1,
       current_ceremony_intent_id: ceremonyIntentId,
+      creation_contract_version: "route_v1",
       satisfied_at: input.humanStatus === "satisfied" ? completedAt : null,
     },
     namespace_requirement: {
@@ -195,6 +196,7 @@ function requirementRows(namespaceStatus: "unmet" | "satisfied" = "unmet"): read
       route_path_segment: null,
       generation: "1",
       current_ceremony_intent_id: ceremonyIntentId,
+      creation_contract_version: "route_v1",
     },
     {
       requirement_kind: "namespace_ownership",
@@ -211,6 +213,7 @@ function requirementRows(namespaceStatus: "unmet" | "satisfied" = "unmet"): read
       route_path_segment: "app.jazleeuw",
       generation: namespaceStatus === "satisfied" ? "1" : "0",
       current_ceremony_intent_id: namespaceStatus === "satisfied" ? "namespace-ceremony-1" : null,
+      creation_contract_version: "route_v1",
     },
   ];
 }

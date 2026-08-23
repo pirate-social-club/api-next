@@ -8,7 +8,6 @@ import { createHttpWorker, type DecodedRequest, type Principal } from "./transpo
 const draft = {
   name: "Jazleeuw",
   description: "A community",
-  route_request: { family: "hns" as const, root_label: "jazleeuw" },
   policy: {
     version: 1 as const,
     accessPaths: [
@@ -31,18 +30,10 @@ const requirements = {
     ceremony_intent_id: "human-ceremony-1",
     satisfied_at: null,
   },
-  namespace_ownership: {
-    requirement: "namespace_ownership" as const,
-    status: "unmet" as const,
-    requirement_hash: "c".repeat(64),
-    provider_id: "hns.owner.v1",
-    generation: 0,
-    ceremony_intent_id: null,
-    satisfied_at: null,
-  },
 };
 
 const document = {
+  creation_contract_version: "optional_route_v2" as const,
   intent_id: "intent-1",
   revision: 1,
   status: "verification_required" as const,
@@ -89,16 +80,10 @@ function services(
     status: "committed" as const,
     next_action: { kind: "none" as const, reason: "committed" as const },
     committed_resource: {
-      community_id: "community-1",
-      href: "/c/app.jazleeuw",
-      canonical_route: {
-        family: "hns" as const,
-        root_label: "jazleeuw",
-        root_label_display: "jazleeuw",
-        path_segment: "app.jazleeuw",
-        href: "/c/app.jazleeuw",
-        app_host: null,
-      },
+      authority_version: "optional_route_v2" as const,
+      community_id: "community_123e4567-e89b-42d3-a456-426614174000",
+      href: "/c/community_123e4567-e89b-42d3-a456-426614174000",
+      canonical_route: null,
     },
   };
   const quotaDocument = {
@@ -177,7 +162,12 @@ describe("community creation HTTP handlers", () => {
       handlers.CommitCommunityCreationIntent(request({ principal, body: commitBody })),
     ).resolves.toMatchObject({
       status: 201,
-      body: { status: "committed", committed_resource: { community_id: "community-1" } },
+      body: {
+        status: "committed",
+        committed_resource: {
+          community_id: "community_123e4567-e89b-42d3-a456-426614174000",
+        },
+      },
     });
     expect(observed.commit).toMatchObject({
       actor: { userId: "admin-1", kind: "admin", scopes: ["community:write"] },
@@ -303,7 +293,9 @@ describe("community creation HTTP handlers", () => {
     expect(commit.status).toBe(201);
     expect(await commit.json()).toMatchObject({
       status: "committed",
-      committed_resource: { community_id: "community-1" },
+      committed_resource: {
+        community_id: "community_123e4567-e89b-42d3-a456-426614174000",
+      },
     });
 
     const preflight = await worker.request(

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   decodeCanonicalCommunityRouteResolutionV1,
+  decodeCommunityPathResolution,
   GetCanonicalCommunityRoute,
 } from "./community-route-resolution.ts";
 
@@ -37,6 +38,26 @@ describe("canonical community route resolution contract", () => {
           app_host: null,
           route_slug: "legacy",
         },
+      }),
+    ).toThrow();
+  });
+
+  test("accepts a permanent V2 id route with optional current namespace metadata", () => {
+    const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
+    expect(
+      decodeCommunityPathResolution({
+        authority_version: "optional_route_v2",
+        community_id: communityId,
+        href: `/c/${communityId}`,
+        canonical_route: null,
+      }),
+    ).toMatchObject({ community_id: communityId, canonical_route: null });
+    expect(() =>
+      decodeCommunityPathResolution({
+        authority_version: "optional_route_v2",
+        community_id: communityId,
+        href: "/c/app.jazleeuw",
+        canonical_route: null,
       }),
     ).toThrow();
   });

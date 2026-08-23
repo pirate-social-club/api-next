@@ -35,6 +35,20 @@ export type CommunityCanonicalRoute =
   | Readonly<CommunityRouteIdentity & { readonly family: "hns"; readonly app_host: string | null }>
   | Readonly<CommunityRouteIdentity & { readonly family: "spaces"; readonly app_host: null }>;
 
+export const OPTIONAL_ROUTE_COMMUNITY_ID_PATTERN =
+  /^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+export type CommunityPathTarget =
+  | Readonly<{
+      readonly kind: "community_id";
+      readonly community_id: string;
+      readonly href: string;
+    }>
+  | Readonly<{
+      readonly kind: "namespace_route";
+      readonly route: CommunityRouteIdentity;
+    }>;
+
 export type CommunityRouteRejection =
   | "invalid_family"
   | "invalid_root_label"
@@ -108,6 +122,23 @@ export function parseCommunityRoutePathSegment(
       : rejected("invalid_path_segment");
   }
   return rejected("invalid_path_segment");
+}
+
+/** Distinguishes permanent generated IDs from namespace-derived route segments. */
+export function parseCommunityPathSegment(
+  pathSegment: string,
+): CommunityRouteResult<CommunityPathTarget> {
+  if (OPTIONAL_ROUTE_COMMUNITY_ID_PATTERN.test(pathSegment)) {
+    return accepted({
+      kind: "community_id",
+      community_id: pathSegment,
+      href: `/c/${pathSegment}`,
+    });
+  }
+  const route = parseCommunityRoutePathSegment(pathSegment);
+  return route.kind === "accepted"
+    ? accepted({ kind: "namespace_route", route: route.value })
+    : route;
 }
 
 export function canonicalRouteView(

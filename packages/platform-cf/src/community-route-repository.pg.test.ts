@@ -367,6 +367,45 @@ function expireHnsRoutes(connection: string, limit = 25) {
 }
 
 suite("canonical community route Postgres repository", () => {
+  test("resolves an active optional-route community by permanent id without a binding", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
+      await admin.query("INSERT INTO users (user_id) VALUES ('route-actor')");
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug, canonical_route_binding_id,
+           route_authority_version
+         ) VALUES ($1, 'Namespaceless route', 'active', 'route-actor',
+           clock_timestamp(), clock_timestamp(), NULL, NULL, 'optional_route_v2')`,
+        [communityId],
+      );
+      const store = makeControlPlaneCanonicalCommunityRouteStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: communityId })),
+        ),
+      ).resolves.toEqual({
+        authority_version: "optional_route_v2",
+        community_id: communityId,
+        href: `/c/${communityId}`,
+        canonical_route: null,
+      });
+      await admin.query("UPDATE communities SET status = 'archived' WHERE community_id = $1", [
+        communityId,
+      ]);
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: communityId })),
+        ),
+      ).resolves.toBeNull();
+      completedTestCount += 1;
+    });
+  }, 30_000);
+
   test("resolves a live verified HNS IDN binding with no legacy fallback", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
@@ -743,6 +782,6 @@ suite("canonical community route Postgres repository", () => {
 });
 
 afterAll(async () => {
-  if (connectionString === undefined || completedTestCount !== 5) return;
+  if (connectionString === undefined || completedTestCount !== 6) return;
   await Bun.write(sentinelPath, sentinelContents);
 });

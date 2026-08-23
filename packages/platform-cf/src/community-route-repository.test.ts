@@ -32,6 +32,22 @@ const spacesRow = (overrides: Row = {}): Row => ({
   ...overrides,
 });
 
+const optionalRouteRow = (overrides: Row = {}): Row => {
+  const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
+  return {
+    community_id: communityId,
+    authority_version: "optional_route_v2",
+    resource_href: `/c/${communityId}`,
+    family: null,
+    root_label: null,
+    root_label_display: null,
+    path_segment: null,
+    href: null,
+    app_host: null,
+    ...overrides,
+  };
+};
+
 function fakeDb(rows: readonly Row[], calls: ControlPlaneStatement[]) {
   const execute = <R = unknown>(
     statement: ControlPlaneStatement,
@@ -59,6 +75,27 @@ const failureOf = <E>(exit: Exit.Exit<unknown, E>): E | undefined => {
 };
 
 describe("canonical community route Postgres repository", () => {
+  test("resolves an active optional-route community without a binding", async () => {
+    const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
+    const calls: ControlPlaneStatement[] = [];
+    const exit = await runWith(
+      makeControlPlaneCanonicalCommunityRouteRepository().resolveCanonicalRoute({
+        path_segment: communityId,
+      }),
+      fakeDb([optionalRouteRow()], calls),
+    );
+    expect(Exit.isSuccess(exit)).toBe(true);
+    if (Exit.isSuccess(exit)) {
+      expect(exit.value).toMatchObject({ community_id: communityId, canonical_route: null });
+    }
+    expect(calls[0]).toMatchObject({
+      label: "community.routes.resolve-community-id",
+      values: [communityId],
+    });
+    expect(calls[0]?.text).toContain("community.status = 'active'");
+    expect(calls[0]?.text).toContain("LEFT JOIN LATERAL effective_active_route");
+  });
+
   test("resolves HNS IDN and Spaces emoji paths with one exact read", async () => {
     for (const [path_segment, row] of [
       ["app.xn--mnchen-3ya", hnsRow()],
@@ -70,7 +107,9 @@ describe("canonical community route Postgres repository", () => {
         fakeDb([row], calls),
       );
       expect(Exit.isSuccess(exit)).toBe(true);
-      if (Exit.isSuccess(exit)) expect(exit.value?.canonical_route.path_segment).toBe(path_segment);
+      if (Exit.isSuccess(exit) && exit.value !== null && exit.value.canonical_route !== null) {
+        expect(exit.value.canonical_route.path_segment).toBe(path_segment);
+      }
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({
         label: "community.routes.resolve-canonical",
@@ -132,7 +171,12 @@ describe("canonical community route Postgres repository", () => {
       fakeDb([hnsRow({ app_host: "app.xn--mnchen-3ya" })], healthyCalls),
     );
     expect(Exit.isSuccess(healthy)).toBe(true);
-    if (Exit.isSuccess(healthy))
-      expect(healthy.value?.canonical_route.app_host).toBe("app.xn--mnchen-3ya");
+    if (
+      Exit.isSuccess(healthy) &&
+      healthy.value !== null &&
+      healthy.value.canonical_route !== null
+    ) {
+      expect(healthy.value.canonical_route.app_host).toBe("app.xn--mnchen-3ya");
+    }
   });
 });

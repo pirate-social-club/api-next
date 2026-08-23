@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import {
   CommunityCreationRequirementsV1,
+  CommunityCreationRequirementsV2,
   decodeCommunityCreationRequirementsV1,
+  decodeCommunityCreationRequirementsV2,
   decodeCreationRequirementProgressV1,
 } from "./community-creation-requirements.ts";
 
@@ -34,6 +36,19 @@ describe("community creation requirement contracts", () => {
     });
     expect(decoded).toEqual({ human_identity: human, namespace_ownership: namespace });
     expect(Schema.encodeSync(CommunityCreationRequirementsV1)(decoded)).toEqual(decoded);
+  });
+
+  test("freezes V2 to exactly one human identity requirement", () => {
+    const decoded = decodeCommunityCreationRequirementsV2({ human_identity: human });
+    expect(Schema.encodeSync(CommunityCreationRequirementsV2)(decoded)).toEqual({
+      human_identity: human,
+    });
+    expect(() =>
+      decodeCommunityCreationRequirementsV2({
+        human_identity: human,
+        namespace_ownership: namespace,
+      }),
+    ).toThrow();
   });
 
   test("enforces the closed progress-state cross-field invariant", () => {

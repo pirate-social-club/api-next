@@ -18,7 +18,6 @@ const actor = { userId: "user-alice", kind: "user" as const };
 const draft = {
   name: "Jazleeuw",
   description: "A community",
-  route_request: { family: "hns" as const, root_label: "jazleeuw" },
   policy: {
     version: 1 as const,
     accessPaths: [
@@ -41,18 +40,10 @@ const requirements = {
     ceremony_intent_id: "human-ceremony-1",
     satisfied_at: null,
   },
-  namespace_ownership: {
-    requirement: "namespace_ownership" as const,
-    status: "unmet" as const,
-    requirement_hash: "c".repeat(64),
-    provider_id: "hns.owner.v1",
-    generation: 0,
-    ceremony_intent_id: null,
-    satisfied_at: null,
-  },
 };
 
 const document = {
+  creation_contract_version: "optional_route_v2" as const,
   intent_id: "intent-1",
   revision: 1,
   status: "verification_required" as const,
@@ -88,16 +79,10 @@ function services(
             status: "committed" as const,
             next_action: { kind: "none" as const, reason: "committed" as const },
             committed_resource: {
-              community_id: "community-jazleeuw",
-              href: "/c/app.jazleeuw",
-              canonical_route: {
-                family: "hns" as const,
-                root_label: "jazleeuw",
-                root_label_display: "jazleeuw",
-                path_segment: "app.jazleeuw",
-                href: "/c/app.jazleeuw",
-                app_host: null,
-              },
+              authority_version: "optional_route_v2" as const,
+              community_id: "community_123e4567-e89b-42d3-a456-426614174000",
+              href: "/c/community_123e4567-e89b-42d3-a456-426614174000",
+              canonical_route: null,
             },
           },
           outcome: "fresh_created" as const,
@@ -110,11 +95,11 @@ function services(
 describe("community creation intent application use cases", () => {
   test("decodes strictly and fingerprints the canonical create request", async () => {
     let receivedHash = "";
-    let receivedRoot = "";
+    let receivedName = "";
     const scoped = services({
       create: ({ body, requestHash }) => {
         receivedHash = requestHash;
-        receivedRoot = body.draft.route_request.root_label;
+        receivedName = body.draft.name;
         return Effect.succeed({ document, outcome: "fresh" });
       },
     });
@@ -128,7 +113,7 @@ describe("community creation intent application use cases", () => {
       ),
     ).resolves.toEqual({ document, outcome: "fresh" });
     expect(receivedHash).toMatch(/^[0-9a-f]{64}$/u);
-    expect(receivedRoot).toBe("jazleeuw");
+    expect(receivedName).toBe("Jazleeuw");
 
     await expect(
       Effect.runPromise(
@@ -140,17 +125,17 @@ describe("community creation intent application use cases", () => {
     ).rejects.toBeInstanceOf(BadRequest);
   });
 
-  test("canonicalizes Unicode and ACE route writes before idempotency hashing", async () => {
-    const observed: Array<{ readonly root: string; readonly hash: string }> = [];
+  test("rejects namespace fields from optional-route creation before hashing", async () => {
+    const observed: string[] = [];
     const scoped = services({
-      create: ({ body, requestHash }) => {
-        observed.push({ root: body.draft.route_request.root_label, hash: requestHash });
+      create: ({ requestHash }) => {
+        observed.push(requestHash);
         return Effect.succeed({ document, outcome: "fresh" });
       },
     });
 
-    for (const root_label of ["münchen", "xn--mnchen-3ya"]) {
-      await Effect.runPromise(
+    await expect(
+      Effect.runPromise(
         createCommunityCreationIntent(
           {
             actor,
@@ -158,19 +143,15 @@ describe("community creation intent application use cases", () => {
               idempotency_key: "equivalent-route",
               draft: {
                 ...draft,
-                route_request: { family: "hns", root_label },
+                route_request: { family: "hns", root_label: "jazleeuw" },
               },
             },
           },
           scoped,
         ),
-      );
-    }
-
-    expect(observed).toHaveLength(2);
-    expect(observed[0]?.root).toBe("xn--mnchen-3ya");
-    expect(observed[1]?.root).toBe("xn--mnchen-3ya");
-    expect(observed[0]?.hash).toBe(observed[1]?.hash);
+      ),
+    ).rejects.toBeInstanceOf(BadRequest);
+    expect(observed).toEqual([]);
   });
 
   test("keeps read and mutation access actor-scoped", async () => {

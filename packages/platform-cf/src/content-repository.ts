@@ -484,12 +484,7 @@ const requireVoteAuthorityIn = (
     if (post.communityId !== communityId || post.postId !== postId || post.status !== "published") {
       return yield* notFound(operation);
     }
-    yield* requireActiveCommunityEffectIn(
-      transaction,
-      communityId,
-      actorUserId,
-      operation,
-    );
+    yield* requireActiveCommunityEffectIn(transaction, communityId, actorUserId, operation);
   });
 
 type ActorVote = Readonly<{

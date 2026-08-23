@@ -80,9 +80,7 @@ const validProgress = (progress: {
     : "Non-satisfied requirements cannot expose a satisfaction instant";
 };
 
-export const CreationRequirementProgressV1 = Schema.Struct(
-  creationRequirementProgressFields,
-).check(
+export const CreationRequirementProgressV1 = Schema.Struct(creationRequirementProgressFields).check(
   Schema.makeFilter((progress) => {
     return validProgress(progress);
   }),

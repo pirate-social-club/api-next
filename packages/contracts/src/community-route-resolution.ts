@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
+import { CurrentCommunityResourceV2 } from "./community-creation.ts";
 import {
   CommunityCanonicalRouteV1,
   CommunityRouteContractParseOptions,
@@ -27,6 +28,17 @@ export const decodeCanonicalCommunityRouteResolutionV1 = Schema.decodeUnknownSyn
   CommunityRouteContractParseOptions,
 );
 
+export const CommunityPathResolution = Schema.Union([
+  CurrentCommunityResourceV2,
+  CanonicalCommunityRouteResolutionV1,
+]);
+export type CommunityPathResolution = Schema.Schema.Type<typeof CommunityPathResolution>;
+
+export const decodeCommunityPathResolution = Schema.decodeUnknownSync(
+  CommunityPathResolution,
+  CommunityRouteContractParseOptions,
+);
+
 /** Resolve only the exact, server-issued canonical route path. */
 export const GetCanonicalCommunityRoute = endpoint({
   method: "GET",
@@ -36,7 +48,7 @@ export const GetCanonicalCommunityRoute = endpoint({
     path: CanonicalCommunityRoutePathV1,
     exactRawPathParameters: ["path_segment"],
   },
-  response: CanonicalCommunityRouteResolutionV1,
+  response: CommunityPathResolution,
   successStatus: 200,
   errors: [BadRequest, InternalError, NotFound],
 } as const);
