@@ -673,6 +673,15 @@ const PositiveRevision = Schema.Int.check(
 );
 const Sha256Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const SongAuthorString = Schema.NonEmptyString;
+const SongTitle = Schema.NonEmptyString.check(Schema.isMaxLength(200));
+const EvidenceRef = Schema.NonEmptyString.check(Schema.isMaxLength(512));
+const RevisionIdentifier = Schema.NonEmptyString.check(Schema.isMaxLength(128));
+const CanonicalBcp47LanguageTag = Schema.String.check(
+  Schema.isMaxLength(35),
+  Schema.isPattern(
+    /^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$/u,
+  ),
+);
 const RoyaltyAllocations = Schema.Array(
   Schema.Struct({
     recipient_id: SongAuthorString,
@@ -689,32 +698,33 @@ const RoyaltyAllocations = Schema.Array(
   }),
 );
 
-const SongAuthorInputCommon = {
-  version: Schema.Literal("song-author-input-v1"),
-  title: SongAuthorString,
-  lyrics: Schema.NullOr(Schema.String),
+/** The form-light author bundle. Embedded metadata may prefill title but is not authoritative. */
+export const SongStartInputV1 = Schema.Struct({
+  version: Schema.Literal("song-start-input-v1"),
+  title: SongTitle,
   audio_reservation_id: SongAuthorString,
-  rights_declaration: Schema.Union([
-    Schema.Struct({ kind: Schema.Literal("original") }),
-    Schema.Struct({ kind: Schema.Literal("derivative"), upstream_asset_id: SongAuthorString }),
-  ]),
+  song_type: Schema.Literals(["original", "remix"]),
+});
+export type SongStartInputV1 = Schema.Schema.Type<typeof SongStartInputV1>;
+
+const SongTermsCommon = {
   royalty_allocations: RoyaltyAllocations,
   access_mode: Schema.Literal("public"),
 };
 
-/** The author-controlled song bundle; trusted analysis never enters this schema. */
-export const SongAuthorInputV1 = Schema.Union([
+/** Mutable non-text decision input, revision-fenced independently of immutable audio analysis. */
+export const SongTermsInputV1 = Schema.Union([
   Schema.Struct({
-    ...SongAuthorInputCommon,
+    ...SongTermsCommon,
     license_preset: Schema.Literals(["non-commercial", "commercial-use"]),
   }),
   Schema.Struct({
-    ...SongAuthorInputCommon,
+    ...SongTermsCommon,
     license_preset: Schema.Literal("commercial-remix"),
     commercial_rev_share_bps: CommercialRevShareBps,
   }),
 ]);
-export type SongAuthorInputV1 = Schema.Schema.Type<typeof SongAuthorInputV1>;
+export type SongTermsInputV1 = Schema.Schema.Type<typeof SongTermsInputV1>;
 
 export const ReserveSongAudioV1 = Schema.Struct({
   idempotency_key: SongAuthorString,
@@ -743,20 +753,31 @@ export const SongAudioReservationV1 = Schema.Struct({
 });
 export type SongAudioReservationV1 = Schema.Schema.Type<typeof SongAudioReservationV1>;
 
-export const CreateSongSubmissionV1 = Schema.Union([
+export const CreateSongSubmissionV1 = Schema.Struct({
+  version: Schema.Literal("song-start-input-v1"),
+  title: SongTitle,
+  audio_reservation_id: SongAuthorString,
+  song_type: Schema.Literals(["original", "remix"]),
+  idempotency_key: SongAuthorString,
+});
+export type CreateSongSubmissionV1 = Schema.Schema.Type<typeof CreateSongSubmissionV1>;
+
+export const BindSongTermsV1 = Schema.Union([
   Schema.Struct({
-    ...SongAuthorInputCommon,
+    ...SongTermsCommon,
     license_preset: Schema.Literals(["non-commercial", "commercial-use"]),
     idempotency_key: SongAuthorString,
+    expected_creation_revision: PositiveRevision,
   }),
   Schema.Struct({
-    ...SongAuthorInputCommon,
+    ...SongTermsCommon,
     license_preset: Schema.Literal("commercial-remix"),
     commercial_rev_share_bps: CommercialRevShareBps,
     idempotency_key: SongAuthorString,
+    expected_creation_revision: PositiveRevision,
   }),
 ]);
-export type CreateSongSubmissionV1 = Schema.Schema.Type<typeof CreateSongSubmissionV1>;
+export type BindSongTermsV1 = Schema.Schema.Type<typeof BindSongTermsV1>;
 
 export const FinalizeSongUploadV1 = Schema.Struct({
   idempotency_key: SongAuthorString,
@@ -897,25 +918,124 @@ export const SealUploadResultV1 = Schema.Union([
 ]);
 export type SealUploadResultV1 = Schema.Schema.Type<typeof SealUploadResultV1>;
 
+const EmbeddedCoverAnalysisV1 = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("ready"),
+    artifact_ref: EvidenceRef,
+    artifact_sha256: Sha256Hex,
+    media_type: Schema.Literals(["image/jpeg", "image/png", "image/webp"]),
+    width: PositiveSafeInteger,
+    height: PositiveSafeInteger,
+    normalization_revision: RevisionIdentifier,
+    safety_policy_revision: RevisionIdentifier,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("absent"),
+    artifact_ref: Schema.Null,
+    reason_code: Schema.Literal("not_embedded"),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("rejected"),
+    artifact_ref: Schema.Null,
+    reason_code: Schema.Literals(["invalid", "unsafe", "limits_exceeded"]),
+  }),
+]);
+
+const ReadySpeechAnalysisV1 = Schema.Struct({
+  status: Schema.Literal("ready"),
+  transcript_artifact_ref: EvidenceRef,
+  transcript_sha256: Sha256Hex,
+  explicitness: Schema.Literals(["not_explicit", "explicit", "uncertain"]),
+  primary_language_bcp47: CanonicalBcp47LanguageTag,
+  secondary_language_bcp47: Schema.NullOr(CanonicalBcp47LanguageTag),
+  evidence_ref: EvidenceRef,
+  policy_revision: RevisionIdentifier,
+  adapter_revision: RevisionIdentifier,
+}).check(
+  Schema.makeFilter((value) =>
+    value.secondary_language_bcp47 === null ||
+    value.secondary_language_bcp47 !== value.primary_language_bcp47
+      ? undefined
+      : "Secondary language must differ from primary language",
+  ),
+);
+
+const SongSpeechAnalysisV1 = Schema.Union([
+  ReadySpeechAnalysisV1,
+  Schema.Struct({
+    status: Schema.Literal("no_speech"),
+    transcript_artifact_ref: Schema.Null,
+    transcript_sha256: Schema.Null,
+    explicitness: Schema.Literal("no_lyrics"),
+    primary_language_bcp47: Schema.Null,
+    secondary_language_bcp47: Schema.Null,
+    evidence_ref: EvidenceRef,
+    policy_revision: RevisionIdentifier,
+    adapter_revision: RevisionIdentifier,
+  }),
+  Schema.Struct({
+    status: Schema.Literal("unavailable"),
+    transcript_artifact_ref: Schema.Null,
+    transcript_sha256: Schema.Null,
+    explicitness: Schema.Literal("uncertain"),
+    primary_language_bcp47: Schema.Null,
+    secondary_language_bcp47: Schema.Null,
+    evidence_ref: EvidenceRef,
+    policy_revision: RevisionIdentifier,
+    adapter_revision: RevisionIdentifier,
+  }),
+]);
+
+const TranscriptSegmentV1 = Schema.Struct({
+  start_ms: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 86_400_000 })),
+  end_ms: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 86_400_000 })),
+  text: Schema.String.check(Schema.isMaxLength(4_096)),
+}).check(
+  Schema.makeFilter(({ start_ms, end_ms }) =>
+    end_ms >= start_ms ? undefined : "Transcript segment end must not precede start",
+  ),
+);
+
+/** Private hostile-data artifact: text is inert, bounded evidence with no provider authority. */
+export const SongTranscriptArtifactV1 = Schema.Struct({
+  version: Schema.Literal("song-transcript-artifact-v1"),
+  operation_id: SongAuthorString,
+  audio_revision: PositiveRevision,
+  analysis_revision: PositiveRevision,
+  canonical_audio_sha256: Sha256Hex,
+  transcript: Schema.String.check(Schema.isMaxLength(200_000)),
+  segments: Schema.Array(TranscriptSegmentV1).check(Schema.isMaxLength(10_000)),
+});
+export type SongTranscriptArtifactV1 = Schema.Schema.Type<typeof SongTranscriptArtifactV1>;
+
 export const SongTrustedAnalysisV1 = Schema.Struct({
   version: Schema.Literal("song-trusted-analysis-v1"),
   operation_id: SongAuthorString,
-  creation_revision: PositiveRevision,
-  finalized_audio_ref: SongAuthorString,
+  audio_revision: PositiveRevision,
+  analysis_revision: PositiveRevision,
+  finalized_audio_ref: EvidenceRef,
   canonical_audio_sha256: Sha256Hex,
-  probe_evidence_ref: SongAuthorString,
+  probe_evidence_ref: EvidenceRef,
+  embedded_metadata: Schema.Struct({
+    evidence_ref: EvidenceRef,
+    adapter_revision: RevisionIdentifier,
+    track_title: Schema.NullOr(SongTitle),
+    cover: EmbeddedCoverAnalysisV1,
+  }),
+  speech_lyrics: SongSpeechAnalysisV1,
   acr: Schema.Struct({
     decision: Schema.Literals(["allow", "requires_reference", "inconclusive", "skipped"]),
-    evidence_ref: SongAuthorString,
-    policy_revision: SongAuthorString,
-    adapter_revision: SongAuthorString,
+    evidence_ref: EvidenceRef,
+    policy_revision: RevisionIdentifier,
+    adapter_revision: RevisionIdentifier,
   }),
-  lyrics_safety: Schema.Literals(["skipped", "allow", "review_required", "blocked"]),
   media_safety: Schema.Literals(["allow", "draft", "review_required", "blocked"]),
   bound_reference: Schema.NullOr(
     Schema.Struct({
       asset_id: SongAuthorString,
-      evidence_creation_revision: PositiveRevision,
+      evidence_audio_revision: PositiveRevision,
+      evidence_analysis_revision: PositiveRevision,
+      evidence_audio_sha256: Sha256Hex,
       upstream_commercial_rev_share_bps: Schema.NullOr(NonNegativeBasisPoints),
     }),
   ),
@@ -927,12 +1047,36 @@ export const SongPublishedProjectionV1 = Schema.Struct({
   submission_id: SongAuthorString,
   post_id: SongAuthorString,
   creation_revision: PositiveRevision,
-  audio_asset_ref: SongAuthorString,
+  title: SongTitle,
+  audio_asset_ref: EvidenceRef,
+  cover_artifact_ref: Schema.NullOr(EvidenceRef),
   analysis_badges: Schema.Union([
     Schema.Tuple([]),
     Schema.Tuple([Schema.Literal("reference_bound")]),
   ]),
-  language_detection: Schema.Literals(["pending", "ready", "unavailable"]),
+  language_detection: Schema.Union([
+    Schema.Struct({
+      status: Schema.Literal("ready"),
+      primary_language_bcp47: CanonicalBcp47LanguageTag,
+      secondary_language_bcp47: Schema.NullOr(CanonicalBcp47LanguageTag),
+    }).check(
+      Schema.makeFilter((value) =>
+        value.secondary_language_bcp47 === null ||
+        value.secondary_language_bcp47 !== value.primary_language_bcp47
+          ? undefined
+          : "Secondary language must differ from primary language",
+      ),
+    ),
+    Schema.Struct({ status: Schema.Literal("no_speech") }),
+    Schema.Struct({ status: Schema.Literal("unavailable") }),
+  ]),
+  lyrics_explicitness: Schema.Literals([
+    "not_explicit",
+    "explicit",
+    "no_lyrics",
+    "uncertain",
+    "unavailable",
+  ]),
   alignment: Schema.Literals(["pending", "ready", "unavailable"]),
   data_registration: Schema.Literals(["pending", "registered", "failed"]),
   locked_delivery: Schema.Literals(["not_required", "preparing", "ready", "failed"]),
@@ -1273,6 +1417,15 @@ export const CreateMediaPostSubmission = endpoint({
   ],
 });
 
+export const BindMediaPostSubmissionTerms = endpoint({
+  method: "POST",
+  path: "/media-post-submissions/:submissionId/terms",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathMediaSubmission, body: BindSongTermsV1 },
+  response: MediaPostSubmissionV1,
+  errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
+});
+
 export const FinalizeMediaPostSubmission = endpoint({
   method: "POST",
   path: "/media-post-submissions/:submissionId/finalize",
@@ -1538,6 +1691,7 @@ export const v1Registry = {
   CreatePost,
   CreateMediaUploadReservation,
   CreateMediaPostSubmission,
+  BindMediaPostSubmissionTerms,
   FinalizeMediaPostSubmission,
   GetMediaPostSubmission,
   BindMediaPostSubmissionReference,

@@ -105,6 +105,10 @@
       "reason": "2026-08-23 song-media R0 breaking amendment: this operation is text-only, removes all non-text request variants and media/song/commerce common fields including legacy commercial_rev_share_pct, and returns TextContentSubmissionV1 with HTTP 201."
     },
     {
+      "operationId": "post_communitiesCommunityIdMediaPostSubmissions",
+      "reason": "2026-08-23 upload-derived song analysis amendment: creation becomes a form-light title/reservation/song-type command; lyrics, rights declaration, license, allocations, remix share, commentary, language, explicitness, artwork, and trusted analysis move out of author creation input."
+    },
+    {
       "operationId": "post_communitiesCommunityIdFollow",
       "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
     },
