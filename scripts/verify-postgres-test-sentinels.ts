@@ -126,6 +126,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-hns-observer-suite-complete",
     contents: "api-next-control-plane-postgres-hns-observer-suite-complete\n",
   },
+  {
+    name: "postgres media persistence",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete",
+    contents: "api-next-control-plane-postgres-media-persistence-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

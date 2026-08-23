@@ -1,599 +1,543 @@
 /**
- * Pure Spec 013 song-creation machine.  Persistence and provider adapters use
- * this module as a reducer; this file intentionally has no Effect or platform
- * dependency and performs no I/O.
+ * Pure Spec 013 song-media persistence machine.
+ *
+ * Creation input, immutable audio identity, trusted analysis, and publication
+ * decisions have independent revision fences. Persistence adapters must call
+ * this reducer before writing a projection; provider and transport authority do
+ * not belong here.
  */
 
-export type MediaTrack = "song";
-export type MediaCreationStatus =
-  | "processing"
-  | "action_required"
+export type SongType = "original" | "remix";
+export type MediaSubmissionStatus =
+  | "awaiting_upload"
+  | "analyzing"
+  | "decision_pending"
+  | "ready_to_publish"
   | "manual_review"
   | "published"
   | "blocked"
-  | "processing_failed"
+  | "failed"
   | "abandoned";
-export type MediaProcessingPhase =
-  | "reserve"
-  | "awaiting_upload"
-  | "finalize"
-  | "analysis"
-  | "decision"
-  | "publish";
+export type MediaSubmissionPhase = "upload" | "analysis" | "decision" | "publication" | null;
 
-export type MediaCreationEvent =
-  | "submission_reserved"
-  | "text_input_bound"
-  | "media_reservation_issued"
-  | "finalize_requested"
-  | "author_cancelled"
-  | "reservation_expired"
-  | "upload_finalized"
-  | "upload_expectation_mismatch_recorded"
-  | "upload_source_precondition_failed"
-  | "seal_conflict_recorded"
-  | "blocking_analysis_completed"
-  | "review_exhaustion_recorded"
-  | "media_failure_recorded"
-  | "publication_allowed"
-  | "reference_required"
-  | "review_required"
-  | "policy_blocked"
-  | "reference_bound"
-  | "action_deadline_elapsed"
-  | "moderator_approved"
-  | "moderator_blocked"
-  | "publication_committed"
-  | "technical_exhaustion_recorded"
-  | "retry_authorized";
+export type SongTerms = Readonly<{
+  licensePreset: "non-commercial" | "commercial-use" | "commercial-remix";
+  commercialRemixShareBps: number;
+  royaltyAllocations: readonly Readonly<{
+    recipientId: string;
+    shareBps: number;
+  }>[];
+  accessMode: "public";
+}>;
 
-export type MediaFailureReason =
-  | "invalid_media"
-  | "unsupported_media"
-  | "probe_failed"
-  | "hash_failed"
-  | "transform_failed"
-  | "publication_failed"
-  | "upload_seal_conflict";
-export type MediaAbandonReason =
-  | "upload_reservation_expired"
-  | "upload_expectation_mismatch"
-  | "upload_source_changed_before_finalize"
-  | "reference_window_expired"
-  | "author_cancelled_before_finalize";
+export type ImmutableAudio = Readonly<{
+  audioRevision: number;
+  immutableRef: string;
+  canonicalSha256: string;
+  contentType: string;
+  sizeBytes: number;
+}>;
+
+export type CoverAnalysis =
+  | Readonly<{
+      status: "ready";
+      artifactRef: string;
+      artifactSha256: string;
+      mediaType: "image/jpeg" | "image/png" | "image/webp";
+      normalizationRevision: string;
+      safetyPolicyRevision: string;
+    }>
+  | Readonly<{ status: "absent"; reasonCode: "not_embedded" }>
+  | Readonly<{
+      status: "rejected";
+      reasonCode: "invalid" | "unsafe" | "limits_exceeded";
+    }>;
+
+export type SpeechAnalysis =
+  | Readonly<{
+      status: "ready";
+      transcriptArtifactRef: string;
+      transcriptSha256: string;
+      explicitness: "not_explicit" | "explicit" | "uncertain";
+      primaryLanguageBcp47: string;
+      secondaryLanguageBcp47: string | null;
+      evidenceRef: string;
+      policyRevision: string;
+      adapterRevision: string;
+    }>
+  | Readonly<{
+      status: "no_speech";
+      explicitness: "no_lyrics";
+      evidenceRef: string;
+      policyRevision: string;
+      adapterRevision: string;
+    }>
+  | Readonly<{
+      status: "unavailable";
+      explicitness: "uncertain";
+      evidenceRef: string;
+      policyRevision: string;
+      adapterRevision: string;
+    }>;
+
+export type TrustedSongAnalysis = Readonly<{
+  analysisRevision: number;
+  audioRevision: number;
+  canonicalAudioSha256: string;
+  finalizedAudioRef: string;
+  probeEvidenceRef: string;
+  embeddedMetadataEvidenceRef: string;
+  embeddedTitle: string | null;
+  cover: CoverAnalysis;
+  speech: SpeechAnalysis;
+  acrDecision: "allow" | "requires_reference" | "inconclusive" | "skipped";
+  acrEvidenceRef: string;
+  acrPolicyRevision: string;
+  acrAdapterRevision: string;
+  mediaSafety: "allow" | "draft" | "review_required" | "blocked";
+  lyricsSafety: "skipped" | "allow" | "review_required" | "blocked";
+}>;
+
+export type PublicationDecision = Readonly<{
+  decisionRevision: number;
+  outcome: "allow" | "manual_review" | "block";
+  creationRevision: number;
+  audioRevision: number;
+  analysisRevision: number;
+  canonicalAudioSha256: string;
+  policyRevision: string;
+  evidenceRef: string;
+}>;
 
 export type MediaSubmissionState = Readonly<{
   submissionId: string;
   operationId: string;
+  communityId: string;
   actorId: string;
-  track: MediaTrack;
+  title: string;
+  songType: SongType;
+  reservationId: string;
   creationRevision: number;
-  status: MediaCreationStatus;
-  phase: MediaProcessingPhase | null;
-  reservationId: string | null;
-  immutableRef: string | null;
-  retryCount: 0 | 1 | 2 | 3;
-  retryable: boolean | null;
-  lastSafePhase: MediaProcessingPhase | null;
-  failureReason: MediaFailureReason | null;
-  abandonReason: MediaAbandonReason | null;
-  heldRevision: number | null;
-  referenceRequestRef: string | null;
-  actionExpiresAt: string | null;
-  reviewRef: string | null;
+  audioRevision: number;
+  analysisRevision: number;
+  decisionRevision: number;
+  workflowRevision: number;
+  status: MediaSubmissionStatus;
+  phase: MediaSubmissionPhase;
+  terms: SongTerms | null;
+  audio: ImmutableAudio | null;
+  analysis: TrustedSongAnalysis | null;
+  decision: PublicationDecision | null;
   postId: string | null;
+  failureCode: string | null;
 }>;
 
-export type MediaTransitionCommand = Readonly<{
-  event: MediaCreationEvent;
-  actorId: string;
-  expectedRevision: number;
-  reservationId?: string;
-  immutableRef?: string;
-  referenceRequestRef?: string;
-  actionExpiresAt?: string;
-  reviewRef?: string;
-  postId?: string;
-  submissionId?: string;
-  operationId?: string;
-  failureReason?: MediaFailureReason;
-  abandonReason?: MediaAbandonReason;
-  retryable?: boolean;
-  retryPhase?: MediaProcessingPhase;
-  moderator?: boolean;
-}>;
+export type MediaSubmissionCommand =
+  | Readonly<{
+      event: "submission_created";
+      actorId: string;
+      expectedCreationRevision: 0;
+      submissionId: string;
+      operationId: string;
+      communityId: string;
+      title: string;
+      songType: SongType;
+      reservationId: string;
+    }>
+  | Readonly<{
+      event: "terms_bound";
+      actorId: string;
+      expectedCreationRevision: number;
+      terms: SongTerms;
+    }>
+  | Readonly<{
+      event: "audio_finalized";
+      actorId: string;
+      expectedCreationRevision: number;
+      expectedAudioRevision: number;
+      audio: ImmutableAudio;
+    }>
+  | Readonly<{
+      event: "analysis_accepted";
+      actorId: string;
+      expectedAudioRevision: number;
+      expectedCanonicalAudioSha256: string;
+      analysis: TrustedSongAnalysis;
+    }>
+  | Readonly<{
+      event: "decision_recorded";
+      actorId: string;
+      expectedCreationRevision: number;
+      expectedAudioRevision: number;
+      expectedAnalysisRevision: number;
+      decision: PublicationDecision;
+    }>
+  | Readonly<{
+      event: "publication_committed";
+      actorId: string;
+      expectedCreationRevision: number;
+      expectedAudioRevision: number;
+      expectedAnalysisRevision: number;
+      expectedDecisionRevision: number;
+      communityActive: boolean;
+      membershipActive: boolean;
+      postId: string;
+    }>
+  | Readonly<{
+      event: "submission_failed" | "submission_abandoned";
+      actorId: string;
+      expectedCreationRevision: number;
+      failureCode: string;
+    }>;
 
 export type MediaSubmissionRejection =
-  | { readonly _tag: "action_expired"; readonly submission_id: string }
-  | {
-      readonly _tag: "actor_not_authorized";
-      readonly reason_code:
-        | "active_membership_required"
-        | "moderator_role_required"
-        | "submission_owner_required";
-    }
-  | {
-      readonly _tag: "analysis_evidence_stale";
-      readonly expected_revision: number;
-      readonly actual_revision: number;
-    }
-  | {
-      readonly _tag: "capability_unavailable";
-      readonly capability: "track" | "locked_delivery";
-      readonly track: Exclude<MediaTrack, "song">;
-    }
-  | { readonly _tag: "idempotency_conflict"; readonly submission_id: string }
-  | {
-      readonly _tag: "reference_binding_invalid";
-      readonly reason_code:
-        | "asset_not_found"
-        | "asset_not_referenceable"
-        | "content_hash_mismatch"
-        | "evidence_revision_mismatch"
-        | "reference_kind_mismatch";
-    }
-  | {
-      readonly _tag: "decision_evidence_invalid";
-      readonly reason_code:
-        | "required_stage_missing"
-        | "input_hash_mismatch"
-        | "policy_revision_mismatch"
-        | "adapter_revision_mismatch";
-    }
-  | {
-      readonly _tag: "retry_not_allowed";
-      readonly reason_code:
-        | "failure_not_retryable"
-        | "retry_limit_reached"
-        | "revision_superseded"
-        | "terminal_status";
-    }
-  | { readonly _tag: "stale_revision"; readonly expected: number; readonly actual: number }
-  | {
-      readonly _tag: "transition_not_allowed";
-      readonly state: MediaCreationStatus | "none";
-      readonly event: MediaCreationEvent;
-    }
-  | {
-      readonly _tag: "upload_not_finalized";
-      readonly reservation_id: string;
-      readonly reason_code: "object_missing" | "ownership_mismatch";
-    };
+  | Readonly<{ tag: "invalid_state"; defect: string }>
+  | Readonly<{ tag: "transition_not_allowed"; event: MediaSubmissionCommand["event"] }>
+  | Readonly<{ tag: "actor_not_authorized" }>
+  | Readonly<{ tag: "inactive_community_effect" }>
+  | Readonly<{
+      tag: "stale_revision";
+      revision: "creation" | "audio" | "analysis" | "decision";
+      expected: number;
+      actual: number;
+    }>
+  | Readonly<{ tag: "audio_identity_mismatch" }>
+  | Readonly<{ tag: "decision_evidence_incomplete" }>;
 
-export type MediaTransitionResult =
-  | { readonly ok: true; readonly state: MediaSubmissionState }
-  | { readonly ok: false; readonly rejection: MediaSubmissionRejection };
+export type MediaSubmissionResult =
+  | Readonly<{ ok: true; state: MediaSubmissionState }>
+  | Readonly<{ ok: false; rejection: MediaSubmissionRejection }>;
 
-const nonEmpty = (value: string | null | undefined): value is string =>
-  typeof value === "string" && value.length > 0 && value.trim() === value;
-const phase = (
-  value: MediaProcessingPhase | undefined,
-  fallback: MediaProcessingPhase,
-): MediaProcessingPhase => value ?? fallback;
+const idPattern = /^\S(?:.*\S)?$/u;
+const hashPattern = /^[0-9a-f]{64}$/u;
 
-/** Returns the durable status/phase pair used by public projections. */
-export const stateOf = (
-  state: Pick<MediaSubmissionState, "status" | "phase">,
-): MediaCreationStatus => state.status;
+const validId = (value: string): boolean =>
+  value.length > 0 && value.length <= 512 && !value.includes("\u0000") && idPattern.test(value);
+const validRevision = (value: number, minimum = 0): boolean =>
+  Number.isSafeInteger(value) && value >= minimum;
+const validHash = (value: string): boolean => hashPattern.test(value);
 
-export const statusPhaseOf = (
-  state: Pick<MediaSubmissionState, "status" | "phase">,
-): { readonly status: MediaCreationStatus; readonly phase: MediaProcessingPhase | null } => ({
-  status: state.status,
-  phase: state.phase,
-});
+export const deterministicMediaWorkflowInstanceId = (
+  operationId: string,
+  workflowRevision: number,
+): string => `${operationId}:workflow:${workflowRevision}`;
 
-/** Returns null for a valid state and a stable defect code otherwise. */
 export function mediaSubmissionInvariant(state: MediaSubmissionState): string | null {
-  if (!nonEmpty(state.submissionId) || !nonEmpty(state.operationId) || !nonEmpty(state.actorId))
+  if (
+    !validId(state.submissionId) ||
+    !validId(state.operationId) ||
+    !validId(state.communityId) ||
+    !validId(state.actorId) ||
+    !validId(state.title) ||
+    !validId(state.reservationId)
+  )
     return "identity";
   if (
-    state.track !== "song" ||
-    !Number.isSafeInteger(state.creationRevision) ||
-    state.creationRevision < 1
+    !validRevision(state.creationRevision, 1) ||
+    !validRevision(state.audioRevision) ||
+    !validRevision(state.analysisRevision) ||
+    !validRevision(state.decisionRevision) ||
+    !validRevision(state.workflowRevision)
   )
     return "revision";
-  if (!Number.isInteger(state.retryCount) || state.retryCount < 0 || state.retryCount > 3)
-    return "retry_count";
-  if (state.status === "processing" && state.phase === null) return "processing_phase";
-  if (state.status !== "processing" && state.phase !== null) return "terminal_phase";
+  if ((state.audioRevision === 0) !== (state.audio === null)) return "audio_presence";
+  if (state.audio !== null) {
+    if (
+      state.audio.audioRevision !== state.audioRevision ||
+      !validId(state.audio.immutableRef) ||
+      !validHash(state.audio.canonicalSha256) ||
+      !validId(state.audio.contentType) ||
+      !validRevision(state.audio.sizeBytes, 1)
+    )
+      return "audio_identity";
+  }
+  if ((state.analysisRevision === 0) !== (state.analysis === null)) return "analysis_presence";
+  if (state.analysis !== null) {
+    if (
+      state.audio === null ||
+      state.analysis.analysisRevision !== state.analysisRevision ||
+      state.analysis.audioRevision !== state.audioRevision ||
+      state.analysis.canonicalAudioSha256 !== state.audio.canonicalSha256 ||
+      state.analysis.finalizedAudioRef !== state.audio.immutableRef
+    )
+      return "analysis_identity";
+  }
+  if ((state.decisionRevision === 0) !== (state.decision === null)) return "decision_presence";
+  if (state.decision !== null) {
+    if (
+      state.analysis === null ||
+      state.audio === null ||
+      state.decision.decisionRevision !== state.decisionRevision ||
+      state.decision.creationRevision !== state.creationRevision ||
+      state.decision.audioRevision !== state.audioRevision ||
+      state.decision.analysisRevision !== state.analysisRevision ||
+      state.decision.canonicalAudioSha256 !== state.audio.canonicalSha256
+    )
+      return "decision_identity";
+  }
+  if (state.status === "awaiting_upload" && state.phase !== "upload") return "upload_phase";
+  if (state.status === "analyzing" && state.phase !== "analysis") return "analysis_phase";
+  if (state.status === "decision_pending" && state.phase !== "decision") return "decision_phase";
+  if (state.status === "ready_to_publish" && state.phase !== "publication")
+    return "publication_phase";
   if (
-    state.status === "action_required" &&
-    (!nonEmpty(state.referenceRequestRef) || !nonEmpty(state.actionExpiresAt))
+    ["manual_review", "published", "blocked", "failed", "abandoned"].includes(state.status) &&
+    state.phase !== null
   )
-    return "action_required";
+    return "terminal_phase";
+  if (state.status === "ready_to_publish" && state.decision?.outcome !== "allow")
+    return "publication_decision";
+  if (state.status === "manual_review" && state.decision?.outcome !== "manual_review")
+    return "review_decision";
+  if (state.status === "blocked" && state.decision?.outcome !== "block") return "block_decision";
   if (
-    state.status === "manual_review" &&
-    (!nonEmpty(state.reviewRef) || state.heldRevision !== state.creationRevision)
+    state.status === "published" &&
+    (!validId(state.postId ?? "") || state.decision?.outcome !== "allow")
   )
-    return "manual_review";
-  if (state.status === "published" && !nonEmpty(state.postId)) return "published_post";
+    return "published_post";
   if (
-    state.status === "processing_failed" &&
-    (!nonEmpty(state.failureReason) || state.retryable === null)
+    (state.status === "failed" || state.status === "abandoned") &&
+    !validId(state.failureCode ?? "")
   )
-    return "failed_reason";
-  if (state.status === "processing_failed" && state.lastSafePhase === null) return "failed_phase";
-  if (state.status === "abandoned" && !nonEmpty(state.abandonReason)) return "abandon_reason";
-  if ((state.status === "blocked" || state.status === "abandoned") && state.postId !== null)
-    return "terminal_post";
+    return "failure_code";
   return null;
 }
 
-const rejectTransition = (
-  state: MediaSubmissionState | null,
-  command: MediaTransitionCommand,
-): MediaTransitionResult => ({
+const rejected = (rejection: MediaSubmissionRejection): MediaSubmissionResult => ({
   ok: false,
-  rejection: {
-    _tag: "transition_not_allowed",
-    state: state?.status ?? "none",
-    event: command.event,
-  },
+  rejection,
 });
 
-const base = (
-  state: MediaSubmissionState,
-  patch: Partial<MediaSubmissionState>,
-): MediaSubmissionState => ({ ...state, ...patch });
+const stale = (
+  revision: "creation" | "audio" | "analysis" | "decision",
+  expected: number,
+  actual: number,
+): MediaSubmissionResult => rejected({ tag: "stale_revision", revision, expected, actual });
 
-/**
- * Applies one explicitly named posting event. Every optimistic fence is
- * checked before the event table, so stale retries never mutate a row.
- */
-export function transition(
+const validTerms = (terms: SongTerms): boolean => {
+  if (terms.accessMode !== "public") return false;
+  if (
+    !Number.isInteger(terms.commercialRemixShareBps) ||
+    terms.commercialRemixShareBps < 0 ||
+    terms.commercialRemixShareBps > 10_000
+  )
+    return false;
+  if (terms.licensePreset !== "commercial-remix" && terms.commercialRemixShareBps !== 0)
+    return false;
+  if (terms.royaltyAllocations.length === 0) return false;
+  const recipients = new Set<string>();
+  let total = 0;
+  for (const allocation of terms.royaltyAllocations) {
+    if (
+      !validId(allocation.recipientId) ||
+      recipients.has(allocation.recipientId) ||
+      !Number.isInteger(allocation.shareBps) ||
+      allocation.shareBps < 1
+    )
+      return false;
+    recipients.add(allocation.recipientId);
+    total += allocation.shareBps;
+  }
+  return total === 10_000;
+};
+
+const nextDecisionStatus = (
+  decision: PublicationDecision,
+): Pick<MediaSubmissionState, "status" | "phase"> => {
+  if (decision.outcome === "allow") return { status: "ready_to_publish", phase: "publication" };
+  if (decision.outcome === "manual_review") return { status: "manual_review", phase: null };
+  return { status: "blocked", phase: null };
+};
+
+export function transitionMediaSubmission(
   current: MediaSubmissionState | null,
-  command: MediaTransitionCommand,
-): MediaTransitionResult {
-  if (!nonEmpty(command.actorId))
-    return {
-      ok: false,
-      rejection: { _tag: "actor_not_authorized", reason_code: "submission_owner_required" },
-    };
+  command: MediaSubmissionCommand,
+): MediaSubmissionResult {
+  if (!validId(command.actorId)) return rejected({ tag: "actor_not_authorized" });
   if (current === null) {
-    if (command.event !== "submission_reserved" || command.expectedRevision !== 0)
-      return rejectTransition(current, command);
-    const state: MediaSubmissionState = {
-      submissionId: command.submissionId ?? "",
-      operationId: command.operationId ?? "",
+    if (command.event !== "submission_created")
+      return rejected({ tag: "transition_not_allowed", event: command.event });
+    const created: MediaSubmissionState = {
+      submissionId: command.submissionId,
+      operationId: command.operationId,
+      communityId: command.communityId,
       actorId: command.actorId,
-      track: "song",
+      title: command.title,
+      songType: command.songType,
+      reservationId: command.reservationId,
       creationRevision: 1,
-      status: "processing",
-      phase: "reserve",
-      reservationId: null,
-      immutableRef: null,
-      retryCount: 0,
-      retryable: null,
-      lastSafePhase: null,
-      failureReason: null,
-      abandonReason: null,
-      heldRevision: null,
-      referenceRequestRef: null,
-      actionExpiresAt: null,
-      reviewRef: null,
+      audioRevision: 0,
+      analysisRevision: 0,
+      decisionRevision: 0,
+      workflowRevision: 0,
+      status: "awaiting_upload",
+      phase: "upload",
+      terms: null,
+      audio: null,
+      analysis: null,
+      decision: null,
       postId: null,
+      failureCode: null,
     };
-    return mediaSubmissionInvariant(state) === null
-      ? { ok: true, state }
-      : rejectTransition(current, command);
+    const defect = mediaSubmissionInvariant(created);
+    return defect === null
+      ? { ok: true, state: created }
+      : rejected({ tag: "invalid_state", defect });
   }
-  if (mediaSubmissionInvariant(current) !== null) return rejectTransition(current, command);
-  if (command.expectedRevision !== current.creationRevision) {
-    return {
-      ok: false,
-      rejection: {
-        _tag: "stale_revision",
-        expected: command.expectedRevision,
-        actual: current.creationRevision,
-      },
-    };
-  }
-  if (current.actorId !== command.actorId && !command.moderator) {
-    return {
-      ok: false,
-      rejection: { _tag: "actor_not_authorized", reason_code: "submission_owner_required" },
-    };
-  }
-  const sameReservation =
-    command.reservationId === undefined ||
-    command.event === "media_reservation_issued" ||
-    command.reservationId === current.reservationId;
-  const sameObject =
-    command.immutableRef === undefined ||
-    command.event === "upload_finalized" ||
-    command.immutableRef === current.immutableRef;
-  if (!sameReservation || !sameObject) return rejectTransition(current, command);
 
-  let next: MediaSubmissionState | null = null;
+  const defect = mediaSubmissionInvariant(current);
+  if (defect !== null) return rejected({ tag: "invalid_state", defect });
+  if (current.actorId !== command.actorId) return rejected({ tag: "actor_not_authorized" });
+  if (["published", "blocked", "abandoned"].includes(current.status))
+    return rejected({ tag: "transition_not_allowed", event: command.event });
+
+  let next: MediaSubmissionState;
   switch (command.event) {
-    case "media_reservation_issued":
+    case "submission_created":
+      return rejected({ tag: "transition_not_allowed", event: command.event });
+    case "terms_bound": {
+      if (command.expectedCreationRevision !== current.creationRevision)
+        return stale("creation", command.expectedCreationRevision, current.creationRevision);
+      if (!validTerms(command.terms)) return rejected({ tag: "invalid_state", defect: "terms" });
+      const creationRevision = current.creationRevision + 1;
+      next = {
+        ...current,
+        creationRevision,
+        terms: command.terms,
+        decisionRevision: 0,
+        decision: null,
+        status: current.analysis === null ? current.status : "decision_pending",
+        phase: current.analysis === null ? current.phase : "decision",
+      };
+      break;
+    }
+    case "audio_finalized": {
+      if (command.expectedCreationRevision !== current.creationRevision)
+        return stale("creation", command.expectedCreationRevision, current.creationRevision);
+      if (command.expectedAudioRevision !== current.audioRevision)
+        return stale("audio", command.expectedAudioRevision, current.audioRevision);
+      if (current.audio !== null || command.audio.audioRevision !== 1)
+        return rejected({ tag: "transition_not_allowed", event: command.event });
+      next = {
+        ...current,
+        audioRevision: 1,
+        workflowRevision: current.workflowRevision + 1,
+        audio: command.audio,
+        status: "analyzing",
+        phase: "analysis",
+      };
+      break;
+    }
+    case "analysis_accepted": {
+      if (command.expectedAudioRevision !== current.audioRevision)
+        return stale("audio", command.expectedAudioRevision, current.audioRevision);
       if (
-        current.status === "processing" &&
-        current.phase === "reserve" &&
-        nonEmpty(command.reservationId)
+        current.audio === null ||
+        command.expectedCanonicalAudioSha256 !== current.audio.canonicalSha256 ||
+        command.analysis.audioRevision !== current.audioRevision ||
+        command.analysis.canonicalAudioSha256 !== current.audio.canonicalSha256 ||
+        command.analysis.finalizedAudioRef !== current.audio.immutableRef
       )
-        next = base(current, { phase: "awaiting_upload", reservationId: command.reservationId });
+        return rejected({ tag: "audio_identity_mismatch" });
+      if (command.analysis.analysisRevision <= current.analysisRevision)
+        return stale("analysis", command.analysis.analysisRevision, current.analysisRevision);
+      next = {
+        ...current,
+        analysisRevision: command.analysis.analysisRevision,
+        decisionRevision: 0,
+        analysis: command.analysis,
+        decision: null,
+        status: "decision_pending",
+        phase: "decision",
+      };
       break;
-    case "finalize_requested":
+    }
+    case "decision_recorded": {
+      if (command.expectedCreationRevision !== current.creationRevision)
+        return stale("creation", command.expectedCreationRevision, current.creationRevision);
+      if (command.expectedAudioRevision !== current.audioRevision)
+        return stale("audio", command.expectedAudioRevision, current.audioRevision);
+      if (command.expectedAnalysisRevision !== current.analysisRevision)
+        return stale("analysis", command.expectedAnalysisRevision, current.analysisRevision);
       if (
-        current.status === "processing" &&
-        current.phase === "awaiting_upload" &&
-        nonEmpty(current.reservationId)
+        current.terms === null ||
+        current.audio === null ||
+        current.analysis === null ||
+        command.decision.decisionRevision !== current.decisionRevision + 1 ||
+        command.decision.creationRevision !== current.creationRevision ||
+        command.decision.audioRevision !== current.audioRevision ||
+        command.decision.analysisRevision !== current.analysisRevision ||
+        command.decision.canonicalAudioSha256 !== current.audio.canonicalSha256
       )
-        next = base(current, { phase: "finalize" });
+        return rejected({ tag: "decision_evidence_incomplete" });
+      next = {
+        ...current,
+        decisionRevision: command.decision.decisionRevision,
+        decision: command.decision,
+        ...nextDecisionStatus(command.decision),
+      };
       break;
-    case "author_cancelled":
-      if (
-        current.status === "processing" &&
-        (current.phase === "reserve" || current.phase === "awaiting_upload")
-      )
-        next = base(current, {
-          status: "abandoned",
-          phase: null,
-          abandonReason: command.abandonReason ?? "author_cancelled_before_finalize",
-        });
+    }
+    case "publication_committed": {
+      if (command.expectedCreationRevision !== current.creationRevision)
+        return stale("creation", command.expectedCreationRevision, current.creationRevision);
+      if (command.expectedAudioRevision !== current.audioRevision)
+        return stale("audio", command.expectedAudioRevision, current.audioRevision);
+      if (command.expectedAnalysisRevision !== current.analysisRevision)
+        return stale("analysis", command.expectedAnalysisRevision, current.analysisRevision);
+      if (command.expectedDecisionRevision !== current.decisionRevision)
+        return stale("decision", command.expectedDecisionRevision, current.decisionRevision);
+      if (!command.communityActive || !command.membershipActive)
+        return rejected({ tag: "inactive_community_effect" });
+      if (current.status !== "ready_to_publish" || current.decision?.outcome !== "allow")
+        return rejected({ tag: "transition_not_allowed", event: command.event });
+      next = {
+        ...current,
+        workflowRevision: current.workflowRevision + 1,
+        status: "published",
+        phase: null,
+        postId: command.postId,
+      };
       break;
-    case "reservation_expired":
-      if (current.status === "processing" && current.phase === "awaiting_upload")
-        next = base(current, {
-          status: "abandoned",
-          phase: null,
-          abandonReason: "upload_reservation_expired",
-        });
+    }
+    case "submission_failed":
+    case "submission_abandoned": {
+      if (command.expectedCreationRevision !== current.creationRevision)
+        return stale("creation", command.expectedCreationRevision, current.creationRevision);
+      next = {
+        ...current,
+        status: command.event === "submission_failed" ? "failed" : "abandoned",
+        phase: null,
+        failureCode: command.failureCode,
+      };
       break;
-    case "upload_finalized":
-      if (
-        current.status === "processing" &&
-        current.phase === "finalize" &&
-        nonEmpty(command.immutableRef)
-      )
-        next = base(current, { phase: "analysis", immutableRef: command.immutableRef });
-      break;
-    case "upload_expectation_mismatch_recorded":
-      if (
-        current.status === "processing" &&
-        (current.phase === "awaiting_upload" || current.phase === "finalize")
-      )
-        next = base(current, {
-          status: "abandoned",
-          phase: null,
-          abandonReason: "upload_expectation_mismatch",
-        });
-      break;
-    case "upload_source_precondition_failed":
-      if (
-        current.status === "processing" &&
-        (current.phase === "awaiting_upload" || current.phase === "finalize")
-      )
-        next = base(current, {
-          status: "abandoned",
-          phase: null,
-          abandonReason: "upload_source_changed_before_finalize",
-        });
-      break;
-    case "seal_conflict_recorded":
-      if (current.status === "processing" && current.phase === "finalize")
-        next = base(current, {
-          status: "processing_failed",
-          phase: null,
-          failureReason: "upload_seal_conflict",
-          retryable: false,
-          lastSafePhase: "finalize",
-        });
-      break;
-    case "blocking_analysis_completed":
-      if (current.status === "processing" && current.phase === "analysis")
-        next = base(current, { phase: "decision" });
-      break;
-    case "review_exhaustion_recorded":
-    case "review_required":
-      if (
-        current.status === "processing" &&
-        (current.phase === "analysis" || current.phase === "decision") &&
-        nonEmpty(command.reviewRef)
-      )
-        next = base(current, {
-          status: "manual_review",
-          phase: null,
-          reviewRef: command.reviewRef,
-          heldRevision: current.creationRevision,
-        });
-      break;
-    case "media_failure_recorded":
-    case "technical_exhaustion_recorded":
-      if (
-        current.status === "processing" &&
-        current.phase !== null &&
-        nonEmpty(command.failureReason)
-      )
-        next = base(current, {
-          status: "processing_failed",
-          phase: null,
-          failureReason: command.failureReason,
-          retryable: command.retryable ?? false,
-          lastSafePhase: current.phase,
-        });
-      break;
-    case "publication_allowed":
-      if (current.status === "processing" && current.phase === "decision")
-        next = base(current, { phase: "publish" });
-      break;
-    case "reference_required":
-      if (
-        current.status === "processing" &&
-        current.phase === "decision" &&
-        nonEmpty(command.referenceRequestRef) &&
-        nonEmpty(command.actionExpiresAt)
-      )
-        next = base(current, {
-          status: "action_required",
-          phase: null,
-          referenceRequestRef: command.referenceRequestRef,
-          actionExpiresAt: command.actionExpiresAt,
-        });
-      break;
-    case "policy_blocked":
-      if (current.status === "processing" && current.phase === "decision")
-        next = base(current, { status: "blocked", phase: null });
-      break;
-    case "reference_bound":
-      if (
-        current.status === "action_required" &&
-        nonEmpty(current.actionExpiresAt) &&
-        Date.parse(current.actionExpiresAt) > Date.now() &&
-        nonEmpty(current.referenceRequestRef)
-      )
-        next = base(current, {
-          status: "processing",
-          phase: "analysis",
-          creationRevision: current.creationRevision + 1,
-          referenceRequestRef: null,
-          actionExpiresAt: null,
-          heldRevision: null,
-        });
-      break;
-    case "action_deadline_elapsed":
-      if (current.status === "action_required")
-        next = base(current, {
-          status: "abandoned",
-          phase: null,
-          abandonReason: "reference_window_expired",
-        });
-      break;
-    case "moderator_approved":
-      if (
-        current.status === "manual_review" &&
-        current.heldRevision === current.creationRevision &&
-        command.moderator
-      )
-        next = base(current, {
-          status: "processing",
-          phase: "publish",
-          reviewRef: null,
-          heldRevision: null,
-        });
-      break;
-    case "moderator_blocked":
-      if (
-        current.status === "manual_review" &&
-        current.heldRevision === current.creationRevision &&
-        command.moderator
-      )
-        next = base(current, {
-          status: "blocked",
-          phase: null,
-          reviewRef: null,
-          heldRevision: null,
-        });
-      break;
-    case "publication_committed":
-      if (
-        current.status === "processing" &&
-        current.phase === "publish" &&
-        nonEmpty(command.postId)
-      )
-        next = base(current, { status: "published", phase: null, postId: command.postId });
-      break;
-    case "retry_authorized":
-      if (current.status !== "processing_failed")
-        return {
-          ok: false,
-          rejection: { _tag: "retry_not_allowed", reason_code: "terminal_status" },
-        };
-      if (current.retryable !== true)
-        return {
-          ok: false,
-          rejection: { _tag: "retry_not_allowed", reason_code: "failure_not_retryable" },
-        };
-      if (current.retryCount >= 3)
-        return {
-          ok: false,
-          rejection: { _tag: "retry_not_allowed", reason_code: "retry_limit_reached" },
-        };
-      next = base(current, {
-        status: "processing",
-        phase: phase(command.retryPhase, current.lastSafePhase ?? "analysis"),
-        creationRevision: current.creationRevision + 1,
-        retryCount: (current.retryCount + 1) as 0 | 1 | 2 | 3,
-        failureReason: null,
-        retryable: null,
-      });
-      break;
-    case "text_input_bound":
-      if (current.status === "processing" && current.phase === "reserve")
-        next = base(current, { phase: "analysis" });
-      break;
-    case "submission_reserved":
-      break;
+    }
   }
-  if (next === null) return rejectTransition(current, command);
-  return mediaSubmissionInvariant(next) === null
+
+  const nextDefect = mediaSubmissionInvariant(next);
+  return nextDefect === null
     ? { ok: true, state: next }
-    : rejectTransition(current, command);
+    : rejected({ tag: "invalid_state", defect: nextDefect });
 }
 
-export const applyMediaSubmissionEvent = transition;
 export const createMediaSubmissionState = (
-  input: Readonly<{
-    readonly submissionId: string;
-    readonly operationId: string;
-    readonly actorId: string;
-  }>,
-): MediaSubmissionState => ({
-  submissionId: input.submissionId,
-  operationId: input.operationId,
-  actorId: input.actorId,
-  track: "song",
-  creationRevision: 1,
-  status: "processing",
-  phase: "reserve",
-  reservationId: null,
-  immutableRef: null,
-  retryCount: 0,
-  retryable: null,
-  failureReason: null,
-  abandonReason: null,
-  lastSafePhase: null,
-  heldRevision: null,
-  referenceRequestRef: null,
-  actionExpiresAt: null,
-  reviewRef: null,
-  postId: null,
-});
-export const assertMediaSubmissionInvariant = (state: MediaSubmissionState): void => {
-  const issue = mediaSubmissionInvariant(state);
-  if (issue !== null) throw new Error(`media_submission_invariant:${issue}`);
+  input: Extract<MediaSubmissionCommand, { readonly event: "submission_created" }>,
+): MediaSubmissionState => {
+  const result = transitionMediaSubmission(null, input);
+  if (!result.ok) throw new Error(`media_submission_create:${result.rejection.tag}`);
+  return result.state;
 };
 
-export const allowedTransitions: Readonly<
-  Record<MediaCreationStatus, readonly MediaCreationStatus[]>
-> = {
-  processing: [
-    "processing",
-    "action_required",
-    "manual_review",
-    "published",
-    "blocked",
-    "processing_failed",
-    "abandoned",
-  ],
-  action_required: ["processing", "abandoned"],
-  manual_review: ["processing", "blocked"],
-  published: ["published"],
-  blocked: ["blocked"],
-  processing_failed: ["processing_failed", "processing"],
-  abandoned: ["abandoned"],
+export const assertMediaSubmissionInvariant = (state: MediaSubmissionState): void => {
+  const defect = mediaSubmissionInvariant(state);
+  if (defect !== null) throw new Error(`media_submission_invariant:${defect}`);
 };
+
 export const mediaSubmissionMachine = {
-  stateOf,
-  allowedTransitions,
+  transition: transitionMediaSubmission,
   assertInvariants: assertMediaSubmissionInvariant,
-  transition,
+  workflowInstanceId: deterministicMediaWorkflowInstanceId,
 } as const;
 
-export type PostTrack = MediaTrack;
-export type PostCreationStatus = MediaCreationStatus;
-export type PostProcessingPhase = MediaProcessingPhase;
-export type PostCreationEvent = MediaCreationEvent;
-export type PostCreationRejection = MediaSubmissionRejection;
+export const transition = transitionMediaSubmission;
+export const applyMediaSubmissionEvent = transitionMediaSubmission;
