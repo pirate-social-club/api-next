@@ -1,7 +1,6 @@
 const encoder = new TextEncoder();
 
-const EMPTY_SHA256 =
-  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 export type StagingCredentials = Readonly<{
   accessKeyId: string;
@@ -65,9 +64,7 @@ function canonicalHeaders(headers: Readonly<Record<string, string>>): {
     if (/[\r\n]/.test(value)) throw new Error("invalid signing header value");
     normalized.set(lowerName, normalizeHeaderValue(value));
   }
-  const entries = [...normalized.entries()].sort(([left], [right]) =>
-    left.localeCompare(right),
-  );
+  const entries = [...normalized.entries()].sort(([left], [right]) => left.localeCompare(right));
   return {
     canonical: entries.map(([name, value]) => `${name}:${value}\n`).join(""),
     signed: entries.map(([name]) => name).join(";"),
@@ -79,7 +76,8 @@ function canonicalQuery(query: Readonly<Record<string, string>> | undefined): st
   return Object.entries(query)
     .map(([name, value]) => [encodeRfc3986(name), encodeRfc3986(value)] as const)
     .sort(([leftName, leftValue], [rightName, rightValue]) => {
-      if (leftName === rightName) return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
+      if (leftName === rightName)
+        return leftValue < rightValue ? -1 : leftValue > rightValue ? 1 : 0;
       return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
     })
     .map(([name, value]) => `${name}=${value}`)

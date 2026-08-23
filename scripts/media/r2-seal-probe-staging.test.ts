@@ -1,13 +1,13 @@
 import { describe, expect, test } from "bun:test";
-
-import { parseProbeMode, readStagingConfig, runStagingProbe } from "./r2-seal-probe-staging";
-import { cleanupOwnedKeys } from "./r2-seal-probe-staging-cleanup";
 import { FakeR2Transport, loadHostileFixtures, probeScenario } from "./r2-seal-probe";
-import { redactStagingEvidence } from "./r2-seal-probe-staging-evidence";
+import { parseProbeMode, readStagingConfig, runStagingProbe } from "./r2-seal-probe-staging";
 import {
-  encodeR2CopySource,
-  signR2Request,
-} from "./r2-seal-probe-staging-signing";
+  CleanupResidualError,
+  cleanupOwnedKeys,
+  runWithCleanup,
+} from "./r2-seal-probe-staging-cleanup";
+import { redactStagingEvidence } from "./r2-seal-probe-staging-evidence";
+import { encodeR2CopySource, signR2Request } from "./r2-seal-probe-staging-signing";
 import { R2S3StagingTransport, sha256Base64 } from "./r2-seal-probe-staging-transport";
 
 const ACCOUNT_ID = "0123456789abcdef0123456789abcdef";
@@ -241,6 +241,54 @@ describe("staging R2 probe safety", () => {
     ]);
   });
 
+  test("runs cleanup after an operation error and preserves primary-error precedence", async () => {
+    const operationError = new Error("operation failed");
+    const cleanupError = new Error("cleanup failed");
+    let cleanupRan = false;
+    try {
+      await runWithCleanup(
+        async () => {
+          throw operationError;
+        },
+        async () => {
+          cleanupRan = true;
+          throw cleanupError;
+        },
+      );
+      throw new Error("expected workflow to fail");
+    } catch (error: unknown) {
+      expect(error).toBeInstanceOf(AggregateError);
+      expect((error as AggregateError).errors).toEqual([operationError, cleanupError]);
+    }
+    expect(cleanupRan).toBe(true);
+  });
+
+  test("fails closed when cleanup reports a residual run-owned object", async () => {
+    const residual = {
+      status: "partial" as const,
+      keys: [
+        {
+          key: "media-r2-seal-probe/run/source.bin",
+          delete: { called: true, status: 503, code: "SlowDown" },
+          absence: { called: true, status: 200, code: "OK" },
+          absent: false,
+        },
+      ],
+    };
+    await expect(
+      runWithCleanup(
+        async () => "not-accepted",
+        async () => residual,
+      ),
+    ).rejects.toMatchObject({
+      name: "CleanupResidualError",
+      result: residual,
+    });
+    expect(() => {
+      throw new CleanupResidualError(residual);
+    }).toThrow("staging cleanup left a run-owned object present");
+  });
+
   test("redacts staging evidence to identities and outcomes only", async () => {
     const env = {
       R2_STAGING_ACCOUNT_ID: ACCOUNT_ID,
@@ -251,7 +299,8 @@ describe("staging R2 probe safety", () => {
     const base = await runStagingProbe({
       env,
       fetch: async (_url, init) => {
-        if (init.method === "HEAD") return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
+        if (init.method === "HEAD")
+          return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
         return response(412, {}, "<Error><Code>PreconditionFailed</Code></Error>");
       },
       runId: "20260823-160001-test",

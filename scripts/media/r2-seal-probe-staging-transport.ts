@@ -1,9 +1,11 @@
-import { encodeR2CopySource, signR2Request, type SignedStagingRequest, type StagingCredentials } from "./r2-seal-probe-staging-signing";
+import {
+  encodeR2CopySource,
+  type SignedStagingRequest,
+  type StagingCredentials,
+  signR2Request,
+} from "./r2-seal-probe-staging-signing";
 
-export type StagingFetch = (
-  input: string,
-  init: RequestInit,
-) => Promise<Response>;
+export type StagingFetch = (input: string, init: RequestInit) => Promise<Response>;
 
 export type StagingHeadResult = Readonly<{
   kind: "found" | "missing" | "error";
@@ -180,7 +182,8 @@ export class R2S3StagingTransport {
         body: bytes,
       });
       const code = await responseCode(response);
-      if (response.status === 412) return { kind: "precondition-failed", status: response.status, code };
+      if (response.status === 412)
+        return { kind: "precondition-failed", status: response.status, code };
       if (response.status < 200 || response.status >= 300) {
         return { kind: "error", status: response.status, code };
       }
@@ -237,13 +240,13 @@ export class R2S3StagingTransport {
         kind: "copied",
         status: response.status,
         code,
-        ...(header(response, "etag") ?? xmlValue(body, "ETag")
+        ...((header(response, "etag") ?? xmlValue(body, "ETag"))
           ? { destinationEtag: header(response, "etag") ?? xmlValue(body, "ETag") }
           : {}),
         ...(decodeBase64Sha256(header(response, "x-amz-checksum-sha256")) === undefined
           ? {}
           : { destinationSha256: decodeBase64Sha256(header(response, "x-amz-checksum-sha256")) }),
-        ...(header(response, "x-amz-version-id") ?? xmlValue(body, "VersionId")
+        ...((header(response, "x-amz-version-id") ?? xmlValue(body, "VersionId"))
           ? {
               destinationVersionId:
                 header(response, "x-amz-version-id") ?? xmlValue(body, "VersionId"),

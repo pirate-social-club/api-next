@@ -101,7 +101,8 @@ export type StagingEvidence = Readonly<{
   remaining_decisions: readonly string[];
 }>;
 
-const FORBIDDEN_VALUE = /(?:https?:\/\/|authorization|x-amz-(?:credential|signature)|(?:credential|signature)=|[\r\n])/i;
+const FORBIDDEN_VALUE =
+  /(?:https?:\/\/|authorization|x-amz-(?:credential|signature)|(?:credential|signature)=|[\r\n])/i;
 const SAFE_ID = /^.{1,512}$/s;
 
 function safeValue(value: string | null, field: string): string | null {
@@ -228,6 +229,8 @@ export function redactStagingEvidence(input: StagingEvidence): StagingEvidence {
       secrets_emitted: false,
       urls_headers_bodies_emitted: false,
     },
-    remaining_decisions: input.remaining_decisions.map((value) => safeValue(value, "decision") ?? ""),
+    remaining_decisions: input.remaining_decisions.map(
+      (value) => safeValue(value, "decision") ?? "",
+    ),
   };
 }

@@ -1,26 +1,23 @@
 import {
-  emptyScenarioEvidence,
-  type ScenarioEvidence,
-} from "./r2-seal-probe-evidence";
-import {
-  probeScenario,
   type CopyObjectRequest,
   type CopyObjectResponse,
   type HeadObjectResponse,
+  probeScenario,
   type R2SealTransport,
 } from "./r2-seal-probe";
+import { emptyScenarioEvidence, type ScenarioEvidence } from "./r2-seal-probe-evidence";
+import { cleanupOwnedKeys, runWithCleanup } from "./r2-seal-probe-staging-cleanup";
 import {
   redactStagingEvidence,
   type StagingEvidence,
   type StagingHeadEvidence,
 } from "./r2-seal-probe-staging-evidence";
-import { cleanupOwnedKeys } from "./r2-seal-probe-staging-cleanup";
 import {
   R2S3StagingTransport,
-  sha256Base64,
   type StagingHeadResult,
   type StagingPutResult,
   type StagingTransportOptions,
+  sha256Base64,
 } from "./r2-seal-probe-staging-transport";
 
 export const STAGING_ENV_NAMES = {
@@ -54,10 +51,7 @@ const REMAINING_DECISIONS = [
   "Bind the live VersionId and SHA-256 observations to the reservation evidence contract.",
 ] as const;
 
-function requiredEnv(
-  env: Readonly<Record<string, string | undefined>>,
-  name: string,
-): string {
+function requiredEnv(env: Readonly<Record<string, string | undefined>>, name: string): string {
   const value = env[name];
   if (value === undefined || value.length === 0 || /[\r\n]/.test(value)) {
     throw new Error(`required staging environment variable ${name} is missing or invalid`);
@@ -70,15 +64,21 @@ export function readStagingConfig(
 ): StagingConfig {
   const accountId = requiredEnv(env, STAGING_ENV_NAMES.accountId);
   if (!/^[a-f0-9]{32}$/i.test(accountId)) {
-    throw new Error(`required staging environment variable ${STAGING_ENV_NAMES.accountId} is invalid`);
+    throw new Error(
+      `required staging environment variable ${STAGING_ENV_NAMES.accountId} is invalid`,
+    );
   }
   const accessKeyId = requiredEnv(env, STAGING_ENV_NAMES.accessKeyId);
   if (!/^[A-Za-z0-9._-]{8,128}$/.test(accessKeyId)) {
-    throw new Error(`required staging environment variable ${STAGING_ENV_NAMES.accessKeyId} is invalid`);
+    throw new Error(
+      `required staging environment variable ${STAGING_ENV_NAMES.accessKeyId} is invalid`,
+    );
   }
   const secretAccessKey = requiredEnv(env, STAGING_ENV_NAMES.secretAccessKey);
   if (secretAccessKey.length < 16 || secretAccessKey.length > 256) {
-    throw new Error(`required staging environment variable ${STAGING_ENV_NAMES.secretAccessKey} is invalid`);
+    throw new Error(
+      `required staging environment variable ${STAGING_ENV_NAMES.secretAccessKey} is invalid`,
+    );
   }
   const bucket = requiredEnv(env, STAGING_ENV_NAMES.bucket);
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) {
@@ -90,17 +90,24 @@ export function readStagingConfig(
 export function parseProbeMode(args: readonly string[]): ProbeMode {
   if (args.length === 0) return "dry-run";
   if (args.length === 1 && args[0] === "--execute-staging") return "execute-staging";
-  throw new Error("use no arguments for the local dry run or exactly --execute-staging for staging");
-}
-
-function sha256Hex(bytes: Uint8Array): Promise<string> {
-  return crypto.subtle.digest("SHA-256", bytes as BufferSource).then((digest) =>
-    [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+  throw new Error(
+    "use no arguments for the local dry run or exactly --execute-staging for staging",
   );
 }
 
+function sha256Hex(bytes: Uint8Array): Promise<string> {
+  return crypto.subtle
+    .digest("SHA-256", bytes as BufferSource)
+    .then((digest) =>
+      [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join(""),
+    );
+}
+
 function newRunId(): string {
-  return `${new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14)}-${crypto.randomUUID()}`;
+  return `${new Date()
+    .toISOString()
+    .replace(/[-:.TZ]/g, "")
+    .slice(0, 14)}-${crypto.randomUUID()}`;
 }
 
 function emptyHead(called = false): StagingHeadEvidence {
@@ -182,7 +189,9 @@ function mapHead(result: StagingHeadResult): HeadObjectResponse {
   };
 }
 
-function mapCopy(result: Awaited<ReturnType<R2S3StagingTransport["copyObject"]>>): CopyObjectResponse {
+function mapCopy(
+  result: Awaited<ReturnType<R2S3StagingTransport["copyObject"]>>,
+): CopyObjectResponse {
   if (result.kind === "precondition-failed") {
     return { kind: "precondition-failed", status: 412, code: "PreconditionFailed" };
   }
@@ -272,111 +281,127 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
   const sourcePreflight = await transport.headObject(config.bucket, sourceKey);
   const destinationPreflight = await transport.headObject(config.bucket, destinationKey);
   const safeToWrite = preflightSafe(sourcePreflight, destinationPreflight);
-  let upload: StagingPutResult = {
-    kind: "error",
-    status: 0,
-    code: "NotAttempted",
-  };
-  let scenario: ScenarioEvidence = emptyScenarioEvidence(
-    defaultScenario(sourceKey, destinationKey, expectedSha256),
-  );
   const ownedKeys: string[] = [];
-  let sealingTransport: RecordingSealTransport | undefined;
-  try {
-    if (safeToWrite) {
-      upload = await transport.putObject(
-        config.bucket,
-        sourceKey,
-        CONTENT,
-        CONTENT_TYPE,
-        expectedSha256Base64,
+  const workflow = await runWithCleanup(
+    async () => {
+      let upload: StagingPutResult = {
+        kind: "error",
+        status: 0,
+        code: "NotAttempted",
+      };
+      let scenario: ScenarioEvidence = emptyScenarioEvidence(
+        defaultScenario(sourceKey, destinationKey, expectedSha256),
       );
-      if (upload.kind === "created") {
-        ownedKeys.push(sourceKey);
-        sealingTransport = new RecordingSealTransport(transport);
-        scenario = await probeScenario(
-          defaultScenario(sourceKey, destinationKey, expectedSha256),
-          sealingTransport,
+      let sealingTransport: RecordingSealTransport | undefined;
+      if (safeToWrite) {
+        upload = await transport.putObject(
+          config.bucket,
+          sourceKey,
+          CONTENT,
+          CONTENT_TYPE,
+          expectedSha256Base64,
         );
-        if (sealingTransport.copy?.kind === "copied") ownedKeys.push(destinationKey);
+        if (upload.kind === "created") {
+          ownedKeys.push(sourceKey);
+          sealingTransport = new RecordingSealTransport(transport);
+          scenario = await probeScenario(
+            defaultScenario(sourceKey, destinationKey, expectedSha256),
+            sealingTransport,
+          );
+          if (sealingTransport.copy?.kind === "copied") ownedKeys.push(destinationKey);
+        }
       }
-    }
-  } finally {
-    const cleanup = await cleanupOwnedKeys(transport, config.bucket, prefix, ownedKeys);
-    const sourceHead =
-      sealingTransport?.sourceHead === undefined
-        ? emptyHead()
-        : headEvidence(sealingTransport.sourceHead);
-    const destinationHead =
-      sealingTransport?.destinationHead === undefined || scenario.destination_head_calls === 0
-        ? null
-        : headEvidence(sealingTransport.destinationHead);
-    const copy = sealingTransport?.copy;
-    const completedAt = new Date().toISOString();
-    const evidence: StagingEvidence = {
-      schema_version: "r2-seal-staging-evidence-v1",
-      run: { run_id: runId, started_at: startedAt, completed_at: completedAt, deterministic: false },
-      account_id: config.accountId,
-      bucket: config.bucket,
-      prefix,
-      source_key: sourceKey,
-      destination_key: destinationKey,
-      mode: "staging-execute",
-      transport: "r2-s3-sigv4",
-      provider_contacted: true,
-      credentials_read: true,
-      preflight: {
-        source: headEvidence(sourcePreflight),
-        destination: headEvidence(destinationPreflight),
-        safe_to_write: safeToWrite,
+      return { upload, scenario, sealingTransport };
+    },
+    () => cleanupOwnedKeys(transport, config.bucket, prefix, ownedKeys),
+  );
+  const { upload, scenario, sealingTransport } = workflow.value;
+  const cleanup = workflow.cleanup;
+  const sourceHead =
+    sealingTransport?.sourceHead === undefined
+      ? emptyHead()
+      : headEvidence(sealingTransport.sourceHead);
+  const destinationHead =
+    sealingTransport?.destinationHead === undefined || scenario.destination_head_calls === 0
+      ? null
+      : headEvidence(sealingTransport.destinationHead);
+  const copy = sealingTransport?.copy;
+  const completedAt = new Date().toISOString();
+  const evidence: StagingEvidence = {
+    schema_version: "r2-seal-staging-evidence-v1",
+    run: {
+      run_id: runId,
+      started_at: startedAt,
+      completed_at: completedAt,
+      deterministic: false,
+    },
+    account_id: config.accountId,
+    bucket: config.bucket,
+    prefix,
+    source_key: sourceKey,
+    destination_key: destinationKey,
+    mode: "staging-execute",
+    transport: "r2-s3-sigv4",
+    provider_contacted: true,
+    credentials_read: true,
+    preflight: {
+      source: headEvidence(sourcePreflight),
+      destination: headEvidence(destinationPreflight),
+      safe_to_write: safeToWrite,
+    },
+    upload: putEvidence(upload),
+    sealing: {
+      outcome: scenario.outcome,
+      source_head: sourceHead,
+      conditional_copy:
+        copy === undefined
+          ? {
+              called: false,
+              status: null,
+              code: null,
+              etag: null,
+              checksum_sha256: null,
+              version_id: null,
+            }
+          : copyEvidence(copy),
+      destination_head: destinationHead,
+      automatic_retry: false,
+      destination_verified: scenario.destination_verified,
+    },
+    metadata: {
+      source_etag: scenario.observed_source_etag,
+      destination_etag: scenario.observed_destination_etag,
+      source_checksum_sha256: {
+        available: scenario.observed_source_sha256 !== null,
+        value: scenario.observed_source_sha256,
       },
-      upload: putEvidence(upload),
-      sealing: {
-        outcome: scenario.outcome,
-        source_head: sourceHead,
-        conditional_copy:
-          copy === undefined
-            ? { called: false, status: null, code: null, etag: null, checksum_sha256: null, version_id: null }
-            : copyEvidence(copy),
-        destination_head: destinationHead,
-        automatic_retry: false,
-        destination_verified: scenario.destination_verified,
+      destination_checksum_sha256: {
+        available: scenario.observed_destination_sha256 !== null,
+        value: scenario.observed_destination_sha256,
       },
-      metadata: {
-        source_etag: scenario.observed_source_etag,
-        destination_etag: scenario.observed_destination_etag,
-        source_checksum_sha256: {
-          available: scenario.observed_source_sha256 !== null,
-          value: scenario.observed_source_sha256,
-        },
-        destination_checksum_sha256: {
-          available: scenario.observed_destination_sha256 !== null,
-          value: scenario.observed_destination_sha256,
-        },
-        source_version_id: scenario.observed_source_version_id,
-        destination_version_id: scenario.observed_destination_version_id,
-        version_binding: scenario.version_binding,
-      },
-      cleanup: {
-        status: cleanup.status,
-        attempted: cleanup.keys.length > 0,
-        keys: cleanup.keys,
-        bucket_deleted: false,
-      },
-      safety: {
-        acknowledged_execute_flag: true,
-        shared_412_is_ambiguous: true,
-        conditional_copy_is_never_retried: true,
-        post_412_destination_head: false,
-        destination_head_only_after_copy_success: true,
-        preexisting_keys_fail_closed: true,
-        cleanup_is_exact_run_owned_keys: true,
-        bucket_was_not_created_or_deleted: true,
-        secrets_emitted: false,
-        urls_headers_bodies_emitted: false,
-      },
-      remaining_decisions: REMAINING_DECISIONS,
-    };
-    return redactStagingEvidence(evidence);
-  }
+      source_version_id: scenario.observed_source_version_id,
+      destination_version_id: scenario.observed_destination_version_id,
+      version_binding: scenario.version_binding,
+    },
+    cleanup: {
+      status: cleanup.status,
+      attempted: cleanup.keys.length > 0,
+      keys: cleanup.keys,
+      bucket_deleted: false,
+    },
+    safety: {
+      acknowledged_execute_flag: true,
+      shared_412_is_ambiguous: true,
+      conditional_copy_is_never_retried: true,
+      post_412_destination_head: false,
+      destination_head_only_after_copy_success: true,
+      preexisting_keys_fail_closed: true,
+      cleanup_is_exact_run_owned_keys: true,
+      bucket_was_not_created_or_deleted: true,
+      secrets_emitted: false,
+      urls_headers_bodies_emitted: false,
+    },
+    remaining_decisions: REMAINING_DECISIONS,
+  };
+  return redactStagingEvidence(evidence);
 }
