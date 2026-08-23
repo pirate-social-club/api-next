@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { endpoint } from "./endpoint.ts";
-import { AuthError, BadRequest, Conflict, InternalError } from "./errors.ts";
+import { AuthError, BadRequest, Conflict, InternalError, NotFound } from "./errors.ts";
 
 const boundedIdentifier = (label: string) =>
   Schema.String.check(
@@ -86,6 +86,26 @@ export const PersonaWalletSetV1 = Schema.Struct({
 });
 export type PersonaWalletSetV1 = Schema.Schema.Type<typeof PersonaWalletSetV1>;
 
+export const PersonaEvmWalletPreparationV1 = Schema.Union([
+  Schema.Struct({
+    persona_id: PersonaIdV1,
+    chain_account_kind: Schema.Literal("evm"),
+    hd_wallet_index: HdWalletIndexV1,
+    status: Schema.Literal("pending"),
+    assignment: Schema.Null,
+  }),
+  Schema.Struct({
+    persona_id: PersonaIdV1,
+    chain_account_kind: Schema.Literal("evm"),
+    hd_wallet_index: HdWalletIndexV1,
+    status: Schema.Literal("active"),
+    assignment: PersonaEvmWalletAssignmentV1,
+  }),
+]);
+export type PersonaEvmWalletPreparationV1 = Schema.Schema.Type<
+  typeof PersonaEvmWalletPreparationV1
+>;
+
 export const PrivatePersonaV1 = Schema.Struct({
   persona_id: PersonaIdV1,
   object: Schema.Literal("persona"),
@@ -102,6 +122,29 @@ const CreatePersonaRequestV1 = Schema.Struct({
   display_name: Schema.optional(nullableBoundedText(80, "display name")),
   bio: Schema.optional(nullableBoundedText(2_000, "bio")),
   preferred_locale: Schema.optional(nullableBoundedText(64, "locale")),
+});
+
+const PersonaPathV1 = Schema.Struct({ personaId: PersonaIdV1 });
+
+const PreparePersonaEvmWalletRequestV1 = Schema.Struct({
+  idempotency_key: boundedIdentifier("idempotency key"),
+});
+
+const proofToken = (label: string) =>
+  Schema.String.check(
+    Schema.makeFilter((value) =>
+      value.length > 0 && value.length <= 16 * 1_024 && !/[\r\n]/u.test(value)
+        ? undefined
+        : `Expected a bounded ${label}`,
+    ),
+  );
+
+const ConfirmPersonaEvmWalletRequestV1 = Schema.Struct({
+  proof: Schema.Struct({
+    type: Schema.Literal("privy_access_token"),
+    privy_access_token: proofToken("Privy access token"),
+    privy_identity_token: Schema.optional(Schema.NullOr(proofToken("Privy identity token"))),
+  }),
 });
 
 export const ListMyPersonas = endpoint({
@@ -121,4 +164,26 @@ export const CreatePersona = endpoint({
   response: PrivatePersonaV1,
   successStatus: 201,
   errors: [AuthError, BadRequest, Conflict, InternalError],
+});
+
+/** Reserve one append-only provider HD index before the client creates it. */
+export const PreparePersonaEvmWallet = endpoint({
+  method: "POST",
+  path: "/personas/:personaId/wallets/evm/prepare",
+  auth: Auth.userOrAdmin(),
+  request: { path: PersonaPathV1, body: PreparePersonaEvmWalletRequestV1 },
+  response: PersonaEvmWalletPreparationV1,
+  successStatus: 200,
+  errors: [AuthError, BadRequest, Conflict, InternalError, NotFound],
+});
+
+/** Confirm only the exact provider-attested wallet at the reserved HD index. */
+export const ConfirmPersonaEvmWallet = endpoint({
+  method: "POST",
+  path: "/personas/:personaId/wallets/evm/confirm",
+  auth: Auth.userOrAdmin(),
+  request: { path: PersonaPathV1, body: ConfirmPersonaEvmWalletRequestV1 },
+  response: PersonaEvmWalletAssignmentV1,
+  successStatus: 200,
+  errors: [AuthError, BadRequest, Conflict, InternalError, NotFound],
 });

@@ -1,5 +1,6 @@
 import { Effect, Exit } from "effect";
 import { describe, expect, it } from "vitest";
+import { PersonaWalletProofRejected } from "../../packages/application/src/use-cases/personas";
 import {
   makeJwksSessionProofVerifier,
   type SessionProofFetcher,
@@ -206,6 +207,14 @@ describe("workerd Privy linked-wallet lookup", () => {
     address: `0x${"bB".repeat(20)}`,
     wallet_client: "privy",
   };
+  const indexedEmbeddedAccount = {
+    ...embeddedAccount,
+    id: null,
+    wallet_client_type: "privy",
+    connector_type: "embedded",
+    imported: false,
+    wallet_index: 2,
+  };
   const solanaAccount = { type: "wallet", chain_type: "solana", address: "not-an-evm-address" };
 
   const adapterWithApi = (fetcher: SessionProofFetcher) =>
@@ -338,5 +347,82 @@ describe("workerd Privy linked-wallet lookup", () => {
       walletAddress: `0x${"a".repeat(40)}`,
     });
     expect(lookupCount).toBe(0);
+  });
+
+  it("attests only the embedded EVM wallet at the server-reserved HD index", async () => {
+    const material = await keyMaterial();
+    const fetcher: SessionProofFetcher = async (input) =>
+      input.includes("/api/v1/users/")
+        ? userResponse([
+            embeddedAccount,
+            { ...indexedEmbeddedAccount, address: `0x${"bB".repeat(20)}` },
+            solanaAccount,
+          ])
+        : jwksResponse(material.jwk);
+    const adapter = adapterWithApi(fetcher);
+    const token = await signToken(material.privateKey, material.jwk.kid);
+    expect(
+      await Effect.runPromise(
+        adapter.verifyPrivyEmbeddedEvmWallet({
+          accessToken: token,
+          identityToken: null,
+          hdWalletIndex: 2,
+        }),
+      ),
+    ).toEqual({
+      sourceUserId: "usr_provider",
+      privyWalletId: null,
+      hdWalletIndex: 2,
+      address: embeddedWallet,
+    });
+  });
+
+  it("does not treat external wallets or another HD index as persona wallet authority", async () => {
+    const material = await keyMaterial();
+    const fetcher: SessionProofFetcher = async (input) =>
+      input.includes("/api/v1/users/")
+        ? userResponse([embeddedAccount, indexedEmbeddedAccount])
+        : jwksResponse(material.jwk);
+    const adapter = adapterWithApi(fetcher);
+    const token = await signToken(material.privateKey, material.jwk.kid);
+    for (const hdWalletIndex of [0, 1, 3]) {
+      const error = await Effect.runPromise(
+        adapter
+          .verifyPrivyEmbeddedEvmWallet({
+            accessToken: token,
+            identityToken: null,
+            hdWalletIndex,
+          })
+          .pipe(Effect.flip),
+      );
+      expect(error).toBeInstanceOf(PersonaWalletProofRejected);
+      expect(error.reason).toBe("unavailable");
+    }
+  });
+
+  it("fails closed when Privy returns duplicate or malformed embedded index facts", async () => {
+    const material = await keyMaterial();
+    const token = await signToken(material.privateKey, material.jwk.kid);
+    for (const accounts of [
+      [indexedEmbeddedAccount, { ...indexedEmbeddedAccount, address: otherWallet }],
+      [{ ...indexedEmbeddedAccount, wallet_index: -1 }],
+      [{ ...indexedEmbeddedAccount, wallet_client_type: "external" }],
+      [{ ...indexedEmbeddedAccount, imported: true }],
+    ]) {
+      const adapter = adapterWithApi(async (input) =>
+        input.includes("/api/v1/users/") ? userResponse(accounts) : jwksResponse(material.jwk),
+      );
+      const error = await Effect.runPromise(
+        adapter
+          .verifyPrivyEmbeddedEvmWallet({
+            accessToken: token,
+            identityToken: null,
+            hdWalletIndex: 2,
+          })
+          .pipe(Effect.flip),
+      );
+      expect(error).toBeInstanceOf(PersonaWalletProofRejected);
+      expect(error.reason).toBe("unavailable");
+    }
   });
 });

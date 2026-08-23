@@ -14,3 +14,4 @@ export { canonicalBodyHash } from "./use-cases/content/common.ts";
 export * from "./use-cases/content/text-post.ts";
 export * from "./use-cases/identity-registration.ts";
 export * from "./use-cases/identity-registration-handler.ts";
+export * from "./use-cases/personas.ts";

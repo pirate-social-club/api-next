@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import {
+  ConfirmPersonaEvmWallet,
   CreatePersona,
   ListMyPersonas,
   PersonaChainAccountKindV1,
   PersonaEvmWalletAssignmentV1,
+  PersonaEvmWalletPreparationV1,
+  PreparePersonaEvmWallet,
   PrivatePersonaV1,
   PublicPersonaV1,
   schemaToOpenApi,
@@ -93,5 +96,35 @@ describe("account-owned persona contracts", () => {
       "idempotency_key",
       "preferred_locale",
     ]);
+  });
+
+  test("reserves an indexed EVM wallet before provider confirmation", () => {
+    const pending = {
+      persona_id: privatePersona.persona_id,
+      chain_account_kind: "evm",
+      hd_wallet_index: 2,
+      status: "pending",
+      assignment: null,
+    } as const;
+    expect(strictDecode(PersonaEvmWalletPreparationV1)(pending)).toEqual(pending);
+    expect(
+      strictDecode(PersonaEvmWalletPreparationV1)({
+        ...pending,
+        status: "active",
+        assignment: privatePersona.wallet_set.evm,
+      }),
+    ).toMatchObject({ status: "active", hd_wallet_index: 2 });
+    expect(PreparePersonaEvmWallet.path).toBe("/personas/:personaId/wallets/evm/prepare");
+    expect(PreparePersonaEvmWallet.auth).toEqual({ policy: { kind: "userOrAdmin" } });
+  });
+
+  test("confirms without accepting a client-supplied wallet address or index", () => {
+    expect(ConfirmPersonaEvmWallet.path).toBe("/personas/:personaId/wallets/evm/confirm");
+    expect(ConfirmPersonaEvmWallet.auth).toEqual({ policy: { kind: "userOrAdmin" } });
+    const request = schemaToOpenApi(ConfirmPersonaEvmWallet.request?.body);
+    expect(request.required).toEqual(["proof"]);
+    expect(Object.keys(request.properties ?? {})).toEqual(["proof"]);
+    expect(JSON.stringify(request)).not.toContain("wallet_address");
+    expect(JSON.stringify(request)).not.toContain("hd_wallet_index");
   });
 });
