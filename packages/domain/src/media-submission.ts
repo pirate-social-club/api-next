@@ -162,6 +162,7 @@ export type ReviewCase = Readonly<{
   heldRevision: number;
   reasonCode: "review_required" | "moderation_unavailable";
   exhaustionCode?: "acr_exhausted";
+  exhaustionAttemptId?: string;
 }>;
 export type ModeratorApprovalEvidence = Readonly<{
   actionId: string;
@@ -481,7 +482,8 @@ function validAnalysis(analysis: TrustedSongAnalysis, state: MediaSubmissionStat
     !validId(analysis.embeddedMetadata.evidenceRef) ||
     !validId(analysis.embeddedMetadata.adapterRevision) ||
     (analysis.embeddedMetadata.trackTitle !== null &&
-      !validId(analysis.embeddedMetadata.trackTitle))
+      (!validId(analysis.embeddedMetadata.trackTitle) ||
+        analysis.embeddedMetadata.trackTitle.length > 200))
   )
     return false;
   if (
@@ -622,8 +624,9 @@ export function mediaSubmissionInvariant(state: MediaSubmissionState): string | 
     (state.phase !== null ||
       state.review === null ||
       state.review.heldRevision !== state.creationRevision ||
-      (state.review.exhaustionCode !== undefined &&
-        state.review.exhaustionCode !== "acr_exhausted"))
+      (state.review.exhaustionCode === "acr_exhausted" &&
+        !validId(state.review.exhaustionAttemptId)) ||
+      (state.review.exhaustionCode === undefined && state.review.exhaustionAttemptId !== undefined))
   )
     return "review_shape";
   if (
@@ -796,8 +799,13 @@ export function transitionMediaSubmission(
       if (
         command.expectedCreationRevision !== current.creationRevision ||
         current.status !== "processing" ||
+        current.terms === null ||
+        current.analysis === null ||
+        current.analysis.acr.decision !== "inconclusive" ||
         !validId(command.review.reviewRef) ||
-        command.review.heldRevision !== current.creationRevision
+        command.review.heldRevision !== current.creationRevision ||
+        command.review.exhaustionCode !== "acr_exhausted" ||
+        !validId(command.review.exhaustionAttemptId)
       )
         return reject({
           _tag: "transition_not_allowed",

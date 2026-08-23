@@ -216,10 +216,22 @@ describe("song media Spec 013 machine", () => {
     const state = analyzed();
     const review = ok(
       transitionMediaSubmission(state, {
-        event: "review_exhaustion_recorded",
+        event: "review_required",
         actorId,
         expectedCreationRevision: 2,
+        expectedAudioRevision: 1,
+        expectedAnalysisRevision: 1,
         review: { reviewRef: "review", heldRevision: 2, reasonCode: "moderation_unavailable" },
+        decision: {
+          decisionRevision: 1,
+          outcome: "manual_review",
+          creationRevision: 2,
+          audioRevision: 1,
+          analysisRevision: 1,
+          canonicalAudioSha256: audioHash,
+          policyRevision: "review-policy",
+          evidenceRef: "review-decision",
+        },
       }),
     );
     const approved = ok(
@@ -238,7 +250,7 @@ describe("song media Spec 013 machine", () => {
           heldRevision: 2,
         },
         decision: {
-          decisionRevision: 1,
+          decisionRevision: 2,
           outcome: "allow",
           creationRevision: 2,
           audioRevision: 1,
@@ -301,10 +313,22 @@ describe("song media Spec 013 machine", () => {
     for (const acrDecision of ["inconclusive", "skipped"] as const) {
       const held = ok(
         transitionMediaSubmission(analyzed(acrDecision), {
-          event: "review_exhaustion_recorded",
+          event: "review_required",
           actorId,
           expectedCreationRevision: 2,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
           review: { reviewRef: "ordinary-review", heldRevision: 2, reasonCode: "review_required" },
+          decision: {
+            decisionRevision: 1,
+            outcome: "manual_review",
+            creationRevision: 2,
+            audioRevision: 1,
+            analysisRevision: 1,
+            canonicalAudioSha256: audioHash,
+            policyRevision: "review-policy",
+            evidenceRef: "ordinary-review-evidence",
+          },
         }),
       );
       expect(
@@ -345,6 +369,7 @@ describe("song media Spec 013 machine", () => {
           heldRevision: 2,
           reasonCode: "review_required",
           exhaustionCode: "acr_exhausted",
+          exhaustionAttemptId: "acr-attempt-3",
         },
       }),
     );
@@ -382,10 +407,22 @@ describe("song media Spec 013 machine", () => {
   test("supersedes held review terms with a new creation revision", () => {
     const held = ok(
       transitionMediaSubmission(analyzed(), {
-        event: "review_exhaustion_recorded",
+        event: "review_required",
         actorId,
         expectedCreationRevision: 2,
+        expectedAudioRevision: 1,
+        expectedAnalysisRevision: 1,
         review: { reviewRef: "held-review", heldRevision: 2, reasonCode: "review_required" },
+        decision: {
+          decisionRevision: 1,
+          outcome: "manual_review",
+          creationRevision: 2,
+          audioRevision: 1,
+          analysisRevision: 1,
+          canonicalAudioSha256: audioHash,
+          policyRevision: "review-policy",
+          evidenceRef: "held-decision",
+        },
       }),
     );
     const replaced = ok(

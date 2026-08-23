@@ -25,7 +25,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 9;
+const testCount = 10;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -691,14 +691,60 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("rejects hostile SQL state, snapshot, payload, replay, audio, and transcript lineage", async () => {
-    await withSchema(async (admin, connection) => {
-      await createThroughDecision(connection);
+    await withSchema(async (_schemaAdmin, connection) => {
+      const admin = new Client({ connectionString: connection });
+      await admin.connect();
+      await createThroughDecision(connection, decision, analysis, true);
+      await admin.query("BEGIN");
+      await admin.query(
+        "INSERT INTO media_submission_terms (submission_id,community_id,actor_user_id,operation_id,creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,access_mode,terms_snapshot) VALUES ($1,$2,$3,$4,3,'non-commercial',0,$5::jsonb,'public',$6::jsonb)",
+        [
+          submission,
+          community,
+          actor,
+          operation,
+          JSON.stringify(terms.royaltyAllocations),
+          JSON.stringify(terms),
+        ],
+      );
+      await admin.query(
+        "UPDATE media_post_submissions SET creation_revision=3,current_terms_revision=3,decision_revision=0,current_decision_revision=NULL,status='processing',phase='analysis',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+        [submission],
+      );
+      await expect(admin.query("COMMIT")).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
       await expect(
         admin.query(
           "UPDATE media_post_submissions SET analysis_revision=2,current_analysis_revision=2,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
           [submission],
         ),
       ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ('hostile-workflow',$1,$2,$3,$4,2,1,0,999,$5,'analysis_launch','hostile-workflow-effect',$6::jsonb)",
+          [
+            submission,
+            community,
+            actor,
+            operation,
+            `media-${operation}-r999`,
+            JSON.stringify({
+              kind: "analysis_launch",
+              submission_id: submission,
+              operation_id: operation,
+              audio_revision: 1,
+              analysis_revision: 0,
+              workflow_revision: 999,
+              workflow_instance_id: `media-${operation}-r999`,
+            }),
+          ],
+        ),
+      ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
       await expect(
         admin.query(
           "INSERT INTO media_submission_terms (submission_id,community_id,actor_user_id,operation_id,creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,access_mode,terms_snapshot) VALUES ($1,$2,$3,$4,3,'non-commercial',0,$5::jsonb,'public',$6::jsonb)",
@@ -712,6 +758,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ],
         ),
       ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
       await expect(
         admin.query(
           "INSERT INTO media_publication_decisions (submission_id,community_id,actor_user_id,operation_id,decision_revision,creation_revision,audio_revision,analysis_revision,canonical_audio_sha256,outcome,policy_revision,evidence_ref,decision_snapshot) VALUES ($1,$2,$3,$4,2,2,1,1,$5,'allow','publication_policy_2','publication_evidence_2',$6::jsonb)",
@@ -725,6 +773,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ],
         ),
       ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
       await expect(
         admin.query(
           "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ('hostile-payload',$1,$2,$3,$4,2,1,0,1,$5,'analysis_launch','hostile-effect',$6::jsonb)",
@@ -746,6 +796,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ],
         ),
       ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
       await expect(
         admin.query(
           "INSERT INTO media_submission_command_replays (community_id,actor_user_id,endpoint_template,idempotency_key,request_hash,submission_id,operation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
@@ -762,6 +814,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ],
         ),
       ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
       await expect(
         admin.query(
           "INSERT INTO media_audio_revisions (submission_id,community_id,actor_user_id,operation_id,audio_revision,immutable_ref,canonical_sha256,content_type,size_bytes) VALUES ($1,$2,$3,$4,2,$5,$6,'audio/wav',$7)",
@@ -776,6 +830,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ],
         ),
       ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
       const aggregateSegments = Array.from({ length: 50 }, (_, index) => ({
         start_ms: index,
         end_ms: index + 1,
@@ -795,6 +851,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ],
         ),
       ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.end();
     });
     completedTestCount += 1;
   }, 40_000);
@@ -811,6 +869,47 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       );
       expect(
         await run(connection, (store) =>
+          store.recordProcessingAttempt({
+            attemptId: "media_pg_acr_attempt_3",
+            communityId: community,
+            submissionId: submission,
+            actorUserId: actor,
+            operationId: operation,
+            audioRevision: 1,
+            analysisRevision: 1,
+            stage: "acr",
+            inputKind: "audio",
+            inputRevision: 1,
+            policyRevision: "acr-policy-1",
+            adapterRevision: "acr-adapter-1",
+            inputHash: audioSha256,
+            attemptNumber: 3,
+          }),
+        ),
+      ).toBeUndefined();
+      expect(
+        await run(connection, (store) =>
+          store.claimProcessingAttempt({
+            attemptId: "media_pg_acr_attempt_3",
+            workerId: "acr-worker",
+            leaseSeconds: 30,
+          }),
+        ),
+      ).toBe(true);
+      expect(
+        await run(connection, (store) =>
+          store.failProcessingAttempt({
+            attemptId: "media_pg_acr_attempt_3",
+            workerId: "acr-worker",
+            claimFence: 1,
+            failureCode: "provider_invalid",
+            retryable: false,
+            evidenceRef: "review-acr-exhausted-evidence",
+          }),
+        ),
+      ).toBe(true);
+      expect(
+        await run(connection, (store) =>
           store.requireReview({
             ...command("/media-post-submissions/:submissionId/review", "acr-exhaustion-key"),
             expectedCreationRevision: 2,
@@ -819,6 +918,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
               heldRevision: 2,
               reasonCode: "review_required",
               exhaustionCode: "acr_exhausted",
+              exhaustionAttemptId: "media_pg_acr_attempt_3",
             },
           }),
         ),
@@ -938,6 +1038,70 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           }),
         ),
       ).toBe(true);
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("parks a completed third outbox failure without a fourth claim", async () => {
+    await withSchema(async (_admin, connection) => {
+      await createThroughDecision(connection);
+      for (const attempt of [1, 2] as const) {
+        expect(
+          await run(connection, (_store, outbox) =>
+            outbox.claim({
+              outboxEventId: "media_pg_analysis_outbox",
+              workflowRevision: 1,
+              workerId: `parking-worker-${attempt}`,
+              leaseSeconds: 30,
+            }),
+          ),
+        ).toMatchObject({ deliveryAttempts: attempt });
+        expect(
+          await run(connection, (_store, outbox) =>
+            outbox.markFailed({
+              outboxEventId: "media_pg_analysis_outbox",
+              workflowRevision: 1,
+              workflowInstanceId: `media-${operation}-r1`,
+              workerId: `parking-worker-${attempt}`,
+              claimFence: attempt,
+              failureCode: "provider_unavailable",
+              nextEligibleAt: new Date(Date.now() - 1_000).toISOString(),
+            }),
+          ),
+        ).toBe(true);
+      }
+      expect(
+        await run(connection, (_store, outbox) =>
+          outbox.claim({
+            outboxEventId: "media_pg_analysis_outbox",
+            workflowRevision: 1,
+            workerId: "parking-worker-3",
+            leaseSeconds: 30,
+          }),
+        ),
+      ).toMatchObject({ deliveryAttempts: 3 });
+      expect(
+        await run(connection, (_store, outbox) =>
+          outbox.markFailed({
+            outboxEventId: "media_pg_analysis_outbox",
+            workflowRevision: 1,
+            workflowInstanceId: `media-${operation}-r1`,
+            workerId: "parking-worker-3",
+            claimFence: 3,
+            failureCode: "provider_invalid",
+            nextEligibleAt: new Date(Date.now() - 1_000).toISOString(),
+          }),
+        ),
+      ).toBe(true);
+      expect(
+        await run(connection, (_store, outbox) =>
+          outbox.claim({
+            outboxEventId: "media_pg_analysis_outbox",
+            workflowRevision: 1,
+            workerId: "parking-worker-4",
+            leaseSeconds: 30,
+          }),
+        ),
+      ).toBeNull();
     });
     completedTestCount += 1;
   }, 40_000);

@@ -374,7 +374,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "media-outbox.claim",
-        text: "UPDATE media_submission_outbox SET state='running',delivery_attempts=CASE WHEN delivery_attempts < 3 THEN delivery_attempts+1 ELSE delivery_attempts END,claim_owner=$1,claim_fence=claim_fence+1,lease_expires_at=clock_timestamp()+make_interval(secs=>$2),next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp() WHERE outbox_event_id=$3 AND workflow_revision=$4 AND ((state='pending') OR (state='failed' AND next_eligible_at<=clock_timestamp()) OR (state='running' AND lease_expires_at<=clock_timestamp())) RETURNING *",
+        text: "UPDATE media_submission_outbox SET state='running',delivery_attempts=CASE WHEN delivery_attempts < 3 THEN delivery_attempts+1 ELSE delivery_attempts END,claim_owner=$1,claim_fence=claim_fence+1,lease_expires_at=clock_timestamp()+make_interval(secs=>$2),next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp() WHERE outbox_event_id=$3 AND workflow_revision=$4 AND ((state='pending') OR (state='failed' AND delivery_attempts < 3 AND next_eligible_at<=clock_timestamp()) OR (state='running' AND lease_expires_at<=clock_timestamp())) RETURNING *",
         values: [input.workerId, input.leaseSeconds, input.outboxEventId, input.workflowRevision],
         readonly: false,
       });
@@ -427,7 +427,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute({
         label: "media-outbox.fail",
-        text: "UPDATE media_submission_outbox SET state='failed',claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,next_eligible_at=$2::timestamptz,updated_at=clock_timestamp() WHERE outbox_event_id=$3 AND workflow_revision=$4 AND workflow_instance_id=$5 AND state='running' AND claim_owner=$6 AND claim_fence=$7 AND lease_expires_at>clock_timestamp()",
+        text: "UPDATE media_submission_outbox SET state=CASE WHEN delivery_attempts >= 3 THEN 'exhausted' ELSE 'failed' END,claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,next_eligible_at=CASE WHEN delivery_attempts >= 3 THEN NULL ELSE $2::timestamptz END,updated_at=clock_timestamp() WHERE outbox_event_id=$3 AND workflow_revision=$4 AND workflow_instance_id=$5 AND state='running' AND claim_owner=$6 AND claim_fence=$7 AND lease_expires_at>clock_timestamp()",
         values: [
           input.failureCode,
           input.nextEligibleAt,
