@@ -735,10 +735,17 @@ concerns: the runtime blast radius is bounded instead by the 900-second token
 TTL, the exact main-branch OIDC subject, and the name-only request.
 
 Because the check refuses changes to its own files, editing it is deliberately
-a break-glass operation: an administrator temporarily relaxes `main` branch
-protection, lands the change, and restores protection. That cost is the point —
-with zero required approvals, the guard is the only thing standing between an
-agent-authored commit and the credential path.
+a break-glass operation. The reviewed recovery payload is committed at
+`docs/api-next/main-ruleset.json`. Before opening the bypass window, require
+zero other open pull requests. An administrator then adds only a temporary
+`OrganizationAdmin` bypass with `bypass_mode: pull_request`; direct pushes stay
+forbidden. The ordinary CI jobs must still succeed procedurally, the boundary
+failure must be limited to the expected guarded-file change, and the bypass
+list must return to empty immediately after the one reviewed squash merge.
+Compare the complete live ruleset with the committed payload, then run and
+close a negative-control pull request proving the boundary still rejects a
+secret-value audit change. With zero required approvals, this guarded process
+is the only path for changing the control itself.
 
 Ordering constraint: `pull_request_target` workflows only run once the workflow
 file exists on the default branch. The pull request that introduces this check
