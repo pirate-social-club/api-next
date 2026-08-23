@@ -10,6 +10,7 @@ import {
   type ControlPlaneTransaction,
   type CreateCommunityCreationIntentResult,
   publicCommunityCreationRequirements,
+  publicOptionalRouteCommunityCreationRequirements,
 } from "@pirate/application";
 import { VerificationCompletionStorageFailed } from "@pirate/application/verification";
 import {
@@ -100,7 +101,15 @@ type IntentBinding = Readonly<{
   readonly configurationVersion: string;
 }>;
 
-type CompiledDraft = Readonly<{
+type CompiledHumanDraft = Readonly<{
+  readonly status: "verification_required" | "gate_unsupported";
+  readonly canonicalPolicyHash: string;
+  readonly verificationRequirementHash: string;
+  readonly binding: IntentBinding;
+  readonly humanProviderBindingHash: string;
+}>;
+
+type CompiledRouteV1Draft = Readonly<{
   readonly status: "verification_required" | "gate_unsupported";
   readonly canonicalPolicyHash: string;
   readonly verificationRequirementHash: string;
@@ -178,11 +187,11 @@ function oneRow(rows: readonly Row[]): Row | null | undefined {
   return rows[0] ?? null;
 }
 
-function compileDraft(
+function compileRouteV1Draft(
   policy: unknown,
   routeRequest: Readonly<{ readonly family: "hns" | "spaces"; readonly root_label: string }>,
   namespaceBindings: readonly CommunityCreationProviderBinding[],
-): CompiledDraft | null {
+): CompiledRouteV1Draft | null {
   const compilation = compileCommunityGatePolicy(policy);
   const route = deriveCommunityRoute(routeRequest);
   const namespaceRequirement = communityNamespaceRequirementHash(routeRequest);
@@ -269,6 +278,44 @@ function compileDraft(
   };
 }
 
+function compileOptionalRouteDraft(policy: unknown): CompiledHumanDraft | null {
+  const compilation = compileCommunityGatePolicy(policy);
+  const humanBinding: CommunityCreationProviderBinding = {
+    requirement: "human_identity",
+    family: null,
+    provider_id:
+      compilation.kind === "supported" ? VERY_WEB_PROVIDER_ID : UNRESOLVED_PROVIDER_ID,
+    provider_configuration: {
+      kind: "dynamic",
+      reference:
+        compilation.kind === "supported"
+          ? VERY_WEB_CONFIGURATION_REFERENCE
+          : UNRESOLVED_PROVIDER_CONFIGURATION,
+      version: compilation.kind === "supported" ? VERY_WEB_CONFIGURATION_VERSION : "1",
+    },
+    protocol_version:
+      compilation.kind === "supported" ? VERY_WEB_PROTOCOL_VERSION : "unresolved",
+  };
+  let humanProviderBindingHash: string;
+  try {
+    humanProviderBindingHash = communityCreationProviderBindingHash(humanBinding);
+  } catch {
+    return null;
+  }
+  return {
+    status: compilation.kind === "supported" ? "verification_required" : "gate_unsupported",
+    canonicalPolicyHash: compilation.canonical_policy_hash,
+    verificationRequirementHash: compilation.verification_requirement_hash,
+    binding: {
+      providerId: humanBinding.provider_id,
+      configurationKind: humanBinding.provider_configuration.kind,
+      configurationReference: humanBinding.provider_configuration.reference,
+      configurationVersion: humanBinding.provider_configuration.version,
+    },
+    humanProviderBindingHash,
+  };
+}
+
 function requirementFromValue(
   value: unknown,
   requirement: "human_identity" | "namespace_ownership",
@@ -320,18 +367,31 @@ function nextActionFromRequirements(
   input: Readonly<{
     readonly intentId: string;
     readonly status: string;
+    readonly contractVersion: "route_v1" | "optional_route_v2";
     readonly human: CreationRequirementProgress;
-    readonly namespace: CreationRequirementProgress;
+    readonly namespace: CreationRequirementProgress | null;
   }>,
 ) {
   if (input.status === "draft") {
     return { kind: "wait", requirement: null, reason_code: "operation_pending" } as const;
   }
   if (input.status === "verification_required") {
-    for (const [requirement, progress, started] of [
-      ["human_identity", input.human, row.human_started === true],
-      ["namespace_ownership", input.namespace, row.namespace_started === true],
-    ] as const) {
+    const requirements: readonly (readonly [
+      "human_identity" | "namespace_ownership",
+      CreationRequirementProgress,
+      boolean,
+    ])[] =
+      input.contractVersion === "optional_route_v2"
+        ? [["human_identity", input.human, row.human_started === true]]
+        : [
+            ["human_identity", input.human, row.human_started === true],
+            [
+              "namespace_ownership",
+              input.namespace as CreationRequirementProgress,
+              row.namespace_started === true,
+            ],
+          ];
+    for (const [requirement, progress, started] of requirements) {
       if (progress.status !== "pending") continue;
       return started
         ? ({
@@ -369,6 +429,7 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
   const requirementHash = asString(row.verification_requirement_hash);
   const providerId = asString(row.verification_provider_id);
   const expiresAt = asTimestamp(row.expires_at);
+  const contractVersion = asString(row.creation_contract_version);
   const human = requirementFromValue(row.human_requirement, "human_identity");
   const namespace = requirementFromValue(row.namespace_requirement, "namespace_ownership");
   if (
@@ -381,50 +442,64 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
     providerId === null ||
     expiresAt === null ||
     human === null ||
-    namespace === null ||
-    row.creation_contract_version !== "route_v1"
+    (contractVersion !== "route_v1" && contractVersion !== "optional_route_v2") ||
+    (contractVersion === "route_v1" && namespace === null) ||
+    (contractVersion === "optional_route_v2" && row.namespace_requirement !== null)
   ) {
     return null;
   }
   const nextAction = nextActionFromRequirements(row, {
     intentId,
     status,
+    contractVersion,
     human,
     namespace,
   });
   if (nextAction === null) return null;
-  let committedResource: CommunityCreationIntentState["committed_resource"] &
-    CommunityCreationIntentDocument["committed_resource"] = null;
+  let committedResource: CommunityCreationIntentDocument["committed_resource"] = null;
+  let committedStateResource: CommunityCreationIntentState["committed_resource"] = null;
   if (row.committed_community_id !== null || row.committed_resource_href !== null) {
-    const family = asString(row.committed_route_family);
-    const rootLabel = asString(row.committed_route_root_label);
-    const rootLabelDisplay = asString(row.committed_route_root_label_display);
-    const pathSegment = asString(row.committed_route_path_segment);
-    const href = asString(row.committed_route_href);
-    if (
-      (family !== "hns" && family !== "spaces") ||
-      rootLabel === null ||
-      rootLabelDisplay === null ||
-      pathSegment === null ||
-      href === null
-    ) {
-      return null;
+    const communityId = asString(row.committed_community_id);
+    const resourceHref = asString(row.committed_resource_href);
+    if (communityId === null || resourceHref === null) return null;
+    committedStateResource = { community_id: communityId, href: resourceHref };
+    if (contractVersion === "optional_route_v2") {
+      committedResource = {
+        authority_version: "optional_route_v2",
+        community_id: communityId,
+        href: resourceHref,
+        canonical_route: null,
+      };
+    } else {
+      const family = asString(row.committed_route_family);
+      const rootLabel = asString(row.committed_route_root_label);
+      const rootLabelDisplay = asString(row.committed_route_root_label_display);
+      const pathSegment = asString(row.committed_route_path_segment);
+      const href = asString(row.committed_route_href);
+      if (
+        (family !== "hns" && family !== "spaces") ||
+        rootLabel === null ||
+        rootLabelDisplay === null ||
+        pathSegment === null ||
+        href === null
+      ) {
+        return null;
+      }
+      committedResource = {
+        community_id: communityId,
+        href: resourceHref,
+        canonical_route: canonicalRouteView(
+          {
+            family,
+            root_label: rootLabel,
+            root_label_display: rootLabelDisplay,
+            path_segment: pathSegment,
+            href,
+          },
+          row.committed_app_host_healthy === true,
+        ),
+      };
     }
-    const route = canonicalRouteView(
-      {
-        family,
-        root_label: rootLabel,
-        root_label_display: rootLabelDisplay,
-        path_segment: pathSegment,
-        href,
-      },
-      row.committed_app_host_healthy === true,
-    );
-    committedResource = {
-      community_id: asString(row.committed_community_id) ?? "",
-      href: asString(row.committed_resource_href) ?? "",
-      canonical_route: route,
-    };
   }
   const state: CommunityCreationIntentState = {
     intent_id: intentId,
@@ -435,23 +510,30 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
     verification_requirement_hash: requirementHash,
     verification_provider_id: providerId,
     expires_at: expiresAt,
-    committed_resource: committedResource,
+    committed_resource: committedStateResource,
   };
-  const decoded = Schema.decodeUnknownOption(CommunityCreationIntentContract)({
+  const publicIntent = {
+    ...(contractVersion === "optional_route_v2"
+      ? { creation_contract_version: "optional_route_v2" as const }
+      : {}),
     intent_id: state.intent_id,
     revision: state.revision,
     status: state.status,
     draft: jsonValue(row.draft),
     canonical_policy_revision: state.canonical_policy_revision,
     canonical_policy_hash: state.canonical_policy_hash,
-    requirements: publicCommunityCreationRequirements({
-      human_identity: human,
-      namespace_ownership: namespace,
-    }),
+    requirements:
+      contractVersion === "optional_route_v2"
+        ? publicOptionalRouteCommunityCreationRequirements(human)
+        : publicCommunityCreationRequirements({
+            human_identity: human,
+            namespace_ownership: namespace as CreationRequirementProgress,
+          }),
     next_action: nextAction,
     expires_at: state.expires_at,
-    committed_resource: state.committed_resource,
-  });
+    committed_resource: committedResource,
+  };
+  const decoded = Schema.decodeUnknownOption(CommunityCreationIntentContract)(publicIntent);
   return Option.isSome(decoded) ? decoded.value : null;
 }
 
@@ -573,7 +655,7 @@ function loadLockedIntent(
                LEFT JOIN community_route_app_host_health AS host
                  ON host.route_binding_id = binding.route_binding_id
               WHERE intent.intent_id = $1 AND intent.actor_id = $2
-                AND intent.creation_contract_version = 'route_v1'
+                AND intent.creation_contract_version IN ('route_v1', 'optional_route_v2')
               FOR UPDATE OF intent`,
       values: [intentId, actorId, databaseNow ?? null],
       readonly: false,
@@ -605,7 +687,7 @@ function replayByKey(
               WHERE revision.actor_id = $1
                 AND revision.operation_kind = $2
                 AND revision.idempotency_key = $3
-                AND intent.creation_contract_version = 'route_v1'
+                AND intent.creation_contract_version IN ('route_v1', 'optional_route_v2')
               FOR UPDATE OF revision`,
       values: [input.actorId, input.operation, input.idempotencyKey],
       readonly: false,
@@ -664,7 +746,7 @@ function insertInitialCreationRequirements(
     readonly actorId: string;
     readonly intentId: string;
     readonly ceremonyIntentId: string;
-    readonly compiled: CompiledDraft;
+    readonly compiled: CompiledHumanDraft;
   }>,
 ): Effect.Effect<void, CommunityCreationRepositoryFailure> {
   return Effect.gen(function* () {
@@ -678,9 +760,7 @@ function insertInitialCreationRequirements(
                route_root_label_display, route_path_segment, generation
              ) VALUES
              ($1, $2, 'human_identity', 'unmet', $3, $4, $5, $6, $7, $8,
-              NULL, NULL, NULL, NULL, 0),
-             ($1, $2, 'namespace_ownership', 'unmet', $9, $10, $11, $12, $13, $14,
-              $15, $16, $17, $18, 0)`,
+              NULL, NULL, NULL, NULL, 0)`,
       values: [
         input.intentId,
         input.actorId,
@@ -690,16 +770,6 @@ function insertInitialCreationRequirements(
         input.compiled.binding.configurationKind,
         input.compiled.binding.configurationReference,
         input.compiled.binding.configurationVersion,
-        input.compiled.namespaceRequirementHash,
-        input.compiled.namespaceBinding.providerId,
-        input.compiled.namespaceBinding.providerBindingHash,
-        input.compiled.namespaceBinding.configurationKind,
-        input.compiled.namespaceBinding.configurationReference,
-        input.compiled.namespaceBinding.configurationVersion,
-        input.compiled.route.family,
-        input.compiled.route.root_label,
-        input.compiled.route.root_label_display,
-        input.compiled.route.path_segment,
       ],
       readonly: false,
     });
@@ -740,7 +810,7 @@ function insertInitialCreationRequirements(
                     NULL, NULL, NULL, NULL, $10, $11::jsonb, intent.expires_at
                FROM community_creation_intents AS intent
               WHERE intent.intent_id = $3 AND intent.actor_id = $2
-                AND intent.creation_contract_version = 'route_v1'`,
+                AND intent.creation_contract_version = 'optional_route_v2'`,
       values: [
         input.ceremonyIntentId,
         input.actorId,
@@ -786,13 +856,16 @@ function reserveNextCreationRequirement(
   return Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
       label: `community.creation.${input.operation}.lock-requirements`,
-      text: `SELECT requirement_kind, status, requirement_hash, provider_id,
-                    provider_binding_hash, provider_configuration_kind,
-                    provider_configuration_ref, provider_configuration_version,
-                    route_family, route_root_label, route_root_label_display,
-                    route_path_segment, generation, current_ceremony_intent_id
-               FROM community_creation_requirement_states
-              WHERE intent_id = $1 AND actor_id = $2
+      text: `SELECT state.requirement_kind, state.status, state.requirement_hash, state.provider_id,
+                    state.provider_binding_hash, state.provider_configuration_kind,
+                    state.provider_configuration_ref, state.provider_configuration_version,
+                    state.route_family, state.route_root_label, state.route_root_label_display,
+                    state.route_path_segment, state.generation, state.current_ceremony_intent_id,
+                    intent.creation_contract_version
+               FROM community_creation_requirement_states AS state
+               JOIN community_creation_intents AS intent
+                 ON intent.intent_id = state.intent_id AND intent.actor_id = state.actor_id
+              WHERE state.intent_id = $1 AND state.actor_id = $2
               ORDER BY CASE requirement_kind
                 WHEN 'human_identity' THEN 1
                 WHEN 'namespace_ownership' THEN 2
@@ -801,7 +874,13 @@ function reserveNextCreationRequirement(
       values: [input.intentId, input.actorId],
       readonly: false,
     });
-    if (result.rows.length !== 2) {
+    const contractVersion = asString(result.rows[0]?.creation_contract_version);
+    const expectedRequirementCount = contractVersion === "optional_route_v2" ? 1 : 2;
+    if (
+      (contractVersion !== "route_v1" && contractVersion !== "optional_route_v2") ||
+      result.rows.length !== expectedRequirementCount ||
+      result.rows.some((row) => row.creation_contract_version !== contractVersion)
+    ) {
       return yield* Effect.fail(failure(input.operation, "invalid-row"));
     }
     if (result.rows.some((row) => row.status === "pending")) return "pending";
@@ -889,7 +968,7 @@ function reserveNextCreationRequirement(
                 AND state.requirement_kind = $7
                 AND state.status IN ('unmet', 'failed', 'expired')
                 AND state.generation = $8
-                AND intent.creation_contract_version = 'route_v1'
+                AND intent.creation_contract_version IN ('route_v1', 'optional_route_v2')
                 AND intent.expires_at > clock_timestamp()`,
       values: [
         input.ceremonyIntentId,
@@ -938,7 +1017,7 @@ function replaceCreationRequirementBindings(
   input: Readonly<{
     readonly actorId: string;
     readonly intentId: string;
-    readonly compiled: CompiledDraft;
+    readonly compiled: CompiledHumanDraft;
   }>,
 ): Effect.Effect<void, CommunityCreationRepositoryFailure> {
   return Effect.gen(function* () {
@@ -970,41 +1049,7 @@ function replaceCreationRequirementBindings(
       ],
       readonly: false,
     });
-    const namespace = yield* transaction.execute({
-      label: "community.creation.update.replace-namespace-binding",
-      text: `UPDATE community_creation_requirement_states
-                SET status = 'unmet', requirement_hash = $1, provider_id = $2,
-                    provider_binding_hash = $3, provider_configuration_kind = $4,
-                    provider_configuration_ref = $5,
-                    provider_configuration_version = $6, route_family = $7,
-                    route_root_label = $8, route_root_label_display = $9,
-                    route_path_segment = $10, current_ceremony_intent_id = NULL,
-                    satisfied_at = NULL, updated_at = clock_timestamp()
-              WHERE intent_id = $11 AND actor_id = $12
-                AND requirement_kind = 'namespace_ownership'
-                AND ROW(
-                  requirement_hash, provider_id, provider_binding_hash,
-                  provider_configuration_kind, provider_configuration_ref,
-                  provider_configuration_version, route_family, route_root_label,
-                  route_root_label_display, route_path_segment
-                ) IS DISTINCT FROM ROW($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-      values: [
-        input.compiled.namespaceRequirementHash,
-        input.compiled.namespaceBinding.providerId,
-        input.compiled.namespaceBinding.providerBindingHash,
-        input.compiled.namespaceBinding.configurationKind,
-        input.compiled.namespaceBinding.configurationReference,
-        input.compiled.namespaceBinding.configurationVersion,
-        input.compiled.route.family,
-        input.compiled.route.root_label,
-        input.compiled.route.root_label_display,
-        input.compiled.route.path_segment,
-        input.intentId,
-        input.actorId,
-      ],
-      readonly: false,
-    });
-    if (human.rowCount > 1 || namespace.rowCount > 1) {
+    if (human.rowCount > 1) {
       return yield* Effect.fail(failure("update", "invalid-row"));
     }
   });
@@ -1755,7 +1800,7 @@ export function makeControlPlaneCommunityCreationRepository(
 ): CommunityCreationRepository {
   const intentTtlSeconds = options.intent_ttl_seconds ?? COMMUNITY_CREATION_INTENT_TTL_SECONDS;
   const nextIntentId = options.next_intent_id ?? (() => `community-intent-${crypto.randomUUID()}`);
-  const nextCommunityId = options.next_community_id ?? (() => `community-${crypto.randomUUID()}`);
+  const nextCommunityId = options.next_community_id ?? (() => `community_${crypto.randomUUID()}`);
   const nextRouteBindingId =
     options.next_route_binding_id ?? (() => `community-route-${crypto.randomUUID()}`);
   const nextSubjectClaimId =
@@ -1779,15 +1824,9 @@ export function makeControlPlaneCommunityCreationRepository(
       const body = decodedBody.value;
       const intentId = nextIntentId();
       if (!validId(intentId)) return yield* Effect.fail(failure("create", "constraint"));
-      const compiled = compileDraft(body.draft.policy, body.draft.route_request, namespaceBindings);
+      const compiled = compileOptionalRouteDraft(body.draft.policy);
       if (compiled === null) return yield* Effect.fail(failure("create", "constraint"));
-      const canonicalDraft = {
-        ...body.draft,
-        route_request: {
-          family: compiled.route.family,
-          root_label: compiled.route.root_label,
-        },
-      };
+      const canonicalDraft = body.draft;
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
@@ -1816,7 +1855,7 @@ export function makeControlPlaneCommunityCreationRepository(
                    ) VALUES (
                      $1, $2, $3, $4, 1, $5, $6::jsonb, 1, $7, $8,
                      $9, $10, $11, $12,
-                     clock_timestamp() + ($13::integer * interval '1 second'), 'route_v1'
+                     clock_timestamp() + ($13::integer * interval '1 second'), 'optional_route_v2'
                    )`,
             values: [
               intentId,
@@ -1929,7 +1968,7 @@ export function makeControlPlaneCommunityCreationRepository(
         return yield* Effect.fail(failure("update", "constraint"));
       }
       const body = decodedBody.value;
-      const compiled = compileDraft(body.draft.policy, body.draft.route_request, namespaceBindings);
+      const compiled = compileOptionalRouteDraft(body.draft.policy);
       if (compiled === null) return yield* Effect.fail(failure("update", "constraint"));
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
@@ -1954,6 +1993,12 @@ export function makeControlPlaneCommunityCreationRepository(
           const providerId = asString(row.verification_provider_id);
           if (document === null || providerId === null) {
             return yield* Effect.fail(failure("update", "invalid-row"));
+          }
+          if (
+            !("creation_contract_version" in document) ||
+            document.creation_contract_version !== "optional_route_v2"
+          ) {
+            return yield* Effect.fail(failure("update", "constraint"));
           }
           if (row.expired === true || TERMINAL_STATUSES.has(document.status)) {
             return yield* Effect.fail(failure("update", "constraint"));
@@ -1985,13 +2030,7 @@ export function makeControlPlaneCommunityCreationRepository(
               : selection === "complete"
                 ? "commit_ready"
                 : "verification_required";
-          const canonicalDraft = {
-            ...body.draft,
-            route_request: {
-              family: compiled.route.family,
-              root_label: compiled.route.root_label,
-            },
-          };
+          const canonicalDraft = body.draft;
           const updated = yield* transaction.execute({
             label: "community.creation.update.persist-intent",
             text: `UPDATE community_creation_intents
@@ -2003,7 +2042,8 @@ export function makeControlPlaneCommunityCreationRepository(
                           provider_configuration_ref = $9,
                           provider_configuration_version = $10,
                           updated_at = clock_timestamp()
-                    WHERE intent_id = $11 AND actor_id = $12 AND revision = $13`,
+                    WHERE intent_id = $11 AND actor_id = $12 AND revision = $13
+                      AND creation_contract_version = 'optional_route_v2'`,
             values: [
               document.revision + 1,
               nextStatus,
@@ -2091,7 +2131,7 @@ export function makeControlPlaneCommunityCreationRepository(
           }
 
           const compilation = compileCommunityGatePolicy(document.draft.policy);
-          const compiledDraft = compileDraft(
+          const compiledDraft = compileRouteV1Draft(
             document.draft.policy,
             document.draft.route_request,
             namespaceBindings,

@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import {
+  CommunityCreationRequirementsV2,
   CommunityCreationRequirementsV1,
   CreationVerificationRequirementV1,
 } from "./community-creation-requirements.ts";
@@ -70,13 +71,23 @@ export const CompiledGatePolicy = Schema.Struct({
 });
 export type CompiledGatePolicy = Schema.Schema.Type<typeof CompiledGatePolicy>;
 
-export const CommunityCreationDraft = Schema.Struct({
+export const CommunityCreationDraftV1 = Schema.Struct({
   name: Schema.NonEmptyString,
   description: Schema.NullOr(Schema.String),
   route_request: CommunityRouteRequestV1,
   policy: CompiledGatePolicy,
 });
-export type CommunityCreationDraft = Schema.Schema.Type<typeof CommunityCreationDraft>;
+export type CommunityCreationDraftV1 = Schema.Schema.Type<typeof CommunityCreationDraftV1>;
+
+export const CommunityCreationDraftV2 = Schema.Struct({
+  name: Schema.NonEmptyString,
+  description: Schema.NullOr(Schema.String),
+  policy: CompiledGatePolicy,
+});
+export type CommunityCreationDraftV2 = Schema.Schema.Type<typeof CommunityCreationDraftV2>;
+
+export const CommunityCreationDraft = CommunityCreationDraftV2;
+export type CommunityCreationDraft = CommunityCreationDraftV2;
 
 export const CommunityCreationStatus = Schema.Literals([
   "draft",
@@ -98,7 +109,7 @@ export const NextActionWaitReasonCode = Schema.Literals([
 ]);
 export type NextActionWaitReasonCode = Schema.Schema.Type<typeof NextActionWaitReasonCode>;
 
-export const CreationNextAction = Schema.Union([
+export const CreationNextActionV1 = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("start_verification"),
     requirement: CreationVerificationRequirementV1,
@@ -123,9 +134,44 @@ export const CreationNextAction = Schema.Union([
     reason: Schema.Literals(["committed", "expired", "cancelled"]),
   }),
 ]);
+export type CreationNextActionV1 = Schema.Schema.Type<typeof CreationNextActionV1>;
+
+export const CommunityCreationNextActionV2 = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("start_verification"),
+    requirement: Schema.Literal("human_identity"),
+    provider_id: Schema.NonEmptyString,
+    creation_intent_id: Schema.NonEmptyString,
+    ceremony_intent_id: Schema.NonEmptyString,
+    generation: PositiveInteger,
+  }),
+  Schema.Struct({ kind: Schema.Literal("commit") }),
+  Schema.Struct({
+    kind: Schema.Literal("wait"),
+    requirement: Schema.NullOr(Schema.Literal("human_identity")),
+    reason_code: NextActionWaitReasonCode,
+    retry_after_seconds: Schema.optional(PositiveInteger),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("blocked"),
+    reason: Schema.Literals(["quota_exceeded", "gate_unsupported"]),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("none"),
+    reason: Schema.Literals(["committed", "expired", "cancelled"]),
+  }),
+]);
+export type CommunityCreationNextActionV2 = Schema.Schema.Type<
+  typeof CommunityCreationNextActionV2
+>;
+
+export const CreationNextAction = Schema.Union([
+  CommunityCreationNextActionV2,
+  CreationNextActionV1,
+]);
 export type CreationNextAction = Schema.Schema.Type<typeof CreationNextAction>;
 
-export const CommittedCommunityResource = Schema.Struct({
+export const CommittedCommunityResourceV1 = Schema.Struct({
   community_id: Schema.NonEmptyString,
   href: Schema.NonEmptyString.check(
     Schema.makeFilter((value) =>
@@ -140,19 +186,68 @@ export const CommittedCommunityResource = Schema.Struct({
       : "Committed resource href must equal its canonical route href",
   ),
 );
+export type CommittedCommunityResourceV1 = Schema.Schema.Type<
+  typeof CommittedCommunityResourceV1
+>;
+
+export const OptionalRouteCommunityIdV2 = Schema.String.check(
+  Schema.makeFilter((value) =>
+    /^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+      value,
+    )
+      ? undefined
+      : "Expected a generated optional-route community id",
+  ),
+);
+export type OptionalRouteCommunityIdV2 = Schema.Schema.Type<typeof OptionalRouteCommunityIdV2>;
+
+export const CommittedCommunityResourceV2 = Schema.Struct({
+  authority_version: Schema.Literal("optional_route_v2"),
+  community_id: OptionalRouteCommunityIdV2,
+  href: Schema.NonEmptyString,
+  canonical_route: Schema.Null,
+}).check(
+  Schema.makeFilter((resource) =>
+    resource.href === `/c/${resource.community_id}`
+      ? undefined
+      : "Committed optional-route href must use its permanent community id",
+  ),
+);
+export type CommittedCommunityResourceV2 = Schema.Schema.Type<
+  typeof CommittedCommunityResourceV2
+>;
+
+export const CurrentCommunityResourceV2 = Schema.Struct({
+  authority_version: Schema.Literal("optional_route_v2"),
+  community_id: OptionalRouteCommunityIdV2,
+  href: Schema.NonEmptyString,
+  canonical_route: Schema.NullOr(CommunityCanonicalRouteV1),
+}).check(
+  Schema.makeFilter((resource) =>
+    resource.href === `/c/${resource.community_id}`
+      ? undefined
+      : "Current optional-route href must use its permanent community id",
+  ),
+);
+export type CurrentCommunityResourceV2 = Schema.Schema.Type<typeof CurrentCommunityResourceV2>;
+
+export const CommittedCommunityResource = Schema.Union([
+  CommittedCommunityResourceV2,
+  CommittedCommunityResourceV1,
+]);
 export type CommittedCommunityResource = Schema.Schema.Type<typeof CommittedCommunityResource>;
 
-export const CommunityCreationIntent = Schema.Struct({
+export const CommunityCreationIntentV1 = Schema.Struct({
   intent_id: Schema.NonEmptyString,
   revision: PositiveInteger,
   status: CommunityCreationStatus,
-  draft: CommunityCreationDraft,
+  draft: CommunityCreationDraftV1,
   canonical_policy_revision: PositiveInteger,
   canonical_policy_hash: Sha256Hex,
   requirements: CommunityCreationRequirementsV1,
-  next_action: CreationNextAction,
+  next_action: CreationNextActionV1,
   expires_at: CanonicalIsoInstant,
-  committed_resource: Schema.NullOr(CommittedCommunityResource),
+  committed_resource: Schema.NullOr(CommittedCommunityResourceV1),
 }).check(
   Schema.makeFilter((intent) => {
     if (intent.status === "committed") {
@@ -205,6 +300,78 @@ export const CommunityCreationIntent = Schema.Struct({
       : "Draft intents require an explicit wait action";
   }),
 );
+export type CommunityCreationIntentV1 = Schema.Schema.Type<typeof CommunityCreationIntentV1>;
+
+export const CommunityCreationIntentV2 = Schema.Struct({
+  creation_contract_version: Schema.Literal("optional_route_v2"),
+  intent_id: Schema.NonEmptyString,
+  revision: PositiveInteger,
+  status: CommunityCreationStatus,
+  draft: CommunityCreationDraftV2,
+  canonical_policy_revision: PositiveInteger,
+  canonical_policy_hash: Sha256Hex,
+  requirements: CommunityCreationRequirementsV2,
+  next_action: CommunityCreationNextActionV2,
+  expires_at: CanonicalIsoInstant,
+  committed_resource: Schema.NullOr(CommittedCommunityResourceV2),
+}).check(
+  Schema.makeFilter((intent) => {
+    if (intent.status === "committed") {
+      return intent.committed_resource !== null &&
+        intent.next_action.kind === "none" &&
+        intent.next_action.reason === "committed"
+        ? undefined
+        : "Committed intents require their committed resource and terminal next action";
+    }
+    if (intent.committed_resource !== null) {
+      return "Non-committed intents cannot expose a committed resource";
+    }
+    if (intent.status === "verification_required") {
+      if (intent.next_action.kind === "start_verification") {
+        const progress = intent.requirements.human_identity;
+        return intent.next_action.creation_intent_id === intent.intent_id &&
+          progress.requirement === "human_identity" &&
+          progress.status === "pending" &&
+          progress.provider_id === intent.next_action.provider_id &&
+          progress.ceremony_intent_id === intent.next_action.ceremony_intent_id &&
+          progress.generation === intent.next_action.generation
+          ? undefined
+          : "Verification start action must match its reserved human requirement";
+      }
+      if (intent.next_action.kind === "wait") {
+        return intent.next_action.requirement === null ||
+          intent.requirements.human_identity.status === "pending"
+          ? undefined
+          : "Verification wait action must name the pending human requirement";
+      }
+      return "Verification-required intents require a typed human verification action";
+    }
+    if (intent.status === "commit_ready") {
+      return intent.next_action.kind === "commit"
+        ? undefined
+        : "Commit-ready intents require a commit action";
+    }
+    if (intent.status === "quota_exceeded" || intent.status === "gate_unsupported") {
+      return intent.next_action.kind === "blocked" && intent.next_action.reason === intent.status
+        ? undefined
+        : "Blocked intents require their matching blocked action";
+    }
+    if (intent.status === "expired" || intent.status === "cancelled") {
+      return intent.next_action.kind === "none" && intent.next_action.reason === intent.status
+        ? undefined
+        : "Terminal intents require their matching terminal action";
+    }
+    return intent.next_action.kind === "wait" && intent.next_action.requirement === null
+      ? undefined
+      : "Draft intents require an explicit wait action";
+  }),
+);
+export type CommunityCreationIntentV2 = Schema.Schema.Type<typeof CommunityCreationIntentV2>;
+
+export const CommunityCreationIntent = Schema.Union([
+  CommunityCreationIntentV2,
+  CommunityCreationIntentV1,
+]);
 export type CommunityCreationIntent = Schema.Schema.Type<typeof CommunityCreationIntent>;
 
 const IntentPath = Schema.Struct({ intentId: Schema.NonEmptyString });
@@ -217,10 +384,10 @@ export const CreateCommunityCreationIntent = endpoint({
   request: {
     body: Schema.Struct({
       idempotency_key: Schema.NonEmptyString,
-      draft: CommunityCreationDraft,
+      draft: CommunityCreationDraftV2,
     }),
   },
-  response: CommunityCreationIntent,
+  response: CommunityCreationIntentV2,
   successStatus: [200, 201],
   errors: [AuthError, BadRequest, Conflict, InternalError],
 });
@@ -244,10 +411,10 @@ export const UpdateCommunityCreationIntent = endpoint({
     body: Schema.Struct({
       idempotency_key: Schema.NonEmptyString,
       expected_revision: PositiveInteger,
-      draft: CommunityCreationDraft,
+      draft: CommunityCreationDraftV2,
     }),
   },
-  response: CommunityCreationIntent,
+  response: CommunityCreationIntentV2,
   successStatus: 200,
   errors: [AuthError, BadRequest, Conflict, NotFound, InternalError],
 });

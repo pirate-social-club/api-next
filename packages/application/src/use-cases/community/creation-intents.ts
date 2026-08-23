@@ -7,7 +7,6 @@ import {
   NotFound,
   UpdateCommunityCreationIntent,
 } from "@pirate/contracts";
-import { deriveCommunityRoute } from "@pirate/domain";
 import { Effect, Schema } from "effect";
 import {
   CommunityCreationRepositoryError,
@@ -58,36 +57,6 @@ const decodeBody = <S extends Schema.ConstraintDecoder<unknown>>(schema: S, inpu
     catch: () => new BadRequest({ message: "Invalid community creation request" }),
   });
 
-function canonicalizeDraftRoute<
-  Body extends { readonly draft: { readonly route_request: unknown } },
->(body: Body) {
-  const request = body.draft.route_request;
-  if (
-    request === null ||
-    typeof request !== "object" ||
-    !("family" in request) ||
-    !("root_label" in request)
-  ) {
-    return Effect.fail(new BadRequest({ message: "Invalid community route request" }));
-  }
-  const route = deriveCommunityRoute({
-    family: request.family,
-    root_label: request.root_label,
-  });
-  return route.kind === "accepted"
-    ? Effect.succeed({
-        ...body,
-        draft: {
-          ...body.draft,
-          route_request: {
-            family: route.value.family,
-            root_label: route.value.root_label,
-          },
-        },
-      })
-    : Effect.fail(new BadRequest({ message: "Invalid community route request" }));
-}
-
 const canonicalValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonicalValue);
   if (value !== null && typeof value === "object") {
@@ -134,8 +103,7 @@ export const createCommunityCreationIntent = Effect.fn("createCommunityCreationI
   services: CommunityCreationServices,
 ) {
   yield* validateActor(input.actor);
-  const decodedBody = yield* decodeBody(CreateCommunityCreationIntent.request.body, input.body);
-  const body = yield* canonicalizeDraftRoute(decodedBody);
+  const body = yield* decodeBody(CreateCommunityCreationIntent.request.body, input.body);
   const hash = yield* requestHash(body);
   return yield* services.communityCreationStore
     .create({ actor: input.actor, body, requestHash: hash })
@@ -167,8 +135,7 @@ export const updateCommunityCreationIntent = Effect.fn("updateCommunityCreationI
   if (!validIdentifier(input.intentId)) {
     return yield* new NotFound({ message: "Community creation intent not found" });
   }
-  const decodedBody = yield* decodeBody(UpdateCommunityCreationIntent.request.body, input.body);
-  const body = yield* canonicalizeDraftRoute(decodedBody);
+  const body = yield* decodeBody(UpdateCommunityCreationIntent.request.body, input.body);
   const hash = yield* requestHash(body);
   return yield* services.communityCreationStore
     .update({ intentId: input.intentId, actor: input.actor, body, requestHash: hash })

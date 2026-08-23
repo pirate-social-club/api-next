@@ -10,6 +10,7 @@ import type {
   CreatePost,
   FollowCommunity,
   GetCanonicalCommunityRoute,
+  GetCommunityCreationIntent,
   GetCommunityPreview,
   GetJoinEligibility,
   GetPost,
@@ -613,7 +614,7 @@ export class CommunityStore extends Context.Service<CommunityStore, CommunitySto
 // --- Server-owned community creation intents (specs 006/010).
 
 export type CommunityCreationIntentDocument = Schema.Schema.Type<
-  typeof CreateCommunityCreationIntent.response
+  typeof GetCommunityCreationIntent.response
 >;
 export type CreateCommunityCreationIntentBody = Schema.Schema.Type<
   (typeof CreateCommunityCreationIntent.request)["body"]
