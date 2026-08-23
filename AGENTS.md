@@ -36,10 +36,27 @@ Effect code:
 
 ## Commit policy
 
-Commit directly to `main` — no feature branches for canonical work (mirrors
-the `core` convention; single integration writer). Lane worktrees branch
-per the lane spec and merge via the coordinator. Commits are conventional,
-small, and pathspec-limited; never a blanket `git add -A`.
+`main` is advanced only by a squash merge of a GitHub pull request. No agent,
+coordinator, or human commits directly to `main`. Lane worktrees branch per the
+lane spec; the coordinator opens the pull request rather than merging locally.
+Commits are conventional, small, and pathspec-limited; never a blanket
+`git add -A`.
+
+Required checks are `check`, `postgres17`, and `secret-boundary`. Zero human
+approvals are required. Merge eligibility for a green pull request is decided by
+trusted automation, not by the check result alone: passing tests establish that
+a change is safe to merge, not that it is wanted.
+
+The secret boundary guard refuses any pull request that modifies
+`.github/workflows/secret-boundary.yml`, `scripts/secret-boundary-check.ts`, or
+`scripts/secret-boundary-check.test.ts`. Changing the guard is a break-glass
+operation: an administrator relaxes the `main` ruleset, lands the change, and
+restores the ruleset. It has no ordinary automatic path.
+
+This supersedes the previous direct-to-`main` convention, and diverges
+deliberately from both the `core` single-integration-writer model and the
+Radicle-primary promotion model in `ops/radicle-ci/operations.md`. See that
+document's api-next transition record.
 
 ## Writer isolation
 
