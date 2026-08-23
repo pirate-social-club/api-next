@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.13.0",
+  "releaseType": "upload-derived-song-analysis-contract-r1",
+  "wireContract": "wire-v2",
+  "sourceCommit": "9f9f4d1",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.13.0.tgz",
+    "sha256": "3c313a2fe15da97c1ea843753829c9e4f7abc87e9932d5d0bd041df248b587ef",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@6263cf7a5e58a3325b6c2bdd5885b871f22eb2c900ff08336380c5fa923e9ae4",
+    "openapiSha256": "6263cf7a5e58a3325b6c2bdd5885b871f22eb2c900ff08336380c5fa923e9ae4",
+    "clientSha256": "96894e2c2ffbb34445ce7ad3154cd5b3e9f46e8938f7dc065ac4372958e820a9"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "6c6f785",
+      "reason": "Spec 013 upload-derived song analysis amendment explicitly ratifies the form-light song start, separate terms command, and audio-revision-bound analysis clean break from client 0.12.0."
+    },
+    "focusedSongMediaAndBoundaryTests": "14 passed",
+    "focusedCodegenBreakingAndClientTests": "38 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "check passed; unit 1280 passed and 204 skipped; Workerd 33, 18, 2, and 1 passed; fresh, 0.12.0-baseline breaking, migration-worktree, and package checks passed"
+  }
+}
