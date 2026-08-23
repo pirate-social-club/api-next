@@ -690,6 +690,12 @@ not an authentication or response-parser failure. It is superseded by the
 explicit disabled-runtime policy above; no drift entry was allowlisted to make
 the workflow green.
 
+The first run under that explicit policy, Actions run `32630721486` at commit
+`1e35662`, completed successfully on 2026-08-23. The Cloudflare axis reported
+zero violations and only the two documented absent-production Worker entries;
+the Infisical axis reported zero violations and zero accepted drift. This is a
+scope correction for a disabled runtime, not a waiver of observed drift.
+
 ## Local project selection — corrected 2026-08-22
 
 Both the repository pin at `api-next/.infisical.json` and the home-directory
