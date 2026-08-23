@@ -105,6 +105,29 @@ export type HnsControlObserverSnapshotFinalizeOutcome =
   | Readonly<{ readonly kind: "lost" }>
   | Readonly<{ readonly kind: "mismatch" }>;
 
+export type HnsControlObserverRetainedSnapshotV1 = Readonly<{
+  readonly snapshot_reference: string;
+  readonly request_bytes: Uint8Array;
+  readonly result_bytes: Uint8Array;
+  readonly result_sha256: Sha256HexValue;
+}>;
+
+export class HnsControlObserverSnapshotReadError extends Error {
+  readonly name = "HnsControlObserverSnapshotReadError";
+
+  constructor(readonly reason: "invalid_snapshot" | "unavailable") {
+    super(reason);
+  }
+}
+
+export type HnsControlObserverSnapshotReaderPort = Readonly<{
+  /** Reads one immutable retained snapshot by its exact database reference. */
+  readonly read: (
+    snapshotReference: string,
+    options: Readonly<{ readonly deadline_ms: number; readonly signal: AbortSignal }>,
+  ) => Promise<HnsControlObserverRetainedSnapshotV1 | null>;
+}>;
+
 export type HnsControlObserverSnapshotStorePort = Readonly<{
   /**
    * Uses the store's database clock. Implementations compare exact request and

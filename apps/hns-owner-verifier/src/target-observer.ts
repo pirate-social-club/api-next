@@ -1,9 +1,16 @@
 import {
+  encodeHnsActiveLeaseRenewalResponse,
   encodeHnsControlObservationRequest,
   type HnsControlObservationRequestV1,
+  HnsControlObserverSnapshotReadError,
+  type HnsControlObserverSnapshotReaderPort,
   type HnsEvidenceLeasePolicy,
+  type HnsOwnerActiveLeaseRenewalRequestV1,
   type HnsOwnershipSource,
+  hnsActiveLeaseRenewalPriorSnapshotReference,
+  mapHnsActiveLeaseRenewalObservationForRequest,
   mapHnsControlObservationToTargetV2,
+  resolveHnsActiveLeaseRenewalControlIdentity,
 } from "@pirate/application/namespace-ownership";
 import {
   decodeHnsOwnerRecoveryTargetResponseBytes,
@@ -42,6 +49,7 @@ export type HnsTargetObserverPort = Readonly<{
 export type HnsTargetObserverRuntime = Readonly<{
   readonly configuration: HnsTargetObserverConfiguration;
   readonly observer: HnsTargetObserverPort;
+  readonly snapshot_reader?: HnsControlObserverSnapshotReaderPort;
 }>;
 
 export type HnsTargetObserverPortErrorReason =
@@ -64,7 +72,9 @@ export class HnsTargetObserverPortError extends Error {
 export class HnsTargetObserverFacadeError extends Error {
   readonly name = "HnsTargetObserverFacadeError";
 
-  constructor(readonly reason: "misconfigured" | "unavailable" | "invalid_response") {
+  constructor(
+    readonly reason: "misconfigured" | "unavailable" | "invalid_response" | "ineligible",
+  ) {
     super(reason);
   }
 }
@@ -133,6 +143,125 @@ export function matchesHnsTargetObserverCreationConfiguration(
     policy.expiry_safety_blocks >= 0 &&
     validPositiveInteger(policy.evidence_lease_seconds)
   );
+}
+
+export function matchesHnsTargetObserverRenewalConfiguration(
+  request: HnsOwnerActiveLeaseRenewalRequestV1,
+  runtime: HnsTargetObserverRuntime,
+): boolean {
+  const configuration = runtime.configuration;
+  return (
+    request.provider_id === configuration.provider_id &&
+    request.provider_configuration.kind === "managed" &&
+    request.provider_configuration.reference === configuration.provider_configuration_reference &&
+    request.provider_configuration.version === configuration.provider_configuration_version &&
+    request.provider_configuration.digest === configuration.provider_configuration_digest &&
+    request.environment === configuration.environment &&
+    validPositiveInteger(configuration.observer_deadline_ms) &&
+    configuration.observer_deadline_ms <= HNS_TARGET_OBSERVER_DEADLINE_MAX_MS
+  );
+}
+
+export async function observeHnsActiveLeaseRenewal(
+  request: HnsOwnerActiveLeaseRenewalRequestV1,
+  runtime: HnsTargetObserverRuntime,
+  observationId: string,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  if (
+    !matchesHnsTargetObserverRenewalConfiguration(request, runtime) ||
+    runtime.snapshot_reader === undefined
+  ) {
+    throw new HnsTargetObserverFacadeError("misconfigured");
+  }
+  if (signal.aborted) throw new HnsTargetObserverFacadeError("unavailable");
+  const controller = new AbortController();
+  const onAbort = () => controller.abort();
+  signal.addEventListener("abort", onAbort, { once: true });
+  const timeout = setTimeout(() => controller.abort(), runtime.configuration.observer_deadline_ms);
+  try {
+    let reference: ReturnType<typeof hnsActiveLeaseRenewalPriorSnapshotReference>;
+    try {
+      reference = hnsActiveLeaseRenewalPriorSnapshotReference(request.prior_provider_evidence_ref);
+    } catch {
+      throw new HnsTargetObserverFacadeError("ineligible");
+    }
+    let snapshot: Awaited<ReturnType<typeof runtime.snapshot_reader.read>>;
+    try {
+      snapshot = await runtime.snapshot_reader.read(reference.snapshot_reference, {
+        deadline_ms: runtime.configuration.observer_deadline_ms,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (
+        error instanceof HnsControlObserverSnapshotReadError &&
+        error.reason === "invalid_snapshot"
+      ) {
+        throw new HnsTargetObserverFacadeError("ineligible");
+      }
+      throw new HnsTargetObserverFacadeError("unavailable");
+    }
+    if (snapshot === null) throw new HnsTargetObserverFacadeError("ineligible");
+    let controlIdentity: Awaited<ReturnType<typeof resolveHnsActiveLeaseRenewalControlIdentity>>;
+    try {
+      controlIdentity = await resolveHnsActiveLeaseRenewalControlIdentity({ request, snapshot });
+    } catch {
+      throw new HnsTargetObserverFacadeError("ineligible");
+    }
+    if (controlIdentity.ownership_source !== runtime.configuration.ownership_source) {
+      throw new HnsTargetObserverFacadeError("misconfigured");
+    }
+    const upstreamSessionRef = controlIdentity.expected_txt_value.slice(
+      "pirate-verification=".length,
+    );
+    const observerRequest: HnsControlObservationRequestV1 = {
+      version: "pirate-hns-control-observation-request-v1",
+      observation_id: observationId,
+      provider_id: request.provider_id,
+      provider_configuration_reference: request.provider_configuration.reference,
+      provider_configuration_version: request.provider_configuration.version,
+      provider_configuration_digest: request.provider_configuration.digest,
+      environment: request.environment,
+      ownership_source: controlIdentity.ownership_source,
+      root_label: request.route.root_label,
+      txt_name: controlIdentity.txt_name,
+      expected_txt_value: controlIdentity.expected_txt_value,
+    };
+    const observerRequestBytes = await encodeHnsControlObservationRequest(observerRequest);
+    let observerResultBytes: Uint8Array;
+    try {
+      observerResultBytes = await runtime.observer.observe(
+        {
+          request: observerRequest,
+          request_bytes: observerRequestBytes,
+          lease_policy: runtime.configuration.lease_policy,
+        },
+        {
+          deadline_ms: runtime.configuration.observer_deadline_ms,
+          signal: controller.signal,
+        },
+      );
+    } catch (error) {
+      throw mapPortError(error);
+    }
+    if (controller.signal.aborted) throw new HnsTargetObserverFacadeError("unavailable");
+    const response = await mapHnsActiveLeaseRenewalObservationForRequest({
+      request,
+      control_identity: controlIdentity,
+      observer_request: observerRequest,
+      observer_result_bytes: observerResultBytes,
+      upstream_session_ref: upstreamSessionRef,
+      policy: runtime.configuration.lease_policy,
+    });
+    return encodeHnsActiveLeaseRenewalResponse(response);
+  } catch (error) {
+    if (error instanceof HnsTargetObserverFacadeError) throw error;
+    if (controller.signal.aborted) throw new HnsTargetObserverFacadeError("unavailable");
+    throw new HnsTargetObserverFacadeError("invalid_response");
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 async function observeWithDeadline(

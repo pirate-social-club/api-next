@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import {
   type HnsControlObservationRequestV1,
+  type HnsOwnerActiveLeaseRenewalRequestV1,
+  hnsActiveLeaseRenewalRequestHash,
   hnsChainAuthorityDigest,
   hnsControlIdentityDigest,
   hnsControlObservationRequestHash,
@@ -85,6 +87,7 @@ function request(path: string, body: unknown, accept: string, observationId?: st
 function runtime(
   observe: HnsTargetObserverRuntime["observer"]["observe"],
   overrides: Partial<HnsTargetObserverRuntime["configuration"]> = {},
+  snapshotReader?: HnsTargetObserverRuntime["snapshot_reader"],
 ): HnsTargetObserverRuntime {
   return {
     configuration: {
@@ -104,6 +107,86 @@ function runtime(
       ...overrides,
     },
     observer: { observe },
+    ...(snapshotReader === undefined ? {} : { snapshot_reader: snapshotReader }),
+  };
+}
+
+function renewalHttpRequest(requestValue: HnsOwnerActiveLeaseRenewalRequestV1): Request {
+  return new Request("https://hns-owner.internal/internal/hns-owner/v1/active-lease-renewal", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/octet-stream",
+      "Pirate-HNS-Active-Lease-Renewal-Id": requestValue.active_lease_renewal_id,
+      "Pirate-HNS-Observation-Id": "observer-renewal-new",
+    },
+    body: JSON.stringify(requestValue),
+  });
+}
+
+async function renewalFixture() {
+  const priorRequest: HnsControlObservationRequestV1 = {
+    version: "pirate-hns-control-observation-request-v1",
+    observation_id: "observer-renewal-prior",
+    provider_id: "hns.owner.v1",
+    provider_configuration_reference: "hns-owner-staging",
+    provider_configuration_version: "hns-owner-config-v1",
+    provider_configuration_digest: configurationDigest,
+    environment: "staging",
+    ownership_source: "hns_parent_chain_txt",
+    root_label: "jazleeuw",
+    txt_name: "jazleeuw",
+    expected_txt_value: "pirate-verification=nvs_prior",
+  };
+  const priorResultBytes = await innerResult(priorRequest, "verified");
+  const priorResult = JSON.parse(new TextDecoder().decode(priorResultBytes)) as {
+    readonly control_identity_digest: string;
+    readonly chain_authority_digest: string;
+    readonly provider_evidence_ref: string;
+  };
+  const resultHashBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", priorResultBytes));
+  const resultHash = Array.from(resultHashBytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  const requestWithoutHash = {
+    version: "pirate-hns-active-lease-renewal-request-v1" as const,
+    operation_kind: "active_lease_renewal" as const,
+    active_lease_renewal_id: "hns-renewal-01",
+    active_lease_renewal_attempt_id: "hns-renewal-attempt-01",
+    community_id: "community-1",
+    route_binding_id: "route-binding-1",
+    expected_binding_generation: 1,
+    expected_verified_evidence_ref: "route-evidence-1",
+    expected_evidence_digest: "a".repeat(64),
+    expected_control_identity_digest: priorResult.control_identity_digest,
+    expected_chain_authority_digest: priorResult.chain_authority_digest,
+    prior_provider_evidence_ref: `hns-observer-v1:sha256:${resultHash}:${priorResult.provider_evidence_ref}`,
+    attempt_number: 1,
+    evidence_ref: "route-evidence-2",
+    requirement_hash: "b".repeat(64),
+    request_hash: "0".repeat(64),
+    provider_id: "hns.owner.v1" as const,
+    provider_binding_hash: "6".repeat(64),
+    provider_configuration: {
+      kind: "managed" as const,
+      reference: "hns-owner-staging",
+      version: "hns-owner-config-v1",
+      digest: configurationDigest,
+    },
+    protocol_version: "hns-active-lease-renewal-v1" as const,
+    environment: "staging",
+    route,
+  };
+  const renewalRequest = {
+    ...requestWithoutHash,
+    request_hash: await hnsActiveLeaseRenewalRequestHash(requestWithoutHash),
+  };
+  return {
+    priorRequest,
+    priorResultBytes,
+    priorResultSha256: resultHash,
+    snapshotReference: priorResult.provider_evidence_ref,
+    renewalRequest,
   };
 }
 
@@ -247,6 +330,64 @@ describe("HNS owner verifier target composition", () => {
     expect(source).not.toContain(["HNS", "LEGACY", "VERIFIER"].join("_"));
     expect(source).not.toContain(["globalThis", "fetch"].join("."));
     expect(source).not.toContain(["legacy", "ns1:"].join("-"));
+  });
+
+  test("renews from the exact retained snapshot over the bound-only endpoint", async () => {
+    const fixture = await renewalFixture();
+    const observations: HnsControlObservationRequestV1[] = [];
+    const targetObserver = runtime(
+      async (input) => {
+        observations.push(input.request);
+        return innerResult(input.request, "verified");
+      },
+      {},
+      {
+        read: async (snapshotReference) => {
+          expect(snapshotReference).toBe(fixture.snapshotReference);
+          return {
+            snapshot_reference: fixture.snapshotReference,
+            request_bytes: encoder.encode(JSON.stringify(fixture.priorRequest)),
+            result_bytes: fixture.priorResultBytes,
+            result_sha256: fixture.priorResultSha256,
+          };
+        },
+      },
+    );
+    const response = await handleRequest(renewalHttpRequest(fixture.renewalRequest), env, {
+      targetObserver,
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/octet-stream");
+    const result = JSON.parse(await response.text()) as Record<string, unknown>;
+    expect(result.status).toBe("verified");
+    expect(observations).toHaveLength(1);
+    expect(observations[0]).toMatchObject({
+      observation_id: "observer-renewal-new",
+      ownership_source: "hns_parent_chain_txt",
+      root_label: "jazleeuw",
+      txt_name: "jazleeuw",
+      expected_txt_value: "pirate-verification=nvs_prior",
+    });
+  });
+
+  test("returns exact ineligibility bytes without an observer exchange", async () => {
+    const fixture = await renewalFixture();
+    let observerCalls = 0;
+    const targetObserver = runtime(
+      async () => {
+        observerCalls += 1;
+        throw new Error("must not observe");
+      },
+      {},
+      { read: async () => null },
+    );
+    const response = await handleRequest(renewalHttpRequest(fixture.renewalRequest), env, {
+      targetObserver,
+    });
+    expect(response.status).toBe(409);
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(await response.text()).toBe('{"error":"renewal_evidence_ineligible"}');
+    expect(observerCalls).toBe(0);
   });
 
   test("starts target creation but disables historical system revalidation", async () => {

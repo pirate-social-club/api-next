@@ -1,4 +1,8 @@
 import {
+  decodeHnsActiveLeaseRenewalRequestBytes,
+  HNS_ACTIVE_LEASE_RENEWAL_REQUEST_MAX_BYTES,
+} from "@pirate/application/namespace-ownership";
+import {
   decodeHnsOwnerRecoveryProviderPollBytes,
   decodeHnsOwnerRecoveryProviderStartBytes,
   HNS_OWNER_RECOVERY_PROVIDER_START_MAX_BYTES,
@@ -14,14 +18,17 @@ import {
   type HnsTargetObserverRuntime,
   matchesHnsTargetObserverCreationConfiguration,
   matchesHnsTargetObserverRecoveryConfiguration,
+  observeHnsActiveLeaseRenewal,
   observeHnsOwnerCreationSession,
   observeHnsOwnerRecoverySession,
 } from "./target-observer.ts";
 
 const START_PATH = "/internal/hns-owner/v1/start";
 const POLL_PATH = "/internal/hns-owner/v1/poll";
+const ACTIVE_LEASE_RENEWAL_PATH = "/internal/hns-owner/v1/active-lease-renewal";
 const SESSION_HEADER = "Pirate-Namespace-Session-Id";
 const OBSERVATION_HEADER = "Pirate-HNS-Observation-Id";
+const ACTIVE_LEASE_RENEWAL_HEADER = "Pirate-HNS-Active-Lease-Renewal-Id";
 const START_REQUEST_MAX_BYTES = 8_192;
 const START_RESPONSE_MAX_BYTES = 65_536;
 const POLL_REQUEST_MAX_BYTES = 32_768;
@@ -718,9 +725,77 @@ export async function handleRequest(
   const source = configuredSource(env);
   const pinned = pinnedConfiguration(env);
   const evidenceTtl = evidenceTtlSeconds(env);
-  if (url.pathname !== START_PATH && url.pathname !== POLL_PATH)
+  if (
+    url.pathname !== START_PATH &&
+    url.pathname !== POLL_PATH &&
+    url.pathname !== ACTIVE_LEASE_RENEWAL_PATH
+  )
     return errorResponse(404, "not_found");
   if (request.method !== "POST") return errorResponse(405, "method_not_allowed");
+  if (url.pathname === ACTIVE_LEASE_RENEWAL_PATH) {
+    if (
+      request.headers.get("content-type") !== "application/json" ||
+      request.headers.get("accept") !== "application/octet-stream" ||
+      request.headers.get(SESSION_HEADER) !== null
+    ) {
+      return errorResponse(400, "invalid_request");
+    }
+    const renewalHeader = request.headers.get(ACTIVE_LEASE_RENEWAL_HEADER);
+    const observationHeader = request.headers.get(OBSERVATION_HEADER);
+    if (
+      renewalHeader === null ||
+      !safeText(renewalHeader, 256) ||
+      observationHeader === null ||
+      !safeText(observationHeader, 256)
+    ) {
+      return errorResponse(400, "invalid_request");
+    }
+    const body = await boundedBody(request, HNS_ACTIVE_LEASE_RENEWAL_REQUEST_MAX_BYTES);
+    if (body === null) return errorResponse(400, "invalid_request");
+    let decoded: Awaited<ReturnType<typeof decodeHnsActiveLeaseRenewalRequestBytes>>;
+    try {
+      decoded = await decodeHnsActiveLeaseRenewalRequestBytes(body);
+    } catch {
+      return errorResponse(400, "invalid_request");
+    }
+    if (decoded.request.active_lease_renewal_id !== renewalHeader) {
+      return errorResponse(400, "invalid_request");
+    }
+    if (
+      source === null ||
+      pinned === null ||
+      evidenceTtl === null ||
+      options.targetObserver === undefined ||
+      options.targetObserver.configuration.ownership_source !== source ||
+      options.targetObserver.configuration.provider_configuration_reference !== pinned.reference ||
+      options.targetObserver.configuration.provider_configuration_version !== pinned.version ||
+      options.targetObserver.configuration.environment !== pinned.environment ||
+      options.targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
+    ) {
+      return errorResponse(502, "provider_misconfigured");
+    }
+    try {
+      return bytesResponse(
+        await observeHnsActiveLeaseRenewal(
+          decoded.request,
+          options.targetObserver,
+          observationHeader,
+          request.signal,
+        ),
+      );
+    } catch (error) {
+      if (error instanceof HnsTargetObserverFacadeError) {
+        return error.reason === "ineligible"
+          ? errorResponse(409, "renewal_evidence_ineligible")
+          : error.reason === "unavailable"
+            ? errorResponse(503, "provider_unavailable")
+            : error.reason === "misconfigured"
+              ? errorResponse(502, "provider_misconfigured")
+              : errorResponse(502, "invalid_response");
+      }
+      return errorResponse(502, "invalid_response");
+    }
+  }
   const header = sessionHeader(request);
   if (header === null) return errorResponse(400, "invalid_request");
   const observationHeader = request.headers.get(OBSERVATION_HEADER);

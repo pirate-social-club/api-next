@@ -2,6 +2,7 @@ import type { HnsControlObserverRuntimeCapabilities } from "@pirate/application/
 import { makeHnsControlObserverHsdPrivateTransport } from "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport";
 import {
   makeControlPlaneHnsControlObserverConfigurationResolver,
+  makeControlPlaneHnsControlObserverSnapshotReader,
   makeControlPlaneHnsControlObserverSnapshotStore,
 } from "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres";
 import {
@@ -117,6 +118,7 @@ export async function composeHnsTargetObserverRuntime(
   const snapshotStore = makeControlPlaneHnsControlObserverSnapshotStore(controlPlane, {
     snapshotStoreReference: env.HNS_SNAPSHOT_STORE_REFERENCE,
   });
+  const snapshotReader = makeControlPlaneHnsControlObserverSnapshotReader(controlPlane);
   const hsdCapability = makeHnsControlObserverHsdPrivateDriverCapability({
     binding: env.HNS_OBSERVER_DRIVER,
     driver_reference: env.HNS_CHAIN_DRIVER_REFERENCE,
@@ -142,7 +144,7 @@ export async function composeHnsTargetObserverRuntime(
     environment: env.HNS_PROVIDER_ENVIRONMENT,
   };
   if (source === "hns_parent_chain_txt") {
-    return makeHnsParentChainTargetObserverRuntime(
+    const runtime = await makeHnsParentChainTargetObserverRuntime(
       {
         authority: { ...authority, ownership_source: source },
         capabilities,
@@ -152,9 +154,10 @@ export async function composeHnsTargetObserverRuntime(
       },
       { deadline_ms: observerDeadline, signal },
     );
+    return Object.freeze({ ...runtime, snapshot_reader: snapshotReader });
   }
   if (validator === undefined || authoritativeDnsDriverReference === undefined) return undefined;
-  return makeHnsOwnerAuthoritativeTargetObserverRuntime(
+  const runtime = await makeHnsOwnerAuthoritativeTargetObserverRuntime(
     {
       authority: { ...authority, ownership_source: source },
       capabilities,
@@ -171,4 +174,5 @@ export async function composeHnsTargetObserverRuntime(
     },
     { deadline_ms: observerDeadline, signal },
   );
+  return Object.freeze({ ...runtime, snapshot_reader: snapshotReader });
 }

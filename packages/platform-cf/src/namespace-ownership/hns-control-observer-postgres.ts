@@ -15,9 +15,12 @@ import {
   type HnsControlObserverConfigurationResolverPort,
   type HnsControlObserverReservationInput,
   type HnsControlObserverReservationOutcome,
+  type HnsControlObserverRetainedSnapshotV1,
   type HnsControlObserverSnapshotFinalizeInput,
   type HnsControlObserverSnapshotFinalizeOutcome,
   type HnsControlObserverSnapshotLogicalPayload,
+  HnsControlObserverSnapshotReadError,
+  type HnsControlObserverSnapshotReaderPort,
   type HnsControlObserverSnapshotStorePort,
   type HnsControlObserverTranscriptEntryV1,
   hnsControlObserverSnapshotAccountingEnvelopeBytes,
@@ -577,6 +580,47 @@ export function makeControlPlaneHnsControlObserverRepository(
       return bytes;
     });
 
+  const read = (snapshotReference: string) =>
+    Effect.gen(function* () {
+      if (!isHnsControlObserverSnapshotReference(snapshotReference)) {
+        return yield* Effect.fail(invalidInput("HNS observer snapshot reference is invalid"));
+      }
+      const db = yield* ControlPlaneDb;
+      const selected = yield* db.execute<Row>({
+        label: "hns-control-observer.snapshot.read",
+        text: `SELECT snapshot_reference, request_bytes, result_bytes, result_sha256
+                 FROM hns_control_observer_snapshots
+                WHERE snapshot_reference = $1`,
+        values: [snapshotReference],
+        readonly: true,
+      });
+      const row = oneRow(selected);
+      if (row === null) return null;
+      if (row === undefined) {
+        return yield* Effect.fail(invalidRow("HNS observer snapshot reference is ambiguous"));
+      }
+      const requestBytes = copyBytes(row.request_bytes);
+      const resultBytes = copyBytes(row.result_bytes);
+      const resultSha256 = stringValue(row, "result_sha256");
+      if (
+        stringValue(row, "snapshot_reference") !== snapshotReference ||
+        requestBytes === null ||
+        requestBytes.byteLength === 0 ||
+        resultBytes === null ||
+        resultBytes.byteLength === 0 ||
+        resultSha256 === null ||
+        !/^[0-9a-f]{64}$/u.test(resultSha256)
+      ) {
+        return yield* Effect.fail(invalidRow("HNS observer retained snapshot row is invalid"));
+      }
+      return {
+        snapshot_reference: snapshotReference,
+        request_bytes: requestBytes,
+        result_bytes: resultBytes,
+        result_sha256: resultSha256 as Sha256HexValue,
+      } satisfies HnsControlObserverRetainedSnapshotV1;
+    });
+
   const reserve = (rawInput: HnsControlObserverReservationInput) =>
     Effect.gen(function* () {
       const input = yield* Effect.tryPromise({
@@ -1052,7 +1096,7 @@ export function makeControlPlaneHnsControlObserverRepository(
       return yield* Effect.fail(attempted.failure);
     });
 
-  return { resolve, reserve, finalize } as const;
+  return { resolve, read, reserve, finalize } as const;
 }
 
 function runPort<A, E>(
@@ -1114,5 +1158,33 @@ export function makeControlPlaneHnsControlObserverSnapshotStore(
         runtime,
         runOptions,
       ) as Promise<HnsControlObserverSnapshotFinalizeOutcome>,
+  };
+}
+
+export function makeControlPlaneHnsControlObserverSnapshotReader(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): HnsControlObserverSnapshotReaderPort {
+  const repository = makeControlPlaneHnsControlObserverRepository();
+  return {
+    read: (snapshotReference, runOptions) =>
+      runPort(repository.read(snapshotReference), runtime, runOptions)
+        .then((snapshot) =>
+          snapshot === null
+            ? null
+            : {
+                ...snapshot,
+                request_bytes: new Uint8Array(snapshot.request_bytes),
+                result_bytes: new Uint8Array(snapshot.result_bytes),
+              },
+        )
+        .catch((error: unknown) =>
+          Promise.reject(
+            new HnsControlObserverSnapshotReadError(
+              error instanceof HnsControlObserverPostgresError && error.reason !== "storage"
+                ? "invalid_snapshot"
+                : "unavailable",
+            ),
+          ),
+        ),
   };
 }

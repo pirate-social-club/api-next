@@ -21,6 +21,7 @@ import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import {
   makeControlPlaneHnsControlObserverConfigurationResolver,
+  makeControlPlaneHnsControlObserverSnapshotReader,
   makeControlPlaneHnsControlObserverSnapshotStore,
 } from "./namespace-ownership/hns-control-observer-postgres.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
@@ -39,7 +40,7 @@ if (required && connectionString === undefined) {
 
 const suite = connectionString === undefined ? describe.skip : describe;
 const encoder = new TextEncoder();
-const testCount = 14;
+const testCount = 15;
 let completedTestCount = 0;
 let admin: Client | undefined;
 let schema = "";
@@ -487,6 +488,38 @@ suite("Postgres 17 HNS control observer persistence", () => {
     ).rejects.toThrow("authority does not match");
     expect(await rowCount("hns_control_observer_operations")).toBe(1);
     expect(await rowCount("hns_control_observer_reservations")).toBe(1);
+    completedTestCount += 1;
+  });
+
+  test("reads one owned immutable snapshot for active-renewal recovery", async () => {
+    const input = await reservationInput("observer-pg-read-01");
+    const store = makeControlPlaneHnsControlObserverSnapshotStore(runtime());
+    const authority = acquired(await store.reserve(input, runOptions()));
+    const terminal = await finalizeInput(input, authority);
+    await expect(store.finalize(terminal, runOptions())).resolves.toMatchObject({
+      kind: "retained",
+      snapshot_reference: authority.snapshot_reference,
+    });
+    const reader = makeControlPlaneHnsControlObserverSnapshotReader(runtime());
+    const first = await reader.read(authority.snapshot_reference, runOptions());
+    expect(first).toEqual({
+      snapshot_reference: authority.snapshot_reference,
+      request_bytes: input.request_bytes,
+      result_bytes: terminal.result_bytes,
+      result_sha256: terminal.result_sha256,
+    });
+    first?.request_bytes.fill(0);
+    first?.result_bytes.fill(0);
+    await expect(reader.read(authority.snapshot_reference, runOptions())).resolves.toEqual({
+      snapshot_reference: authority.snapshot_reference,
+      request_bytes: input.request_bytes,
+      result_bytes: terminal.result_bytes,
+      result_sha256: terminal.result_sha256,
+    });
+    await expect(reader.read("hns-observer:postgres:missing", runOptions())).resolves.toBeNull();
+    await expect(reader.read("invalid", runOptions())).rejects.toMatchObject({
+      reason: "invalid_snapshot",
+    });
     completedTestCount += 1;
   });
 
