@@ -276,7 +276,7 @@ describe("Very web provider", () => {
       app_id: "very-app",
       mobile: { uri: expect.stringContaining("veros://verify") },
     });
-    expect(JSON.stringify(start.presentation)).not.toContain("777");
+    expect(JSON.stringify(start.presentation)).not.toContain(btoa(String.fromCharCode(...KEY)));
   });
 
   test("uses stable field-safe external nullifiers and fresh field-safe pseudonyms", async () => {
@@ -302,6 +302,8 @@ describe("Very web provider", () => {
       expect(value).toMatch(/^[1-9][0-9]*$/u);
       expect(BigInt(value)).toBeLessThan(BN128_SCALAR_FIELD);
     }
+    expect(BigInt(firstQuery.options.pseudonym)).toBeLessThan(1n << 128n);
+    expect(BigInt(secondQuery.options.pseudonym)).toBeLessThan(1n << 128n);
     expect(secondQuery.options.pseudonym).not.toBe(firstQuery.options.pseudonym);
 
     const creation = await Effect.runPromise(
@@ -321,7 +323,7 @@ describe("Very web provider", () => {
       transport: transportWith(calls),
       randomness: {
         bytes: (length) =>
-          length === 31 ? new Uint8Array(length) : new Uint8Array(length).fill(1),
+          length === 16 ? new Uint8Array(length) : new Uint8Array(length).fill(1),
       },
     });
     expect(await failureTag(makeVeryWebProvider(configured.value).start(START_INPUT))).toBe(

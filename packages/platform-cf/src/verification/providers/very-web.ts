@@ -911,7 +911,10 @@ export function makeVeryWebProvider(options: VeryWebAdapterOptions): Verificatio
       return Effect.all({
         keyBytes: randomBytes(options.randomness, 32),
         ivBytes: randomBytes(options.randomness, 12),
-        bindingBytes: randomBytes(options.randomness, 31),
+        // The captured working ZK proof used a 40-digit pseudonym; wider
+        // values are not part of the recorded provider contract. Keep 128
+        // bits of per-ceremony entropy within that demonstrated range.
+        bindingBytes: randomBytes(options.randomness, 16),
       }).pipe(
         Effect.flatMap(({ keyBytes, ivBytes, bindingBytes }) =>
           Effect.gen(function* () {
