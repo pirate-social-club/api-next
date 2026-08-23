@@ -34,6 +34,18 @@ const alias = {
     "../../packages/application/src/use-cases/session-exchange.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/use-cases/verification-callback": new URL(
+    "../../packages/application/src/use-cases/verification-callback.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/use-cases/verification-completion": new URL(
+    "../../packages/application/src/use-cases/verification-completion.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/use-cases/verification-start": new URL(
+    "../../packages/application/src/use-cases/verification-start.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/use-cases/identity-registration-handler": new URL(
     "../../packages/application/src/use-cases/identity-registration-handler.ts",
     import.meta.url,

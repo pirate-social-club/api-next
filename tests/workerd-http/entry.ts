@@ -1,8 +1,11 @@
 import {
   ContentRepositoryError,
   type ContentStore,
+  createTextPost,
   type IdentityStore,
   type M2Actor,
+  type TextModeration,
+  TextModerationProviderError,
   TextPostRepositoryError,
   type TextPostStore,
 } from "@pirate/application";
@@ -27,6 +30,13 @@ import {
   makeSessionIdentityStore,
   type SessionExchangeServices,
 } from "@pirate/application/use-cases/session-exchange";
+import {
+  computeVerificationRequestHash,
+  makeVerificationProviderRegistry,
+  type StoredVerificationCompletion,
+  type VerificationCompletionStore,
+  type VerificationProviderPlanInput,
+} from "@pirate/application/verification";
 import { AuthError } from "@pirate/contracts";
 import {
   makeRs256SessionTokenMinter,
@@ -41,6 +51,7 @@ import {
   type DecodedRequest,
   type Principal,
 } from "../../apps/http-worker/src/transport.ts";
+import { makeVerificationHandlers } from "../../apps/http-worker/src/verification-handlers.ts";
 import { castPostVote } from "../../packages/application/src/use-cases/content/cast-post-vote.ts";
 import { clearPostVote } from "../../packages/application/src/use-cases/content/clear-post-vote.ts";
 import {
@@ -48,6 +59,16 @@ import {
   reportComment,
 } from "../../packages/application/src/use-cases/content/comment-moderation.ts";
 import { createCommentReply } from "../../packages/application/src/use-cases/content/comments-replies.ts";
+import {
+  makeVeryWebProvider,
+  VERY_WEB_CONFIGURATION_REFERENCE,
+  VERY_WEB_CONFIGURATION_VERSION,
+  VERY_WEB_ISSUER,
+  VERY_WEB_METHOD,
+  VERY_WEB_PROTOCOL_VERSION,
+  VERY_WEB_PROVIDER_ID,
+  VERY_WEB_RP_SCOPE,
+} from "../../packages/platform-cf/src/verification/providers/very-web.ts";
 
 export {
   RegistrationApplicationRateLimiterDO,
@@ -169,6 +190,40 @@ const textSubmission = {
   created_at: "2026-08-21T12:00:00.000Z",
   updated_at: "2026-08-21T12:00:00.000Z",
 };
+
+const routeAuthorityFixtureId = "community-very-staging-fixture-acceptance-v1";
+const missingRouteTextPostStore: TextPostStore["Service"] = {
+  replay: () => Effect.succeed({ kind: "none" as const }),
+  checkAuthority: () =>
+    Effect.fail(new TextPostRepositoryError({ operation: "authority", reason: "not-found" })),
+  commitTerminal: () => Effect.die("missing route must fail before moderation or commit"),
+  getForAuthor: () => Effect.succeed(null),
+};
+const unavailableTextModeration: TextModeration["Service"] = {
+  evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
+};
+
+function createPostThroughContract(request: DecodedRequest) {
+  const communityId = (request.params as Readonly<{ communityId: string }>).communityId;
+  if (communityId !== routeAuthorityFixtureId) return textSubmission;
+  const principal = request.principal;
+  if (principal === null || (principal.kind !== "user" && principal.kind !== "admin")) {
+    throw new AuthError({ message: "Authentication required" });
+  }
+  return Effect.runPromise(
+    createTextPost(
+      {
+        communityId,
+        actor: { userId: principal.subject, kind: principal.kind },
+        body: request.body,
+      },
+      {
+        textPostStore: missingRouteTextPostStore,
+        textModeration: unavailableTextModeration,
+      },
+    ),
+  );
+}
 
 const identityStore: IdentityStore["Service"] = {
   findUser: (userId) =>
@@ -470,10 +525,140 @@ const moderationActor = (request: DecodedRequest): M2Actor => {
 const moderationParams = (request: DecodedRequest): Record<string, unknown> =>
   request.params as Record<string, unknown>;
 
+const veryNow = "2099-08-20T12:00:00.000Z";
+const veryExpires = "2099-08-20T12:05:00.000Z";
+const veryConfiguration = {
+  kind: "dynamic" as const,
+  reference: VERY_WEB_CONFIGURATION_REFERENCE,
+  version: VERY_WEB_CONFIGURATION_VERSION,
+};
+const veryPlanInput = {
+  method: VERY_WEB_METHOD,
+  scope: {
+    kind: "named" as const,
+    scope_semantics: "issuer_rp_scope" as const,
+    issuer: VERY_WEB_ISSUER,
+    rp_scope: VERY_WEB_RP_SCOPE,
+  },
+  requested_requirements: [
+    { claim_id: "credential.subject_unique" },
+    { claim_id: "human.personhood" },
+  ],
+  requested_claim_ids: ["credential.subject_unique", "human.personhood"],
+  subject_binding_intent: "establish" as const,
+  protocol_version: VERY_WEB_PROTOCOL_VERSION,
+  environment: "test",
+  verification_purpose: {
+    intent: "community_join" as const,
+    policy_id: "curated-human-membership-v1",
+  },
+} satisfies VerificationProviderPlanInput;
+const veryIdentifierCounts = new Map<string, number>();
+const veryProvider = makeVeryWebProvider({
+  app_id: "very-workerd-app",
+  api_url: "https://api.very.example/api/v1",
+  verify_url: "https://verify.very.example/api/v1/verify",
+  bridge_api_url: "https://bridge.very.example/api/v1",
+  sealing_key: new Uint8Array(32).fill(7),
+  transport: {
+    createBridge: () =>
+      Effect.succeed({ status: 200, body: { sessionId: "bridge-session-workerd" } }),
+    bridgeStatus: () => Effect.succeed({ status: 200, body: { status: "pending" } }),
+    verify: () => Effect.succeed({ status: 200, body: { status: "valid" } }),
+  },
+  clock: { now: () => veryNow, expiresAt: () => veryExpires },
+  identifiers: {
+    next: (kind) => {
+      if (kind === "session") return "very-session-workerd";
+      const next = (veryIdentifierCounts.get(kind) ?? 0) + 1;
+      veryIdentifierCounts.set(kind, next);
+      return `very-${kind}-${next}-workerd`;
+    },
+  },
+  randomness: { bytes: (length) => new Uint8Array(length).fill(length) },
+  digest: { digest: () => Effect.succeed("b".repeat(64)) },
+});
+const veryRequestInput = {
+  actor_id: "usr_workerd_test",
+  intent_id: "intent-very-workerd",
+  ...veryPlanInput,
+  request_mode: "dynamic" as const,
+  provider_configuration: veryConfiguration,
+};
+const veryRequestHash = await computeVerificationRequestHash(
+  VERY_WEB_PROVIDER_ID,
+  veryRequestInput,
+);
+const veryStarted = await Effect.runPromise(
+  veryProvider.start({
+    ...veryRequestInput,
+    request_hash: veryRequestHash,
+  }),
+);
+const veryRegistry = await Effect.runPromise(
+  makeVerificationProviderRegistry([veryProvider], { now: () => Date.parse(veryNow) }),
+);
+let veryCurrentSession = veryStarted.session;
+const veryCompletionStore: VerificationCompletionStore = {
+  load: ({ proof_session_id }) =>
+    Effect.succeed(
+      proof_session_id === veryCurrentSession.id
+        ? ({ session: veryCurrentSession, terminal: null } satisfies StoredVerificationCompletion)
+        : null,
+    ),
+  reserveAttempt: () =>
+    Effect.succeed({
+      kind: "acquired" as const,
+      reservation: {
+        attempt_id: "very-attempt-workerd",
+        fence_token: 1,
+        lease_expires_at: veryExpires,
+      },
+    }),
+  releaseAttempt: () => Effect.void,
+  consumeAttempt: () => Effect.void,
+  settleCompleted: () => Effect.void,
+  commit: (input) => Effect.succeed({ kind: "committed" as const, result_hash: input.result_hash }),
+};
+const verificationHandlers = makeVerificationHandlers({
+  start: {
+    registry: veryRegistry,
+    intents: {
+      resolve: (input) =>
+        "intent_id" in input && input.intent_id === veryRequestInput.intent_id
+          ? Effect.succeed(veryPlanInput)
+          : Effect.die("Very workerd intent drifted"),
+    },
+    store: {
+      reserve: () =>
+        Effect.succeed({
+          kind: "acquired" as const,
+          reservation: {
+            reservation_id: "very-reservation-workerd",
+            fence_token: 1,
+            lease_expires_at: veryExpires,
+          },
+        }),
+      finalize: (_reservation, start) => {
+        veryCurrentSession = start.session;
+        return Effect.succeed({ kind: "created" as const, start });
+      },
+      release: () => Effect.void,
+    },
+  },
+  completion: {
+    registry: veryRegistry,
+    store: veryCompletionStore,
+    hasher: { hash: () => Effect.succeed("c".repeat(64)) },
+    now: () => Date.parse(veryNow),
+  },
+});
+
 const app = createHttpWorker({
   config: { corsOrigin: "https://solid.test" },
   sessionExchange,
   handlers: {
+    ...verificationHandlers,
     ...makeNamespaceOwnershipHandlers({
       start: namespaceStart,
       completion: namespaceCompletion,
@@ -545,7 +730,7 @@ const app = createHttpWorker({
           { textPostStore: moderationFixture },
         ),
       ),
-    CreatePost: () => textSubmission,
+    CreatePost: createPostThroughContract,
     GetTextContentSubmission: () => textSubmission,
     GetJwks: () => sessionCryptoInstances.browser.jwks(),
   },

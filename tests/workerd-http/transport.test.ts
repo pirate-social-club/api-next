@@ -3,6 +3,56 @@
 import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+const VERY_CONTEXT_ID = "1034873066642566601948846461572930273212113570698";
+const VERY_JOIN_PROOF_EXTERNAL_NULLIFIER =
+  "16908375590427872095478225792601985971283130407532372051473232178944199924789";
+
+type VeryStartBody = Readonly<{
+  proof_session_id: string;
+  provider_id: string;
+  presentation: Readonly<{
+    payload: Readonly<{ query: string }>;
+  }>;
+}>;
+
+function proofFor(start: VeryStartBody): string {
+  const query = JSON.parse(start.presentation.payload.query) as {
+    readonly conditions: readonly [
+      Readonly<{ readonly value: Readonly<{ readonly from: string; readonly to: string }> }>,
+    ];
+    readonly options: Readonly<{
+      readonly expiredAtLowerBound: string;
+      readonly equalCheckId: string;
+      readonly pseudonym: string;
+    }>;
+  };
+  return JSON.stringify({
+    proof: {
+      pi_a: ["1", "2", "1"],
+      pi_b: [
+        ["3", "4"],
+        ["5", "6"],
+        ["1", "0"],
+      ],
+      pi_c: ["7", "8", "1"],
+      protocol: "groth16",
+      curve: "bn128",
+    },
+    publicSignals: [
+      "3",
+      VERY_CONTEXT_ID,
+      "101",
+      VERY_JOIN_PROOF_EXTERNAL_NULLIFIER,
+      query.options.pseudonym,
+      query.options.expiredAtLowerBound,
+      "202",
+      query.options.equalCheckId,
+      query.conditions[0].value.from,
+      query.conditions[0].value.to,
+    ],
+  });
+}
+
 describe("real HTTP worker transport", () => {
   const browserCookies = (
     response: Response,
@@ -335,6 +385,93 @@ describe("real HTTP worker transport", () => {
       case_ref: "case_workerd",
       action: "hide",
       target_status: "hidden",
+    });
+  });
+
+  it("returns a definite 404 when a text post has no effective route authority", async () => {
+    const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "workerd-proof" },
+      }),
+    });
+    const browser = browserCookies(exchange);
+    const response = await SELF.fetch(
+      "https://worker.test/communities/community-very-staging-fixture-acceptance-v1/posts",
+      {
+        method: "POST",
+        headers: {
+          cookie: browser.cookie,
+          "content-type": "application/json",
+          origin: "https://solid.test",
+          "x-csrf-token": browser.csrf,
+          "x-request-id": "workerd-route-authority-missing",
+        },
+        body: JSON.stringify({
+          post_type: "text",
+          idempotency_key: "workerd-route-authority-missing",
+          body: "must not publish without an effective route",
+        }),
+      },
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({
+      error: {
+        code: "not_found",
+        message: "Text submission not found",
+        retryable: false,
+      },
+      request_id: "workerd-route-authority-missing",
+    });
+  });
+
+  it("completes a captured Very widget proof through the Workerd HTTP boundary", async () => {
+    const exchange = await SELF.fetch("https://worker.test/auth/session/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: "https://solid.test" },
+      body: JSON.stringify({
+        proof: { type: "privy_access_token", privy_access_token: "workerd-proof" },
+      }),
+    });
+    const browser = browserCookies(exchange);
+    const headers = {
+      cookie: browser.cookie,
+      "content-type": "application/json",
+      origin: "https://solid.test",
+      "x-csrf-token": browser.csrf,
+    };
+    const started = await SELF.fetch("https://worker.test/verification/sessions", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ intent_id: "intent-very-workerd", provider_id: "very.web" }),
+    });
+    expect(started.status).toBe(201);
+    const start = (await started.json()) as VeryStartBody;
+    expect(start).toMatchObject({
+      proof_session_id: "very-session-workerd",
+      provider_id: "very.web",
+      presentation: { payload: { query: expect.any(String) } },
+    });
+
+    const completed = await SELF.fetch(
+      `https://worker.test/verification/sessions/${start.proof_session_id}/complete`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          idempotency_key: "very-complete-workerd",
+          payload: { mode: "widget", proof: proofFor(start) },
+        }),
+      },
+    );
+    const completedBody = await completed.json();
+    expect(completed.status, JSON.stringify(completedBody)).toBe(200);
+    expect(completedBody).toEqual({
+      proof_session_id: "very-session-workerd",
+      status: "completed",
+      replayed: false,
     });
   });
 
