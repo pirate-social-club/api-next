@@ -430,7 +430,9 @@ export function makeJwksSessionProofVerifier(
       if (!response.ok) return undefined;
       const body = await response.text();
       if (body.length > SESSION_PROOF_MAX_USER_BYTES) return undefined;
-      return JSON.parse(body);
+      const document = object(JSON.parse(body));
+      if (document.id !== sourceUserId) return undefined;
+      return document;
     } catch {
       return undefined;
     } finally {

@@ -377,6 +377,33 @@ describe("workerd Privy linked-wallet lookup", () => {
     });
   });
 
+  it("rejects linked-wallet authority from a user document for another Privy subject", async () => {
+    const material = await keyMaterial();
+    const fetcher: SessionProofFetcher = async (input) =>
+      input.includes("/api/v1/users/")
+        ? new Response(
+            JSON.stringify({
+              id: "usr_other",
+              linked_accounts: [indexedEmbeddedAccount],
+            }),
+            { status: 200 },
+          )
+        : jwksResponse(material.jwk);
+    const adapter = adapterWithApi(fetcher);
+    const token = await signToken(material.privateKey, material.jwk.kid);
+    const error = await Effect.runPromise(
+      adapter
+        .verifyPrivyEmbeddedEvmWallet({
+          accessToken: token,
+          identityToken: null,
+          hdWalletIndex: 2,
+        })
+        .pipe(Effect.flip),
+    );
+    expect(error).toBeInstanceOf(PersonaWalletProofRejected);
+    expect(error.reason).toBe("unavailable");
+  });
+
   it("does not treat external wallets or another HD index as persona wallet authority", async () => {
     const material = await keyMaterial();
     const fetcher: SessionProofFetcher = async (input) =>
