@@ -11,6 +11,7 @@ import {
   type HnsControlObserverSnapshotStorePort,
   type HnsControlObserverTranscriptEntryV1,
   type HnsControlObserverTranscriptValidationContext,
+  hnsControlObserverSnapshotAccountingEnvelopeBytes,
   hnsControlObserverSnapshotLogicalByteLength,
   hnsControlObserverTranscriptByteLength,
   validateHnsControlObserverTranscript,
@@ -120,6 +121,8 @@ describe("HNS control observer transcript", () => {
       semantic_facts_bytes: factsBytes,
       result_bytes: resultBytes,
       result_sha256: await sha256(resultBytes),
+      result_status: "unavailable",
+      result_reference_kind: "diagnostic_ref",
     } as const;
     const rawByteLength =
       requestBytes.byteLength +
@@ -128,7 +131,13 @@ describe("HNS control observer transcript", () => {
       resultBytes.byteLength +
       hnsControlObserverTranscriptByteLength(transcript);
     const logicalByteLength = hnsControlObserverSnapshotLogicalByteLength(payload);
+    const accountingEnvelopeBytes = hnsControlObserverSnapshotAccountingEnvelopeBytes(payload);
+    const accountingEnvelope = new TextDecoder().decode(accountingEnvelopeBytes);
+    expect(logicalByteLength).toBe(rawByteLength + accountingEnvelopeBytes.byteLength);
     expect(logicalByteLength).toBeGreaterThan(rawByteLength);
+    expect(accountingEnvelope).toContain('"result_status":"unavailable"');
+    expect(accountingEnvelope).toContain('"result_reference_kind":"diagnostic_ref"');
+    expect(accountingEnvelope).toContain('"transcript_entry_count":1');
     expect(
       hnsControlObserverSnapshotLogicalByteLength({
         ...payload,

@@ -62,6 +62,8 @@ type RootDecision =
 export type HnsParentChainObserverResult = Readonly<{
   readonly result_bytes: Uint8Array;
   readonly result_sha256: Sha256HexValue;
+  readonly result_status: "verified" | "rejected" | "unavailable";
+  readonly result_reference_kind: "provider_evidence_ref" | "diagnostic_ref";
   readonly semantic_facts_bytes: Uint8Array;
   readonly transcript: ReadonlyArray<HnsControlObserverTranscriptEntryV1>;
 }>;
@@ -605,6 +607,9 @@ async function finalizeResult(
   return {
     result_bytes: decoded.result_bytes,
     result_sha256: decoded.result_sha256,
+    result_status: decoded.result.status,
+    result_reference_kind:
+      decoded.result.status === "unavailable" ? "diagnostic_ref" : "provider_evidence_ref",
     semantic_facts_bytes: new Uint8Array(decoded.result_bytes),
     transcript,
   };
@@ -1110,6 +1115,8 @@ export function makeHnsParentChainTargetObserver(
           semantic_facts_bytes: observed.semantic_facts_bytes,
           result_bytes: observed.result_bytes,
           result_sha256: observed.result_sha256,
+          result_status: observed.result_status,
+          result_reference_kind: observed.result_reference_kind,
         });
       let snapshotByteLength = logicalSnapshotBytes();
       if (snapshotByteLength > HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES) {

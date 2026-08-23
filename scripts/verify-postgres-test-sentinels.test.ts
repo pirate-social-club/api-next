@@ -37,6 +37,7 @@ async function sentinelSet(): Promise<{
     "verification",
     "verification-start",
     "community-purchase-funding",
+    "hns-observer",
   ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),
@@ -105,5 +106,19 @@ describe("Postgres suite sentinel verification", () => {
         ),
       ).toHaveLength(2);
     }
+  });
+
+  test("keeps HNS observer persistence fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain(
+      "packages/platform-cf/src/hns-control-observer-repository.pg.test.ts",
+    );
+    expect(
+      workflow.match(/\/tmp\/api-next-control-plane-postgres-hns-observer-suite-complete/gu),
+    ).toHaveLength(2);
   });
 });

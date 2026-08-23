@@ -224,6 +224,12 @@ const communityRouteDatabaseExpiryMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const hnsControlObserverPersistenceMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0042_hns_control_observer_persistence.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -436,6 +442,11 @@ const communityRouteDatabaseExpiryMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0041_community_route_database_expiry.sql"] ?? "",
   sql: communityRouteDatabaseExpiryMigrationSql,
 };
+const hnsControlObserverPersistenceMigration: PostgresMigration = {
+  version: "0042_hns_control_observer_persistence.sql",
+  checksum: checksumManifest.migrations["0042_hns_control_observer_persistence.sql"] ?? "",
+  sql: hnsControlObserverPersistenceMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -478,6 +489,7 @@ const migrations: readonly PostgresMigration[] = [
   commentsRepliesRuntimeMigration,
   postVoteActionsMigration,
   communityRouteDatabaseExpiryMigration,
+  hnsControlObserverPersistenceMigration,
 ];
 
 function checksum(value: string): string {
@@ -712,6 +724,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(communityRouteDatabaseExpiryMigrationSql)).toBe(
         communityRouteDatabaseExpiryMigration.checksum,
       );
+      expect(checksum(hnsControlObserverPersistenceMigrationSql)).toBe(
+        hnsControlObserverPersistenceMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -798,6 +813,11 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "content_publication_outbox",
         "decision_records",
         "evidence_receipts",
+        "hns_control_observer_configurations",
+        "hns_control_observer_operations",
+        "hns_control_observer_reservations",
+        "hns_control_observer_snapshot_transcript_entries",
+        "hns_control_observer_snapshots",
         "home_feed_projection",
         "identity_credentials",
         "moderation_actions",
@@ -945,6 +965,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "decision_records_append_only",
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",
+        "hns_control_observer_configurations_append_only",
+        "hns_control_observer_operations_append_only",
+        "hns_control_observer_snapshots_append_only",
+        "hns_control_observer_transcript_entries_append_only",
         "namespace_ownership_evidence_snapshot_append_only",
         "observations_append_only",
         "policy_versions_append_only",

@@ -196,6 +196,7 @@ export {
   HNS_CONTROL_OBSERVER_TRANSCRIPT_MAX_ENTRIES,
   HnsControlObserverHsdTransportError,
   HnsControlObserverTranscriptError,
+  hnsControlObserverSnapshotAccountingEnvelopeBytes,
   hnsControlObserverSnapshotLogicalByteLength,
   hnsControlObserverTranscriptByteLength,
   isHnsControlObserverSnapshotReference,

@@ -94,6 +94,12 @@ export {
   makeControlPlaneIdentityStore,
 } from "./identity-repository";
 export {
+  HnsControlObserverPostgresError,
+  makeControlPlaneHnsControlObserverConfigurationResolver,
+  makeControlPlaneHnsControlObserverRepository,
+  makeControlPlaneHnsControlObserverSnapshotStore,
+} from "./namespace-ownership/hns-control-observer-postgres";
+export {
   type HnsOwnerAdapterOptions,
   type HnsOwnerTransport,
   type HnsOwnerTransportFailure,

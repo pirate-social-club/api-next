@@ -81,6 +81,8 @@ export type HnsControlObserverSnapshotLogicalPayload = HnsControlObserverSnapsho
     readonly configuration_bytes: Uint8Array;
     readonly reservation_database_time: string;
     readonly lease_expires_at: string;
+    readonly result_status: "verified" | "rejected" | "unavailable";
+    readonly result_reference_kind: "provider_evidence_ref" | "diagnostic_ref";
   }>;
 
 export type HnsControlObserverSnapshotFinalizeOutcome =
@@ -214,15 +216,9 @@ export function hnsControlObserverTranscriptByteLength(
  * includes hashes, identifiers, statuses, and structural metadata without
  * base64 expansion or dependence on a physical Postgres representation.
  */
-export function hnsControlObserverSnapshotLogicalByteLength(
+export function hnsControlObserverSnapshotAccountingEnvelopeBytes(
   input: HnsControlObserverSnapshotLogicalPayload,
-): number {
-  const rawByteLength =
-    input.request_bytes.byteLength +
-    input.configuration_bytes.byteLength +
-    input.semantic_facts_bytes.byteLength +
-    input.result_bytes.byteLength +
-    hnsControlObserverTranscriptByteLength(input.transcript);
+): Uint8Array {
   const accountingEnvelope = {
     observation_id: input.observation_id,
     observer_fence: input.observer_fence,
@@ -244,13 +240,28 @@ export function hnsControlObserverSnapshotLogicalByteLength(
       response_bytes: entry.response_bytes?.byteLength ?? null,
       response_sha256: entry.response_sha256,
     })),
+    transcript_entry_count: input.transcript.length,
+    transcript_byte_length: hnsControlObserverTranscriptByteLength(input.transcript),
     semantic_facts_bytes: input.semantic_facts_bytes.byteLength,
+    result_status: input.result_status,
+    result_reference_kind: input.result_reference_kind,
+    result_reference: input.snapshot_reference,
     result_bytes: input.result_bytes.byteLength,
     result_sha256: input.result_sha256,
   };
-  const metadataByteLength = new TextEncoder().encode(
-    JSON.stringify(accountingEnvelope),
-  ).byteLength;
+  return new TextEncoder().encode(JSON.stringify(accountingEnvelope));
+}
+
+export function hnsControlObserverSnapshotLogicalByteLength(
+  input: HnsControlObserverSnapshotLogicalPayload,
+): number {
+  const rawByteLength =
+    input.request_bytes.byteLength +
+    input.configuration_bytes.byteLength +
+    input.semantic_facts_bytes.byteLength +
+    input.result_bytes.byteLength +
+    hnsControlObserverTranscriptByteLength(input.transcript);
+  const metadataByteLength = hnsControlObserverSnapshotAccountingEnvelopeBytes(input).byteLength;
   const total = rawByteLength + metadataByteLength;
   return Number.isSafeInteger(total) ? total : Number.POSITIVE_INFINITY;
 }

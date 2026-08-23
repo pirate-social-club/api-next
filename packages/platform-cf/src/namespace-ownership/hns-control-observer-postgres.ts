@@ -1,0 +1,916 @@
+import {
+  ControlPlaneDb,
+  type ControlPlaneError,
+  decodeHnsControlObservationRequestBytes,
+  decodeHnsControlObservationResultBytes,
+  decodeHnsControlObserverConfigurationBytes,
+  HNS_CONTROL_OBSERVER_CONFIGURATION_MAX_BYTES,
+  HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MAX_SECONDS,
+  HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MIN_SECONDS,
+  HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES,
+  type HnsControlObserverConfigurationResolverPort,
+  type HnsControlObserverReservationInput,
+  type HnsControlObserverReservationOutcome,
+  type HnsControlObserverSnapshotFinalizeInput,
+  type HnsControlObserverSnapshotFinalizeOutcome,
+  type HnsControlObserverSnapshotLogicalPayload,
+  type HnsControlObserverSnapshotStorePort,
+  hnsControlObserverSnapshotAccountingEnvelopeBytes,
+  hnsControlObserverSnapshotLogicalByteLength,
+  hnsControlObserverTranscriptByteLength,
+  isHnsControlObserverSnapshotReference,
+  validateHnsControlObserverTranscript,
+} from "@pirate/application";
+import type { Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
+import { Effect, type Layer } from "effect";
+
+const DEFAULT_SNAPSHOT_STORE_REFERENCE = "postgres:hns-control-observer-v1";
+const MAX_SAFE_FENCE = Number.MAX_SAFE_INTEGER;
+
+type Row = Readonly<Record<string, unknown>>;
+
+export class HnsControlObserverPostgresError extends Error {
+  readonly name = "HnsControlObserverPostgresError";
+
+  constructor(
+    readonly reason: "invalid_input" | "invalid_row" | "storage",
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+class FinalizationFenceLost extends Error {
+  readonly name = "FinalizationFenceLost";
+}
+
+function invalidInput(message: string): HnsControlObserverPostgresError {
+  return new HnsControlObserverPostgresError("invalid_input", message);
+}
+
+function invalidRow(message: string): HnsControlObserverPostgresError {
+  return new HnsControlObserverPostgresError("invalid_row", message);
+}
+
+function copyBytes(value: unknown): Uint8Array | null {
+  if (!(value instanceof Uint8Array)) return null;
+  return new Uint8Array(value);
+}
+
+function stringValue(row: Row, key: string): string | null {
+  const value = row[key];
+  return typeof value === "string" ? value : null;
+}
+
+function integerValue(row: Row, key: string): number | null {
+  const value = row[key];
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "bigint"
+        ? Number(value)
+        : typeof value === "string" && /^-?\d+$/u.test(value)
+          ? Number(value)
+          : Number.NaN;
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function oneRow(result: Readonly<{ readonly rows: readonly Row[]; readonly rowCount: number }>) {
+  if (result.rowCount === 0 && result.rows.length === 0) return null;
+  if (result.rowCount !== 1 || result.rows.length !== 1) return undefined;
+  return result.rows[0];
+}
+
+function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+function safeIdentity(value: string, maximumBytes: number): boolean {
+  if (value.length === 0 || value.trim() !== value) return false;
+  if (new TextEncoder().encode(value).byteLength > maximumBytes) return false;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f)) return false;
+  }
+  return true;
+}
+
+function rowIdentityMatches(
+  row: Row,
+  input: Readonly<{
+    readonly observation_id: string;
+    readonly request_bytes: Uint8Array;
+    readonly request_sha256: string;
+    readonly configuration_bytes: Uint8Array;
+    readonly provider_configuration_digest: string;
+  }>,
+): boolean {
+  const requestBytes = copyBytes(row.request_bytes);
+  const configurationBytes = copyBytes(row.configuration_bytes);
+  return (
+    stringValue(row, "observation_id") === input.observation_id &&
+    stringValue(row, "request_sha256") === input.request_sha256 &&
+    stringValue(row, "provider_configuration_digest") === input.provider_configuration_digest &&
+    requestBytes !== null &&
+    bytesEqual(requestBytes, input.request_bytes) &&
+    configurationBytes !== null &&
+    bytesEqual(configurationBytes, input.configuration_bytes)
+  );
+}
+
+const FORMAT_RESERVATION_SQL = `to_char(
+  reservation_database_time AT TIME ZONE 'UTC',
+  'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+) AS reservation_database_time,
+to_char(
+  lease_expires_at AT TIME ZONE 'UTC',
+  'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+) AS lease_expires_at`;
+
+const SELECT_OPERATION_SQL = `SELECT observation_id,
+       provider_configuration_reference,
+       provider_configuration_version,
+       provider_configuration_digest,
+       request_bytes,
+       request_sha256,
+       configuration_bytes,
+       snapshot_reference
+  FROM hns_control_observer_operations
+ WHERE observation_id = $1`;
+
+const LOCK_OPERATION_SQL = `${SELECT_OPERATION_SQL} FOR UPDATE`;
+
+const LOCK_RESERVATION_SQL = `SELECT observation_id,
+       state,
+       reservation_lease_seconds,
+       observer_fence,
+       ${FORMAT_RESERVATION_SQL},
+       terminal_snapshot_reference,
+       terminal_status
+  FROM hns_control_observer_reservations
+ WHERE observation_id = $1
+ FOR UPDATE`;
+
+const SELECT_SNAPSHOT_REPLAY_SQL = `SELECT snapshot_reference, result_bytes, result_sha256
+  FROM hns_control_observer_snapshots
+ WHERE observation_id = $1`;
+
+const SELECT_FINALIZE_AUTHORITY_SQL = `SELECT operation.observation_id,
+       operation.provider_configuration_reference,
+       operation.provider_configuration_version,
+       operation.provider_configuration_digest,
+       operation.request_bytes,
+       operation.request_sha256,
+       operation.configuration_bytes,
+       operation.snapshot_reference,
+       ${FORMAT_RESERVATION_SQL},
+       reservation.state,
+       reservation.observer_fence,
+       reservation.reservation_lease_seconds
+  FROM hns_control_observer_operations AS operation
+  JOIN hns_control_observer_reservations AS reservation
+    USING (observation_id)
+ WHERE operation.observation_id = $1`;
+
+function replayFromRow(
+  row: Row | null | undefined,
+): Extract<HnsControlObserverSnapshotFinalizeOutcome, { readonly kind: "replay" }> {
+  if (row === undefined || row === null) {
+    throw invalidRow("HNS observer terminal reservation lacks exactly one snapshot");
+  }
+  const snapshotReference = stringValue(row, "snapshot_reference");
+  const resultBytes = copyBytes(row.result_bytes);
+  const resultSha256 = stringValue(row, "result_sha256");
+  if (
+    snapshotReference === null ||
+    !isHnsControlObserverSnapshotReference(snapshotReference) ||
+    resultBytes === null ||
+    resultBytes.byteLength === 0 ||
+    resultSha256 === null ||
+    !/^[0-9a-f]{64}$/u.test(resultSha256)
+  ) {
+    throw invalidRow("HNS observer retained snapshot row is invalid");
+  }
+  return {
+    kind: "replay",
+    snapshot_reference: snapshotReference,
+    result_bytes: resultBytes,
+    result_sha256: resultSha256 as Sha256HexValue,
+  };
+}
+
+async function validateReservationInput(
+  input: HnsControlObserverReservationInput,
+  snapshotStoreReference: string,
+) {
+  if (
+    !safeIdentity(input.observation_id, 256) ||
+    !(input.request_bytes instanceof Uint8Array) ||
+    !(input.configuration_bytes instanceof Uint8Array) ||
+    !Number.isSafeInteger(input.reservation_lease_seconds) ||
+    input.reservation_lease_seconds < HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MIN_SECONDS ||
+    input.reservation_lease_seconds > HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MAX_SECONDS
+  ) {
+    throw invalidInput("HNS observer reservation input is invalid");
+  }
+  const request = await decodeHnsControlObservationRequestBytes(input.request_bytes);
+  const configuration = await decodeHnsControlObserverConfigurationBytes(input.configuration_bytes);
+  if (
+    request.request.observation_id !== input.observation_id ||
+    request.request_sha256 !== input.request_sha256 ||
+    configuration.configuration_digest !== input.provider_configuration_digest ||
+    request.request.provider_configuration_digest !== configuration.configuration_digest ||
+    configuration.configuration.provider_configuration_reference !==
+      request.request.provider_configuration_reference ||
+    configuration.configuration.provider_configuration_version !==
+      request.request.provider_configuration_version ||
+    configuration.configuration.provider_id !== request.request.provider_id ||
+    configuration.configuration.environment !== request.request.environment ||
+    !configuration.configuration.ownership_sources.includes(request.request.ownership_source) ||
+    configuration.configuration.observer_reservation_lease_seconds !==
+      input.reservation_lease_seconds ||
+    configuration.configuration.snapshot_store_reference !== snapshotStoreReference
+  ) {
+    throw invalidInput("HNS observer reservation authority does not match its exact bytes");
+  }
+  return {
+    observation_id: input.observation_id,
+    request_bytes: new Uint8Array(request.request_bytes),
+    request_sha256: request.request_sha256,
+    configuration_bytes: new Uint8Array(configuration.configuration_bytes),
+    provider_configuration_digest: configuration.configuration_digest,
+    provider_configuration_reference: configuration.configuration.provider_configuration_reference,
+    provider_configuration_version: configuration.configuration.provider_configuration_version,
+    reservation_lease_seconds: input.reservation_lease_seconds,
+  } as const;
+}
+
+async function validateFinalizeInput(
+  input: HnsControlObserverSnapshotFinalizeInput,
+  operation: Row,
+) {
+  const requestBytes = copyBytes(operation.request_bytes);
+  const configurationBytes = copyBytes(operation.configuration_bytes);
+  const reservationDatabaseTime = stringValue(operation, "reservation_database_time");
+  const leaseExpiresAt = stringValue(operation, "lease_expires_at");
+  if (
+    requestBytes === null ||
+    configurationBytes === null ||
+    reservationDatabaseTime === null ||
+    leaseExpiresAt === null
+  ) {
+    throw invalidRow("HNS observer operation snapshot authority is invalid");
+  }
+  const request = await decodeHnsControlObservationRequestBytes(requestBytes);
+  const configuration = await decodeHnsControlObserverConfigurationBytes(configurationBytes);
+  const result = await decodeHnsControlObservationResultBytes(input.result_bytes, request.request);
+  if (
+    request.request_sha256 !== input.request_sha256 ||
+    configuration.configuration_digest !== input.provider_configuration_digest ||
+    request.request.provider_configuration_digest !== configuration.configuration_digest ||
+    configuration.configuration.provider_configuration_reference !==
+      request.request.provider_configuration_reference ||
+    configuration.configuration.provider_configuration_version !==
+      request.request.provider_configuration_version ||
+    configuration.configuration.provider_id !== request.request.provider_id ||
+    configuration.configuration.environment !== request.request.environment ||
+    !configuration.configuration.ownership_sources.includes(request.request.ownership_source) ||
+    stringValue(operation, "provider_configuration_reference") !==
+      configuration.configuration.provider_configuration_reference ||
+    stringValue(operation, "provider_configuration_version") !==
+      configuration.configuration.provider_configuration_version ||
+    result.result_sha256 !== input.result_sha256 ||
+    result.result.observation_id !== input.observation_id ||
+    (result.result.status === "unavailable"
+      ? result.result.diagnostic_ref !== input.snapshot_reference
+      : result.result.provider_evidence_ref !== input.snapshot_reference)
+  ) {
+    throw invalidInput("HNS observer finalization bytes do not match retained authority");
+  }
+  const transcript = await validateHnsControlObserverTranscript({
+    transcript: input.transcript,
+    context: {
+      ownership_source: request.request.ownership_source,
+      hsd_driver_reference: configuration.configuration.chain.driver_reference,
+      hsd_response_max_bytes: configuration.configuration.chain.response_max_bytes,
+      authoritative_dns_driver_reference:
+        configuration.configuration.authoritative_dns?.driver_reference ?? null,
+      authoritative_dns_response_max_bytes:
+        configuration.configuration.authoritative_dns?.response_max_bytes ?? null,
+      required_view_ids: configuration.configuration.authoritative_dns?.required_view_ids ?? [],
+    },
+  });
+  const logicalPayload: HnsControlObserverSnapshotLogicalPayload = {
+    observation_id: input.observation_id,
+    observer_fence: input.observer_fence,
+    reservation_database_time: reservationDatabaseTime,
+    lease_expires_at: leaseExpiresAt,
+    request_bytes: requestBytes,
+    request_sha256: input.request_sha256,
+    configuration_bytes: configurationBytes,
+    provider_configuration_digest: input.provider_configuration_digest,
+    snapshot_reference: input.snapshot_reference,
+    transcript,
+    semantic_facts_bytes: new Uint8Array(input.semantic_facts_bytes),
+    result_bytes: new Uint8Array(result.result_bytes),
+    result_sha256: result.result_sha256,
+    result_status: result.result.status,
+    result_reference_kind:
+      result.result.status === "unavailable" ? "diagnostic_ref" : "provider_evidence_ref",
+  };
+  const accountingEnvelopeBytes = hnsControlObserverSnapshotAccountingEnvelopeBytes(logicalPayload);
+  const logicalSnapshotByteLength = hnsControlObserverSnapshotLogicalByteLength(logicalPayload);
+  if (
+    logicalPayload.semantic_facts_bytes.byteLength === 0 ||
+    !Number.isSafeInteger(logicalSnapshotByteLength) ||
+    logicalSnapshotByteLength > HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES
+  ) {
+    throw invalidInput("HNS observer finalization exceeds the retained snapshot bound");
+  }
+  return {
+    ...logicalPayload,
+    transcript_byte_length: hnsControlObserverTranscriptByteLength(transcript),
+    accounting_envelope_bytes: accountingEnvelopeBytes,
+    logical_snapshot_byte_length: logicalSnapshotByteLength,
+  } as const;
+}
+
+export function makeControlPlaneHnsControlObserverRepository(
+  options: Readonly<{ readonly snapshotStoreReference?: string }> = {},
+) {
+  const snapshotStoreReference = options.snapshotStoreReference ?? DEFAULT_SNAPSHOT_STORE_REFERENCE;
+
+  const resolve = (identity: Readonly<{ readonly reference: string; readonly version: string }>) =>
+    Effect.gen(function* () {
+      if (!safeIdentity(identity.reference, 512) || !safeIdentity(identity.version, 256)) {
+        return yield* Effect.fail(invalidInput("HNS observer configuration identity is invalid"));
+      }
+      const db = yield* ControlPlaneDb;
+      const selected = yield* db.execute<Row>({
+        label: "hns-control-observer.configuration.resolve",
+        text: `SELECT configuration_bytes
+                 FROM hns_control_observer_configurations
+                WHERE provider_configuration_reference = $1
+                  AND provider_configuration_version = $2`,
+        values: [identity.reference, identity.version],
+        readonly: true,
+      });
+      const row = oneRow(selected);
+      if (row === null) return null;
+      if (row === undefined) {
+        return yield* Effect.fail(invalidRow("HNS observer configuration identity is ambiguous"));
+      }
+      const bytes = copyBytes(row.configuration_bytes);
+      if (
+        bytes === null ||
+        bytes.byteLength === 0 ||
+        bytes.byteLength > HNS_CONTROL_OBSERVER_CONFIGURATION_MAX_BYTES
+      ) {
+        return yield* Effect.fail(invalidRow("HNS observer configuration row is invalid"));
+      }
+      return bytes;
+    });
+
+  const reserve = (rawInput: HnsControlObserverReservationInput) =>
+    Effect.gen(function* () {
+      const input = yield* Effect.tryPromise({
+        try: () => validateReservationInput(rawInput, snapshotStoreReference),
+        catch: (error) =>
+          error instanceof HnsControlObserverPostgresError
+            ? error
+            : invalidInput("HNS observer reservation input failed strict decoding"),
+      });
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((transaction) =>
+        Effect.gen(function* () {
+          yield* transaction.execute({
+            label: "hns-control-observer.operation.insert",
+            text: `INSERT INTO hns_control_observer_operations (
+                     observation_id,
+                     provider_configuration_reference,
+                     provider_configuration_version,
+                     provider_configuration_digest,
+                     request_bytes,
+                     request_sha256,
+                     configuration_bytes,
+                     snapshot_reference
+                   ) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+                   ON CONFLICT (observation_id) DO NOTHING`,
+            values: [
+              input.observation_id,
+              input.provider_configuration_reference,
+              input.provider_configuration_version,
+              input.provider_configuration_digest,
+              input.request_bytes,
+              input.request_sha256,
+              input.configuration_bytes,
+            ],
+            readonly: false,
+          });
+          const operationResult = yield* transaction.execute<Row>({
+            label: "hns-control-observer.operation.lock",
+            text: LOCK_OPERATION_SQL,
+            values: [input.observation_id],
+            readonly: false,
+          });
+          const operation = oneRow(operationResult);
+          if (operation === undefined || operation === null) {
+            return yield* Effect.fail(invalidRow("HNS observer operation row is missing"));
+          }
+          if (!rowIdentityMatches(operation, input)) {
+            return { kind: "mismatch" } as const;
+          }
+          const snapshotReference = stringValue(operation, "snapshot_reference");
+          if (
+            snapshotReference === null ||
+            !isHnsControlObserverSnapshotReference(snapshotReference)
+          ) {
+            return yield* Effect.fail(invalidRow("HNS observer snapshot reference is invalid"));
+          }
+
+          const reservationResult = yield* transaction.execute<Row>({
+            label: "hns-control-observer.reservation.lock",
+            text: LOCK_RESERVATION_SQL,
+            values: [input.observation_id],
+            readonly: false,
+          });
+          const reservation = oneRow(reservationResult);
+          if (reservation === undefined) {
+            return yield* Effect.fail(invalidRow("HNS observer reservation identity is ambiguous"));
+          }
+          if (reservation === null) {
+            const inserted = yield* transaction.execute<Row>({
+              label: "hns-control-observer.reservation.insert",
+              text: `WITH db_clock AS (
+                       SELECT date_trunc('milliseconds', clock_timestamp()) AS database_now
+                     )
+                     INSERT INTO hns_control_observer_reservations (
+                       observation_id,
+                       state,
+                       reservation_lease_seconds,
+                       observer_fence,
+                       reservation_database_time,
+                       lease_expires_at,
+                       created_at,
+                       updated_at
+                     )
+                     SELECT $1,
+                            'reserved',
+                            $2::INTEGER,
+                            1,
+                            database_now,
+                            database_now + ($2::INTEGER) * INTERVAL '1 second',
+                            database_now,
+                            database_now
+                       FROM db_clock
+                     RETURNING observer_fence, ${FORMAT_RESERVATION_SQL}`,
+              values: [input.observation_id, input.reservation_lease_seconds],
+              readonly: false,
+            });
+            const row = oneRow(inserted);
+            if (row === undefined || row === null) {
+              return yield* Effect.fail(invalidRow("HNS observer reservation was not inserted"));
+            }
+            const observerFence = integerValue(row, "observer_fence");
+            const reservationDatabaseTime = stringValue(row, "reservation_database_time");
+            const leaseExpiresAt = stringValue(row, "lease_expires_at");
+            if (
+              observerFence !== 1 ||
+              reservationDatabaseTime === null ||
+              leaseExpiresAt === null
+            ) {
+              return yield* Effect.fail(invalidRow("HNS observer reservation result is invalid"));
+            }
+            return {
+              kind: "acquired",
+              observer_fence: observerFence,
+              reservation_database_time: reservationDatabaseTime,
+              lease_expires_at: leaseExpiresAt,
+              snapshot_reference: snapshotReference,
+            } as const;
+          }
+
+          if (stringValue(reservation, "state") === "terminal") {
+            const replayResult = yield* transaction.execute<Row>({
+              label: "hns-control-observer.snapshot.replay",
+              text: SELECT_SNAPSHOT_REPLAY_SQL,
+              values: [input.observation_id],
+              readonly: true,
+            });
+            return replayFromRow(oneRow(replayResult));
+          }
+          if (
+            stringValue(reservation, "state") !== "reserved" ||
+            integerValue(reservation, "reservation_lease_seconds") !==
+              input.reservation_lease_seconds
+          ) {
+            return yield* Effect.fail(invalidRow("HNS observer reservation row is invalid"));
+          }
+
+          const reacquired = yield* transaction.execute<Row>({
+            label: "hns-control-observer.reservation.reacquire",
+            text: `WITH db_clock AS (
+                     SELECT date_trunc('milliseconds', clock_timestamp()) AS database_now
+                   )
+                   UPDATE hns_control_observer_reservations AS reservation
+                      SET observer_fence = reservation.observer_fence + 1,
+                          reservation_database_time = db_clock.database_now,
+                          lease_expires_at = db_clock.database_now
+                            + reservation.reservation_lease_seconds * INTERVAL '1 second',
+                          updated_at = db_clock.database_now
+                     FROM db_clock
+                    WHERE reservation.observation_id = $1
+                      AND reservation.state = 'reserved'
+                      AND reservation.observer_fence < $2
+                      AND reservation.lease_expires_at <= db_clock.database_now
+                   RETURNING reservation.observer_fence, ${FORMAT_RESERVATION_SQL}`,
+            values: [input.observation_id, MAX_SAFE_FENCE],
+            readonly: false,
+          });
+          const reacquiredRow = oneRow(reacquired);
+          if (reacquiredRow !== null && reacquiredRow !== undefined) {
+            const observerFence = integerValue(reacquiredRow, "observer_fence");
+            const reservationDatabaseTime = stringValue(reacquiredRow, "reservation_database_time");
+            const leaseExpiresAt = stringValue(reacquiredRow, "lease_expires_at");
+            if (
+              observerFence === null ||
+              reservationDatabaseTime === null ||
+              leaseExpiresAt === null
+            ) {
+              return yield* Effect.fail(invalidRow("HNS observer reacquisition row is invalid"));
+            }
+            return {
+              kind: "acquired",
+              observer_fence: observerFence,
+              reservation_database_time: reservationDatabaseTime,
+              lease_expires_at: leaseExpiresAt,
+              snapshot_reference: snapshotReference,
+            } as const;
+          }
+          if (reacquiredRow === undefined) {
+            return yield* Effect.fail(invalidRow("HNS observer reacquisition is ambiguous"));
+          }
+
+          const busyResult = yield* transaction.execute<Row>({
+            label: "hns-control-observer.reservation.busy",
+            text: `WITH db_clock AS (SELECT clock_timestamp() AS database_now)
+                   SELECT GREATEST(
+                            1,
+                            CEIL(EXTRACT(EPOCH FROM (reservation.lease_expires_at
+                              - db_clock.database_now)))
+                          )::BIGINT AS retry_after_seconds
+                     FROM hns_control_observer_reservations AS reservation,
+                          db_clock
+                    WHERE reservation.observation_id = $1
+                      AND reservation.state = 'reserved'
+                      AND reservation.lease_expires_at > db_clock.database_now`,
+            values: [input.observation_id],
+            readonly: true,
+          });
+          const busy = oneRow(busyResult);
+          const retryAfterSeconds =
+            busy === null ? null : integerValue(busy ?? {}, "retry_after_seconds");
+          if (busy === undefined || retryAfterSeconds === null) {
+            return yield* Effect.fail(invalidRow("HNS observer live reservation is invalid"));
+          }
+          return { kind: "busy", retry_after_seconds: retryAfterSeconds } as const;
+        }),
+      );
+    });
+
+  const finalize = (rawInput: HnsControlObserverSnapshotFinalizeInput) =>
+    Effect.gen(function* () {
+      if (
+        !safeIdentity(rawInput.observation_id, 256) ||
+        !Number.isSafeInteger(rawInput.observer_fence) ||
+        rawInput.observer_fence < 1 ||
+        !isHnsControlObserverSnapshotReference(rawInput.snapshot_reference)
+      ) {
+        return { kind: "mismatch" } as const;
+      }
+      const db = yield* ControlPlaneDb;
+      const authorityResult = yield* db.execute<Row>({
+        label: "hns-control-observer.finalize.authority",
+        text: SELECT_FINALIZE_AUTHORITY_SQL,
+        values: [rawInput.observation_id],
+        readonly: true,
+      });
+      const authority = oneRow(authorityResult);
+      if (authority === null) return { kind: "mismatch" } as const;
+      if (authority === undefined) {
+        return yield* Effect.fail(invalidRow("HNS observer finalization authority is ambiguous"));
+      }
+      const requestBytes = copyBytes(authority.request_bytes);
+      const configurationBytes = copyBytes(authority.configuration_bytes);
+      if (
+        requestBytes === null ||
+        configurationBytes === null ||
+        !rowIdentityMatches(authority, {
+          observation_id: rawInput.observation_id,
+          request_bytes: requestBytes,
+          request_sha256: rawInput.request_sha256,
+          configuration_bytes: configurationBytes,
+          provider_configuration_digest: rawInput.provider_configuration_digest,
+        }) ||
+        stringValue(authority, "snapshot_reference") !== rawInput.snapshot_reference
+      ) {
+        return { kind: "mismatch" } as const;
+      }
+      if (stringValue(authority, "state") === "terminal") {
+        const replayResult = yield* db.execute<Row>({
+          label: "hns-control-observer.finalize.replay",
+          text: SELECT_SNAPSHOT_REPLAY_SQL,
+          values: [rawInput.observation_id],
+          readonly: true,
+        });
+        const replay = replayFromRow(oneRow(replayResult));
+        return replay.result_sha256 === rawInput.result_sha256 &&
+          bytesEqual(replay.result_bytes, rawInput.result_bytes)
+          ? replay
+          : ({ kind: "mismatch" } as const);
+      }
+
+      const input = yield* Effect.tryPromise({
+        try: () => validateFinalizeInput(rawInput, authority),
+        catch: (error) =>
+          error instanceof HnsControlObserverPostgresError
+            ? error
+            : invalidInput("HNS observer finalization failed strict decoding"),
+      });
+
+      const attempted = yield* db
+        .withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const operationResult = yield* transaction.execute<Row>({
+              label: "hns-control-observer.finalize.lock-operation",
+              text: LOCK_OPERATION_SQL,
+              values: [input.observation_id],
+              readonly: false,
+            });
+            const operation = oneRow(operationResult);
+            if (operation === undefined || operation === null) {
+              return yield* Effect.fail(invalidRow("HNS observer operation disappeared"));
+            }
+            if (!rowIdentityMatches(operation, input)) return { kind: "mismatch" } as const;
+
+            const reservationResult = yield* transaction.execute<Row>({
+              label: "hns-control-observer.finalize.lock-reservation",
+              text: LOCK_RESERVATION_SQL,
+              values: [input.observation_id],
+              readonly: false,
+            });
+            const reservation = oneRow(reservationResult);
+            if (reservation === undefined || reservation === null) {
+              return yield* Effect.fail(invalidRow("HNS observer reservation disappeared"));
+            }
+            if (stringValue(reservation, "state") === "terminal") {
+              const replayResult = yield* transaction.execute<Row>({
+                label: "hns-control-observer.finalize.concurrent-replay",
+                text: SELECT_SNAPSHOT_REPLAY_SQL,
+                values: [input.observation_id],
+                readonly: true,
+              });
+              const replay = replayFromRow(oneRow(replayResult));
+              return replay.result_sha256 === input.result_sha256 &&
+                bytesEqual(replay.result_bytes, input.result_bytes)
+                ? replay
+                : ({ kind: "mismatch" } as const);
+            }
+            if (
+              stringValue(reservation, "state") !== "reserved" ||
+              integerValue(reservation, "observer_fence") !== input.observer_fence ||
+              stringValue(reservation, "reservation_database_time") !==
+                input.reservation_database_time ||
+              stringValue(reservation, "lease_expires_at") !== input.lease_expires_at
+            ) {
+              return { kind: "lost" } as const;
+            }
+
+            const inserted = yield* transaction.execute({
+              label: "hns-control-observer.snapshot.insert",
+              text: `INSERT INTO hns_control_observer_snapshots (
+                       snapshot_reference,
+                       observation_id,
+                       observer_fence,
+                       request_bytes,
+                       request_sha256,
+                       configuration_bytes,
+                       provider_configuration_digest,
+                       reservation_database_time,
+                       lease_expires_at,
+                       semantic_facts_bytes,
+                       result_status,
+                       result_reference_kind,
+                       result_reference,
+                       result_bytes,
+                       result_sha256,
+                       transcript_entry_count,
+                       transcript_byte_length,
+                       accounting_envelope_bytes,
+                       logical_snapshot_byte_length,
+                       retained_at
+                     )
+                     SELECT operation.snapshot_reference,
+                            operation.observation_id,
+                            reservation.observer_fence,
+                            operation.request_bytes,
+                            operation.request_sha256,
+                            operation.configuration_bytes,
+                            operation.provider_configuration_digest,
+                            reservation.reservation_database_time,
+                            reservation.lease_expires_at,
+                            $5,
+                            $6,
+                            $7,
+                            operation.snapshot_reference,
+                            $8,
+                            $9,
+                            $10,
+                            $11,
+                            $12,
+                            $13,
+                            date_trunc('milliseconds', clock_timestamp())
+                       FROM hns_control_observer_operations AS operation
+                       JOIN hns_control_observer_reservations AS reservation
+                         USING (observation_id)
+                      WHERE operation.observation_id = $1
+                        AND operation.request_sha256 = $2
+                        AND operation.provider_configuration_digest = $3
+                        AND operation.snapshot_reference = $4
+                        AND reservation.state = 'reserved'
+                        AND reservation.observer_fence = $14
+                        AND reservation.lease_expires_at > clock_timestamp()`,
+              values: [
+                input.observation_id,
+                input.request_sha256,
+                input.provider_configuration_digest,
+                input.snapshot_reference,
+                input.semantic_facts_bytes,
+                input.result_status,
+                input.result_reference_kind,
+                input.result_bytes,
+                input.result_sha256,
+                input.transcript.length,
+                input.transcript_byte_length,
+                input.accounting_envelope_bytes,
+                input.logical_snapshot_byte_length,
+                input.observer_fence,
+              ],
+              readonly: false,
+            });
+            if (inserted.rowCount !== 1) return yield* Effect.fail(new FinalizationFenceLost());
+
+            for (let index = 0; index < input.transcript.length; index += 1) {
+              const entry = input.transcript[index];
+              if (entry === undefined) {
+                return yield* Effect.fail(invalidRow("HNS observer transcript entry disappeared"));
+              }
+              yield* transaction.execute({
+                label: "hns-control-observer.transcript.insert",
+                text: `INSERT INTO hns_control_observer_snapshot_transcript_entries (
+                         snapshot_reference,
+                         entry_ordinal,
+                         driver_reference,
+                         ownership_source,
+                         method_or_view_id,
+                         request_bytes,
+                         request_sha256,
+                         transport_outcome,
+                         transport_status,
+                         response_bytes,
+                         response_sha256
+                       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+                values: [
+                  input.snapshot_reference,
+                  index,
+                  entry.driver_reference,
+                  entry.ownership_source,
+                  entry.method_or_view_id,
+                  entry.request_bytes,
+                  entry.request_sha256,
+                  entry.transport_outcome,
+                  entry.transport_status,
+                  entry.response_bytes,
+                  entry.response_sha256,
+                ],
+                readonly: false,
+              });
+            }
+
+            const terminal = yield* transaction.execute({
+              label: "hns-control-observer.reservation.finalize",
+              text: `WITH db_clock AS (
+                       SELECT date_trunc('milliseconds', clock_timestamp()) AS database_now
+                     )
+                     UPDATE hns_control_observer_reservations AS reservation
+                        SET state = 'terminal',
+                            terminal_snapshot_reference = $4,
+                            terminal_status = $5,
+                            terminal_at = db_clock.database_now,
+                            updated_at = db_clock.database_now
+                       FROM db_clock
+                      WHERE reservation.observation_id = $1
+                        AND reservation.state = 'reserved'
+                        AND reservation.observer_fence = $2
+                        AND reservation.lease_expires_at > clock_timestamp()
+                        AND EXISTS (
+                          SELECT 1
+                            FROM hns_control_observer_operations AS operation
+                           WHERE operation.observation_id = reservation.observation_id
+                             AND operation.request_sha256 = $3
+                             AND operation.provider_configuration_digest = $6
+                             AND operation.snapshot_reference = $4
+                        )`,
+              values: [
+                input.observation_id,
+                input.observer_fence,
+                input.request_sha256,
+                input.snapshot_reference,
+                input.result_status,
+                input.provider_configuration_digest,
+              ],
+              readonly: false,
+            });
+            if (terminal.rowCount !== 1) return yield* Effect.fail(new FinalizationFenceLost());
+            return {
+              kind: "retained",
+              snapshot_reference: input.snapshot_reference,
+              result_bytes: new Uint8Array(input.result_bytes),
+              result_sha256: input.result_sha256,
+            } as const;
+          }),
+        )
+        .pipe(Effect.result);
+      if (attempted._tag === "Success") return attempted.success;
+      if (attempted.failure instanceof FinalizationFenceLost) return { kind: "lost" } as const;
+      return yield* Effect.fail(attempted.failure);
+    });
+
+  return { resolve, reserve, finalize } as const;
+}
+
+function runPort<A, E>(
+  effect: Effect.Effect<A, E, ControlPlaneDb>,
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  options: Readonly<{ readonly deadline_ms: number; readonly signal: AbortSignal }>,
+): Promise<A> {
+  if (
+    options.signal.aborted ||
+    !Number.isSafeInteger(options.deadline_ms) ||
+    options.deadline_ms <= 0
+  ) {
+    return Promise.reject(invalidInput("HNS observer persistence deadline is invalid or aborted"));
+  }
+  return Effect.runPromise(
+    Effect.scoped(Effect.timeout(Effect.provide(runtime)(effect), options.deadline_ms)),
+    { signal: options.signal },
+  );
+}
+
+export function makeControlPlaneHnsControlObserverConfigurationResolver(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): HnsControlObserverConfigurationResolverPort {
+  const repository = makeControlPlaneHnsControlObserverRepository();
+  return {
+    resolve: (identity, options) => runPort(repository.resolve(identity), runtime, options),
+  };
+}
+
+export function makeControlPlaneHnsControlObserverSnapshotStore(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  options: Readonly<{ readonly snapshotStoreReference?: string }> = {},
+): HnsControlObserverSnapshotStorePort {
+  const repository = makeControlPlaneHnsControlObserverRepository(options);
+  return {
+    reserve: (input, runOptions) =>
+      runPort(
+        repository.reserve({
+          ...input,
+          request_bytes: new Uint8Array(input.request_bytes),
+          configuration_bytes: new Uint8Array(input.configuration_bytes),
+        }),
+        runtime,
+        runOptions,
+      ) as Promise<HnsControlObserverReservationOutcome>,
+    finalize: (input, runOptions) =>
+      runPort(
+        repository.finalize({
+          ...input,
+          transcript: input.transcript.map((entry) => ({
+            ...entry,
+            request_bytes: new Uint8Array(entry.request_bytes),
+            response_bytes:
+              entry.response_bytes === null ? null : new Uint8Array(entry.response_bytes),
+          })),
+          semantic_facts_bytes: new Uint8Array(input.semantic_facts_bytes),
+          result_bytes: new Uint8Array(input.result_bytes),
+        }),
+        runtime,
+        runOptions,
+      ) as Promise<HnsControlObserverSnapshotFinalizeOutcome>,
+  };
+}
