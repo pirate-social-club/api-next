@@ -438,8 +438,7 @@ async function validateFinalizeInput(
         configuration.configuration.authoritative_dns?.response_max_bytes ?? null,
       required_view_ids: configuration.configuration.authoritative_dns?.required_view_ids ?? [],
       terminal_status: result.result.status,
-      terminal_reason_code:
-        result.result.status === "unavailable" ? result.result.reason_code : null,
+      terminal_reason_code: result.result.status === "verified" ? null : result.result.reason_code,
     },
   });
   let semanticFactsBytes = new Uint8Array(input.semantic_facts_bytes);
@@ -466,10 +465,16 @@ async function validateFinalizeInput(
       dnsEntries,
       result.result,
     );
+    const chainOnlyRejection =
+      result.result.status === "rejected" &&
+      (result.result.reason_code === "root_absent" ||
+        result.result.reason_code === "root_inactive");
     if (
       !semanticFactsMatchWire ||
       (result.result.status !== "unavailable" &&
+        !chainOnlyRejection &&
         semanticFacts.views.length !== dns.required_view_ids.length) ||
+      (chainOnlyRejection && (semanticFacts.views.length !== 0 || dnsEntries.length !== 0)) ||
       semanticFacts.views.some((view, index) => {
         const dnskey = dnsEntries[index * 2];
         const control = dnsEntries[index * 2 + 1];

@@ -512,6 +512,67 @@ describe("HNS parent-chain HSD observer", () => {
     expect(finalizeCalls).toBe(1);
   });
 
+  test("lets abort win while replay bytes are being decoded", async () => {
+    const configurationBytes = encoder.encode(JSON.stringify(configurationValue));
+    const decodedConfiguration =
+      await decodeHnsControlObserverConfigurationBytes(configurationBytes);
+    const request = {
+      ...requestValue,
+      provider_configuration_digest: decodedConfiguration.configuration_digest,
+    };
+    const requestBytes = await encodeHnsControlObservationRequest(request);
+    const retained = await observeHnsParentChain({
+      request,
+      request_sha256: await hnsControlObservationRequestHash(request),
+      configuration: configurationValue,
+      reservation_database_time: databaseTime,
+      snapshot_reference: snapshotReference,
+      transport: hsdScript().transport,
+      signal: new AbortController().signal,
+    });
+    const controller = new AbortController();
+    let resultByteReads = 0;
+    const replay = {
+      kind: "replay" as const,
+      snapshot_reference: snapshotReference,
+      get result_bytes(): Uint8Array {
+        resultByteReads += 1;
+        if (resultByteReads === 2) controller.abort();
+        return new Uint8Array(retained.result_bytes);
+      },
+      result_sha256: retained.result_sha256,
+    };
+    const target = makeHnsParentChainTargetObserver({
+      configuration_resolver: { resolve: async () => new Uint8Array(configurationBytes) },
+      capabilities: {
+        provider_id: "hns.owner.v1",
+        environment: "test",
+        chain_driver_reference: configurationValue.chain.driver_reference,
+        authoritative_dns_driver_reference: null,
+        snapshot_store_reference: configurationValue.snapshot_store_reference,
+      },
+      snapshot_store: {
+        reserve: async () => replay,
+        finalize: async () => {
+          throw new Error("replay must not finalize");
+        },
+      },
+      hsd_transport: {
+        exchange: async () => {
+          throw new Error("replay must not call HSD");
+        },
+      },
+    });
+
+    await expect(
+      target.observe(
+        { request, request_bytes: requestBytes, lease_policy: leasePolicy },
+        { deadline_ms: 12_000, signal: controller.signal },
+      ),
+    ).rejects.toMatchObject({ reason: "transport_unavailable" });
+    expect(resultByteReads).toBeGreaterThanOrEqual(2);
+  });
+
   test("maps configuration and snapshot-store failures into closed adapter errors", async () => {
     const configurationBytes = encoder.encode(JSON.stringify(configurationValue));
     const decodedConfiguration =

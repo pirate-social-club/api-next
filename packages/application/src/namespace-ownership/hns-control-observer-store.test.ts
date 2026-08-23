@@ -334,6 +334,51 @@ describe("HNS control observer transcript", () => {
     );
   });
 
+  test("allows only root-state owner rejections to terminate before DNS", async () => {
+    const hsd = await responseEntry();
+    for (const reason of ["root_absent", "root_inactive"] as const) {
+      await expect(
+        validateHnsControlObserverTranscript({
+          transcript: [hsd],
+          context: {
+            ...transcriptContext,
+            terminal_status: "rejected",
+            terminal_reason_code: reason,
+          },
+        }),
+      ).resolves.toHaveLength(1);
+    }
+    for (const reason of [
+      "txt_absent",
+      "txt_value_mismatch",
+      "expiry_horizon_insufficient",
+    ] as const) {
+      await expect(
+        validateHnsControlObserverTranscript({
+          transcript: [hsd],
+          context: {
+            ...transcriptContext,
+            terminal_status: "rejected",
+            terminal_reason_code: reason,
+          },
+        }),
+      ).rejects.toMatchObject({ reason: "invalid_transcript" });
+    }
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [
+          hsd,
+          await dnsEntry({ view_id: "dns-view-a", query_kind: "dnskey", message_id: 9 }),
+        ],
+        context: {
+          ...transcriptContext,
+          terminal_status: "rejected",
+          terminal_reason_code: "root_absent",
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "invalid_transcript" });
+  });
+
   test("accepts only a legal ordered unavailable DNS prefix", async () => {
     const hsd = await responseEntry();
     const dnskeyTimeout = await dnsEntry({
@@ -352,6 +397,35 @@ describe("HNS control observer transcript", () => {
         },
       }),
     ).resolves.toHaveLength(2);
+    for (const reason of [
+      "chain_transport_unavailable",
+      "chain_unsynchronized",
+      "chain_view_stale",
+      "chain_view_changed",
+      "chain_response_invalid",
+      "observer_internal_error",
+    ] as const) {
+      await expect(
+        validateHnsControlObserverTranscript({
+          transcript: [hsd],
+          context: {
+            ...transcriptContext,
+            terminal_status: "unavailable",
+            terminal_reason_code: reason,
+          },
+        }),
+      ).resolves.toHaveLength(1);
+      await expect(
+        validateHnsControlObserverTranscript({
+          transcript: [hsd, dnskeyTimeout],
+          context: {
+            ...transcriptContext,
+            terminal_status: "unavailable",
+            terminal_reason_code: reason,
+          },
+        }),
+      ).rejects.toMatchObject({ reason: "invalid_transcript" });
+    }
     await expect(
       validateHnsControlObserverTranscript({
         transcript: [hsd],

@@ -12,6 +12,7 @@ import {
   type HnsControlObserverReservationInput,
   type HnsControlObserverReservationOutcome,
   type HnsControlObserverSnapshotFinalizeInput,
+  hnsChainAuthorityDigest,
   hnsObservedTxtValuesDigest,
 } from "@pirate/application";
 import type { Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
@@ -38,7 +39,7 @@ if (required && connectionString === undefined) {
 
 const suite = connectionString === undefined ? describe.skip : describe;
 const encoder = new TextEncoder();
-const testCount = 11;
+const testCount = 14;
 let completedTestCount = 0;
 let admin: Client | undefined;
 let schema = "";
@@ -135,6 +136,16 @@ function signedDnsResponse(
   ]);
 }
 
+function servfailDnsResponse(request: Uint8Array): Uint8Array {
+  const header = new Uint8Array(12);
+  header[0] = request[0] ?? 0;
+  header[1] = request[1] ?? 0;
+  header.set(uint16(0x8402), 2);
+  header.set(uint16(1), 4);
+  header.set(uint16(1), 10);
+  return concatBytes([header, request.subarray(12)]);
+}
+
 function scopedConnection(raw: string, schemaName: string): string {
   const separator = raw.includes("?") ? "&" : "?";
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schemaName}`)}`;
@@ -153,6 +164,26 @@ async function rawSha256(bytes: Uint8Array): Promise<Sha256HexValue> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
     "",
   ) as Sha256HexValue;
+}
+
+async function hsdResponseTranscriptEntry(
+  ownershipSource: "hns_parent_chain_txt" | "owner_authoritative_dns_txt",
+) {
+  const requestBytes = encoder.encode('{"method":"getblockchaininfo","params":[]}');
+  const responseBytes = encoder.encode(
+    '{"result":{"chain":"regtest","blocks":10},"error":null,"id":null}',
+  );
+  return {
+    driver_reference: dnsConfigurationValue.chain.driver_reference,
+    ownership_source: ownershipSource,
+    method_or_view_id: "getblockchaininfo",
+    request_bytes: requestBytes,
+    request_sha256: await rawSha256(requestBytes),
+    transport_outcome: "response" as const,
+    transport_status: 200,
+    response_bytes: responseBytes,
+    response_sha256: await rawSha256(responseBytes),
+  };
 }
 
 async function seedConfiguration(
@@ -255,6 +286,63 @@ async function finalizeInput(
     semantic_facts_bytes: encoder.encode('{"status":"unavailable"}'),
     result_bytes: resultBytes,
     result_sha256: decoded.result_sha256,
+  };
+}
+
+async function ownerChainOnlyFinalizeInput(
+  reservation: HnsControlObserverReservationInput,
+  authority: Extract<HnsControlObserverReservationOutcome, { readonly kind: "acquired" }>,
+  reason: "root_absent" | "root_inactive" | "txt_absent",
+): Promise<HnsControlObserverSnapshotFinalizeInput> {
+  const request = await decodeHnsControlObservationRequestBytes(reservation.request_bytes);
+  const chainAuthorityDigest = await hnsChainAuthorityDigest({
+    chain_network: dnsConfigurationValue.chain.network,
+    chain_genesis_block_hash: dnsConfigurationValue.chain.genesis_block_hash,
+    root_label: request.request.root_label,
+    ownership_source: "owner_authoritative_dns_txt",
+    authority_records: [],
+  });
+  const expectedTxtValueSha256 = await rawSha256(
+    encoder.encode(request.request.expected_txt_value),
+  );
+  const resultBytes = encoder.encode(
+    JSON.stringify({
+      version: "pirate-hns-control-observation-result-v1",
+      observation_id: reservation.observation_id,
+      request_sha256: reservation.request_sha256,
+      status: "rejected",
+      reason_code: reason,
+      provider_id: request.request.provider_id,
+      provider_configuration_reference: request.request.provider_configuration_reference,
+      provider_configuration_version: request.request.provider_configuration_version,
+      provider_configuration_digest: request.request.provider_configuration_digest,
+      environment: request.request.environment,
+      ownership_source: request.request.ownership_source,
+      root_label: request.request.root_label,
+      txt_name: request.request.txt_name,
+      expected_txt_value_sha256: expectedTxtValueSha256,
+      observed_txt_values_digest: null,
+      chain_authority_digest: chainAuthorityDigest,
+      chain_network: dnsConfigurationValue.chain.network,
+      chain_genesis_block_hash: dnsConfigurationValue.chain.genesis_block_hash,
+      chain_anchor_height: 10,
+      chain_anchor_block_hash: "8".repeat(64),
+      chain_anchor_median_time: 1_700_000_000,
+      expiry_height: reason === "txt_absent" ? 1_000 : null,
+      provider_evidence_ref: authority.snapshot_reference,
+    }),
+  );
+  const decodedResult = await decodeHnsControlObservationResultBytes(resultBytes, request.request);
+  return {
+    observation_id: reservation.observation_id,
+    observer_fence: authority.observer_fence,
+    request_sha256: reservation.request_sha256,
+    provider_configuration_digest: reservation.provider_configuration_digest,
+    snapshot_reference: authority.snapshot_reference,
+    transcript: [await hsdResponseTranscriptEntry("owner_authoritative_dns_txt")],
+    semantic_facts_bytes: encodeHnsAuthoritativeDnsSemanticFactsV1([]),
+    result_bytes: resultBytes,
+    result_sha256: decodedResult.result_sha256,
   };
 }
 
@@ -621,6 +709,366 @@ suite("Postgres 17 HNS control observer persistence", () => {
       ),
     ).resolves.toMatchObject({ kind: "retained" });
     expect(await rowCount("hns_control_observer_snapshot_transcript_entries")).toBe(0);
+    completedTestCount += 1;
+  });
+
+  test("retains only chain-state owner rejections before authoritative DNS", async () => {
+    const store = makeControlPlaneHnsControlObserverSnapshotStore(runtime());
+    for (const reason of ["root_absent", "root_inactive"] as const) {
+      const chainConfiguration = {
+        ...dnsConfigurationValue,
+        provider_configuration_reference: `hns-observer-pg-dns-${reason}`,
+      } as const satisfies HnsControlObserverConfigurationV1;
+      const input = await reservationInput(
+        `observer-pg-owner-chain-${reason}`,
+        `pirate-verification=pg-observer-${reason}`,
+        chainConfiguration,
+        "owner_authoritative_dns_txt",
+      );
+      const authority = acquired(await store.reserve(input, runOptions()));
+      await expect(
+        store.finalize(await ownerChainOnlyFinalizeInput(input, authority, reason), runOptions()),
+      ).resolves.toMatchObject({ kind: "retained" });
+    }
+
+    const txtAbsentConfiguration = {
+      ...dnsConfigurationValue,
+      provider_configuration_reference: "hns-observer-pg-dns-txt-absent",
+    } as const satisfies HnsControlObserverConfigurationV1;
+    const invalidInput = await reservationInput(
+      "observer-pg-owner-chain-txt-absent",
+      "pirate-verification=pg-observer-txt-absent",
+      txtAbsentConfiguration,
+      "owner_authoritative_dns_txt",
+    );
+    const invalidAuthority = acquired(await store.reserve(invalidInput, runOptions()));
+    await expect(
+      store.finalize(
+        await ownerChainOnlyFinalizeInput(invalidInput, invalidAuthority, "txt_absent"),
+        runOptions(),
+      ),
+    ).rejects.toThrow("strict decoding");
+    expect(await rowCount("hns_control_observer_snapshots")).toBe(2);
+    expect(await rowCount("hns_control_observer_snapshot_transcript_entries")).toBe(2);
+    completedTestCount += 1;
+  });
+
+  test("retains authenticated owner control before an expiry-horizon rejection", async () => {
+    const expectedTxtValue = "pirate-verification=pg-observer-expiry";
+    const expiryConfiguration = {
+      ...dnsConfigurationValue,
+      provider_configuration_reference: "hns-observer-pg-dns-expiry",
+    } as const satisfies HnsControlObserverConfigurationV1;
+    const input = await reservationInput(
+      "observer-pg-owner-expiry-01",
+      expectedTxtValue,
+      expiryConfiguration,
+      "owner_authoritative_dns_txt",
+    );
+    const store = makeControlPlaneHnsControlObserverSnapshotStore(runtime());
+    const authority = acquired(await store.reserve(input, runOptions()));
+    const request = await decodeHnsControlObservationRequestBytes(input.request_bytes);
+    const dnskeyRequest = buildHnsAuthoritativeDnsQueryV1({
+      message_id: 21,
+      query_kind: "dnskey",
+      root_label: request.request.root_label,
+    });
+    const controlRequest = buildHnsAuthoritativeDnsQueryV1({
+      message_id: 22,
+      query_kind: "control_txt",
+      root_label: request.request.root_label,
+    });
+    const dnskeyResponse = signedDnsResponse(dnskeyRequest, 48, new Uint8Array([1]));
+    const controlTxtBytes = encoder.encode(expectedTxtValue);
+    const controlResponse = signedDnsResponse(
+      controlRequest,
+      16,
+      concatBytes([new Uint8Array([controlTxtBytes.byteLength]), controlTxtBytes]),
+    );
+    const authorityRecords = [
+      ["NS", "ns1.pgobserver"],
+      ["GLUE4", "ns1.pgobserver", "192.0.2.53"],
+      ["DS", 12_345, 13, 2, "ab".repeat(32)],
+    ] as const;
+    const chainAuthorityDigest = await hnsChainAuthorityDigest({
+      chain_network: expiryConfiguration.chain.network,
+      chain_genesis_block_hash: expiryConfiguration.chain.genesis_block_hash,
+      root_label: request.request.root_label,
+      ownership_source: "owner_authoritative_dns_txt",
+      authority_records: authorityRecords,
+    });
+    const observedTxtValuesDigest = await hnsObservedTxtValuesDigest([
+      { chunks: [expectedTxtValue] },
+    ]);
+    if (observedTxtValuesDigest === null) throw new Error("expected TXT digest");
+    const resultBytes = encoder.encode(
+      JSON.stringify({
+        version: "pirate-hns-control-observation-result-v1",
+        observation_id: input.observation_id,
+        request_sha256: input.request_sha256,
+        status: "rejected",
+        reason_code: "expiry_horizon_insufficient",
+        provider_id: request.request.provider_id,
+        provider_configuration_reference: request.request.provider_configuration_reference,
+        provider_configuration_version: request.request.provider_configuration_version,
+        provider_configuration_digest: request.request.provider_configuration_digest,
+        environment: request.request.environment,
+        ownership_source: request.request.ownership_source,
+        root_label: request.request.root_label,
+        txt_name: request.request.txt_name,
+        expected_txt_value_sha256: await rawSha256(encoder.encode(expectedTxtValue)),
+        observed_txt_values_digest: observedTxtValuesDigest,
+        chain_authority_digest: chainAuthorityDigest,
+        chain_network: expiryConfiguration.chain.network,
+        chain_genesis_block_hash: expiryConfiguration.chain.genesis_block_hash,
+        chain_anchor_height: 10,
+        chain_anchor_block_hash: "8".repeat(64),
+        chain_anchor_median_time: 1_700_000_000,
+        expiry_height: 200,
+        provider_evidence_ref: authority.snapshot_reference,
+      }),
+    );
+    const decodedResult = await decodeHnsControlObservationResultBytes(
+      resultBytes,
+      request.request,
+    );
+    const dnskeyRequestSha256 = await rawSha256(dnskeyRequest);
+    const dnskeyResponseSha256 = await rawSha256(dnskeyResponse);
+    const controlRequestSha256 = await rawSha256(controlRequest);
+    const controlResponseSha256 = await rawSha256(controlResponse);
+    await expect(
+      store.finalize(
+        {
+          observation_id: input.observation_id,
+          observer_fence: authority.observer_fence,
+          request_sha256: input.request_sha256,
+          provider_configuration_digest: input.provider_configuration_digest,
+          snapshot_reference: authority.snapshot_reference,
+          transcript: [
+            await hsdResponseTranscriptEntry("owner_authoritative_dns_txt"),
+            {
+              driver_reference: expiryConfiguration.authoritative_dns.driver_reference,
+              ownership_source: "owner_authoritative_dns_txt",
+              method_or_view_id: "getblockchaininfo",
+              request_bytes: dnskeyRequest,
+              request_sha256: dnskeyRequestSha256,
+              transport_outcome: "response",
+              transport_status: null,
+              response_bytes: dnskeyResponse,
+              response_sha256: dnskeyResponseSha256,
+            },
+            {
+              driver_reference: expiryConfiguration.authoritative_dns.driver_reference,
+              ownership_source: "owner_authoritative_dns_txt",
+              method_or_view_id: "getblockchaininfo",
+              request_bytes: controlRequest,
+              request_sha256: controlRequestSha256,
+              transport_outcome: "response",
+              transport_status: null,
+              response_bytes: controlResponse,
+              response_sha256: controlResponseSha256,
+            },
+          ],
+          semantic_facts_bytes: encodeHnsAuthoritativeDnsSemanticFactsV1([
+            {
+              view_id: "getblockchaininfo",
+              authority_nameserver: "ns1.pgobserver",
+              authority_address_family: "GLUE4",
+              authority_address: "192.0.2.53",
+              dnskey_request_sha256: dnskeyRequestSha256,
+              dnskey_response_sha256: dnskeyResponseSha256,
+              control_request_sha256: controlRequestSha256,
+              control_response_sha256: controlResponseSha256,
+              chain_authority_digest: chainAuthorityDigest,
+              validation_database_time: authority.reservation_database_time,
+              dnssec_validation: "secure",
+              semantic_class: "txt_values",
+              observed_txt_values_digest: observedTxtValuesDigest,
+            },
+          ]),
+          result_bytes: resultBytes,
+          result_sha256: decodedResult.result_sha256,
+        },
+        runOptions(),
+      ),
+    ).resolves.toMatchObject({ kind: "retained" });
+    expect(await rowCount("hns_control_observer_snapshots")).toBe(1);
+    completedTestCount += 1;
+  });
+
+  test("retains completed secure views before a later unavailable DNS terminal", async () => {
+    const store = makeControlPlaneHnsControlObserverSnapshotStore(runtime());
+    for (const reason of [
+      "authoritative_dns_timeout",
+      "authoritative_dns_servfail",
+      "observer_capacity",
+    ] as const) {
+      const terminalConfiguration = {
+        ...dnsConfigurationValue,
+        provider_configuration_reference: `hns-observer-pg-dns-${reason}`,
+        authoritative_dns: {
+          ...dnsConfigurationValue.authoritative_dns,
+          required_view_ids: ["dns-view-a", "dns-view-b"],
+        },
+      } as const satisfies HnsControlObserverConfigurationV1;
+      const input = await reservationInput(
+        `observer-pg-owner-prefix-${reason}`,
+        "pirate-verification=pg-observer-prefix",
+        terminalConfiguration,
+        "owner_authoritative_dns_txt",
+      );
+      const authority = acquired(await store.reserve(input, runOptions()));
+      const request = await decodeHnsControlObservationRequestBytes(input.request_bytes);
+      const dnskeyRequest = buildHnsAuthoritativeDnsQueryV1({
+        message_id: 31,
+        query_kind: "dnskey",
+        root_label: request.request.root_label,
+      });
+      const controlRequest = buildHnsAuthoritativeDnsQueryV1({
+        message_id: 32,
+        query_kind: "control_txt",
+        root_label: request.request.root_label,
+      });
+      const terminalRequest = buildHnsAuthoritativeDnsQueryV1({
+        message_id: 33,
+        query_kind: "dnskey",
+        root_label: request.request.root_label,
+      });
+      const dnskeyResponse = signedDnsResponse(dnskeyRequest, 48, new Uint8Array([1]));
+      const controlTxtBytes = encoder.encode(request.request.expected_txt_value);
+      const controlResponse = signedDnsResponse(
+        controlRequest,
+        16,
+        concatBytes([new Uint8Array([controlTxtBytes.byteLength]), controlTxtBytes]),
+      );
+      const terminalResponse =
+        reason === "authoritative_dns_timeout"
+          ? null
+          : reason === "authoritative_dns_servfail"
+            ? servfailDnsResponse(terminalRequest)
+            : new Uint8Array(terminalConfiguration.authoritative_dns.response_max_bytes);
+      const chainAuthorityDigest = "5".repeat(64) as Sha256HexValue;
+      const observedTxtValuesDigest = await hnsObservedTxtValuesDigest([
+        { chunks: [request.request.expected_txt_value] },
+      ]);
+      if (observedTxtValuesDigest === null) throw new Error("expected TXT digest");
+      const resultBytes = encoder.encode(
+        JSON.stringify({
+          version: "pirate-hns-control-observation-result-v1",
+          observation_id: input.observation_id,
+          request_sha256: input.request_sha256,
+          status: "unavailable",
+          reason_code: reason,
+          retry_after_seconds: null,
+          diagnostic_ref: authority.snapshot_reference,
+        }),
+      );
+      const decodedResult = await decodeHnsControlObservationResultBytes(resultBytes);
+      const dnskeyRequestSha256 = await rawSha256(dnskeyRequest);
+      const dnskeyResponseSha256 = await rawSha256(dnskeyResponse);
+      const controlRequestSha256 = await rawSha256(controlRequest);
+      const controlResponseSha256 = await rawSha256(controlResponse);
+      const terminalRequestSha256 = await rawSha256(terminalRequest);
+      const terminalResponseSha256 =
+        terminalResponse === null ? null : await rawSha256(terminalResponse);
+      const retainedAuthority = {
+        observation_id: input.observation_id,
+        observer_fence: authority.observer_fence,
+        request_sha256: input.request_sha256,
+        provider_configuration_digest: input.provider_configuration_digest,
+        snapshot_reference: authority.snapshot_reference,
+        transcript: [
+          await hsdResponseTranscriptEntry("owner_authoritative_dns_txt"),
+          {
+            driver_reference: terminalConfiguration.authoritative_dns.driver_reference,
+            ownership_source: "owner_authoritative_dns_txt" as const,
+            method_or_view_id: "dns-view-a",
+            request_bytes: dnskeyRequest,
+            request_sha256: dnskeyRequestSha256,
+            transport_outcome: "response" as const,
+            transport_status: null,
+            response_bytes: dnskeyResponse,
+            response_sha256: dnskeyResponseSha256,
+          },
+          {
+            driver_reference: terminalConfiguration.authoritative_dns.driver_reference,
+            ownership_source: "owner_authoritative_dns_txt" as const,
+            method_or_view_id: "dns-view-a",
+            request_bytes: controlRequest,
+            request_sha256: controlRequestSha256,
+            transport_outcome: "response" as const,
+            transport_status: null,
+            response_bytes: controlResponse,
+            response_sha256: controlResponseSha256,
+          },
+          {
+            driver_reference: terminalConfiguration.authoritative_dns.driver_reference,
+            ownership_source: "owner_authoritative_dns_txt" as const,
+            method_or_view_id: "dns-view-b",
+            request_bytes: terminalRequest,
+            request_sha256: terminalRequestSha256,
+            transport_outcome:
+              reason === "authoritative_dns_timeout" ? ("timeout" as const) : ("response" as const),
+            transport_status: null,
+            response_bytes: terminalResponse,
+            response_sha256: terminalResponseSha256,
+          },
+        ],
+        semantic_facts_bytes: encodeHnsAuthoritativeDnsSemanticFactsV1([
+          {
+            view_id: "dns-view-a",
+            authority_nameserver: "ns1.pgobserver",
+            authority_address_family: "GLUE4",
+            authority_address: "192.0.2.53",
+            dnskey_request_sha256: dnskeyRequestSha256,
+            dnskey_response_sha256: dnskeyResponseSha256,
+            control_request_sha256: controlRequestSha256,
+            control_response_sha256: controlResponseSha256,
+            chain_authority_digest: chainAuthorityDigest,
+            validation_database_time: authority.reservation_database_time,
+            dnssec_validation: "secure",
+            semantic_class: "txt_values",
+            observed_txt_values_digest: observedTxtValuesDigest,
+          },
+        ]),
+      };
+      if (reason === "authoritative_dns_timeout") {
+        const contradictoryResultBytes = encoder.encode(
+          JSON.stringify({
+            version: "pirate-hns-control-observation-result-v1",
+            observation_id: input.observation_id,
+            request_sha256: input.request_sha256,
+            status: "unavailable",
+            reason_code: "chain_transport_unavailable",
+            retry_after_seconds: null,
+            diagnostic_ref: authority.snapshot_reference,
+          }),
+        );
+        const contradictoryResult =
+          await decodeHnsControlObservationResultBytes(contradictoryResultBytes);
+        await expect(
+          store.finalize(
+            {
+              ...retainedAuthority,
+              result_bytes: contradictoryResultBytes,
+              result_sha256: contradictoryResult.result_sha256,
+            },
+            runOptions(),
+          ),
+        ).rejects.toThrow("strict decoding");
+      }
+      await expect(
+        store.finalize(
+          {
+            ...retainedAuthority,
+            result_bytes: resultBytes,
+            result_sha256: decodedResult.result_sha256,
+          },
+          runOptions(),
+        ),
+      ).resolves.toMatchObject({ kind: "retained" });
+    }
+    expect(await rowCount("hns_control_observer_snapshots")).toBe(3);
     completedTestCount += 1;
   });
 

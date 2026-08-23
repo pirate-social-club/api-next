@@ -163,6 +163,23 @@ async function startRevalidation(): Promise<{
 }
 
 describe("HNS owner verifier Worker", () => {
+  test("keeps target observer runtime and transports out of the default Worker entrypoint", async () => {
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    const targetObserverSource = await Bun.file(
+      new URL("./target-observer.ts", import.meta.url),
+    ).text();
+    const localImports = (moduleSource: string): ReadonlyArray<string> =>
+      Array.from(
+        moduleSource.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)["'](\.[^"']+)["']/gu),
+        (match) => match[1] ?? "",
+      );
+
+    expect(localImports(source)).toEqual(["./target-observer.ts"]);
+    expect(localImports(targetObserverSource)).toEqual([]);
+    expect(source).toContain("return handleRequest(request, env);");
+    expect(source).not.toContain("return handleRequest(request, env, {");
+  });
+
   test("starts both the frozen creation and route-revalidation presentation", async () => {
     const response = await app.fetch(
       request("/internal/hns-owner/v1/start", creationStart, "application/json"),

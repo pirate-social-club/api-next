@@ -498,13 +498,34 @@ export async function validateHnsControlObserverTranscript(
   if (dnsStarted && nextDnsQueryKind === "control_txt" && !dnsTerminalPrefix) {
     return failTranscript("HNS observer DNS transcript ends after a successful DNSKEY response");
   }
+  const ownerChainOnlyRejection =
+    input.context.ownership_source === "owner_authoritative_dns_txt" &&
+    input.context.terminal_status === "rejected" &&
+    (input.context.terminal_reason_code === "root_absent" ||
+      input.context.terminal_reason_code === "root_inactive");
   if (
     input.context.ownership_source === "owner_authoritative_dns_txt" &&
     input.context.terminal_status !== undefined &&
     input.context.terminal_status !== "unavailable" &&
+    !ownerChainOnlyRejection &&
     (dnsTerminalPrefix || nextDnsViewIndex !== input.context.required_view_ids.length)
   ) {
     return failTranscript("HNS observer terminal DNS result lacks every configured view pair");
+  }
+  if (ownerChainOnlyRejection && dnsStarted) {
+    return failTranscript("HNS observer chain-only rejection contains authoritative DNS");
+  }
+  const ownerChainUnavailable =
+    input.context.ownership_source === "owner_authoritative_dns_txt" &&
+    input.context.terminal_status === "unavailable" &&
+    (input.context.terminal_reason_code === "chain_transport_unavailable" ||
+      input.context.terminal_reason_code === "chain_unsynchronized" ||
+      input.context.terminal_reason_code === "chain_view_stale" ||
+      input.context.terminal_reason_code === "chain_view_changed" ||
+      input.context.terminal_reason_code === "chain_response_invalid" ||
+      input.context.terminal_reason_code === "observer_internal_error");
+  if (ownerChainUnavailable && dnsStarted) {
+    return failTranscript("HNS observer chain-unavailable result contains authoritative DNS");
   }
   if (
     input.context.ownership_source === "owner_authoritative_dns_txt" &&

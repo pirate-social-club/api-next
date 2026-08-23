@@ -262,15 +262,17 @@ function unavailableResult(
 }
 
 /**
- * Disabled owner-source kernel. `authority_records` must come from the future
- * shared stable HSD A/B bracket. This function is not a complete target
- * observer and is not composed by the Worker runtime.
+ * Disabled owner-source kernel. The complete source adapter supplies
+ * `authority_records` and their expected digest from one stable HSD A/B
+ * bracket. This function remains independently testable and is not composed by
+ * the Worker runtime.
  */
 export async function observeHnsOwnerAuthoritativeDns(
   input: Readonly<{
     readonly request: HnsControlObservationRequestV1;
     readonly configuration: HnsControlObserverConfigurationV1;
     readonly authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
+    readonly expected_chain_authority_digest?: Sha256HexValue;
     readonly reservation_database_time: string;
     readonly initial_transcript?: ReadonlyArray<HnsControlObserverTranscriptEntryV1>;
     readonly message_ids: HnsAuthoritativeDnsMessageIdPortV1;
@@ -305,6 +307,15 @@ export async function observeHnsOwnerAuthoritativeDns(
     authority_records: canonicalAuthorityRecords,
   });
   abortIfSet(input.signal);
+  if (
+    input.expected_chain_authority_digest !== undefined &&
+    chainAuthorityDigest !== input.expected_chain_authority_digest
+  ) {
+    throw new HnsOwnerAuthoritativeDnsObserverError(
+      "invalid_response",
+      "HNS owner-authoritative DNS authority differs from its stable HSD bracket",
+    );
+  }
   const transcript = (input.initial_transcript ?? []).map((entry) => ({
     ...entry,
     request_bytes: new Uint8Array(entry.request_bytes),

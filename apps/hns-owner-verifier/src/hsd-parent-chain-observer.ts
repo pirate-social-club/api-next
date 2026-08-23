@@ -35,6 +35,13 @@ import {
 } from "@pirate/application/namespace-ownership";
 import { Predicate } from "effect";
 import { type HnsTargetObserverPort, HnsTargetObserverPortError } from "./target-observer.ts";
+import {
+  finalizeHnsControlObserverResult,
+  type HnsTargetObserverExecutionResult,
+  makeHnsRejectedControlResult,
+  makeHnsUnavailableControlResult,
+  makeHnsVerifiedControlResult,
+} from "./target-observer-result.ts";
 
 type Sha256HexValue = HnsControlObservationRequestV1["provider_configuration_digest"];
 
@@ -96,14 +103,7 @@ export type HnsStableHsdBracketResultV1 =
       readonly transcript: ReadonlyArray<HnsControlObserverTranscriptEntryV1>;
     }>;
 
-export type HnsParentChainObserverResult = Readonly<{
-  readonly result_bytes: Uint8Array;
-  readonly result_sha256: Sha256HexValue;
-  readonly result_status: "verified" | "rejected" | "unavailable";
-  readonly result_reference_kind: "provider_evidence_ref" | "diagnostic_ref";
-  readonly semantic_facts_bytes: Uint8Array;
-  readonly transcript: ReadonlyArray<HnsControlObserverTranscriptEntryV1>;
-}>;
+export type HnsParentChainObserverResult = HnsTargetObserverExecutionResult;
 
 export class HnsStableHsdBracketError extends HnsTargetObserverPortError {
   override readonly name: string = "HnsStableHsdBracketError";
@@ -925,29 +925,14 @@ async function finalizeResult(
   transcript: ReadonlyArray<HnsControlObserverTranscriptEntryV1>,
   signal: AbortSignal,
 ): Promise<HnsParentChainObserverResult> {
-  if (signal.aborted) {
-    throw new HnsParentChainObserverError(
-      "transport_unavailable",
-      "HNS parent-chain result finalization started after abort",
-    );
-  }
-  const bytes = encoder.encode(JSON.stringify(result));
-  const decoded = await decodeHnsControlObservationResultBytes(bytes, request);
-  if (signal.aborted) {
-    throw new HnsParentChainObserverError(
-      "transport_unavailable",
-      "HNS parent-chain result finalization completed after abort",
-    );
-  }
-  return {
-    result_bytes: decoded.result_bytes,
-    result_sha256: decoded.result_sha256,
-    result_status: decoded.result.status,
-    result_reference_kind:
-      decoded.result.status === "unavailable" ? "diagnostic_ref" : "provider_evidence_ref",
-    semantic_facts_bytes: new Uint8Array(decoded.result_bytes),
+  return finalizeHnsControlObserverResult({
+    request,
+    result,
     transcript,
-  };
+    semantic_facts_bytes: null,
+    signal,
+    abort_error: (message) => new HnsParentChainObserverError("transport_unavailable", message),
+  });
 }
 
 function unavailableResult(
@@ -956,15 +941,12 @@ function unavailableResult(
   reason: HnsControlObservationUnavailableReason,
   snapshotReference: string,
 ): HnsControlObservationResultV1 {
-  return {
-    version: "pirate-hns-control-observation-result-v1",
-    observation_id: request.observation_id,
+  return makeHnsUnavailableControlResult({
+    request,
     request_sha256: requestHash,
-    status: "unavailable",
-    reason_code: reason,
-    retry_after_seconds: null,
-    diagnostic_ref: snapshotReference,
-  };
+    reason,
+    snapshot_reference: snapshotReference,
+  });
 }
 
 function rejectedResult(
@@ -981,31 +963,18 @@ function rejectedResult(
     readonly snapshot_reference: string;
   }>,
 ): HnsControlObservationResultV1 {
-  return {
-    version: "pirate-hns-control-observation-result-v1",
-    observation_id: input.request.observation_id,
+  return makeHnsRejectedControlResult({
+    request: input.request,
     request_sha256: input.request_hash,
-    status: "rejected",
-    reason_code: input.reason,
-    provider_id: input.request.provider_id,
-    provider_configuration_reference: input.request.provider_configuration_reference,
-    provider_configuration_version: input.request.provider_configuration_version,
-    provider_configuration_digest: input.request.provider_configuration_digest,
-    environment: input.request.environment,
-    ownership_source: input.request.ownership_source,
-    root_label: input.request.root_label,
-    txt_name: input.request.txt_name,
+    reason: input.reason,
     expected_txt_value_sha256: input.expected_txt_value_sha256,
     observed_txt_values_digest: input.observed_txt_values_digest,
     chain_authority_digest: input.chain_authority_digest,
-    chain_network: input.chain_anchor.network,
+    chain_anchor: input.chain_anchor,
     chain_genesis_block_hash: input.chain_genesis_block_hash,
-    chain_anchor_height: input.chain_anchor.height,
-    chain_anchor_block_hash: input.chain_anchor.best_block_hash,
-    chain_anchor_median_time: input.chain_anchor.median_time,
     expiry_height: input.expiry_height,
-    provider_evidence_ref: input.snapshot_reference,
-  };
+    snapshot_reference: input.snapshot_reference,
+  });
 }
 
 function verifiedResult(
@@ -1021,33 +990,17 @@ function verifiedResult(
     readonly snapshot_reference: string;
   }>,
 ): HnsControlObservationResultV1 {
-  return {
-    version: "pirate-hns-control-observation-result-v1",
-    observation_id: input.request.observation_id,
+  return makeHnsVerifiedControlResult({
+    request: input.request,
     request_sha256: input.request_hash,
-    status: "verified",
-    provider_id: input.request.provider_id,
-    provider_configuration_reference: input.request.provider_configuration_reference,
-    provider_configuration_version: input.request.provider_configuration_version,
-    provider_configuration_digest: input.request.provider_configuration_digest,
-    environment: input.request.environment,
-    ownership_source: input.request.ownership_source,
-    root_label: input.request.root_label,
-    txt_name: input.request.txt_name,
     expected_txt_value_sha256: input.expected_txt_value_sha256,
     control_identity_digest: input.control_identity_digest,
     chain_authority_digest: input.chain_authority_digest,
-    root_exists: true,
-    root_control_verified: true,
-    expiry_horizon_sufficient: true,
-    chain_network: input.chain_anchor.network,
+    chain_anchor: input.chain_anchor,
     chain_genesis_block_hash: input.chain_genesis_block_hash,
-    chain_anchor_height: input.chain_anchor.height,
-    chain_anchor_block_hash: input.chain_anchor.best_block_hash,
-    chain_anchor_median_time: input.chain_anchor.median_time,
     expiry_height: input.expiry_height,
-    provider_evidence_ref: input.snapshot_reference,
-  };
+    snapshot_reference: input.snapshot_reference,
+  });
 }
 
 export async function observeHnsParentChain(
@@ -1239,12 +1192,35 @@ export async function observeHnsParentChain(
   }
 }
 
-export function makeHnsParentChainTargetObserver(
+export type HnsTargetObserverLifecycleSourceInput = Readonly<{
+  readonly request: HnsControlObservationRequestV1;
+  readonly request_sha256: Sha256HexValue;
+  readonly configuration: HnsControlObserverConfigurationV1;
+  readonly configuration_digest: Sha256HexValue;
+  readonly reservation_database_time: string;
+  readonly snapshot_reference: string;
+  readonly signal: AbortSignal;
+}>;
+
+export function makeHnsTargetObserverSnapshotLifecycle(
   input: Readonly<{
+    readonly ownership_source: HnsOwnershipSource;
     readonly configuration_resolver: HnsControlObserverConfigurationResolverPort;
     readonly capabilities: HnsControlObserverRuntimeCapabilities;
     readonly snapshot_store: HnsControlObserverSnapshotStorePort;
-    readonly hsd_transport: HnsControlObserverHsdTransportPort;
+    readonly observe_source: (
+      input: HnsTargetObserverLifecycleSourceInput,
+    ) => Promise<HnsTargetObserverExecutionResult>;
+    readonly make_capacity_result: (
+      input: Readonly<{
+        readonly request: HnsControlObservationRequestV1;
+        readonly request_sha256: Sha256HexValue;
+        readonly snapshot_reference: string;
+        readonly transcript: ReadonlyArray<HnsControlObserverTranscriptEntryV1>;
+        readonly semantic_facts_bytes: Uint8Array;
+        readonly signal: AbortSignal;
+      }>,
+    ) => Promise<HnsTargetObserverExecutionResult>;
   }>,
 ): HnsTargetObserverPort {
   return {
@@ -1269,10 +1245,10 @@ export function makeHnsParentChainTargetObserver(
           "HNS observer request projection and bytes differ",
         );
       }
-      if (decodedRequest.request.ownership_source !== "hns_parent_chain_txt") {
+      if (decodedRequest.request.ownership_source !== input.ownership_source) {
         throw new HnsParentChainObserverError(
           "invalid_request",
-          "HNS parent-chain observer received another ownership source",
+          "HNS observer received another ownership source",
         );
       }
       let configuration: Awaited<ReturnType<typeof resolveHnsControlObserverConfiguration>>;
@@ -1390,6 +1366,12 @@ export function makeHnsParentChainTargetObserver(
           reservation.result_bytes,
           decodedRequest.request,
         );
+        if (options.signal.aborted) {
+          throw new HnsParentChainObserverError(
+            "transport_unavailable",
+            "HNS observer replay decoding completed after its deadline",
+          );
+        }
         if (
           replay.result_sha256 !== reservation.result_sha256 ||
           (replay.result.status === "unavailable"
@@ -1399,6 +1381,12 @@ export function makeHnsParentChainTargetObserver(
           throw new HnsParentChainObserverError(
             "invalid_response",
             "HNS observer replay is not cross-pinned to its snapshot",
+          );
+        }
+        if (options.signal.aborted) {
+          throw new HnsParentChainObserverError(
+            "transport_unavailable",
+            "HNS observer replay validation completed after its deadline",
           );
         }
         return replay.result_bytes;
@@ -1418,13 +1406,13 @@ export function makeHnsParentChainTargetObserver(
           "HNS observer snapshot reservation authority is malformed",
         );
       }
-      let observed = await observeHnsParentChain({
+      let observed = await input.observe_source({
         request: decodedRequest.request,
         request_sha256: decodedRequest.request_sha256,
         configuration: configuration.configuration,
+        configuration_digest: configuration.configuration_digest,
         reservation_database_time: reservation.reservation_database_time,
         snapshot_reference: reservation.snapshot_reference,
-        transport: input.hsd_transport,
         signal: options.signal,
       });
       if (options.signal.aborted) {
@@ -1453,17 +1441,14 @@ export function makeHnsParentChainTargetObserver(
         });
       let snapshotByteLength = logicalSnapshotBytes();
       if (snapshotByteLength > HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES) {
-        observed = await finalizeResult(
-          decodedRequest.request,
-          unavailableResult(
-            decodedRequest.request,
-            decodedRequest.request_sha256,
-            "observer_capacity",
-            reservation.snapshot_reference,
-          ),
-          observed.transcript,
-          options.signal,
-        );
+        observed = await input.make_capacity_result({
+          request: decodedRequest.request,
+          request_sha256: decodedRequest.request_sha256,
+          snapshot_reference: reservation.snapshot_reference,
+          transcript: observed.transcript,
+          semantic_facts_bytes: observed.semantic_facts_bytes,
+          signal: options.signal,
+        });
         snapshotByteLength = logicalSnapshotBytes();
         if (snapshotByteLength > HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES) {
           throw new HnsParentChainObserverError(
@@ -1528,4 +1513,42 @@ export function makeHnsParentChainTargetObserver(
       return new Uint8Array(finalized.result_bytes);
     },
   };
+}
+
+export function makeHnsParentChainTargetObserver(
+  input: Readonly<{
+    readonly configuration_resolver: HnsControlObserverConfigurationResolverPort;
+    readonly capabilities: HnsControlObserverRuntimeCapabilities;
+    readonly snapshot_store: HnsControlObserverSnapshotStorePort;
+    readonly hsd_transport: HnsControlObserverHsdTransportPort;
+  }>,
+): HnsTargetObserverPort {
+  return makeHnsTargetObserverSnapshotLifecycle({
+    ownership_source: "hns_parent_chain_txt",
+    configuration_resolver: input.configuration_resolver,
+    capabilities: input.capabilities,
+    snapshot_store: input.snapshot_store,
+    observe_source: (sourceInput) =>
+      observeHnsParentChain({
+        request: sourceInput.request,
+        request_sha256: sourceInput.request_sha256,
+        configuration: sourceInput.configuration,
+        reservation_database_time: sourceInput.reservation_database_time,
+        snapshot_reference: sourceInput.snapshot_reference,
+        transport: input.hsd_transport,
+        signal: sourceInput.signal,
+      }),
+    make_capacity_result: (capacityInput) =>
+      finalizeResult(
+        capacityInput.request,
+        unavailableResult(
+          capacityInput.request,
+          capacityInput.request_sha256,
+          "observer_capacity",
+          capacityInput.snapshot_reference,
+        ),
+        capacityInput.transcript,
+        capacityInput.signal,
+      ),
+  });
 }
