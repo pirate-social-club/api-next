@@ -400,8 +400,16 @@ export async function runLocalDryRun(fixtureSet?: FixtureSet): Promise<ProbeEvid
 
 async function main(args: readonly string[] = Bun.argv.slice(2)): Promise<void> {
   if (args.length === 1 && args[0] === "--execute-staging") {
-    const { runStagingProbe } = await import("./r2-seal-probe-staging");
-    process.stdout.write(`${JSON.stringify(await runStagingProbe(), null, 2)}\n`);
+    const { runStagingProbe, STAGING_EXECUTION_ACKNOWLEDGEMENT } = await import(
+      "./r2-seal-probe-staging"
+    );
+    process.stdout.write(
+      `${JSON.stringify(
+        await runStagingProbe({ acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT }),
+        null,
+        2,
+      )}\n`,
+    );
     return;
   }
   if (args.length > 0) {

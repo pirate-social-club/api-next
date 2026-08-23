@@ -19,7 +19,7 @@ export type StagingHeadResult = Readonly<{
 }>;
 
 export type StagingPutResult = Readonly<{
-  kind: "created" | "precondition-failed" | "error";
+  kind: "created" | "precondition-failed" | "ambiguous" | "error";
   status: number;
   code: string;
   etag?: string;
@@ -28,13 +28,16 @@ export type StagingPutResult = Readonly<{
 }>;
 
 export type StagingCopyResult = Readonly<{
-  kind: "copied" | "precondition-failed" | "error";
+  kind: "copied" | "precondition-failed" | "ambiguous" | "error";
   status: number;
   code: string;
   destinationEtag?: string;
   destinationSha256?: string;
   destinationVersionId?: string;
+  sourceVersionId?: string;
 }>;
+
+export type CopyGuardMode = "source-only" | "destination-only" | "combined";
 
 export type StagingDeleteResult = Readonly<{
   kind: "deleted" | "error";
@@ -182,8 +185,9 @@ export class R2S3StagingTransport {
         body: bytes,
       });
       const code = await responseCode(response);
-      if (response.status === 412)
+      if (response.status === 412 && code === "PreconditionFailed")
         return { kind: "precondition-failed", status: response.status, code };
+      if (response.status === 412) return { kind: "error", status: response.status, code };
       if (response.status < 200 || response.status >= 300) {
         return { kind: "error", status: response.status, code };
       }
@@ -200,7 +204,7 @@ export class R2S3StagingTransport {
           : { versionId: header(response, "x-amz-version-id") }),
       };
     } catch {
-      return { kind: "error", status: 0, code: "TransportError" };
+      return { kind: "ambiguous", status: 0, code: "ResponseLost" };
     }
   }
 
@@ -211,7 +215,29 @@ export class R2S3StagingTransport {
     destinationKey: string;
     sourceEtag: string;
   }): Promise<StagingCopyResult> {
+    return this.copyObjectWithGuards(input, "combined");
+  }
+
+  /** Diagnostic-only request builder; production sealing always uses combined guards. */
+  async copyObjectWithGuards(
+    input: {
+      sourceBucket: string;
+      destinationBucket: string;
+      sourceKey: string;
+      destinationKey: string;
+      sourceEtag: string;
+    },
+    guardMode: CopyGuardMode,
+  ): Promise<StagingCopyResult> {
     try {
+      const guardHeaders = {
+        ...(guardMode === "source-only" || guardMode === "combined"
+          ? { "x-amz-copy-source-if-match": input.sourceEtag }
+          : {}),
+        ...(guardMode === "destination-only" || guardMode === "combined"
+          ? { "cf-copy-destination-if-none-match": "*" }
+          : {}),
+      };
       const { response } = await signedFetch(this.options, {
         accountId: this.options.accountId,
         bucket: input.destinationBucket,
@@ -219,14 +245,14 @@ export class R2S3StagingTransport {
         method: "PUT",
         headers: {
           "x-amz-copy-source": encodeR2CopySource(input.sourceBucket, input.sourceKey),
-          "x-amz-copy-source-if-match": input.sourceEtag,
-          "cf-copy-destination-if-none-match": "*",
+          ...guardHeaders,
         },
       });
       const code = await responseCode(response);
-      if (response.status === 412) {
+      if (response.status === 412 && code === "PreconditionFailed") {
         return { kind: "precondition-failed", status: response.status, code };
       }
+      if (response.status === 412) return { kind: "error", status: response.status, code };
       if (response.status < 200 || response.status >= 300) {
         return { kind: "error", status: response.status, code };
       }
@@ -252,19 +278,28 @@ export class R2S3StagingTransport {
                 header(response, "x-amz-version-id") ?? xmlValue(body, "VersionId"),
             }
           : {}),
+        ...((header(response, "x-amz-copy-source-version-id") ??
+        xmlValue(body, "CopySourceVersionId"))
+          ? {
+              sourceVersionId:
+                header(response, "x-amz-copy-source-version-id") ??
+                xmlValue(body, "CopySourceVersionId"),
+            }
+          : {}),
       };
     } catch {
-      return { kind: "error", status: 0, code: "TransportError" };
+      return { kind: "ambiguous", status: 0, code: "ResponseLost" };
     }
   }
 
-  async deleteObject(bucket: string, key: string): Promise<StagingDeleteResult> {
+  async deleteObject(bucket: string, key: string, ifMatch?: string): Promise<StagingDeleteResult> {
     try {
       const { response } = await signedFetch(this.options, {
         accountId: this.options.accountId,
         bucket,
         key,
         method: "DELETE",
+        ...(ifMatch === undefined ? {} : { headers: { "if-match": ifMatch } }),
       });
       const code = await responseCode(response);
       return response.status >= 200 && response.status < 300

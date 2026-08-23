@@ -2,8 +2,18 @@ import type { StagingCleanupKey, StagingOperation } from "./r2-seal-probe-stagin
 import type { StagingDeleteResult, StagingHeadResult } from "./r2-seal-probe-staging-transport";
 
 type CleanupTransport = Readonly<{
-  deleteObject: (bucket: string, key: string) => Promise<StagingDeleteResult>;
+  deleteObject: (bucket: string, key: string, ifMatch?: string) => Promise<StagingDeleteResult>;
   headObject: (bucket: string, key: string) => Promise<StagingHeadResult>;
+}>;
+
+export type CleanupCandidate = Readonly<{
+  key: string;
+  ownership: "confirmed" | "ambiguous";
+  expected: Readonly<{
+    sizeBytes: number;
+    contentType: string;
+    sha256: string;
+  }>;
 }>;
 
 export type CleanupResult = Readonly<{
@@ -26,20 +36,75 @@ export async function cleanupOwnedKeys(
   transport: CleanupTransport,
   bucket: string,
   prefix: string,
-  ownedKeys: readonly string[],
+  candidates: readonly CleanupCandidate[],
 ): Promise<CleanupResult> {
-  const keys = [...new Set(ownedKeys)];
-  if (keys.length === 0) return { status: "not-attempted", keys: [] };
+  const uniqueCandidates = [
+    ...new Map(candidates.map((candidate) => [candidate.key, candidate])).values(),
+  ];
+  if (uniqueCandidates.length === 0) return { status: "not-attempted", keys: [] };
   const results: StagingCleanupKey[] = [];
-  for (const key of keys) {
+  for (const candidate of uniqueCandidates) {
+    const key = candidate.key;
     if (!key.startsWith(prefix) || key === prefix || key.includes("..")) {
       throw new Error("cleanup key is outside the exact run-owned prefix");
     }
-    const deletion = await transport.deleteObject(bucket, key);
+    const verification = await transport.headObject(bucket, key);
+    const verificationOperation = operation({
+      called: true,
+      status: verification.status,
+      code: verification.code,
+    });
+    if (verification.kind === "missing") {
+      results.push({
+        key,
+        ownership: candidate.ownership,
+        candidate_verified: false,
+        verification: verificationOperation,
+        residual_reason: "not-found",
+        delete: operation({ called: false, status: null, code: null }),
+        absence: verificationOperation,
+        absent: true,
+      });
+      continue;
+    }
+    const candidateVerified =
+      verification.kind === "found" &&
+      verification.etag !== undefined &&
+      verification.sizeBytes === candidate.expected.sizeBytes &&
+      verification.contentType === candidate.expected.contentType &&
+      verification.sha256 === candidate.expected.sha256;
+    if (!candidateVerified) {
+      const reason =
+        verification.kind === "found" && verification.etag === undefined
+          ? "etag-unavailable"
+          : verification.kind === "found" && verification.sha256 === undefined
+            ? "checksum-unavailable"
+            : "metadata-mismatch";
+      results.push({
+        key,
+        ownership: candidate.ownership,
+        candidate_verified: false,
+        verification: verificationOperation,
+        residual_reason: reason,
+        delete: operation({ called: false, status: null, code: null }),
+        absence: operation({ called: false, status: null, code: null }),
+        absent: false,
+      });
+      continue;
+    }
+    const deletion = await transport.deleteObject(bucket, key, verification.etag);
     const absence = await transport.headObject(bucket, key);
     const absent = absence.kind === "missing" && absence.code === "NoSuchKey";
     results.push({
       key,
+      ownership: candidate.ownership,
+      candidate_verified: true,
+      verification: verificationOperation,
+      residual_reason: absent
+        ? "none"
+        : deletion.kind === "error"
+          ? "delete-failed"
+          : "absence-check-failed",
       delete: operation({ called: true, status: deletion.status, code: deletion.code }),
       absence: operation({ called: true, status: absence.status, code: absence.code }),
       absent,

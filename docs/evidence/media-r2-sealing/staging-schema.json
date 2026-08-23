@@ -103,7 +103,7 @@
     "upload": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["called", "status", "code", "etag", "checksum_sha256", "version_id", "owned_after_success"],
+      "required": ["called", "status", "code", "etag", "checksum_sha256", "version_id", "owned_after_success", "ownership"],
       "properties": {
         "called": { "type": "boolean" },
         "status": { "type": ["integer", "null"], "minimum": 0, "maximum": 599 },
@@ -111,20 +111,22 @@
         "etag": { "$ref": "#/$defs/safeString" },
         "checksum_sha256": { "$ref": "#/$defs/safeString" },
         "version_id": { "$ref": "#/$defs/safeString" },
-        "owned_after_success": { "type": "boolean" }
+        "owned_after_success": { "type": "boolean" },
+        "ownership": { "enum": ["confirmed", "ambiguous", "none"] }
       }
     },
     "copy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["called", "status", "code", "etag", "checksum_sha256", "version_id"],
+      "required": ["called", "status", "code", "etag", "checksum_sha256", "version_id", "source_version_id"],
       "properties": {
         "called": { "type": "boolean" },
         "status": { "type": ["integer", "null"], "minimum": 0, "maximum": 599 },
         "code": { "$ref": "#/$defs/safeString" },
         "etag": { "$ref": "#/$defs/safeString" },
         "checksum_sha256": { "$ref": "#/$defs/safeString" },
-        "version_id": { "$ref": "#/$defs/safeString" }
+        "version_id": { "$ref": "#/$defs/safeString" },
+        "source_version_id": { "$ref": "#/$defs/safeString" }
       }
     },
     "sealing": {
@@ -176,9 +178,13 @@
     "cleanupKey": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["key", "delete", "absence", "absent"],
+      "required": ["key", "ownership", "candidate_verified", "verification", "residual_reason", "delete", "absence", "absent"],
       "properties": {
         "key": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "ownership": { "enum": ["confirmed", "ambiguous"] },
+        "candidate_verified": { "type": "boolean" },
+        "verification": { "$ref": "#/$defs/operation" },
+        "residual_reason": { "enum": ["none", "not-found", "metadata-mismatch", "checksum-unavailable", "etag-unavailable", "delete-failed", "absence-check-failed"] },
         "delete": { "$ref": "#/$defs/operation" },
         "absence": { "$ref": "#/$defs/operation" },
         "absent": { "type": "boolean" }
@@ -198,7 +204,7 @@
     "safety": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["acknowledged_execute_flag", "shared_412_is_ambiguous", "conditional_copy_is_never_retried", "post_412_destination_head", "destination_head_only_after_copy_success", "preexisting_keys_fail_closed", "cleanup_is_exact_run_owned_keys", "bucket_was_not_created_or_deleted", "secrets_emitted", "urls_headers_bodies_emitted"],
+      "required": ["acknowledged_execute_flag", "shared_412_is_ambiguous", "conditional_copy_is_never_retried", "post_412_destination_head", "destination_head_only_after_copy_success", "preexisting_keys_fail_closed", "cleanup_is_exact_run_owned_keys", "bucket_was_not_created_or_deleted", "ambiguous_mutation_candidates_fail_closed", "secrets_emitted", "urls_headers_bodies_emitted"],
       "properties": {
         "acknowledged_execute_flag": { "const": true },
         "shared_412_is_ambiguous": { "const": true },
@@ -208,6 +214,7 @@
         "preexisting_keys_fail_closed": { "const": true },
         "cleanup_is_exact_run_owned_keys": { "const": true },
         "bucket_was_not_created_or_deleted": { "const": true },
+        "ambiguous_mutation_candidates_fail_closed": { "const": true },
         "secrets_emitted": { "const": false },
         "urls_headers_bodies_emitted": { "const": false }
       }

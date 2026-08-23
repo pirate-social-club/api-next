@@ -15,6 +15,17 @@ export type StagingHeadEvidence = StagingOperation &
 
 export type StagingCleanupKey = Readonly<{
   key: string;
+  ownership: "confirmed" | "ambiguous";
+  candidate_verified: boolean;
+  verification: StagingOperation;
+  residual_reason:
+    | "none"
+    | "not-found"
+    | "metadata-mismatch"
+    | "checksum-unavailable"
+    | "etag-unavailable"
+    | "delete-failed"
+    | "absence-check-failed";
   delete: StagingOperation;
   absence: StagingOperation;
   absent: boolean;
@@ -50,6 +61,7 @@ export type StagingEvidence = Readonly<{
     checksum_sha256: string | null;
     version_id: string | null;
     owned_after_success: boolean;
+    ownership: "confirmed" | "ambiguous" | "none";
   }>;
   sealing: Readonly<{
     outcome:
@@ -66,6 +78,7 @@ export type StagingEvidence = Readonly<{
         etag: string | null;
         checksum_sha256: string | null;
         version_id: string | null;
+        source_version_id: string | null;
       }>;
     destination_head: StagingHeadEvidence | null;
     automatic_retry: false;
@@ -95,6 +108,7 @@ export type StagingEvidence = Readonly<{
     preexisting_keys_fail_closed: true;
     cleanup_is_exact_run_owned_keys: true;
     bucket_was_not_created_or_deleted: true;
+    ambiguous_mutation_candidates_fail_closed: true;
     secrets_emitted: false;
     urls_headers_bodies_emitted: false;
   }>;
@@ -134,6 +148,10 @@ function head(value: StagingHeadEvidence): StagingHeadEvidence {
 function cleanUpKey(value: StagingCleanupKey): StagingCleanupKey {
   return {
     key: safeValue(value.key, "cleanup.key") ?? "",
+    ownership: value.ownership,
+    candidate_verified: value.candidate_verified,
+    verification: operation(value.verification),
+    residual_reason: value.residual_reason,
     delete: operation(value.delete),
     absence: operation(value.absence),
     absent: value.absent,
@@ -172,6 +190,7 @@ export function redactStagingEvidence(input: StagingEvidence): StagingEvidence {
       checksum_sha256: safeValue(input.upload.checksum_sha256, "upload.checksum_sha256"),
       version_id: safeValue(input.upload.version_id, "upload.version_id"),
       owned_after_success: input.upload.owned_after_success,
+      ownership: input.upload.ownership,
     },
     sealing: {
       outcome: input.sealing.outcome,
@@ -184,6 +203,10 @@ export function redactStagingEvidence(input: StagingEvidence): StagingEvidence {
           "copy.checksum_sha256",
         ),
         version_id: safeValue(input.sealing.conditional_copy.version_id, "copy.version_id"),
+        source_version_id: safeValue(
+          input.sealing.conditional_copy.source_version_id,
+          "copy.source_version_id",
+        ),
       },
       destination_head:
         input.sealing.destination_head === null ? null : head(input.sealing.destination_head),
@@ -218,7 +241,7 @@ export function redactStagingEvidence(input: StagingEvidence): StagingEvidence {
       bucket_deleted: false,
     },
     safety: {
-      acknowledged_execute_flag: true,
+      acknowledged_execute_flag: input.safety.acknowledged_execute_flag,
       shared_412_is_ambiguous: true,
       conditional_copy_is_never_retried: true,
       post_412_destination_head: false,
@@ -226,6 +249,8 @@ export function redactStagingEvidence(input: StagingEvidence): StagingEvidence {
       preexisting_keys_fail_closed: true,
       cleanup_is_exact_run_owned_keys: true,
       bucket_was_not_created_or_deleted: true,
+      ambiguous_mutation_candidates_fail_closed:
+        input.safety.ambiguous_mutation_candidates_fail_closed,
       secrets_emitted: false,
       urls_headers_bodies_emitted: false,
     },

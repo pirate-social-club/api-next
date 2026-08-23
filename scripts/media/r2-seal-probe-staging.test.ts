@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { FakeR2Transport, loadHostileFixtures, probeScenario } from "./r2-seal-probe";
-import { parseProbeMode, readStagingConfig, runStagingProbe } from "./r2-seal-probe-staging";
+import {
+  parseProbeMode,
+  readStagingConfig,
+  runStagingProbe,
+  STAGING_EXECUTION_ACKNOWLEDGEMENT,
+} from "./r2-seal-probe-staging";
 import {
   CleanupResidualError,
   cleanupOwnedKeys,
@@ -18,6 +23,31 @@ function response(status: number, headers?: Record<string, string>, body = ""): 
   return new Response(body, { status, headers });
 }
 
+function cleanupCandidate(key: string, ownership: "confirmed" | "ambiguous" = "confirmed") {
+  return {
+    key,
+    ownership,
+    expected: {
+      sizeBytes: 1,
+      contentType: "audio/mpeg",
+      sha256: "expected-sha256",
+    },
+  } as const;
+}
+
+function base64ToHex(value: string): string {
+  return [...Uint8Array.from(atob(value), (character) => character.charCodeAt(0))]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+const STAGING_ENV = {
+  R2_STAGING_ACCOUNT_ID: ACCOUNT_ID,
+  R2_STAGING_ACCESS_KEY_ID: ACCESS_KEY_ID,
+  R2_STAGING_SECRET_ACCESS_KEY: SECRET_ACCESS_KEY,
+  R2_STAGING_BUCKET: "fixture-bucket",
+} as const;
+
 describe("staging R2 probe safety", () => {
   test("requires the explicit staging acknowledgement and validates credentials without echoing them", () => {
     expect(parseProbeMode([])).toBe("dry-run");
@@ -31,6 +61,31 @@ describe("staging R2 probe safety", () => {
         R2_STAGING_BUCKET: "fixture-bucket",
       }),
     ).toThrow("R2_STAGING_SECRET_ACCESS_KEY");
+  });
+
+  test("rejects a direct probe import before touching environment or fetch", async () => {
+    const touched: string[] = [];
+    const env = new Proxy(
+      {},
+      {
+        get(_target, property) {
+          touched.push(String(property));
+          return undefined;
+        },
+      },
+    ) as Record<string, string | undefined>;
+    let fetchCalled = false;
+    await expect(
+      runStagingProbe({
+        env,
+        fetch: async () => {
+          fetchCalled = true;
+          return response(500);
+        },
+      }),
+    ).rejects.toThrow("explicit execute-staging acknowledgement");
+    expect(touched).toEqual([]);
+    expect(fetchCalled).toBe(false);
   });
 
   test("constructs deterministic SigV4 requests without sending them", async () => {
@@ -69,6 +124,7 @@ describe("staging R2 probe safety", () => {
           "content-type": "audio/mpeg",
           "x-amz-checksum-sha256": await sha256Base64(bytes),
           "x-amz-version-id": "version-1",
+          "x-amz-copy-source-version-id": "source-version-1",
         });
       },
     });
@@ -88,6 +144,7 @@ describe("staging R2 probe safety", () => {
       sourceEtag: '"observed-source-etag"',
     });
     expect(copy.kind).toBe("copied");
+    expect(copy.sourceVersionId).toBe("source-version-1");
     const headers = new Headers(requests[1]?.init.headers);
     expect(headers.get("x-amz-copy-source")).toBe(
       encodeR2CopySource("fixture-bucket", "source path"),
@@ -104,6 +161,76 @@ describe("staging R2 probe safety", () => {
     );
     expect(headers.get("x-amz-checksum-sha256")).toBeNull();
     expect(requests).toHaveLength(2);
+  });
+
+  test("uses the real signed transport for guard-mode diagnostics", async () => {
+    const requests: RequestInit[] = [];
+    const transport = new R2S3StagingTransport({
+      accountId: ACCOUNT_ID,
+      credentials: { accessKeyId: ACCESS_KEY_ID, secretAccessKey: SECRET_ACCESS_KEY },
+      now: () => new Date("2020-01-01T00:00:00.000Z"),
+      fetch: async (_url, init) => {
+        requests.push(init);
+        return response(412, {}, "<Error><Code>PreconditionFailed</Code></Error>");
+      },
+    });
+    const input = {
+      sourceBucket: "fixture-bucket",
+      destinationBucket: "fixture-bucket",
+      sourceKey: "source",
+      destinationKey: "destination",
+      sourceEtag: '"source-etag"',
+    } as const;
+    for (const mode of ["source-only", "destination-only", "combined"] as const) {
+      const result = await transport.copyObjectWithGuards(input, mode);
+      expect(result).toMatchObject({ kind: "precondition-failed", status: 412 });
+    }
+    expect(requests).toHaveLength(3);
+    const sourceOnly = new Headers(requests[0]?.headers);
+    const destinationOnly = new Headers(requests[1]?.headers);
+    const combined = new Headers(requests[2]?.headers);
+    expect(sourceOnly.get("x-amz-copy-source-if-match")).toBe('"source-etag"');
+    expect(sourceOnly.get("cf-copy-destination-if-none-match")).toBeNull();
+    expect(destinationOnly.get("x-amz-copy-source-if-match")).toBeNull();
+    expect(destinationOnly.get("cf-copy-destination-if-none-match")).toBe("*");
+    expect(combined.get("x-amz-copy-source-if-match")).toBe('"source-etag"');
+    expect(combined.get("cf-copy-destination-if-none-match")).toBe("*");
+    for (const request of [sourceOnly, destinationOnly, combined]) {
+      const signedHeaders = request.get("authorization")?.match(/SignedHeaders=([^,]+)/)?.[1] ?? "";
+      expect(signedHeaders.split(";")).toContain("x-amz-copy-source");
+    }
+  });
+
+  test("classifies only exact PreconditionFailed 412 responses as shared preconditions", async () => {
+    for (const body of [
+      "<Error><Code>PreconditionFailed</Code></Error>",
+      "<Error><Code>ConditionalRequestConflict</Code></Error>",
+      "<Error><Message>missing code</Message></Error>",
+    ]) {
+      const transport = new R2S3StagingTransport({
+        accountId: ACCOUNT_ID,
+        credentials: { accessKeyId: ACCESS_KEY_ID, secretAccessKey: SECRET_ACCESS_KEY },
+        fetch: async () => response(412, {}, body),
+      });
+      const result = await transport.copyObject({
+        sourceBucket: "fixture-bucket",
+        destinationBucket: "fixture-bucket",
+        sourceKey: "source",
+        destinationKey: "destination",
+        sourceEtag: '"source-etag"',
+      });
+      if (body.includes("PreconditionFailed")) {
+        expect(result).toMatchObject({ kind: "precondition-failed", code: "PreconditionFailed" });
+      } else if (body.includes("ConditionalRequestConflict")) {
+        expect(result).toMatchObject({
+          kind: "error",
+          status: 412,
+          code: "ConditionalRequestConflict",
+        });
+      } else {
+        expect(result).toMatchObject({ kind: "error", status: 412, code: "ProviderError" });
+      }
+    }
   });
 
   test("treats shared 412 as terminal and performs no destination HEAD or copy retry", async () => {
@@ -130,7 +257,15 @@ describe("staging R2 probe safety", () => {
       if (requestNumber === 5) {
         return response(412, {}, "<Error><Code>PreconditionFailed</Code></Error>");
       }
-      if (requestNumber === 6) return response(204);
+      if (requestNumber === 6) {
+        return response(200, {
+          etag: '"upload"',
+          "content-length": String(content.byteLength),
+          "content-type": "audio/mpeg",
+          "x-amz-checksum-sha256": contentChecksum,
+        });
+      }
+      if (requestNumber === 7) return response(204);
       return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
     };
     const evidence = await runStagingProbe({
@@ -141,6 +276,7 @@ describe("staging R2 probe safety", () => {
         R2_STAGING_BUCKET: "fixture-bucket",
       },
       fetch: fakeFetch,
+      acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
       runId: "20260823-160000-test",
       now: () => new Date("2020-01-01T00:00:00.000Z"),
     });
@@ -149,7 +285,120 @@ describe("staging R2 probe safety", () => {
     expect(evidence.sealing.destination_head).toBeNull();
     expect(evidence.cleanup.keys).toHaveLength(1);
     expect(evidence.cleanup.keys[0]?.absent).toBe(true);
-    expect(methods).toEqual(["HEAD", "HEAD", "PUT", "HEAD", "PUT", "DELETE", "HEAD"]);
+    expect(methods).toEqual(["HEAD", "HEAD", "PUT", "HEAD", "PUT", "HEAD", "DELETE", "HEAD"]);
+  });
+
+  test("registers and cleans an upload candidate when the PUT response is lost after commit", async () => {
+    const content = new TextEncoder().encode("r2-seal-staging-proof-v1\n");
+    const checksum = await sha256Base64(content);
+    const expectedSha256 = base64ToHex(checksum);
+    let requestNumber = 0;
+    const methods: string[] = [];
+    const evidence = await runStagingProbe({
+      env: STAGING_ENV,
+      acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
+      runId: "20260823-160002-upload-loss",
+      fetch: async (_url, init) => {
+        requestNumber += 1;
+        methods.push(init.method ?? "");
+        if (requestNumber <= 2) return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
+        if (requestNumber === 3) {
+          expect(init.method).toBe("PUT");
+          throw new Error("response lost after upload commit");
+        }
+        if (requestNumber === 4) {
+          return response(200, {
+            etag: '"committed-upload"',
+            "content-length": String(content.byteLength),
+            "content-type": "audio/mpeg",
+            "x-amz-checksum-sha256": checksum,
+          });
+        }
+        if (requestNumber === 5) {
+          expect(init.method).toBe("DELETE");
+          return response(204);
+        }
+        if (requestNumber === 6) {
+          return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
+        }
+        throw new Error(`unexpected request ${requestNumber}`);
+      },
+    });
+    expect(evidence.upload).toMatchObject({ code: "ResponseLost", ownership: "ambiguous" });
+    expect(evidence.cleanup.status).toBe("complete");
+    expect(evidence.cleanup.keys).toEqual([
+      expect.objectContaining({
+        ownership: "ambiguous",
+        candidate_verified: true,
+        absent: true,
+        residual_reason: "none",
+      }),
+    ]);
+    expect(evidence.sealing.conditional_copy.called).toBe(false);
+    expect(expectedSha256).toHaveLength(64);
+    expect(methods).toEqual(["HEAD", "HEAD", "PUT", "HEAD", "DELETE", "HEAD"]);
+  });
+
+  test("registers and cleans a copy candidate when the CopyObject response is lost after commit", async () => {
+    const content = new TextEncoder().encode("r2-seal-staging-proof-v1\n");
+    const checksum = await sha256Base64(content);
+    let requestNumber = 0;
+    const methods: string[] = [];
+    const objectHeaders = {
+      etag: '"object"',
+      "content-length": String(content.byteLength),
+      "content-type": "audio/mpeg",
+      "x-amz-checksum-sha256": checksum,
+      "x-amz-version-id": "source-version-1",
+    };
+    const evidence = await runStagingProbe({
+      env: STAGING_ENV,
+      acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
+      runId: "20260823-160003-copy-loss",
+      fetch: async (_url, init) => {
+        requestNumber += 1;
+        methods.push(init.method ?? "");
+        if (requestNumber <= 2) return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
+        if (requestNumber === 3) return response(200, { etag: '"upload"' });
+        if (requestNumber === 4) return response(200, objectHeaders);
+        if (requestNumber === 5) {
+          expect(init.method).toBe("PUT");
+          throw new Error("response lost after copy commit");
+        }
+        if (requestNumber === 6 || requestNumber === 9) return response(200, objectHeaders);
+        if (requestNumber === 7 || requestNumber === 10) {
+          expect(init.method).toBe("DELETE");
+          return response(204);
+        }
+        if (requestNumber === 8 || requestNumber === 11) {
+          return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
+        }
+        throw new Error(`unexpected request ${requestNumber}`);
+      },
+    });
+    expect(evidence.sealing.outcome).toBe("provider_response_unknown");
+    expect(evidence.sealing.conditional_copy).toMatchObject({
+      called: true,
+      code: "ResponseLost",
+    });
+    expect(evidence.sealing.destination_head).toBeNull();
+    expect(evidence.cleanup.status).toBe("complete");
+    expect(evidence.cleanup.keys).toHaveLength(2);
+    expect(evidence.cleanup.keys.map((key) => key.ownership)).toEqual(["confirmed", "ambiguous"]);
+    expect(evidence.cleanup.keys.every((key) => key.candidate_verified && key.absent)).toBe(true);
+    expect(methods).toEqual([
+      "HEAD",
+      "HEAD",
+      "PUT",
+      "HEAD",
+      "PUT",
+      "HEAD",
+      "DELETE",
+      "HEAD",
+      "HEAD",
+      "DELETE",
+      "HEAD",
+    ]);
   });
 
   test("keeps source-only, destination-only, and combined 412 diagnostics ambiguous", async () => {
@@ -173,6 +422,7 @@ describe("staging R2 probe safety", () => {
 
   test("cleanup deletes and verifies only exact run-owned keys", async () => {
     const calls: string[] = [];
+    let headCalls = 0;
     const cleanup = await cleanupOwnedKeys(
       {
         async deleteObject(_bucket, key) {
@@ -181,16 +431,28 @@ describe("staging R2 probe safety", () => {
         },
         async headObject(_bucket, key) {
           calls.push(`head:${key}`);
-          return { kind: "missing", status: 404, code: "NoSuchKey" };
+          headCalls += 1;
+          return headCalls === 1
+            ? {
+                kind: "found",
+                status: 200,
+                code: "OK",
+                etag: '"expected"',
+                sizeBytes: 1,
+                contentType: "audio/mpeg",
+                sha256: "expected-sha256",
+              }
+            : { kind: "missing", status: 404, code: "NoSuchKey" };
         },
       },
       "fixture-bucket",
       "media-r2-seal-probe/run/",
-      ["media-r2-seal-probe/run/source.bin"],
+      [cleanupCandidate("media-r2-seal-probe/run/source.bin")],
     );
     expect(cleanup.status).toBe("complete");
     expect(cleanup.keys[0]?.absent).toBe(true);
     expect(calls).toEqual([
+      "head:media-r2-seal-probe/run/source.bin",
       "delete:media-r2-seal-probe/run/source.bin",
       "head:media-r2-seal-probe/run/source.bin",
     ]);
@@ -206,7 +468,7 @@ describe("staging R2 probe safety", () => {
         },
         "fixture-bucket",
         "media-r2-seal-probe/run/",
-        ["other-prefix/foreign"],
+        [cleanupCandidate("other-prefix/foreign")],
       ),
     ).rejects.toThrow("exact run-owned prefix");
   });
@@ -221,12 +483,20 @@ describe("staging R2 probe safety", () => {
         },
         async headObject(_bucket, key) {
           calls.push(`head:${key}`);
-          return { kind: "found", status: 200, code: "OK", etag: '"still-present"' };
+          return {
+            kind: "found",
+            status: 200,
+            code: "OK",
+            etag: '"still-present"',
+            sizeBytes: 1,
+            contentType: "audio/mpeg",
+            sha256: "expected-sha256",
+          };
         },
       },
       "fixture-bucket",
       "media-r2-seal-probe/run/",
-      ["media-r2-seal-probe/run/source.bin"],
+      [cleanupCandidate("media-r2-seal-probe/run/source.bin")],
     );
     expect(cleanup.status).toBe("partial");
     expect(cleanup.keys).toEqual([
@@ -236,6 +506,7 @@ describe("staging R2 probe safety", () => {
       }),
     ]);
     expect(calls).toEqual([
+      "head:media-r2-seal-probe/run/source.bin",
       "delete:media-r2-seal-probe/run/source.bin",
       "head:media-r2-seal-probe/run/source.bin",
     ]);
@@ -303,6 +574,7 @@ describe("staging R2 probe safety", () => {
           return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
         return response(412, {}, "<Error><Code>PreconditionFailed</Code></Error>");
       },
+      acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
       runId: "20260823-160001-test",
     });
     const polluted = {

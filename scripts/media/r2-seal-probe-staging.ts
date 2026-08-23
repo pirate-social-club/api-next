@@ -6,7 +6,11 @@ import {
   type R2SealTransport,
 } from "./r2-seal-probe";
 import { emptyScenarioEvidence, type ScenarioEvidence } from "./r2-seal-probe-evidence";
-import { cleanupOwnedKeys, runWithCleanup } from "./r2-seal-probe-staging-cleanup";
+import {
+  type CleanupCandidate,
+  cleanupOwnedKeys,
+  runWithCleanup,
+} from "./r2-seal-probe-staging-cleanup";
 import {
   redactStagingEvidence,
   type StagingEvidence,
@@ -27,6 +31,8 @@ export const STAGING_ENV_NAMES = {
   bucket: "R2_STAGING_BUCKET",
 } as const;
 
+export const STAGING_EXECUTION_ACKNOWLEDGEMENT = "execute-staging" as const;
+
 export type StagingConfig = Readonly<{
   accountId: string;
   accessKeyId: string;
@@ -35,6 +41,7 @@ export type StagingConfig = Readonly<{
 }>;
 
 export type StagingRunOptions = Readonly<{
+  acknowledgement?: string;
   env?: Readonly<Record<string, string | undefined>>;
   fetch?: StagingTransportOptions["fetch"];
   now?: () => Date;
@@ -50,6 +57,13 @@ const REMAINING_DECISIONS = [
   "Ratify or reject production dependence on the beta cf-copy-destination-if-none-match extension.",
   "Bind the live VersionId and SHA-256 observations to the reservation evidence contract.",
 ] as const;
+
+function requireStagingAcknowledgement(value: string | undefined): true {
+  if (value !== STAGING_EXECUTION_ACKNOWLEDGEMENT) {
+    throw new Error("staging probe requires the explicit execute-staging acknowledgement");
+  }
+  return true;
+}
 
 function requiredEnv(env: Readonly<Record<string, string | undefined>>, name: string): string {
   const value = env[name];
@@ -145,6 +159,8 @@ function putEvidence(result: StagingPutResult) {
     checksum_sha256: result.sha256 ?? null,
     version_id: result.versionId ?? null,
     owned_after_success: result.kind === "created",
+    ownership:
+      result.kind === "created" ? "confirmed" : result.kind === "ambiguous" ? "ambiguous" : "none",
   } as const;
 }
 
@@ -156,6 +172,7 @@ function copyEvidence(result: StagingCopyResultLike) {
     etag: result.destinationEtag ?? null,
     checksum_sha256: result.destinationSha256 ?? null,
     version_id: result.destinationVersionId ?? null,
+    source_version_id: result.sourceVersionId ?? null,
   } as const;
 }
 
@@ -165,6 +182,7 @@ type StagingCopyResultLike = Readonly<{
   destinationEtag?: string;
   destinationSha256?: string;
   destinationVersionId?: string;
+  sourceVersionId?: string;
 }>;
 
 function mapHead(result: StagingHeadResult): HeadObjectResponse {
@@ -195,6 +213,9 @@ function mapCopy(
   if (result.kind === "precondition-failed") {
     return { kind: "precondition-failed", status: 412, code: "PreconditionFailed" };
   }
+  if (result.kind === "ambiguous") {
+    return { kind: "error", status: 0, code: "ResponseLost" };
+  }
   if (result.kind === "error") return { kind: "error", status: result.status, code: result.code };
   if (result.destinationEtag === undefined) {
     return { kind: "error", status: result.status, code: "MissingCopyETag" };
@@ -215,7 +236,10 @@ class RecordingSealTransport implements R2SealTransport {
   destinationHead: StagingHeadResult | undefined;
   copy: Awaited<ReturnType<R2S3StagingTransport["copyObject"]>> | undefined;
 
-  constructor(private readonly transport: R2S3StagingTransport) {}
+  constructor(
+    private readonly transport: R2S3StagingTransport,
+    private readonly onCopyAttempt: () => void,
+  ) {}
 
   async headObject(bucket: string, key: string): Promise<HeadObjectResponse> {
     const result = await this.transport.headObject(bucket, key);
@@ -225,6 +249,7 @@ class RecordingSealTransport implements R2SealTransport {
   }
 
   async copyObject(request: CopyObjectRequest): Promise<CopyObjectResponse> {
+    this.onCopyAttempt();
     const result = await this.transport.copyObject({
       sourceBucket: request.sourceBucket,
       destinationBucket: request.destinationBucket,
@@ -262,6 +287,7 @@ function defaultScenario(sourceKey: string, destinationKey: string, expectedSha2
 }
 
 export async function runStagingProbe(options: StagingRunOptions = {}): Promise<StagingEvidence> {
+  const acknowledgedExecuteFlag = requireStagingAcknowledgement(options.acknowledgement);
   const config = readStagingConfig(options.env ?? process.env);
   const runId = options.runId ?? newRunId();
   if (!/^[A-Za-z0-9-]{8,128}$/.test(runId)) throw new Error("staging run id is invalid");
@@ -281,7 +307,12 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
   const sourcePreflight = await transport.headObject(config.bucket, sourceKey);
   const destinationPreflight = await transport.headObject(config.bucket, destinationKey);
   const safeToWrite = preflightSafe(sourcePreflight, destinationPreflight);
-  const ownedKeys: string[] = [];
+  const expectedObject = {
+    sizeBytes: CONTENT.byteLength,
+    contentType: CONTENT_TYPE,
+    sha256: expectedSha256,
+  } as const;
+  const candidates: CleanupCandidate[] = [];
   const workflow = await runWithCleanup(
     async () => {
       let upload: StagingPutResult = {
@@ -294,6 +325,12 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
       );
       let sealingTransport: RecordingSealTransport | undefined;
       if (safeToWrite) {
+        const sourceCandidate: CleanupCandidate = {
+          key: sourceKey,
+          ownership: "ambiguous",
+          expected: expectedObject,
+        };
+        const sourceCandidateIndex = candidates.push(sourceCandidate) - 1;
         upload = await transport.putObject(
           config.bucket,
           sourceKey,
@@ -302,18 +339,35 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
           expectedSha256Base64,
         );
         if (upload.kind === "created") {
-          ownedKeys.push(sourceKey);
-          sealingTransport = new RecordingSealTransport(transport);
+          candidates[sourceCandidateIndex] = { ...sourceCandidate, ownership: "confirmed" };
+          sealingTransport = new RecordingSealTransport(transport, () => {
+            candidates.push({
+              key: destinationKey,
+              ownership: "ambiguous",
+              expected: expectedObject,
+            });
+          });
           scenario = await probeScenario(
             defaultScenario(sourceKey, destinationKey, expectedSha256),
             sealingTransport,
           );
-          if (sealingTransport.copy?.kind === "copied") ownedKeys.push(destinationKey);
+          if (sealingTransport.copy?.kind === "copied") {
+            const destinationCandidate = candidates.find(({ key }) => key === destinationKey);
+            if (destinationCandidate !== undefined) {
+              const destinationIndex = candidates.findIndex(({ key }) => key === destinationKey);
+              candidates[destinationIndex] = { ...destinationCandidate, ownership: "confirmed" };
+            }
+          } else if (sealingTransport.copy?.kind !== "ambiguous") {
+            const destinationIndex = candidates.findIndex(({ key }) => key === destinationKey);
+            if (destinationIndex >= 0) candidates.splice(destinationIndex, 1);
+          }
+        } else if (upload.kind !== "ambiguous") {
+          candidates.pop();
         }
       }
       return { upload, scenario, sealingTransport };
     },
-    () => cleanupOwnedKeys(transport, config.bucket, prefix, ownedKeys),
+    () => cleanupOwnedKeys(transport, config.bucket, prefix, candidates),
   );
   const { upload, scenario, sealingTransport } = workflow.value;
   const cleanup = workflow.cleanup;
@@ -362,6 +416,7 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
               etag: null,
               checksum_sha256: null,
               version_id: null,
+              source_version_id: null,
             }
           : copyEvidence(copy),
       destination_head: destinationHead,
@@ -390,7 +445,7 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
       bucket_deleted: false,
     },
     safety: {
-      acknowledged_execute_flag: true,
+      acknowledged_execute_flag: acknowledgedExecuteFlag,
       shared_412_is_ambiguous: true,
       conditional_copy_is_never_retried: true,
       post_412_destination_head: false,
