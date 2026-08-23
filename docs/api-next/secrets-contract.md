@@ -676,6 +676,13 @@ deleted on 2026-08-23. The final live read-back reports exactly one finding:
 the missing production funding RPC. Staging and development report no
 Infisical drift, and all three roots are empty.
 
+The first GitHub OIDC run, Actions run `32630163470` at commit `293783a`,
+authenticated successfully and reproduced that exact name-only result. The
+Cloudflare step reported zero violations; the Infisical step exited non-zero
+only for the missing production `COMMUNITY_PURCHASE_FUNDING_RPC_URL`. No secret
+value appeared in the log. The red workflow is therefore active drift signal,
+not an authentication or response-parser failure.
+
 ## Local project selection — corrected 2026-08-22
 
 Both the repository pin at `api-next/.infisical.json` and the home-directory
