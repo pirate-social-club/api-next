@@ -1263,6 +1263,102 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_media_command_replay_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'media command replay is immutable';
+END;
+$$;
+
+CREATE FUNCTION guard_media_immutable_object_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'media immutable object is immutable';
+END;
+$$;
+
+CREATE FUNCTION guard_media_processing_attempt_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(NEW.attempt_id, NEW.submission_id, NEW.operation_id, NEW.creation_revision, NEW.stage,
+         NEW.attempt_number, NEW.input_hash, NEW.created_at)
+     IS DISTINCT FROM ROW(OLD.attempt_id, OLD.submission_id, OLD.operation_id, OLD.creation_revision,
+         OLD.stage, OLD.attempt_number, OLD.input_hash, OLD.created_at) THEN
+    RAISE EXCEPTION 'media processing attempt identity is immutable';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_media_submission_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(
+    NEW.submission_id, NEW.community_id, NEW.actor_user_id, NEW.operation_id,
+    NEW.endpoint_template, NEW.idempotency_key, NEW.request_hash, NEW.track,
+    NEW.author_input, NEW.title, NEW.lyrics, NEW.rights_kind, NEW.upstream_asset_id,
+    NEW.license_preset, NEW.commercial_rev_share_bps, NEW.royalty_allocations,
+    NEW.access_mode, NEW.audio_reservation_id, NEW.response_snapshot_bytes,
+    NEW.response_snapshot_sha256, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.submission_id, OLD.community_id, OLD.actor_user_id, OLD.operation_id,
+    OLD.endpoint_template, OLD.idempotency_key, OLD.request_hash, OLD.track,
+    OLD.author_input, OLD.title, OLD.lyrics, OLD.rights_kind, OLD.upstream_asset_id,
+    OLD.license_preset, OLD.commercial_rev_share_bps, OLD.royalty_allocations,
+    OLD.access_mode, OLD.audio_reservation_id, OLD.response_snapshot_bytes,
+    OLD.response_snapshot_sha256, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'media submission authority and creation snapshot are immutable';
+  END IF;
+  IF OLD.status IN ('published', 'blocked', 'abandoned') THEN
+    RAISE EXCEPTION 'terminal media submission is immutable';
+  END IF;
+  IF NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'media submission updated_at must advance';
+  END IF;
+  IF NEW.creation_revision < OLD.creation_revision THEN
+    RAISE EXCEPTION 'media submission creation revision must not decrease';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_media_upload_reservation_update() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(
+    NEW.reservation_id, NEW.community_id, NEW.actor_user_id, NEW.endpoint_template,
+    NEW.idempotency_key, NEW.request_hash, NEW.track, NEW.slot,
+    NEW.expected_content_type, NEW.expected_size_bytes, NEW.expected_sha256,
+    NEW.upload_url, NEW.upload_headers, NEW.expires_at, NEW.response_snapshot_bytes,
+    NEW.response_snapshot_sha256, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.reservation_id, OLD.community_id, OLD.actor_user_id, OLD.endpoint_template,
+    OLD.idempotency_key, OLD.request_hash, OLD.track, OLD.slot,
+    OLD.expected_content_type, OLD.expected_size_bytes, OLD.expected_sha256,
+    OLD.upload_url, OLD.upload_headers, OLD.expires_at, OLD.response_snapshot_bytes,
+    OLD.response_snapshot_sha256, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'media upload reservation authority is immutable';
+  END IF;
+  IF OLD.state IN ('sealed', 'rejected', 'expired') THEN
+    RAISE EXCEPTION 'terminal media upload reservation is immutable';
+  END IF;
+  IF NEW.state NOT IN ('issued', 'claimed', 'sealed', 'rejected', 'expired') THEN
+    RAISE EXCEPTION 'invalid media upload reservation state';
+  END IF;
+  IF NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'media upload reservation updated_at must advance';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_namespace_ownership_completion_attempt_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -5263,6 +5359,253 @@ CREATE TABLE identity_credentials (
     CONSTRAINT identity_credentials_user_not_blank CHECK ((btrim(canonical_user_id) <> ''::text))
 );
 
+CREATE TABLE media_immutable_objects (
+    immutable_ref text NOT NULL,
+    reservation_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    operation_id text NOT NULL,
+    destination_ref text NOT NULL,
+    etag text NOT NULL,
+    object_version text NOT NULL,
+    size_bytes bigint NOT NULL,
+    content_type text NOT NULL,
+    canonical_sha256 text,
+    sealed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_immutable_objects_canonical_sha256_check CHECK (((canonical_sha256 IS NULL) OR (canonical_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT media_immutable_objects_content_type_check CHECK ((content_type ~ '^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$'::text)),
+    CONSTRAINT media_immutable_objects_destination_ref_check CHECK ((btrim(destination_ref) <> ''::text)),
+    CONSTRAINT media_immutable_objects_etag_check CHECK ((btrim(etag) <> ''::text)),
+    CONSTRAINT media_immutable_objects_object_version_check CHECK ((btrim(object_version) <> ''::text)),
+    CONSTRAINT media_immutable_objects_size_bytes_check CHECK ((size_bytes > 0))
+);
+
+CREATE TABLE media_moderation_projections (
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    status text NOT NULL,
+    held_revision bigint,
+    review_ref text,
+    reason_code text,
+    moderator_actor_id text,
+    action_id text,
+    action_evidence_ref text,
+    action_created_at timestamp with time zone,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_moderation_projections_action_shape CHECK ((((status = ANY (ARRAY['none'::text, 'open'::text])) AND (moderator_actor_id IS NULL) AND (action_id IS NULL)) OR (status = ANY (ARRAY['approved'::text, 'blocked'::text, 'closed'::text])))),
+    CONSTRAINT media_moderation_projections_status_check CHECK ((status = ANY (ARRAY['none'::text, 'open'::text, 'approved'::text, 'blocked'::text, 'closed'::text])))
+);
+
+CREATE TABLE media_post_submissions (
+    submission_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    operation_id text NOT NULL,
+    endpoint_template text DEFAULT '/communities/:communityId/media-post-submissions'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    track text NOT NULL,
+    author_input jsonb NOT NULL,
+    title text NOT NULL,
+    lyrics text,
+    rights_kind text NOT NULL,
+    upstream_asset_id text,
+    license_preset text NOT NULL,
+    commercial_rev_share_bps integer NOT NULL,
+    royalty_allocations jsonb NOT NULL,
+    access_mode text NOT NULL,
+    audio_reservation_id text NOT NULL,
+    immutable_ref text,
+    creation_revision bigint DEFAULT 1 NOT NULL,
+    workflow_revision bigint DEFAULT 0 NOT NULL,
+    status text DEFAULT 'processing'::text NOT NULL,
+    phase text,
+    reason_code text,
+    retryable boolean,
+    retry_count integer DEFAULT 0 NOT NULL,
+    last_safe_phase text,
+    action_expires_at timestamp with time zone,
+    reference_request_ref text,
+    review_ref text,
+    held_revision bigint,
+    post_id text,
+    response_snapshot_bytes bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_post_submissions_access_mode_check CHECK ((access_mode = 'public'::text)),
+    CONSTRAINT media_post_submissions_author_input_check CHECK ((jsonb_typeof(author_input) = 'object'::text)),
+    CONSTRAINT media_post_submissions_commercial_rev_share_bps_check CHECK (((commercial_rev_share_bps >= 0) AND (commercial_rev_share_bps <= 10000))),
+    CONSTRAINT media_post_submissions_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_post_submissions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/media-post-submissions'::text)),
+    CONSTRAINT media_post_submissions_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT media_post_submissions_last_safe_phase_check CHECK (((last_safe_phase IS NULL) OR (last_safe_phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])))),
+    CONSTRAINT media_post_submissions_license_preset_check CHECK ((license_preset = ANY (ARRAY['non-commercial'::text, 'commercial-use'::text, 'commercial-remix'::text]))),
+    CONSTRAINT media_post_submissions_phase_check CHECK (((phase IS NULL) OR (phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text])))),
+    CONSTRAINT media_post_submissions_phase_shape CHECK ((((status = 'processing'::text) AND (phase IS NOT NULL)) OR (status <> 'processing'::text))),
+    CONSTRAINT media_post_submissions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_post_submissions_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
+    CONSTRAINT media_post_submissions_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_post_submissions_retry_count_check CHECK (((retry_count >= 0) AND (retry_count <= 3))),
+    CONSTRAINT media_post_submissions_rights_kind_check CHECK ((rights_kind = ANY (ARRAY['original'::text, 'derivative'::text]))),
+    CONSTRAINT media_post_submissions_royalty_allocations_check CHECK ((jsonb_typeof(royalty_allocations) = 'array'::text)),
+    CONSTRAINT media_post_submissions_status_check CHECK ((status = ANY (ARRAY['processing'::text, 'action_required'::text, 'manual_review'::text, 'published'::text, 'blocked'::text, 'processing_failed'::text, 'abandoned'::text]))),
+    CONSTRAINT media_post_submissions_status_shape CHECK ((((status = 'published'::text) AND (post_id IS NOT NULL) AND (phase IS NULL) AND (retryable IS NULL)) OR ((status = 'manual_review'::text) AND (review_ref IS NOT NULL) AND (held_revision IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'action_required'::text) AND (action_expires_at IS NOT NULL) AND (reference_request_ref IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'processing_failed'::text) AND (reason_code IS NOT NULL) AND (retryable IS NOT NULL) AND (post_id IS NULL)) OR ((status = 'blocked'::text) AND (post_id IS NULL) AND (held_revision IS NULL)) OR ((status = 'abandoned'::text) AND (reason_code IS NOT NULL) AND (post_id IS NULL)) OR (status = 'processing'::text))),
+    CONSTRAINT media_post_submissions_time_check CHECK ((updated_at >= created_at)),
+    CONSTRAINT media_post_submissions_title_check CHECK ((btrim(title) <> ''::text)),
+    CONSTRAINT media_post_submissions_track_check CHECK ((track = 'song'::text)),
+    CONSTRAINT media_post_submissions_workflow_revision_check CHECK ((workflow_revision >= 0))
+);
+
+CREATE TABLE media_processing_attempts (
+    attempt_id text NOT NULL,
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    creation_revision bigint NOT NULL,
+    stage text NOT NULL,
+    state text NOT NULL,
+    input_hash text NOT NULL,
+    policy_revision text,
+    adapter_revision text,
+    lease_owner text,
+    fence_token bigint,
+    provider_idempotency_key text,
+    attempt_number integer DEFAULT 1 NOT NULL,
+    retryable boolean,
+    failure_code text,
+    next_eligible_at timestamp with time zone,
+    evidence_ref text,
+    result jsonb,
+    started_at timestamp with time zone,
+    completed_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_processing_attempts_attempt_number_check CHECK (((attempt_number > 0) AND (attempt_number <= 3))),
+    CONSTRAINT media_processing_attempts_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_processing_attempts_input_hash_check CHECK ((input_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_processing_attempts_stage_check CHECK ((stage = ANY (ARRAY['probe'::text, 'hash'::text, 'transform'::text, 'acr'::text, 'lyrics_safety'::text, 'media_safety'::text, 'publication'::text]))),
+    CONSTRAINT media_processing_attempts_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text, 'succeeded'::text, 'exhausted'::text]))),
+    CONSTRAINT media_processing_attempts_state_shape CHECK ((((state = 'pending'::text) AND (started_at IS NULL) AND (completed_at IS NULL)) OR ((state = 'running'::text) AND (started_at IS NOT NULL) AND (completed_at IS NULL) AND (lease_owner IS NOT NULL) AND (fence_token IS NOT NULL)) OR ((state = 'retry_wait'::text) AND (completed_at IS NOT NULL) AND (retryable = true) AND (next_eligible_at IS NOT NULL)) OR ((state = 'succeeded'::text) AND (completed_at IS NOT NULL) AND (result IS NOT NULL) AND (evidence_ref IS NOT NULL)) OR ((state = 'exhausted'::text) AND (completed_at IS NOT NULL) AND (failure_code IS NOT NULL) AND (retryable = false))))
+);
+
+CREATE TABLE media_publication_projections (
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    creation_revision bigint NOT NULL,
+    audio_asset_ref text NOT NULL,
+    analysis_badges jsonb DEFAULT '[]'::jsonb NOT NULL,
+    language_detection text DEFAULT 'pending'::text NOT NULL,
+    alignment text NOT NULL,
+    data_registration text DEFAULT 'pending'::text NOT NULL,
+    locked_delivery text DEFAULT 'not_required'::text NOT NULL,
+    projected_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_publication_projections_alignment_check CHECK ((alignment = ANY (ARRAY['pending'::text, 'ready'::text, 'unavailable'::text]))),
+    CONSTRAINT media_publication_projections_analysis_badges_check CHECK ((analysis_badges = ANY (ARRAY['[]'::jsonb, '["reference_bound"]'::jsonb]))),
+    CONSTRAINT media_publication_projections_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_publication_projections_data_registration_check CHECK ((data_registration = ANY (ARRAY['pending'::text, 'registered'::text, 'failed'::text]))),
+    CONSTRAINT media_publication_projections_language_detection_check CHECK ((language_detection = ANY (ARRAY['pending'::text, 'ready'::text, 'unavailable'::text]))),
+    CONSTRAINT media_publication_projections_locked_delivery_check CHECK ((locked_delivery = ANY (ARRAY['not_required'::text, 'preparing'::text, 'ready'::text, 'failed'::text])))
+);
+
+CREATE TABLE media_submission_command_replays (
+    actor_user_id text NOT NULL,
+    endpoint_template text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    response_snapshot_bytes bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_submission_command_replays_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
+    CONSTRAINT media_submission_command_replays_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT media_submission_command_replays_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_submission_command_replays_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE media_submission_outbox (
+    outbox_event_id text NOT NULL,
+    submission_id text NOT NULL,
+    operation_id text NOT NULL,
+    creation_revision bigint NOT NULL,
+    workflow_revision bigint NOT NULL,
+    workflow_instance_id text NOT NULL,
+    event_type text NOT NULL,
+    effect_identity text NOT NULL,
+    payload jsonb NOT NULL,
+    state text DEFAULT 'pending'::text NOT NULL,
+    delivery_attempts integer DEFAULT 0 NOT NULL,
+    claimed_at timestamp with time zone,
+    delivered_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_submission_outbox_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_submission_outbox_delivery_attempts_check CHECK ((delivery_attempts >= 0)),
+    CONSTRAINT media_submission_outbox_effect_identity_check CHECK ((btrim(effect_identity) <> ''::text)),
+    CONSTRAINT media_submission_outbox_effect_shape CHECK ((((state = 'delivered'::text) AND (delivered_at IS NOT NULL)) OR ((state = ANY (ARRAY['pending'::text, 'claimed'::text, 'failed'::text])) AND (delivered_at IS NULL)))),
+    CONSTRAINT media_submission_outbox_event_type_check CHECK ((event_type = ANY (ARRAY['analysis_launch'::text, 'publication'::text, 'reference_wakeup'::text, 'retry_wakeup'::text]))),
+    CONSTRAINT media_submission_outbox_payload_check CHECK ((jsonb_typeof(payload) = 'object'::text)),
+    CONSTRAINT media_submission_outbox_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'claimed'::text, 'delivered'::text, 'failed'::text]))),
+    CONSTRAINT media_submission_outbox_workflow_instance_id_check CHECK ((btrim(workflow_instance_id) <> ''::text)),
+    CONSTRAINT media_submission_outbox_workflow_revision_check CHECK ((workflow_revision > 0))
+);
+
+CREATE TABLE media_submission_revisions (
+    submission_id text NOT NULL,
+    creation_revision bigint NOT NULL,
+    operation_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    phase text NOT NULL,
+    status text NOT NULL,
+    event text NOT NULL,
+    evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_submission_revisions_creation_revision_check CHECK ((creation_revision > 0)),
+    CONSTRAINT media_submission_revisions_event_check CHECK ((btrim(event) <> ''::text)),
+    CONSTRAINT media_submission_revisions_evidence_check CHECK ((jsonb_typeof(evidence) = 'object'::text)),
+    CONSTRAINT media_submission_revisions_phase_check CHECK ((phase = ANY (ARRAY['reserve'::text, 'awaiting_upload'::text, 'finalize'::text, 'analysis'::text, 'decision'::text, 'publish'::text]))),
+    CONSTRAINT media_submission_revisions_status_check CHECK ((status = ANY (ARRAY['processing'::text, 'action_required'::text, 'manual_review'::text, 'published'::text, 'blocked'::text, 'processing_failed'::text, 'abandoned'::text])))
+);
+
+CREATE TABLE media_upload_reservations (
+    reservation_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_user_id text NOT NULL,
+    endpoint_template text DEFAULT '/communities/:communityId/media-upload-reservations'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    track text NOT NULL,
+    slot text NOT NULL,
+    expected_content_type text NOT NULL,
+    expected_size_bytes bigint NOT NULL,
+    expected_sha256 text,
+    upload_url text NOT NULL,
+    upload_headers jsonb DEFAULT '[]'::jsonb NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    state text DEFAULT 'issued'::text NOT NULL,
+    submission_id text,
+    operation_id text,
+    response_snapshot_bytes bytea NOT NULL,
+    response_snapshot_sha256 text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT media_upload_reservations_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/media-upload-reservations'::text)),
+    CONSTRAINT media_upload_reservations_expected_content_type_check CHECK ((expected_content_type ~ '^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$'::text)),
+    CONSTRAINT media_upload_reservations_expected_sha256_check CHECK (((expected_sha256 IS NULL) OR (expected_sha256 ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT media_upload_reservations_expected_size_bytes_check CHECK ((expected_size_bytes > 0)),
+    CONSTRAINT media_upload_reservations_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT media_upload_reservations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_upload_reservations_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
+    CONSTRAINT media_upload_reservations_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT media_upload_reservations_slot_check CHECK ((slot = 'primary_audio'::text)),
+    CONSTRAINT media_upload_reservations_state_check CHECK ((state = ANY (ARRAY['issued'::text, 'claimed'::text, 'sealed'::text, 'rejected'::text, 'expired'::text]))),
+    CONSTRAINT media_upload_reservations_terminal_shape CHECK ((((state = 'issued'::text) AND (submission_id IS NULL) AND (operation_id IS NULL)) OR (state = 'expired'::text) OR ((state = ANY (ARRAY['claimed'::text, 'sealed'::text, 'rejected'::text])) AND (submission_id IS NOT NULL) AND (operation_id IS NOT NULL)))),
+    CONSTRAINT media_upload_reservations_time_check CHECK ((updated_at >= created_at)),
+    CONSTRAINT media_upload_reservations_track_check CHECK ((track = 'song'::text)),
+    CONSTRAINT media_upload_reservations_upload_headers_check CHECK ((jsonb_typeof(upload_headers) = 'array'::text)),
+    CONSTRAINT media_upload_reservations_upload_url_check CHECK ((btrim(upload_url) <> ''::text))
+);
+
 CREATE TABLE moderation_actions (
     community_id text NOT NULL,
     action_id text NOT NULL,
@@ -6359,6 +6702,66 @@ ALTER TABLE ONLY identity_credentials
 ALTER TABLE ONLY identity_credentials
     ADD CONSTRAINT identity_credentials_provider_subject_unique UNIQUE (provider, provider_app_id, provider_subject);
 
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_destination_ref_key UNIQUE (destination_ref);
+
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_identity_unique UNIQUE (reservation_id);
+
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_operation_unique UNIQUE (operation_id);
+
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_pkey PRIMARY KEY (immutable_ref);
+
+ALTER TABLE ONLY media_moderation_projections
+    ADD CONSTRAINT media_moderation_projections_operation_id_key UNIQUE (operation_id);
+
+ALTER TABLE ONLY media_moderation_projections
+    ADD CONSTRAINT media_moderation_projections_pkey PRIMARY KEY (submission_id);
+
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_key_unique UNIQUE (actor_user_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_operation_id_key UNIQUE (operation_id);
+
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_pkey PRIMARY KEY (submission_id);
+
+ALTER TABLE ONLY media_processing_attempts
+    ADD CONSTRAINT media_processing_attempts_identity_unique UNIQUE (operation_id, creation_revision, stage, attempt_number);
+
+ALTER TABLE ONLY media_processing_attempts
+    ADD CONSTRAINT media_processing_attempts_pkey PRIMARY KEY (attempt_id);
+
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projections_operation_id_key UNIQUE (operation_id);
+
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projections_pkey PRIMARY KEY (submission_id);
+
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projections_post_unique UNIQUE (community_id, post_id);
+
+ALTER TABLE ONLY media_submission_command_replays
+    ADD CONSTRAINT media_submission_command_replays_pkey PRIMARY KEY (actor_user_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY media_submission_outbox
+    ADD CONSTRAINT media_submission_outbox_effect_identity_key UNIQUE (effect_identity);
+
+ALTER TABLE ONLY media_submission_outbox
+    ADD CONSTRAINT media_submission_outbox_pkey PRIMARY KEY (outbox_event_id);
+
+ALTER TABLE ONLY media_submission_revisions
+    ADD CONSTRAINT media_submission_revisions_pkey PRIMARY KEY (submission_id, creation_revision);
+
+ALTER TABLE ONLY media_upload_reservations
+    ADD CONSTRAINT media_upload_reservations_identity_unique UNIQUE (actor_user_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY media_upload_reservations
+    ADD CONSTRAINT media_upload_reservations_pkey PRIMARY KEY (reservation_id);
+
 ALTER TABLE ONLY moderation_actions
     ADD CONSTRAINT moderation_actions_pkey PRIMARY KEY (community_id, action_id);
 
@@ -6687,6 +7090,14 @@ CREATE INDEX home_feed_rank_idx ON home_feed_projection USING btree (community_i
 
 CREATE INDEX identity_credentials_user_status_idx ON identity_credentials USING btree (canonical_user_id, status, created_at DESC);
 
+CREATE INDEX media_post_submissions_author_idx ON media_post_submissions USING btree (actor_user_id, updated_at DESC, submission_id);
+
+CREATE INDEX media_processing_attempts_work_idx ON media_processing_attempts USING btree (state, next_eligible_at, created_at, attempt_id) WHERE (state = ANY (ARRAY['pending'::text, 'retry_wait'::text, 'running'::text]));
+
+CREATE INDEX media_submission_outbox_pending_idx ON media_submission_outbox USING btree (state, created_at, outbox_event_id) WHERE (state = ANY (ARRAY['pending'::text, 'claimed'::text, 'failed'::text]));
+
+CREATE INDEX media_upload_reservations_expiry_idx ON media_upload_reservations USING btree (state, expires_at, reservation_id) WHERE (state = ANY (ARRAY['issued'::text, 'claimed'::text]));
+
 CREATE INDEX moderation_actions_target_idx ON moderation_actions USING btree (community_id, target_kind, target_id, created_at DESC);
 
 CREATE INDEX moderation_reports_status_idx ON moderation_reports USING btree (community_id, status, created_at, report_id);
@@ -6916,6 +7327,16 @@ CREATE TRIGGER hns_control_observer_transcript_entries_append_only BEFORE DELETE
 CREATE TRIGGER hns_control_observer_transcript_entry_insert_guard BEFORE INSERT ON hns_control_observer_snapshot_transcript_entries FOR EACH ROW EXECUTE FUNCTION validate_hns_control_observer_transcript_entry_insert();
 
 CREATE TRIGGER identity_credentials_enforce_lifecycle BEFORE INSERT OR DELETE OR UPDATE ON identity_credentials FOR EACH ROW EXECUTE FUNCTION identity_credentials_enforce_lifecycle();
+
+CREATE TRIGGER media_command_replay_update_guard BEFORE UPDATE ON media_submission_command_replays FOR EACH ROW EXECUTE FUNCTION guard_media_command_replay_update();
+
+CREATE TRIGGER media_immutable_object_update_guard BEFORE UPDATE ON media_immutable_objects FOR EACH ROW EXECUTE FUNCTION guard_media_immutable_object_update();
+
+CREATE TRIGGER media_processing_attempt_update_guard BEFORE UPDATE ON media_processing_attempts FOR EACH ROW EXECUTE FUNCTION guard_media_processing_attempt_update();
+
+CREATE TRIGGER media_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW EXECUTE FUNCTION guard_media_submission_update();
+
+CREATE TRIGGER media_upload_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION guard_media_upload_reservation_update();
 
 CREATE CONSTRAINT TRIGGER namespace_ownership_attempt_session_coherence AFTER INSERT OR UPDATE ON namespace_ownership_completion_attempts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_namespace_ownership_attempt_session_coherence();
 
@@ -7450,6 +7871,78 @@ ALTER TABLE ONLY home_feed_projection
 
 ALTER TABLE ONLY identity_credentials
     ADD CONSTRAINT identity_credentials_canonical_user_id_fkey FOREIGN KEY (canonical_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_actor_fk FOREIGN KEY (actor_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_reservation_fk FOREIGN KEY (reservation_id) REFERENCES media_upload_reservations(reservation_id);
+
+ALTER TABLE ONLY media_moderation_projections
+    ADD CONSTRAINT media_moderation_projections_operation_fk FOREIGN KEY (operation_id) REFERENCES media_post_submissions(operation_id);
+
+ALTER TABLE ONLY media_moderation_projections
+    ADD CONSTRAINT media_moderation_projections_submission_fk FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_actor_fk FOREIGN KEY (actor_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_object_fk FOREIGN KEY (immutable_ref) REFERENCES media_immutable_objects(immutable_ref);
+
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_reservation_fk FOREIGN KEY (audio_reservation_id) REFERENCES media_upload_reservations(reservation_id);
+
+ALTER TABLE ONLY media_processing_attempts
+    ADD CONSTRAINT media_processing_attempts_operation_fk FOREIGN KEY (operation_id) REFERENCES media_post_submissions(operation_id);
+
+ALTER TABLE ONLY media_processing_attempts
+    ADD CONSTRAINT media_processing_attempts_submission_fk FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projections_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projections_operation_fk FOREIGN KEY (operation_id) REFERENCES media_post_submissions(operation_id);
+
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projections_submission_fk FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY media_submission_command_replays
+    ADD CONSTRAINT media_submission_command_replays_actor_fk FOREIGN KEY (actor_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY media_submission_command_replays
+    ADD CONSTRAINT media_submission_command_replays_operation_fk FOREIGN KEY (operation_id) REFERENCES media_post_submissions(operation_id);
+
+ALTER TABLE ONLY media_submission_command_replays
+    ADD CONSTRAINT media_submission_command_replays_submission_fk FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY media_submission_outbox
+    ADD CONSTRAINT media_submission_outbox_operation_fk FOREIGN KEY (operation_id) REFERENCES media_post_submissions(operation_id);
+
+ALTER TABLE ONLY media_submission_outbox
+    ADD CONSTRAINT media_submission_outbox_submission_fk FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY media_submission_revisions
+    ADD CONSTRAINT media_submission_revisions_actor_fk FOREIGN KEY (actor_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY media_submission_revisions
+    ADD CONSTRAINT media_submission_revisions_operation_fk FOREIGN KEY (operation_id) REFERENCES media_post_submissions(operation_id);
+
+ALTER TABLE ONLY media_submission_revisions
+    ADD CONSTRAINT media_submission_revisions_submission_fk FOREIGN KEY (submission_id) REFERENCES media_post_submissions(submission_id);
+
+ALTER TABLE ONLY media_upload_reservations
+    ADD CONSTRAINT media_upload_reservations_actor_fk FOREIGN KEY (actor_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY media_upload_reservations
+    ADD CONSTRAINT media_upload_reservations_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY moderation_actions
     ADD CONSTRAINT moderation_actions_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
