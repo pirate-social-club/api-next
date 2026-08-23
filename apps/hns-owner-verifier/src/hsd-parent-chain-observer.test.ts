@@ -388,6 +388,48 @@ describe("HNS parent-chain HSD observer", () => {
     expect(exchangeCalls).toBe(1);
   });
 
+  test("stops when abort wins while the first response transcript is hashing", async () => {
+    const controller = new AbortController();
+    let exchangeCalls = 0;
+    class AbortAfterSliceBytes extends Uint8Array<ArrayBuffer> {
+      override slice(start?: number, end?: number): Uint8Array<ArrayBuffer> {
+        const copy = super.slice(start, end);
+        queueMicrotask(() => controller.abort());
+        return copy;
+      }
+    }
+    const rawResponse = rpc({
+      chain: "regtest",
+      blocks: 123_456,
+      headers: 123_456,
+      bestblockhash: anchorHash,
+      mediantime: databaseSeconds - 60,
+      verificationprogress: 1,
+    });
+    const responseBytes = new AbortAfterSliceBytes(new ArrayBuffer(rawResponse.byteLength));
+    responseBytes.set(rawResponse);
+    const observation = observeHnsParentChain({
+      request: requestValue,
+      request_sha256: await hnsControlObservationRequestHash(requestValue),
+      configuration: configurationValue,
+      reservation_database_time: databaseTime,
+      snapshot_reference: snapshotReference,
+      signal: controller.signal,
+      transport: {
+        exchange: async () => {
+          exchangeCalls += 1;
+          return {
+            status: 200,
+            content_type: "application/json",
+            response_bytes: responseBytes,
+          };
+        },
+      },
+    });
+    await expect(observation).rejects.toMatchObject({ reason: "transport_unavailable" });
+    expect(exchangeCalls).toBe(1);
+  });
+
   test("reserves, finalizes, and replays exact snapshot bytes through the injected store", async () => {
     const configurationBytes = encoder.encode(JSON.stringify(configurationValue));
     const decodedConfiguration =
@@ -546,6 +588,24 @@ describe("HNS parent-chain HSD observer", () => {
       lease_expires_at: "2026-02-02T03:04:20.000Z",
       snapshot_reference: snapshotReference,
     } as const;
+    for (const [kind, reason] of [
+      ["lost", "transport_unavailable"],
+      ["mismatch", "invalid_response"],
+    ] as const) {
+      await expect(
+        invoke(
+          makeHnsParentChainTargetObserver({
+            configuration_resolver: { resolve: async () => configurationBytes },
+            capabilities,
+            snapshot_store: {
+              reserve: async () => acquired,
+              finalize: async () => ({ kind }),
+            },
+            hsd_transport: hsdScript().transport,
+          }),
+        ),
+      ).rejects.toMatchObject({ reason });
+    }
     await expect(
       invoke(
         makeHnsParentChainTargetObserver({
@@ -664,8 +724,16 @@ describe("HNS parent-chain HSD observer", () => {
   });
 
   test("rejects a projection/body mismatch before configuration or driver work", async () => {
+    let resolverCalls = 0;
+    let storeCalls = 0;
+    let hsdCalls = 0;
     const target = makeHnsParentChainTargetObserver({
-      configuration_resolver: { resolve: async () => null },
+      configuration_resolver: {
+        resolve: async () => {
+          resolverCalls += 1;
+          return null;
+        },
+      },
       capabilities: {
         provider_id: "hns.owner.v1",
         environment: "test",
@@ -675,14 +743,17 @@ describe("HNS parent-chain HSD observer", () => {
       },
       snapshot_store: {
         reserve: async () => {
+          storeCalls += 1;
           throw new Error("must not reserve");
         },
         finalize: async () => {
+          storeCalls += 1;
           throw new Error("must not finalize");
         },
       },
       hsd_transport: {
         exchange: async () => {
+          hsdCalls += 1;
           throw new Error("must not call HSD");
         },
       },
@@ -698,5 +769,27 @@ describe("HNS parent-chain HSD observer", () => {
         { deadline_ms: 12_000, signal: new AbortController().signal },
       ),
     ).rejects.toBeInstanceOf(HnsParentChainObserverError);
+    expect(resolverCalls).toBe(0);
+    expect(storeCalls).toBe(0);
+    expect(hsdCalls).toBe(0);
+
+    const ownerRequest = {
+      ...requestValue,
+      ownership_source: "owner_authoritative_dns_txt",
+      txt_name: "_pirate.jazleeuw",
+    } as const;
+    await expect(
+      target.observe(
+        {
+          request: ownerRequest,
+          request_bytes: await encodeHnsControlObservationRequest(ownerRequest),
+          lease_policy: leasePolicy,
+        },
+        { deadline_ms: 12_000, signal: new AbortController().signal },
+      ),
+    ).rejects.toMatchObject({ reason: "invalid_request" });
+    expect(resolverCalls).toBe(0);
+    expect(storeCalls).toBe(0);
+    expect(hsdCalls).toBe(0);
   });
 });

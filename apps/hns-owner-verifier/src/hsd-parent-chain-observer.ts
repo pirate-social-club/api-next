@@ -383,18 +383,40 @@ async function transcriptEntry(
     readonly status: number | null;
     readonly response_bytes: Uint8Array | null;
     readonly driver_reference: string;
+    readonly signal: AbortSignal;
   }>,
 ): Promise<HnsControlObserverTranscriptEntryV1> {
+  if (input.signal.aborted) {
+    throw new HnsParentChainObserverError(
+      "transport_unavailable",
+      "HNS parent-chain transcript recording started after abort",
+    );
+  }
+  const requestSha256 = await sha256Bytes(input.request_bytes);
+  if (input.signal.aborted) {
+    throw new HnsParentChainObserverError(
+      "transport_unavailable",
+      "HNS parent-chain transcript request hashing completed after abort",
+    );
+  }
+  const responseSha256 =
+    input.response_bytes === null ? null : await sha256Bytes(input.response_bytes);
+  if (input.signal.aborted) {
+    throw new HnsParentChainObserverError(
+      "transport_unavailable",
+      "HNS parent-chain transcript response hashing completed after abort",
+    );
+  }
   return {
     driver_reference: input.driver_reference,
     ownership_source: "hns_parent_chain_txt",
     method_or_view_id: input.method,
     request_bytes: new Uint8Array(input.request_bytes),
-    request_sha256: await sha256Bytes(input.request_bytes),
+    request_sha256: requestSha256,
     transport_outcome: input.outcome,
     transport_status: input.status,
     response_bytes: input.response_bytes === null ? null : new Uint8Array(input.response_bytes),
-    response_sha256: input.response_bytes === null ? null : await sha256Bytes(input.response_bytes),
+    response_sha256: responseSha256,
   };
 }
 
@@ -408,6 +430,12 @@ async function hsdRpc(
     readonly transcript: HnsControlObserverTranscriptEntryV1[];
   }>,
 ): Promise<unknown> {
+  if (input.signal.aborted) {
+    throw new HnsParentChainObserverError(
+      "transport_unavailable",
+      "HNS parent-chain RPC started after abort",
+    );
+  }
   const requestBytes = encoder.encode(
     JSON.stringify({ method: input.method, params: input.params }),
   );
@@ -450,8 +478,15 @@ async function hsdRpc(
         status: null,
         response_bytes: null,
         driver_reference: input.configuration.chain.driver_reference,
+        signal: input.signal,
       }),
     );
+    if (input.signal.aborted) {
+      throw new HnsParentChainObserverError(
+        "transport_unavailable",
+        "HNS parent-chain transcript recording completed after abort",
+      );
+    }
     if (outcome === "aborted") {
       throw new HnsParentChainObserverError(
         "transport_unavailable",
@@ -484,8 +519,15 @@ async function hsdRpc(
       status: response.status,
       response_bytes: responseBytes,
       driver_reference: input.configuration.chain.driver_reference,
+      signal: input.signal,
     }),
   );
+  if (input.signal.aborted) {
+    throw new HnsParentChainObserverError(
+      "transport_unavailable",
+      "HNS parent-chain transcript recording completed after abort",
+    );
+  }
   if (
     response.response_bytes.byteLength > input.configuration.chain.response_max_bytes ||
     response.response_bytes.byteLength > responseBytes.byteLength
@@ -954,6 +996,12 @@ export function makeHnsParentChainTargetObserver(
           "HNS observer request projection and bytes differ",
         );
       }
+      if (decodedRequest.request.ownership_source !== "hns_parent_chain_txt") {
+        throw new HnsParentChainObserverError(
+          "invalid_request",
+          "HNS parent-chain observer received another ownership source",
+        );
+      }
       let configuration: Awaited<ReturnType<typeof resolveHnsControlObserverConfiguration>>;
       try {
         configuration = await resolveHnsControlObserverConfiguration({
@@ -972,6 +1020,12 @@ export function makeHnsParentChainTargetObserver(
           signal: options.signal,
         });
       } catch (error) {
+        if (options.signal.aborted) {
+          throw new HnsParentChainObserverError(
+            "transport_unavailable",
+            "HNS observer configuration resolution completed after its deadline",
+          );
+        }
         if (error instanceof HnsControlObserverConfigurationError) {
           throw new HnsParentChainObserverError(
             "misconfigured",
@@ -981,6 +1035,12 @@ export function makeHnsParentChainTargetObserver(
         throw new HnsParentChainObserverError(
           "transport_unavailable",
           "HNS observer configuration registry is unavailable",
+        );
+      }
+      if (options.signal.aborted) {
+        throw new HnsParentChainObserverError(
+          "transport_unavailable",
+          "HNS observer configuration resolution completed after its deadline",
         );
       }
       if (options.deadline_ms !== configuration.configuration.observer_deadline_ms) {
