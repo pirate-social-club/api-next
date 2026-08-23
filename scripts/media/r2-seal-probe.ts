@@ -399,8 +399,15 @@ export async function runLocalDryRun(fixtureSet?: FixtureSet): Promise<ProbeEvid
 }
 
 async function main(args: readonly string[] = Bun.argv.slice(2)): Promise<void> {
+  if (args.length === 1 && args[0] === "--execute-staging") {
+    const { runStagingProbe } = await import("./r2-seal-probe-staging");
+    process.stdout.write(`${JSON.stringify(await runStagingProbe(), null, 2)}\n`);
+    return;
+  }
   if (args.length > 0) {
-    throw new Error("The local R2 seal probe accepts no network, credential, or live-run options");
+    throw new Error(
+      "use no arguments for the local dry run or exactly --execute-staging for staging",
+    );
   }
   process.stdout.write(`${JSON.stringify(await runLocalDryRun(), null, 2)}\n`);
 }

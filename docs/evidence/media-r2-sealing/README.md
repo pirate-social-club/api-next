@@ -84,3 +84,48 @@ Focused tests:
 ```text
 bun test scripts/media/r2-seal-probe.test.ts
 ```
+
+## Disposable staging runner
+
+The same entrypoint has an explicit, mutating acknowledgement for a future
+disposable staging run:
+
+```text
+R2_STAGING_ACCOUNT_ID=... \
+R2_STAGING_ACCESS_KEY_ID=... \
+R2_STAGING_SECRET_ACCESS_KEY=... \
+R2_STAGING_BUCKET=... \
+bun scripts/media/r2-seal-probe.ts --execute-staging
+```
+
+The values above are placeholders and must never be put in shell history,
+source, evidence, or logs. The runner validates the four required environment
+variables without echoing any value. With no arguments the entrypoint always
+uses the local fake transport; the staging flag is the only path that reads
+credentials or calls `fetch`. The staging output is projected through the
+closed [staging schema](./staging-schema.json).
+
+The staging path generates one run-specific prefix and two exact keys. It
+checks both keys before writing and uses `If-None-Match: *` for the source
+upload, so a pre-existing key or an unknown preflight response fails closed.
+It requires an already-existing bucket and never creates or deletes a bucket.
+Cleanup can delete only the exact source or destination key successfully owned
+by that run; every attempted deletion has a separate absence verification.
+
+The sealing sequence is deliberately narrow: one source `HEAD`, one
+`CopyObject` sent as a destination `PUT` with the observed source ETag in
+`x-amz-copy-source-if-match` and the beta
+`cf-copy-destination-if-none-match: *` condition, and one destination `HEAD`
+only after a successful copy. A 412 is recorded as shared and ambiguous. It
+never triggers a destination `HEAD`, copy retry, or causal source/destination
+guess. ETag, SHA-256 checksum, and VersionId are reported as separate
+observations; an ETag is never treated as a checksum.
+
+The live runner has not been authorized to contact a production bucket. The
+current staging account is not entitled to R2, so no `--execute-staging` run
+was performed in this tranche. The local and injected-fetch tests exercise
+signing, request construction, hostile responses, redaction, and cleanup
+without a network call. A future transcript must bind only the run/account/
+bucket/key identities, statuses, parsed codes, timestamps, ETags, checksum and
+version observations, and exact cleanup results. URLs, headers, bodies, media
+bytes, credentials, and raw provider responses are excluded.

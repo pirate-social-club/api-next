@@ -1,0 +1,216 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/api-next/r2-seal-staging-evidence-v1.schema.json",
+  "title": "Disposable staging R2 sealing evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run",
+    "account_id",
+    "bucket",
+    "prefix",
+    "source_key",
+    "destination_key",
+    "mode",
+    "transport",
+    "provider_contacted",
+    "credentials_read",
+    "preflight",
+    "upload",
+    "sealing",
+    "metadata",
+    "cleanup",
+    "safety",
+    "remaining_decisions"
+  ],
+  "properties": {
+    "schema_version": { "const": "r2-seal-staging-evidence-v1" },
+    "run": { "$ref": "#/$defs/run" },
+    "account_id": { "type": "string", "pattern": "^[A-Fa-f0-9]{32}$" },
+    "bucket": { "type": "string", "minLength": 3, "maxLength": 63 },
+    "prefix": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "source_key": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "destination_key": { "type": "string", "minLength": 1, "maxLength": 512 },
+    "mode": { "const": "staging-execute" },
+    "transport": { "const": "r2-s3-sigv4" },
+    "provider_contacted": { "const": true },
+    "credentials_read": { "const": true },
+    "preflight": { "$ref": "#/$defs/preflight" },
+    "upload": { "$ref": "#/$defs/upload" },
+    "sealing": { "$ref": "#/$defs/sealing" },
+    "metadata": { "$ref": "#/$defs/metadata" },
+    "cleanup": { "$ref": "#/$defs/cleanup" },
+    "safety": { "$ref": "#/$defs/safety" },
+    "remaining_decisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1, "maxLength": 512 }
+    }
+  },
+  "$defs": {
+    "safeString": {
+      "type": ["string", "null"],
+      "maxLength": 512,
+      "not": { "pattern": "https?://|authorization|x-amz-(credential|signature)|(^|[^a-z])((credential|signature)=)" }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "started_at", "completed_at", "deterministic"],
+      "properties": {
+        "run_id": { "type": "string", "pattern": "^[A-Za-z0-9-]{8,128}$" },
+        "started_at": { "type": "string", "format": "date-time" },
+        "completed_at": { "type": "string", "format": "date-time" },
+        "deterministic": { "const": false }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["called", "status", "code"],
+      "properties": {
+        "called": { "type": "boolean" },
+        "status": { "type": ["integer", "null"], "minimum": 0, "maximum": 599 },
+        "code": { "$ref": "#/$defs/safeString" }
+      }
+    },
+    "head": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["called", "status", "code", "etag", "size_bytes", "content_type", "checksum_sha256", "version_id"],
+      "properties": {
+        "called": { "type": "boolean" },
+        "status": { "type": ["integer", "null"], "minimum": 0, "maximum": 599 },
+        "code": { "$ref": "#/$defs/safeString" },
+        "etag": { "$ref": "#/$defs/safeString" },
+        "size_bytes": { "type": ["integer", "null"], "minimum": 0 },
+        "content_type": { "$ref": "#/$defs/safeString" },
+        "checksum_sha256": { "$ref": "#/$defs/safeString" },
+        "version_id": { "$ref": "#/$defs/safeString" }
+      }
+    },
+    "preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "destination", "safe_to_write"],
+      "properties": {
+        "source": { "$ref": "#/$defs/head" },
+        "destination": { "$ref": "#/$defs/head" },
+        "safe_to_write": { "type": "boolean" }
+      }
+    },
+    "upload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["called", "status", "code", "etag", "checksum_sha256", "version_id", "owned_after_success"],
+      "properties": {
+        "called": { "type": "boolean" },
+        "status": { "type": ["integer", "null"], "minimum": 0, "maximum": 599 },
+        "code": { "$ref": "#/$defs/safeString" },
+        "etag": { "$ref": "#/$defs/safeString" },
+        "checksum_sha256": { "$ref": "#/$defs/safeString" },
+        "version_id": { "$ref": "#/$defs/safeString" },
+        "owned_after_success": { "type": "boolean" }
+      }
+    },
+    "copy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["called", "status", "code", "etag", "checksum_sha256", "version_id"],
+      "properties": {
+        "called": { "type": "boolean" },
+        "status": { "type": ["integer", "null"], "minimum": 0, "maximum": 599 },
+        "code": { "$ref": "#/$defs/safeString" },
+        "etag": { "$ref": "#/$defs/safeString" },
+        "checksum_sha256": { "$ref": "#/$defs/safeString" },
+        "version_id": { "$ref": "#/$defs/safeString" }
+      }
+    },
+    "sealing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "source_head", "conditional_copy", "destination_head", "automatic_retry", "destination_verified"],
+      "properties": {
+        "outcome": {
+          "enum": [
+            "success",
+            "source_missing",
+            "expectation_mismatch",
+            "conditional_precondition_ambiguous",
+            "verification_mismatch",
+            "provider_response_unknown",
+            "transport_error"
+          ]
+        },
+        "source_head": { "$ref": "#/$defs/head" },
+        "conditional_copy": { "$ref": "#/$defs/copy" },
+        "destination_head": { "anyOf": [{ "$ref": "#/$defs/head" }, { "type": "null" }] },
+        "automatic_retry": { "const": false },
+        "destination_verified": { "type": "boolean" }
+      }
+    },
+    "availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["available", "value"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "value": { "$ref": "#/$defs/safeString" }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_etag", "destination_etag", "source_checksum_sha256", "destination_checksum_sha256", "source_version_id", "destination_version_id", "version_binding"],
+      "properties": {
+        "source_etag": { "$ref": "#/$defs/safeString" },
+        "destination_etag": { "$ref": "#/$defs/safeString" },
+        "source_checksum_sha256": { "$ref": "#/$defs/availability" },
+        "destination_checksum_sha256": { "$ref": "#/$defs/availability" },
+        "source_version_id": { "$ref": "#/$defs/safeString" },
+        "destination_version_id": { "$ref": "#/$defs/safeString" },
+        "version_binding": { "enum": ["matched", "unavailable", "mismatch"] }
+      }
+    },
+    "cleanupKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "delete", "absence", "absent"],
+      "properties": {
+        "key": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "delete": { "$ref": "#/$defs/operation" },
+        "absence": { "$ref": "#/$defs/operation" },
+        "absent": { "type": "boolean" }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "attempted", "keys", "bucket_deleted"],
+      "properties": {
+        "status": { "enum": ["complete", "partial", "not-attempted"] },
+        "attempted": { "type": "boolean" },
+        "keys": { "type": "array", "items": { "$ref": "#/$defs/cleanupKey" } },
+        "bucket_deleted": { "const": false }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["acknowledged_execute_flag", "shared_412_is_ambiguous", "conditional_copy_is_never_retried", "post_412_destination_head", "destination_head_only_after_copy_success", "preexisting_keys_fail_closed", "cleanup_is_exact_run_owned_keys", "bucket_was_not_created_or_deleted", "secrets_emitted", "urls_headers_bodies_emitted"],
+      "properties": {
+        "acknowledged_execute_flag": { "const": true },
+        "shared_412_is_ambiguous": { "const": true },
+        "conditional_copy_is_never_retried": { "const": true },
+        "post_412_destination_head": { "const": false },
+        "destination_head_only_after_copy_success": { "const": true },
+        "preexisting_keys_fail_closed": { "const": true },
+        "cleanup_is_exact_run_owned_keys": { "const": true },
+        "bucket_was_not_created_or_deleted": { "const": true },
+        "secrets_emitted": { "const": false },
+        "urls_headers_bodies_emitted": { "const": false }
+      }
+    }
+  }
+}
