@@ -20,6 +20,7 @@ import { GetCanonicalCommunityRoute } from "./community-route-resolution.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
 import { CreateKaraokeAttempt, GetKaraokeAttempt, GetKaraokeLeaderboard } from "./karaoke.ts";
 import { PollNamespaceOwnership, StartNamespaceOwnership } from "./namespace-ownership.ts";
+import { CreatePersona, ListMyPersonas } from "./personas.ts";
 /** Named registry; the client generator references these exports by name. */
 import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
@@ -33,6 +34,8 @@ export const registry = {
   GetCanonicalCommunityRoute,
   StartHnsOwnerRecovery,
   PollHnsOwnerRecovery,
+  ListMyPersonas,
+  CreatePersona,
   ...v1Registry,
   ...verification,
   ...money,
