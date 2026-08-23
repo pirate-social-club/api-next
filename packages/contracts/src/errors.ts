@@ -111,6 +111,27 @@ export class RetryableConflict extends Data.TaggedError("RetryableConflict")<Wir
   readonly retryable = true as const;
 }
 
+/** An owner-recovery fence is live; retry only after the declared delay. */
+export class OwnerRecoveryInProgress extends Data.TaggedError("OwnerRecoveryInProgress")<{
+  readonly message: string;
+  readonly details: { readonly retry_after_seconds: number };
+}> {
+  static readonly detailsSchema = Schema.Struct({
+    retry_after_seconds: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 3_600 })),
+  });
+  static readonly detailsRequired = true;
+  static readonly retryAfterHeader = {
+    minimumSeconds: 1,
+    maximumSeconds: 3_600,
+    pattern: "^(?:[1-9]|[1-9][0-9]|[1-9][0-9]{2}|[12][0-9]{3}|3[0-5][0-9]{2}|3600)$",
+    detailsKey: "retry_after_seconds",
+  } as const;
+
+  readonly status = 409 as const;
+  readonly code = "owner_recovery_in_progress" as const;
+  readonly retryable = true as const;
+}
+
 /**
  * A non-retryable replay conflict with the submission identity required by
  * the text-post reconciliation contract. The wire code intentionally remains
@@ -163,6 +184,12 @@ export class PostVoteIdempotencyConflict extends Data.TaggedError("PostVoteIdemp
 export class VerificationStartInProgress extends Data.TaggedError("VerificationStartInProgress")<
   WireArgs & { readonly retry_after_seconds: number }
 > {
+  static readonly retryAfterHeader = {
+    minimumSeconds: 1,
+    maximumSeconds: 86_400,
+    pattern: "^[1-9][0-9]*$",
+  } as const;
+
   readonly status = 409 as const;
   readonly code = "verification_start_in_progress" as const;
   readonly retryable = true as const;
@@ -303,6 +330,7 @@ export type ApiError =
   | RateLimited
   | Conflict
   | RetryableConflict
+  | OwnerRecoveryInProgress
   | IdempotencyConflict
   | PostVoteIdempotencyConflict
   | VerificationStartInProgress
@@ -347,6 +375,44 @@ export function toErrorBody(
 } {
   const requestIdField = requestId === undefined ? {} : { request_id: requestId };
   if (hasWireShape(error)) {
+    const ownerRecoveryDetails =
+      error.code === "owner_recovery_in_progress" ? error.details : undefined;
+    const ownerRecoveryDetailsAreClosed =
+      ownerRecoveryDetails !== null &&
+      typeof ownerRecoveryDetails === "object" &&
+      !Array.isArray(ownerRecoveryDetails) &&
+      Object.keys(ownerRecoveryDetails).length === 1 &&
+      Object.hasOwn(ownerRecoveryDetails, "retry_after_seconds");
+    const ownerRecoveryRetryAfter = ownerRecoveryDetailsAreClosed
+      ? ownerRecoveryDetails.retry_after_seconds
+      : undefined;
+    if (
+      error.code === "owner_recovery_in_progress" &&
+      (!ownerRecoveryDetailsAreClosed ||
+        typeof ownerRecoveryRetryAfter !== "number" ||
+        !Number.isSafeInteger(ownerRecoveryRetryAfter) ||
+        ownerRecoveryRetryAfter < 1 ||
+        ownerRecoveryRetryAfter > 3_600)
+    ) {
+      return {
+        status: 500,
+        body: {
+          error: {
+            code: "internal_error",
+            message: "Internal server error",
+            retryable: true,
+          },
+          ...requestIdField,
+        },
+      };
+    }
+    const retryAfterSeconds =
+      error.code === "owner_recovery_in_progress"
+        ? ownerRecoveryRetryAfter
+        : "retry_after_seconds" in error
+          ? error.retry_after_seconds
+          : undefined;
+    const retryAfterMaximum = error.code === "owner_recovery_in_progress" ? 3_600 : 86_400;
     return {
       status: error.status,
       body: {
@@ -358,19 +424,16 @@ export function toErrorBody(
         },
         ...requestIdField,
       },
-      ...((error.code === "verification_start_in_progress" || error.code === "rate_limited") &&
-      typeof (error as { readonly retry_after_seconds?: unknown }).retry_after_seconds ===
-        "number" &&
-      Number.isSafeInteger(
-        (error as { readonly retry_after_seconds: number }).retry_after_seconds,
-      ) &&
-      (error as { readonly retry_after_seconds: number }).retry_after_seconds >= 1 &&
-      (error as { readonly retry_after_seconds: number }).retry_after_seconds <= 86_400
+      ...((error.code === "verification_start_in_progress" ||
+        error.code === "rate_limited" ||
+        error.code === "owner_recovery_in_progress") &&
+      typeof retryAfterSeconds === "number" &&
+      Number.isSafeInteger(retryAfterSeconds) &&
+      retryAfterSeconds >= 1 &&
+      retryAfterSeconds <= retryAfterMaximum
         ? {
             headers: {
-              "Retry-After": String(
-                (error as { readonly retry_after_seconds: number }).retry_after_seconds,
-              ),
+              "Retry-After": String(retryAfterSeconds),
             },
           }
         : {}),

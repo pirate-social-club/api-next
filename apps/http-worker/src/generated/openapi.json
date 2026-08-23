@@ -6653,6 +6653,2167 @@
         ]
       }
     },
+    "/communities/{communityId}/canonical-route/ownership-recovery/start": {
+      "post": {
+        "operationId": "post_communitiesCommunityIdCanonicalRouteOwnershipRecoveryStart",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,255}$"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expected_generation": {
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "expected_generation",
+                  "idempotency_key"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "x-max-body-bytes": 1024
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "route_recovery_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "generation": {
+                      "type": "integer"
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "poll_result"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string"
+                    },
+                    "challenge": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ownership_source": {
+                              "type": "string",
+                              "enum": [
+                                "hns_parent_chain_txt"
+                              ]
+                            },
+                            "challenge_name": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "challenge_value": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "ownership_source",
+                            "challenge_name",
+                            "challenge_value",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ownership_source": {
+                              "type": "string",
+                              "enum": [
+                                "owner_authoritative_dns_txt"
+                              ]
+                            },
+                            "challenge_name": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "challenge_value": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "ownership_source",
+                            "challenge_name",
+                            "challenge_value",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "replayed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "route_recovery_id",
+                    "session_id",
+                    "generation",
+                    "channel",
+                    "status",
+                    "expires_at",
+                    "challenge",
+                    "replayed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "route_recovery_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "allOf": [
+                        {
+                          "minLength": 1
+                        }
+                      ]
+                    },
+                    "generation": {
+                      "type": "integer"
+                    },
+                    "channel": {
+                      "type": "string",
+                      "enum": [
+                        "poll_result"
+                      ]
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending"
+                      ]
+                    },
+                    "expires_at": {
+                      "type": "string"
+                    },
+                    "challenge": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ownership_source": {
+                              "type": "string",
+                              "enum": [
+                                "hns_parent_chain_txt"
+                              ]
+                            },
+                            "challenge_name": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "challenge_value": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "ownership_source",
+                            "challenge_name",
+                            "challenge_value",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "ownership_source": {
+                              "type": "string",
+                              "enum": [
+                                "owner_authoritative_dns_txt"
+                              ]
+                            },
+                            "challenge_name": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "challenge_value": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "ownership_source",
+                            "challenge_name",
+                            "challenge_value",
+                            "expires_at"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    },
+                    "replayed": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "route_recovery_id",
+                    "session_id",
+                    "generation",
+                    "channel",
+                    "status",
+                    "expires_at",
+                    "challenge",
+                    "replayed"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "object",
+                          "properties": {
+                            "retry_after_seconds": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 3600
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "retry_after_seconds"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "owner_recovery_in_progress"
+            ],
+            "headers": {
+              "Retry-After": {
+                "required": false,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^(?:[1-9]|[1-9][0-9]|[1-9][0-9]{2}|[12][0-9]{3}|3[0-5][0-9]{2}|3600)$"
+                },
+                "x-required-for-error-codes": [
+                  "owner_recovery_in_progress"
+                ],
+                "x-minimum-seconds": 1,
+                "x-maximum-seconds": 3600
+              }
+            }
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable",
+              "provider_unavailable"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          },
+          "browserSessionOnly": true
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "OwnerRecoveryInProgress",
+          "NotFound",
+          "ProviderUnavailable",
+          "ProviderMisconfigured",
+          "InternalError"
+        ]
+      }
+    },
+    "/communities/{communityId}/canonical-route/ownership-recovery/poll": {
+      "post": {
+        "operationId": "post_communitiesCommunityIdCanonicalRouteOwnershipRecoveryPoll",
+        "parameters": [
+          {
+            "name": "communityId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "allOf": [
+                {
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9._~-]{0,255}$"
+                }
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "route_recovery_id": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  },
+                  "session_id": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  },
+                  "expected_generation": {
+                    "type": "integer"
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  },
+                  "channel": {
+                    "type": "string",
+                    "enum": [
+                      "poll_result"
+                    ]
+                  }
+                },
+                "required": [
+                  "route_recovery_id",
+                  "session_id",
+                  "expected_generation",
+                  "idempotency_key",
+                  "channel"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "x-max-body-bytes": 2048
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "unavailable"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 3600
+                            }
+                          ]
+                        },
+                        "result_hash": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "root_unavailable",
+                            "expiry_insufficient"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "reason_code",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verified"
+                          ]
+                        },
+                        "canonical_route": {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            },
+                            "root_label_display": {
+                              "type": "string"
+                            },
+                            "path_segment": {
+                              "type": "string"
+                            },
+                            "href": {
+                              "type": "string"
+                            },
+                            "app_host": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label",
+                            "root_label_display",
+                            "path_segment",
+                            "href",
+                            "app_host"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "canonical_route",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "expired"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "unavailable"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 3600
+                            }
+                          ]
+                        },
+                        "result_hash": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "root_unavailable",
+                            "expiry_insufficient"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "reason_code",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verified"
+                          ]
+                        },
+                        "canonical_route": {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            },
+                            "root_label_display": {
+                              "type": "string"
+                            },
+                            "path_segment": {
+                              "type": "string"
+                            },
+                            "href": {
+                              "type": "string"
+                            },
+                            "app_host": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label",
+                            "root_label_display",
+                            "path_segment",
+                            "href",
+                            "app_host"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "canonical_route",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "expired"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "object",
+                          "properties": {
+                            "retry_after_seconds": {
+                              "type": "integer",
+                              "allOf": [
+                                {
+                                  "minimum": 1,
+                                  "maximum": 3600
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "retry_after_seconds"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "owner_recovery_in_progress"
+            ],
+            "headers": {
+              "Retry-After": {
+                "required": false,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^(?:[1-9]|[1-9][0-9]|[1-9][0-9]{2}|[12][0-9]{3}|3[0-5][0-9]{2}|3600)$"
+                },
+                "x-required-for-error-codes": [
+                  "owner_recovery_in_progress"
+                ],
+                "x-minimum-seconds": 1,
+                "x-maximum-seconds": 3600
+              }
+            }
+          },
+          "422": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "unavailable"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 3600
+                            }
+                          ]
+                        },
+                        "result_hash": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "root_unavailable",
+                            "expiry_insufficient"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "reason_code",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verified"
+                          ]
+                        },
+                        "canonical_route": {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            },
+                            "root_label_display": {
+                              "type": "string"
+                            },
+                            "path_segment": {
+                              "type": "string"
+                            },
+                            "href": {
+                              "type": "string"
+                            },
+                            "app_host": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label",
+                            "root_label_display",
+                            "path_segment",
+                            "href",
+                            "app_host"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "canonical_route",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "expired"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          },
+          "502": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "provider_unavailable",
+              "provider_unavailable"
+            ]
+          },
+          "503": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "unavailable"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        },
+                        "retry_after_seconds": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 3600
+                            }
+                          ]
+                        },
+                        "result_hash": {
+                          "type": "null"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "rejected"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "root_unavailable",
+                            "expiry_insufficient"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "reason_code",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "verified"
+                          ]
+                        },
+                        "canonical_route": {
+                          "type": "object",
+                          "properties": {
+                            "family": {
+                              "type": "string",
+                              "enum": [
+                                "hns"
+                              ]
+                            },
+                            "root_label": {
+                              "type": "string"
+                            },
+                            "root_label_display": {
+                              "type": "string"
+                            },
+                            "path_segment": {
+                              "type": "string"
+                            },
+                            "href": {
+                              "type": "string"
+                            },
+                            "app_host": {
+                              "type": "null"
+                            }
+                          },
+                          "required": [
+                            "family",
+                            "root_label",
+                            "root_label_display",
+                            "path_segment",
+                            "href",
+                            "app_host"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "canonical_route",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "route_recovery_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "session_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "generation": {
+                          "type": "integer"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "expired"
+                          ]
+                        },
+                        "replayed": {
+                          "type": "boolean"
+                        },
+                        "retry_after_seconds": {
+                          "type": "null"
+                        },
+                        "result_hash": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "route_recovery_id",
+                        "session_id",
+                        "generation",
+                        "status",
+                        "replayed",
+                        "retry_after_seconds",
+                        "result_hash"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "user"
+          },
+          "browserSessionOnly": true
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "OwnerRecoveryInProgress",
+          "NotFound",
+          "ProviderUnavailable",
+          "ProviderMisconfigured",
+          "InternalError"
+        ]
+      }
+    },
     "/posts/{postId}/vote": {
       "post": {
         "operationId": "post_postsPostIdVote",
@@ -35424,11 +37585,16 @@
             ],
             "headers": {
               "Retry-After": {
-                "required": true,
+                "required": false,
                 "schema": {
                   "type": "string",
                   "pattern": "^[1-9][0-9]*$"
-                }
+                },
+                "x-required-for-error-codes": [
+                  "verification_start_in_progress"
+                ],
+                "x-minimum-seconds": 1,
+                "x-maximum-seconds": 86400
               }
             }
           },

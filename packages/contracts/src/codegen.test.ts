@@ -3,7 +3,13 @@ import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { generateClient, generateOpenApi, generateRouteTable, schemaToOpenApi } from "./codegen.ts";
 import { endpoint } from "./endpoint.ts";
-import { BadRequest, IdempotencyConflict, RateLimited } from "./errors.ts";
+import {
+  BadRequest,
+  Conflict,
+  IdempotencyConflict,
+  OwnerRecoveryInProgress,
+  RateLimited,
+} from "./errors.ts";
 import { Cents } from "./money.ts";
 import { diffBreaking, type OpenApiDocument } from "./openapi-diff.ts";
 import { registry } from "./registry.ts";
@@ -88,6 +94,38 @@ describe("codegen pipeline", () => {
     const client = generateClient({ TextPost: textPost });
     expect(client).toContain('"detailsSchema"');
     expect(client).toContain("readonly id: string");
+  });
+
+  test("generates a code-specific bounded Retry-After contract", () => {
+    const recovery = endpoint({
+      method: "POST",
+      path: "/recovery",
+      auth: Auth.user({ browserSessionOnly: true }),
+      response: Schema.Struct({ ok: Schema.Boolean }),
+      errors: [Conflict, OwnerRecoveryInProgress],
+    });
+    const response = generateOpenApi([recovery]).paths["/recovery"]?.post?.responses as Record<
+      string,
+      Record<string, unknown>
+    >;
+    expect(response["409"]?.headers).toEqual({
+      "Retry-After": {
+        required: false,
+        schema: {
+          type: "string",
+          pattern: "^(?:[1-9]|[1-9][0-9]|[1-9][0-9]{2}|[12][0-9]{3}|3[0-5][0-9]{2}|3600)$",
+        },
+        "x-required-for-error-codes": ["owner_recovery_in_progress"],
+        "x-minimum-seconds": 1,
+        "x-maximum-seconds": 3_600,
+      },
+    });
+    const client = generateClient({ Recovery: recovery });
+    expect(client).toContain('"code":"owner_recovery_in_progress"');
+    expect(client).toContain(
+      '"retryAfterHeader":{"minimumSeconds":1,"maximumSeconds":3600,"pattern":"^(?:[1-9]|[1-9][0-9]|[1-9][0-9]{2}|[12][0-9]{3}|3[0-5][0-9]{2}|3600)$","detailsKey":"retry_after_seconds"}',
+    );
+    expect(client).toContain("API error response Retry-After header disagreed with its details");
   });
 
   test("generated client is type-checkable source with typed methods", () => {

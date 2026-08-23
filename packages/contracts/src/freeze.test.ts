@@ -6,6 +6,7 @@ import {
   GateFailed,
   GetCommunityPreview,
   NotFound,
+  OwnerRecoveryInProgress,
   PaymentRequired,
   ProviderMisconfigured,
   ProviderUnavailable,
@@ -70,6 +71,46 @@ describe("wire-error catalog", () => {
     ).toBeUndefined();
   });
 
+  it("keeps owner-recovery retry details and Retry-After identical and bounded", () => {
+    const serialized = toErrorBody(
+      new OwnerRecoveryInProgress({
+        message: "Recovery is already in progress",
+        details: { retry_after_seconds: 17 },
+      }),
+    );
+    expect(serialized.status).toBe(409);
+    expect(serialized.headers).toEqual({ "Retry-After": "17" });
+    expect(serialized.body).toEqual({
+      error: {
+        code: "owner_recovery_in_progress",
+        message: "Recovery is already in progress",
+        retryable: true,
+        details: { retry_after_seconds: 17 },
+      },
+    });
+    expect(
+      toErrorBody(
+        new OwnerRecoveryInProgress({
+          message: "bad delay",
+          details: { retry_after_seconds: 3_601 },
+        }),
+      ),
+    ).toMatchObject({ status: 500, body: { error: { code: "internal_error" } } });
+    for (const details of [
+      { retry_after_seconds: 17, extra: "forged" },
+      [{ retry_after_seconds: 17 }],
+    ]) {
+      expect(
+        toErrorBody(
+          new OwnerRecoveryInProgress({
+            message: "invalid details shape",
+            details,
+          } as never),
+        ),
+      ).toMatchObject({ status: 500, body: { error: { code: "internal_error" } } });
+    }
+  });
+
   it("requires structured details for gate failures", () => {
     const error = new GateFailed({ message: "gate failed", details: { gate: "age" } });
     expect(toErrorBody(error).body.error.details).toEqual({ gate: "age" });
@@ -109,6 +150,10 @@ describe("auth policy vocabulary", () => {
     expect(GetCommunityPreview.auth).toEqual({
       policy: { kind: "userOrAdmin" },
       optionalUser: true,
+    });
+    expect(Auth.user({ browserSessionOnly: true })).toEqual({
+      policy: { kind: "user" },
+      browserSessionOnly: true,
     });
   });
 });

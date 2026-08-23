@@ -307,6 +307,96 @@ describe("contracts-generated HTTP worker", () => {
     expect(allowed.status).toBe(200);
   });
 
+  it("enforces browser-session-only auth before owner-recovery body decoding", async () => {
+    let authenticateCalls = 0;
+    let handlerCalls = 0;
+    const app = createHttpWorker({
+      config: { corsOrigin: "https://solid.test" },
+      handlers: {
+        StartHnsOwnerRecovery: () => {
+          handlerCalls += 1;
+          return withEndpointResult(
+            {
+              route_recovery_id: "recovery-1",
+              session_id: "session-1",
+              generation: 7,
+              channel: "poll_result",
+              status: "pending",
+              expires_at: "2026-08-23T12:00:00.000Z",
+              challenge: {
+                ownership_source: "hns_parent_chain_txt",
+                challenge_name: "_pirate-recovery.example",
+                challenge_value: "pirate-verification=opaque",
+                expires_at: "2026-08-23T12:00:00.000Z",
+              },
+              replayed: false,
+            },
+            201,
+          );
+        },
+      },
+      authenticate: ({ credentials }) => {
+        authenticateCalls += 1;
+        return {
+          kind: credentials.sessionCookie === "admin-token" ? "admin" : "user",
+          subject: credentials.sessionCookie ?? "unexpected-bearer",
+        };
+      },
+      authorize: ({ input }) => {
+        if (input.principal?.kind !== "user") {
+          throw new AuthError({ message: "Authentication required" });
+        }
+      },
+    });
+    const url =
+      "https://worker.test/communities/community-1/canonical-route/ownership-recovery/start";
+    const bearer = await app.request(url, {
+      method: "POST",
+      headers: { authorization: "Bearer user-token", "content-type": "application/json" },
+      body: "not-json",
+    });
+    expect(bearer.status).toBe(401);
+    expect(authenticateCalls).toBe(0);
+    expect(handlerCalls).toBe(0);
+
+    const cookie = "__Host-pirate_session=browser-token; __Host-pirate_csrf=csrf-token";
+    const missingCsrf = await app.request(url, {
+      method: "POST",
+      headers: { cookie, origin: "https://solid.test", "content-type": "application/json" },
+      body: "not-json",
+    });
+    expect(missingCsrf.status).toBe(401);
+    expect(handlerCalls).toBe(0);
+
+    const adminCookie = "__Host-pirate_session=admin-token; __Host-pirate_csrf=csrf-token";
+    const admin = await app.request(url, {
+      method: "POST",
+      headers: {
+        cookie: adminCookie,
+        origin: "https://solid.test",
+        "content-type": "application/json",
+        "x-csrf-token": "csrf-token",
+      },
+      body: "not-json",
+    });
+    expect(admin.status).toBe(401);
+    expect(handlerCalls).toBe(0);
+
+    const allowed = await app.request(url, {
+      method: "POST",
+      headers: {
+        cookie,
+        origin: "https://solid.test",
+        "content-type": "application/json",
+        "x-csrf-token": "csrf-token",
+      },
+      body: '{"expected_generation":7,"idempotency_key":"start-1"}',
+    });
+    expect(allowed.status).toBe(201);
+    expect(handlerCalls).toBe(1);
+    expect(authenticateCalls).toBe(3);
+  });
+
   it("clears the host-only session and CSRF cookies exactly on logout", async () => {
     const app = createHttpWorker({ config: { corsOrigin: "https://solid.test" } });
     const wrongOrigin = await app.request("https://worker.test/auth/session/logout", {

@@ -462,6 +462,8 @@ export const decodeInput = async (
 const isPublic = (endpoint: EndpointDefinition): boolean => endpoint.auth.policy.kind === "public";
 const isOptionalUser = (endpoint: EndpointDefinition): boolean =>
   endpoint.auth.optionalUser === true;
+const isBrowserSessionOnly = (endpoint: EndpointDefinition): boolean =>
+  endpoint.auth.browserSessionOnly === true;
 
 const declaredStatuses = (endpoint: EndpointDefinition): readonly number[] => {
   if (endpoint.successStatus === undefined) return [200];
@@ -629,6 +631,14 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         if (hasAuthorizationHeader && hasSessionCookie) {
           throw new AuthError({ message: "Authentication failed" });
         }
+        if (isBrowserSessionOnly(binding.endpoint)) {
+          if (hasAuthorizationHeader) {
+            throw new AuthError({ message: "Authentication failed" });
+          }
+          if (!hasSessionCookie) {
+            throw new AuthError({ message: "Authentication required" });
+          }
+        }
         let principal: Principal | null = null;
         if (
           !isPublic(binding.endpoint) &&
@@ -658,6 +668,9 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
               ...(hasBrowserCredential ? { sessionCookie } : {}),
             },
           });
+        }
+        if (isBrowserSessionOnly(binding.endpoint) && principal?.kind !== "user") {
+          throw new AuthError({ message: "Authentication failed" });
         }
 
         // Cookie credentials are ambient and therefore need a same-origin

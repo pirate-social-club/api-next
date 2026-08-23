@@ -24,6 +24,8 @@ export type AuthPolicy =
 export interface AuthModifiers {
   readonly altcha?: AuthScope;
   readonly optionalUser?: boolean;
+  /** Require the host-only browser session cookie and reject Authorization credentials. */
+  readonly browserSessionOnly?: boolean;
 }
 
 /** What an endpoint declares: a principal policy plus optional modifiers. */

@@ -17,6 +17,16 @@ export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 /** Wire representation used when an endpoint carries a request body. */
 export type EndpointBodyEncoding = "json" | "exact-json" | "raw-text";
 
+/** Closed response-header contract carried by a declared retryable error. */
+export interface RetryAfterHeaderContract {
+  readonly minimumSeconds: number;
+  readonly maximumSeconds: number;
+  /** Canonical decimal representation accepted on the wire. */
+  readonly pattern: string;
+  /** When present, the header must equal this integer member of error.details. */
+  readonly detailsKey?: string;
+}
+
 /** Constructors from the wire-error catalog a handler may fail with. */
 export type ApiErrorCtor = (new (
   args: never,
@@ -25,6 +35,8 @@ export type ApiErrorCtor = (new (
   readonly detailsSchema?: Schema.Schema<unknown>;
   /** Whether the declared details member is required on the wire. */
   readonly detailsRequired?: boolean;
+  /** Optional required Retry-After response-header contract. */
+  readonly retryAfterHeader?: RetryAfterHeaderContract;
 };
 
 /**

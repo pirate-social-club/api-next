@@ -83,6 +83,57 @@ describe("generated api client", () => {
     });
   });
 
+  test("validates owner-recovery retry details against the required header", async () => {
+    let headers = new Headers({ "Retry-After": "17" });
+    let details: Record<string, unknown> = { retry_after_seconds: 17 };
+    const fetchImpl = Object.assign(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "owner_recovery_in_progress",
+              message: "Recovery is already in progress",
+              retryable: true,
+              details,
+            },
+          }),
+          { status: 409, headers },
+        ),
+      { preconnect: fetch.preconnect },
+    );
+    const client = createPirateApiClient("https://api.example", fetchImpl);
+    const input = {
+      path: { communityId: "community-1" },
+      body: { expected_generation: 7, idempotency_key: "start-1" },
+    };
+
+    await expect(
+      client.post_communitiesCommunityIdCanonicalRouteOwnershipRecoveryStart(input),
+    ).rejects.toMatchObject({
+      declaredName: "OwnerRecoveryInProgress",
+      retryAfterSeconds: 17,
+      details: { retry_after_seconds: 17 },
+    });
+
+    headers = new Headers();
+    await expect(
+      client.post_communitiesCommunityIdCanonicalRouteOwnershipRecoveryStart(input),
+    ).rejects.toBeInstanceOf(ApiClientProtocolError);
+    headers = new Headers({ "Retry-After": "017" });
+    await expect(
+      client.post_communitiesCommunityIdCanonicalRouteOwnershipRecoveryStart(input),
+    ).rejects.toBeInstanceOf(ApiClientProtocolError);
+    headers = new Headers({ "Retry-After": "18" });
+    await expect(
+      client.post_communitiesCommunityIdCanonicalRouteOwnershipRecoveryStart(input),
+    ).rejects.toBeInstanceOf(ApiClientProtocolError);
+    headers = new Headers({ "Retry-After": "3601" });
+    details = { retry_after_seconds: 3_601 };
+    await expect(
+      client.post_communitiesCommunityIdCanonicalRouteOwnershipRecoveryStart(input),
+    ).rejects.toBeInstanceOf(ApiClientProtocolError);
+  });
+
   test("round-trips text CreatePost and current-state submission responses", async () => {
     const submission = {
       submission_id: "sub_1",

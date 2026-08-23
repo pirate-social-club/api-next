@@ -7,6 +7,7 @@ export * from "./community-route-resolution.ts";
 export * from "./community-routes.ts";
 export * from "./endpoint.ts";
 export * from "./errors.ts";
+export * from "./hns-owner-recovery.ts";
 export * from "./karaoke.ts";
 export * from "./money.ts";
 export * from "./namespace-ownership.ts";

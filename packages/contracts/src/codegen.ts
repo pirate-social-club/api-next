@@ -83,6 +83,16 @@ function errorResponses(errors: readonly ApiErrorCtor[] | undefined): Record<str
       const candidateInstance = new candidate({} as never) as ApiError;
       return candidateInstance.status === instance.status;
     });
+    const retryAfterContracts = statusErrors.flatMap((candidate) =>
+      candidate.retryAfterHeader === undefined ? [] : [candidate.retryAfterHeader],
+    );
+    const retryAfterCodes = statusErrors.flatMap((candidate) => {
+      if (candidate.retryAfterHeader === undefined) return [];
+      return [(new candidate({} as never) as ApiError).code];
+    });
+    const retryAfterPatterns = [
+      ...new Set(retryAfterContracts.map((contract) => contract.pattern)),
+    ];
     const detailsRequired =
       statusErrors.length > 0 &&
       statusErrors.every(
@@ -100,17 +110,30 @@ function errorResponses(errors: readonly ApiErrorCtor[] | undefined): Record<str
         "application/json": { schema: wireErrorBodySchema(detailsSchema, detailsRequired) },
       },
       "x-error-codes": [...existing, instance.code],
-      ...(previous?.headers === undefined ? {} : { headers: previous.headers }),
-      ...(instance.code === "verification_start_in_progress"
+      ...(retryAfterContracts.length > 0
         ? {
             headers: {
               "Retry-After": {
-                required: true,
-                schema: { type: "string", pattern: "^[1-9][0-9]*$" },
+                required: retryAfterContracts.length === statusErrors.length,
+                schema:
+                  retryAfterPatterns.length === 1
+                    ? { type: "string", pattern: retryAfterPatterns[0] }
+                    : {
+                        anyOf: retryAfterPatterns.map((pattern) => ({ type: "string", pattern })),
+                      },
+                "x-required-for-error-codes": retryAfterCodes,
+                "x-minimum-seconds": Math.min(
+                  ...retryAfterContracts.map((contract) => contract.minimumSeconds),
+                ),
+                "x-maximum-seconds": Math.max(
+                  ...retryAfterContracts.map((contract) => contract.maximumSeconds),
+                ),
               },
             },
           }
-        : {}),
+        : previous?.headers === undefined
+          ? {}
+          : { headers: previous.headers }),
     };
   }
   return responses;
@@ -254,6 +277,12 @@ export interface ClientErrorDefinition {
   readonly retryable: boolean;
   readonly detailsSchema?: JsonSchema;
   readonly detailsRequired?: boolean;
+  readonly retryAfterHeader?: {
+    readonly minimumSeconds: number;
+    readonly maximumSeconds: number;
+    readonly pattern: string;
+    readonly detailsKey?: string;
+  };
 }
 
 function clientErrorDefinitions(
@@ -274,6 +303,7 @@ function clientErrorDefinitions(
               ? {}
               : { detailsRequired: Ctor.detailsRequired }),
           }),
+      ...(Ctor.retryAfterHeader === undefined ? {} : { retryAfterHeader: Ctor.retryAfterHeader }),
     };
   });
 }
@@ -585,6 +615,12 @@ export interface ApiClientErrorDefinition {
   readonly retryable: boolean;
   readonly detailsSchema?: JsonSchema;
   readonly detailsRequired?: boolean;
+  readonly retryAfterHeader?: {
+    readonly minimumSeconds: number;
+    readonly maximumSeconds: number;
+    readonly pattern: string;
+    readonly detailsKey?: string;
+  };
 }
 
 export class ApiClientProtocolError extends Error {
@@ -754,6 +790,8 @@ function schemaError(value: unknown, schema: JsonSchema, path: string, root: Jso
   }
   if (typeof schema.minLength === "number" && typeof value === "string" && value.length < schema.minLength) return "string too short";
   if (typeof schema.pattern === "string" && typeof value === "string" && !new RegExp(schema.pattern).test(value)) return "string pattern mismatch";
+  if (typeof schema.minimum === "number" && typeof value === "number" && value < schema.minimum) return "number below minimum";
+  if (typeof schema.maximum === "number" && typeof value === "number" && value > schema.maximum) return "number above maximum";
   return undefined;
 }
 function parseWireError(value: unknown, status: number): ApiClientErrorBody {
@@ -815,6 +853,39 @@ export function createPirateApiClient(baseUrl: string, optionsOrFetch: PirateApi
         if (detailsError !== undefined) {
           throw new ApiClientProtocolError(
             "API error response failed declared details validation",
+            response.status,
+          );
+        }
+      }
+      if (definition.retryAfterHeader !== undefined) {
+        const rawRetryAfter = response.headers.get("retry-after");
+        if (
+          rawRetryAfter === null ||
+          !new RegExp(definition.retryAfterHeader.pattern, "u").test(rawRetryAfter)
+        ) {
+          throw new ApiClientProtocolError(
+            "API error response was missing its canonical Retry-After header",
+            response.status,
+          );
+        }
+        const retryAfterSeconds = Number(rawRetryAfter);
+        if (
+          !Number.isSafeInteger(retryAfterSeconds) ||
+          retryAfterSeconds < definition.retryAfterHeader.minimumSeconds ||
+          retryAfterSeconds > definition.retryAfterHeader.maximumSeconds
+        ) {
+          throw new ApiClientProtocolError(
+            "API error response carried an out-of-range Retry-After header",
+            response.status,
+          );
+        }
+        const detailsKey = definition.retryAfterHeader.detailsKey;
+        if (
+          detailsKey !== undefined &&
+          (!record(body.error.details) || body.error.details[detailsKey] !== retryAfterSeconds)
+        ) {
+          throw new ApiClientProtocolError(
+            "API error response Retry-After header disagreed with its details",
             response.status,
           );
         }
