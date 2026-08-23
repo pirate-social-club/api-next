@@ -5,7 +5,7 @@
   "version": "0.13.0",
   "releaseType": "upload-derived-song-analysis-contract-r1",
   "wireContract": "wire-v2",
-  "sourceCommit": "f8efdb2",
+  "sourceCommit": "9f9f4d1",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.13.0.tgz",
     "sha256": "3c313a2fe15da97c1ea843753829c9e4f7abc87e9932d5d0bd041df248b587ef",
@@ -28,7 +28,7 @@
       "baselineCommit": "6c6f785",
       "reason": "Spec 013 upload-derived song analysis amendment explicitly ratifies the form-light song start, separate terms command, and audio-revision-bound analysis clean break from client 0.12.0."
     },
-    "focusedSongMediaAndBoundaryTests": "13 passed",
+    "focusedSongMediaAndBoundaryTests": "14 passed",
     "focusedCodegenBreakingAndClientTests": "38 passed",
     "packageVerifier": "passed",
     "repositoryCheck": "check passed; unit 1280 passed and 204 skipped; Workerd 33, 18, 2, and 1 passed; fresh, 0.12.0-baseline breaking, migration-worktree, and package checks passed"

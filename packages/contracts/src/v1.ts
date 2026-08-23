@@ -672,6 +672,7 @@ const PositiveRevision = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
 const Sha256Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+const TranscriptTextMaxLength = 200_000;
 const SongAuthorString = Schema.NonEmptyString;
 const SongTitle = Schema.NonEmptyString.check(Schema.isMaxLength(200));
 const EvidenceRef = Schema.NonEmptyString.check(Schema.isMaxLength(512));
@@ -1001,8 +1002,16 @@ export const SongTranscriptArtifactV1 = Schema.Struct({
   audio_revision: PositiveRevision,
   analysis_revision: PositiveRevision,
   canonical_audio_sha256: Sha256Hex,
-  transcript: Schema.String.check(Schema.isMaxLength(200_000)),
-  segments: Schema.Array(TranscriptSegmentV1).check(Schema.isMaxLength(10_000)),
+  transcript: Schema.String.check(Schema.isMaxLength(TranscriptTextMaxLength)),
+  segments: Schema.Array(TranscriptSegmentV1).check(
+    Schema.isMaxLength(10_000),
+    Schema.makeFilter((segments) =>
+      segments.reduce((length, segment) => length + segment.text.length, 0) <=
+      TranscriptTextMaxLength
+        ? undefined
+        : "Aggregate transcript segment text exceeds the transcript ceiling",
+    ),
+  ),
 });
 export type SongTranscriptArtifactV1 = Schema.Schema.Type<typeof SongTranscriptArtifactV1>;
 
@@ -1055,7 +1064,16 @@ export const SongTrustedAnalysisV1 = Schema.Union([
     speech_lyrics: UnavailableSpeechAnalysisV1,
     lyrics_safety: Schema.Literal("review_required"),
   }),
-]);
+]).check(
+  Schema.makeFilter((analysis) => {
+    const reference = analysis.bound_reference;
+    return reference === null ||
+      (reference.evidence_audio_revision === analysis.audio_revision &&
+        reference.evidence_audio_sha256 === analysis.canonical_audio_sha256)
+      ? undefined
+      : "Bound reference evidence must match the enclosing audio revision and hash";
+  }),
+);
 export type SongTrustedAnalysisV1 = Schema.Schema.Type<typeof SongTrustedAnalysisV1>;
 
 export const SongPublishedProjectionV1 = Schema.Struct({
@@ -1395,7 +1413,7 @@ export const CreatePost = endpoint({
   errors: [AuthError, BadRequest, IdempotencyConflict, MembershipRequired, NotFound, RateLimited],
 });
 
-// --- song media R0 --------------------------------------------------------
+// --- song media -----------------------------------------------------------
 
 export const CreateMediaUploadReservation = endpoint({
   method: "POST",

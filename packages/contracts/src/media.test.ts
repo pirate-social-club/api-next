@@ -258,30 +258,39 @@ describe("song media R1 derived-analysis contracts", () => {
       }),
     ).toMatchObject({ version: "song-start-input-v1", song_type: "remix" });
     expect(decode(CreateSongSubmissionV1, songInput)).toMatchObject({ title: "A song" });
-    for (const field of [
-      "body",
-      "commentary",
-      "lyrics",
-      "language",
-      "primary_language_bcp47",
-      "explicitness",
-      "cover_artwork",
-      "cover_art_reservation_id",
-      "instrumental_audio_reservation_id",
-      "vocal_audio_reservation_id",
-      "is_instrumental",
-      "rights_declaration",
-      "license_preset",
-      "commercial_rev_share_bps",
-      "royalty_allocations",
-      "access_mode",
-      "canonical_audio_sha256",
-      "acr",
-      "provider",
-    ]) {
-      expect(() =>
-        decode(CreateSongSubmissionV1, { ...songInput, [field]: "not-author-input" }),
-      ).toThrow();
+    const forbiddenAuthorFields: Readonly<Record<string, unknown>> = {
+      body: "Post commentary",
+      commentary: "Song discussion",
+      lyrics: "Valid author-supplied lyrics",
+      language: "en",
+      primary_language_bcp47: "en-US",
+      explicitness: "explicit",
+      cover_artwork: { media_type: "image/png", bytes_base64: "iVBORw0KGgo=" },
+      cover_art_reservation_id: "cover_res_1",
+      instrumental_audio_reservation_id: "instrumental_res_1",
+      vocal_audio_reservation_id: "vocal_res_1",
+      is_instrumental: true,
+      rights_declaration: { kind: "original" },
+      license_preset: "commercial-remix",
+      commercial_rev_share_bps: 1000,
+      royalty_allocations: [{ recipient_id: "author_1", share_bps: 10_000 }],
+      access_mode: "public",
+      price: { amount_minor: 499, currency: "USD" },
+      preview: { start_ms: 45_000, duration_ms: 30_000 },
+      canonical_audio_sha256: "a".repeat(64),
+      storage_coordinates: { bucket: "private-media", object_key: "uploads/song.mp3" },
+      workflow_revision: 1,
+      workflow_instance_id: "media-op_1-r1",
+      acr: {
+        decision: "allow",
+        evidence_ref: "acr_1",
+        policy_revision: "acr-policy-v1",
+        adapter_revision: "acr-adapter-v1",
+      },
+      provider: "speech-provider",
+    };
+    for (const [field, value] of Object.entries(forbiddenAuthorFields)) {
+      expect(() => decode(CreateSongSubmissionV1, { ...songInput, [field]: value })).toThrow();
     }
   });
 
@@ -400,14 +409,47 @@ describe("song media R1 derived-analysis contracts", () => {
       bound_reference: {
         asset_id: "asset_1",
         evidence_audio_revision: 1,
-        evidence_analysis_revision: 2,
+        evidence_analysis_revision: 1,
         evidence_audio_sha256: "a".repeat(64),
         upstream_commercial_rev_share_bps: 1000,
       },
     } as const;
-    expect(decode(SongTrustedAnalysisV1, analysis)).toMatchObject({
+    const decodedAnalysis = decode(SongTrustedAnalysisV1, analysis);
+    expect(decodedAnalysis).toMatchObject({
       audio_revision: 1,
       analysis_revision: 2,
+      bound_reference: { evidence_analysis_revision: 1 },
+    });
+    const projection = {
+      version: "song-published-projection-v1",
+      submission_id: "sub_1",
+      post_id: "post_1",
+      creation_revision: 2,
+      title: "Author-confirmed title",
+      audio_asset_ref: "audio_1",
+      cover_artifact_ref: "cover_1",
+      analysis_badges: ["reference_bound"],
+      language_detection: {
+        status: "ready",
+        primary_language_bcp47: "en-US",
+        secondary_language_bcp47: "es",
+      },
+      lyrics_explicitness: "not_explicit",
+      alignment: "pending",
+      data_registration: "pending",
+      locked_delivery: "not_required",
+    } as const;
+    expect(decode(SongPublishedProjectionV1, projection)).toEqual(projection);
+    expect({
+      embeddedTitle: analysis.embedded_metadata.track_title,
+      embeddedCover: analysis.embedded_metadata.cover.artifact_ref,
+      publishedTitle: projection.title,
+      publishedCover: projection.cover_artifact_ref,
+    }).toEqual({
+      embeddedTitle: "Embedded title",
+      embeddedCover: "cover_1",
+      publishedTitle: "Author-confirmed title",
+      publishedCover: "cover_1",
     });
     expect(() =>
       decode(SongTrustedAnalysisV1, {
@@ -439,6 +481,66 @@ describe("song media R1 derived-analysis contracts", () => {
         },
       }),
     ).toThrow();
+    expect(() =>
+      decode(SongTrustedAnalysisV1, {
+        ...analysis,
+        audio_revision: 2,
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(SongTrustedAnalysisV1, {
+        ...analysis,
+        canonical_audio_sha256: "d".repeat(64),
+      }),
+    ).toThrow();
+  });
+
+  test("keeps immutable audio evidence reusable across a terms revision only", () => {
+    const analysis = {
+      version: "song-trusted-analysis-v1",
+      operation_id: "op_revision_fence",
+      audio_revision: 3,
+      analysis_revision: 4,
+      finalized_audio_ref: "audio_revision_3",
+      canonical_audio_sha256: "e".repeat(64),
+      probe_evidence_ref: "probe_revision_3",
+      embedded_metadata: {
+        evidence_ref: "id3_revision_3",
+        adapter_revision: "id3-v1",
+        track_title: null,
+        cover: { status: "absent", artifact_ref: null, reason_code: "not_embedded" },
+      },
+      speech_lyrics: {
+        status: "no_speech",
+        transcript_artifact_ref: null,
+        transcript_sha256: null,
+        explicitness: "no_lyrics",
+        primary_language_bcp47: null,
+        secondary_language_bcp47: null,
+        evidence_ref: "speech_revision_3",
+        policy_revision: "speech-policy-v1",
+        adapter_revision: "speech-adapter-v1",
+      },
+      acr: {
+        decision: "allow",
+        evidence_ref: "acr_revision_3",
+        policy_revision: "acr-policy-v1",
+        adapter_revision: "acr-adapter-v1",
+      },
+      lyrics_safety: "skipped",
+      media_safety: "allow",
+      bound_reference: null,
+    } as const;
+    const beforeTermsAdvance = decode(SongTrustedAnalysisV1, analysis);
+    expect(
+      decode(BindSongTermsV1, {
+        ...songTerms,
+        expected_creation_revision: 2,
+        commercial_rev_share_bps: 0,
+      }),
+    ).toMatchObject({ expected_creation_revision: 2, commercial_rev_share_bps: 0 });
+    const afterTermsAdvance = decode(SongTrustedAnalysisV1, analysis);
+    expect(afterTermsAdvance).toEqual(beforeTermsAdvance);
   });
 
   test("keeps no-speech distinct from unavailable and closes cover outcomes", () => {
@@ -555,6 +657,35 @@ describe("song media R1 derived-analysis contracts", () => {
       decode(SongTranscriptArtifactV1, {
         ...transcript,
         segments: [{ start_ms: 1000, end_ms: 999, text: "invalid" }],
+      }),
+    ).toThrow();
+    const segment = (text: string, index: number) => ({
+      start_ms: index,
+      end_ms: index + 1,
+      text,
+    });
+    const boundarySegments = [
+      ...Array.from({ length: 48 }, (_, index) => segment("x".repeat(4096), index)),
+      segment("x".repeat(3392), 48),
+    ];
+    expect(
+      decode(SongTranscriptArtifactV1, {
+        ...transcript,
+        transcript: "x".repeat(200_000),
+        segments: boundarySegments,
+      }),
+    ).toMatchObject({ segments: boundarySegments });
+    expect(() =>
+      decode(SongTranscriptArtifactV1, {
+        ...transcript,
+        segments: [...boundarySegments.slice(0, -1), segment("x".repeat(3393), 48)],
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(SongTranscriptArtifactV1, {
+        ...transcript,
+        transcript: "x".repeat(200_001),
+        segments: [],
       }),
     ).toThrow();
   });
