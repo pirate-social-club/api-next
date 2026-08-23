@@ -47,6 +47,7 @@
     "./use-cases/verification-completion": "./src/use-cases/verification-completion.ts",
     "./use-cases/verification-start": "./src/use-cases/verification-start.ts",
     "./use-cases/namespace-ownership-start": "./src/use-cases/namespace-ownership-start.ts",
-    "./use-cases/namespace-ownership-completion": "./src/use-cases/namespace-ownership-completion.ts"
+    "./use-cases/namespace-ownership-completion": "./src/use-cases/namespace-ownership-completion.ts",
+    "./use-cases/hns-owner-recovery": "./src/use-cases/hns-owner-recovery.ts"
   }
 }
