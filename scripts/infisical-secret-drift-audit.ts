@@ -1,3 +1,5 @@
+import { resolveInfisicalAuditToken } from "./infisical-oidc-auth";
+
 export const API_NEXT_INFISICAL_PROJECT_ID = "fac45f92-9450-42fb-8c2f-f20d043fdfab";
 export const INFISICAL_ENVIRONMENTS = ["dev", "staging", "prod"] as const;
 
@@ -326,11 +328,8 @@ export async function fetchInfisicalSnapshots(input: {
 }
 
 export async function main(): Promise<void> {
-  const token = process.env.INFISICAL_AUDIT_TOKEN?.trim();
-  if (!token) {
-    throw new Error("INFISICAL_AUDIT_TOKEN is required; use a fresh, name-only audit credential");
-  }
   const baseUrl = process.env.INFISICAL_API_URL?.trim() || "https://app.infisical.com/api";
+  const token = await resolveInfisicalAuditToken({ baseUrl });
   const report = auditInfisicalSnapshots(
     await fetchInfisicalSnapshots({
       baseUrl,

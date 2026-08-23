@@ -71,6 +71,17 @@ then deleted. Exact re-inventory confirmed all four staging resources absent.
 The unrelated `pirate-control-plane-production` Hyperdrive (`7e457bc3…`) was
 outside scope and remains untouched.
 
+A follow-up name-only inventory of all 36 Workers in the old account found four
+additional unreachable legacy Workers: `community-provision-operator`,
+`community-provision-operator-staging`, the duplicate
+`community-provision-operator-staging-staging`, and
+`pirate-api-core-staging`. None had a custom domain, route, cron trigger,
+workers.dev endpoint, or inbound service binding. Their 46 installed secret
+bindings were deleted before the four Workers were deleted. A complete
+post-delete name scan covered the 32 surviving Workers and found zero
+`TURSO_*` bindings. DNS-bound legacy Workers remain only through the former
+delegation TTL and must not be retired before the cache-drain verification.
+
 Deleting the misplaced HTTP Worker also removed the public custom-domain DNS,
 which proved that the misplaced account still owned `pirate.sc` at that time.
 The canonical HTTP Worker deliberately exposed its `workers.dev` origin, and
@@ -627,8 +638,8 @@ the audit only lists script secret names and does not need write permission.
 
 ## Infisical remote drift audit
 
-`bun run audit:infisical` is deliberately separate from both `bun run check`
-and the Cloudflare audit. It scans the `dev`, `staging`, and `prod`
+`bun run audit:infisical` is deliberately separate from `bun run check`. It
+scans the `dev`, `staging`, and `prod`
 environments in the api-next project, checks the expected service and operator
 folders, and reports root entries, misplaced entries, missing required names,
 and unexpected folders. It exits non-zero for unallowlisted drift.
@@ -637,9 +648,22 @@ The audit uses the Infisical REST API directly. Secret-name requests set
 `viewSecretValue=false`, `expandSecretReferences=false`, and `recursive=false`;
 the script reads only `secretKey` metadata and never invokes the CLI or writes
 the CLI's local value cache. Folder requests are metadata-only and read only
-`relativePath`. The audit requires an explicit `INFISICAL_AUDIT_TOKEN` and may
-use `INFISICAL_API_URL` for the regional API base URL. It never reads the
-local Infisical profile, project pin, or cached credential.
+`relativePath`. Local operators may provide an explicit
+`INFISICAL_AUDIT_TOKEN`; CI instead uses project machine identity
+`a4c9780d-f83b-42cb-8c5e-e493439d374d` and exchanges GitHub's short-lived OIDC
+token directly for an Infisical token capped at 900 seconds. No Infisical
+credential is stored in GitHub. The Free plan does not support a metadata-only
+custom role, so the project-scoped identity uses the built-in `Viewer` role.
+That role can read values even though this script never requests them; the
+exact main-branch OIDC subject, the absence of a pull-request trigger, and the
+hard-coded `viewSecretValue=false` request are therefore security boundaries.
+
+The dedicated `.github/workflows/secret-drift.yml` workflow runs both remote
+axes on pushes to `main` and by manual dispatch. Its OIDC trust is bound to the
+immutable repository subject for `main` and audience
+`https://github.com/pirate-social-club`. It never runs for pull requests. The
+audit may use `INFISICAL_API_URL` for the regional API base URL and never reads
+the local Infisical profile, project pin, or cached credential.
 
 No current Infisical drift is allowlisted. The disabled-production alert
 placeholders and missing production funding RPC remain failures until they are
