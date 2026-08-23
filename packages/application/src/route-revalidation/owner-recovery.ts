@@ -166,6 +166,24 @@ const ProviderStartSchema = Schema.Struct({
   challenge_expires_at: CanonicalInstant,
   route: RouteSchema,
 });
+const ProviderStartChallengeSchema = Schema.Struct({
+  ownership_source: OwnershipSourceSchema,
+  challenge_name: boundedString(255, "challenge_name"),
+  challenge_value: ChallengeValue,
+  expires_at: CanonicalInstant,
+});
+const ProviderStartPresentationSchema = Schema.Struct({
+  kind: Schema.Literal("embedded_sdk"),
+  session_id: UpstreamReference,
+  protocol: Schema.Literal("hns-txt-challenge"),
+  version: Schema.Literal("1"),
+  payload: ProviderStartChallengeSchema,
+});
+const ProviderStartResponseSchema = Schema.Struct({
+  upstream_session_ref: UpstreamReference,
+  expires_at: CanonicalInstant,
+  presentation: ProviderStartPresentationSchema,
+});
 const PersistedSessionSchema = Schema.Struct({
   route_recovery_id: Identifier,
   session_id: Identifier,
@@ -283,21 +301,6 @@ const ProviderPollSchema = Schema.Struct({
   session: PersistedSessionSchema,
   payload: Schema.Struct({}),
 });
-const ProviderStartOutcomeSchema = Schema.Union([
-  Schema.Struct({
-    status: Schema.Literal("pending"),
-    upstream_session_ref: UpstreamReference,
-    ownership_source: OwnershipSourceSchema,
-    challenge_name: boundedString(255, "challenge_name"),
-    challenge_value: ChallengeValue,
-    expires_at: CanonicalInstant,
-  }),
-  Schema.Struct({
-    status: Schema.Literal("failed"),
-    reason: Schema.Literals(["unavailable", "misconfigured", "invalid_response"]),
-  }),
-]);
-
 const TargetVerifiedSchema = Schema.Struct({
   status: Schema.Literal("verified"),
   observation_contract_version: Schema.Literal("pirate-hns-target-observation-v2"),
@@ -1520,19 +1523,9 @@ export async function buildHnsOwnerRecoveryEvidence(
   };
 }
 
-export type HnsOwnerRecoveryProviderStartOutcome =
-  | Readonly<{
-      readonly status: "pending";
-      readonly upstream_session_ref: string;
-      readonly ownership_source: Schema.Schema.Type<typeof OwnershipSourceSchema>;
-      readonly challenge_name: string;
-      readonly challenge_value: string;
-      readonly expires_at: string;
-    }>
-  | Readonly<{
-      readonly status: "failed";
-      readonly reason: "unavailable" | "misconfigured" | "invalid_response";
-    }>;
+export type HnsOwnerRecoveryProviderStartResponseV1 = Schema.Schema.Type<
+  typeof ProviderStartResponseSchema
+>;
 
 export async function finalizeHnsOwnerRecoveryProviderStart(
   input: Readonly<{
@@ -1540,15 +1533,14 @@ export async function finalizeHnsOwnerRecoveryProviderStart(
     readonly public_start_hash: Sha256HexValue;
     readonly start_request: HnsOwnerRecoveryStartRequestV1;
     readonly started_at: string;
-    readonly provider_outcome: HnsOwnerRecoveryProviderStartOutcome;
+    readonly provider_response: HnsOwnerRecoveryProviderStartResponseV1;
   }>,
 ): Promise<
-  | Readonly<{
-      readonly kind: "retained";
-      readonly session: HnsOwnerRecoveryPersistedSessionV1;
-      readonly response: Awaited<ReturnType<typeof hnsOwnerRecoveryStartResponse>>;
-    }>
-  | Readonly<{ readonly kind: "failed" }>
+  Readonly<{
+    readonly kind: "retained";
+    readonly session: HnsOwnerRecoveryPersistedSessionV1;
+    readonly response: Awaited<ReturnType<typeof hnsOwnerRecoveryStartResponse>>;
+  }>
 > {
   const providerStart = decodeSchema(
     ProviderStartSchema,
@@ -1580,18 +1572,37 @@ export async function finalizeHnsOwnerRecoveryProviderStart(
   ) {
     throw new HnsOwnerRecoveryDecodeError("Public recovery start hash is not self-consistent");
   }
-  const outcome = decodeSchema(
-    ProviderStartOutcomeSchema,
-    input.provider_outcome,
-    "HNS owner-recovery provider start outcome is invalid",
+  assertOrder(
+    input.provider_response,
+    ["upstream_session_ref", "expires_at", "presentation"],
+    "HNS owner-recovery provider start response is reordered",
   );
-  if (outcome.status === "failed") return { kind: "failed" };
+  const untrustedPresentation = input.provider_response.presentation;
+  assertOrder(
+    untrustedPresentation,
+    ["kind", "session_id", "protocol", "version", "payload"],
+    "HNS owner-recovery provider presentation is reordered",
+  );
+  assertOrder(
+    untrustedPresentation.payload,
+    ["ownership_source", "challenge_name", "challenge_value", "expires_at"],
+    "HNS owner-recovery provider challenge is reordered",
+  );
+  const providerResponse = decodeSchema(
+    ProviderStartResponseSchema,
+    input.provider_response,
+    "HNS owner-recovery provider start response is invalid",
+  );
+  const presentation = providerResponse.presentation;
+  const challenge = presentation.payload;
   if (
-    outcome.expires_at !== providerStart.challenge_expires_at ||
+    providerResponse.expires_at !== providerStart.challenge_expires_at ||
     providerStart.challenge_expires_at !== hnsOwnerRecoveryChallengeExpiresAt(input.started_at) ||
-    outcome.challenge_name !==
-      hnsOwnerChallengeName(outcome.ownership_source, providerStart.route.root_label) ||
-    outcome.challenge_value !== hnsOwnerChallengeValue(outcome.upstream_session_ref)
+    presentation.session_id !== providerResponse.upstream_session_ref ||
+    challenge.expires_at !== providerResponse.expires_at ||
+    challenge.challenge_name !==
+      hnsOwnerChallengeName(challenge.ownership_source, providerStart.route.root_label) ||
+    challenge.challenge_value !== hnsOwnerChallengeValue(providerResponse.upstream_session_ref)
   ) {
     throw new HnsOwnerRecoveryDecodeError("Provider start does not echo recovery authority");
   }
@@ -1614,11 +1625,11 @@ export async function finalizeHnsOwnerRecoveryProviderStart(
     protocol_version: providerStart.protocol_version,
     environment: providerStart.environment,
     route: providerStart.route,
-    upstream_session_ref: outcome.upstream_session_ref,
-    ownership_source: outcome.ownership_source,
-    challenge_name: outcome.challenge_name,
-    challenge_value: outcome.challenge_value,
-    challenge_expires_at: outcome.expires_at,
+    upstream_session_ref: providerResponse.upstream_session_ref,
+    ownership_source: challenge.ownership_source,
+    challenge_name: challenge.challenge_name,
+    challenge_value: challenge.challenge_value,
+    challenge_expires_at: providerResponse.expires_at,
     status: "pending",
     started_at: input.started_at,
   };
@@ -1633,8 +1644,8 @@ export async function finalizeHnsOwnerRecoveryProviderStart(
         expected_session_id: providerStart.session_id,
         start_idempotency_key: input.start_request.idempotency_key,
         expected_public_start_hash: input.public_start_hash,
-        expected_upstream_session_ref: outcome.upstream_session_ref,
-        expected_ownership_source: outcome.ownership_source,
+        expected_upstream_session_ref: providerResponse.upstream_session_ref,
+        expected_ownership_source: challenge.ownership_source,
         expected_challenge_expires_at: providerStart.challenge_expires_at,
       },
       replayed: false,

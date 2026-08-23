@@ -72,6 +72,25 @@ const policy: HnsEvidenceLeasePolicy = {
   evidence_lease_seconds: 2_592_000,
 };
 
+function providerStartResponse(expiresAt = "2026-02-02T05:38:20.000Z") {
+  return {
+    upstream_session_ref: "nvs_recovery_01",
+    expires_at: expiresAt,
+    presentation: {
+      kind: "embedded_sdk",
+      session_id: "nvs_recovery_01",
+      protocol: "hns-txt-challenge",
+      version: "1",
+      payload: {
+        ownership_source: "hns_parent_chain_txt",
+        challenge_name: "jazleeuw",
+        challenge_value: "pirate-verification=nvs_recovery_01",
+        expires_at: expiresAt,
+      },
+    },
+  } as const;
+}
+
 const positiveResponse = {
   status: "verified",
   observation_contract_version: "pirate-hns-target-observation-v2",
@@ -118,14 +137,7 @@ async function fixtureSession(): Promise<HnsOwnerRecoveryPersistedSessionV1> {
     public_start_hash: publicStartHash,
     start_request: startRequest,
     started_at: "2026-02-02T04:38:20.000Z",
-    provider_outcome: {
-      status: "pending",
-      upstream_session_ref: "nvs_recovery_01",
-      ownership_source: "hns_parent_chain_txt",
-      challenge_name: "jazleeuw",
-      challenge_value: "pirate-verification=nvs_recovery_01",
-      expires_at: "2026-02-02T05:38:20.000Z",
-    },
+    provider_response: providerStartResponse(),
   });
   if (finalized.kind !== "retained") throw new Error("fixture start was not retained");
   return finalized.session;
@@ -226,16 +238,24 @@ describe("HNS owner-initiated recovery protocol kernel", () => {
       authority,
       database_started_at: session.started_at,
     });
-    const failed = await finalizeHnsOwnerRecoveryProviderStart({
-      provider_start: providerStart,
-      public_start_hash: session.public_start_hash,
-      start_request: startRequest,
-      started_at: session.started_at,
-      provider_outcome: { status: "failed", reason: "unavailable" },
-    });
-    expect(failed).toEqual({ kind: "failed" });
-    expect(failed).not.toHaveProperty("session");
-    expect(failed).not.toHaveProperty("response");
+    await expect(
+      finalizeHnsOwnerRecoveryProviderStart({
+        provider_start: providerStart,
+        public_start_hash: session.public_start_hash,
+        start_request: startRequest,
+        started_at: session.started_at,
+        provider_response: {
+          ...providerStartResponse(),
+          presentation: {
+            ...providerStartResponse().presentation,
+            payload: {
+              ...providerStartResponse().presentation.payload,
+              expires_at: "2026-02-02T05:38:21.000Z",
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow();
   });
 
   test("reproduces the verified evidence and terminal result vectors", async () => {
@@ -690,13 +710,12 @@ describe("HNS owner-initiated recovery protocol kernel", () => {
         public_start_hash: publicStartHash,
         start_request: startRequest,
         started_at: "2026-02-02T04:38:20.000Z",
-        provider_outcome: {
-          status: "not_pending",
-          upstream_session_ref: "nvs_recovery_01",
-          ownership_source: "hns_parent_chain_txt",
-          challenge_name: "jazleeuw",
-          challenge_value: "pirate-verification=nvs_recovery_01",
-          expires_at: "2026-02-02T05:38:20.000Z",
+        provider_response: {
+          ...providerStartResponse(),
+          presentation: {
+            ...providerStartResponse().presentation,
+            protocol: "wrong-protocol",
+          },
         } as never,
       }),
     ).rejects.toThrow();
