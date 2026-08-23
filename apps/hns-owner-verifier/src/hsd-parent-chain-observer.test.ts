@@ -9,12 +9,15 @@ import {
   type HnsControlObserverSnapshotFinalizeInput,
   type HnsControlObserverSnapshotStorePort,
   type HnsEvidenceLeasePolicy,
+  hnsChainAuthorityDigest,
   hnsControlObservationRequestHash,
 } from "@pirate/application/namespace-ownership";
 import {
   HnsParentChainObserverError,
+  HnsStableHsdBracketError,
   makeHnsParentChainTargetObserver,
   observeHnsParentChain,
+  observeHnsStableHsdBracket,
 } from "./hsd-parent-chain-observer.ts";
 
 const encoder = new TextEncoder();
@@ -233,6 +236,13 @@ describe("HNS parent-chain HSD observer", () => {
     expect(decoded.result).toMatchObject({
       status: "verified",
       provider_evidence_ref: snapshotReference,
+      chain_authority_digest: await hnsChainAuthorityDigest({
+        chain_network: "regtest",
+        chain_genesis_block_hash: genesisHash,
+        root_label: "jazleeuw",
+        ownership_source: "hns_parent_chain_txt",
+        authority_records: [],
+      }),
       chain_anchor_height: 123_456,
       chain_anchor_block_hash: anchorHash,
       expiry_height: 200_000,
@@ -791,5 +801,151 @@ describe("HNS parent-chain HSD observer", () => {
     expect(resolverCalls).toBe(0);
     expect(storeCalls).toBe(0);
     expect(hsdCalls).toBe(0);
+  });
+});
+
+describe("stable HSD root bracket", () => {
+  const ownerConfiguration = {
+    ...configurationValue,
+    ownership_sources: ["hns_parent_chain_txt", "owner_authoritative_dns_txt"],
+    authoritative_dns: {
+      driver_reference: "authoritative-dns:regtest",
+      required_view_ids: ["dns-view-a", "dns-view-b"],
+      require_dnssec: true,
+      require_all_views: true,
+      response_max_bytes: 65_535,
+    },
+  } as const;
+  const ownerRequest = {
+    ...requestValue,
+    ownership_source: "owner_authoritative_dns_txt",
+    txt_name: "_pirate.jazleeuw",
+  } as const;
+
+  test("retains one stable owner bracket with canonical authority and source-bound transcript", async () => {
+    const script = hsdScript({
+      records: [
+        { type: "DS", keyTag: 12_345, algorithm: 13, digestType: 2, digest: "AABB" },
+        { type: "GLUE4", ns: "ns1.jazleeuw.", address: "192.0.2.53" },
+        { type: "NS", ns: "ns1.jazleeuw." },
+        { type: "TXT", txt: ["ignored-by-owner"] },
+        { type: "DS", keyTag: 12_345, algorithm: 13, digestType: 2, digest: "aabb" },
+      ],
+    });
+    const observed = await observeHnsStableHsdBracket({
+      request: ownerRequest,
+      configuration: ownerConfiguration,
+      reservation_database_time: databaseTime,
+      transport: script.transport,
+      signal: new AbortController().signal,
+    });
+    expect(observed.kind).toBe("stable");
+    if (observed.kind !== "stable") throw new Error("expected stable HSD bracket");
+    expect(observed.bracket.anchor_a).toEqual(observed.bracket.anchor_b);
+    expect(observed.bracket.request_authority).toEqual({
+      provider_id: ownerRequest.provider_id,
+      provider_configuration_reference: ownerRequest.provider_configuration_reference,
+      provider_configuration_version: ownerRequest.provider_configuration_version,
+      provider_configuration_digest: ownerRequest.provider_configuration_digest,
+      environment: ownerRequest.environment,
+      ownership_source: ownerRequest.ownership_source,
+      root_label: ownerRequest.root_label,
+      chain_network: ownerConfiguration.chain.network,
+      chain_genesis_block_hash: ownerConfiguration.chain.genesis_block_hash,
+      chain_driver_reference: ownerConfiguration.chain.driver_reference,
+    });
+    expect(observed.bracket.root).toEqual({ kind: "active", expiry_height: 200_000 });
+    expect(observed.bracket.txt_records).toEqual([["ignored-by-owner"]]);
+    expect(observed.bracket.authority_records).toEqual([
+      ["NS", "ns1.jazleeuw"],
+      ["GLUE4", "ns1.jazleeuw", "192.0.2.53"],
+      ["DS", 12_345, 13, 2, "aabb"],
+    ]);
+    expect(observed.bracket.chain_authority_digest).toBe(
+      await hnsChainAuthorityDigest({
+        chain_network: "regtest",
+        chain_genesis_block_hash: genesisHash,
+        root_label: "jazleeuw",
+        ownership_source: "owner_authoritative_dns_txt",
+        authority_records: observed.bracket.authority_records,
+      }),
+    );
+    expect(observed.bracket.transcript).toHaveLength(7);
+    expect(
+      observed.bracket.transcript.every(
+        (entry) => entry.ownership_source === "owner_authoritative_dns_txt",
+      ),
+    ).toBe(true);
+    expect(script.requests).toHaveLength(7);
+    expect(Object.isFrozen(observed)).toBe(true);
+    expect(Object.isFrozen(observed.bracket)).toBe(true);
+    expect(Object.isFrozen(observed.bracket.request_authority)).toBe(true);
+    expect(Object.isFrozen(observed.bracket.authority_records)).toBe(true);
+    expect(Object.isFrozen(observed.bracket.authority_records[0])).toBe(true);
+    expect(Object.isFrozen(observed.bracket.transcript)).toBe(true);
+    expect(Object.isFrozen(observed.bracket.transcript[0])).toBe(true);
+  });
+
+  test("does not read a resource for an inactive root and closes a changing view as unavailable", async () => {
+    const inactiveScript = hsdScript({ root: "inactive" });
+    const inactive = await observeHnsStableHsdBracket({
+      request: ownerRequest,
+      configuration: ownerConfiguration,
+      reservation_database_time: databaseTime,
+      transport: inactiveScript.transport,
+      signal: new AbortController().signal,
+    });
+    expect(inactive.kind).toBe("stable");
+    if (inactive.kind !== "stable") throw new Error("expected stable inactive bracket");
+    expect(inactive.bracket.root).toEqual({ kind: "root_inactive", expiry_height: null });
+    expect(inactive.bracket.authority_records).toEqual([]);
+    expect(inactiveScript.requests).toHaveLength(6);
+    expect(inactiveScript.requests.some((request) => request.includes("getnameresource"))).toBe(
+      false,
+    );
+
+    const changedScript = hsdScript({ changedAnchor: true });
+    const changed = await observeHnsStableHsdBracket({
+      request: ownerRequest,
+      configuration: ownerConfiguration,
+      reservation_database_time: databaseTime,
+      transport: changedScript.transport,
+      signal: new AbortController().signal,
+    });
+    expect(changed).toMatchObject({ kind: "unavailable", reason: "chain_view_changed" });
+    if (changed.kind !== "unavailable") throw new Error("expected unavailable bracket");
+    expect(changed.transcript).toHaveLength(7);
+    expect(Object.isFrozen(changed)).toBe(true);
+    expect(Object.isFrozen(changed.transcript)).toBe(true);
+    expect(changedScript.requests).toHaveLength(7);
+  });
+
+  test("rejects crossed request authority and exposes shared errors without parent identity", async () => {
+    const script = hsdScript();
+    await expect(
+      observeHnsStableHsdBracket({
+        request: { ...ownerRequest, environment: "crossed" },
+        configuration: ownerConfiguration,
+        reservation_database_time: databaseTime,
+        transport: script.transport,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toBeInstanceOf(HnsStableHsdBracketError);
+    expect(script.requests).toHaveLength(0);
+
+    const controller = new AbortController();
+    controller.abort();
+    const aborted = observeHnsStableHsdBracket({
+      request: ownerRequest,
+      configuration: ownerConfiguration,
+      reservation_database_time: databaseTime,
+      transport: script.transport,
+      signal: controller.signal,
+    });
+    await expect(aborted).rejects.toMatchObject({
+      name: "HnsStableHsdBracketError",
+      reason: "transport_unavailable",
+    });
+    expect(script.requests).toHaveLength(0);
   });
 });
