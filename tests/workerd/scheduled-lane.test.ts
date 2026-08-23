@@ -293,11 +293,67 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     const result = await handleScheduled(fakeEnv, job.lane, job, Date.now(), {
       leaseTtlMs: 1_000,
       renewIntervalMs: 1,
+      renewDeadlineMs: 100,
     });
 
     expect(result.acquired).toBe(true);
     expect(releasedGeneration).toBe(2);
     expect(result.leaseAfterRun).toBeNull();
+  });
+
+  it("bounds a stuck renewal and skips release with unknown fence authority", async () => {
+    let renewalStarted!: () => void;
+    const renewalStartedPromise = new Promise<void>((resolve) => {
+      renewalStarted = resolve;
+    });
+    let releaseCalls = 0;
+    const stub = {
+      tryAcquireWithFence: async (_ttlMs: number, owner: string, now: number) => ({
+        owner,
+        expiresAt: now + 1_000,
+        generation: 1,
+      }),
+      renew: async () => {
+        renewalStarted();
+        return new Promise<never>(() => undefined);
+      },
+      releaseWithFence: async () => {
+        releaseCalls += 1;
+        return true;
+      },
+      currentLease: async () => null,
+    };
+    const fakeEnv = {
+      CRON_LOCK: {
+        getByName: () => stub,
+      },
+    } as unknown as JobsWorkerEnv;
+    const job: JobDefinition = {
+      name: "spike.stuck-renewal",
+      lane: "stuck-renewal-lane",
+      schedule: "*/5 * * * *",
+      timeout: 5_000,
+      retry: defaultRetrySchedule,
+      expectedFailures: [],
+      severity: {
+        expectedFailure: {},
+        timeout: "medium",
+        transactionOutcomeUnknown: "high",
+        defect: "high",
+      },
+      reads: [],
+      writes: [],
+      run: Effect.promise(() => renewalStartedPromise),
+    };
+
+    await expect(
+      handleScheduled(fakeEnv, job.lane, job, Date.now(), {
+        leaseTtlMs: 1_000,
+        renewIntervalMs: 1,
+        renewDeadlineMs: 20,
+      }),
+    ).rejects.toMatchObject({ _tag: "LaneLeaseLost" });
+    expect(releaseCalls).toBe(0);
   });
 
   it("runs the real routing audit, renews its lease, and aggregates alerts", async () => {

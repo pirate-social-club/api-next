@@ -149,6 +149,7 @@ export interface LaneRunOptions {
   /** Narrower values are used by workerd tests to make renewal observable. */
   readonly leaseTtlMs?: number;
   readonly renewIntervalMs?: number;
+  readonly renewDeadlineMs?: number;
 }
 
 const LANE_LEASE_TTL_MS = 30_000;
@@ -259,9 +260,32 @@ const renewLaneLease = Effect.fn("renewLaneLease")(function* (
   state: LaneState,
   ttlMs: number,
   owner: string,
+  deadlineMs: number,
 ) {
   const renewed = yield* Effect.tryPromise({
-    try: () => stub.renew(ttlMs, owner, state.currentLease.generation, Date.now()),
+    try: () =>
+      new Promise<FencedLeaseRecord | null>((resolve, reject) => {
+        let settled = false;
+        const timeout = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          reject(new LaneLeaseLost());
+        }, deadlineMs);
+        stub.renew(ttlMs, owner, state.currentLease.generation, Date.now()).then(
+          (value) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            resolve(value);
+          },
+          (error) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            reject(error);
+          },
+        );
+      }),
     catch: () => new LaneLeaseLost(),
   });
   if (renewed === null) return yield* Effect.fail(new LaneLeaseLost());
@@ -357,6 +381,10 @@ const runScheduledEffect = Effect.fn("runScheduled")(function* <
   const owner = crypto.randomUUID();
   const leaseTtlMs = options.leaseTtlMs ?? LANE_LEASE_TTL_MS;
   const renewIntervalMs = Math.max(1, options.renewIntervalMs ?? Math.floor(leaseTtlMs / 3));
+  const renewDeadlineMs = Math.max(
+    1,
+    Math.min(options.renewDeadlineMs ?? Math.floor(leaseTtlMs / 3), leaseTtlMs),
+  );
   const grant = yield* acquireLaneLease(stub, leaseTtlMs, owner, now);
   if (grant === null) {
     return {
@@ -380,17 +408,7 @@ const runScheduledEffect = Effect.fn("runScheduled")(function* <
         leaseAfterRun: null,
       };
       const leaseLoss = yield* Deferred.make<void, LaneLeaseLost>();
-      const renewal = Effect.repeat(
-        Effect.sleep(renewIntervalMs).pipe(
-          // A Durable Object RPC can still commit after an interrupted
-          // Promise stops notifying its caller. Drain an in-flight renewal so
-          // release always uses the generation that the DO actually stored.
-          Effect.flatMap(() =>
-            Effect.uninterruptible(renewLaneLease(stub, state, leaseTtlMs, owner)),
-          ),
-        ),
-        Schedule.forever,
-      ).pipe(
+      const renewOnce = renewLaneLease(stub, state, leaseTtlMs, owner, renewDeadlineMs).pipe(
         Effect.catch((error) =>
           Effect.sync(() => {
             state.leaseLost = true;
@@ -402,12 +420,21 @@ const runScheduledEffect = Effect.fn("runScheduled")(function* <
           ),
         ),
       );
+      const renewal = Effect.repeat(
+        Effect.sleep(renewIntervalMs).pipe(
+          // A Durable Object RPC can still commit after an interrupted
+          // Promise stops notifying its caller. Drain an in-flight renewal so
+          // release always uses the generation that the DO actually stored.
+          Effect.flatMap(() => Effect.uninterruptible(renewOnce)),
+        ),
+        Schedule.forever,
+      );
       const renewalFiber = yield* renewal.pipe(Effect.forkScoped);
       return { state, leaseLoss, renewalFiber };
     }),
     ({ state, renewalFiber }) =>
       Fiber.interrupt(renewalFiber).pipe(
-        Effect.andThen(
+        Effect.flatMap(() =>
           state.releaseSafe && !state.leaseLost
             ? Effect.exit(releaseLaneLease(stub, state, owner)).pipe(
                 Effect.flatMap((exit) =>
@@ -420,7 +447,11 @@ const runScheduledEffect = Effect.fn("runScheduled")(function* <
                   }),
                 ),
               )
-            : Effect.void,
+            : state.leaseLost
+              ? Effect.sync(() => {
+                  releaseResult.error = new LaneLeaseLost();
+                })
+              : Effect.void,
         ),
       ),
   ).pipe(
