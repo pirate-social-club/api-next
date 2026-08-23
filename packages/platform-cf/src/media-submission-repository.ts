@@ -1031,7 +1031,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           });
           const inserted = yield* tx.execute({
             label: "media-submission.create",
-            text: "INSERT INTO media_post_submissions (submission_id,community_id,actor_user_id,operation_id,idempotency_key,request_hash,title,song_type,start_input,audio_reservation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)",
+            text: "INSERT INTO media_post_submissions (submission_id,community_id,actor_user_id,operation_id,idempotency_key,request_hash,title,song_type,phase,start_input,audio_reservation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'reserve',$9::jsonb,$10,$11,$12)",
             values: [
               submissionId,
               input.communityId,
@@ -1054,6 +1054,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           });
           if (inserted.rowCount !== 1)
             return yield* Effect.fail(fail("create", "constraint", { submissionId }));
+          yield* insertEvent(tx, next, 1, "submission_reserved", {});
           const claimed = yield* tx.execute({
             label: "media-reservation.claim",
             text: "UPDATE media_upload_reservations SET state='claimed',submission_id=$1,operation_id=$2,claim_fence=claim_fence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND reservation_id=$5 AND state='issued' AND expires_at>clock_timestamp()",
@@ -1079,7 +1080,20 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             values: [submissionId, input.communityId, input.actorUserId, operationId],
             readonly: false,
           });
-          yield* insertEvent(tx, next, 1, "submission_reserved", {});
+          const issued = yield* reduce("create", next, {
+            event: "media_reservation_issued",
+            actorId: input.actorUserId,
+            expectedCreationRevision: next.creationRevision,
+          });
+          const issuedRow = yield* tx.execute({
+            label: "media-submission.reservation-issued",
+            text: "UPDATE media_post_submissions SET phase='awaiting_upload',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND status='processing' AND phase='reserve' AND event_sequence=1 RETURNING event_sequence",
+            values: [input.communityId, input.actorUserId, submissionId, operationId],
+            readonly: false,
+          });
+          if (issuedRow.rowCount !== 1)
+            return yield* Effect.fail(fail("create", "constraint", { submissionId }));
+          yield* insertEvent(tx, issued, 2, "media_reservation_issued", {});
           yield* insertReplay(tx, { ...input, endpointTemplate: SUBMISSION_ENDPOINT }, operationId);
           return {
             kind: "created",

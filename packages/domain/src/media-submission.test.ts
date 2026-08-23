@@ -71,6 +71,15 @@ const created = createMediaSubmissionState({
   songType: "original",
   reservationId: "media_reservation",
 });
+const issued = (() => {
+  const result = transitionMediaSubmission(created, {
+    event: "media_reservation_issued",
+    actorId,
+    expectedCreationRevision: 1,
+  });
+  if (!result.ok) throw new Error(result.rejection._tag);
+  return result.state;
+})();
 
 function ok<A extends ReturnType<typeof transitionMediaSubmission>>(result: A) {
   expect(result.ok).toBe(true);
@@ -80,7 +89,7 @@ function ok<A extends ReturnType<typeof transitionMediaSubmission>>(result: A) {
 
 function analyzed(acrDecision: TrustedSongAnalysis["acr"]["decision"] = "allow") {
   const withTerms = ok(
-    transitionMediaSubmission(created, {
+    transitionMediaSubmission(issued, {
       event: "song_terms_bound",
       actorId,
       expectedCreationRevision: 1,
@@ -111,10 +120,11 @@ describe("song media Spec 013 machine", () => {
   test("starts form-light and uses the exact workflow identity", () => {
     expect(created).toMatchObject({
       status: "processing",
-      phase: "awaiting_upload",
+      phase: "reserve",
       creationRevision: 1,
       audioRevision: 0,
     });
+    expect(issued.phase).toBe("awaiting_upload");
     expect(deterministicMediaWorkflowInstanceId(operationId, 1)).toBe("media-media_operation-r1");
   });
 
@@ -150,8 +160,15 @@ describe("song media Spec 013 machine", () => {
       songType: "remix",
       reservationId: "media_reservation",
     });
-    const withTerms = ok(
+    const remixIssued = ok(
       transitionMediaSubmission(remix, {
+        event: "media_reservation_issued",
+        actorId,
+        expectedCreationRevision: 1,
+      }),
+    );
+    const withTerms = ok(
+      transitionMediaSubmission(remixIssued, {
         event: "song_terms_bound",
         actorId,
         expectedCreationRevision: 1,
@@ -496,7 +513,7 @@ describe("song media Spec 013 machine", () => {
 
   test("keeps abandonment phases and seal conflicts typed", () => {
     const withTerms = ok(
-      transitionMediaSubmission(created, {
+      transitionMediaSubmission(issued, {
         event: "song_terms_bound",
         actorId,
         expectedCreationRevision: 1,

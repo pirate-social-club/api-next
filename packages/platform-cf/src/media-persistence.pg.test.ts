@@ -419,7 +419,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         values: [submission],
       });
       expect(counts.rows[0]).toEqual({
-        events: "6",
+        events: "7",
         effects: "2",
         publications: "1",
         alignment: "unavailable",
@@ -857,7 +857,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         terminal_reason: "expectation_mismatch",
         terminal_evidence_ref: "upload-mismatch-evidence",
         terminal_evidence_digest: sha256(new TextEncoder().encode("upload-mismatch-evidence")),
-        terminal_fence: "2",
+        terminal_fence: "3",
       });
     });
     completedTestCount += 1;
@@ -875,6 +875,62 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         ),
       ).rejects.toThrow();
       await admin.query("ROLLBACK");
+      for (const [suffix, payload] of [
+        [
+          "null-operation",
+          {
+            kind: "analysis_launch",
+            submission_id: submission,
+            operation_id: null,
+            audio_revision: 1,
+            analysis_revision: 0,
+            workflow_revision: 1,
+            workflow_instance_id: `media-${operation}-r1`,
+          },
+        ],
+        [
+          "fraction-audio",
+          {
+            kind: "analysis_launch",
+            submission_id: submission,
+            operation_id: operation,
+            audio_revision: 1.5,
+            analysis_revision: 0,
+            workflow_revision: 1,
+            workflow_instance_id: `media-${operation}-r1`,
+          },
+        ],
+        [
+          "string-workflow",
+          {
+            kind: "analysis_launch",
+            submission_id: submission,
+            operation_id: operation,
+            audio_revision: 1,
+            analysis_revision: 0,
+            workflow_revision: "1",
+            workflow_instance_id: `media-${operation}-r1`,
+          },
+        ],
+      ] as const) {
+        await admin.query("BEGIN");
+        await expect(
+          admin.query(
+            "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,$5,2,1,0,1,$6,'analysis_launch',$7,$8::jsonb)",
+            [
+              `hostile-payload-${suffix}`,
+              submission,
+              community,
+              actor,
+              operation,
+              `media-${operation}-r1`,
+              `hostile-effect-${suffix}`,
+              JSON.stringify(payload),
+            ],
+          ),
+        ).rejects.toThrow();
+        await admin.query("ROLLBACK");
+      }
       await admin.query("BEGIN");
       await expect(
         admin.query(
@@ -905,6 +961,28 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         ),
       ).rejects.toThrow();
       await admin.query("ROLLBACK");
+      for (const [suffix, segment] of [
+        ["extra-key", { start_ms: 0, end_ms: 1, text: "ok", extra: true }],
+        ["fractional-time", { start_ms: 0.5, end_ms: 1, text: "ok" }],
+      ] as const) {
+        await admin.query("BEGIN");
+        await expect(
+          admin.query(
+            "INSERT INTO media_transcript_artifacts (transcript_artifact_ref,community_id,actor_user_id,submission_id,operation_id,audio_revision,analysis_revision,canonical_audio_sha256,transcript_sha256,transcript_text,segments) VALUES ($1,$2,$3,$4,$5,1,2,$6,$7,'ok',$8::jsonb)",
+            [
+              `hostile-transcript-${suffix}`,
+              community,
+              actor,
+              submission,
+              operation,
+              audioSha256,
+              sha256(new TextEncoder().encode("ok")),
+              JSON.stringify([segment]),
+            ],
+          ),
+        ).rejects.toThrow();
+        await admin.query("ROLLBACK");
+      }
       await admin.end();
     });
     completedTestCount += 1;

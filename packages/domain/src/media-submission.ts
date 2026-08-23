@@ -279,6 +279,7 @@ export type MediaSubmissionCommand =
       songType: SongType;
       reservationId: string;
     }>
+  | (RevisionCommand & Readonly<{ event: "media_reservation_issued" }>)
   | (RevisionCommand & Readonly<{ event: "song_terms_bound"; terms: SongTerms }>)
   | (RevisionCommand &
       Readonly<{ event: "upload_finalized"; expectedAudioRevision: number; audio: ImmutableAudio }>)
@@ -704,7 +705,7 @@ export function transitionMediaSubmission(
       workflowRevision: 0,
       retryCount: 0,
       status: "processing",
-      phase: "awaiting_upload",
+      phase: "reserve",
       terms: null,
       audio: null,
       analysis: null,
@@ -729,6 +730,35 @@ export function transitionMediaSubmission(
     return reject({ _tag: "transition_not_allowed", state: current.status, event: command.event });
   let next: MediaSubmissionState = current;
   switch (command.event) {
+    case "media_reservation_issued": {
+      if (
+        command.expectedCreationRevision !== current.creationRevision ||
+        current.status !== "processing" ||
+        current.phase !== "reserve" ||
+        current.audioRevision !== 0 ||
+        current.analysisRevision !== 0 ||
+        current.decisionRevision !== 0 ||
+        current.workflowRevision !== 0 ||
+        current.terms !== null ||
+        current.audio !== null ||
+        current.analysis !== null ||
+        current.boundReference !== null ||
+        current.decision !== null ||
+        current.action !== null ||
+        current.review !== null ||
+        current.moderatorApproval !== null ||
+        current.failure !== null ||
+        current.abandonment !== null ||
+        current.postId !== null
+      )
+        return reject({
+          _tag: "transition_not_allowed",
+          state: current.status,
+          event: command.event,
+        });
+      next = { ...current, phase: "awaiting_upload" };
+      break;
+    }
     case "song_terms_bound": {
       if (command.expectedCreationRevision !== current.creationRevision)
         return stale(command.expectedCreationRevision, current.creationRevision);
