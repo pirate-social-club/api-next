@@ -1,6 +1,8 @@
 import {
   ControlPlaneDb,
   type ControlPlaneError,
+  classifyHnsAuthoritativeDnsResponseV1,
+  decodeHnsAuthoritativeDnsSemanticFactsV1,
   decodeHnsControlObservationRequestBytes,
   decodeHnsControlObservationResultBytes,
   decodeHnsControlObserverConfigurationBytes,
@@ -8,6 +10,8 @@ import {
   HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MAX_SECONDS,
   HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MIN_SECONDS,
   HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES,
+  type HnsAuthoritativeDnsSemanticViewV1,
+  type HnsControlObservationResultV1,
   type HnsControlObserverConfigurationResolverPort,
   type HnsControlObserverReservationInput,
   type HnsControlObserverReservationOutcome,
@@ -15,9 +19,11 @@ import {
   type HnsControlObserverSnapshotFinalizeOutcome,
   type HnsControlObserverSnapshotLogicalPayload,
   type HnsControlObserverSnapshotStorePort,
+  type HnsControlObserverTranscriptEntryV1,
   hnsControlObserverSnapshotAccountingEnvelopeBytes,
   hnsControlObserverSnapshotLogicalByteLength,
   hnsControlObserverTranscriptByteLength,
+  hnsObservedTxtValuesDigest,
   isHnsControlObserverSnapshotReference,
   validateHnsControlObserverTranscript,
 } from "@pirate/application";
@@ -97,6 +103,134 @@ function safeIdentity(value: string, maximumBytes: number): boolean {
     if (codePoint < 0x20 || (codePoint >= 0x7f && codePoint <= 0x9f)) return false;
   }
   return true;
+}
+
+function ownerDnsSemanticFactsMatchTerminalResult(
+  views: ReadonlyArray<HnsAuthoritativeDnsSemanticViewV1>,
+  result: HnsControlObservationResultV1,
+  dnsTranscriptEntryCount: number,
+): boolean {
+  if (result.status === "unavailable") {
+    const firstNonSecureIndex = views.findIndex((view) => view.dnssec_validation !== "secure");
+    if (result.reason_code === "authoritative_dns_insecure") {
+      if (views.length === 0 && dnsTranscriptEntryCount === 0) return true;
+      return (
+        firstNonSecureIndex === views.length - 1 &&
+        firstNonSecureIndex >= 0 &&
+        (views[firstNonSecureIndex]?.dnssec_validation === "insecure" ||
+          views[firstNonSecureIndex]?.dnssec_validation === "bogus") &&
+        dnsTranscriptEntryCount === views.length * 2
+      );
+    }
+    if (result.reason_code === "authoritative_dns_inconclusive" && firstNonSecureIndex >= 0) {
+      return (
+        firstNonSecureIndex === views.length - 1 &&
+        views[firstNonSecureIndex]?.dnssec_validation === "indeterminate" &&
+        dnsTranscriptEntryCount === views.length * 2
+      );
+    }
+    if (result.reason_code === "authoritative_dns_inconclusive") {
+      if (views.length === 0 && dnsTranscriptEntryCount === 0) return true;
+      if (dnsTranscriptEntryCount > views.length * 2) return true;
+      const semanticKeys = views.map((view) =>
+        view.semantic_class === "txt_values"
+          ? `txt_values:${view.observed_txt_values_digest}`
+          : view.semantic_class,
+      );
+      return semanticKeys.length > 1 && new Set(semanticKeys).size > 1;
+    }
+    return firstNonSecureIndex < 0;
+  }
+  const allSecureTxtValues =
+    views.length > 0 &&
+    views.every(
+      (view) =>
+        view.dnssec_validation === "secure" &&
+        view.semantic_class === "txt_values" &&
+        view.observed_txt_values_digest !== null,
+    );
+  const observedDigests = new Set(views.map((view) => view.observed_txt_values_digest));
+  if (result.status === "verified") {
+    return allSecureTxtValues && observedDigests.size === 1;
+  }
+  if (result.reason_code === "txt_absent") {
+    return (
+      views.length > 0 &&
+      views.every(
+        (view) =>
+          view.dnssec_validation === "secure" &&
+          (view.semantic_class === "nxdomain" || view.semantic_class === "nodata") &&
+          view.observed_txt_values_digest === null,
+      ) &&
+      new Set(views.map((view) => view.semantic_class)).size === 1
+    );
+  }
+  if (
+    result.reason_code === "txt_value_mismatch" ||
+    result.reason_code === "expiry_horizon_insufficient"
+  ) {
+    return (
+      allSecureTxtValues &&
+      observedDigests.size === 1 &&
+      views.every((view) => view.observed_txt_values_digest === result.observed_txt_values_digest)
+    );
+  }
+  return views.length === 0;
+}
+
+async function ownerDnsSemanticFactsMatchWire(
+  views: ReadonlyArray<HnsAuthoritativeDnsSemanticViewV1>,
+  dnsEntries: ReadonlyArray<HnsControlObserverTranscriptEntryV1>,
+  result: HnsControlObservationResultV1,
+): Promise<boolean> {
+  let viewIndex = 0;
+  for (let index = 0; index + 1 < dnsEntries.length; index += 2) {
+    const dnskey = dnsEntries[index];
+    const control = dnsEntries[index + 1];
+    if (
+      dnskey?.transport_outcome !== "response" ||
+      dnskey.response_bytes === null ||
+      control?.transport_outcome !== "response" ||
+      control.response_bytes === null
+    ) {
+      continue;
+    }
+    const isTerminalControlCapacityPrefix =
+      result.status === "unavailable" &&
+      result.reason_code === "observer_capacity" &&
+      index + 1 === dnsEntries.length - 1;
+    if (isTerminalControlCapacityPrefix) continue;
+    const dnskeyClass = classifyHnsAuthoritativeDnsResponseV1({
+      request_bytes: dnskey.request_bytes,
+      response_bytes: dnskey.response_bytes,
+    }).kind;
+    const controlClassification = classifyHnsAuthoritativeDnsResponseV1({
+      request_bytes: control.request_bytes,
+      response_bytes: control.response_bytes,
+    });
+    const controlClass = controlClassification.kind;
+    if (
+      dnskeyClass === "dnskey" &&
+      (controlClass === "txt_values" || controlClass === "nxdomain" || controlClass === "nodata")
+    ) {
+      const view = views[viewIndex];
+      if (view === undefined) return false;
+      if (view.dnssec_validation === "secure") {
+        const observedTxtValuesDigest =
+          controlClass === "txt_values"
+            ? await hnsObservedTxtValuesDigest(controlClassification.observed_txt_records)
+            : null;
+        if (
+          view.semantic_class !== controlClass ||
+          view.observed_txt_values_digest !== observedTxtValuesDigest
+        ) {
+          return false;
+        }
+      }
+      viewIndex += 1;
+    }
+  }
+  return viewIndex === views.length;
 }
 
 function rowIdentityMatches(
@@ -295,6 +429,7 @@ async function validateFinalizeInput(
     transcript: input.transcript,
     context: {
       ownership_source: request.request.ownership_source,
+      root_label: request.request.root_label,
       hsd_driver_reference: configuration.configuration.chain.driver_reference,
       hsd_response_max_bytes: configuration.configuration.chain.response_max_bytes,
       authoritative_dns_driver_reference:
@@ -302,8 +437,75 @@ async function validateFinalizeInput(
       authoritative_dns_response_max_bytes:
         configuration.configuration.authoritative_dns?.response_max_bytes ?? null,
       required_view_ids: configuration.configuration.authoritative_dns?.required_view_ids ?? [],
+      terminal_status: result.result.status,
+      terminal_reason_code: result.result.status === "verified" ? null : result.result.reason_code,
     },
   });
+  let semanticFactsBytes = new Uint8Array(input.semantic_facts_bytes);
+  if (request.request.ownership_source === "owner_authoritative_dns_txt") {
+    const dns = configuration.configuration.authoritative_dns;
+    if (dns === null) {
+      throw invalidInput("HNS observer owner-DNS finalization lacks configured authority");
+    }
+    let semanticFacts: ReturnType<typeof decodeHnsAuthoritativeDnsSemanticFactsV1>;
+    try {
+      semanticFacts = decodeHnsAuthoritativeDnsSemanticFactsV1(semanticFactsBytes);
+    } catch {
+      throw invalidInput("HNS observer owner-DNS semantic facts are invalid");
+    }
+    const dnsEntries = transcript.filter(
+      (entry) =>
+        entry.ownership_source === "owner_authoritative_dns_txt" &&
+        entry.driver_reference === dns.driver_reference,
+    );
+    const terminalChainAuthorityDigest =
+      result.result.status === "unavailable" ? null : result.result.chain_authority_digest;
+    const semanticFactsMatchWire = await ownerDnsSemanticFactsMatchWire(
+      semanticFacts.views,
+      dnsEntries,
+      result.result,
+    );
+    const chainOnlyRejection =
+      result.result.status === "rejected" &&
+      (result.result.reason_code === "root_absent" ||
+        result.result.reason_code === "root_inactive");
+    if (
+      !semanticFactsMatchWire ||
+      (result.result.status !== "unavailable" &&
+        !chainOnlyRejection &&
+        semanticFacts.views.length !== dns.required_view_ids.length) ||
+      (chainOnlyRejection && (semanticFacts.views.length !== 0 || dnsEntries.length !== 0)) ||
+      semanticFacts.views.some((view, index) => {
+        const dnskey = dnsEntries[index * 2];
+        const control = dnsEntries[index * 2 + 1];
+        return (
+          view.view_id !== dns.required_view_ids[index] ||
+          view.validation_database_time !== reservationDatabaseTime ||
+          dnskey === undefined ||
+          control === undefined ||
+          dnskey.method_or_view_id !== view.view_id ||
+          control.method_or_view_id !== view.view_id ||
+          dnskey.request_sha256 !== view.dnskey_request_sha256 ||
+          dnskey.response_sha256 !== view.dnskey_response_sha256 ||
+          control.request_sha256 !== view.control_request_sha256 ||
+          control.response_sha256 !== view.control_response_sha256
+        );
+      }) ||
+      (terminalChainAuthorityDigest !== null &&
+        semanticFacts.views.some(
+          (view) => view.chain_authority_digest !== terminalChainAuthorityDigest,
+        )) ||
+      new Set(semanticFacts.views.map((view) => view.chain_authority_digest)).size > 1 ||
+      !ownerDnsSemanticFactsMatchTerminalResult(
+        semanticFacts.views,
+        result.result,
+        dnsEntries.length,
+      )
+    ) {
+      throw invalidInput("HNS observer owner-DNS semantic facts do not match the transcript");
+    }
+    semanticFactsBytes = new Uint8Array(semanticFacts.semantic_facts_bytes);
+  }
   const logicalPayload: HnsControlObserverSnapshotLogicalPayload = {
     observation_id: input.observation_id,
     observer_fence: input.observer_fence,
@@ -315,7 +517,7 @@ async function validateFinalizeInput(
     provider_configuration_digest: input.provider_configuration_digest,
     snapshot_reference: input.snapshot_reference,
     transcript,
-    semantic_facts_bytes: new Uint8Array(input.semantic_facts_bytes),
+    semantic_facts_bytes: semanticFactsBytes,
     result_bytes: new Uint8Array(result.result_bytes),
     result_sha256: result.result_sha256,
     result_status: result.result.status,

@@ -8,7 +8,7 @@ export const HNS_CONTROL_OBSERVER_CONFIGURATION_VERSION =
 export const HNS_CONTROL_OBSERVER_CONFIGURATION_MAX_BYTES = 8_192 as const;
 export const HNS_CONTROL_OBSERVER_CONFIGURATION_REFERENCE_MAX_BYTES = 512 as const;
 export const HNS_CONTROL_OBSERVER_CONFIGURATION_IDENTITY_MAX_BYTES = 256 as const;
-export const HNS_CONTROL_OBSERVER_CONFIGURATION_VIEW_MAX_COUNT = 8 as const;
+export const HNS_CONTROL_OBSERVER_CONFIGURATION_VIEW_MAX_COUNT = 4 as const;
 export const HNS_CONTROL_OBSERVER_HSD_RESPONSE_MAX_BYTES = 1_048_576 as const;
 export const HNS_CONTROL_OBSERVER_DNS_RESPONSE_MAX_BYTES = 65_535 as const;
 export const HNS_CONTROL_OBSERVER_DEADLINE_MAX_MS = 12_000 as const;
@@ -274,6 +274,15 @@ function assertConfigurationInvariants(configuration: HnsControlObserverConfigur
     throw new HnsControlObserverConfigurationError(
       "invalid_document",
       "HNS observer authoritative DNS policy does not match its source set",
+    );
+  }
+  if (
+    configuration.authoritative_dns !== null &&
+    configuration.authoritative_dns.driver_reference === configuration.chain.driver_reference
+  ) {
+    throw new HnsControlObserverConfigurationError(
+      "invalid_document",
+      "HNS observer chain and authoritative DNS drivers must be distinct",
     );
   }
   const reservationMinimum = Math.ceil(configuration.observer_deadline_ms / 1_000) + 3;

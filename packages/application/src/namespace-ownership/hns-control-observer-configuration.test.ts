@@ -101,6 +101,11 @@ describe("HNS control observer configuration", () => {
         value.authoritative_dns = null;
       }),
       changedConfiguration((value) => {
+        (value.authoritative_dns as Record<string, unknown>).driver_reference = (
+          value.chain as Record<string, unknown>
+        ).driver_reference;
+      }),
+      changedConfiguration((value) => {
         (value.authoritative_dns as Record<string, unknown>).required_view_ids = [
           "dns-view-b",
           "dns-view-a",
@@ -108,7 +113,7 @@ describe("HNS control observer configuration", () => {
       }),
       changedConfiguration((value) => {
         (value.authoritative_dns as Record<string, unknown>).required_view_ids = Array.from(
-          { length: 9 },
+          { length: 5 },
           (_, index) => `dns-view-${index}`,
         );
       }),

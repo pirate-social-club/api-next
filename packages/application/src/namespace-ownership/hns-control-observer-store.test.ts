@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { Sha256Hex, type Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
 import { Schema } from "effect";
 import {
+  buildHnsAuthoritativeDnsQueryV1,
+  decodeHnsAuthoritativeDnsQueryV1,
+} from "./hns-authoritative-dns.ts";
+import {
   HNS_CONTROL_OBSERVER_DRIVER_REQUEST_MAX_BYTES,
   HNS_CONTROL_OBSERVER_TRANSCRIPT_MAX_BYTES,
   type HnsControlObserverReservationInput,
@@ -36,8 +40,67 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return left.every((byte, index) => byte === right[index]);
 }
 
+function uint16(value: number): Uint8Array {
+  return new Uint8Array([(value >>> 8) & 0xff, value & 0xff]);
+}
+
+function concatBytes(parts: ReadonlyArray<Uint8Array>): Uint8Array {
+  const result = new Uint8Array(parts.reduce((total, part) => total + part.byteLength, 0));
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.byteLength;
+  }
+  return result;
+}
+
+function dnsRecord(type: number, rdata: Uint8Array): Uint8Array {
+  return concatBytes([
+    new Uint8Array([0xc0, 0x0c]),
+    uint16(type),
+    uint16(1),
+    new Uint8Array([0, 0, 1, 44]),
+    uint16(rdata.byteLength),
+    rdata,
+  ]);
+}
+
+function validDnskeyResponse(request: Uint8Array): Uint8Array {
+  const signature = new Uint8Array(18);
+  signature.set(uint16(48));
+  const answers = [dnsRecord(48, new Uint8Array([1])), dnsRecord(46, signature)];
+  const header = new Uint8Array(12);
+  header[0] = request[0] ?? 0;
+  header[1] = request[1] ?? 0;
+  header.set(uint16(0x8400), 2);
+  header.set(uint16(1), 4);
+  header.set(uint16(answers.length), 6);
+  header.set(uint16(1), 10);
+  return concatBytes([
+    header,
+    request.subarray(12, request.byteLength - 11),
+    ...answers,
+    request.subarray(request.byteLength - 11),
+  ]);
+}
+
+function servfailResponse(request: Uint8Array): Uint8Array {
+  const header = new Uint8Array(12);
+  header[0] = request[0] ?? 0;
+  header[1] = request[1] ?? 0;
+  header.set(uint16(0x8002), 2);
+  header.set(uint16(1), 4);
+  header.set(uint16(1), 10);
+  return concatBytes([
+    header,
+    request.subarray(12, request.byteLength - 11),
+    request.subarray(request.byteLength - 11),
+  ]);
+}
+
 const transcriptContext: HnsControlObserverTranscriptValidationContext = {
   ownership_source: "owner_authoritative_dns_txt",
+  root_label: "jazleeuw",
   hsd_driver_reference: "hsd-json-rpc:regtest-primary",
   hsd_response_max_bytes: 1_048_576,
   authoritative_dns_driver_reference: "authoritative-dns:regtest",
@@ -65,7 +128,11 @@ async function responseEntry(
 }
 
 async function noResponseDnsEntry(): Promise<HnsControlObserverTranscriptEntryV1> {
-  const requestBytes = encoder.encode("dns-wire-query");
+  const requestBytes = buildHnsAuthoritativeDnsQueryV1({
+    message_id: 1,
+    query_kind: "dnskey",
+    root_label: transcriptContext.root_label,
+  });
   return {
     driver_reference: "authoritative-dns:regtest",
     ownership_source: "owner_authoritative_dns_txt",
@@ -76,6 +143,39 @@ async function noResponseDnsEntry(): Promise<HnsControlObserverTranscriptEntryV1
     transport_status: null,
     response_bytes: null,
     response_sha256: null,
+  };
+}
+
+async function dnsEntry(
+  input: Readonly<{
+    readonly view_id: string;
+    readonly query_kind: "dnskey" | "control_txt";
+    readonly message_id: number;
+    readonly outcome?: "response" | "timeout" | "transport_error" | "aborted";
+    readonly root_label?: string;
+    readonly response_bytes?: Uint8Array;
+  }>,
+): Promise<HnsControlObserverTranscriptEntryV1> {
+  const requestBytes = buildHnsAuthoritativeDnsQueryV1({
+    message_id: input.message_id,
+    query_kind: input.query_kind,
+    root_label: input.root_label ?? transcriptContext.root_label,
+  });
+  const outcome = input.outcome ?? "response";
+  const responseBytes =
+    outcome === "response"
+      ? (input.response_bytes ?? new Uint8Array([input.message_id & 0xff, 1]))
+      : null;
+  return {
+    driver_reference: "authoritative-dns:regtest",
+    ownership_source: "owner_authoritative_dns_txt",
+    method_or_view_id: input.view_id,
+    request_bytes: requestBytes,
+    request_sha256: await sha256(requestBytes),
+    transport_outcome: outcome,
+    transport_status: null,
+    response_bytes: responseBytes,
+    response_sha256: responseBytes === null ? null : await sha256(responseBytes),
   };
 }
 
@@ -208,6 +308,379 @@ describe("HNS control observer transcript", () => {
         context: transcriptContext,
       }),
     ).rejects.toMatchObject({ reason: "observer_capacity" });
+  });
+
+  test("requires configured DNSKEY/control pairs and treats a method-named view as DNS", async () => {
+    const collisionContext = {
+      ...transcriptContext,
+      required_view_ids: ["getblockchaininfo", "dns-view-b"],
+      terminal_status: "verified" as const,
+    };
+    const transcript = [
+      await responseEntry(),
+      await dnsEntry({ view_id: "getblockchaininfo", query_kind: "dnskey", message_id: 1 }),
+      await dnsEntry({ view_id: "getblockchaininfo", query_kind: "control_txt", message_id: 2 }),
+      await dnsEntry({ view_id: "dns-view-b", query_kind: "dnskey", message_id: 3 }),
+      await dnsEntry({ view_id: "dns-view-b", query_kind: "control_txt", message_id: 4 }),
+    ];
+    const retained = await validateHnsControlObserverTranscript({
+      transcript,
+      context: collisionContext,
+    });
+    expect(retained).toHaveLength(5);
+    expect(decodeHnsAuthoritativeDnsQueryV1(retained[1]?.request_bytes).query_kind).toBe("dnskey");
+    expect(decodeHnsAuthoritativeDnsQueryV1(retained[2]?.request_bytes).query_kind).toBe(
+      "control_txt",
+    );
+  });
+
+  test("allows only root-state owner rejections to terminate before DNS", async () => {
+    const hsd = await responseEntry();
+    for (const reason of ["root_absent", "root_inactive"] as const) {
+      await expect(
+        validateHnsControlObserverTranscript({
+          transcript: [hsd],
+          context: {
+            ...transcriptContext,
+            terminal_status: "rejected",
+            terminal_reason_code: reason,
+          },
+        }),
+      ).resolves.toHaveLength(1);
+    }
+    for (const reason of [
+      "txt_absent",
+      "txt_value_mismatch",
+      "expiry_horizon_insufficient",
+    ] as const) {
+      await expect(
+        validateHnsControlObserverTranscript({
+          transcript: [hsd],
+          context: {
+            ...transcriptContext,
+            terminal_status: "rejected",
+            terminal_reason_code: reason,
+          },
+        }),
+      ).rejects.toMatchObject({ reason: "invalid_transcript" });
+    }
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [
+          hsd,
+          await dnsEntry({ view_id: "dns-view-a", query_kind: "dnskey", message_id: 9 }),
+        ],
+        context: {
+          ...transcriptContext,
+          terminal_status: "rejected",
+          terminal_reason_code: "root_absent",
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "invalid_transcript" });
+  });
+
+  test("accepts only a legal ordered unavailable DNS prefix", async () => {
+    const hsd = await responseEntry();
+    const dnskeyTimeout = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "dnskey",
+      message_id: 1,
+      outcome: "timeout",
+    });
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, dnskeyTimeout],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "authoritative_dns_timeout",
+        },
+      }),
+    ).resolves.toHaveLength(2);
+    for (const reason of [
+      "chain_transport_unavailable",
+      "chain_unsynchronized",
+      "chain_view_stale",
+      "chain_view_changed",
+      "chain_response_invalid",
+      "observer_internal_error",
+    ] as const) {
+      await expect(
+        validateHnsControlObserverTranscript({
+          transcript: [hsd],
+          context: {
+            ...transcriptContext,
+            terminal_status: "unavailable",
+            terminal_reason_code: reason,
+          },
+        }),
+      ).resolves.toHaveLength(1);
+      await expect(
+        validateHnsControlObserverTranscript({
+          transcript: [hsd, dnskeyTimeout],
+          context: {
+            ...transcriptContext,
+            terminal_status: "unavailable",
+            terminal_reason_code: reason,
+          },
+        }),
+      ).rejects.toMatchObject({ reason: "invalid_transcript" });
+    }
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "authoritative_dns_timeout",
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "invalid_transcript" });
+
+    const dnskeyRequest = buildHnsAuthoritativeDnsQueryV1({
+      message_id: 1,
+      query_kind: "dnskey",
+      root_label: transcriptContext.root_label,
+    });
+    const dnskey = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "dnskey",
+      message_id: 1,
+      response_bytes: validDnskeyResponse(dnskeyRequest),
+    });
+    const controlTimeout = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "control_txt",
+      message_id: 2,
+      outcome: "transport_error",
+    });
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, dnskey, controlTimeout],
+        context: { ...transcriptContext, terminal_status: "unavailable" },
+      }),
+    ).resolves.toHaveLength(3);
+
+    const capacityBytes = new Uint8Array(
+      transcriptContext.authoritative_dns_response_max_bytes ?? 0,
+    );
+    const capacityPrefix = {
+      ...(await dnsEntry({
+        view_id: "dns-view-a",
+        query_kind: "dnskey",
+        message_id: 3,
+      })),
+      response_bytes: capacityBytes,
+      response_sha256: await sha256(capacityBytes),
+    };
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, capacityPrefix],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "observer_capacity",
+        },
+      }),
+    ).resolves.toHaveLength(2);
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, capacityPrefix],
+        context: { ...transcriptContext, terminal_status: "unavailable" },
+      }),
+    ).rejects.toMatchObject({ reason: "invalid_transcript" });
+
+    const hsdCapacityBytes = new Uint8Array(transcriptContext.hsd_response_max_bytes);
+    const hsdCapacity = await responseEntry({
+      response_bytes: hsdCapacityBytes,
+      response_sha256: await sha256(hsdCapacityBytes),
+    });
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsdCapacity],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "observer_capacity",
+        },
+      }),
+    ).resolves.toHaveLength(1);
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "observer_capacity",
+        },
+      }),
+    ).resolves.toHaveLength(1);
+
+    const inconclusiveDnskey = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "dnskey",
+      message_id: 4,
+    });
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, inconclusiveDnskey],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "authoritative_dns_inconclusive",
+        },
+      }),
+    ).resolves.toHaveLength(2);
+
+    const servfailRequest = buildHnsAuthoritativeDnsQueryV1({
+      message_id: 8,
+      query_kind: "dnskey",
+      root_label: transcriptContext.root_label,
+    });
+    const servfailDnskey = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "dnskey",
+      message_id: 8,
+      response_bytes: servfailResponse(servfailRequest),
+    });
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, servfailDnskey],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "authoritative_dns_servfail",
+        },
+      }),
+    ).resolves.toHaveLength(2);
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, servfailDnskey],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "authoritative_dns_insecure",
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "invalid_transcript" });
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "authoritative_dns_servfail",
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "invalid_transcript" });
+
+    const controlInconclusive = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "control_txt",
+      message_id: 5,
+    });
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, dnskey, controlInconclusive],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "authoritative_dns_inconclusive",
+        },
+      }),
+    ).resolves.toHaveLength(3);
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, dnskey, controlInconclusive],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "authoritative_dns_servfail",
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "invalid_transcript" });
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [
+          hsd,
+          dnskey,
+          controlInconclusive,
+          await dnsEntry({ view_id: "dns-view-b", query_kind: "dnskey", message_id: 6 }),
+        ],
+        context: {
+          ...transcriptContext,
+          terminal_status: "unavailable",
+          terminal_reason_code: "authoritative_dns_inconclusive",
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "invalid_transcript" });
+
+    const aborted = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "dnskey",
+      message_id: 7,
+      outcome: "aborted",
+    });
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, aborted],
+        context: { ...transcriptContext, terminal_status: "unavailable" },
+      }),
+    ).rejects.toMatchObject({ reason: "invalid_transcript" });
+  });
+
+  test("rejects reversed, duplicate, skipped, wrong-root, missing, and post-terminal DNS entries", async () => {
+    const hsd = await responseEntry();
+    const dnskeyA = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "dnskey",
+      message_id: 1,
+    });
+    const controlA = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "control_txt",
+      message_id: 2,
+    });
+    const dnskeyB = await dnsEntry({
+      view_id: "dns-view-b",
+      query_kind: "dnskey",
+      message_id: 3,
+    });
+    const timeoutA = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "dnskey",
+      message_id: 4,
+      outcome: "timeout",
+    });
+    const wrongRoot = await dnsEntry({
+      view_id: "dns-view-a",
+      query_kind: "dnskey",
+      message_id: 5,
+      root_label: "jazleevv",
+    });
+    const invalidTranscripts = [
+      [hsd, controlA],
+      [hsd, dnskeyA, dnskeyA],
+      [hsd, dnskeyB],
+      [hsd, wrongRoot],
+      [hsd, dnskeyA],
+      [hsd, timeoutA, dnskeyB],
+      [hsd, dnskeyA, controlA, hsd],
+    ];
+    for (const transcript of invalidTranscripts) {
+      await expect(
+        validateHnsControlObserverTranscript({
+          transcript,
+          context: { ...transcriptContext, terminal_status: "unavailable" },
+        }),
+      ).rejects.toMatchObject({ reason: "invalid_transcript" });
+    }
+    await expect(
+      validateHnsControlObserverTranscript({
+        transcript: [hsd, dnskeyA, controlA],
+        context: { ...transcriptContext, terminal_status: "verified" },
+      }),
+    ).rejects.toMatchObject({ reason: "invalid_transcript" });
   });
 });
 

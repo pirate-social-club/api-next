@@ -102,6 +102,40 @@ export {
   mapHnsActiveLeaseRenewalObservation,
 } from "./hns-active-lease-renewal.ts";
 export type {
+  HnsAuthoritativeDnsAddressFamilyV1,
+  HnsAuthoritativeDnsAuthorityTupleV1,
+  HnsAuthoritativeDnsDecodedQueryV1,
+  HnsAuthoritativeDnsDecodedSemanticFactsV1,
+  HnsAuthoritativeDnsExchangeInputV1,
+  HnsAuthoritativeDnsMessageIdPortV1,
+  HnsAuthoritativeDnsQueryKindV1,
+  HnsAuthoritativeDnsResponseClassificationV1,
+  HnsAuthoritativeDnsSemanticClassV1,
+  HnsAuthoritativeDnsSemanticViewV1,
+  HnsAuthoritativeDnsTransportFailureV1,
+  HnsAuthoritativeDnsTransportPortV1,
+  HnsAuthoritativeDnsValidationResultV1,
+  HnsAuthoritativeDnsValidationV1,
+  HnsAuthoritativeDnsValidatorInputV1,
+  HnsAuthoritativeDnsValidatorPortV1,
+} from "./hns-authoritative-dns.ts";
+export {
+  buildHnsAuthoritativeDnsQueryV1,
+  classifyHnsAuthoritativeDnsResponseV1,
+  decodeHnsAuthoritativeDnsQueryV1,
+  decodeHnsAuthoritativeDnsSemanticFactsV1,
+  encodeHnsAuthoritativeDnsSemanticFactsV1,
+  HNS_AUTHORITATIVE_DNS_OWNER_VIEW_MAX_COUNT,
+  HNS_AUTHORITATIVE_DNS_QUERY_UDP_PAYLOAD_SIZE,
+  HNS_AUTHORITATIVE_DNS_SEMANTIC_FACTS_MAX_BYTES,
+  HNS_AUTHORITATIVE_DNS_SEMANTIC_FACTS_VERSION,
+  HnsAuthoritativeDnsAdapterResultError,
+  HnsAuthoritativeDnsTransportErrorV1,
+  HnsAuthoritativeDnsWireError,
+  selectHnsAuthoritativeDnsAuthorityTupleV1,
+  validateHnsAuthoritativeDnsValidationResultV1,
+} from "./hns-authoritative-dns.ts";
+export type {
   HnsChainAuthorityRecord,
   HnsControlObservationDecodedRequest,
   HnsControlObservationDecodedResult,
@@ -173,7 +207,6 @@ export {
   resolveHnsControlObserverConfiguration,
 } from "./hns-control-observer-configuration.ts";
 export type {
-  HnsControlObserverAuthoritativeDnsTransportPort,
   HnsControlObserverHsdMethod,
   HnsControlObserverHsdTransportPort,
   HnsControlObserverHsdTransportResponse,
