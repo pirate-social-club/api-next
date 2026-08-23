@@ -1,5 +1,6 @@
 import {
   encodeHnsAuthoritativeDnsSemanticFactsV1,
+  HNS_AUTHORITATIVE_DNS_VALIDATOR_POLICY_ID,
   type HnsAuthoritativeDnsMessageIdPortV1,
   type HnsAuthoritativeDnsTransportPortV1,
   type HnsAuthoritativeDnsValidatorPortV1,
@@ -187,6 +188,12 @@ export async function observeHnsOwnerAuthoritativeDnsSource(
       readonly validator: HnsAuthoritativeDnsValidatorPortV1;
     }>,
 ): Promise<HnsTargetObserverExecutionResult> {
+  if (input.validator.policy_id !== HNS_AUTHORITATIVE_DNS_VALIDATOR_POLICY_ID) {
+    throw new HnsOwnerAuthoritativeTargetObserverError(
+      "misconfigured",
+      "HNS authoritative DNS validator policy is not the configured immutable policy",
+    );
+  }
   if (
     input.request.ownership_source !== "owner_authoritative_dns_txt" ||
     input.request.txt_name !== `_pirate.${input.request.root_label}`
@@ -380,6 +387,17 @@ export function makeHnsOwnerAuthoritativeDnsTargetObserver(
     readonly validator: HnsAuthoritativeDnsValidatorPortV1;
   }>,
 ): HnsTargetObserverPort {
+  if (input.validator.policy_id !== HNS_AUTHORITATIVE_DNS_VALIDATOR_POLICY_ID) {
+    throw new HnsOwnerAuthoritativeTargetObserverError(
+      "misconfigured",
+      "HNS authoritative DNS validator policy is not the configured immutable policy",
+    );
+  }
+  const validate = input.validator.validate.bind(input.validator);
+  const validator = Object.freeze({
+    policy_id: HNS_AUTHORITATIVE_DNS_VALIDATOR_POLICY_ID,
+    validate,
+  });
   const lifecycle = makeHnsTargetObserverSnapshotLifecycle({
     ownership_source: "owner_authoritative_dns_txt",
     configuration_resolver: input.configuration_resolver,
@@ -391,7 +409,7 @@ export function makeHnsOwnerAuthoritativeDnsTargetObserver(
         hsd_transport: input.hsd_transport,
         authoritative_dns_transport: input.authoritative_dns_transport,
         message_ids: input.message_ids,
-        validator: input.validator,
+        validator,
       }),
     make_capacity_result: makeHnsOwnerObserverCapacityResult,
   });

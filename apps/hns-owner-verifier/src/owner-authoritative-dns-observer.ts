@@ -2,6 +2,7 @@ import {
   buildHnsAuthoritativeDnsQueryV1,
   classifyHnsAuthoritativeDnsResponseV1,
   encodeHnsAuthoritativeDnsSemanticFactsV1,
+  HNS_AUTHORITATIVE_DNS_VALIDATOR_POLICY_ID,
   type HnsAuthoritativeDnsMessageIdPortV1,
   type HnsAuthoritativeDnsSemanticViewV1,
   HnsAuthoritativeDnsTransportErrorV1,
@@ -21,6 +22,7 @@ import {
   validateHnsAuthoritativeDnsValidationResultV1,
   validateHnsControlObserverTranscript,
 } from "@pirate/application/namespace-ownership";
+import { hnsAuthoritativeDnsPolicyV1RequiresChildQuery } from "./owner-authoritative-dns-policy-v1.ts";
 
 type Sha256HexValue = HnsAuthoritativeDnsValidationResultV1["validated_chain_authority_digest"];
 
@@ -282,6 +284,13 @@ export async function observeHnsOwnerAuthoritativeDns(
   }>,
 ): Promise<HnsOwnerAuthoritativeDnsObservationResult> {
   abortIfSet(input.signal);
+  if (input.validator.policy_id !== HNS_AUTHORITATIVE_DNS_VALIDATOR_POLICY_ID) {
+    throw new HnsOwnerAuthoritativeDnsObserverError(
+      "invalid_response",
+      "HNS authoritative DNS validator policy is invalid",
+    );
+  }
+  const validate = input.validator.validate.bind(input.validator);
   const dns = input.configuration.authoritative_dns;
   if (
     input.request.ownership_source !== "owner_authoritative_dns_txt" ||
@@ -327,7 +336,7 @@ export async function observeHnsOwnerAuthoritativeDns(
   const txtValueSets: ReadonlyArray<string>[] = [];
   let finalTxtDigest: Sha256HexValue | null = null;
 
-  if (!canonicalAuthorityRecords.some((record) => record[0] === "DS")) {
+  if (!hnsAuthoritativeDnsPolicyV1RequiresChildQuery(canonicalAuthorityRecords)) {
     return unavailableResult({
       reason_code: "authoritative_dns_insecure",
       transcript,
@@ -425,7 +434,7 @@ export async function observeHnsOwnerAuthoritativeDns(
     let rawValidation: unknown;
     try {
       abortIfSet(input.signal);
-      rawValidation = await input.validator.validate({
+      rawValidation = await validate({
         driver_reference: dns.driver_reference,
         view_id: viewId,
         root_label: input.request.root_label,
