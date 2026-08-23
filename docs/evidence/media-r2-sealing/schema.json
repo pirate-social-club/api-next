@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/api-next/r2-seal-evidence-v1.schema.json",
+  "title": "Local R2 sealing probe evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "run",
+    "account_id",
+    "bucket",
+    "mode",
+    "transport",
+    "provider_contacted",
+    "credentials_read",
+    "scenarios",
+    "cleanup",
+    "safety",
+    "remaining_live_proof_questions"
+  ],
+  "properties": {
+    "schema_version": { "const": "r2-seal-evidence-v1" },
+    "run": { "$ref": "#/$defs/run" },
+    "account_id": { "type": ["string", "null"] },
+    "bucket": { "type": ["string", "null"] },
+    "mode": { "const": "local-dry-run" },
+    "transport": { "const": "fake" },
+    "provider_contacted": { "const": false },
+    "credentials_read": { "const": false },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scenario" }
+    },
+    "cleanup": { "$ref": "#/$defs/cleanup" },
+    "safety": { "$ref": "#/$defs/safety" },
+    "remaining_live_proof_questions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  },
+  "$defs": {
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "started_at", "completed_at", "deterministic"],
+      "properties": {
+        "run_id": { "const": "local-r2-seal-dry-run-v1" },
+        "started_at": { "const": "1970-01-01T00:00:00.000Z" },
+        "completed_at": { "const": "1970-01-01T00:00:00.000Z" },
+        "deterministic": { "const": true }
+      }
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "outcome",
+        "proof_scope",
+        "diagnostic_scope",
+        "fixture_intent",
+        "source_key",
+        "destination_key",
+        "expected_size_bytes",
+        "expected_content_type",
+        "expected_sha256",
+        "observed_source_etag",
+        "observed_source_size_bytes",
+        "observed_source_content_type",
+        "observed_source_sha256",
+        "observed_source_version_id",
+        "observed_destination_etag",
+        "observed_destination_size_bytes",
+        "observed_destination_content_type",
+        "observed_destination_sha256",
+        "observed_destination_version_id",
+        "version_binding",
+        "verification_failure",
+        "source_head_calls",
+        "source_head_status",
+        "source_head_code",
+        "conditional_copy_calls",
+        "conditional_copy_status",
+        "conditional_copy_code",
+        "destination_head_calls",
+        "destination_head_status",
+        "destination_head_code",
+        "automatic_retry",
+        "destination_verified"
+      ],
+      "properties": {
+        "name": {
+          "enum": [
+            "success",
+            "source-missing",
+            "copy-source-missing",
+            "expectation-size-mismatch",
+            "expectation-content-type-mismatch",
+            "expectation-checksum-mismatch",
+            "expectation-checksum-missing",
+            "source-overwritten-before-copy",
+            "destination-conflict",
+            "simultaneous-source-destination-race",
+            "destination-appears-before-copy",
+            "malformed-404",
+            "generic-404",
+            "no-such-bucket",
+            "copy-provider-error",
+            "nonstandard-412",
+            "verification-etag-mismatch",
+            "verification-size-mismatch",
+            "verification-content-type-mismatch",
+            "verification-checksum-mismatch",
+            "verification-version-mismatch",
+            "verification-destination-missing",
+            "verification-provider-error",
+            "multipart-etag",
+            "unquoted-etag",
+            "weak-etag",
+            "ambiguous-412"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "source_missing",
+            "expectation_mismatch",
+            "conditional_precondition_ambiguous",
+            "verification_mismatch",
+            "provider_response_unknown",
+            "transport_error"
+          ]
+        },
+        "proof_scope": { "enum": ["local-only", "inconclusive"] },
+        "diagnostic_scope": { "enum": ["none", "transport-ambiguous"] },
+        "fixture_intent": {
+          "enum": [
+            "none",
+            "source-overwrite",
+            "destination-conflict",
+            "destination-race",
+            "source-and-destination-race",
+            "ambiguous-412"
+          ]
+        },
+        "source_key": { "type": "string", "minLength": 1 },
+        "destination_key": { "type": "string", "minLength": 1 },
+        "expected_size_bytes": { "type": "integer", "minimum": 1 },
+        "expected_content_type": { "type": "string", "minLength": 1 },
+        "expected_sha256": { "type": ["string", "null"] },
+        "observed_source_etag": { "type": ["string", "null"] },
+        "observed_source_size_bytes": { "type": ["integer", "null"], "minimum": 1 },
+        "observed_source_content_type": { "type": ["string", "null"] },
+        "observed_source_sha256": { "type": ["string", "null"] },
+        "observed_source_version_id": { "type": ["string", "null"] },
+        "observed_destination_etag": { "type": ["string", "null"] },
+        "observed_destination_size_bytes": { "type": ["integer", "null"], "minimum": 1 },
+        "observed_destination_content_type": { "type": ["string", "null"] },
+        "observed_destination_sha256": { "type": ["string", "null"] },
+        "observed_destination_version_id": { "type": ["string", "null"] },
+        "version_binding": { "enum": ["matched", "unavailable", "mismatch"] },
+        "verification_failure": {
+          "enum": [
+            "none",
+            "destination_missing",
+            "provider_error",
+            "etag_mismatch",
+            "size_mismatch",
+            "content_type_mismatch",
+            "checksum_mismatch",
+            "version_unavailable",
+            "version_mismatch"
+          ]
+        },
+        "source_head_calls": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "source_head_status": { "type": ["integer", "null"], "minimum": 100, "maximum": 599 },
+        "source_head_code": { "type": ["string", "null"] },
+        "conditional_copy_calls": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "conditional_copy_status": { "type": ["integer", "null"], "minimum": 100, "maximum": 599 },
+        "conditional_copy_code": { "type": ["string", "null"] },
+        "destination_head_calls": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "destination_head_status": { "type": ["integer", "null"], "minimum": 100, "maximum": 599 },
+        "destination_head_code": { "type": ["string", "null"] },
+        "automatic_retry": { "const": false },
+        "destination_verified": { "type": "boolean" }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "attempted", "objects_removed", "reason"],
+      "properties": {
+        "status": { "const": "not-run" },
+        "attempted": { "const": false },
+        "objects_removed": { "const": 0 },
+        "reason": { "const": "local-fake-has-no-external-objects" }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ambiguous_precondition_is_terminal",
+        "conditional_copy_is_never_retried",
+        "destination_verification_uses_one_head_on_success",
+        "secrets_emitted"
+      ],
+      "properties": {
+        "ambiguous_precondition_is_terminal": { "const": true },
+        "conditional_copy_is_never_retried": { "const": true },
+        "destination_verification_uses_one_head_on_success": { "const": true },
+        "secrets_emitted": { "const": false }
+      }
+    }
+  }
+}

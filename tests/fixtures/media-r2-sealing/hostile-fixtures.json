@@ -1,0 +1,403 @@
+{
+  "schema_version": "r2-seal-hostile-fixtures-v1",
+  "source_bucket": "local-r2-seal-fixture",
+  "destination_bucket": "local-r2-seal-fixture",
+  "scenarios": [
+    {
+      "name": "success",
+      "source_key": "fixture/reservation/success.bin",
+      "destination_key": "fixture/immutable/success.bin",
+      "source": {
+        "etag": "\"etag-success-source\"",
+        "size_bytes": 1024,
+        "content_type": "audio/mpeg",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "version_id": "source-version-success"
+      },
+      "destination": null,
+      "expected_size_bytes": 1024,
+      "expected_content_type": "audio/mpeg",
+      "expected_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "destination_version_id_after_copy": "destination-version-success"
+    },
+    {
+      "name": "source-missing",
+      "source_key": "fixture/reservation/missing.bin",
+      "destination_key": "fixture/immutable/missing.bin",
+      "source": null,
+      "destination": null,
+      "expected_size_bytes": 1024,
+      "expected_content_type": "audio/mpeg"
+    },
+    {
+      "name": "copy-source-missing",
+      "source_key": "fixture/reservation/copy-missing.bin",
+      "destination_key": "fixture/immutable/copy-missing.bin",
+      "source": {
+        "etag": "\"etag-copy-missing\"",
+        "size_bytes": 1024,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 1024,
+      "expected_content_type": "audio/mpeg",
+      "source_disappears_before_copy": true
+    },
+    {
+      "name": "expectation-size-mismatch",
+      "source_key": "fixture/reservation/stale-size.bin",
+      "destination_key": "fixture/immutable/stale-size.bin",
+      "source": {
+        "etag": "\"etag-current-source\"",
+        "size_bytes": 2048,
+        "content_type": "audio/mpeg",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "destination": null,
+      "expected_size_bytes": 4096,
+      "expected_content_type": "audio/mpeg"
+    },
+    {
+      "name": "expectation-content-type-mismatch",
+      "source_key": "fixture/reservation/stale-content-type.bin",
+      "destination_key": "fixture/immutable/stale-content-type.bin",
+      "source": {
+        "etag": "\"etag-content-type-source\"",
+        "size_bytes": 2048,
+        "content_type": "application/octet-stream"
+      },
+      "destination": null,
+      "expected_size_bytes": 2048,
+      "expected_content_type": "audio/mpeg"
+    },
+    {
+      "name": "expectation-checksum-mismatch",
+      "source_key": "fixture/reservation/stale-checksum.bin",
+      "destination_key": "fixture/immutable/stale-checksum.bin",
+      "source": {
+        "etag": "\"etag-checksum-source\"",
+        "size_bytes": 2048,
+        "content_type": "audio/mpeg",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "destination": null,
+      "expected_size_bytes": 2048,
+      "expected_content_type": "audio/mpeg",
+      "expected_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "name": "expectation-checksum-missing",
+      "source_key": "fixture/reservation/missing-checksum.bin",
+      "destination_key": "fixture/immutable/missing-checksum.bin",
+      "source": {
+        "etag": "\"etag-checksum-missing\"",
+        "size_bytes": 2048,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 2048,
+      "expected_content_type": "audio/mpeg",
+      "expected_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+      "name": "source-overwritten-before-copy",
+      "source_key": "fixture/reservation/overwritten.bin",
+      "destination_key": "fixture/immutable/overwritten.bin",
+      "source": {
+        "etag": "\"etag-before-overwrite\"",
+        "size_bytes": 4096,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 4096,
+      "expected_content_type": "audio/mpeg",
+      "overwrite_source_before_copy": {
+        "etag": "\"etag-after-overwrite\"",
+        "size_bytes": 8192,
+        "content_type": "audio/mpeg"
+      }
+    },
+    {
+      "name": "destination-conflict",
+      "source_key": "fixture/reservation/destination-conflict.bin",
+      "destination_key": "fixture/immutable/destination-conflict.bin",
+      "source": {
+        "etag": "\"etag-conflict-source\"",
+        "size_bytes": 16384,
+        "content_type": "audio/mpeg"
+      },
+      "destination": {
+        "etag": "\"etag-preexisting-destination\"",
+        "size_bytes": 16384,
+        "content_type": "audio/mpeg",
+        "version_id": "destination-existing-version"
+      },
+      "expected_size_bytes": 16384,
+      "expected_content_type": "audio/mpeg"
+    },
+    {
+      "name": "simultaneous-source-destination-race",
+      "source_key": "fixture/reservation/simultaneous-race.bin",
+      "destination_key": "fixture/immutable/simultaneous-race.bin",
+      "source": {
+        "etag": "\"etag-race-source-before\"",
+        "size_bytes": 32768,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 32768,
+      "expected_content_type": "audio/mpeg",
+      "overwrite_source_before_copy": {
+        "etag": "\"etag-race-source-after\"",
+        "size_bytes": 65536,
+        "content_type": "audio/mpeg"
+      },
+      "destination_appears_before_copy": {
+        "etag": "\"etag-race-destination\"",
+        "size_bytes": 32768,
+        "content_type": "audio/mpeg"
+      }
+    },
+    {
+      "name": "destination-appears-before-copy",
+      "source_key": "fixture/reservation/destination-race.bin",
+      "destination_key": "fixture/immutable/destination-race.bin",
+      "source": {
+        "etag": "\"etag-preflight-source\"",
+        "size_bytes": 32768,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 32768,
+      "expected_content_type": "audio/mpeg",
+      "destination_appears_before_copy": {
+        "etag": "\"etag-preflight-destination\"",
+        "size_bytes": 32768,
+        "content_type": "audio/mpeg"
+      }
+    },
+    {
+      "name": "malformed-404",
+      "source_key": "fixture/reservation/malformed-404.bin",
+      "destination_key": "fixture/immutable/malformed-404.bin",
+      "source": null,
+      "destination": null,
+      "expected_size_bytes": 1024,
+      "expected_content_type": "audio/mpeg",
+      "source_head_error": "malformed-404"
+    },
+    {
+      "name": "generic-404",
+      "source_key": "fixture/reservation/generic-404.bin",
+      "destination_key": "fixture/immutable/generic-404.bin",
+      "source": null,
+      "destination": null,
+      "expected_size_bytes": 1024,
+      "expected_content_type": "audio/mpeg",
+      "source_head_error": "generic-404"
+    },
+    {
+      "name": "no-such-bucket",
+      "source_key": "fixture/reservation/no-such-bucket.bin",
+      "destination_key": "fixture/immutable/no-such-bucket.bin",
+      "source": null,
+      "destination": null,
+      "expected_size_bytes": 1024,
+      "expected_content_type": "audio/mpeg",
+      "source_head_error": "no-such-bucket"
+    },
+    {
+      "name": "copy-provider-error",
+      "source_key": "fixture/reservation/copy-provider-error.bin",
+      "destination_key": "fixture/immutable/copy-provider-error.bin",
+      "source": {
+        "etag": "\"etag-copy-provider-error\"",
+        "size_bytes": 1024,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 1024,
+      "expected_content_type": "audio/mpeg",
+      "copy_failure": "provider-error"
+    },
+    {
+      "name": "nonstandard-412",
+      "source_key": "fixture/reservation/nonstandard-412.bin",
+      "destination_key": "fixture/immutable/nonstandard-412.bin",
+      "source": {
+        "etag": "\"etag-nonstandard-412\"",
+        "size_bytes": 1024,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 1024,
+      "expected_content_type": "audio/mpeg",
+      "copy_failure": "nonstandard-412"
+    },
+    {
+      "name": "verification-etag-mismatch",
+      "source_key": "fixture/reservation/verification-etag.bin",
+      "destination_key": "fixture/immutable/verification-etag.bin",
+      "source": {
+        "etag": "\"etag-verification-source\"",
+        "size_bytes": 65536,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 65536,
+      "expected_content_type": "audio/mpeg",
+      "verification_mismatch": "etag",
+      "destination_version_id_after_copy": "destination-version-verification"
+    },
+    {
+      "name": "verification-size-mismatch",
+      "source_key": "fixture/reservation/verification-size.bin",
+      "destination_key": "fixture/immutable/verification-size.bin",
+      "source": {
+        "etag": "\"etag-verification-source\"",
+        "size_bytes": 65536,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 65536,
+      "expected_content_type": "audio/mpeg",
+      "verification_mismatch": "size",
+      "destination_version_id_after_copy": "destination-version-verification"
+    },
+    {
+      "name": "verification-content-type-mismatch",
+      "source_key": "fixture/reservation/verification-content-type.bin",
+      "destination_key": "fixture/immutable/verification-content-type.bin",
+      "source": {
+        "etag": "\"etag-verification-source\"",
+        "size_bytes": 65536,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 65536,
+      "expected_content_type": "audio/mpeg",
+      "verification_mismatch": "content-type",
+      "destination_version_id_after_copy": "destination-version-verification"
+    },
+    {
+      "name": "verification-checksum-mismatch",
+      "source_key": "fixture/reservation/verification-checksum.bin",
+      "destination_key": "fixture/immutable/verification-checksum.bin",
+      "source": {
+        "etag": "\"etag-verification-source\"",
+        "size_bytes": 65536,
+        "content_type": "audio/mpeg",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "destination": null,
+      "expected_size_bytes": 65536,
+      "expected_content_type": "audio/mpeg",
+      "expected_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "verification_mismatch": "checksum",
+      "destination_version_id_after_copy": "destination-version-verification"
+    },
+    {
+      "name": "verification-version-mismatch",
+      "source_key": "fixture/reservation/verification-version.bin",
+      "destination_key": "fixture/immutable/verification-version.bin",
+      "source": {
+        "etag": "\"etag-verification-source\"",
+        "size_bytes": 65536,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 65536,
+      "expected_content_type": "audio/mpeg",
+      "verification_mismatch": "version",
+      "destination_version_id_after_copy": "destination-version-verification"
+    },
+    {
+      "name": "verification-destination-missing",
+      "source_key": "fixture/reservation/verification-missing.bin",
+      "destination_key": "fixture/immutable/verification-missing.bin",
+      "source": {
+        "etag": "\"etag-verification-source\"",
+        "size_bytes": 65536,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 65536,
+      "expected_content_type": "audio/mpeg",
+      "destination_head_failure": "missing",
+      "destination_version_id_after_copy": "destination-version-verification"
+    },
+    {
+      "name": "verification-provider-error",
+      "source_key": "fixture/reservation/verification-provider-error.bin",
+      "destination_key": "fixture/immutable/verification-provider-error.bin",
+      "source": {
+        "etag": "\"etag-verification-source\"",
+        "size_bytes": 65536,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 65536,
+      "expected_content_type": "audio/mpeg",
+      "destination_head_failure": "provider-error",
+      "destination_version_id_after_copy": "destination-version-verification"
+    },
+    {
+      "name": "multipart-etag",
+      "source_key": "fixture/reservation/multipart.bin",
+      "destination_key": "fixture/immutable/multipart.bin",
+      "source": {
+        "etag": "\"f77dc0eecdebcd774a2a22cb393ad2ff-2\"",
+        "size_bytes": 5243904,
+        "content_type": "audio/wav",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "destination": null,
+      "expected_size_bytes": 5243904,
+      "expected_content_type": "audio/wav",
+      "copied_destination_etag": "\"9e107d9d372bb6826bd81d3542a419d6\"",
+      "destination_version_id_after_copy": "destination-version-multipart"
+    },
+    {
+      "name": "unquoted-etag",
+      "source_key": "fixture/reservation/unquoted-etag.bin",
+      "destination_key": "fixture/immutable/unquoted-etag.bin",
+      "source": {
+        "etag": "9e107d9d372bb6826bd81d3542a419d6",
+        "size_bytes": 1024,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 1024,
+      "expected_content_type": "audio/mpeg",
+      "destination_version_id_after_copy": "destination-version-unquoted"
+    },
+    {
+      "name": "weak-etag",
+      "source_key": "fixture/reservation/weak-etag.bin",
+      "destination_key": "fixture/immutable/weak-etag.bin",
+      "source": {
+        "etag": "W/\"9e107d9d372bb6826bd81d3542a419d6\"",
+        "size_bytes": 1024,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 1024,
+      "expected_content_type": "audio/mpeg",
+      "destination_version_id_after_copy": "destination-version-weak"
+    },
+    {
+      "name": "ambiguous-412",
+      "source_key": "fixture/reservation/ambiguous.bin",
+      "destination_key": "fixture/immutable/ambiguous.bin",
+      "source": {
+        "etag": "\"etag-ambiguous-source\"",
+        "size_bytes": 32768,
+        "content_type": "audio/mpeg"
+      },
+      "destination": null,
+      "expected_size_bytes": 32768,
+      "expected_content_type": "audio/mpeg",
+      "copy_failure": "ambiguous-412"
+    }
+  ]
+}
