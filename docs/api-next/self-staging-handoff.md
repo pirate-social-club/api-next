@@ -26,9 +26,10 @@ Hyperdrive `8cb7658a0f7143359c1becfec6a15c23`. The name-only Cloudflare audit
 reports zero violations, health and JWKS probes pass, and the live JWK matches
 the Infisical private key. The three misplaced staging Workers, their nine
 installed secrets, and misplaced staging Hyperdrive were retired on
-2026-08-23. Because the misplaced account still owns the `pirate.sc` zone, the
-public hostname temporarily reaches the canonical `workers.dev` origin through
-the managed, secret-free `api-next-staging-zone-bridge`. Treat later
+2026-08-23. The `pirate.sc` zone moved to the canonical account later that day,
+and the API and Solid custom domains are attached to their canonical Workers.
+The managed, secret-free `api-next-staging-zone-bridge` remains temporarily
+only for resolvers caching the former 86,400-second delegation. Treat later
 pre-correction versions and probes in this document as historical
 misplaced-account evidence unless explicitly labeled canonical.
 

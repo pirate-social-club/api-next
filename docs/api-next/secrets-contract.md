@@ -5,9 +5,10 @@ Workers were synchronized and deployed on 2026-08-23, and the Cloudflare
 name-only audit now reports zero violations. Production remains disabled and
 the Infisical audit reports one production-only finding. All misplaced-account
 staging secrets, Workers, and Hyperdrive resources have been retired. A
-secret-free zone bridge remains temporarily because that account still owns
-the `pirate.sc` zone. Infisical confidential values were not rendered in tool
-output.
+secret-free zone bridge remains temporarily for resolvers that cache the old
+delegation. The `pirate.sc` zone moved to the canonical account on 2026-08-23,
+and both staging custom domains are attached there. Infisical confidential
+values were not rendered in tool output.
 
 Date of inventory: 2026-08-23.
 
@@ -18,7 +19,7 @@ Date of inventory: 2026-08-23.
 | Infisical, api-next project | project `fac45f92-9450-42fb-8c2f-f20d043fdfab`, organization `d9615445-c0d4-445a-ad58-1d55d365635a` | Reachable. `api-next/.infisical.json` now pins this project, so commands run anywhere in the api-next tree resolve it without `--projectId`. See "Local project selection" below. |
 | Infisical, historical project | workspace `5acea78e-7813-4d8a-b29c-9b862a0b1c71` | Reachable. Historical reference only. Its `/services/api` folder deliberately mixes API runtime, HNS, Spaces, media, Story, and operator credentials; that mixing is the boundary defect this contract corrects. Do not copy it wholesale. |
 | Cloudflare Worker secrets, canonical | account `08a4c22cf52e2ecae883e36f80a33f4a` | Reachable through the `api-next-canonical` Wrangler profile. The staging HTTP Worker has exactly six declared confidential names and the staging jobs Worker has its one declared funding name. Both production Workers are absent. |
-| Cloudflare zone bridge, temporary | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable through the retained default Wrangler profile. The three misplaced staging Workers, their nine installed secrets, and the misplaced staging Hyperdrive were retired on 2026-08-23. Only the managed, secret-free `api-next-staging-zone-bridge` remains in api-next scope because this account still owns the `pirate.sc` zone. An unrelated production Hyperdrive was not changed. |
+| Cloudflare zone bridge, temporary | account `ff375d61cdc0c5dc946837f3e37725e0` | Reachable through the retained default Wrangler profile. The three misplaced staging Workers, their nine installed secrets, and the misplaced staging Hyperdrive were retired on 2026-08-23. The managed, secret-free `api-next-staging-zone-bridge` remains only for resolvers caching the old delegation after the zone moved to the canonical account. An unrelated production Hyperdrive was not changed. |
 | Declared Wrangler contract | `api-next/apps/http-worker/wrangler.jsonc` and `api-next/apps/jobs-worker/wrangler.jsonc` | In repository. Both Workers are in scope; earlier revisions of this document covered only the http Worker. `secrets.required` is a real Wrangler property — it drives type generation and local-dev warnings, but does not gate a deploy. See D9. |
 
 Environments are Infisical environments. Never encode an environment into a
@@ -71,12 +72,22 @@ The unrelated `pirate-control-plane-production` Hyperdrive (`7e457bc3…`) was
 outside scope and remains untouched.
 
 Deleting the misplaced HTTP Worker also removed the public custom-domain DNS,
-proving that `pirate.sc` is still owned by the misplaced account. The canonical
-HTTP Worker now deliberately exposes its `workers.dev` origin. Managed Worker
-`api-next-staging-zone-bridge` in the zone-owning account contains no bindings
-or secrets and forwards the custom domain to that origin. Public health and
-JWKS both return 200 through the bridge. Move the zone to the canonical account
-and retire the bridge as a separate DNS migration.
+which proved that the misplaced account still owned `pirate.sc` at that time.
+The canonical HTTP Worker deliberately exposed its `workers.dev` origin, and
+managed Worker `api-next-staging-zone-bridge` contained no bindings or secrets
+while forwarding the custom domain to that origin. Public health and JWKS both
+returned 200 through the bridge.
+
+On 2026-08-23 the registrar delegation moved from `adrian`/`dakota` to the
+canonical zone's `nelci`/`yahir` nameservers. Cloudflare reports canonical zone
+`b027d7e2ef3fc3a089713fe118eafbca` active. Custom domains
+`api-next-staging.pirate.sc` and `web-next-staging.pirate.sc` are attached to
+canonical Workers `pirate-http-worker-staging` and
+`pirate-web-solid-staging`. Forced-SNI probes against the canonical edge
+returned 200 for API health, the Solid page, and the Solid public verification
+configuration before recursive caches expired. Keep the old bridge and old
+Solid Worker only through the former 86,400-second delegation TTL; retire them
+after public NS convergence and a final endpoint check.
 
 The retirement exposed one value-integrity defect: the canonical
 `PIRATE_APP_JWT_PRIVATE_KEY` copied from Infisical had one trailing newline.

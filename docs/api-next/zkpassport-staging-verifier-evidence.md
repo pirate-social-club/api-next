@@ -15,8 +15,10 @@ part of this provisioning tranche.
 - Runtime bind: `127.0.0.1:8794`; the verifier is not directly public.
 - Reverse proxy: Caddy terminates TLS on ports 80/443 and proxies to the
   loopback runtime.
-- The authoritative `pirate.sc` zone remains in the existing `hippiehecton`
-  Cloudflare account. No zone migration or nameserver change occurred.
+- At provisioning time, the authoritative `pirate.sc` zone was in the existing
+  `hippiehecton` Cloudflare account, and no zone migration or nameserver change
+  occurred in this tranche. The zone moved to the canonical account on
+  2026-08-23; the DNS-only verifier record retained the same target.
 - `94.103.168.161` (`ns1-pirate-fluence`) and `81.15.150.159` (`ns2`) were not
   touched.
 

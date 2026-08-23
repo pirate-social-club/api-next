@@ -24,9 +24,10 @@ and jobs Workers were synchronized and deployed from published commit
 The canonical Cloudflare audit reports zero violations, health and JWKS probes
 pass, and the live JWK matches the Infisical private key. The three misplaced
 staging Workers, their nine installed secrets, and misplaced staging
-Hyperdrive were retired on 2026-08-23. The misplaced account still owns the
-`pirate.sc` zone, so a managed bridge with no bindings or secrets temporarily
-forwards the public hostname to the canonical `workers.dev` origin.
+Hyperdrive were retired on 2026-08-23. The `pirate.sc` zone then moved to the
+canonical account, and the API and Solid custom domains were attached directly
+to their canonical Workers. A managed bridge with no bindings or secrets is
+retained in the old account only through the former delegation TTL.
 
 ## Current M3 mode override — 2026-08-19
 
