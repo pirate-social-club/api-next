@@ -19461,251 +19461,57 @@
           "content": {
             "application/json": {
               "schema": {
-                "anyOf": [
-                  {
-                    "type": "object",
-                    "properties": {
-                      "version": {
-                        "type": "string",
-                        "enum": [
-                          "song-author-input-v1"
-                        ]
-                      },
-                      "title": {
-                        "type": "string",
-                        "allOf": [
-                          {
-                            "minLength": 1
-                          }
-                        ]
-                      },
-                      "lyrics": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "audio_reservation_id": {
-                        "type": "string",
-                        "allOf": [
-                          {
-                            "minLength": 1
-                          }
-                        ]
-                      },
-                      "rights_declaration": {
-                        "$ref": "#/$defs/Union_"
-                      },
-                      "royalty_allocations": {
-                        "$ref": "#/$defs/Arrays_"
-                      },
-                      "access_mode": {
-                        "type": "string",
-                        "enum": [
-                          "public"
-                        ]
-                      },
-                      "license_preset": {
-                        "type": "string",
-                        "enum": [
-                          "non-commercial",
-                          "commercial-use"
-                        ]
-                      },
-                      "idempotency_key": {
-                        "type": "string",
-                        "allOf": [
-                          {
-                            "minLength": 1
-                          }
-                        ]
-                      }
-                    },
-                    "required": [
-                      "version",
-                      "title",
-                      "lyrics",
-                      "audio_reservation_id",
-                      "rights_declaration",
-                      "royalty_allocations",
-                      "access_mode",
-                      "license_preset",
-                      "idempotency_key"
-                    ],
-                    "additionalProperties": false
-                  },
-                  {
-                    "type": "object",
-                    "properties": {
-                      "version": {
-                        "type": "string",
-                        "enum": [
-                          "song-author-input-v1"
-                        ]
-                      },
-                      "title": {
-                        "type": "string",
-                        "allOf": [
-                          {
-                            "minLength": 1
-                          }
-                        ]
-                      },
-                      "lyrics": {
-                        "anyOf": [
-                          {
-                            "type": "string"
-                          },
-                          {
-                            "type": "null"
-                          }
-                        ]
-                      },
-                      "audio_reservation_id": {
-                        "type": "string",
-                        "allOf": [
-                          {
-                            "minLength": 1
-                          }
-                        ]
-                      },
-                      "rights_declaration": {
-                        "$ref": "#/$defs/Union_"
-                      },
-                      "royalty_allocations": {
-                        "$ref": "#/$defs/Arrays_"
-                      },
-                      "access_mode": {
-                        "type": "string",
-                        "enum": [
-                          "public"
-                        ]
-                      },
-                      "license_preset": {
-                        "type": "string",
-                        "enum": [
-                          "commercial-remix"
-                        ]
-                      },
-                      "commercial_rev_share_bps": {
-                        "type": "integer",
-                        "allOf": [
-                          {
-                            "minimum": 0,
-                            "maximum": 10000
-                          },
-                          {
-                            "default": 1000
-                          }
-                        ]
-                      },
-                      "idempotency_key": {
-                        "type": "string",
-                        "allOf": [
-                          {
-                            "minLength": 1
-                          }
-                        ]
-                      }
-                    },
-                    "required": [
-                      "version",
-                      "title",
-                      "lyrics",
-                      "audio_reservation_id",
-                      "rights_declaration",
-                      "royalty_allocations",
-                      "access_mode",
-                      "license_preset",
-                      "idempotency_key"
-                    ],
-                    "additionalProperties": false
-                  }
-                ],
-                "$defs": {
-                  "Union_": {
-                    "anyOf": [
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "original"
-                            ]
-                          }
-                        },
-                        "required": [
-                          "kind"
-                        ],
-                        "additionalProperties": false
-                      },
-                      {
-                        "type": "object",
-                        "properties": {
-                          "kind": {
-                            "type": "string",
-                            "enum": [
-                              "derivative"
-                            ]
-                          },
-                          "upstream_asset_id": {
-                            "type": "string",
-                            "allOf": [
-                              {
-                                "minLength": 1
-                              }
-                            ]
-                          }
-                        },
-                        "required": [
-                          "kind",
-                          "upstream_asset_id"
-                        ],
-                        "additionalProperties": false
-                      }
+                "type": "object",
+                "properties": {
+                  "version": {
+                    "type": "string",
+                    "enum": [
+                      "song-start-input-v1"
                     ]
                   },
-                  "Arrays_": {
-                    "type": "array",
-                    "items": {
-                      "type": "object",
-                      "properties": {
-                        "recipient_id": {
-                          "type": "string",
-                          "allOf": [
-                            {
-                              "minLength": 1
-                            }
-                          ]
-                        },
-                        "share_bps": {
-                          "type": "integer",
-                          "allOf": [
-                            {
-                              "minimum": 1,
-                              "maximum": 10000
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "recipient_id",
-                        "share_bps"
-                      ],
-                      "additionalProperties": false
-                    },
+                  "title": {
+                    "type": "string",
                     "allOf": [
                       {
-                        "minItems": 1
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 200
+                      }
+                    ]
+                  },
+                  "audio_reservation_id": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  },
+                  "song_type": {
+                    "type": "string",
+                    "enum": [
+                      "original",
+                      "remix"
+                    ]
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
                       }
                     ]
                   }
-                }
+                },
+                "required": [
+                  "version",
+                  "title",
+                  "audio_reservation_id",
+                  "song_type",
+                  "idempotency_key"
+                ],
+                "additionalProperties": false
               }
             }
           }
@@ -20609,6 +20415,1020 @@
           "Conflict",
           "IdempotencyConflict",
           "MembershipRequired",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
+    "/media-post-submissions/{submissionId}/terms": {
+      "post": {
+        "operationId": "post_mediaPostSubmissionsSubmissionIdTerms",
+        "parameters": [
+          {
+            "name": "submissionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "royalty_allocations": {
+                        "$ref": "#/$defs/Arrays_"
+                      },
+                      "access_mode": {
+                        "type": "string",
+                        "enum": [
+                          "public"
+                        ]
+                      },
+                      "license_preset": {
+                        "type": "string",
+                        "enum": [
+                          "non-commercial",
+                          "commercial-use"
+                        ]
+                      },
+                      "idempotency_key": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      "expected_creation_revision": {
+                        "type": "integer",
+                        "allOf": [
+                          {
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "royalty_allocations",
+                      "access_mode",
+                      "license_preset",
+                      "idempotency_key",
+                      "expected_creation_revision"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "royalty_allocations": {
+                        "$ref": "#/$defs/Arrays_"
+                      },
+                      "access_mode": {
+                        "type": "string",
+                        "enum": [
+                          "public"
+                        ]
+                      },
+                      "license_preset": {
+                        "type": "string",
+                        "enum": [
+                          "commercial-remix"
+                        ]
+                      },
+                      "commercial_rev_share_bps": {
+                        "type": "integer",
+                        "allOf": [
+                          {
+                            "minimum": 0,
+                            "maximum": 10000
+                          },
+                          {
+                            "default": 1000
+                          }
+                        ]
+                      },
+                      "idempotency_key": {
+                        "type": "string",
+                        "allOf": [
+                          {
+                            "minLength": 1
+                          }
+                        ]
+                      },
+                      "expected_creation_revision": {
+                        "type": "integer",
+                        "allOf": [
+                          {
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "royalty_allocations",
+                      "access_mode",
+                      "license_preset",
+                      "idempotency_key",
+                      "expected_creation_revision"
+                    ],
+                    "additionalProperties": false
+                  }
+                ],
+                "$defs": {
+                  "Arrays_": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "recipient_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "share_bps": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 10000
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "recipient_id",
+                        "share_bps"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "allOf": [
+                      {
+                        "minItems": 1
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "processing"
+                          ]
+                        },
+                        "phase": {
+                          "type": "string",
+                          "enum": [
+                            "reserve",
+                            "awaiting_upload",
+                            "finalize",
+                            "analysis",
+                            "decision",
+                            "publish"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "updated_at",
+                        "status",
+                        "phase"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "action_required"
+                          ]
+                        },
+                        "action": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "reference_required"
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "reference_request_ref": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "expires_at",
+                            "reference_request_ref"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "updated_at",
+                        "status",
+                        "action"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "manual_review"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "review_required",
+                            "moderation_unavailable"
+                          ]
+                        },
+                        "review_ref": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "updated_at",
+                        "status",
+                        "reason_code",
+                        "review_ref"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "published"
+                          ]
+                        },
+                        "published_resource": {
+                          "type": "object",
+                          "properties": {
+                            "post_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "post_id",
+                            "href"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "updated_at",
+                        "status",
+                        "published_resource"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "blocked"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "policy_violation"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "updated_at",
+                        "status",
+                        "reason_code"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "processing_failed"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_media",
+                            "unsupported_media",
+                            "probe_failed",
+                            "hash_failed",
+                            "transform_failed",
+                            "publication_failed",
+                            "upload_seal_conflict"
+                          ]
+                        },
+                        "retry_count": {
+                          "type": "number",
+                          "enum": [
+                            0,
+                            1,
+                            2,
+                            3
+                          ]
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "updated_at",
+                        "status",
+                        "reason_code",
+                        "retry_count",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "abandoned"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "upload_reservation_expired",
+                            "upload_expectation_mismatch",
+                            "upload_source_changed_before_finalize",
+                            "reference_window_expired",
+                            "author_cancelled_before_finalize"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "updated_at",
+                        "status",
+                        "reason_code"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "object",
+                          "properties": {
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "idempotency_conflict"
+                              ]
+                            },
+                            "submission_id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "reason_code",
+                            "submission_id"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "conflict"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "IdempotencyConflict",
           "NotFound",
           "RateLimited"
         ]
