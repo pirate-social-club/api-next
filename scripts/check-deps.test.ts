@@ -183,6 +183,22 @@ describe("provider dependency boundary", () => {
     );
   });
 
+  test("keeps the HNS verifier on its two frozen application protocol seams", async () => {
+    const root = await fixtureRoot({
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts":
+        'import type { VerificationProviderAdapter } from "@pirate/application/verification";\nexport type Fixture = VerificationProviderAdapter;\n',
+      "apps/hns-owner-verifier/src/allowed.ts":
+        'import type { HnsControlObservationRequestV1 } from "@pirate/application/namespace-ownership";\nimport type { HnsOwnerRecoveryPersistedSessionV1 } from "@pirate/application/route-revalidation";\nexport type Allowed = HnsControlObservationRequestV1 | HnsOwnerRecoveryPersistedSessionV1;\n',
+      "apps/hns-owner-verifier/src/forbidden.ts":
+        'import { getMyProfile } from "@pirate/application/use-cases/profile";\nexport const forbidden = getMyProfile;\n',
+    });
+    const result = lintDependencies(root, { checkVerificationExportSurface: false });
+    expect(result.violations).toContain(
+      "apps/hns-owner-verifier/src/forbidden.ts: @pirate/hns-owner-verifier may not import @pirate/application/use-cases/profile",
+    );
+    expect(result.violations.some((violation) => violation.includes("allowed.ts"))).toBe(false);
+  });
+
   test("fails closed for unsupported workspace entries", async () => {
     const root = await fixtureRoot({
       "packages/platform-cf/src/verification/providers/contract-fixture.ts":

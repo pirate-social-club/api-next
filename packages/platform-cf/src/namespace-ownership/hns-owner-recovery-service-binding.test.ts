@@ -232,6 +232,43 @@ describe("HNS owner-recovery service-binding provider", () => {
     expect(networkCalls).toBe(1);
   });
 
+  test("preserves strict internal 502 failure reasons without retrying", async () => {
+    const { providerStart } = await fixture();
+    for (const [error, reason] of [
+      ["provider_misconfigured", "misconfigured"],
+      ["invalid_response", "invalid_response"],
+    ] as const) {
+      let calls = 0;
+      const provider = makeHnsOwnerRecoveryServiceBindingProvider({
+        fetch: async () => {
+          calls += 1;
+          return response(JSON.stringify({ error }), 502);
+        },
+      });
+      await expect(
+        Effect.runPromise(
+          provider.start(providerStart, { deadline_ms: HNS_OWNER_RECOVERY_START_DEADLINE_MS }),
+        ),
+      ).rejects.toMatchObject({ reason });
+      expect(calls).toBe(1);
+    }
+
+    for (const malformed of [
+      response('{"error":"unknown"}', 502),
+      response(' {"error":"provider_misconfigured"}', 502),
+      response('{"error":"provider_misconfigured"}', 502, "text/plain"),
+    ]) {
+      const provider = makeHnsOwnerRecoveryServiceBindingProvider({
+        fetch: async () => malformed,
+      });
+      await expect(
+        Effect.runPromise(
+          provider.start(providerStart, { deadline_ms: HNS_OWNER_RECOVERY_START_DEADLINE_MS }),
+        ),
+      ).rejects.toMatchObject({ reason: "invalid_response" });
+    }
+  });
+
   test("strictly rejects malformed start responses and wrong content types", async () => {
     const { providerStart } = await fixture();
     for (const providerResponse of [

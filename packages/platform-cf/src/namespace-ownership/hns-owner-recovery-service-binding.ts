@@ -17,6 +17,9 @@ const START_URL = "https://hns-owner.internal/internal/hns-owner/v1/start";
 const POLL_URL = "https://hns-owner.internal/internal/hns-owner/v1/poll";
 const START_RESPONSE_MAX_BYTES = 65_536;
 const POLL_RESPONSE_MAX_BYTES = 1_048_576;
+const ERROR_RESPONSE_MAX_BYTES = 64;
+const MISCONFIGURED_ERROR_BODY = '{"error":"provider_misconfigured"}';
+const INVALID_RESPONSE_ERROR_BODY = '{"error":"invalid_response"}';
 
 export const HNS_OWNER_RECOVERY_START_DEADLINE_MS = 5_000;
 export const HNS_OWNER_RECOVERY_POLL_DEADLINE_MS = 15_000;
@@ -28,11 +31,38 @@ function failed(reason: "unavailable" | "misconfigured" | "invalid_response") {
   return new HnsOwnerRecoveryProviderFailed({ reason });
 }
 
+async function mappedInternalError(response: Response): Promise<never> {
+  if (response.headers.get("content-type")?.toLowerCase() !== "application/json") {
+    await discardHnsOwnerServiceBindingResponse(response);
+    throw failed("invalid_response");
+  }
+  let bytes: Uint8Array;
+  try {
+    bytes = await readBoundedHnsOwnerServiceBindingResponse(
+      response,
+      ERROR_RESPONSE_MAX_BYTES,
+      () => failed("invalid_response"),
+    );
+  } catch {
+    throw failed("invalid_response");
+  }
+  let body: string;
+  try {
+    body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw failed("invalid_response");
+  }
+  if (body === MISCONFIGURED_ERROR_BODY) throw failed("misconfigured");
+  if (body === INVALID_RESPONSE_ERROR_BODY) throw failed("invalid_response");
+  throw failed("invalid_response");
+}
+
 async function mappedResponse(
   response: Response,
   expectedContentType: "application/json" | "application/octet-stream",
   maxBytes: number,
 ): Promise<Uint8Array> {
+  if (response.status === 502) return mappedInternalError(response);
   if (response.status === 429 || response.status >= 500) {
     await discardHnsOwnerServiceBindingResponse(response);
     throw failed("unavailable");

@@ -1145,24 +1145,25 @@ export async function validateHnsOwnerRecoveryPersistedSession(
   return session;
 }
 
-export async function encodeHnsOwnerRecoveryProviderStart(
-  input: HnsOwnerSameRootRecoveryProviderStartV1,
-): Promise<Uint8Array> {
-  const decoded = decodeSchema(
-    ProviderStartSchema,
-    input,
-    "HNS owner-recovery provider start is not strict",
-  );
-  assertOrder(decoded, providerStartKeys, "HNS owner-recovery provider start is reordered");
+async function strictHnsOwnerRecoveryProviderStart(
+  input: unknown,
+): Promise<HnsOwnerSameRootRecoveryProviderStartV1> {
+  assertOrder(input, providerStartKeys, "HNS owner-recovery provider start is reordered");
+  const raw = input as Record<string, unknown>;
   assertOrder(
-    decoded.provider_configuration,
+    raw.provider_configuration,
     ["kind", "reference", "version", "digest"],
     "HNS owner-recovery provider configuration is reordered",
   );
   assertOrder(
-    decoded.route,
+    raw.route,
     ["family", "root_label", "root_label_display", "path_segment", "href", "app_host"],
     "HNS owner-recovery route is reordered",
+  );
+  const decoded = decodeSchema(
+    ProviderStartSchema,
+    input,
+    "HNS owner-recovery provider start is not strict",
   );
   const expectedRequirementHash = await hnsOwnerRecoveryRequirementHash(
     providerStartAuthority(decoded),
@@ -1176,11 +1177,25 @@ export async function encodeHnsOwnerRecoveryProviderStart(
       "HNS owner-recovery provider start hashes are not self-consistent",
     );
   }
+  return decoded;
+}
+
+export async function encodeHnsOwnerRecoveryProviderStart(
+  input: HnsOwnerSameRootRecoveryProviderStartV1,
+): Promise<Uint8Array> {
+  const decoded = await strictHnsOwnerRecoveryProviderStart(input);
   const bytes = encoder.encode(JSON.stringify(decoded));
   if (bytes.byteLength > HNS_OWNER_RECOVERY_PROVIDER_START_MAX_BYTES) {
     throw new HnsOwnerRecoveryDecodeError("HNS owner-recovery provider start exceeds byte limit");
   }
   return bytes;
+}
+
+export async function decodeHnsOwnerRecoveryProviderStartBytes(
+  value: Uint8Array,
+): Promise<HnsOwnerSameRootRecoveryProviderStartV1> {
+  const json = decodeStrictHnsJsonBytes(value, HNS_OWNER_RECOVERY_PROVIDER_START_MAX_BYTES);
+  return strictHnsOwnerRecoveryProviderStart(json);
 }
 
 export function decodeHnsOwnerRecoveryStartRequestBytes(
@@ -1294,6 +1309,55 @@ export function encodeHnsOwnerRecoveryProviderPollRequest(
     throw new HnsOwnerRecoveryDecodeError("HNS owner-recovery provider poll exceeds byte limit");
   }
   return bytes;
+}
+
+export async function decodeHnsOwnerRecoveryProviderPollBytes(
+  value: Uint8Array,
+): Promise<HnsOwnerSameRootRecoveryProviderPollV1> {
+  const json = decodeStrictHnsJsonBytes(value, HNS_OWNER_RECOVERY_PROVIDER_POLL_MAX_BYTES);
+  assertOrder(
+    json,
+    ["operation_kind", "protocol_version", "session", "payload"],
+    "HNS owner-recovery provider poll is reordered",
+  );
+  const raw = json as Record<string, unknown>;
+  assertOrder(raw.session, persistedSessionKeys, "HNS owner-recovery session is reordered");
+  const rawSession = raw.session as Record<string, unknown>;
+  assertOrder(
+    rawSession.provider_configuration,
+    ["kind", "reference", "version", "digest"],
+    "HNS owner-recovery provider configuration is reordered",
+  );
+  assertOrder(
+    rawSession.route,
+    ["family", "root_label", "root_label_display", "path_segment", "href", "app_host"],
+    "HNS owner-recovery route is reordered",
+  );
+  assertOrder(raw.payload, [], "HNS owner-recovery poll payload is not empty");
+  const decoded = decodeSchema(
+    ProviderPollSchema,
+    json,
+    "HNS owner-recovery provider poll is invalid",
+  );
+  const providerStart = providerStartFromPersistedSession(decoded.session);
+  const expectedRequirementHash = await hnsOwnerRecoveryRequirementHash(
+    providerStartAuthority(providerStart),
+  );
+  const expectedProviderStartHash = await hnsOwnerRecoveryProviderStartHash(providerStart);
+  if (
+    decoded.session.requirement_hash !== expectedRequirementHash ||
+    decoded.session.provider_start_hash !== expectedProviderStartHash ||
+    decoded.session.challenge_expires_at !==
+      hnsOwnerRecoveryChallengeExpiresAt(decoded.session.started_at) ||
+    decoded.session.challenge_name !==
+      hnsOwnerChallengeName(decoded.session.ownership_source, decoded.session.route.root_label) ||
+    decoded.session.challenge_value !== hnsOwnerChallengeValue(decoded.session.upstream_session_ref)
+  ) {
+    throw new HnsOwnerRecoveryDecodeError(
+      "HNS owner-recovery provider poll authority is not self-consistent",
+    );
+  }
+  return decoded;
 }
 
 export async function decodeHnsOwnerRecoveryTargetResponseBytes(value: Uint8Array): Promise<

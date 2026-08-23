@@ -453,6 +453,13 @@ export function hnsControlObservationRequestHash(
   return sha256Utf8(hnsControlObservationRequestPreimage(input));
 }
 
+export async function encodeHnsControlObservationRequest(
+  input: HnsControlObservationRequestV1,
+): Promise<Uint8Array> {
+  const bytes = new TextEncoder().encode(JSON.stringify(input));
+  return (await decodeHnsControlObservationRequestBytes(bytes)).request_bytes;
+}
+
 export async function decodeHnsControlObservationRequestBytes(
   value: unknown,
 ): Promise<HnsControlObservationDecodedRequest> {

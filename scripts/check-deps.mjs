@@ -63,6 +63,11 @@ const DOMAIN_EFFECT_ALLOWLIST = new Set([
   "effect/TypeError",
 ]);
 
+const HNS_OWNER_VERIFIER_APPLICATION_SEAMS = new Set([
+  "@pirate/application/namespace-ownership",
+  "@pirate/application/route-revalidation",
+]);
+
 const VERIFICATION_EXPORTS = {
   "packages/domain": {
     "./assets.ts": [
@@ -455,6 +460,9 @@ function isAllowedPackageDependency(pkg, spec) {
   if (!spec.startsWith("@pirate/")) return true;
   if (spec === pkg) return true;
   if (spec === "@pirate/http-worker" || spec === "@pirate/jobs-worker") return false;
+  if (pkg === "@pirate/hns-owner-verifier" && spec.startsWith("@pirate/application")) {
+    return HNS_OWNER_VERIFIER_APPLICATION_SEAMS.has(spec);
+  }
   return ALLOWED[pkg].some(
     (dependency) => spec === dependency || spec.startsWith(`${dependency}/`),
   );

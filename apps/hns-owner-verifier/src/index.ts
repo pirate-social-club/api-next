@@ -1,3 +1,16 @@
+import {
+  decodeHnsOwnerRecoveryProviderPollBytes,
+  decodeHnsOwnerRecoveryProviderStartBytes,
+  HNS_OWNER_RECOVERY_PROVIDER_START_MAX_BYTES,
+  type HnsOwnerSameRootRecoveryProviderStartV1,
+} from "@pirate/application/route-revalidation";
+import {
+  HnsTargetObserverFacadeError,
+  type HnsTargetObserverRuntime,
+  matchesHnsTargetObserverRecoveryConfiguration,
+  observeHnsOwnerRecoverySession,
+} from "./target-observer.ts";
+
 const START_PATH = "/internal/hns-owner/v1/start";
 const POLL_PATH = "/internal/hns-owner/v1/poll";
 const SESSION_HEADER = "Pirate-Namespace-Session-Id";
@@ -698,6 +711,34 @@ function startResponse(input: StartInput, source: string, ttlSeconds: number): R
   return jsonResponse(body, 200);
 }
 
+function recoveryStartResponse(
+  input: HnsOwnerSameRootRecoveryProviderStartV1,
+  source: string,
+): Response {
+  const upstreamSessionRef = randomReference();
+  const expiresAt = input.challenge_expires_at;
+  const rootLabel = input.route.root_label;
+  return jsonResponse(
+    {
+      upstream_session_ref: upstreamSessionRef,
+      expires_at: expiresAt,
+      presentation: {
+        kind: "embedded_sdk",
+        session_id: upstreamSessionRef,
+        protocol: "hns-txt-challenge",
+        version: "1",
+        payload: {
+          ownership_source: source,
+          challenge_name: source === "hns_parent_chain_txt" ? rootLabel : `_pirate.${rootLabel}`,
+          challenge_value: `pirate-verification=${upstreamSessionRef}`,
+          expires_at: expiresAt,
+        },
+      },
+    },
+    200,
+  );
+}
+
 function legacyUrl(value: string): string | null {
   try {
     const url = new URL(value);
@@ -1005,7 +1046,10 @@ async function pollLegacy(
 export async function handleRequest(
   request: Request,
   env: Env,
-  options: Readonly<{ readonly fetcher?: Fetcher }> = {},
+  options: Readonly<{
+    readonly fetcher?: Fetcher;
+    readonly targetObserver?: HnsTargetObserverRuntime;
+  }> = {},
 ): Promise<Response> {
   const url = new URL(request.url);
   const source = configuredSource(env);
@@ -1025,7 +1069,10 @@ export async function handleRequest(
     return errorResponse(400, "invalid_request");
   if (source === null || pinned === null || evidenceTtl === null)
     return errorResponse(502, "provider_misconfigured");
-  const maxBytes = url.pathname === START_PATH ? START_REQUEST_MAX_BYTES : POLL_REQUEST_MAX_BYTES;
+  const maxBytes =
+    url.pathname === START_PATH
+      ? HNS_OWNER_RECOVERY_PROVIDER_START_MAX_BYTES
+      : POLL_REQUEST_MAX_BYTES;
   const body = await boundedBody(request, maxBytes);
   if (body === null) return errorResponse(400, "invalid_request");
   let decoded: unknown;
@@ -1035,6 +1082,27 @@ export async function handleRequest(
     return errorResponse(400, "invalid_request");
   }
   if (url.pathname === START_PATH) {
+    if (isObject(decoded) && decoded.operation_kind === "same_root_recovery") {
+      let input: HnsOwnerSameRootRecoveryProviderStartV1;
+      try {
+        input = await decodeHnsOwnerRecoveryProviderStartBytes(body);
+      } catch {
+        return errorResponse(400, "invalid_request");
+      }
+      if (options.targetObserver === undefined) return errorResponse(502, "provider_misconfigured");
+      if (header !== input.session_id) return errorResponse(400, "invalid_request");
+      if (
+        !matchesPinnedConfiguration(input.provider_configuration, pinned) ||
+        input.environment !== pinned.environment ||
+        !matchesHnsTargetObserverRecoveryConfiguration(input, options.targetObserver) ||
+        options.targetObserver.configuration.ownership_source !== source ||
+        options.targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
+      ) {
+        return errorResponse(502, "provider_misconfigured");
+      }
+      return recoveryStartResponse(input, source);
+    }
+    if (body.byteLength > START_REQUEST_MAX_BYTES) return errorResponse(400, "invalid_request");
     const input = parseStart(decoded);
     const ttl = challengeTtlSeconds(env);
     if (input === null) return errorResponse(400, "invalid_request");
@@ -1045,6 +1113,41 @@ export async function handleRequest(
     )
       return errorResponse(422, "provider_rejected");
     return startResponse(input, source, ttl);
+  }
+  if (isObject(decoded) && decoded.operation_kind === "same_root_recovery") {
+    let poll: Awaited<ReturnType<typeof decodeHnsOwnerRecoveryProviderPollBytes>>;
+    try {
+      poll = await decodeHnsOwnerRecoveryProviderPollBytes(body);
+    } catch {
+      return errorResponse(400, "invalid_request");
+    }
+    if (header !== poll.session.session_id) return errorResponse(400, "invalid_request");
+    if (options.targetObserver === undefined) {
+      return errorResponse(502, "provider_misconfigured");
+    }
+    if (
+      !matchesPinnedConfiguration(poll.session.provider_configuration, pinned) ||
+      poll.session.environment !== pinned.environment ||
+      !matchesHnsTargetObserverRecoveryConfiguration(poll.session, options.targetObserver) ||
+      options.targetObserver.configuration.ownership_source !== source ||
+      options.targetObserver.configuration.lease_policy.evidence_lease_seconds !== evidenceTtl
+    ) {
+      return errorResponse(502, "provider_misconfigured");
+    }
+    try {
+      return bytesResponse(
+        await observeHnsOwnerRecoverySession(poll.session, options.targetObserver),
+      );
+    } catch (error) {
+      if (error instanceof HnsTargetObserverFacadeError) {
+        return error.reason === "unavailable"
+          ? errorResponse(503, "provider_unavailable")
+          : error.reason === "misconfigured"
+            ? errorResponse(502, "provider_misconfigured")
+            : errorResponse(502, "invalid_response");
+      }
+      return errorResponse(502, "invalid_response");
+    }
   }
   const poll = parsePoll(decoded, header, source);
   if (poll === null) return errorResponse(400, "invalid_request");

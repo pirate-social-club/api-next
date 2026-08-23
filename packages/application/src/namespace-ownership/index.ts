@@ -127,6 +127,7 @@ export {
   decodeHnsControlObservationRequestBytes,
   decodeHnsControlObservationResultBytes,
   deriveHnsEvidenceLease,
+  encodeHnsControlObservationRequest,
   HNS_CONTROL_OBSERVATION_DIAGNOSTIC_MAX_BYTES,
   HNS_CONTROL_OBSERVATION_EXPECTED_TXT_MAX_BYTES,
   HNS_CONTROL_OBSERVATION_PROVIDER_EVIDENCE_MAX_BYTES,

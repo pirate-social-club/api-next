@@ -6,6 +6,8 @@ import {
   buildHnsOwnerRecoveryProviderStart,
   classifyHnsOwnerRecoveryTargetResponse,
   decodeHnsOwnerRecoveryPollRequestBytes,
+  decodeHnsOwnerRecoveryProviderPollBytes,
+  decodeHnsOwnerRecoveryProviderStartBytes,
   decodeHnsOwnerRecoveryProviderStartResponseBytes,
   decodeHnsOwnerRecoveryStartRequestBytes,
   decodeHnsOwnerRecoveryTargetResponseBytes,
@@ -261,6 +263,28 @@ describe("HNS owner-initiated recovery protocol kernel", () => {
   });
 
   test("owns exact private start decoding and authority-free poll transport encoding", async () => {
+    const providerStart = await buildHnsOwnerRecoveryProviderStart({
+      route_recovery_id: "hns_recovery_01",
+      session_id: "hns_recovery_session_01",
+      authority,
+      database_started_at: "2026-02-02T04:38:20.000Z",
+    });
+    const providerStartBytes = await encodeHnsOwnerRecoveryProviderStart(providerStart);
+    expect(await decodeHnsOwnerRecoveryProviderStartBytes(providerStartBytes)).toEqual(
+      providerStart,
+    );
+    const { route_recovery_id, session_id, ...providerStartRest } = providerStart;
+    await expect(
+      decodeHnsOwnerRecoveryProviderStartBytes(
+        utf8({ session_id, route_recovery_id, ...providerStartRest }),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      decodeHnsOwnerRecoveryProviderStartBytes(
+        utf8({ ...providerStart, provider_start_hash: "f".repeat(64) }),
+      ),
+    ).rejects.toThrow();
+
     const startResponse = providerStartResponse();
     expect(decodeHnsOwnerRecoveryProviderStartResponseBytes(utf8(startResponse))).toEqual(
       startResponse,
@@ -297,9 +321,30 @@ describe("HNS owner-initiated recovery protocol kernel", () => {
 
     const session = await fixtureSession();
     const poll = await buildHnsOwnerRecoveryProviderPoll(session, persistedAuthority(session));
-    expect(encodeHnsOwnerRecoveryProviderPollRequest(poll)).toEqual(
-      await encodeHnsOwnerRecoveryProviderPoll(poll, persistedAuthority(session)),
-    );
+    const pollBytes = await encodeHnsOwnerRecoveryProviderPoll(poll, persistedAuthority(session));
+    expect(encodeHnsOwnerRecoveryProviderPollRequest(poll)).toEqual(pollBytes);
+    expect(await decodeHnsOwnerRecoveryProviderPollBytes(pollBytes)).toEqual(poll);
+    await expect(
+      decodeHnsOwnerRecoveryProviderPollBytes(
+        utf8({
+          protocol_version: poll.protocol_version,
+          operation_kind: poll.operation_kind,
+          session: poll.session,
+          payload: poll.payload,
+        }),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      decodeHnsOwnerRecoveryProviderPollBytes(
+        utf8({
+          ...poll,
+          session: {
+            ...poll.session,
+            challenge_value: "pirate-verification=substituted-session",
+          },
+        }),
+      ),
+    ).rejects.toThrow();
     expect(() =>
       encodeHnsOwnerRecoveryProviderPollRequest({
         protocol_version: poll.protocol_version,
