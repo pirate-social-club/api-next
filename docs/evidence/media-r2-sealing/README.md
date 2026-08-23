@@ -111,10 +111,13 @@ upload, so a pre-existing key or an unknown preflight response fails closed.
 It requires an already-existing bucket and never creates or deletes a bucket.
 Mutation candidates are registered before each upload or copy dispatch, so a
 response lost after a provider-side commit remains cleanup-owned and is never
-silently omitted. Cleanup considers only those exact run-prefix candidates,
-requires matching size, content type, checksum, and an ETag, deletes with the
-observed ETag condition, and verifies absence. A mismatch or missing safety
-fact is a residual/inconclusive result and fails closed.
+silently omitted. PutObject signs an exact run marker in custom metadata and
+CopyObject preserves that metadata. Cleanup considers only those exact
+run-prefix candidates, requires the marker, matching size, content type,
+checksum, and an ETag, and deletes with the observed ETag condition. A
+confirmed response ETag is also rechecked when one was available. A marker,
+metadata, or confirmed-ETag mismatch is a residual/inconclusive result and
+fails closed.
 
 The sealing sequence is deliberately narrow: one source `HEAD`, one
 `CopyObject` sent as a destination `PUT` with the observed source ETag in
@@ -124,7 +127,9 @@ only after a successful copy. A 412 is recorded as shared and ambiguous. It
 never triggers a destination `HEAD`, copy retry, or causal source/destination
 guess. ETag, SHA-256 checksum, destination VersionId, and the distinct
 `x-amz-copy-source-version-id` source VersionId are reported as separate
-observations; an ETag is never treated as a checksum.
+observations; an ETag is never treated as a checksum. HTTP 408, 425, 429, and
+all 5xx mutation responses are treated as ambiguous delivery, retain their
+cleanup candidates, and preserve the returned status/code.
 
 The live runner has not been authorized to contact a production bucket. The
 current staging account is not entitled to R2, so no `--execute-staging` run

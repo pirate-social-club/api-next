@@ -9,6 +9,8 @@ type CleanupTransport = Readonly<{
 export type CleanupCandidate = Readonly<{
   key: string;
   ownership: "confirmed" | "ambiguous";
+  ownershipMarker: string;
+  expectedEtag?: string;
   expected: Readonly<{
     sizeBytes: number;
     contentType: string;
@@ -58,6 +60,10 @@ export async function cleanupOwnedKeys(
       results.push({
         key,
         ownership: candidate.ownership,
+        ownership_marker: candidate.ownershipMarker,
+        marker_verified: false,
+        expected_etag: candidate.expectedEtag ?? null,
+        etag_verified: false,
         candidate_verified: false,
         verification: verificationOperation,
         residual_reason: "not-found",
@@ -67,22 +73,36 @@ export async function cleanupOwnedKeys(
       });
       continue;
     }
-    const candidateVerified =
+    const markerVerified =
+      verification.kind === "found" && verification.ownershipMarker === candidate.ownershipMarker;
+    const etagVerified =
       verification.kind === "found" &&
       verification.etag !== undefined &&
+      (candidate.expectedEtag === undefined || verification.etag === candidate.expectedEtag);
+    const candidateVerified =
+      verification.kind === "found" &&
+      markerVerified &&
+      etagVerified &&
       verification.sizeBytes === candidate.expected.sizeBytes &&
       verification.contentType === candidate.expected.contentType &&
       verification.sha256 === candidate.expected.sha256;
     if (!candidateVerified) {
-      const reason =
-        verification.kind === "found" && verification.etag === undefined
-          ? "etag-unavailable"
-          : verification.kind === "found" && verification.sha256 === undefined
-            ? "checksum-unavailable"
-            : "metadata-mismatch";
+      const reason = !markerVerified
+        ? "ownership-marker-mismatch"
+        : candidate.expectedEtag !== undefined && !etagVerified
+          ? "confirmed-etag-mismatch"
+          : verification.kind === "found" && verification.etag === undefined
+            ? "etag-unavailable"
+            : verification.kind === "found" && verification.sha256 === undefined
+              ? "checksum-unavailable"
+              : "metadata-mismatch";
       results.push({
         key,
         ownership: candidate.ownership,
+        ownership_marker: candidate.ownershipMarker,
+        marker_verified: markerVerified,
+        expected_etag: candidate.expectedEtag ?? null,
+        etag_verified: etagVerified,
         candidate_verified: false,
         verification: verificationOperation,
         residual_reason: reason,
@@ -98,6 +118,10 @@ export async function cleanupOwnedKeys(
     results.push({
       key,
       ownership: candidate.ownership,
+      ownership_marker: candidate.ownershipMarker,
+      marker_verified: markerVerified,
+      expected_etag: candidate.expectedEtag ?? null,
+      etag_verified: etagVerified,
       candidate_verified: true,
       verification: verificationOperation,
       residual_reason: absent

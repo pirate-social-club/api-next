@@ -16,6 +16,7 @@ export type StagingHeadResult = Readonly<{
   contentType?: string;
   sha256?: string;
   versionId?: string;
+  ownershipMarker?: string;
 }>;
 
 export type StagingPutResult = Readonly<{
@@ -121,6 +122,10 @@ function responseSize(response: Response): number | undefined {
   return Number.isSafeInteger(size) ? size : undefined;
 }
 
+function isAmbiguousMutationStatus(status: number): boolean {
+  return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
+
 export class R2S3StagingTransport {
   private readonly options: StagingTransportOptions;
 
@@ -157,6 +162,9 @@ export class R2S3StagingTransport {
         ...(header(response, "x-amz-version-id") === undefined
           ? {}
           : { versionId: header(response, "x-amz-version-id") }),
+        ...(header(response, "x-amz-meta-r2-seal-run-marker") === undefined
+          ? {}
+          : { ownershipMarker: header(response, "x-amz-meta-r2-seal-run-marker") }),
       };
     } catch {
       return { kind: "error", status: 0, code: "TransportError" };
@@ -169,6 +177,7 @@ export class R2S3StagingTransport {
     bytes: Uint8Array,
     contentType: string,
     sha256Base64: string,
+    ownershipMarker: string,
   ): Promise<StagingPutResult> {
     try {
       const { response } = await signedFetch(this.options, {
@@ -181,6 +190,7 @@ export class R2S3StagingTransport {
           "content-length": String(bytes.byteLength),
           "if-none-match": "*",
           "x-amz-checksum-sha256": sha256Base64,
+          "x-amz-meta-r2-seal-run-marker": ownershipMarker,
         },
         body: bytes,
       });
@@ -188,6 +198,9 @@ export class R2S3StagingTransport {
       if (response.status === 412 && code === "PreconditionFailed")
         return { kind: "precondition-failed", status: response.status, code };
       if (response.status === 412) return { kind: "error", status: response.status, code };
+      if (isAmbiguousMutationStatus(response.status)) {
+        return { kind: "ambiguous", status: response.status, code };
+      }
       if (response.status < 200 || response.status >= 300) {
         return { kind: "error", status: response.status, code };
       }
@@ -245,6 +258,7 @@ export class R2S3StagingTransport {
         method: "PUT",
         headers: {
           "x-amz-copy-source": encodeR2CopySource(input.sourceBucket, input.sourceKey),
+          "x-amz-metadata-directive": "COPY",
           ...guardHeaders,
         },
       });
@@ -253,6 +267,9 @@ export class R2S3StagingTransport {
         return { kind: "precondition-failed", status: response.status, code };
       }
       if (response.status === 412) return { kind: "error", status: response.status, code };
+      if (isAmbiguousMutationStatus(response.status)) {
+        return { kind: "ambiguous", status: response.status, code };
+      }
       if (response.status < 200 || response.status >= 300) {
         return { kind: "error", status: response.status, code };
       }

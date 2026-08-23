@@ -16,6 +16,10 @@ export type StagingHeadEvidence = StagingOperation &
 export type StagingCleanupKey = Readonly<{
   key: string;
   ownership: "confirmed" | "ambiguous";
+  ownership_marker: string;
+  marker_verified: boolean;
+  expected_etag: string | null;
+  etag_verified: boolean;
   candidate_verified: boolean;
   verification: StagingOperation;
   residual_reason:
@@ -24,6 +28,8 @@ export type StagingCleanupKey = Readonly<{
     | "metadata-mismatch"
     | "checksum-unavailable"
     | "etag-unavailable"
+    | "ownership-marker-mismatch"
+    | "confirmed-etag-mismatch"
     | "delete-failed"
     | "absence-check-failed";
   delete: StagingOperation;
@@ -62,6 +68,7 @@ export type StagingEvidence = Readonly<{
     version_id: string | null;
     owned_after_success: boolean;
     ownership: "confirmed" | "ambiguous" | "none";
+    ownership_marker: string;
   }>;
   sealing: Readonly<{
     outcome:
@@ -149,6 +156,10 @@ function cleanUpKey(value: StagingCleanupKey): StagingCleanupKey {
   return {
     key: safeValue(value.key, "cleanup.key") ?? "",
     ownership: value.ownership,
+    ownership_marker: safeValue(value.ownership_marker, "cleanup.ownership_marker") ?? "",
+    marker_verified: value.marker_verified,
+    expected_etag: safeValue(value.expected_etag, "cleanup.expected_etag"),
+    etag_verified: value.etag_verified,
     candidate_verified: value.candidate_verified,
     verification: operation(value.verification),
     residual_reason: value.residual_reason,
@@ -191,6 +202,7 @@ export function redactStagingEvidence(input: StagingEvidence): StagingEvidence {
       version_id: safeValue(input.upload.version_id, "upload.version_id"),
       owned_after_success: input.upload.owned_after_success,
       ownership: input.upload.ownership,
+      ownership_marker: safeValue(input.upload.ownership_marker, "upload.ownership_marker") ?? "",
     },
     sealing: {
       outcome: input.sealing.outcome,

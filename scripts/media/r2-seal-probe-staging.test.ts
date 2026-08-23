@@ -23,10 +23,17 @@ function response(status: number, headers?: Record<string, string>, body = ""): 
   return new Response(body, { status, headers });
 }
 
-function cleanupCandidate(key: string, ownership: "confirmed" | "ambiguous" = "confirmed") {
+function cleanupCandidate(
+  key: string,
+  ownership: "confirmed" | "ambiguous" = "confirmed",
+  ownershipMarker = "r2-seal:test",
+  expectedEtag?: string,
+) {
   return {
     key,
     ownership,
+    ownershipMarker,
+    ...(expectedEtag === undefined ? {} : { expectedEtag }),
     expected: {
       sizeBytes: 1,
       contentType: "audio/mpeg",
@@ -125,6 +132,7 @@ describe("staging R2 probe safety", () => {
           "x-amz-checksum-sha256": await sha256Base64(bytes),
           "x-amz-version-id": "version-1",
           "x-amz-copy-source-version-id": "source-version-1",
+          "x-amz-meta-r2-seal-run-marker": "r2-seal:test",
         });
       },
     });
@@ -135,6 +143,7 @@ describe("staging R2 probe safety", () => {
       sizeBytes: bytes.byteLength,
       sha256: "f16d05ec6b29248d2c61adb1e9263f78e4f7bace1b955014a2d17872cfe4064d",
       versionId: "version-1",
+      ownershipMarker: "r2-seal:test",
     });
     const copy = await transport.copyObject({
       sourceBucket: "fixture-bucket",
@@ -151,6 +160,7 @@ describe("staging R2 probe safety", () => {
     );
     expect(headers.get("x-amz-copy-source-if-match")).toBe('"observed-source-etag"');
     expect(headers.get("cf-copy-destination-if-none-match")).toBe("*");
+    expect(headers.get("x-amz-metadata-directive")).toBe("COPY");
     const signedHeaders = headers.get("authorization")?.match(/SignedHeaders=([^,]+)/)?.[1] ?? "";
     expect(signedHeaders.split(";")).toEqual(
       expect.arrayContaining([
@@ -251,6 +261,7 @@ describe("staging R2 probe safety", () => {
           "content-length": String(content.byteLength),
           "content-type": "audio/mpeg",
           "x-amz-checksum-sha256": contentChecksum,
+          "x-amz-meta-r2-seal-run-marker": "r2-seal:20260823-160000-test",
           "x-amz-version-id": "source-version",
         });
       }
@@ -263,6 +274,7 @@ describe("staging R2 probe safety", () => {
           "content-length": String(content.byteLength),
           "content-type": "audio/mpeg",
           "x-amz-checksum-sha256": contentChecksum,
+          "x-amz-meta-r2-seal-run-marker": "r2-seal:20260823-160000-test",
         });
       }
       if (requestNumber === 7) return response(204);
@@ -292,12 +304,14 @@ describe("staging R2 probe safety", () => {
     const content = new TextEncoder().encode("r2-seal-staging-proof-v1\n");
     const checksum = await sha256Base64(content);
     const expectedSha256 = base64ToHex(checksum);
+    const runId = "20260823-160002-upload-loss";
+    const ownershipMarker = `r2-seal:${runId}`;
     let requestNumber = 0;
     const methods: string[] = [];
     const evidence = await runStagingProbe({
       env: STAGING_ENV,
       acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
-      runId: "20260823-160002-upload-loss",
+      runId,
       fetch: async (_url, init) => {
         requestNumber += 1;
         methods.push(init.method ?? "");
@@ -312,6 +326,7 @@ describe("staging R2 probe safety", () => {
             "content-length": String(content.byteLength),
             "content-type": "audio/mpeg",
             "x-amz-checksum-sha256": checksum,
+            "x-amz-meta-r2-seal-run-marker": ownershipMarker,
           });
         }
         if (requestNumber === 5) {
@@ -345,11 +360,12 @@ describe("staging R2 probe safety", () => {
     let requestNumber = 0;
     const methods: string[] = [];
     const objectHeaders = {
-      etag: '"object"',
+      etag: '"upload"',
       "content-length": String(content.byteLength),
       "content-type": "audio/mpeg",
       "x-amz-checksum-sha256": checksum,
       "x-amz-version-id": "source-version-1",
+      "x-amz-meta-r2-seal-run-marker": "r2-seal:20260823-160003-copy-loss",
     };
     const evidence = await runStagingProbe({
       env: STAGING_ENV,
@@ -401,6 +417,102 @@ describe("staging R2 probe safety", () => {
     ]);
   });
 
+  test("treats HTTP 500 and 429 upload responses as ambiguous and cleans post-commit objects", async () => {
+    const content = new TextEncoder().encode("r2-seal-staging-proof-v1\n");
+    const checksum = await sha256Base64(content);
+    for (const [index, status] of [500, 429].entries()) {
+      const runId = `20260823-16001${index}-upload-status`;
+      const ownershipMarker = `r2-seal:${runId}`;
+      let requestNumber = 0;
+      const evidence = await runStagingProbe({
+        env: STAGING_ENV,
+        acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
+        runId,
+        fetch: async (_url, init) => {
+          requestNumber += 1;
+          if (requestNumber <= 2) return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
+          if (requestNumber === 3) {
+            expect(new Headers(init.headers).get("x-amz-meta-r2-seal-run-marker")).toBe(
+              ownershipMarker,
+            );
+            return response(status, {}, "<Error><Code>SlowDown</Code></Error>");
+          }
+          if (requestNumber === 4) {
+            return response(200, {
+              etag: '"post-commit-upload"',
+              "content-length": String(content.byteLength),
+              "content-type": "audio/mpeg",
+              "x-amz-checksum-sha256": checksum,
+              "x-amz-meta-r2-seal-run-marker": ownershipMarker,
+            });
+          }
+          if (requestNumber === 5) return response(204);
+          return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
+        },
+      });
+      expect(evidence.upload).toMatchObject({
+        status,
+        code: "SlowDown",
+        ownership: "ambiguous",
+        ownership_marker: ownershipMarker,
+      });
+      expect(evidence.cleanup.status).toBe("complete");
+      expect(evidence.cleanup.keys[0]).toMatchObject({
+        marker_verified: true,
+        candidate_verified: true,
+        absent: true,
+      });
+      expect(requestNumber).toBe(6);
+    }
+  });
+
+  test("treats HTTP 500 and 429 copy responses as ambiguous and cleans both candidates", async () => {
+    const content = new TextEncoder().encode("r2-seal-staging-proof-v1\n");
+    const checksum = await sha256Base64(content);
+    for (const [index, status] of [500, 429].entries()) {
+      const runId = `20260823-16002${index}-copy-status`;
+      const ownershipMarker = `r2-seal:${runId}`;
+      let requestNumber = 0;
+      const objectHeaders = {
+        etag: '"post-commit-object"',
+        "content-length": String(content.byteLength),
+        "content-type": "audio/mpeg",
+        "x-amz-checksum-sha256": checksum,
+        "x-amz-version-id": "source-version-2",
+        "x-amz-meta-r2-seal-run-marker": ownershipMarker,
+      };
+      const evidence = await runStagingProbe({
+        env: STAGING_ENV,
+        acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
+        runId,
+        fetch: async (_url, init) => {
+          requestNumber += 1;
+          if (requestNumber <= 2) return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
+          if (requestNumber === 3) return response(200, { etag: '"post-commit-object"' });
+          if (requestNumber === 4 || requestNumber === 6 || requestNumber === 9)
+            return response(200, objectHeaders);
+          if (requestNumber === 5) {
+            expect(init.method).toBe("PUT");
+            return response(status, {}, "<Error><Code>SlowDown</Code></Error>");
+          }
+          if (requestNumber === 7 || requestNumber === 10) {
+            expect(init.method).toBe("DELETE");
+            return response(204);
+          }
+          return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
+        },
+      });
+      expect(evidence.sealing.conditional_copy).toMatchObject({
+        status,
+        code: "SlowDown",
+      });
+      expect(evidence.cleanup.status).toBe("complete");
+      expect(evidence.cleanup.keys).toHaveLength(2);
+      expect(evidence.cleanup.keys.every((key) => key.marker_verified && key.absent)).toBe(true);
+      expect(requestNumber).toBe(11);
+    }
+  });
+
   test("keeps source-only, destination-only, and combined 412 diagnostics ambiguous", async () => {
     const fixtures = await loadHostileFixtures();
     for (const name of [
@@ -441,6 +553,7 @@ describe("staging R2 probe safety", () => {
                 sizeBytes: 1,
                 contentType: "audio/mpeg",
                 sha256: "expected-sha256",
+                ownershipMarker: "r2-seal:test",
               }
             : { kind: "missing", status: 404, code: "NoSuchKey" };
         },
@@ -491,6 +604,7 @@ describe("staging R2 probe safety", () => {
             sizeBytes: 1,
             contentType: "audio/mpeg",
             sha256: "expected-sha256",
+            ownershipMarker: "r2-seal:test",
           };
         },
       },
@@ -510,6 +624,85 @@ describe("staging R2 probe safety", () => {
       "delete:media-r2-seal-probe/run/source.bin",
       "head:media-r2-seal-probe/run/source.bin",
     ]);
+  });
+
+  test("never deletes when the run marker is missing or wrong", async () => {
+    for (const ownershipMarker of [undefined, "r2-seal:other"]) {
+      let deleteCalls = 0;
+      const cleanup = await cleanupOwnedKeys(
+        {
+          async deleteObject() {
+            deleteCalls += 1;
+            return { kind: "deleted", status: 204, code: "OK" };
+          },
+          async headObject() {
+            return {
+              kind: "found",
+              status: 200,
+              code: "OK",
+              etag: '"expected"',
+              sizeBytes: 1,
+              contentType: "audio/mpeg",
+              sha256: "expected-sha256",
+              ...(ownershipMarker === undefined ? {} : { ownershipMarker }),
+            };
+          },
+        },
+        "fixture-bucket",
+        "media-r2-seal-probe/run/",
+        [cleanupCandidate("media-r2-seal-probe/run/source.bin")],
+      );
+      expect(cleanup.status).toBe("partial");
+      expect(cleanup.keys[0]).toMatchObject({
+        marker_verified: false,
+        candidate_verified: false,
+        residual_reason: "ownership-marker-mismatch",
+        absent: false,
+      });
+      expect(deleteCalls).toBe(0);
+    }
+  });
+
+  test("never deletes a confirmed candidate when its response ETag changes", async () => {
+    let deleteCalls = 0;
+    const cleanup = await cleanupOwnedKeys(
+      {
+        async deleteObject() {
+          deleteCalls += 1;
+          return { kind: "deleted", status: 204, code: "OK" };
+        },
+        async headObject() {
+          return {
+            kind: "found",
+            status: 200,
+            code: "OK",
+            etag: '"different-response"',
+            sizeBytes: 1,
+            contentType: "audio/mpeg",
+            sha256: "expected-sha256",
+            ownershipMarker: "r2-seal:test",
+          };
+        },
+      },
+      "fixture-bucket",
+      "media-r2-seal-probe/run/",
+      [
+        cleanupCandidate(
+          "media-r2-seal-probe/run/source.bin",
+          "confirmed",
+          "r2-seal:test",
+          '"expected-response"',
+        ),
+      ],
+    );
+    expect(cleanup.status).toBe("partial");
+    expect(cleanup.keys[0]).toMatchObject({
+      marker_verified: true,
+      etag_verified: false,
+      residual_reason: "confirmed-etag-mismatch",
+      absent: false,
+    });
+    expect(deleteCalls).toBe(0);
   });
 
   test("runs cleanup after an operation error and preserves primary-error precedence", async () => {

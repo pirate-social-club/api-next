@@ -150,7 +150,7 @@ function headEvidence(result: StagingHeadResult, called = true): StagingHeadEvid
   };
 }
 
-function putEvidence(result: StagingPutResult) {
+function putEvidence(result: StagingPutResult, ownershipMarker: string) {
   return {
     called: true,
     status: result.status,
@@ -161,6 +161,7 @@ function putEvidence(result: StagingPutResult) {
     owned_after_success: result.kind === "created",
     ownership:
       result.kind === "created" ? "confirmed" : result.kind === "ambiguous" ? "ambiguous" : "none",
+    ownership_marker: ownershipMarker,
   } as const;
 }
 
@@ -214,7 +215,7 @@ function mapCopy(
     return { kind: "precondition-failed", status: 412, code: "PreconditionFailed" };
   }
   if (result.kind === "ambiguous") {
-    return { kind: "error", status: 0, code: "ResponseLost" };
+    return { kind: "error", status: result.status, code: result.code };
   }
   if (result.kind === "error") return { kind: "error", status: result.status, code: result.code };
   if (result.destinationEtag === undefined) {
@@ -294,6 +295,7 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
   const prefix = `media-r2-seal-probe/${runId}/`;
   const sourceKey = `${prefix}source.bin`;
   const destinationKey = `${prefix}sealed.bin`;
+  const ownershipMarker = `r2-seal:${runId}`;
   const startedAt = new Date().toISOString();
   const expectedSha256 = await sha256Hex(CONTENT);
   const expectedSha256Base64 = await sha256Base64(CONTENT);
@@ -328,6 +330,7 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
         const sourceCandidate: CleanupCandidate = {
           key: sourceKey,
           ownership: "ambiguous",
+          ownershipMarker,
           expected: expectedObject,
         };
         const sourceCandidateIndex = candidates.push(sourceCandidate) - 1;
@@ -337,13 +340,19 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
           CONTENT,
           CONTENT_TYPE,
           expectedSha256Base64,
+          ownershipMarker,
         );
         if (upload.kind === "created") {
-          candidates[sourceCandidateIndex] = { ...sourceCandidate, ownership: "confirmed" };
+          candidates[sourceCandidateIndex] = {
+            ...sourceCandidate,
+            ownership: "confirmed",
+            ...(upload.etag === undefined ? {} : { expectedEtag: upload.etag }),
+          };
           sealingTransport = new RecordingSealTransport(transport, () => {
             candidates.push({
               key: destinationKey,
               ownership: "ambiguous",
+              ownershipMarker,
               expected: expectedObject,
             });
           });
@@ -355,7 +364,13 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
             const destinationCandidate = candidates.find(({ key }) => key === destinationKey);
             if (destinationCandidate !== undefined) {
               const destinationIndex = candidates.findIndex(({ key }) => key === destinationKey);
-              candidates[destinationIndex] = { ...destinationCandidate, ownership: "confirmed" };
+              candidates[destinationIndex] = {
+                ...destinationCandidate,
+                ownership: "confirmed",
+                ...(sealingTransport.copy.destinationEtag === undefined
+                  ? {}
+                  : { expectedEtag: sealingTransport.copy.destinationEtag }),
+              };
             }
           } else if (sealingTransport.copy?.kind !== "ambiguous") {
             const destinationIndex = candidates.findIndex(({ key }) => key === destinationKey);
@@ -403,7 +418,7 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
       destination: headEvidence(destinationPreflight),
       safe_to_write: safeToWrite,
     },
-    upload: putEvidence(upload),
+    upload: putEvidence(upload, ownershipMarker),
     sealing: {
       outcome: scenario.outcome,
       source_head: sourceHead,
