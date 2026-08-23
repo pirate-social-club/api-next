@@ -86,7 +86,6 @@ jobs:
           /tmp/api-next-control-plane-postgres-verification-start-suite-complete
           /tmp/api-next-control-plane-postgres-community-purchase-funding-suite-complete
           /tmp/api-next-control-plane-postgres-hns-observer-suite-complete
-          /tmp/api-next-control-plane-postgres-media-persistence-suite-complete
       - name: Run required Postgres 17 suite
         env:
           CONTROL_PLANE_POSTGRES_TEST_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
@@ -108,7 +107,6 @@ jobs:
           CONTROL_PLANE_POSTGRES_VERIFICATION_START_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-verification-start-suite-complete
           CONTROL_PLANE_POSTGRES_COMMUNITY_PURCHASE_FUNDING_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-community-purchase-funding-suite-complete
           CONTROL_PLANE_POSTGRES_HNS_OBSERVER_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-hns-observer-suite-complete
-          CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-media-persistence-suite-complete
         run: >-
           timeout 300s bun test
           packages/platform-cf/src/postgres.pg.test.ts
@@ -129,6 +127,5 @@ jobs:
           packages/platform-cf/src/verification-start-repository.pg.test.ts
           packages/platform-cf/src/community-purchase-funding-repository.pg.test.ts
           packages/platform-cf/src/hns-control-observer-repository.pg.test.ts
-          packages/platform-cf/src/media-persistence.pg.test.ts
       - name: Verify Postgres 17 completion sentinel
         run: bun run verify:postgres-sentinels

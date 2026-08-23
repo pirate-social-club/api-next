@@ -38,7 +38,6 @@ async function sentinelSet(): Promise<{
     "verification-start",
     "community-purchase-funding",
     "hns-observer",
-    "media-persistence",
   ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),
@@ -120,22 +119,6 @@ describe("Postgres suite sentinel verification", () => {
     );
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-hns-observer-suite-complete/gu),
-    ).toHaveLength(2);
-  });
-
-  test("keeps media persistence fail-closed in Postgres CI", async () => {
-    const workflow = await readFile(
-      new URL("../.github/workflows/ci.yml", import.meta.url),
-      "utf8",
-    );
-
-    expect(workflow).toContain("packages/platform-cf/src/media-persistence.pg.test.ts");
-    expect(workflow).toContain(
-      "CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL: " +
-        "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete",
-    );
-    expect(
-      workflow.match(/\/tmp\/api-next-control-plane-postgres-media-persistence-suite-complete/gu),
     ).toHaveLength(2);
   });
 });

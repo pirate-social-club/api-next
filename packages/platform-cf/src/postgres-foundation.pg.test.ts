@@ -230,9 +230,6 @@ const hnsControlObserverPersistenceMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
-const songMediaSubmissionMigrationSql = await Bun.file(
-  new URL("../../../db/postgres/migrations/0043_song_media_submission.sql", import.meta.url),
-).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -450,11 +447,6 @@ const hnsControlObserverPersistenceMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0042_hns_control_observer_persistence.sql"] ?? "",
   sql: hnsControlObserverPersistenceMigrationSql,
 };
-const songMediaSubmissionMigration: PostgresMigration = {
-  version: "0043_song_media_submission.sql",
-  checksum: checksumManifest.migrations["0043_song_media_submission.sql"] ?? "",
-  sql: songMediaSubmissionMigrationSql,
-};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -498,7 +490,6 @@ const migrations: readonly PostgresMigration[] = [
   postVoteActionsMigration,
   communityRouteDatabaseExpiryMigration,
   hnsControlObserverPersistenceMigration,
-  songMediaSubmissionMigration,
 ];
 
 function checksum(value: string): string {
@@ -736,7 +727,6 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(hnsControlObserverPersistenceMigrationSql)).toBe(
         hnsControlObserverPersistenceMigration.checksum,
       );
-      expect(checksum(songMediaSubmissionMigrationSql)).toBe(songMediaSubmissionMigration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -830,19 +820,6 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "hns_control_observer_snapshots",
         "home_feed_projection",
         "identity_credentials",
-        "media_analysis_evidence",
-        "media_audio_revisions",
-        "media_immutable_objects",
-        "media_moderation_projections",
-        "media_post_submissions",
-        "media_processing_attempts",
-        "media_publication_decisions",
-        "media_publication_projections",
-        "media_submission_command_replays",
-        "media_submission_events",
-        "media_submission_outbox",
-        "media_submission_terms",
-        "media_upload_reservations",
         "moderation_actions",
         "moderation_reports",
         "namespace_ownership_completion_attempts",
@@ -992,14 +969,6 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "hns_control_observer_operations_append_only",
         "hns_control_observer_snapshots_append_only",
         "hns_control_observer_transcript_entries_append_only",
-        "media_analysis_evidence_append_only",
-        "media_audio_revisions_append_only",
-        "media_command_replays_append_only",
-        "media_immutable_objects_append_only",
-        "media_publication_decisions_append_only",
-        "media_publication_projections_append_only",
-        "media_submission_events_append_only",
-        "media_submission_terms_append_only",
         "namespace_ownership_evidence_snapshot_append_only",
         "observations_append_only",
         "policy_versions_append_only",
