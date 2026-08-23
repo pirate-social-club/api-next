@@ -3,11 +3,78 @@ import {
   type ControlPlaneError,
   type ControlPlaneTransaction,
 } from "@pirate/application";
-import { deterministicMediaWorkflowInstanceId } from "@pirate/domain";
 import { Data, Effect } from "effect";
+import {
+  deterministicMediaWorkflowInstanceId,
+  type MediaOutboxPayload,
+} from "../../domain/src/media-submission.ts";
 
 type Row = Readonly<Record<string, unknown>>;
+type EventType = "analysis_launch" | "publication" | "alignment";
 const ID = /^\S(?:.*\S)?$/u;
+const validId = (value: unknown): value is string =>
+  typeof value === "string" && value.length <= 512 && !value.includes("\u0000") && ID.test(value);
+const integer = (value: unknown): number | null => {
+  if (typeof value === "number" && Number.isSafeInteger(value)) return value;
+  if (typeof value !== "string" || !/^[0-9]+$/u.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+};
+const decoded = (value: unknown): Record<string, unknown> | null => {
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+};
+const keys = (value: Record<string, unknown>) => Object.keys(value).sort().join(",");
+const payloadFor = (value: unknown, kind: EventType): MediaOutboxPayload | null => {
+  const object = decoded(value);
+  if (object === null) return null;
+  const expected =
+    kind === "analysis_launch"
+      ? "analysis_revision,audio_revision,kind,operation_id,submission_id,workflow_instance_id,workflow_revision"
+      : "kind,operation_id,post_id,submission_id,workflow_instance_id,workflow_revision";
+  if (
+    keys(object) !== expected ||
+    object.kind !== kind ||
+    !validId(object.submission_id) ||
+    !validId(object.operation_id) ||
+    !validId(object.workflow_instance_id)
+  )
+    return null;
+  if (
+    kind === "analysis_launch" &&
+    ![object.audio_revision, object.analysis_revision, object.workflow_revision].every(
+      (n) => typeof n === "number" && Number.isSafeInteger(n) && n >= 0,
+    )
+  )
+    return null;
+  if (
+    kind !== "analysis_launch" &&
+    (!validId(object.post_id) ||
+      !Number.isSafeInteger(object.workflow_revision) ||
+      (object.workflow_revision as number) < 1)
+  )
+    return null;
+  return object as unknown as MediaOutboxPayload;
+};
+const payloadMatchesInput = (
+  payload: MediaOutboxPayload,
+  input: MediaOutboxEnqueueInput,
+): boolean =>
+  payload.submission_id === input.submissionId &&
+  payload.operation_id === input.operationId &&
+  payload.workflow_instance_id === input.workflowInstanceId &&
+  payload.workflow_revision === input.workflowRevision &&
+  (payload.kind === "analysis_launch"
+    ? payload.audio_revision === input.audioRevision
+    : validId(payload.post_id));
 
 export class MediaOutboxRepositoryError extends Data.TaggedError("MediaOutboxRepositoryError")<{
   readonly operation: "enqueue" | "get" | "claim" | "deliver" | "fail";
@@ -20,48 +87,46 @@ export class MediaOutboxRepositoryError extends Data.TaggedError("MediaOutboxRep
   readonly outboxEventId?: string;
 }> {}
 export type MediaOutboxRepositoryFailure = MediaOutboxRepositoryError | ControlPlaneError;
-
 export type MediaOutboxRecord = Readonly<{
   outboxEventId: string;
   submissionId: string;
   communityId: string;
+  actorUserId: string;
   operationId: string;
   creationRevision: number;
   audioRevision: number;
   analysisRevision: number;
   workflowRevision: number;
   workflowInstanceId: string;
-  eventType: "analysis_launch" | "publication";
+  eventType: EventType;
   effectIdentity: string;
-  payload: Readonly<Record<string, unknown>>;
+  payload: MediaOutboxPayload;
   state: "pending" | "claimed" | "delivered" | "failed";
   deliveryAttempts: number;
   claimOwner: string | null;
   claimFence: number;
 }>;
-
 export type MediaOutboxEnqueueInput = Readonly<{
   outboxEventId: string;
   submissionId: string;
   communityId: string;
+  actorUserId: string;
   operationId: string;
   creationRevision: number;
   audioRevision: number;
   analysisRevision: number;
   workflowRevision: number;
   workflowInstanceId: string;
-  eventType: MediaOutboxRecord["eventType"];
+  eventType: EventType;
   effectIdentity: string;
-  payload: Readonly<Record<string, unknown>>;
+  payload: MediaOutboxPayload;
 }>;
-
 export type MediaOutboxClaimInput = Readonly<{
   outboxEventId: string;
   workflowRevision: number;
   workerId: string;
   leaseSeconds: number;
 }>;
-
 export type MediaOutboxCompletionInput = Readonly<{
   outboxEventId: string;
   workflowRevision: number;
@@ -69,50 +134,26 @@ export type MediaOutboxCompletionInput = Readonly<{
   workerId: string;
   claimFence: number;
 }>;
-
 export type MediaOutboxStore = {
-  enqueue: (
+  enqueue(
     input: MediaOutboxEnqueueInput,
-  ) => Effect.Effect<
-    | { readonly kind: "created"; readonly outboxEventId: string }
-    | { readonly kind: "replay"; readonly outboxEventId: string },
+  ): Effect.Effect<
+    { readonly kind: "created" | "replay"; readonly outboxEventId: string },
     MediaOutboxRepositoryFailure,
     ControlPlaneDb
   >;
-  get: (
+  get(
     outboxEventId: string,
-  ) => Effect.Effect<MediaOutboxRecord | null, MediaOutboxRepositoryFailure, ControlPlaneDb>;
-  claim: (
+  ): Effect.Effect<MediaOutboxRecord | null, MediaOutboxRepositoryFailure, ControlPlaneDb>;
+  claim(
     input: MediaOutboxClaimInput,
-  ) => Effect.Effect<MediaOutboxRecord | null, MediaOutboxRepositoryFailure, ControlPlaneDb>;
-  markDelivered: (
+  ): Effect.Effect<MediaOutboxRecord | null, MediaOutboxRepositoryFailure, ControlPlaneDb>;
+  markDelivered(
     input: MediaOutboxCompletionInput,
-  ) => Effect.Effect<boolean, MediaOutboxRepositoryFailure, ControlPlaneDb>;
-  markFailed: (
+  ): Effect.Effect<boolean, MediaOutboxRepositoryFailure, ControlPlaneDb>;
+  markFailed(
     input: MediaOutboxCompletionInput & { failureCode: string; nextEligibleAt: string },
-  ) => Effect.Effect<boolean, MediaOutboxRepositoryFailure, ControlPlaneDb>;
-};
-
-const validId = (value: unknown): value is string =>
-  typeof value === "string" && value.length <= 512 && !value.includes("\u0000") && ID.test(value);
-const integer = (value: unknown): number | null => {
-  if (typeof value === "number" && Number.isSafeInteger(value)) return value;
-  if (typeof value !== "string" || !/^-?[0-9]+$/u.test(value)) return null;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : null;
-};
-const payload = (value: unknown): Readonly<Record<string, unknown>> | null => {
-  if (typeof value === "object" && value !== null && !Array.isArray(value))
-    return value as Readonly<Record<string, unknown>>;
-  if (typeof value !== "string") return null;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? (parsed as Readonly<Record<string, unknown>>)
-      : null;
-  } catch {
-    return null;
-  }
+  ): Effect.Effect<boolean, MediaOutboxRepositoryFailure, ControlPlaneDb>;
 };
 const fail = (
   operation: MediaOutboxRepositoryError["operation"],
@@ -131,23 +172,28 @@ const lock = (tx: ControlPlaneTransaction, value: string) =>
     values: [value],
     readonly: false,
   });
-
 function decodeRecord(
   row: Row,
   operation: MediaOutboxRepositoryError["operation"],
 ): MediaOutboxRecord {
-  const creationRevision = integer(row.creation_revision);
-  const audioRevision = integer(row.audio_revision);
-  const analysisRevision = integer(row.analysis_revision);
-  const workflowRevision = integer(row.workflow_revision);
-  const deliveryAttempts = integer(row.delivery_attempts);
-  const claimFence = integer(row.claim_fence);
-  const decodedPayload = payload(row.payload);
+  const creationRevision = integer(row.creation_revision),
+    audioRevision = integer(row.audio_revision),
+    analysisRevision = integer(row.analysis_revision),
+    workflowRevision = integer(row.workflow_revision),
+    attempts = integer(row.delivery_attempts),
+    fence = integer(row.claim_fence);
+  const eventType = String(row.event_type) as EventType;
+  const payload = payloadFor(row.payload, eventType);
   if (
-    !validId(row.outbox_event_id) ||
-    !validId(row.submission_id) ||
-    !validId(row.community_id) ||
-    !validId(row.operation_id) ||
+    ![
+      row.outbox_event_id,
+      row.submission_id,
+      row.community_id,
+      row.actor_user_id,
+      row.operation_id,
+      row.workflow_instance_id,
+      row.effect_identity,
+    ].every(validId) ||
     creationRevision === null ||
     creationRevision < 1 ||
     audioRevision === null ||
@@ -156,17 +202,15 @@ function decodeRecord(
     analysisRevision < 0 ||
     workflowRevision === null ||
     workflowRevision < 1 ||
-    !validId(row.workflow_instance_id) ||
     row.workflow_instance_id !==
-      deterministicMediaWorkflowInstanceId(row.operation_id, workflowRevision) ||
-    !["analysis_launch", "publication"].includes(String(row.event_type)) ||
-    !validId(row.effect_identity) ||
-    decodedPayload === null ||
+      deterministicMediaWorkflowInstanceId(String(row.operation_id), workflowRevision) ||
+    !["analysis_launch", "publication", "alignment"].includes(eventType) ||
+    payload === null ||
+    attempts === null ||
+    attempts < 0 ||
+    fence === null ||
+    fence < 0 ||
     !["pending", "claimed", "delivered", "failed"].includes(String(row.state)) ||
-    deliveryAttempts === null ||
-    deliveryAttempts < 0 ||
-    claimFence === null ||
-    claimFence < 0 ||
     (row.claim_owner !== null && !validId(row.claim_owner))
   )
     throw fail(
@@ -175,58 +219,60 @@ function decodeRecord(
       typeof row.outbox_event_id === "string" ? row.outbox_event_id : undefined,
     );
   return {
-    outboxEventId: row.outbox_event_id,
-    submissionId: row.submission_id,
-    communityId: row.community_id,
-    operationId: row.operation_id,
+    outboxEventId: row.outbox_event_id as string,
+    submissionId: row.submission_id as string,
+    communityId: row.community_id as string,
+    actorUserId: row.actor_user_id as string,
+    operationId: row.operation_id as string,
     creationRevision,
     audioRevision,
     analysisRevision,
     workflowRevision,
-    workflowInstanceId: row.workflow_instance_id,
-    eventType: row.event_type as MediaOutboxRecord["eventType"],
-    effectIdentity: row.effect_identity,
-    payload: decodedPayload,
+    workflowInstanceId: row.workflow_instance_id as string,
+    eventType,
+    effectIdentity: row.effect_identity as string,
+    payload,
     state: row.state as MediaOutboxRecord["state"],
-    deliveryAttempts,
+    deliveryAttempts: attempts,
     claimOwner: row.claim_owner as string | null,
-    claimFence,
+    claimFence: fence,
   };
 }
-
-const decode = (
-  row: Row,
-  operation: MediaOutboxRepositoryError["operation"],
-  outboxEventId?: string,
-) =>
+const decode = (row: Row, operation: MediaOutboxRepositoryError["operation"], id?: string) =>
   Effect.try({
     try: () => decodeRecord(row, operation),
     catch: (error) =>
-      error instanceof MediaOutboxRepositoryError
-        ? error
-        : fail(operation, "invalid-row", outboxEventId),
+      error instanceof MediaOutboxRepositoryError ? error : fail(operation, "invalid-row", id),
   });
 
 export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
   const enqueue: MediaOutboxStore["enqueue"] = (input) =>
     Effect.gen(function* () {
+      const checkedPayload = payloadFor(input.payload, input.eventType);
       if (
-        !validId(input.outboxEventId) ||
-        !validId(input.submissionId) ||
-        !validId(input.communityId) ||
-        !validId(input.operationId) ||
-        !Number.isSafeInteger(input.creationRevision) ||
+        ![
+          input.outboxEventId,
+          input.submissionId,
+          input.communityId,
+          input.actorUserId,
+          input.operationId,
+          input.workflowInstanceId,
+          input.effectIdentity,
+        ].every(validId) ||
+        ![
+          input.creationRevision,
+          input.audioRevision,
+          input.analysisRevision,
+          input.workflowRevision,
+        ].every((n) => Number.isSafeInteger(n)) ||
         input.creationRevision < 1 ||
-        !Number.isSafeInteger(input.audioRevision) ||
         input.audioRevision < 1 ||
-        !Number.isSafeInteger(input.analysisRevision) ||
         input.analysisRevision < 0 ||
-        !Number.isSafeInteger(input.workflowRevision) ||
         input.workflowRevision < 1 ||
         input.workflowInstanceId !==
           deterministicMediaWorkflowInstanceId(input.operationId, input.workflowRevision) ||
-        !["analysis_launch", "publication"].includes(input.eventType) ||
-        !validId(input.effectIdentity)
+        checkedPayload === null ||
+        !payloadMatchesInput(checkedPayload, input)
       )
         return yield* Effect.fail(fail("enqueue", "invalid-input", input.outboxEventId));
       const db = yield* ControlPlaneDb;
@@ -235,7 +281,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
           yield* lock(tx, input.effectIdentity);
           const prior = yield* tx.execute<Row>({
             label: "media-outbox.enqueue.replay",
-            text: "SELECT * FROM media_submission_outbox WHERE effect_identity = $1 FOR UPDATE",
+            text: "SELECT * FROM media_submission_outbox WHERE effect_identity=$1 FOR UPDATE",
             values: [input.effectIdentity],
             readonly: false,
           });
@@ -247,12 +293,9 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
               current.outboxEventId !== input.outboxEventId ||
               current.submissionId !== input.submissionId ||
               current.communityId !== input.communityId ||
+              current.actorUserId !== input.actorUserId ||
               current.operationId !== input.operationId ||
-              current.creationRevision !== input.creationRevision ||
-              current.audioRevision !== input.audioRevision ||
-              current.analysisRevision !== input.analysisRevision ||
               current.workflowRevision !== input.workflowRevision ||
-              current.workflowInstanceId !== input.workflowInstanceId ||
               current.eventType !== input.eventType ||
               JSON.stringify(current.payload) !== JSON.stringify(input.payload)
             )
@@ -261,16 +304,12 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
           }
           const result = yield* tx.execute({
             label: "media-outbox.enqueue",
-            text: `INSERT INTO media_submission_outbox (
-                     outbox_event_id, submission_id, community_id, operation_id,
-                     creation_revision, audio_revision, analysis_revision,
-                     workflow_revision, workflow_instance_id, event_type,
-                     effect_identity, payload
-                   ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb)`,
+            text: "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)",
             values: [
               input.outboxEventId,
               input.submissionId,
               input.communityId,
+              input.actorUserId,
               input.operationId,
               input.creationRevision,
               input.audioRevision,
@@ -289,24 +328,20 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
         }),
       );
     });
-
-  const get: MediaOutboxStore["get"] = (outboxEventId) =>
+  const get: MediaOutboxStore["get"] = (id) =>
     Effect.gen(function* () {
-      if (!validId(outboxEventId))
-        return yield* Effect.fail(fail("get", "invalid-input", outboxEventId));
+      if (!validId(id)) return yield* Effect.fail(fail("get", "invalid-input", id));
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "media-outbox.get",
-        text: "SELECT * FROM media_submission_outbox WHERE outbox_event_id = $1",
-        values: [outboxEventId],
+        text: "SELECT * FROM media_submission_outbox WHERE outbox_event_id=$1",
+        values: [id],
         readonly: true,
       });
       if (result.rows.length === 0) return null;
-      if (result.rows.length !== 1)
-        return yield* Effect.fail(fail("get", "invalid-row", outboxEventId));
-      return yield* decode(result.rows[0] as Row, "get", outboxEventId);
+      if (result.rows.length !== 1) return yield* Effect.fail(fail("get", "invalid-row", id));
+      return yield* decode(result.rows[0] as Row, "get", id);
     });
-
   const claim: MediaOutboxStore["claim"] = (input) =>
     Effect.gen(function* () {
       if (
@@ -316,25 +351,13 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
         input.workflowRevision < 1 ||
         !Number.isSafeInteger(input.leaseSeconds) ||
         input.leaseSeconds < 1 ||
-        input.leaseSeconds > 3_600
+        input.leaseSeconds > 3600
       )
         return yield* Effect.fail(fail("claim", "invalid-input", input.outboxEventId));
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "media-outbox.claim",
-        text: `UPDATE media_submission_outbox
-                  SET state = 'claimed', delivery_attempts = delivery_attempts + 1,
-                      claim_owner = $1, claim_fence = claim_fence + 1,
-                      lease_expires_at = clock_timestamp() + make_interval(secs => $2),
-                      next_eligible_at = NULL, failure_code = NULL,
-                      updated_at = clock_timestamp()
-                WHERE outbox_event_id = $3 AND workflow_revision = $4
-                  AND (
-                    state = 'pending'
-                    OR (state = 'failed' AND next_eligible_at <= clock_timestamp())
-                    OR (state = 'claimed' AND lease_expires_at <= clock_timestamp())
-                  )
-                RETURNING *`,
+        text: "UPDATE media_submission_outbox SET state='claimed',delivery_attempts=delivery_attempts+1,claim_owner=$1,claim_fence=claim_fence+1,lease_expires_at=clock_timestamp()+make_interval(secs=>$2),next_eligible_at=NULL,failure_code=NULL,updated_at=clock_timestamp() WHERE outbox_event_id=$3 AND workflow_revision=$4 AND (state='pending' OR (state='failed' AND next_eligible_at<=clock_timestamp()) OR (state='claimed' AND lease_expires_at<=clock_timestamp())) RETURNING *",
         values: [input.workerId, input.leaseSeconds, input.outboxEventId, input.workflowRevision],
         readonly: false,
       });
@@ -343,7 +366,6 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
         return yield* Effect.fail(fail("claim", "invalid-row", input.outboxEventId));
       return yield* decode(result.rows[0] as Row, "claim", input.outboxEventId);
     });
-
   const markDelivered: MediaOutboxStore["markDelivered"] = (input) =>
     Effect.gen(function* () {
       if (
@@ -359,14 +381,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute({
         label: "media-outbox.deliver",
-        text: `UPDATE media_submission_outbox
-                  SET state = 'delivered', claim_owner = NULL, lease_expires_at = NULL,
-                      delivered_at = clock_timestamp(), failure_code = NULL,
-                      next_eligible_at = NULL, updated_at = clock_timestamp()
-                WHERE outbox_event_id = $1 AND workflow_revision = $2
-                  AND workflow_instance_id = $3 AND state = 'claimed'
-                  AND claim_owner = $4 AND claim_fence = $5
-                  AND lease_expires_at > clock_timestamp()`,
+        text: "UPDATE media_submission_outbox SET state='delivered',claim_owner=NULL,lease_expires_at=NULL,delivered_at=clock_timestamp(),failure_code=NULL,next_eligible_at=NULL,updated_at=clock_timestamp() WHERE outbox_event_id=$1 AND workflow_revision=$2 AND workflow_instance_id=$3 AND state='claimed' AND claim_owner=$4 AND claim_fence=$5 AND lease_expires_at>clock_timestamp()",
         values: [
           input.outboxEventId,
           input.workflowRevision,
@@ -378,7 +393,6 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       });
       return result.rowCount === 1;
     });
-
   const markFailed: MediaOutboxStore["markFailed"] = (input) =>
     Effect.gen(function* () {
       if (
@@ -396,14 +410,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute({
         label: "media-outbox.fail",
-        text: `UPDATE media_submission_outbox
-                  SET state = 'failed', claim_owner = NULL, lease_expires_at = NULL,
-                      failure_code = $1, next_eligible_at = $2::timestamptz,
-                      updated_at = clock_timestamp()
-                WHERE outbox_event_id = $3 AND workflow_revision = $4
-                  AND workflow_instance_id = $5 AND state = 'claimed'
-                  AND claim_owner = $6 AND claim_fence = $7
-                  AND lease_expires_at > clock_timestamp()`,
+        text: "UPDATE media_submission_outbox SET state='failed',claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,next_eligible_at=$2::timestamptz,updated_at=clock_timestamp() WHERE outbox_event_id=$3 AND workflow_revision=$4 AND workflow_instance_id=$5 AND state='claimed' AND claim_owner=$6 AND claim_fence=$7 AND lease_expires_at>clock_timestamp()",
         values: [
           input.failureCode,
           input.nextEligibleAt,
@@ -417,9 +424,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       });
       return result.rowCount === 1;
     });
-
   return { enqueue, get, claim, markDelivered, markFailed };
 }
-
 export const makeMediaOutboxRepository = makeControlPlaneMediaOutboxRepository;
 export const makeControlPlaneMediaOutboxStore = makeControlPlaneMediaOutboxRepository;
