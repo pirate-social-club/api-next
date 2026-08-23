@@ -279,7 +279,7 @@ export async function listInfisicalSecretNames(input: {
       projectId: input.projectId,
       environment: input.environment,
       secretPath: normalisePath(input.path),
-      viewSecretValue: "false",
+      viewSecretValue: "true",
       expandSecretReferences: "false",
       recursive: "false",
     }),
