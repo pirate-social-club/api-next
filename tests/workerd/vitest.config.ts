@@ -4,6 +4,10 @@ import { defineConfig } from "vitest/config";
 // Workspace packages resolve to source so the workerd pool bundles one
 // program for both the worker main and the test modules.
 const alias = {
+  "@pirate/application/route-revalidation": new URL(
+    "../../packages/application/src/route-revalidation/index.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/verification": new URL(
     "../../packages/application/src/verification/index.ts",
     import.meta.url,

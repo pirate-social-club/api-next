@@ -33,6 +33,7 @@ export const HNS_OWNER_RECOVERY_EVIDENCE_VERSION = "pirate-hns-owner-recovery-ev
 export const HNS_OWNER_RECOVERY_RESULT_VERSION = "pirate-hns-owner-recovery-result-v1" as const;
 export const HNS_OWNER_RECOVERY_START_REQUEST_MAX_BYTES = 1_024 as const;
 export const HNS_OWNER_RECOVERY_PROVIDER_START_MAX_BYTES = 8_192 as const;
+export const HNS_OWNER_RECOVERY_PROVIDER_START_RESPONSE_MAX_BYTES = 65_536 as const;
 export const HNS_OWNER_RECOVERY_POLL_REQUEST_MAX_BYTES = 2_048 as const;
 export const HNS_OWNER_RECOVERY_PROVIDER_POLL_MAX_BYTES = 32_768 as const;
 export const HNS_OWNER_RECOVERY_PROVIDER_RESPONSE_MAX_BYTES = 1_048_576 as const;
@@ -1255,13 +1256,39 @@ export async function encodeHnsOwnerRecoveryProviderPoll(
     "HNS owner-recovery provider poll is invalid",
   );
   await validateHnsOwnerRecoveryPersistedSession(decoded.session, authority);
+  return encodeHnsOwnerRecoveryProviderPollRequest(decoded);
+}
+
+/**
+ * Canonical transport encoding after the application has already validated
+ * the persisted session authority. The private adapter receives no separate
+ * authority document and must not reconstruct or reorder this wire body.
+ */
+export function encodeHnsOwnerRecoveryProviderPollRequest(
+  input: HnsOwnerSameRootRecoveryProviderPollV1,
+): Uint8Array {
   assertOrder(
-    decoded,
+    input,
     ["operation_kind", "protocol_version", "session", "payload"],
     "HNS owner-recovery provider poll is reordered",
   );
-  assertOrder(decoded.session, persistedSessionKeys, "HNS owner-recovery session is reordered");
-  assertOrder(decoded.payload, [], "HNS owner-recovery poll payload is not empty");
+  assertOrder(input.session, persistedSessionKeys, "HNS owner-recovery session is reordered");
+  assertOrder(
+    input.session.provider_configuration,
+    ["kind", "reference", "version", "digest"],
+    "HNS owner-recovery provider configuration is reordered",
+  );
+  assertOrder(
+    input.session.route,
+    ["family", "root_label", "root_label_display", "path_segment", "href", "app_host"],
+    "HNS owner-recovery route is reordered",
+  );
+  assertOrder(input.payload, [], "HNS owner-recovery poll payload is not empty");
+  const decoded = decodeSchema(
+    ProviderPollSchema,
+    input,
+    "HNS owner-recovery provider poll is invalid",
+  );
   const bytes = encoder.encode(JSON.stringify(decoded));
   if (bytes.byteLength > HNS_OWNER_RECOVERY_PROVIDER_POLL_MAX_BYTES) {
     throw new HnsOwnerRecoveryDecodeError("HNS owner-recovery provider poll exceeds byte limit");
@@ -1526,6 +1553,36 @@ export async function buildHnsOwnerRecoveryEvidence(
 export type HnsOwnerRecoveryProviderStartResponseV1 = Schema.Schema.Type<
   typeof ProviderStartResponseSchema
 >;
+
+export function decodeHnsOwnerRecoveryProviderStartResponseBytes(
+  value: Uint8Array,
+): HnsOwnerRecoveryProviderStartResponseV1 {
+  const json = decodeStrictHnsJsonBytes(
+    value,
+    HNS_OWNER_RECOVERY_PROVIDER_START_RESPONSE_MAX_BYTES,
+  );
+  assertOrder(
+    json,
+    ["upstream_session_ref", "expires_at", "presentation"],
+    "HNS owner-recovery provider start response is reordered",
+  );
+  const response = decodeSchema(
+    ProviderStartResponseSchema,
+    json,
+    "HNS owner-recovery provider start response is invalid",
+  );
+  assertOrder(
+    response.presentation,
+    ["kind", "session_id", "protocol", "version", "payload"],
+    "HNS owner-recovery provider presentation is reordered",
+  );
+  assertOrder(
+    response.presentation.payload,
+    ["ownership_source", "challenge_name", "challenge_value", "expires_at"],
+    "HNS owner-recovery provider challenge is reordered",
+  );
+  return response;
+}
 
 export async function finalizeHnsOwnerRecoveryProviderStart(
   input: Readonly<{

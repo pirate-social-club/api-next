@@ -101,6 +101,12 @@ export {
   makeHnsOwnerAdapter,
 } from "./namespace-ownership/hns-owner";
 export {
+  HNS_OWNER_RECOVERY_POLL_DEADLINE_MS,
+  HNS_OWNER_RECOVERY_START_DEADLINE_MS,
+  type HnsOwnerRecoveryServiceBindingProvider,
+  makeHnsOwnerRecoveryServiceBindingProvider,
+} from "./namespace-ownership/hns-owner-recovery-service-binding";
+export {
   HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
   HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS,
   type HnsOwnerRouteRevalidationTransport,

@@ -6,9 +6,11 @@ import {
   buildHnsOwnerRecoveryProviderStart,
   classifyHnsOwnerRecoveryTargetResponse,
   decodeHnsOwnerRecoveryPollRequestBytes,
+  decodeHnsOwnerRecoveryProviderStartResponseBytes,
   decodeHnsOwnerRecoveryStartRequestBytes,
   decodeHnsOwnerRecoveryTargetResponseBytes,
   encodeHnsOwnerRecoveryProviderPoll,
+  encodeHnsOwnerRecoveryProviderPollRequest,
   encodeHnsOwnerRecoveryProviderStart,
   finalizeHnsOwnerRecoveryProviderStart,
   type HnsOwnerRecoveryAuthorityV1,
@@ -256,6 +258,56 @@ describe("HNS owner-initiated recovery protocol kernel", () => {
         },
       }),
     ).rejects.toThrow();
+  });
+
+  test("owns exact private start decoding and authority-free poll transport encoding", async () => {
+    const startResponse = providerStartResponse();
+    expect(decodeHnsOwnerRecoveryProviderStartResponseBytes(utf8(startResponse))).toEqual(
+      startResponse,
+    );
+    expect(() =>
+      decodeHnsOwnerRecoveryProviderStartResponseBytes(
+        utf8({
+          expires_at: startResponse.expires_at,
+          upstream_session_ref: startResponse.upstream_session_ref,
+          presentation: startResponse.presentation,
+        }),
+      ),
+    ).toThrow();
+    expect(() =>
+      decodeHnsOwnerRecoveryProviderStartResponseBytes(
+        utf8({ ...startResponse, provider_diagnostic: "not-public" }),
+      ),
+    ).toThrow();
+    const exactBytes = utf8(startResponse);
+    const duplicateBytes = new TextEncoder().encode(
+      new TextDecoder()
+        .decode(exactBytes)
+        .replace(
+          '{"upstream_session_ref":"nvs_recovery_01",',
+          '{"upstream_session_ref":"nvs_recovery_01","upstream_session_ref":"nvs_recovery_01",',
+        ),
+    );
+    expect(() => decodeHnsOwnerRecoveryProviderStartResponseBytes(duplicateBytes)).toThrow();
+    expect(() =>
+      decodeHnsOwnerRecoveryProviderStartResponseBytes(
+        new Uint8Array([0xef, 0xbb, 0xbf, ...exactBytes]),
+      ),
+    ).toThrow();
+
+    const session = await fixtureSession();
+    const poll = await buildHnsOwnerRecoveryProviderPoll(session, persistedAuthority(session));
+    expect(encodeHnsOwnerRecoveryProviderPollRequest(poll)).toEqual(
+      await encodeHnsOwnerRecoveryProviderPoll(poll, persistedAuthority(session)),
+    );
+    expect(() =>
+      encodeHnsOwnerRecoveryProviderPollRequest({
+        protocol_version: poll.protocol_version,
+        operation_kind: poll.operation_kind,
+        session: poll.session,
+        payload: poll.payload,
+      }),
+    ).toThrow();
   });
 
   test("reproduces the verified evidence and terminal result vectors", async () => {

@@ -71,19 +71,19 @@ function jsonBytes(value: unknown, maxBytes: number, operation: Operation): Uint
   return bytes;
 }
 
-async function boundedResponseBytes(
+export async function readBoundedHnsOwnerServiceBindingResponse(
   response: Response,
   maxBytes: number,
-  operation: Operation,
+  invalidFailure: () => Error,
 ): Promise<Uint8Array> {
   const declaredHeader = response.headers.get("content-length");
   if (declaredHeader !== null) {
     const declared = Number(declaredHeader);
     if (!Number.isSafeInteger(declared) || declared < 1 || declared > maxBytes) {
-      throw invalid(operation);
+      throw invalidFailure();
     }
   }
-  if (response.body === null) throw invalid(operation);
+  if (response.body === null) throw invalidFailure();
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -99,14 +99,14 @@ async function boundedResponseBytes(
           // Preserve the bounded-response classification if cancellation races
           // the provider closing the stream.
         }
-        throw invalid(operation);
+        throw invalidFailure();
       }
       chunks.push(part.value);
     }
   } finally {
     reader.releaseLock();
   }
-  if (total === 0) throw invalid(operation);
+  if (total === 0) throw invalidFailure();
   const bytes = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
@@ -116,7 +116,7 @@ async function boundedResponseBytes(
   return bytes;
 }
 
-async function discardResponseBody(response: Response): Promise<void> {
+export async function discardHnsOwnerServiceBindingResponse(response: Response): Promise<void> {
   try {
     await response.body?.cancel();
   } catch {
@@ -132,21 +132,21 @@ async function mappedResponse(
   maxBytes: number,
 ): Promise<Uint8Array> {
   if (response.status === 429 || response.status >= 500) {
-    await discardResponseBody(response);
+    await discardHnsOwnerServiceBindingResponse(response);
     throw unavailable(operation);
   }
   if ([400, 404, 409, 422].includes(response.status)) {
-    await discardResponseBody(response);
+    await discardHnsOwnerServiceBindingResponse(response);
     throw rejected(operation);
   }
   if (
     response.status !== 200 ||
     response.headers.get("content-type")?.toLowerCase() !== contentType
   ) {
-    await discardResponseBody(response);
+    await discardHnsOwnerServiceBindingResponse(response);
     throw invalid(operation);
   }
-  return boundedResponseBytes(response, maxBytes, operation);
+  return readBoundedHnsOwnerServiceBindingResponse(response, maxBytes, () => invalid(operation));
 }
 
 function request(
