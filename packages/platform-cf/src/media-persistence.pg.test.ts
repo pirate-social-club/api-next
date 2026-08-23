@@ -25,7 +25,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 10;
+const testCount = 12;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -690,6 +690,99 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
+  test("persists upload expectation mismatch with its typed event and retention", async () => {
+    await withSchema(async (admin, connection) => {
+      expect(
+        await run(connection, (store) =>
+          store.reserve({
+            communityId: community,
+            actorUserId: actor,
+            idempotencyKey: "mismatch-reserve",
+            requestHash,
+            expectedContentType: "audio/mpeg",
+            expectedSizeBytes: audioBytes.byteLength,
+            expectedSha256: audioSha256,
+            uploadUrl: "https://upload.test/media",
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            responseBytes,
+            responseSha256,
+            reservationId: reservation,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.createSubmission({
+            communityId: community,
+            actorUserId: actor,
+            idempotencyKey: "mismatch-create",
+            requestHash,
+            title: "Fixture song",
+            songType: "original",
+            reservationId: reservation,
+            submissionId: submission,
+            operationId: operation,
+            responseBytes,
+            responseSha256,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.uploadExpectationMismatch({
+            ...command("/media-post-submissions/:submissionId/upload-mismatch", "mismatch-key"),
+            expectedCreationRevision: 1,
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      expect(
+        (
+          await admin.query(
+            "SELECT status,abandonment_reason,retention_disposition FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "abandoned",
+        abandonment_reason: "upload_expectation_mismatch",
+        retention_disposition: "retain_for_reconciliation",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT event_kind FROM media_submission_events WHERE submission_id=$1 ORDER BY event_sequence DESC LIMIT 1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ event_kind: "upload_expectation_mismatch_recorded" });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("rejects forged ordinary exhaustion and pointer mutation at SQL transition fences", async () => {
+    await withSchema(async (_schemaAdmin, connection) => {
+      const admin = new Client({ connectionString: connection });
+      await admin.connect();
+      await createThroughDecision(connection, reviewDecision);
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "UPDATE media_post_submissions SET review_exhaustion_code='acr_exhausted',review_exhaustion_attempt_id='forged',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+          [submission],
+        ),
+      ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "UPDATE media_post_submissions SET current_immutable_ref='forged-pointer',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+          [submission],
+        ),
+      ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.end();
+    });
+    completedTestCount += 1;
+  }, 40_000);
   test("rejects hostile SQL state, snapshot, payload, replay, audio, and transcript lineage", async () => {
     await withSchema(async (_schemaAdmin, connection) => {
       const admin = new Client({ connectionString: connection });
@@ -914,7 +1007,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             ...command("/media-post-submissions/:submissionId/review", "acr-exhaustion-key"),
             expectedCreationRevision: 2,
             review: {
-              reviewRef: "review-acr-exhausted-evidence",
+              reviewRef: "review-acr-exhausted-case",
               heldRevision: 2,
               reasonCode: "review_required",
               exhaustionCode: "acr_exhausted",

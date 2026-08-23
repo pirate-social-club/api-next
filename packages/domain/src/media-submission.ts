@@ -790,7 +790,12 @@ export function transitionMediaSubmission(
         decision: null,
         decisionRevision: 0,
         status: "processing",
-        phase: current.terms === null ? "analysis" : "decision",
+        phase:
+          command.analysis.acr.decision === "inconclusive"
+            ? "analysis"
+            : current.terms === null
+              ? "analysis"
+              : "decision",
         failure: null,
       };
       break;
@@ -799,6 +804,7 @@ export function transitionMediaSubmission(
       if (
         command.expectedCreationRevision !== current.creationRevision ||
         current.status !== "processing" ||
+        current.phase !== "analysis" ||
         current.terms === null ||
         current.analysis === null ||
         current.analysis.acr.decision !== "inconclusive" ||
@@ -828,9 +834,11 @@ export function transitionMediaSubmission(
         command.expectedAudioRevision !== current.audioRevision ||
         command.expectedAnalysisRevision !== current.analysisRevision ||
         current.status !== "processing" ||
-        current.phase !== "decision" ||
+        !["analysis", "decision"].includes(current.phase ?? "") ||
         !validId(command.review.reviewRef) ||
         command.review.heldRevision !== current.creationRevision ||
+        command.review.exhaustionCode !== undefined ||
+        command.review.exhaustionAttemptId !== undefined ||
         command.decision.outcome !== "manual_review" ||
         command.decision.decisionRevision !== current.decisionRevision + 1 ||
         command.decision.creationRevision !== current.creationRevision ||
@@ -858,7 +866,9 @@ export function transitionMediaSubmission(
       if (
         command.expectedCreationRevision !== current.creationRevision ||
         current.status !== "processing" ||
-        command.failure.retryCount > 3
+        command.failure.retryCount > 3 ||
+        (command.event === "seal_conflict_recorded" &&
+          (command.failure.code !== "upload_seal_conflict" || command.failure.retryable))
       )
         return reject({
           _tag: "transition_not_allowed",
@@ -1160,7 +1170,9 @@ export function transitionMediaSubmission(
         command.expectedCreationRevision !== current.creationRevision ||
         current.audioRevision > 0 ||
         current.status !== "processing" ||
-        !["reserve", "awaiting_upload", "finalize"].includes(current.phase ?? "")
+        (command.event === "author_cancelled"
+          ? !["reserve", "awaiting_upload"].includes(current.phase ?? "")
+          : current.phase !== "awaiting_upload")
       )
         return reject({
           _tag: "transition_not_allowed",
@@ -1171,6 +1183,10 @@ export function transitionMediaSubmission(
         ...current,
         status: "abandoned",
         phase: null,
+        action: null,
+        review: null,
+        moderatorApproval: null,
+        failure: null,
         abandonment: { reason: command.event, retentionDisposition: "no_object" },
       };
       break;
@@ -1180,7 +1196,9 @@ export function transitionMediaSubmission(
       if (
         command.expectedCreationRevision !== current.creationRevision ||
         current.audioRevision > 0 ||
-        !["awaiting_upload", "finalize"].includes(current.phase ?? "")
+        (command.event === "upload_expectation_mismatch_recorded"
+          ? !["awaiting_upload", "finalize"].includes(current.phase ?? "")
+          : current.phase !== "finalize")
       )
         return reject({
           _tag: "transition_not_allowed",
@@ -1193,6 +1211,9 @@ export function transitionMediaSubmission(
         phase: null,
         abandonment: command.abandonment,
         action: null,
+        review: null,
+        moderatorApproval: null,
+        failure: null,
       };
       break;
     }

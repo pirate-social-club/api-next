@@ -394,6 +394,9 @@ export type MediaSubmissionStore = {
   recordTechnicalExhaustion(
     input: FailureInput,
   ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  recordSealConflict(
+    input: FailureInput,
+  ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   actionDeadlineElapsed(
     input: AbandonInput,
   ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
@@ -401,6 +404,12 @@ export type MediaSubmissionStore = {
     input: AbandonInput,
   ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   reservationExpire(
+    input: AbandonInput,
+  ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  uploadExpectationMismatch(
+    input: AbandonInput,
+  ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  uploadSourcePreconditionFailed(
     input: AbandonInput,
   ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   publish(
@@ -1635,7 +1644,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           if (operation === "review" && next.review?.exhaustionCode === "acr_exhausted") {
             const attempt = yield* tx.execute<Row>({
               label: "media-review.exhaustion-attempt",
-              text: "SELECT a.attempt_id FROM media_processing_attempts a WHERE a.attempt_id=$1 AND a.community_id=$2 AND a.actor_user_id=$3 AND a.submission_id=$4 AND a.operation_id=$5 AND a.stage='acr' AND a.input_kind='audio' AND a.audio_revision=$6 AND a.analysis_revision=$7 AND a.input_revision=$6 AND a.input_hash=$8 AND a.state='exhausted' AND a.retryable=FALSE AND a.failure_code IS NOT NULL AND a.evidence_ref=$9 AND a.attempt_number=3 AND NOT EXISTS (SELECT 1 FROM media_processing_attempts later WHERE later.community_id=a.community_id AND later.actor_user_id=a.actor_user_id AND later.submission_id=a.submission_id AND later.operation_id=a.operation_id AND later.stage='acr' AND later.attempt_number>a.attempt_number)",
+              text: "SELECT a.attempt_id FROM media_processing_attempts a WHERE a.attempt_id=$1 AND a.community_id=$2 AND a.actor_user_id=$3 AND a.submission_id=$4 AND a.operation_id=$5 AND a.stage='acr' AND a.input_kind='audio' AND a.audio_revision=$6 AND a.analysis_revision=$7 AND a.input_revision=$6 AND a.input_hash=$8 AND a.state='exhausted' AND a.retryable=FALSE AND a.failure_code IS NOT NULL AND a.attempt_number=3 AND NOT EXISTS (SELECT 1 FROM media_processing_attempts later WHERE later.community_id=a.community_id AND later.actor_user_id=a.actor_user_id AND later.submission_id=a.submission_id AND later.operation_id=a.operation_id AND later.stage='acr' AND later.attempt_number>a.attempt_number)",
               values: [
                 next.review.exhaustionAttemptId,
                 current.communityId,
@@ -1645,7 +1654,6 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 current.audioRevision,
                 current.analysisRevision,
                 current.audio?.canonicalSha256 ?? "",
-                next.review.reviewRef,
               ],
               readonly: true,
             });
@@ -1997,7 +2005,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
 
   const failureTransition = (
     input: FailureInput,
-    event: "media_failure_recorded" | "technical_exhaustion_recorded",
+    event: "media_failure_recorded" | "technical_exhaustion_recorded" | "seal_conflict_recorded",
   ) =>
     transitionSimple(
       "failure",
@@ -2027,35 +2035,74 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     failureTransition(input, "media_failure_recorded");
   const recordTechnicalExhaustion: MediaSubmissionStore["recordTechnicalExhaustion"] = (input) =>
     failureTransition(input, "technical_exhaustion_recorded");
+  const recordSealConflict: MediaSubmissionStore["recordSealConflict"] = (input) =>
+    failureTransition(input, "seal_conflict_recorded");
 
   const abandonmentTransition = (
     input: AbandonInput,
-    event: "author_cancelled" | "reservation_expired" | "action_deadline_elapsed",
+    event:
+      | "author_cancelled"
+      | "reservation_expired"
+      | "action_deadline_elapsed"
+      | "upload_expectation_mismatch_recorded"
+      | "upload_source_precondition_failed",
   ) =>
     transitionSimple(
       "abandon",
       input,
-      (_current) =>
-        event === "action_deadline_elapsed"
-          ? {
-              event,
-              actorId: input.actorUserId,
-              expectedCreationRevision: input.expectedCreationRevision,
-              nowEpochMs: input.nowEpochMs ?? Date.now(),
-            }
-          : {
-              event,
-              actorId: input.actorUserId,
-              expectedCreationRevision: input.expectedCreationRevision,
+      (_current) => {
+        if (event === "action_deadline_elapsed")
+          return {
+            event,
+            actorId: input.actorUserId,
+            expectedCreationRevision: input.expectedCreationRevision,
+            nowEpochMs: input.nowEpochMs ?? Date.now(),
+          };
+        if (event === "upload_expectation_mismatch_recorded")
+          return {
+            event,
+            actorId: input.actorUserId,
+            expectedCreationRevision: input.expectedCreationRevision,
+            abandonment: {
+              reason: "upload_expectation_mismatch" as const,
+              retentionDisposition: "retain_for_reconciliation" as const,
             },
+          };
+        if (event === "upload_source_precondition_failed")
+          return {
+            event,
+            actorId: input.actorUserId,
+            expectedCreationRevision: input.expectedCreationRevision,
+            abandonment: {
+              reason: "upload_source_changed_before_finalize" as const,
+              retentionDisposition: "retain_for_reconciliation" as const,
+            },
+          };
+        return {
+          event,
+          actorId: input.actorUserId,
+          expectedCreationRevision: input.expectedCreationRevision,
+        };
+      },
       (_next, current) => ({
         event,
         text: "UPDATE media_post_submissions SET status='abandoned',phase=NULL,action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,held_revision=NULL,abandonment_reason=$1,retention_disposition=$2,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6",
         values: [
-          event,
+          event === "action_deadline_elapsed"
+            ? "action_deadline_elapsed"
+            : event === "author_cancelled"
+              ? "author_cancelled"
+              : event === "reservation_expired"
+                ? "reservation_expired"
+                : event === "upload_expectation_mismatch_recorded"
+                  ? "upload_expectation_mismatch"
+                  : "upload_source_changed_before_finalize",
           event === "action_deadline_elapsed" && current.audioRevision > 0
             ? "retain_until_expiry"
-            : "no_object",
+            : event === "upload_expectation_mismatch_recorded" ||
+                event === "upload_source_precondition_failed"
+              ? "retain_for_reconciliation"
+              : "no_object",
           current.communityId,
           current.actorId,
           current.submissionId,
@@ -2069,6 +2116,11 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     abandonmentTransition(input, "author_cancelled");
   const reservationExpire: MediaSubmissionStore["reservationExpire"] = (input) =>
     abandonmentTransition(input, "reservation_expired");
+  const uploadExpectationMismatch: MediaSubmissionStore["uploadExpectationMismatch"] = (input) =>
+    abandonmentTransition(input, "upload_expectation_mismatch_recorded");
+  const uploadSourcePreconditionFailed: MediaSubmissionStore["uploadSourcePreconditionFailed"] = (
+    input,
+  ) => abandonmentTransition(input, "upload_source_precondition_failed");
 
   const publish: MediaSubmissionStore["publish"] = (input) =>
     Effect.gen(function* () {
@@ -2487,9 +2539,12 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     retry,
     recordMediaFailure,
     recordTechnicalExhaustion,
+    recordSealConflict,
     actionDeadlineElapsed,
     authorCancel,
     reservationExpire,
+    uploadExpectationMismatch,
+    uploadSourcePreconditionFailed,
     publish,
     recordAlignment,
     recordProcessingAttempt,

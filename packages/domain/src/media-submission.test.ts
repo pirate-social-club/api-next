@@ -493,4 +493,61 @@ describe("song media Spec 013 machine", () => {
       ).status,
     ).toBe("published");
   });
+
+  test("keeps abandonment phases and seal conflicts typed", () => {
+    const withTerms = ok(
+      transitionMediaSubmission(created, {
+        event: "song_terms_bound",
+        actorId,
+        expectedCreationRevision: 1,
+        terms,
+      }),
+    );
+    expect(
+      transitionMediaSubmission(withTerms, {
+        event: "upload_source_precondition_failed",
+        actorId,
+        expectedCreationRevision: 2,
+        abandonment: {
+          reason: "upload_source_changed_before_finalize",
+          retentionDisposition: "retain_for_reconciliation",
+        },
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "transition_not_allowed" } });
+    expect(
+      ok(
+        transitionMediaSubmission(withTerms, {
+          event: "upload_expectation_mismatch_recorded",
+          actorId,
+          expectedCreationRevision: 2,
+          abandonment: {
+            reason: "upload_expectation_mismatch",
+            retentionDisposition: "retain_for_reconciliation",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      status: "abandoned",
+      abandonment: { retentionDisposition: "retain_for_reconciliation" },
+    });
+    const analyzedState = analyzed();
+    expect(
+      ok(
+        transitionMediaSubmission(analyzedState, {
+          event: "seal_conflict_recorded",
+          actorId,
+          expectedCreationRevision: 2,
+          failure: {
+            code: "upload_seal_conflict",
+            retryable: false,
+            retryCount: 0,
+            lastSafePhase: "finalize",
+          },
+        }),
+      ),
+    ).toMatchObject({
+      status: "processing_failed",
+      failure: { code: "upload_seal_conflict", retryable: false },
+    });
+  });
 });
