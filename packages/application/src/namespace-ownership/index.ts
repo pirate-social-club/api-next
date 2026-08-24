@@ -304,6 +304,11 @@ export type {
   HnsOwnerRecoverySourceIneligiblePublicResponse,
   HnsOwnerRecoverySourceIneligibleResultV2Input,
   HnsOwnerTargetIneligibleObservationV3,
+  HnsOwnerTargetObservationV3,
+  HnsOwnerTargetPendingObservationV3,
+  HnsOwnerTargetRejectedObservationV3,
+  HnsOwnerTargetUnavailableObservationV3,
+  HnsOwnerTargetVerifiedObservationV3,
 } from "./hns-control-observer-v2.ts";
 export {
   decodeHnsActiveLeaseRenewalIneligibleResponseV2Bytes,
@@ -311,9 +316,11 @@ export {
   decodeHnsControlObservationResultV2Bytes,
   decodeHnsOwnerRecoverySourceIneligiblePublicResponseBytes,
   decodeHnsOwnerTargetIneligibleObservationV3Bytes,
+  decodeHnsOwnerTargetObservationV3Bytes,
   encodeHnsActiveLeaseRenewalIneligibleResponseV2,
   encodeHnsControlObservationResultV2,
   encodeHnsOwnerRecoverySourceIneligiblePublicResponse,
+  encodeHnsOwnerTargetObservationV3,
   HNS_ACTIVE_LEASE_RENEWAL_INELIGIBLE_RESPONSE_V2_VERSION,
   HNS_ACTIVE_LEASE_RENEWAL_SOURCE_INELIGIBLE_RESULT_V3_VERSION,
   HNS_CONTROL_OBSERVATION_RESULT_V2_VERSION,
@@ -337,6 +344,7 @@ export {
   hnsOwnerRecoverySourceIneligibleResultV2Hash,
   hnsOwnerRecoverySourceIneligibleResultV2Preimage,
   mapHnsControlObservationIneligibleToTargetV3,
+  mapHnsControlObservationToTargetV3,
   promoteHnsControlObservationResultV1ToV2,
 } from "./hns-control-observer-v2.ts";
 export type {

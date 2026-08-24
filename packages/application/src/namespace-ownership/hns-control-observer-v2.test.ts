@@ -1,15 +1,22 @@
 import { expect, test } from "bun:test";
 import type { Sha256Hex } from "@pirate/domain/verification";
-import { decodeHnsControlObservationRequestBytes } from "./hns-control-observer.ts";
+import {
+  decodeHnsControlObservationRequestBytes,
+  hnsControlIdentityDigest,
+} from "./hns-control-observer.ts";
 import { HNS_CONTROL_OBSERVER_CONFIGURATION_V2_VERSION } from "./hns-control-observer-configuration.ts";
 import {
   decodeHnsActiveLeaseRenewalIneligibleResponseV2Bytes,
   decodeHnsControlObservationCompatibleResultBytes,
   decodeHnsControlObservationResultV2Bytes,
   decodeHnsOwnerTargetIneligibleObservationV3Bytes,
+  decodeHnsOwnerTargetObservationV3Bytes,
   encodeHnsActiveLeaseRenewalIneligibleResponseV2,
+  encodeHnsControlObservationResultV2,
   encodeHnsOwnerRecoverySourceIneligiblePublicResponse,
+  encodeHnsOwnerTargetObservationV3,
   type HnsControlObserverTranscriptManifestEntryV2,
+  type HnsOwnerTargetObservationV3,
   hnsActiveLeaseRenewalSourceIneligibleResultV3Hash,
   hnsActiveLeaseRenewalSourceIneligibleResultV3Preimage,
   hnsControlObserverSnapshotAccountingEnvelopeV2Bytes,
@@ -23,6 +30,7 @@ import {
   hnsOwnerRecoverySourceIneligibleResultV2Hash,
   hnsOwnerRecoverySourceIneligibleResultV2Preimage,
   mapHnsControlObservationIneligibleToTargetV3,
+  mapHnsControlObservationToTargetV3,
 } from "./hns-control-observer-v2.ts";
 
 const encoder = new TextEncoder();
@@ -201,6 +209,171 @@ test("keeps result versions closed and inventory uncertainty unavailable", async
       ),
     ),
   ).rejects.toThrow();
+});
+
+test("maps and strict-decodes every target-v3 member", async () => {
+  const decodedRequest = await decodeHnsControlObservationRequestBytes(encoder.encode(requestJson));
+  const request = decodedRequest.request;
+  const observerSnapshotSha256 = sha("7");
+  const chainAuthorityDigest = sha("4");
+  const expectedTxtValueSha256 = "f8c7e628a8ff881a53aa0ad1cf405c106708d89008c9400cdf49fb417d19d5c1";
+  const policy = {
+    expected_block_interval_seconds: 600,
+    minimum_safe_remaining_blocks: 144,
+    expiry_safety_blocks: 144,
+    evidence_lease_seconds: 2_592_000,
+  } as const;
+  const verifiedBytes = await encodeHnsControlObservationResultV2(
+    {
+      version: "pirate-hns-control-observation-result-v2",
+      observation_id: request.observation_id,
+      request_sha256: decodedRequest.request_sha256,
+      status: "verified",
+      provider_id: request.provider_id,
+      provider_configuration_reference: request.provider_configuration_reference,
+      provider_configuration_version: request.provider_configuration_version,
+      provider_configuration_digest: request.provider_configuration_digest,
+      environment: request.environment,
+      ownership_source: request.ownership_source,
+      root_label: request.root_label,
+      txt_name: request.txt_name,
+      expected_txt_value_sha256: expectedTxtValueSha256,
+      control_identity_digest: await hnsControlIdentityDigest({
+        ownership_source: request.ownership_source,
+        txt_name: request.txt_name,
+        expected_txt_value: request.expected_txt_value,
+        root_label: request.root_label,
+        chain_authority_digest: chainAuthorityDigest,
+      }),
+      chain_authority_digest: chainAuthorityDigest,
+      root_exists: true,
+      root_control_verified: true,
+      expiry_horizon_sufficient: true,
+      chain_network: "regtest",
+      chain_genesis_block_hash: sha("2"),
+      chain_anchor_height: 123_600,
+      chain_anchor_block_hash: sha("3"),
+      chain_anchor_median_time: 1_770_007_200,
+      expiry_height: 200_000,
+      observer_snapshot_sha256: observerSnapshotSha256,
+      provider_evidence_ref: "hns-observer:regtest:target-v3-verified",
+    },
+    request,
+  );
+  const verified = await mapHnsControlObservationToTargetV3({
+    request,
+    result_bytes: verifiedBytes,
+    upstream_session_ref: "nvs_custody_01",
+    policy,
+  });
+  expect(verified).toMatchObject({
+    status: "verified",
+    observation_contract_version: "pirate-hns-target-observation-v3",
+    observer_snapshot_sha256: observerSnapshotSha256,
+  });
+  if (verified.status !== "verified") throw new Error("expected verified target-v3 fixture");
+  expect(verified.provider_evidence_ref).toBe(
+    `hns-observer-v2:sha256:${verified.observer_result_sha256}:hns-observer:regtest:target-v3-verified`,
+  );
+
+  const targets: HnsOwnerTargetObservationV3[] = [verified];
+  for (const reason of ["txt_absent", "root_absent"] as const) {
+    const rejectedBytes = await encodeHnsControlObservationResultV2(
+      {
+        version: "pirate-hns-control-observation-result-v2",
+        observation_id: request.observation_id,
+        request_sha256: decodedRequest.request_sha256,
+        status: "rejected",
+        reason_code: reason,
+        provider_id: request.provider_id,
+        provider_configuration_reference: request.provider_configuration_reference,
+        provider_configuration_version: request.provider_configuration_version,
+        provider_configuration_digest: request.provider_configuration_digest,
+        environment: request.environment,
+        ownership_source: request.ownership_source,
+        root_label: request.root_label,
+        txt_name: request.txt_name,
+        expected_txt_value_sha256: expectedTxtValueSha256,
+        observed_txt_values_digest: null,
+        chain_authority_digest: chainAuthorityDigest,
+        chain_network: "regtest",
+        chain_genesis_block_hash: sha("2"),
+        chain_anchor_height: 123_600,
+        chain_anchor_block_hash: sha("3"),
+        chain_anchor_median_time: 1_770_007_200,
+        expiry_height: reason === "txt_absent" ? 200_000 : null,
+        observer_snapshot_sha256: observerSnapshotSha256,
+        provider_evidence_ref: `hns-observer:regtest:target-v3-${reason}`,
+      },
+      request,
+    );
+    targets.push(
+      await mapHnsControlObservationToTargetV3({
+        request,
+        result_bytes: rejectedBytes,
+        upstream_session_ref: "nvs_custody_01",
+        policy,
+      }),
+    );
+  }
+  const unavailableRequest = { ...request, observation_id: "observer-custody-unavailable-01" };
+  targets.push(
+    await mapHnsControlObservationToTargetV3({
+      request: unavailableRequest,
+      result_bytes: encoder.encode(unavailableResultJson),
+      upstream_session_ref: "nvs_custody_01",
+      policy,
+    }),
+  );
+  targets.push(
+    await mapHnsControlObservationToTargetV3({
+      request,
+      result_bytes: encoder.encode(ineligibleResultJson),
+      upstream_session_ref: "nvs_custody_01",
+      policy,
+    }),
+  );
+  expect(targets.map((target) => target.status)).toEqual([
+    "verified",
+    "pending",
+    "rejected",
+    "unavailable",
+    "ineligible",
+  ]);
+  for (const target of targets) {
+    const bytes = await encodeHnsOwnerTargetObservationV3(target);
+    await expect(decodeHnsOwnerTargetObservationV3Bytes(bytes)).resolves.toMatchObject({
+      response: target,
+    });
+  }
+  const changedPrefix = await encodeHnsOwnerTargetObservationV3(verified).then((bytes) =>
+    encoder.encode(decoder.decode(bytes).replace("hns-observer-v2:", "hns-observer-v1:")),
+  );
+  await expect(decodeHnsOwnerTargetObservationV3Bytes(changedPrefix)).rejects.toThrow(
+    "does not bind",
+  );
+  const changedTxtHash = encoder.encode(
+    JSON.stringify({ ...verified, expected_txt_value_sha256: sha("9") }),
+  );
+  await expect(decodeHnsOwnerTargetObservationV3Bytes(changedTxtHash)).rejects.toThrow(
+    "challenge or evidence time is invalid",
+  );
+  const pendingAsRejected = targets.find((target) => target.status === "pending");
+  if (pendingAsRejected === undefined || pendingAsRejected.status !== "pending") {
+    throw new Error("expected pending target-v3 fixture");
+  }
+  await expect(
+    decodeHnsOwnerTargetObservationV3Bytes(
+      encoder.encode(JSON.stringify({ ...pendingAsRejected, status: "rejected" })),
+    ),
+  ).rejects.toThrow("Target rejected response-v3 is invalid");
+  const { observation_contract_version, status, ...verifiedTail } = verified;
+  const reorderedVerified = encoder.encode(
+    JSON.stringify({ observation_contract_version, status, ...verifiedTail }),
+  );
+  await expect(decodeHnsOwnerTargetObservationV3Bytes(reorderedVerified)).rejects.toThrow(
+    "members are reordered",
+  );
 });
 
 test("charges exact inventory bytes in the successor snapshot accounting", () => {

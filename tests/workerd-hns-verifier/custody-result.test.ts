@@ -3,11 +3,13 @@
 import {
   decodeHnsControlObservationRequestBytes,
   decodeHnsControlObservationResultV2Bytes,
+  decodeHnsOwnerTargetObservationV3Bytes,
   type HnsControlObserverTranscriptManifestEntryV2,
   hnsControlObserverSnapshotDigestV2,
   hnsControlObserverTranscriptManifestDigestV2,
   hnsCreationSourceIneligibleResultV2Hash,
   mapHnsControlObservationIneligibleToTargetV3,
+  mapHnsControlObservationToTargetV3,
 } from "@pirate/application/namespace-ownership";
 import type { Sha256Hex } from "@pirate/domain/verification";
 import { describe, expect, it } from "vitest";
@@ -103,6 +105,23 @@ describe("HNS custody result successors (workerd)", () => {
     });
     expect(target.observer_snapshot_sha256).toBe(result.result.observer_snapshot_sha256);
     expect(target.observer_result_sha256).toBe(result.result_sha256);
+    expect(
+      await mapHnsControlObservationToTargetV3({
+        request: request.request,
+        result_bytes: result.result_bytes,
+        upstream_session_ref: "nvs_custody_01",
+        policy: {
+          expected_block_interval_seconds: 600,
+          minimum_safe_remaining_blocks: 144,
+          expiry_safety_blocks: 144,
+          evidence_lease_seconds: 2_592_000,
+        },
+      }),
+    ).toEqual(target);
+    expect(
+      (await decodeHnsOwnerTargetObservationV3Bytes(encoder.encode(JSON.stringify(target))))
+        .response,
+    ).toEqual(target);
     expect(
       await hnsCreationSourceIneligibleResultV2Hash({
         ceremony_intent_id: "cc_ceremony-custody-1",
