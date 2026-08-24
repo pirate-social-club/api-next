@@ -12,7 +12,6 @@ import {
   IPFS_PINNING_MAX_IDENTIFIER_BYTES,
   IPFS_PINNING_MAX_RESPONSE_BYTES,
   IPFS_PINNING_MAX_SECRET_BYTES,
-  IPFS_PINNING_MAX_SOURCE_BYTES,
   IPFS_PINNING_MAX_TIMEOUT_MS,
   IpfsPinningRequestInvalid,
 } from "@pirate/application/data/ipfs-pinning";
@@ -23,10 +22,13 @@ export const FILEBASE_IPFS_ADD_PATH = "/api/v0/add" as const;
 export const FILEBASE_IPFS_PIN_ADD_PATH = "/api/v0/pin/add" as const;
 export const FILEBASE_IPFS_PIN_LS_PATH = "/api/v0/pin/ls" as const;
 export const FILEBASE_IPFS_CAT_PATH = "/api/v0/cat" as const;
-export const FILEBASE_IPFS_MULTIPART_BOUNDARY = "----pirate-filebase-ipfs-v1" as const;
+export const FILEBASE_IPFS_MULTIPART_BOUNDARY_PREFIX = "----pirate-filebase-ipfs-v1-" as const;
+export const FILEBASE_IPFS_BOUNDARY_RANDOM_BYTES = 18 as const;
 export const FILEBASE_IPFS_ADAPTER_REVISION = "filebase-ipfs-pinning-v1" as const;
 export const FILEBASE_IPFS_MAX_JSON_BYTES = 2 * 1024 * 1024;
 export const FILEBASE_IPFS_MAX_CID_BYTES = 128;
+/** Internal transport safety cap; accepted product limits are always injected. */
+export const FILEBASE_IPFS_INTERNAL_MAX_SOURCE_BYTES = 512 * 1024 * 1024;
 
 export type FilebaseIpfsRequestBody = Readonly<{
   readonly byte_length: number;
@@ -64,12 +66,16 @@ export type FilebaseIpfsTransport = (
   request: FilebaseIpfsTransportRequest,
 ) => PromiseLike<FilebaseIpfsTransportResponse>;
 
+export type FilebaseIpfsRandomBytes = (length: number) => Uint8Array;
+
 export type FilebaseIpfsAdapterOptions = Readonly<{
   /** Disabled is the safe default and makes no transport call. */
   readonly enabled?: boolean;
   /** Opaque bucket-scoped bearer token. It never appears in a result. */
   readonly token?: string;
   readonly transport?: FilebaseIpfsTransport;
+  /** Test-only entropy injection; production uses crypto.getRandomValues. */
+  readonly random_bytes?: (length: number) => Uint8Array;
   readonly limits?: IpfsPinningLimits;
 }>;
 
@@ -77,6 +83,7 @@ type Config = Readonly<{
   readonly token: string;
   readonly transport: FilebaseIpfsTransport;
   readonly limits: IpfsPinningLimits;
+  readonly random_bytes: FilebaseIpfsRandomBytes;
 }>;
 
 class OperationAbort extends Error {
@@ -106,6 +113,13 @@ class ResponseBodyError extends Error {
     super(reason);
     this.name = "ResponseBodyError";
     this.reason = reason;
+  }
+}
+
+class InvalidCidResponseError extends Error {
+  constructor() {
+    super("invalid_cid");
+    this.name = "InvalidCidResponseError";
   }
 }
 
@@ -154,7 +168,7 @@ function validLimits(value: unknown): value is IpfsPinningLimits {
   if (!Predicate.isObject(value)) return false;
   const limits = value as Record<string, unknown>;
   return (
-    validPositiveInteger(limits.max_source_bytes, IPFS_PINNING_MAX_SOURCE_BYTES) &&
+    validPositiveInteger(limits.max_source_bytes, FILEBASE_IPFS_INTERNAL_MAX_SOURCE_BYTES) &&
     validPositiveInteger(limits.max_response_bytes, IPFS_PINNING_MAX_RESPONSE_BYTES) &&
     validPositiveInteger(limits.timeout_ms, IPFS_PINNING_MAX_TIMEOUT_MS) &&
     validPositiveInteger(limits.pin_convergence_attempts, IPFS_PINNING_MAX_CONVERGENCE_ATTEMPTS) &&
@@ -171,6 +185,47 @@ function validToken(value: unknown): value is string {
     !/[\r\n]/u.test(value) &&
     !/\s/u.test(value)
   );
+}
+
+function defaultRandomBytes(length: number): Uint8Array {
+  return globalThis.crypto.getRandomValues(new Uint8Array(length));
+}
+
+function randomBoundary(randomBytes: FilebaseIpfsRandomBytes): string | null {
+  try {
+    const bytes = randomBytes(FILEBASE_IPFS_BOUNDARY_RANDOM_BYTES);
+    if (
+      !(bytes instanceof Uint8Array) ||
+      bytes.byteLength !== FILEBASE_IPFS_BOUNDARY_RANDOM_BYTES
+    ) {
+      return null;
+    }
+    const suffix = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    return `${FILEBASE_IPFS_MULTIPART_BOUNDARY_PREFIX}${suffix}`;
+  } catch {
+    return null;
+  }
+}
+
+function snapshotInput(input: IpfsPinningInput): IpfsPinningInput | null {
+  try {
+    if (!Predicate.isObject(input) || !Predicate.isObject(input.source)) return null;
+    return Object.freeze({
+      version: input.version,
+      request_id: input.request_id,
+      filename: input.filename,
+      content_type: input.content_type,
+      source: Object.freeze({
+        byte_length: input.source.byte_length,
+        open: input.source.open,
+      }),
+      expected_byte_length: input.expected_byte_length,
+      expected_sha256: input.expected_sha256,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+  } catch {
+    return null;
+  }
 }
 
 function validateInput(input: IpfsPinningInput, limits: IpfsPinningLimits): void {
@@ -536,16 +591,17 @@ function jsonBody(value: unknown): FilebaseIpfsRequestBody {
 function multipartBody(
   input: IpfsPinningInput,
   limits: IpfsPinningLimits,
+  boundary: string,
 ): FilebaseIpfsRequestBody {
   const encoder = new TextEncoder();
   const preamble = encoder.encode(
-    `--${FILEBASE_IPFS_MULTIPART_BOUNDARY}\r\nContent-Disposition: form-data; name="file"; filename="${input.filename}"\r\nContent-Type: ${input.content_type}\r\n\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${input.filename}"\r\nContent-Type: ${input.content_type}\r\n\r\n`,
   );
-  const epilogue = encoder.encode(`\r\n--${FILEBASE_IPFS_MULTIPART_BOUNDARY}--\r\n`);
+  const epilogue = encoder.encode(`\r\n--${boundary}--\r\n`);
   let opened = false;
   return {
     byte_length: preamble.byteLength + input.expected_byte_length + epilogue.byteLength,
-    content_type: `multipart/form-data; boundary=${FILEBASE_IPFS_MULTIPART_BOUNDARY}`,
+    content_type: `multipart/form-data; boundary=${boundary}`,
     open: async function* (signal) {
       if (opened) throw new MultipartBodyError("length");
       opened = true;
@@ -614,6 +670,76 @@ function stringField(value: Record<string, unknown>, key: string): string | null
   return typeof field === "string" ? field : null;
 }
 
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): boolean {
+  const allowed = new Set([...required, ...optional]);
+  return (
+    required.every((key) => Object.hasOwn(value, key)) &&
+    Object.keys(value).every((key) => allowed.has(key))
+  );
+}
+
+function parseAddResponse(value: Record<string, unknown>): string {
+  if (!hasOnlyKeys(value, ["Hash"], ["Name", "Size", "Bytes"])) {
+    throw new ResponseBodyError("malformed");
+  }
+  if (Object.hasOwn(value, "Name") && typeof value.Name !== "string") {
+    throw new ResponseBodyError("malformed");
+  }
+  for (const key of ["Size", "Bytes"] as const) {
+    const field = value[key];
+    if (
+      field !== undefined &&
+      !(
+        (typeof field === "string" && /^[0-9]+$/u.test(field)) ||
+        (typeof field === "number" && Number.isSafeInteger(field) && field >= 0)
+      )
+    ) {
+      throw new ResponseBodyError("malformed");
+    }
+  }
+  const cid = stringField(value, "Hash");
+  if (cid === null || !isValidFilebaseCid(cid)) {
+    throw new InvalidCidResponseError();
+  }
+  return cid;
+}
+
+function parsePinAddResponse(value: Record<string, unknown>, cid: string): void {
+  if (!hasOnlyKeys(value, ["Pins"])) throw new ResponseBodyError("malformed");
+  if (
+    !Array.isArray(value.Pins) ||
+    value.Pins.length === 0 ||
+    !value.Pins.every((pin) => typeof pin === "string" && isValidFilebaseCid(pin)) ||
+    !value.Pins.includes(cid)
+  ) {
+    throw new ResponseBodyError("malformed");
+  }
+}
+
+function parsePinLsResponse(value: Record<string, unknown>, cid: string): boolean {
+  if (
+    !hasOnlyKeys(value, ["Keys"]) ||
+    !Predicate.isObject(value.Keys) ||
+    Array.isArray(value.Keys)
+  ) {
+    throw new ResponseBodyError("malformed");
+  }
+  const keys = value.Keys as Record<string, unknown>;
+  for (const [key, entry] of Object.entries(keys)) {
+    if (!isValidFilebaseCid(key) || !Predicate.isObject(entry) || Array.isArray(entry)) {
+      throw new ResponseBodyError("malformed");
+    }
+    if (!hasOnlyKeys(entry as Record<string, unknown>, ["Type"]) || entry.Type !== "recursive") {
+      throw new ResponseBodyError("malformed");
+    }
+  }
+  return Object.hasOwn(keys, cid);
+}
+
 function resultForHttpStatus(
   status: number,
   path: FilebaseIpfsTransportRequest["path"],
@@ -663,20 +789,37 @@ export function makeFilebaseIpfsPinningAdapter(
   const enabled = options.enabled === true;
   const token = options.token;
   const transport = options.transport;
+  const randomBytes = options.random_bytes ?? defaultRandomBytes;
   const limits = options.limits;
   const config: Config | null =
-    enabled && validToken(token) && transport !== undefined && validLimits(limits)
-      ? { token, transport, limits }
+    enabled &&
+    validToken(token) &&
+    transport !== undefined &&
+    typeof randomBytes === "function" &&
+    validLimits(limits)
+      ? Object.freeze({
+          token,
+          transport,
+          limits: Object.freeze({ ...limits }),
+          random_bytes: randomBytes,
+        })
       : null;
 
-  const pin = (input: IpfsPinningInput) =>
-    Effect.tryPromise<IpfsPinningResult, IpfsPinningRequestInvalid>({
+  const pin = (input: IpfsPinningInput) => {
+    const capturedInput = snapshotInput(input);
+    return Effect.tryPromise<IpfsPinningResult, IpfsPinningRequestInvalid>({
       try: async () => {
         if (!enabled) return { status: "disabled", outcome: "disabled" };
         if (config === null)
           return { status: "permanent", outcome: "permanent", reason: "configuration" };
-        validateInput(input, config.limits);
-        if (input.signal?.aborted) return { status: "cancelled", outcome: "cancelled" };
+        if (capturedInput === null)
+          throw new IpfsPinningRequestInvalid({ reason: "invalid_source" });
+        const requestInput = capturedInput;
+        validateInput(requestInput, config.limits);
+        const boundary = randomBoundary(config.random_bytes);
+        if (boundary === null)
+          return { status: "permanent", outcome: "permanent", reason: "configuration" };
+        if (requestInput.signal?.aborted) return { status: "cancelled", outcome: "cancelled" };
 
         const controller = new AbortController();
         let abortReason: "timeout" | "cancelled" | undefined;
@@ -684,7 +827,7 @@ export function makeFilebaseIpfsPinningAdapter(
           abortReason = "cancelled";
           controller.abort(abortReason);
         };
-        input.signal?.addEventListener("abort", callerAbort, { once: true });
+        requestInput.signal?.addEventListener("abort", callerAbort, { once: true });
         const timer = setTimeout(() => {
           abortReason = "timeout";
           controller.abort(abortReason);
@@ -750,7 +893,7 @@ export function makeFilebaseIpfsPinningAdapter(
         try {
           const addResponse = await call(
             FILEBASE_IPFS_ADD_PATH,
-            multipartBody(input, config.limits),
+            multipartBody(requestInput, config.limits, boundary),
           );
           const addStatus = statusPath(FILEBASE_IPFS_ADD_PATH, addResponse.status);
           if (addStatus !== null) {
@@ -761,23 +904,15 @@ export function makeFilebaseIpfsPinningAdapter(
             "application/json",
             "application/x-ndjson",
           ]);
-          const cid = stringField(add, "Hash") ?? stringField(add, "hash");
-          const rawSize = add.Size ?? add.size;
-          const size =
-            typeof rawSize === "string" && /^[0-9]+$/u.test(rawSize)
-              ? Number(rawSize)
-              : typeof rawSize === "number" && Number.isSafeInteger(rawSize)
-                ? rawSize
-                : null;
-          if (cid === null || !isValidFilebaseCid(cid))
-            return { status: "malformed", outcome: "malformed", reason: "invalid_cid" };
-          if (size === null || size !== input.expected_byte_length)
-            return {
-              status: "integrity_mismatch",
-              outcome: "integrity_mismatch",
-              reason: "length",
-            };
-
+          let cid: string;
+          try {
+            cid = parseAddResponse(add);
+          } catch (error) {
+            if (error instanceof InvalidCidResponseError) {
+              return { status: "malformed", outcome: "malformed", reason: "invalid_cid" };
+            }
+            throw error;
+          }
           const pinAdd = await call(
             FILEBASE_IPFS_PIN_ADD_PATH,
             jsonBody({ arg: cid, recursive: true }),
@@ -790,15 +925,15 @@ export function makeFilebaseIpfsPinningAdapter(
           }
           if (pinAdd.status !== 409) {
             const pinAddBody = await parseJsonResponse(pinAdd, ["application/json"]);
-            const pins = pinAddBody.Pins ?? pinAddBody.pins;
-            if (pins !== undefined && (!Array.isArray(pins) || !pins.includes(cid))) {
-              return { status: "malformed", outcome: "malformed", reason: "malformed_response" };
-            }
+            parsePinAddResponse(pinAddBody, cid);
           } else {
             await cancelResponse(pinAdd, "duplicate_pin");
           }
 
           let recursive = false;
+          let lastPinLsRetryable:
+            | Extract<IpfsPinningResult, { readonly status: "retryable" }>
+            | undefined;
           for (let attempt = 0; attempt < config.limits.pin_convergence_attempts; attempt += 1) {
             const pinLs = await call(
               FILEBASE_IPFS_PIN_LS_PATH,
@@ -808,23 +943,30 @@ export function makeFilebaseIpfsPinningAdapter(
             const pinLsStatus = statusPath(FILEBASE_IPFS_PIN_LS_PATH, pinLs.status);
             if (pinLsStatus !== null) {
               await cancelResponse(pinLs, "http_status");
-              if (pinLsStatus.status === "retryable") continue;
+              if (pinLsStatus.status === "retryable") {
+                lastPinLsRetryable = pinLsStatus;
+                if (attempt + 1 < config.limits.pin_convergence_attempts) {
+                  await delay(config.limits.pin_convergence_delay_ms, controller.signal);
+                }
+                continue;
+              }
               return pinLsStatus;
             }
             const listing = await parseJsonResponse(pinLs, ["application/json"]);
-            const keys = listing.Keys ?? listing.keys;
-            if (Predicate.isObject(keys)) {
-              const entry = (keys as Record<string, unknown>)[cid];
-              if (Predicate.isObject(entry)) {
-                const pinType = entry.Type ?? entry.type;
-                recursive = pinType === "recursive";
-              }
-            }
+            recursive = parsePinLsResponse(listing, cid);
             if (recursive) break;
-            await delay(config.limits.pin_convergence_delay_ms, controller.signal);
+            if (attempt + 1 < config.limits.pin_convergence_attempts) {
+              await delay(config.limits.pin_convergence_delay_ms, controller.signal);
+            }
           }
           if (!recursive)
-            return { status: "retryable", outcome: "retryable", reason: "pin_not_converged" };
+            return (
+              lastPinLsRetryable ?? {
+                status: "retryable",
+                outcome: "retryable",
+                reason: "pin_not_converged",
+              }
+            );
 
           const cat = await call(
             FILEBASE_IPFS_CAT_PATH,
@@ -840,62 +982,73 @@ export function makeFilebaseIpfsPinningAdapter(
             await cancelResponse(cat, "wrong_content_type");
             return { status: "malformed", outcome: "malformed", reason: "wrong_content_type" };
           }
-          const catIterator = cat.body.open(controller.signal)[Symbol.asyncIterator]();
-          const catHash = new Sha256();
-          let catBytes = 0;
-          let rejectCatAbort: ((error: OperationAbort) => void) | undefined;
-          const catAbort = new Promise<never>((_resolve, reject) => {
-            rejectCatAbort = reject;
-          });
-          const onCatAbort = () => {
-            void cancelResponse(cat, "aborted");
-            rejectCatAbort?.(new OperationAbort(abortReason ?? "cancelled"));
-          };
-          controller.signal.addEventListener("abort", onCatAbort, { once: true });
+          let catIterator: AsyncIterator<Uint8Array> | undefined;
+          let catFullyConsumed = false;
           try {
-            while (true) {
-              const part = await Promise.race([catIterator.next(), catAbort]);
-              if (part.done) break;
-              if (!(part.value instanceof Uint8Array))
-                return { status: "malformed", outcome: "malformed", reason: "malformed_response" };
-              catBytes += part.value.byteLength;
-              if (
-                catBytes > input.expected_byte_length ||
-                catBytes > config.limits.max_source_bytes
-              ) {
-                await cancelResponse(cat, "cat_too_large");
-                return {
-                  status: "integrity_mismatch",
-                  outcome: "integrity_mismatch",
-                  reason: "length",
-                };
+            const catHash = new Sha256();
+            let catBytes = 0;
+            let rejectCatAbort: ((error: OperationAbort) => void) | undefined;
+            const catAbort = new Promise<never>((_resolve, reject) => {
+              rejectCatAbort = reject;
+            });
+            const onCatAbort = () => {
+              void cancelResponse(cat, "aborted");
+              rejectCatAbort?.(new OperationAbort(abortReason ?? "cancelled"));
+            };
+            controller.signal.addEventListener("abort", onCatAbort, { once: true });
+            try {
+              catIterator = cat.body.open(controller.signal)[Symbol.asyncIterator]();
+              while (true) {
+                const part = await Promise.race([catIterator.next(), catAbort]);
+                if (part.done) break;
+                if (!(part.value instanceof Uint8Array)) {
+                  throw new ResponseBodyError("malformed");
+                }
+                catBytes += part.value.byteLength;
+                if (
+                  catBytes > requestInput.expected_byte_length ||
+                  catBytes > config.limits.max_source_bytes
+                ) {
+                  return {
+                    status: "integrity_mismatch",
+                    outcome: "integrity_mismatch",
+                    reason: "length",
+                  };
+                }
+                catHash.update(part.value);
               }
-              catHash.update(part.value);
+            } catch (error) {
+              if (error instanceof OperationAbort || error instanceof ResponseBodyError)
+                throw error;
+              throw new ResponseBodyError("malformed");
+            } finally {
+              controller.signal.removeEventListener("abort", onCatAbort);
+              if (catIterator !== undefined) disposeIterator(catIterator);
             }
+            if (catBytes !== requestInput.expected_byte_length)
+              return {
+                status: "integrity_mismatch",
+                outcome: "integrity_mismatch",
+                reason: "length",
+              };
+            if (catHash.digest() !== requestInput.expected_sha256)
+              return {
+                status: "integrity_mismatch",
+                outcome: "integrity_mismatch",
+                reason: "sha256",
+              };
+            catFullyConsumed = true;
+            return {
+              status: "pinned",
+              outcome: "pinned",
+              cid,
+              byte_length: catBytes,
+              sha256: requestInput.expected_sha256,
+              recursive: true,
+            };
           } finally {
-            controller.signal.removeEventListener("abort", onCatAbort);
-            disposeIterator(catIterator);
+            if (!catFullyConsumed) void cancelResponse(cat, "cat_discard");
           }
-          if (catBytes !== input.expected_byte_length)
-            return {
-              status: "integrity_mismatch",
-              outcome: "integrity_mismatch",
-              reason: "length",
-            };
-          if (catHash.digest() !== input.expected_sha256)
-            return {
-              status: "integrity_mismatch",
-              outcome: "integrity_mismatch",
-              reason: "sha256",
-            };
-          return {
-            status: "pinned",
-            outcome: "pinned",
-            cid,
-            byte_length: catBytes,
-            sha256: input.expected_sha256,
-            recursive: true,
-          };
         } catch (error) {
           if (error instanceof OperationAbort) {
             return error.reason === "timeout"
@@ -921,7 +1074,7 @@ export function makeFilebaseIpfsPinningAdapter(
           operationFinished = true;
           controller.abort("finished");
           clearTimeout(timer);
-          input.signal?.removeEventListener("abort", callerAbort);
+          requestInput.signal?.removeEventListener("abort", callerAbort);
         }
       },
       catch: (error) =>
@@ -929,6 +1082,7 @@ export function makeFilebaseIpfsPinningAdapter(
           ? error
           : new IpfsPinningRequestInvalid({ reason: "invalid_transport" }),
     });
+  };
   return { pin };
 }
 

@@ -7,7 +7,6 @@ import { Context, Data, type Effect } from "effect";
  */
 export const IPFS_PINNING_PORT_VERSION = "ipfs-pinning-v1" as const;
 
-export const IPFS_PINNING_MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 export const IPFS_PINNING_MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
 export const IPFS_PINNING_MAX_TIMEOUT_MS = 120_000;
 export const IPFS_PINNING_MAX_CONVERGENCE_ATTEMPTS = 8;
