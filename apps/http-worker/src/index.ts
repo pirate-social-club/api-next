@@ -19,6 +19,10 @@ export {
   type HttpWorkerBindings,
   type HttpWorkerCompositionDependencies,
 } from "./composition.ts";
+export {
+  disabledProductionHnsHostServingComposition,
+  makeHnsHostServingComposition,
+} from "./hns-host-serving-composition.ts";
 export { createHttpWorker, withEndpointResult } from "./transport.ts";
 
 let cachedProductionApp: ReturnType<typeof createProductionHttpWorker> | undefined;
