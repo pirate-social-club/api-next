@@ -3,6 +3,7 @@ import type { IpfsPinningInput, IpfsPinningLimits } from "@pirate/application/da
 import { Effect } from "effect";
 import {
   FILEBASE_IPFS_ADD_PATH,
+  FILEBASE_IPFS_ADD_QUERY,
   FILEBASE_IPFS_CAT_PATH,
   FILEBASE_IPFS_MULTIPART_BOUNDARY_PREFIX,
   FILEBASE_IPFS_PIN_ADD_PATH,
@@ -14,11 +15,45 @@ import {
   makeFilebaseIpfsPinningAdapter,
 } from "./filebase-ipfs-pinning.ts";
 
-const CID = "bafkreie7mstupynzp4jr7k5wwrdss3e3n4badz47wpctk3tmo7ujw2uani";
-const BYTES = new Uint8Array([1, 2, 3, 4]);
-const SHA256 = "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a";
-const TOKEN = "filebase-test-token-must-not-leak";
-const RANDOM_BYTES = new Uint8Array(Array.from({ length: 18 }, (_, index) => index + 1));
+const hostileFixtures = (await Bun.file(
+  new URL("../../../../tests/fixtures/data-ipfs/filebase/hostile-fixtures.json", import.meta.url),
+).json()) as {
+  readonly content: Readonly<{
+    readonly bytes_hex: string;
+    readonly length: number;
+    readonly sha256: string;
+    readonly cid_v1: string;
+  }>;
+  readonly multipart: Readonly<{
+    readonly boundary_prefix: string;
+    readonly random_bytes_hex: string;
+    readonly injection_filename: string;
+    readonly boundary_collision_payload: string;
+  }>;
+  readonly responses: Readonly<{
+    readonly wrong_content_type: string;
+    readonly ndjson: string;
+    readonly oversized: Readonly<{ readonly character: string; readonly length: number }>;
+    readonly pin_ls_empty: unknown;
+    readonly pin_ls_recursive: unknown;
+  }>;
+  readonly secret: string;
+};
+
+function hexBytes(value: string): Uint8Array {
+  return Uint8Array.from(value.match(/../gu)?.map((part) => Number.parseInt(part, 16)) ?? []);
+}
+
+async function digestHex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+const CID = hostileFixtures.content.cid_v1;
+const BYTES = hexBytes(hostileFixtures.content.bytes_hex);
+const SHA256 = hostileFixtures.content.sha256;
+const TOKEN = hostileFixtures.secret;
+const RANDOM_BYTES = hexBytes(hostileFixtures.multipart.random_bytes_hex);
 const limits: IpfsPinningLimits = {
   max_source_bytes: 1024,
   max_response_bytes: 1024,
@@ -27,7 +62,7 @@ const limits: IpfsPinningLimits = {
   pin_convergence_delay_ms: 0,
 };
 
-function body(bytes: Uint8Array, onCancel: () => void = () => undefined) {
+function body(bytes: Uint8Array, onCancel: () => void | PromiseLike<void> = () => undefined) {
   return {
     open: async function* () {
       yield bytes;
@@ -88,6 +123,7 @@ function transportFor(
     readonly duplicate?: boolean;
     readonly addSize?: string;
     readonly statuses?: Partial<Record<FilebaseIpfsTransportRequest["path"], number>>;
+    readonly onRequest?: (request: FilebaseIpfsTransportRequest) => void;
   } = {},
 ) {
   const requests: FilebaseIpfsTransportRequest[] = [];
@@ -96,6 +132,7 @@ function transportFor(
     request: FilebaseIpfsTransportRequest,
   ): Promise<FilebaseIpfsTransportResponse> => {
     requests.push(request);
+    options.onRequest?.(request);
     const forcedStatus = options.statuses?.[request.path];
     if (forcedStatus !== undefined) return json({}, forcedStatus);
     if (request.path === FILEBASE_IPFS_ADD_PATH) {
@@ -109,12 +146,23 @@ function transportFor(
       }
       const text = new TextDecoder().decode(multipart);
       const boundary = request.body.content_type.split("boundary=", 2)[1] ?? "";
-      expect(boundary.startsWith(FILEBASE_IPFS_MULTIPART_BOUNDARY_PREFIX)).toBe(true);
+      expect(boundary.startsWith(hostileFixtures.multipart.boundary_prefix)).toBe(true);
+      expect(hostileFixtures.multipart.boundary_prefix).toBe(
+        FILEBASE_IPFS_MULTIPART_BOUNDARY_PREFIX,
+      );
       expect(text).toContain(`--${boundary}`);
       expect(text).toContain('filename="sample.bin"');
       expect(text.endsWith(`\r\n--${boundary}--\r\n`)).toBe(true);
       return json(
-        { Name: "sample.bin", Hash: CID, Size: options.addSize ?? "4" },
+        {
+          Bytes: "4",
+          Hash: CID,
+          Mode: "0644",
+          Mtime: "0",
+          MtimeNsecs: "0",
+          Name: "sample.bin",
+          Size: options.addSize ?? "4",
+        },
         200,
         options.contentType ?? "application/json",
       );
@@ -124,9 +172,11 @@ function transportFor(
     }
     if (request.path === FILEBASE_IPFS_PIN_LS_PATH) {
       lsCalls += 1;
-      return json({
-        Keys: options.converge === false && lsCalls < 3 ? {} : { [CID]: { Type: "recursive" } },
-      });
+      return json(
+        options.converge === false && lsCalls < 3
+          ? hostileFixtures.responses.pin_ls_empty
+          : hostileFixtures.responses.pin_ls_recursive,
+      );
     }
     return {
       status: 200,
@@ -137,12 +187,15 @@ function transportFor(
   return { requests, transport };
 }
 
-function adapter(transport: FilebaseIpfsTransport) {
+function adapter(
+  transport: FilebaseIpfsTransport,
+  limitOverrides: Partial<IpfsPinningLimits> = {},
+) {
   return makeFilebaseIpfsPinningAdapter({
     enabled: true,
     token: TOKEN,
     transport,
-    limits,
+    limits: { ...limits, ...limitOverrides },
     random_bytes: () => new Uint8Array(RANDOM_BYTES),
   });
 }
@@ -174,13 +227,49 @@ describe("Filebase IPFS pinning adapter", () => {
       recursive: true,
     });
     expect(fake.requests.map((request) => request.url)).toEqual([
-      `https://rpc.filebase.io${FILEBASE_IPFS_ADD_PATH}`,
-      `https://rpc.filebase.io${FILEBASE_IPFS_PIN_ADD_PATH}?arg=${encodeURIComponent(CID)}`,
-      `https://rpc.filebase.io${FILEBASE_IPFS_PIN_LS_PATH}?arg=${encodeURIComponent(CID)}&type=recursive`,
+      `https://rpc.filebase.io${FILEBASE_IPFS_ADD_PATH}${FILEBASE_IPFS_ADD_QUERY}`,
+      `https://rpc.filebase.io${FILEBASE_IPFS_PIN_ADD_PATH}?arg=${encodeURIComponent(CID)}&recursive=true&progress=false`,
+      `https://rpc.filebase.io${FILEBASE_IPFS_PIN_LS_PATH}?arg=${encodeURIComponent(CID)}&type=recursive&stream=false&names=false`,
       `https://rpc.filebase.io${FILEBASE_IPFS_CAT_PATH}?arg=${encodeURIComponent(CID)}`,
     ]);
+    expect(fake.requests[1]?.body.byte_length).toBe(0);
+    expect(fake.requests[1]?.body.content_type).not.toBe("application/json");
     expect(fake.requests.every((request) => request.redirect === "error")).toBe(true);
     expect(fake.requests[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
+  });
+
+  test("rejects a true multipart boundary collision before pinning", async () => {
+    const collisionBytes = new TextEncoder().encode(
+      hostileFixtures.multipart.boundary_collision_payload,
+    );
+    const collisionInput = input({
+      source: {
+        byte_length: collisionBytes.byteLength,
+        open: async function* () {
+          yield collisionBytes;
+        },
+      },
+      expected_byte_length: collisionBytes.byteLength,
+      expected_sha256: await digestHex(collisionBytes),
+    });
+    const result = await Effect.runPromise(adapter(transportFor().transport).pin(collisionInput));
+    expect(result).toEqual({
+      status: "integrity_mismatch",
+      outcome: "integrity_mismatch",
+      reason: "length",
+    });
+  });
+
+  test("rejects filename header injection before opening the transport", async () => {
+    let calls = 0;
+    const result = await Effect.runPromise(
+      adapter(async () => {
+        calls += 1;
+        return json({});
+      }).pin(input({ filename: hostileFixtures.multipart.injection_filename })),
+    ).catch((error) => error);
+    expect(result).toMatchObject({ reason: "invalid_filename" });
+    expect(calls).toBe(0);
   });
 
   test("requires recursive pin state after a duplicate or delayed pin", async () => {
@@ -192,11 +281,55 @@ describe("Filebase IPFS pinning adapter", () => {
     ).toHaveLength(3);
   });
 
+  test("waits between non-converged pin-list attempts", async () => {
+    const lsTimes: number[] = [];
+    const fake = transportFor({
+      converge: false,
+      onRequest: (request) => {
+        if (request.path === FILEBASE_IPFS_PIN_LS_PATH) lsTimes.push(performance.now());
+      },
+    });
+    const result = await Effect.runPromise(
+      adapter(fake.transport, { pin_convergence_delay_ms: 10 }).pin(input()),
+    );
+    expect(result.status).toBe("pinned");
+    expect(lsTimes).toHaveLength(3);
+    const first = lsTimes[0] ?? 0;
+    const second = lsTimes[1] ?? 0;
+    const third = lsTimes[2] ?? 0;
+    expect(second - first).toBeGreaterThanOrEqual(8);
+    expect(third - second).toBeGreaterThanOrEqual(8);
+  });
+
   test("treats a duplicate pin as success only after canonical recursive pin/ls", async () => {
     const fake = transportFor({ duplicate: true });
     const result = await Effect.runPromise(adapter(fake.transport).pin(input()));
     expect(result.status).toBe("pinned");
     expect(fake.requests.some((request) => request.path === FILEBASE_IPFS_PIN_LS_PATH)).toBe(true);
+  });
+
+  test("accepts bounded documented /pin/add evidence and rejects unbounded evidence", async () => {
+    const base = transportFor();
+    const accepted = await Effect.runPromise(
+      adapter(async (request) => {
+        const response = await base.transport(request);
+        return request.path === FILEBASE_IPFS_PIN_ADD_PATH
+          ? json({ Bytes: "4", Pins: [CID], Progress: "1" })
+          : response;
+      }).pin(input()),
+    );
+    expect(accepted.status).toBe("pinned");
+
+    const rejectedBase = transportFor();
+    const rejected = await Effect.runPromise(
+      adapter(async (request) => {
+        const response = await rejectedBase.transport(request);
+        return request.path === FILEBASE_IPFS_PIN_ADD_PATH
+          ? json({ Bytes: "999999999999999999999999999", Pins: [CID] })
+          : response;
+      }).pin(input()),
+    );
+    expect(rejected).toMatchObject({ status: "malformed", reason: "malformed_response" });
   });
 
   test("rejects invalid CID structures and wrong response content type", async () => {
@@ -205,7 +338,7 @@ describe("Filebase IPFS pinning adapter", () => {
     expect(isValidFilebaseCid("bafkrei-not-a-cid")).toBe(false);
     expect(isValidFilebaseCid(CID.toUpperCase())).toBe(false);
     expect(isValidFilebaseCid(`${CID.slice(0, -1)}z`)).toBe(false);
-    const fake = transportFor({ contentType: "text/html" });
+    const fake = transportFor({ contentType: hostileFixtures.responses.wrong_content_type });
     const result = await Effect.runPromise(adapter(fake.transport).pin(input()));
     expect(result).toMatchObject({ status: "malformed" });
   });
@@ -232,6 +365,23 @@ describe("Filebase IPFS pinning adapter", () => {
       adapter(transportFor({ statuses: { [FILEBASE_IPFS_CAT_PATH]: 404 } }).transport).pin(input()),
     );
     expect(notFound).toEqual({ status: "not_found", outcome: "not_found" });
+
+    const rejected = await Effect.runPromise(
+      adapter(transportFor({ statuses: { [FILEBASE_IPFS_ADD_PATH]: 400 } }).transport).pin(input()),
+    );
+    expect(rejected).toMatchObject({ status: "permanent", reason: "provider_rejected" });
+
+    const transportFailure = await Effect.runPromise(
+      adapter(async () => {
+        throw new Error(`provider leaked ${TOKEN}`);
+      }).pin(input()),
+    );
+    expect(transportFailure).toEqual({
+      status: "retryable",
+      outcome: "retryable",
+      reason: "transport",
+    });
+    expect(JSON.stringify(transportFailure)).not.toContain(TOKEN);
   });
 
   test("returns integrity mismatch without treating a CID as a raw SHA-256", async () => {
@@ -287,6 +437,55 @@ describe("Filebase IPFS pinning adapter", () => {
     expect(invalidCancelled).toBe(true);
   });
 
+  test("disposes /cat on overflow and does not await a hostile cancel", async () => {
+    let overflowCancelled = false;
+    const overflow = transportFor({
+      catBytes: new Uint8Array([1, 2, 3, 4, 5]),
+      catOnCancel: () => {
+        overflowCancelled = true;
+      },
+    });
+    const overflowResult = await Effect.runPromise(adapter(overflow.transport).pin(input()));
+    expect(overflowResult).toMatchObject({ status: "integrity_mismatch", reason: "length" });
+    expect(overflowCancelled).toBe(true);
+
+    let neverSettlingCancelled = false;
+    const hostile = transportFor({
+      catBytes: new Uint8Array([9, 9, 9, 9]),
+      catOnCancel: () => {
+        neverSettlingCancelled = true;
+        return new Promise<void>(() => undefined);
+      },
+    });
+    const bounded = await Promise.race([
+      Effect.runPromise(adapter(hostile.transport).pin(input())),
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("cancel cleanup blocked operation")), 250);
+      }),
+    ]);
+    expect(bounded).toMatchObject({ status: "integrity_mismatch", reason: "sha256" });
+    expect(neverSettlingCancelled).toBe(true);
+  });
+
+  test("disposes a one-pass source iterator when multipart streaming fails", async () => {
+    let disposed = false;
+    const source = {
+      byte_length: BYTES.byteLength,
+      open: async function* () {
+        try {
+          yield "not-bytes" as unknown as Uint8Array;
+        } finally {
+          disposed = true;
+        }
+      },
+    };
+    const result = await Effect.runPromise(
+      adapter(transportFor().transport).pin(input({ source })),
+    );
+    expect(result).toMatchObject({ status: "integrity_mismatch", reason: "length" });
+    expect(disposed).toBe(true);
+  });
+
   test("uses streamed /cat length and digest as authority, not /add Size", async () => {
     const fake = transportFor({ addSize: "999999" });
     const result = await Effect.runPromise(adapter(fake.transport).pin(input()));
@@ -299,7 +498,10 @@ describe("Filebase IPFS pinning adapter", () => {
       adapter(async (request) => {
         const response = await malformedPinLs.transport(request);
         if (request.path === FILEBASE_IPFS_PIN_LS_PATH) {
-          return json({ keys: { [CID]: { Type: "recursive" } } });
+          const recursive = hostileFixtures.responses.pin_ls_recursive as {
+            readonly Keys: Readonly<Record<string, unknown>>;
+          };
+          return json({ PinLsList: { Keys: recursive.Keys } });
         }
         return response;
       }).pin(input()),
@@ -310,7 +512,7 @@ describe("Filebase IPFS pinning adapter", () => {
       adapter(async (request) => {
         const response = await transportFor().transport(request);
         if (request.path === FILEBASE_IPFS_ADD_PATH) {
-          return raw(`{"Hash":"${CID}","Name":"a","Size":"4"}\n{"Hash":"${CID}"}\n`);
+          return raw(hostileFixtures.responses.ndjson);
         }
         return response;
       }).pin(input()),
@@ -321,7 +523,13 @@ describe("Filebase IPFS pinning adapter", () => {
   test("bounds oversized JSON and disposes a late response after timeout", async () => {
     const oversized = await Effect.runPromise(
       adapter(async (request) => {
-        if (request.path === FILEBASE_IPFS_ADD_PATH) return raw("x".repeat(2_000));
+        if (request.path === FILEBASE_IPFS_ADD_PATH) {
+          return raw(
+            hostileFixtures.responses.oversized.character.repeat(
+              hostileFixtures.responses.oversized.length,
+            ),
+          );
+        }
         return transportFor().transport(request);
       }).pin(input()),
     );

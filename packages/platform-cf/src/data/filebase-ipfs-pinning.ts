@@ -22,6 +22,8 @@ export const FILEBASE_IPFS_ADD_PATH = "/api/v0/add" as const;
 export const FILEBASE_IPFS_PIN_ADD_PATH = "/api/v0/pin/add" as const;
 export const FILEBASE_IPFS_PIN_LS_PATH = "/api/v0/pin/ls" as const;
 export const FILEBASE_IPFS_CAT_PATH = "/api/v0/cat" as const;
+export const FILEBASE_IPFS_ADD_QUERY =
+  "?cid-version=1&wrap-with-directory=false&progress=false" as const;
 export const FILEBASE_IPFS_MULTIPART_BOUNDARY_PREFIX = "----pirate-filebase-ipfs-v1-" as const;
 export const FILEBASE_IPFS_BOUNDARY_RANDOM_BYTES = 18 as const;
 export const FILEBASE_IPFS_ADAPTER_REVISION = "filebase-ipfs-pinning-v1" as const;
@@ -588,6 +590,40 @@ function jsonBody(value: unknown): FilebaseIpfsRequestBody {
   };
 }
 
+function emptyBody(): FilebaseIpfsRequestBody {
+  return {
+    byte_length: 0,
+    content_type: "application/octet-stream",
+    open: async function* (signal) {
+      if (signal.aborted) throw abortError(signal);
+      yield new Uint8Array(0);
+    },
+  };
+}
+
+function containsBytes(haystack: Uint8Array, needle: Uint8Array): boolean {
+  if (needle.byteLength === 0 || needle.byteLength > haystack.byteLength) return false;
+  outer: for (let offset = 0; offset <= haystack.byteLength - needle.byteLength; offset += 1) {
+    for (let index = 0; index < needle.byteLength; index += 1) {
+      if (haystack[offset + index] !== needle[index]) continue outer;
+    }
+    return true;
+  }
+  return false;
+}
+
+function boundaryCollisionGuard(boundary: string): (chunk: Uint8Array) => void {
+  const marker = new TextEncoder().encode(`--${boundary}`);
+  let suffix = new Uint8Array(0);
+  return (chunk) => {
+    const combined = new Uint8Array(suffix.byteLength + chunk.byteLength);
+    combined.set(suffix);
+    combined.set(chunk, suffix.byteLength);
+    if (containsBytes(combined, marker)) throw new MultipartBodyError("length");
+    suffix = combined.slice(Math.max(0, combined.byteLength - marker.byteLength + 1));
+  };
+}
+
 function multipartBody(
   input: IpfsPinningInput,
   limits: IpfsPinningLimits,
@@ -608,6 +644,7 @@ function multipartBody(
       if (signal.aborted) throw abortError(signal);
       yield preamble;
       const hash = new Sha256();
+      const guardBoundaryCollision = boundaryCollisionGuard(boundary);
       let total = 0;
       const sourceIterator = input.source.open(signal)[Symbol.asyncIterator]();
       let rejectAbort: ((error: OperationAbort) => void) | undefined;
@@ -626,6 +663,7 @@ function multipartBody(
           const chunk = part.value;
           if (signal.aborted) throw abortError(signal);
           if (!(chunk instanceof Uint8Array)) throw new MultipartBodyError("length");
+          guardBoundaryCollision(chunk);
           total += chunk.byteLength;
           if (total > input.expected_byte_length || total > limits.max_source_bytes) {
             throw new MultipartBodyError("length");
@@ -683,24 +721,24 @@ function hasOnlyKeys(
 }
 
 function parseAddResponse(value: Record<string, unknown>): string {
-  if (!hasOnlyKeys(value, ["Hash"], ["Name", "Size", "Bytes"])) {
+  if (!hasOnlyKeys(value, ["Hash"], ["Bytes", "Mode", "Mtime", "MtimeNsecs", "Name", "Size"])) {
     throw new ResponseBodyError("malformed");
   }
-  if (Object.hasOwn(value, "Name") && typeof value.Name !== "string") {
+  if (Object.hasOwn(value, "Name") && !validPinName(value.Name)) {
     throw new ResponseBodyError("malformed");
   }
-  for (const key of ["Size", "Bytes"] as const) {
-    const field = value[key];
+  for (const key of ["Size", "Bytes"] as const)
     if (
-      field !== undefined &&
-      !(
-        (typeof field === "string" && /^[0-9]+$/u.test(field)) ||
-        (typeof field === "number" && Number.isSafeInteger(field) && field >= 0)
-      )
-    ) {
+      Object.hasOwn(value, key) &&
+      !boundedUnsignedInteger(value[key], FILEBASE_IPFS_INTERNAL_MAX_SOURCE_BYTES)
+    )
       throw new ResponseBodyError("malformed");
-    }
-  }
+  if (Object.hasOwn(value, "Mode") && !validBoundedText(value.Mode, 32))
+    throw new ResponseBodyError("malformed");
+  if (Object.hasOwn(value, "Mtime") && !boundedSignedInteger(value.Mtime, Number.MAX_SAFE_INTEGER))
+    throw new ResponseBodyError("malformed");
+  if (Object.hasOwn(value, "MtimeNsecs") && !boundedUnsignedInteger(value.MtimeNsecs, 999_999_999))
+    throw new ResponseBodyError("malformed");
   const cid = stringField(value, "Hash");
   if (cid === null || !isValidFilebaseCid(cid)) {
     throw new InvalidCidResponseError();
@@ -708,13 +746,50 @@ function parseAddResponse(value: Record<string, unknown>): string {
   return cid;
 }
 
+function boundedUnsignedInteger(value: unknown, maximum: number): boolean {
+  return (
+    (typeof value === "string" && /^[0-9]+$/u.test(value) && Number(value) <= maximum) ||
+    (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= maximum)
+  );
+}
+
+function boundedSignedInteger(value: unknown, maximum: number): boolean {
+  if (typeof value === "number") {
+    return Number.isSafeInteger(value) && Math.abs(value) <= maximum;
+  }
+  return (
+    typeof value === "string" && /^-?[0-9]+$/u.test(value) && Math.abs(Number(value)) <= maximum
+  );
+}
+
+function validPinName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    utf8Length(value) <= IPFS_PINNING_MAX_IDENTIFIER_BYTES &&
+    [...value].every((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code >= 0x20 && code !== 0x7f && !(code >= 0x80 && code <= 0x9f);
+    })
+  );
+}
+
 function parsePinAddResponse(value: Record<string, unknown>, cid: string): void {
-  if (!hasOnlyKeys(value, ["Pins"])) throw new ResponseBodyError("malformed");
+  if (!hasOnlyKeys(value, ["Pins"], ["Bytes", "Progress"])) {
+    throw new ResponseBodyError("malformed");
+  }
   if (
     !Array.isArray(value.Pins) ||
     value.Pins.length === 0 ||
     !value.Pins.every((pin) => typeof pin === "string" && isValidFilebaseCid(pin)) ||
     !value.Pins.includes(cid)
+  ) {
+    throw new ResponseBodyError("malformed");
+  }
+  if (
+    (Object.hasOwn(value, "Bytes") &&
+      !boundedUnsignedInteger(value.Bytes, FILEBASE_IPFS_INTERNAL_MAX_SOURCE_BYTES)) ||
+    (Object.hasOwn(value, "Progress") &&
+      !boundedUnsignedInteger(value.Progress, FILEBASE_IPFS_INTERNAL_MAX_SOURCE_BYTES))
   ) {
     throw new ResponseBodyError("malformed");
   }
@@ -728,12 +803,25 @@ function parsePinLsResponse(value: Record<string, unknown>, cid: string): boolea
   ) {
     throw new ResponseBodyError("malformed");
   }
+  // Kubo's PinLsList is the typed output value; its non-stream JSON encoder
+  // emits that value directly, so the wire body is {"Keys": ...}.
   const keys = value.Keys as Record<string, unknown>;
   for (const [key, entry] of Object.entries(keys)) {
     if (!isValidFilebaseCid(key) || !Predicate.isObject(entry) || Array.isArray(entry)) {
       throw new ResponseBodyError("malformed");
     }
-    if (!hasOnlyKeys(entry as Record<string, unknown>, ["Type"]) || entry.Type !== "recursive") {
+    const pinEntry = entry as Record<string, unknown>;
+    if (!hasOnlyKeys(pinEntry, ["Type"], ["Name"])) {
+      throw new ResponseBodyError("malformed");
+    }
+    if (
+      pinEntry.Type !== "direct" &&
+      pinEntry.Type !== "indirect" &&
+      pinEntry.Type !== "recursive"
+    ) {
+      throw new ResponseBodyError("malformed");
+    }
+    if (Object.hasOwn(pinEntry, "Name") && !validPinName(pinEntry.Name)) {
       throw new ResponseBodyError("malformed");
     }
   }
@@ -894,6 +982,7 @@ export function makeFilebaseIpfsPinningAdapter(
           const addResponse = await call(
             FILEBASE_IPFS_ADD_PATH,
             multipartBody(requestInput, config.limits, boundary),
+            FILEBASE_IPFS_ADD_QUERY,
           );
           const addStatus = statusPath(FILEBASE_IPFS_ADD_PATH, addResponse.status);
           if (addStatus !== null) {
@@ -915,8 +1004,8 @@ export function makeFilebaseIpfsPinningAdapter(
           }
           const pinAdd = await call(
             FILEBASE_IPFS_PIN_ADD_PATH,
-            jsonBody({ arg: cid, recursive: true }),
-            `?arg=${encodeURIComponent(cid)}`,
+            emptyBody(),
+            `?arg=${encodeURIComponent(cid)}&recursive=true&progress=false`,
           );
           const pinAddStatus = statusPath(FILEBASE_IPFS_PIN_ADD_PATH, pinAdd.status);
           if (pinAddStatus !== null) {
@@ -937,8 +1026,8 @@ export function makeFilebaseIpfsPinningAdapter(
           for (let attempt = 0; attempt < config.limits.pin_convergence_attempts; attempt += 1) {
             const pinLs = await call(
               FILEBASE_IPFS_PIN_LS_PATH,
-              jsonBody({ arg: cid, type: "recursive" }),
-              `?arg=${encodeURIComponent(cid)}&type=recursive`,
+              emptyBody(),
+              `?arg=${encodeURIComponent(cid)}&type=recursive&stream=false&names=false`,
             );
             const pinLsStatus = statusPath(FILEBASE_IPFS_PIN_LS_PATH, pinLs.status);
             if (pinLsStatus !== null) {

@@ -8,14 +8,15 @@
   "multipart": {
     "boundary_prefix": "----pirate-filebase-ipfs-v1-",
     "random_bytes_hex": "0102030405060708090a0b0c0d0e0f101112",
-    "injection_filename": "bad\r\nX-Leak: true"
+    "injection_filename": "bad\r\nX-Leak: true",
+    "boundary_collision_payload": "prefix\r\n------pirate-filebase-ipfs-v1-0102030405060708090a0b0c0d0e0f101112\r\nsuffix"
   },
   "responses": {
     "wrong_content_type": "text/html",
     "ndjson": "{\"Hash\":\"not-a-cid\",\"Size\":\"4\"}\n{\"Hash\":\"second\"}\n",
-    "oversized": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "oversized": { "character": "x", "length": 2048 },
     "pin_ls_empty": { "Keys": {} },
-    "pin_ls_recursive": { "Keys": { "bafkreie7mstupynzp4jr7k5wwrdss3e3n4badz47wpctk3tmo7ujw2uani": { "Type": "recursive" } } }
+    "pin_ls_recursive": { "Keys": { "bafkreie7mstupynzp4jr7k5wwrdss3e3n4badz47wpctk3tmo7ujw2uani": { "Name": "sample.bin", "Type": "recursive" } } }
   },
   "secret": "filebase-test-token-must-not-leak"
 }
