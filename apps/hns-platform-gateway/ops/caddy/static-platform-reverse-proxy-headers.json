@@ -1,0 +1,16 @@
+{
+  "request": {
+    "delete": [
+      "X-Pirate-Gateway-*",
+      "X-Pirate-Hns-Forwarder-*"
+    ],
+    "set": {
+      "X-Pirate-Gateway-External-Scheme": [
+        "https"
+      ],
+      "X-Pirate-Gateway-Tls-Sni": [
+        "{http.request.tls.server_name}"
+      ]
+    }
+  }
+}

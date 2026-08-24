@@ -7,6 +7,9 @@
     ".": "./src/index.ts",
     "./server": "./src/server.ts"
   },
+  "scripts": {
+    "build:executable": "bun build --compile --target=bun-linux-x64-baseline --outfile dist/pirate-hns-platform-gateway src/main.ts"
+  },
   "dependencies": {
     "@pirate/application": "0.0.0"
   }
