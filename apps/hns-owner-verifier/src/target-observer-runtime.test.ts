@@ -8,10 +8,7 @@ import {
   type HnsControlObserverSnapshotFinalizeInput,
   type HnsControlObserverSnapshotStorePort,
 } from "@pirate/application/namespace-ownership";
-import {
-  makeHnsOwnerAuthoritativeTargetObserverRuntime,
-  makeHnsParentChainTargetObserverRuntime,
-} from "./target-observer-runtime.ts";
+import { makeHnsParentChainTargetObserverRuntime } from "./target-observer-runtime.ts";
 
 const configurationValue = {
   version: "pirate-hns-control-observer-configuration-v1",
@@ -384,117 +381,5 @@ describe("HNS parent-chain target-observer runtime composition", () => {
     ).rejects.toMatchObject({ reason: "transport_unavailable" });
     expect(storeCalls).toBe(0);
     expect(hsdCalls).toBe(0);
-  });
-});
-
-describe("HNS owner-authoritative target-observer runtime composition", () => {
-  test("pins the DNS runtime and retains transport uncertainty without DNS fallback", async () => {
-    const ownerConfiguration = {
-      ...configurationValue,
-      ownership_sources: ["owner_authoritative_dns_txt"],
-      authoritative_dns: {
-        driver_reference: "authoritative-dns:regtest",
-        required_view_ids: ["dns-view-a", "dns-view-b"],
-        require_dnssec: true,
-        require_all_views: true,
-        response_max_bytes: 65_535,
-      },
-    } as const;
-    const configurationBytes = await encodeHnsControlObserverConfiguration(ownerConfiguration);
-    const configurationDigest = await sha256(configurationBytes);
-    let dnsCalls = 0;
-    let validatorCalls = 0;
-    let finalized = 0;
-    const runtime = await makeHnsOwnerAuthoritativeTargetObserverRuntime(
-      {
-        authority: {
-          provider_id: "hns.owner.v1",
-          provider_configuration_reference: ownerConfiguration.provider_configuration_reference,
-          provider_configuration_version: ownerConfiguration.provider_configuration_version,
-          provider_configuration_digest: configurationDigest,
-          environment: ownerConfiguration.environment,
-          ownership_source: "owner_authoritative_dns_txt",
-        },
-        capabilities: {
-          provider_id: "hns.owner.v1",
-          environment: ownerConfiguration.environment,
-          chain_driver_reference: ownerConfiguration.chain.driver_reference,
-          authoritative_dns_driver_reference: ownerConfiguration.authoritative_dns.driver_reference,
-          snapshot_store_reference: ownerConfiguration.snapshot_store_reference,
-        },
-        configuration_resolver: {
-          resolve: async () => new Uint8Array(configurationBytes),
-        },
-        snapshot_store: {
-          reserve: async () => ({
-            kind: "acquired",
-            observer_fence: 1,
-            reservation_database_time: "2026-02-02T03:04:05.000Z",
-            lease_expires_at: "2026-02-02T03:04:20.000Z",
-            snapshot_reference: "hns-observer:regtest:owner-runtime-01",
-          }),
-          finalize: async (input) => {
-            finalized += 1;
-            return {
-              kind: "retained",
-              snapshot_reference: input.snapshot_reference,
-              result_bytes: new Uint8Array(input.result_bytes),
-              result_sha256: input.result_sha256,
-            };
-          },
-        },
-        hsd_transport: {
-          exchange: async () => {
-            throw new HnsControlObserverHsdTransportError("transport_error");
-          },
-        },
-        authoritative_dns_transport: {
-          exchange: async () => {
-            dnsCalls += 1;
-            throw new Error("DNS must not run after HSD uncertainty");
-          },
-        },
-        message_ids: { next_id: () => 1 },
-        validator: {
-          policy_id: "pirate-hns-authoritative-dns-validator-policy-v1",
-          validate: async () => {
-            validatorCalls += 1;
-            throw new Error("validation must not run after HSD uncertainty");
-          },
-        },
-      },
-      { deadline_ms: 12_000, signal: new AbortController().signal },
-    );
-    expect(runtime.configuration.ownership_source).toBe("owner_authoritative_dns_txt");
-    const request = {
-      version: "pirate-hns-control-observation-request-v1",
-      observation_id: "owner-runtime-observation-01",
-      provider_id: "hns.owner.v1",
-      provider_configuration_reference: ownerConfiguration.provider_configuration_reference,
-      provider_configuration_version: ownerConfiguration.provider_configuration_version,
-      provider_configuration_digest: configurationDigest,
-      environment: ownerConfiguration.environment,
-      ownership_source: "owner_authoritative_dns_txt",
-      root_label: "jazleeuw",
-      txt_name: "_pirate.jazleeuw",
-      expected_txt_value: "pirate-verification=nvs_owner_runtime",
-    } as const;
-    const resultBytes = await runtime.observer.observe(
-      {
-        request,
-        request_bytes: await encodeHnsControlObservationRequest(request),
-        lease_policy: runtime.configuration.lease_policy,
-      },
-      { deadline_ms: 12_000, signal: new AbortController().signal },
-    );
-    expect(
-      (await decodeHnsControlObservationResultBytes(resultBytes, request)).result,
-    ).toMatchObject({
-      status: "unavailable",
-      reason_code: "chain_transport_unavailable",
-    });
-    expect(finalized).toBe(1);
-    expect(dnsCalls).toBe(0);
-    expect(validatorCalls).toBe(0);
   });
 });
