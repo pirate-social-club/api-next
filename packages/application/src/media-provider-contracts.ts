@@ -80,10 +80,9 @@ const MediaProviderAttemptMetadata = Schema.Struct({
   request_id: BoundedIdentifier,
   timeout_ms: PositiveTimeout,
 });
+
 export { MediaProviderAttemptMetadata };
-export type MediaProviderAttemptMetadata = Schema.Schema.Type<
-  typeof MediaProviderAttemptMetadata
->;
+export type MediaProviderAttemptMetadata = Schema.Schema.Type<typeof MediaProviderAttemptMetadata>;
 
 /**
  * Effect interruption is the cancellation mechanism. The signal is passed to
@@ -187,6 +186,7 @@ const TranscriptSegment = Schema.Struct({
     end_ms >= start_ms ? undefined : "Transcript segment end must not precede start",
   ),
 );
+
 export { TranscriptSegment };
 export type MediaTranscriptSegment = Schema.Schema.Type<typeof TranscriptSegment>;
 
@@ -211,6 +211,19 @@ const TranscriptSegments = Schema.Array(TranscriptSegment).check(
   }),
 );
 
+const MediaTranscriptIdentityFields = {
+  operation_id: BoundedIdentifier,
+  audio_revision: PositiveRevision,
+  analysis_revision: PositiveRevision,
+  canonical_audio_sha256: Sha256Hex,
+  transcript_artifact_ref: BoundedArtifactReference,
+  transcript_sha256: Sha256Hex,
+};
+
+/** Closed identity for private transcript evidence and every classifier result. */
+export const MediaTranscriptIdentity = Schema.Struct(MediaTranscriptIdentityFields);
+export type MediaTranscriptIdentity = Schema.Schema.Type<typeof MediaTranscriptIdentity>;
+
 /**
  * Private hostile-data evidence. `transcript` and segment text are inert data;
  * this shape has no tool, network, storage, secret, policy, or instruction
@@ -218,11 +231,7 @@ const TranscriptSegments = Schema.Array(TranscriptSegment).check(
  */
 export const MediaTranscriptArtifact = Schema.Struct({
   version: Schema.Literal("media-transcript-artifact-v1"),
-  operation_id: BoundedIdentifier,
-  audio_revision: PositiveRevision,
-  analysis_revision: PositiveRevision,
-  canonical_audio_sha256: Sha256Hex,
-  transcript_artifact_ref: BoundedArtifactReference,
+  ...MediaTranscriptIdentityFields,
   transcript: Schema.String.check(
     Schema.isMaxLength(MEDIA_TRANSCRIPT_MAX_LENGTH),
     Schema.makeFilter((value) =>
@@ -239,6 +248,7 @@ const DetectedLanguageEvidence = Schema.Struct({
   language_bcp47: MediaBcp47LanguageTag,
   confidence: Confidence,
 });
+
 export { DetectedLanguageEvidence };
 export type MediaDetectedLanguageEvidence = Schema.Schema.Type<typeof DetectedLanguageEvidence>;
 
@@ -286,10 +296,7 @@ const MediaAsrNoSpeechResult = Schema.Struct({
 });
 
 /** ASR has only transcript or explicit no-speech success outcomes. */
-export const MediaAsrResult = Schema.Union([
-  MediaAsrTranscriptResult,
-  MediaAsrNoSpeechResult,
-]);
+export const MediaAsrResult = Schema.Union([MediaAsrTranscriptResult, MediaAsrNoSpeechResult]);
 export type MediaAsrResult = Schema.Schema.Type<typeof MediaAsrResult>;
 
 const ClassifierProvenance = {
@@ -299,6 +306,11 @@ const ClassifierProvenance = {
   adapter_revision: BoundedRevisionIdentifier,
 };
 
+const ClassifierResultIdentity = {
+  transcript_identity: MediaTranscriptIdentity,
+  attempt_id: BoundedIdentifier,
+};
+
 const ClassifierEvidence = Schema.Struct({
   kind: Schema.Literals(["explicitness", "primary_language", "secondary_language"]),
   segment_index: NonNegativeInteger.check(
@@ -306,6 +318,7 @@ const ClassifierEvidence = Schema.Struct({
   ),
   confidence: Confidence,
 });
+
 export { ClassifierEvidence };
 export type MediaClassifierEvidence = Schema.Schema.Type<typeof ClassifierEvidence>;
 
@@ -340,32 +353,58 @@ const MediaExplicitnessClassifiedResult = Schema.Struct({
     secondary_language: Schema.NullOr(Confidence),
   }),
   evidence: ClassifierEvidenceList,
+  ...ClassifierResultIdentity,
   ...ClassifierProvenance,
-});
+}).check(
+  Schema.makeFilter(
+    ({ primary_language_bcp47, secondary_language_bcp47, confidence, evidence }) => {
+      const evidenceKinds = new Set(evidence.map(({ kind }) => kind));
+      const secondaryLanguagePresent = secondary_language_bcp47 !== null;
+      const secondaryConfidencePresent = confidence.secondary_language !== null;
+      const languagesAreDistinct =
+        !secondaryLanguagePresent || secondary_language_bcp47 !== primary_language_bcp47;
+      const evidenceCoversClaimedFields =
+        evidenceKinds.has("explicitness") &&
+        evidenceKinds.has("primary_language") &&
+        (secondaryLanguagePresent
+          ? evidenceKinds.has("secondary_language")
+          : !evidenceKinds.has("secondary_language"));
+      return languagesAreDistinct &&
+        secondaryLanguagePresent === secondaryConfidencePresent &&
+        evidenceCoversClaimedFields
+        ? undefined
+        : "Classifier language, confidence, and evidence claims must agree";
+    },
+  ),
+);
 
 const MediaExplicitnessFailureResult = Schema.Union([
   Schema.Struct({
     version: Schema.Literal("media-explicitness-classifier-result-v1"),
     status: Schema.Literal("unparseable"),
     evidence: ClassifierFailureEvidence,
+    ...ClassifierResultIdentity,
     ...ClassifierProvenance,
   }),
   Schema.Struct({
     version: Schema.Literal("media-explicitness-classifier-result-v1"),
     status: Schema.Literal("out_of_policy"),
     evidence: ClassifierFailureEvidence,
+    ...ClassifierResultIdentity,
     ...ClassifierProvenance,
   }),
   Schema.Struct({
     version: Schema.Literal("media-explicitness-classifier-result-v1"),
     status: Schema.Literal("ambiguous"),
     evidence: ClassifierFailureEvidence,
+    ...ClassifierResultIdentity,
     ...ClassifierProvenance,
   }),
   Schema.Struct({
     version: Schema.Literal("media-explicitness-classifier-result-v1"),
     status: Schema.Literal("exhausted"),
     evidence: ClassifierFailureEvidence,
+    ...ClassifierResultIdentity,
     ...ClassifierProvenance,
   }),
 ]);
@@ -390,7 +429,9 @@ export interface MediaAsrAdapter {
 }
 
 /** Effect service tag for the provider-neutral ASR port. */
-export class MediaAsr extends Context.Service<MediaAsr, MediaAsrAdapter>()("MediaAsr") {}
+export class MediaAsr extends Context.Service<MediaAsr, MediaAsrAdapter>()(
+  "@pirate/application/media-provider-contracts/MediaAsr",
+) {}
 
 export interface MediaExplicitnessClassifierAdapter {
   readonly classify: (
@@ -403,7 +444,7 @@ export interface MediaExplicitnessClassifierAdapter {
 export class MediaExplicitnessClassifier extends Context.Service<
   MediaExplicitnessClassifier,
   MediaExplicitnessClassifierAdapter
->()("MediaExplicitnessClassifier") {}
+>()("@pirate/application/media-provider-contracts/MediaExplicitnessClassifier") {}
 
 export type MediaSpeechRecognitionService = MediaAsrAdapter;
 export type MediaLanguageExplicitnessClassifierService = MediaExplicitnessClassifierAdapter;
@@ -429,11 +470,34 @@ export const decodeMediaExplicitnessClassifierResult = (
 export const isMediaClassifierResultBoundToTranscript = (
   input: MediaExplicitnessClassifierInput,
   result: MediaExplicitnessClassifierResult,
-): boolean =>
-  result.status !== "classified" ||
-  result.evidence.every(
-    ({ segment_index }) => segment_index < input.transcript.segments.length,
+): boolean => {
+  const identity = result.transcript_identity;
+  const transcript = input.transcript;
+  const identityMatches =
+    result.attempt_id === input.attempt.attempt_id &&
+    identity.operation_id === transcript.operation_id &&
+    identity.audio_revision === transcript.audio_revision &&
+    identity.analysis_revision === transcript.analysis_revision &&
+    identity.canonical_audio_sha256 === transcript.canonical_audio_sha256 &&
+    identity.transcript_artifact_ref === transcript.transcript_artifact_ref &&
+    identity.transcript_sha256 === transcript.transcript_sha256;
+  if (!identityMatches || result.status !== "classified") return identityMatches;
+
+  const evidenceKinds = new Set(result.evidence.map(({ kind }) => kind));
+  const evidenceCoversClaimedFields =
+    evidenceKinds.has("explicitness") &&
+    evidenceKinds.has("primary_language") &&
+    (result.secondary_language_bcp47 === null
+      ? !evidenceKinds.has("secondary_language")
+      : evidenceKinds.has("secondary_language"));
+  return (
+    result.secondary_language_bcp47 !== result.primary_language_bcp47 &&
+    (result.secondary_language_bcp47 === null) ===
+      (result.confidence.secondary_language === null) &&
+    evidenceCoversClaimedFields &&
+    result.evidence.every(({ segment_index }) => segment_index < transcript.segments.length)
   );
+};
 
 /** The processor must not accept evidence for a different immutable audio revision. */
 export const isMediaAsrResultBoundToInput = (
@@ -444,6 +508,7 @@ export const isMediaAsrResultBoundToInput = (
   result.audio.audio_revision === input.audio.audio_revision &&
   result.audio.analysis_revision === input.audio.analysis_revision &&
   result.audio.canonical_audio_sha256 === input.audio.canonical_audio_sha256 &&
+  result.attempt.attempt_id === input.attempt.attempt_id &&
   (result.status === "no_speech" ||
     (result.transcript.operation_id === input.audio.operation_id &&
       result.transcript.audio_revision === input.audio.audio_revision &&

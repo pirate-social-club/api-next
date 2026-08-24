@@ -1,24 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Effect, Exit, Schema } from "effect";
 import {
-  type MediaAsrAdapter,
-  MediaAsrInput,
-  MediaAsrResult,
-  MediaBcp47LanguageTag,
-  type MediaExplicitnessClassifierAdapter,
-  MediaExplicitnessClassifierInput,
-  MediaExplicitnessClassifierResult,
-  MediaProviderFailure,
-  MEDIA_TRANSCRIPT_MAX_LENGTH,
-  decodeMediaAsrInput,
-  decodeMediaAsrResult,
-  decodeMediaExplicitnessClassifierInput,
-  decodeMediaExplicitnessClassifierResult,
-  isMediaAsrResultBoundToInput,
-  isMediaClassifierResultBoundToTranscript,
-  isRetryableMediaProviderFailure,
-} from "./media-provider-contracts.ts";
-import {
   asrInput,
   asrNoSpeechResult,
   asrTranscriptResult,
@@ -31,12 +13,27 @@ import {
   hostileTranscript,
   malformedBcp47Tags,
 } from "../../../tests/fixtures/media-analysis/contracts/fixtures.ts";
+import {
+  decodeMediaAsrInput,
+  decodeMediaAsrResult,
+  decodeMediaExplicitnessClassifierInput,
+  decodeMediaExplicitnessClassifierResult,
+  isMediaAsrResultBoundToInput,
+  isMediaClassifierResultBoundToTranscript,
+  isRetryableMediaProviderFailure,
+  MEDIA_TRANSCRIPT_MAX_LENGTH,
+  type MediaAsrAdapter,
+  type MediaAsrInput,
+  MediaBcp47LanguageTag,
+  type MediaExplicitnessClassifierAdapter,
+  type MediaExplicitnessClassifierInput,
+  MediaProviderFailure,
+} from "./media-provider-contracts.ts";
 
-const strictDecode = <A>(schema: Schema.Schema<A>, input: unknown): A =>
-  Schema.decodeUnknownSync(
-    schema as unknown as Schema.ConstraintDecoder<unknown>,
-    { onExcessProperty: "error" },
-  )(input) as A;
+const strictDecode = <S extends Schema.ConstraintDecoder<unknown>>(
+  schema: S,
+  input: unknown,
+): S["Type"] => Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })(input);
 
 describe("provider-neutral media analysis contracts", () => {
   test("binds ASR to an immutable audio revision and bounded attempt", () => {
@@ -127,7 +124,10 @@ describe("provider-neutral media analysis contracts", () => {
     expect(() =>
       decodeMediaAsrResult({
         ...asrTranscriptResult,
-        transcript: { ...hostileTranscript, transcript: "x".repeat(MEDIA_TRANSCRIPT_MAX_LENGTH + 1) },
+        transcript: {
+          ...hostileTranscript,
+          transcript: "x".repeat(MEDIA_TRANSCRIPT_MAX_LENGTH + 1),
+        },
       }),
     ).toThrow();
   });
@@ -183,6 +183,8 @@ describe("provider-neutral media analysis contracts", () => {
         version: "media-explicitness-classifier-result-v1",
         status,
         evidence: [],
+        transcript_identity: classifierResult.transcript_identity,
+        attempt_id: classifierResult.attempt_id,
         policy_revision: "lyrics-policy-1",
         prompt_revision: "classifier-prompt-1",
         classifier_revision: "classifier-contract-1",
@@ -197,6 +199,38 @@ describe("provider-neutral media analysis contracts", () => {
       secondary_language_bcp47: "ru",
     });
     expect(
+      decodeMediaExplicitnessClassifierResult({
+        ...classifierResult,
+        secondary_language_bcp47: null,
+        confidence: { ...classifierResult.confidence, secondary_language: null },
+        evidence: classifierResult.evidence.filter(({ kind }) => kind !== "secondary_language"),
+      }),
+    ).toMatchObject({ secondary_language_bcp47: null });
+    expect(() =>
+      decodeMediaExplicitnessClassifierResult({
+        ...classifierResult,
+        secondary_language_bcp47: null,
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeMediaExplicitnessClassifierResult({
+        ...classifierResult,
+        confidence: { ...classifierResult.confidence, secondary_language: null },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeMediaExplicitnessClassifierResult({
+        ...classifierResult,
+        evidence: classifierResult.evidence.filter(({ kind }) => kind !== "primary_language"),
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeMediaExplicitnessClassifierResult({
+        ...classifierResult,
+        transcript: "transcript must not be repeated in classifier output",
+      }),
+    ).toThrow();
+    expect(
       isMediaClassifierResultBoundToTranscript(
         decodeMediaExplicitnessClassifierInput(classifierInput),
         decodeMediaExplicitnessClassifierResult(classifierResult),
@@ -207,7 +241,29 @@ describe("provider-neutral media analysis contracts", () => {
         decodeMediaExplicitnessClassifierInput(classifierInput),
         decodeMediaExplicitnessClassifierResult({
           ...classifierResult,
-          evidence: [{ ...classifierResult.evidence[0], segment_index: 10_000 }],
+          evidence: classifierResult.evidence.map((evidence) => ({
+            ...evidence,
+            segment_index: 9_999,
+          })),
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isMediaClassifierResultBoundToTranscript(
+        decodeMediaExplicitnessClassifierInput(classifierInput),
+        decodeMediaExplicitnessClassifierResult({
+          version: "media-explicitness-classifier-result-v1",
+          status: "exhausted",
+          evidence: [],
+          transcript_identity: {
+            ...classifierResult.transcript_identity,
+            transcript_sha256: "c".repeat(64),
+          },
+          attempt_id: classifierResult.attempt_id,
+          policy_revision: "lyrics-policy-1",
+          prompt_revision: "classifier-prompt-1",
+          classifier_revision: "classifier-contract-1",
+          adapter_revision: "adapter-revision-1",
         }),
       ),
     ).toBe(false);
@@ -248,7 +304,10 @@ describe("provider-neutral media analysis contracts", () => {
 
   test("supports compile-time fakes and cancellation through the adapter port", () => {
     const asrFake = {
-      recognize: (input: (typeof MediaAsrInput)["Type"], options: { readonly signal: AbortSignal }) =>
+      recognize: (
+        input: (typeof MediaAsrInput)["Type"],
+        options: { readonly signal: AbortSignal },
+      ) =>
         options.signal.aborted
           ? Effect.fail({
               _tag: "cancelled",
@@ -268,7 +327,9 @@ describe("provider-neutral media analysis contracts", () => {
     controller.abort();
     expect(
       Exit.isFailure(
-        Effect.runSyncExit(asrFake.recognize(decodeMediaAsrInput(asrInput), { signal: controller.signal })),
+        Effect.runSyncExit(
+          asrFake.recognize(decodeMediaAsrInput(asrInput), { signal: controller.signal }),
+        ),
       ),
     ).toBe(true);
     expect(
