@@ -179,10 +179,16 @@ export type CommandInput = Readonly<{
   responseBytes: Bytes;
   responseSha256: string;
 }>;
-export type CommandReplayInput = Pick<
-  CommandInput,
-  "communityId" | "actorUserId" | "endpointTemplate" | "idempotencyKey" | "requestHash"
->;
+export type CommandReplayInput = Omit<
+  Pick<
+    CommandInput,
+    "communityId" | "actorUserId" | "endpointTemplate" | "idempotencyKey" | "requestHash"
+  >,
+  never
+> & {
+  readonly personaId: string | null;
+};
+type ReplayIdentityInput = CommandReplayInput;
 export type TermsInput = CommandInput &
   Readonly<{ expectedCreationRevision: number; terms: SongTerms }>;
 export type ImmutableObjectInput = Readonly<{
@@ -378,6 +384,7 @@ export type MediaSubmissionStore = {
     communityId: string;
     submissionId: string;
     actorUserId: string;
+    personaId: string;
   }): Effect.Effect<MediaSubmissionState | null, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   bindTerms(
     input: TermsInput,
@@ -519,33 +526,28 @@ const lock = (tx: ControlPlaneTransaction, key: string) =>
 const resolvePersonaId = (
   tx: ControlPlaneTransaction,
   accountId: string,
-  requestedPersonaId: string | undefined,
+  requestedPersonaId: string,
   operation: MediaSubmissionRepositoryOperation,
 ) =>
   Effect.gen(function* () {
     const result = yield* tx.execute<Row>({
       label: `media-${operation}.persona`,
-      text: "SELECT persona_id FROM personas WHERE account_id=$1 AND status='active' AND ($2::text IS NULL OR persona_id=$2) ORDER BY is_first_persona DESC,created_at,persona_id LIMIT 1",
-      values: [accountId, requestedPersonaId ?? null],
+      text: "SELECT persona_id FROM personas WHERE account_id=$1 AND persona_id=$2 AND status='active'",
+      values: [accountId, requestedPersonaId],
       readonly: true,
     });
     const personaId = result.rows[0]?.persona_id;
     if (!validId(personaId)) return yield* Effect.fail(fail(operation, "invalid-input"));
     return personaId;
   });
-const replayKey = (input: CommandReplayInput): string =>
-  json([
-    input.communityId,
-    input.actorUserId,
-    input.personaId ?? null,
-    input.endpointTemplate,
-    input.idempotencyKey,
-  ]);
+const replayKey = (input: ReplayIdentityInput): string =>
+  json([input.actorUserId, input.personaId, input.endpointTemplate, input.idempotencyKey]);
 
 function replayFromRow(
   row: Row,
   requestHash: string,
   operation: MediaSubmissionRepositoryOperation,
+  expectedCommunityId?: string,
 ): ReplayOutcome {
   const submissionId = row.submission_id;
   const operationId = row.operation_id;
@@ -560,18 +562,24 @@ function replayFromRow(
     !validHash(digest)
   )
     throw fail(operation, "invalid-row");
-  return storedHash === requestHash
+  return storedHash === requestHash &&
+    (expectedCommunityId === undefined || row.community_id === expectedCommunityId)
     ? { kind: "replay", submissionId, operationId, bytes: response, sha256: digest }
     : { kind: "conflict", submissionId };
 }
-function reservationReplay(row: Row, requestHash: string): ReservationOutcome {
+function reservationReplay(
+  row: Row,
+  requestHash: string,
+  expectedCommunityId?: string,
+): ReservationOutcome {
   const reservationId = row.reservation_id;
   const response = bytes(row.response_snapshot_bytes);
   const digest = row.response_snapshot_sha256;
   const storedHash = row.request_hash;
   if (!validId(reservationId) || response === null || !validHash(digest) || !validHash(storedHash))
     throw fail("reserve", "invalid-row");
-  return storedHash === requestHash
+  return storedHash === requestHash &&
+    (expectedCommunityId === undefined || row.community_id === expectedCommunityId)
     ? { kind: "replay", reservationId, bytes: response, sha256: digest }
     : { kind: "conflict", reservationId };
 }
@@ -746,7 +754,7 @@ function decodeState(
     operationId: row.operation_id as string,
     communityId: row.community_id as string,
     actorId: row.actor_user_id as string,
-    ...(personaId === null ? {} : { personaId }),
+    personaId: personaId as string,
     title: row.title as string,
     songType: row.song_type as SongType,
     reservationId: row.audio_reservation_id as string,
@@ -847,15 +855,20 @@ function decodeState(
 
 const loadState = (
   tx: ControlPlaneTransaction,
-  input: { communityId: string; submissionId: string; actorUserId: string },
+  input: {
+    communityId: string;
+    submissionId: string;
+    actorUserId: string;
+    personaId?: string;
+  },
   operation: MediaSubmissionRepositoryOperation,
   forUpdate: boolean,
 ) =>
   Effect.gen(function* () {
     const result = yield* tx.execute<Row>({
       label: `media-submission.${operation}.load`,
-      text: `${stateSelect} WHERE s.community_id = $1 AND s.submission_id = $2 AND s.actor_user_id = $3 ${forUpdate ? "FOR UPDATE OF s" : ""}`,
-      values: [input.communityId, input.submissionId, input.actorUserId],
+      text: `${stateSelect} WHERE s.community_id=$1 AND s.submission_id=$2 AND s.actor_user_id=$3 AND ($4::text IS NULL OR s.author_persona_id=$4) ${forUpdate ? "FOR UPDATE OF s" : ""}`,
+      values: [input.communityId, input.submissionId, input.actorUserId, input.personaId ?? null],
       readonly: !forUpdate,
     });
     if (result.rows.length === 0) return null;
@@ -885,44 +898,42 @@ const reduce = (
   });
 const replayInTx = (
   tx: ControlPlaneTransaction,
-  input: CommandReplayInput,
+  input: ReplayIdentityInput,
   operation: MediaSubmissionRepositoryOperation,
 ) =>
   Effect.gen(function* () {
     yield* lock(tx, replayKey(input));
     const result = yield* tx.execute<Row>({
       label: `media-submission.${operation}.replay`,
-      text: "SELECT submission_id, operation_id, request_hash, response_snapshot_bytes, response_snapshot_sha256, actor_persona_id FROM media_submission_command_replays WHERE community_id = $1 AND actor_user_id = $2 AND endpoint_template = $3 AND idempotency_key = $4 AND (actor_persona_id = COALESCE($5, (SELECT persona_id FROM personas WHERE account_id = $2 AND is_first_persona LIMIT 1)) OR ($5 IS NULL AND actor_persona_id IS NULL)) FOR UPDATE",
-      values: [
-        input.communityId,
-        input.actorUserId,
-        input.endpointTemplate,
-        input.idempotencyKey,
-        input.personaId ?? null,
-      ],
+      text: "SELECT community_id,submission_id,operation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256,actor_persona_id FROM media_submission_command_replays WHERE actor_account_id=$1 AND actor_persona_id IS NOT DISTINCT FROM $2 AND endpoint_template=$3 AND idempotency_key=$4 FOR UPDATE",
+      values: [input.actorUserId, input.personaId, input.endpointTemplate, input.idempotencyKey],
       readonly: false,
     });
     if (result.rows.length === 0) return null;
     if (result.rows.length !== 1) return yield* Effect.fail(fail(operation, "invalid-row"));
     return yield* Effect.try({
-      try: () => replayFromRow(result.rows[0] as Row, input.requestHash, operation),
+      try: () =>
+        replayFromRow(result.rows[0] as Row, input.requestHash, operation, input.communityId),
       catch: (error) =>
         error instanceof MediaSubmissionRepositoryError ? error : fail(operation, "invalid-row"),
     });
   });
 const insertReplay = (
   tx: ControlPlaneTransaction,
-  input: CommandInput | (SubmissionInput & { endpointTemplate: string }),
+  input:
+    | CommandInput
+    | (SubmissionInput & { endpointTemplate: string })
+    | (Omit<CommandInput, "personaId"> & { personaId: null }),
   operationId: string,
   submissionActorUserId = input.actorUserId,
 ) =>
   tx.execute({
     label: "media-submission.replay.insert",
-    text: "INSERT INTO media_submission_command_replays (community_id,actor_user_id,actor_persona_id,submission_actor_user_id,endpoint_template,idempotency_key,request_hash,submission_id,operation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8,(SELECT submission_id FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$4 AND operation_id=$9)),$9,$10,$11)",
+    text: "INSERT INTO media_submission_command_replays (community_id,actor_user_id,actor_persona_id,submission_actor_user_id,submission_author_persona_id,endpoint_template,idempotency_key,request_hash,submission_id,operation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,(SELECT author_persona_id FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$4 AND operation_id=$9),$5,$6,$7,COALESCE($8,(SELECT submission_id FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$4 AND operation_id=$9)),$9,$10,$11)",
     values: [
       input.communityId,
       input.actorUserId,
-      input.personaId ?? null,
+      input.personaId,
       submissionActorUserId,
       input.endpointTemplate,
       input.idempotencyKey,
@@ -947,7 +958,7 @@ const insertEvent = (
       state.submissionId,
       state.communityId,
       state.actorId,
-      state.personaId ?? null,
+      state.personaId,
       state.operationId,
       sequence,
       `media-event-${crypto.randomUUID()}`,
@@ -981,7 +992,7 @@ const insertOutbox = (
       state.submissionId,
       state.communityId,
       state.actorId,
-      state.personaId ?? null,
+      state.personaId,
       state.operationId,
       state.creationRevision,
       state.audioRevision,
@@ -998,7 +1009,15 @@ const validCommand = (input: CommandInput): boolean =>
   validId(input.communityId) &&
   validId(input.submissionId) &&
   validId(input.actorUserId) &&
-  (input.personaId === undefined || validId(input.personaId)) &&
+  validId(input.personaId) &&
+  validId(input.endpointTemplate) &&
+  validId(input.idempotencyKey) &&
+  validHash(input.requestHash) &&
+  validSnapshot(input);
+const validAccountCommand = (input: Omit<CommandInput, "personaId">): boolean =>
+  validId(input.communityId) &&
+  validId(input.submissionId) &&
+  validId(input.actorUserId) &&
   validId(input.endpointTemplate) &&
   validId(input.idempotencyKey) &&
   validHash(input.requestHash) &&
@@ -1011,27 +1030,22 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         ![input.communityId, input.actorUserId, input.endpointTemplate, input.idempotencyKey].every(
           validId,
         ) ||
-        (input.personaId !== undefined && !validId(input.personaId)) ||
+        (input.personaId !== null && !validId(input.personaId)) ||
         !validHash(input.requestHash)
       )
         return yield* Effect.fail(fail("replay", "invalid-input"));
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "media-submission.replay",
-        text: "SELECT submission_id,operation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256 FROM media_submission_command_replays WHERE community_id=$1 AND actor_user_id=$2 AND endpoint_template=$3 AND idempotency_key=$4 AND (actor_persona_id = COALESCE($5, (SELECT persona_id FROM personas WHERE account_id=$2 AND is_first_persona LIMIT 1)) OR ($5 IS NULL AND actor_persona_id IS NULL))",
-        values: [
-          input.communityId,
-          input.actorUserId,
-          input.endpointTemplate,
-          input.idempotencyKey,
-          input.personaId ?? null,
-        ],
+        text: "SELECT community_id,submission_id,operation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256 FROM media_submission_command_replays WHERE actor_account_id=$1 AND actor_persona_id IS NOT DISTINCT FROM $2 AND endpoint_template=$3 AND idempotency_key=$4",
+        values: [input.actorUserId, input.personaId, input.endpointTemplate, input.idempotencyKey],
         readonly: true,
       });
       if (result.rows.length === 0) return { kind: "none" } as const;
       if (result.rows.length !== 1) return yield* Effect.fail(fail("replay", "invalid-row"));
       return yield* Effect.try({
-        try: () => replayFromRow(result.rows[0] as Row, input.requestHash, "replay"),
+        try: () =>
+          replayFromRow(result.rows[0] as Row, input.requestHash, "replay", input.communityId),
         catch: (error) =>
           error instanceof MediaSubmissionRepositoryError ? error : fail("replay", "invalid-row"),
       });
@@ -1043,11 +1057,11 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         ![
           input.communityId,
           input.actorUserId,
+          input.personaId,
           input.idempotencyKey,
           input.expectedContentType,
           input.uploadUrl,
         ].every(validId) ||
-        (input.personaId !== undefined && !validId(input.personaId)) ||
         !validHash(input.requestHash) ||
         !validRevision(input.expectedSizeBytes, 1) ||
         (input.expectedSha256 !== undefined && !validHash(input.expectedSha256)) ||
@@ -1069,27 +1083,16 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           );
           yield* lock(
             tx,
-            json([
-              input.communityId,
-              input.actorUserId,
-              RESERVATION_ENDPOINT,
-              input.idempotencyKey,
-            ]),
+            json([input.actorUserId, personaId, RESERVATION_ENDPOINT, input.idempotencyKey]),
           );
           const prior = yield* tx.execute<Row>({
             label: "media-reservation.replay",
-            text: "SELECT reservation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256,actor_persona_id FROM media_upload_reservations WHERE community_id=$1 AND actor_user_id=$2 AND endpoint_template=$3 AND idempotency_key=$4 AND actor_persona_id = COALESCE($5, (SELECT persona_id FROM personas WHERE account_id=$2 AND is_first_persona LIMIT 1)) FOR UPDATE",
-            values: [
-              input.communityId,
-              input.actorUserId,
-              RESERVATION_ENDPOINT,
-              input.idempotencyKey,
-              personaId,
-            ],
+            text: "SELECT community_id,reservation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256,actor_persona_id FROM media_upload_reservations WHERE actor_account_id=$1 AND actor_persona_id=$2 AND endpoint_template=$3 AND idempotency_key=$4 FOR UPDATE",
+            values: [input.actorUserId, personaId, RESERVATION_ENDPOINT, input.idempotencyKey],
             readonly: false,
           });
           if (prior.rows.length === 1)
-            return reservationReplay(prior.rows[0] as Row, input.requestHash);
+            return reservationReplay(prior.rows[0] as Row, input.requestHash, input.communityId);
           if (prior.rows.length > 1) return yield* Effect.fail(fail("reserve", "invalid-row"));
           const authority = yield* tx.execute<Row>({
             label: "media-reservation.authority",
@@ -1137,11 +1140,11 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         ![
           input.communityId,
           input.actorUserId,
+          input.personaId,
           input.idempotencyKey,
           input.title,
           input.reservationId,
         ].every(validId) ||
-        (input.personaId !== undefined && !validId(input.personaId)) ||
         !validHash(input.requestHash) ||
         input.title.length > 200 ||
         !["original", "remix"].includes(input.songType) ||
@@ -1179,11 +1182,11 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               submissionId,
               operationId,
               communityId: input.communityId,
+              personaId,
               title: input.title,
               songType: input.songType,
               reservationId: input.reservationId,
             })),
-            personaId,
           } satisfies MediaSubmissionState;
           const inserted = yield* tx.execute({
             label: "media-submission.create",
@@ -1240,7 +1243,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               input.communityId,
               input.actorUserId,
               operationId,
-              next.personaId ?? null,
+              next.personaId,
             ],
             readonly: false,
           });
@@ -1272,15 +1275,17 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
 
   const getForAuthor: MediaSubmissionStore["getForAuthor"] = (input) =>
     Effect.gen(function* () {
-      if (![input.communityId, input.submissionId, input.actorUserId].every(validId))
+      if (
+        ![input.communityId, input.submissionId, input.actorUserId, input.personaId].every(validId)
+      )
         return yield* Effect.fail(
           fail("get", "invalid-input", { submissionId: input.submissionId }),
         );
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "media-submission.get",
-        text: `${stateSelect} WHERE s.community_id=$1 AND s.submission_id=$2 AND s.actor_user_id=$3`,
-        values: [input.communityId, input.submissionId, input.actorUserId],
+        text: `${stateSelect} WHERE s.community_id=$1 AND s.submission_id=$2 AND s.actor_user_id=$3 AND s.author_persona_id=$4`,
+        values: [input.communityId, input.submissionId, input.actorUserId, input.personaId],
         readonly: true,
       });
       if (result.rows.length === 0) return null;
@@ -1304,6 +1309,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "terms");
           const prior = yield* replayInTx(tx, input, "terms");
           if (prior !== null) return prior;
           const current = yield* loadState(tx, input, "terms", true);
@@ -1331,7 +1337,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               json(input.terms.royaltyAllocations),
               input.terms.accessMode,
               json(input.terms),
-              current.personaId ?? null,
+              current.personaId,
             ],
             readonly: false,
           });
@@ -1395,6 +1401,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "finalize");
           const prior = yield* replayInTx(tx, input, "finalize");
           if (prior !== null) return prior;
           const current = yield* loadState(tx, input, "finalize", true);
@@ -1436,7 +1443,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               input.immutableObject.sizeBytes,
               input.immutableObject.contentType,
               input.immutableObject.canonicalSha256,
-              current.personaId ?? null,
+              current.personaId,
             ],
             readonly: false,
           });
@@ -1452,7 +1459,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               audio.canonicalSha256,
               audio.contentType,
               audio.sizeBytes,
-              current.personaId ?? null,
+              current.personaId,
             ],
             readonly: false,
           });
@@ -1537,6 +1544,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "analysis");
           const prior = yield* replayInTx(tx, input, "analysis");
           if (prior !== null) return prior;
           const current = yield* loadState(tx, input, "analysis", true);
@@ -1571,7 +1579,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 bound.upstreamCommercialRevShareBps,
                 bound.inheritedLicensePreset ?? null,
                 bound.inheritedCommercialRevShareBps ?? null,
-                current.personaId ?? null,
+                current.personaId,
               ],
               readonly: false,
             });
@@ -1592,7 +1600,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 speech.transcriptSha256,
                 input.transcriptArtifact?.transcript ?? null,
                 json(input.transcriptArtifact?.segments ?? []),
-                current.personaId ?? null,
+                current.personaId,
               ],
               readonly: false,
             });
@@ -1644,7 +1652,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               bound?.evidenceAudioSha256 ?? null,
               bound?.upstreamCommercialRevShareBps ?? null,
               json(trustedAnalysisSnapshot(input.analysis)),
-              current.personaId ?? null,
+              current.personaId,
             ],
             readonly: false,
           });
@@ -1691,6 +1699,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "decision");
           const prior = yield* replayInTx(tx, input, "decision");
           if (prior !== null) return prior;
           const current = yield* loadState(tx, input, "decision", true);
@@ -1746,7 +1755,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               input.decision.policyRevision,
               input.decision.evidenceRef,
               json(input.decision),
-              current.personaId ?? null,
+              current.personaId,
             ],
             readonly: false,
           });
@@ -1846,6 +1855,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, operation);
           const prior = yield* replayInTx(tx, input, operation);
           if (prior !== null) return prior;
           const current = yield* loadState(tx, input, operation, true);
@@ -2056,7 +2066,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       return Effect.fail(fail("moderation", "invalid-input", { submissionId: input.submissionId }));
     const authorityInput = { ...input, actorUserId: actorId };
     return Effect.gen(function* () {
-      if (!validCommand(authorityInput))
+      if (!validAccountCommand(authorityInput))
         return yield* Effect.fail(
           fail("moderation", "invalid-input", { submissionId: input.submissionId }),
         );
@@ -2079,7 +2089,11 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             );
           const current = yield* loadState(
             tx,
-            { ...authorityInput, actorUserId: ownerId },
+            {
+              communityId: authorityInput.communityId,
+              submissionId: authorityInput.submissionId,
+              actorUserId: ownerId,
+            },
             "moderation",
             true,
           );
@@ -2087,7 +2101,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             return yield* Effect.fail(
               fail("moderation", "not-found", { submissionId: input.submissionId }),
             );
-          const replayInput = { ...authorityInput, actorUserId: actorId };
+          const replayInput = { ...authorityInput, actorUserId: actorId, personaId: null };
           const prior = yield* replayInTx(tx, replayInput, "moderation");
           if (prior !== null) return prior;
           const authority = yield* tx.execute<Row>({
@@ -2145,7 +2159,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 approvedDecision.policyRevision,
                 approvedDecision.evidenceRef,
                 json(approvedDecision),
-                current.personaId ?? null,
+                current.personaId,
               ],
               readonly: false,
             });
@@ -2169,7 +2183,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               input.action === "approve"
                 ? json(input.decision)
                 : json({ reasonCode: "policy_violation" }),
-              current.personaId ?? null,
+              current.personaId,
             ],
             readonly: false,
           });
@@ -2431,6 +2445,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "publish");
           const prior = yield* replayInTx(tx, input, "publish");
           if (prior !== null) return prior;
           const current = yield* loadState(tx, input, "publish", true);
@@ -2477,7 +2492,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 current.title,
                 input.idempotencyKey,
                 input.requestHash,
-                current.personaId ?? null,
+                current.personaId,
               ],
               readonly: false,
             });
@@ -2539,7 +2554,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               speech.status === "ready" ? speech.secondaryLanguageBcp47 : null,
               speech.explicitness,
               json(current.boundReference === null ? [] : ["reference_bound"]),
-              current.personaId ?? null,
+              current.personaId,
             ],
             readonly: false,
           });
@@ -2555,7 +2570,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               current.audioRevision,
               current.analysisRevision,
               current.audio.canonicalSha256,
-              current.personaId ?? null,
+              current.personaId,
             ],
             readonly: false,
           });
@@ -2576,7 +2591,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     Effect.gen(function* () {
       if (
         ![input.communityId, input.submissionId, input.actorUserId, input.postId].every(validId) ||
-        (input.personaId !== undefined && !validId(input.personaId)) ||
+        !validId(input.personaId) ||
         !validRevision(input.audioRevision, 1) ||
         !validRevision(input.analysisRevision, 1) ||
         !validHash(input.canonicalAudioSha256) ||
@@ -2687,7 +2702,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           input.operationId,
           input.inputHash,
         ].every(validId) ||
-        (input.personaId !== undefined && !validId(input.personaId)) ||
+        !validId(input.personaId) ||
         !validHash(input.inputHash) ||
         !validRevision(input.audioRevision, 1) ||
         !validRevision(input.analysisRevision, 1) ||
@@ -2720,7 +2735,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           input.policyRevision,
           input.adapterRevision,
           "pending",
-          input.personaId ?? null,
+          input.personaId,
         ],
         readonly: false,
       });

@@ -30,6 +30,11 @@ import {
   type TextPostSubmissionDocument,
 } from "../../ports.ts";
 import {
+  type PersonaStoreService,
+  PersonaUnavailable,
+  requireActiveOwnedPersona,
+} from "../personas.ts";
+import {
   canonicalBodyHash,
   validateHumanDirectActor,
   validateIdentifier,
@@ -60,6 +65,7 @@ export type TextPostCreateInput = Readonly<{
 export type TextPostServices = Readonly<{
   readonly textPostStore?: TextPostStore["Service"];
   readonly textModeration?: TextModeration["Service"];
+  readonly personaStore?: Pick<PersonaStoreService, "findOwned">;
 }>;
 
 export type GetTextContentSubmissionInput = Readonly<{
@@ -186,13 +192,22 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
 > {
   const store = services.textPostStore;
   const moderation = services.textModeration;
-  if (store === undefined || moderation === undefined)
+  const personaStore = services.personaStore;
+  if (store === undefined || moderation === undefined || personaStore === undefined)
     return yield* new TextPostRuntimeUnavailable();
   yield* validateIdentifier(input.communityId, "Invalid community identifier");
   yield* validateHumanDirectActor(input.actor);
   const body = yield* decodeTextPostBody(input.body);
   if (!validPublicHumanDirectPost(body) || body.post_type !== "text")
     return yield* new BadRequest({ message: "Only public human text posts are supported" });
+  yield* requireActiveOwnedPersona(
+    { accountId: input.actor.userId, personaId: body.persona_id },
+    personaStore,
+  ).pipe(
+    Effect.mapError((error) =>
+      error instanceof PersonaUnavailable ? new NotFound({ message: "Persona not found" }) : error,
+    ),
+  );
   const text = yield* normalizeTextInput(body);
   const requestHash = yield* canonicalBodyHash({
     community_id: input.communityId,
@@ -207,6 +222,7 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
       .replay({
         communityId: input.communityId,
         actor: input.actor,
+        personaId: body.persona_id,
         idempotencyKey,
         requestHash,
         surface: "text_post",
@@ -234,6 +250,7 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
       .commitTerminal({
         communityId: input.communityId,
         actor: input.actor,
+        personaId: body.persona_id,
         body,
         moderationInput: text.input,
         idempotencyKey,

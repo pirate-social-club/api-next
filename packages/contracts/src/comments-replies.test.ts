@@ -45,15 +45,20 @@ describe("comments and replies contracts", () => {
     expect(CreateCommentReply.errors).toContain(ReplyDepthExceeded);
   });
 
-  test("requires only idempotency_key and body and rejects legacy fields", () => {
+  test("requires persona_id, idempotency_key, and body and rejects legacy fields", () => {
     const requestBody = CreateComment.request?.body;
     const schema = schemaToOpenApi(requestBody);
-    expect(schema.required).toEqual(["idempotency_key", "body"]);
-    expect(Object.keys(schemaProperties(requestBody)).sort()).toEqual(["body", "idempotency_key"]);
+    expect(schema.required).toEqual(["idempotency_key", "persona_id", "body"]);
+    expect(Object.keys(schemaProperties(requestBody)).sort()).toEqual([
+      "body",
+      "idempotency_key",
+      "persona_id",
+    ]);
     expect(schema.additionalProperties).toBe(false);
     expect(() =>
       Schema.decodeUnknownSync(requestBody, { onExcessProperty: "error" })({
         idempotency_key: "key_1",
+        persona_id: "persona_comment_author",
         body: "hello",
         media_refs: [],
       }),

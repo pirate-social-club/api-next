@@ -331,7 +331,7 @@ const CommunityBranding = Schema.Struct({
 });
 
 const CommunityRoleSummary = Schema.Struct({
-  user: Schema.String,
+  persona: PublicPersonaV1,
   display_name: Schema.String,
   handle: Schema.String,
   avatar_ref: Schema.optional(Schema.NullOr(Schema.String)),
@@ -480,7 +480,7 @@ const PostDocument = Schema.Struct({
   id: Schema.String,
   object: Schema.Literal("post"),
   community: Schema.String,
-  author_user: Schema.optional(Schema.NullOr(Schema.String)),
+  author_persona: Schema.optional(Schema.NullOr(PublicPersonaV1)),
   author_public_handle: Schema.optional(Schema.NullOr(Schema.String)),
   authorship_mode: Schema.Literals(["human_direct", "user_agent"]),
   agent: Schema.optional(Schema.NullOr(Schema.String)),
@@ -652,6 +652,7 @@ const PublicCommunityThreadsResponse = Schema.Struct({
 
 const CreatePostCommon = {
   idempotency_key: Schema.String,
+  persona_id: PersonaIdV1,
   authorship_mode: Schema.optional(Schema.Literals(["human_direct", "user_agent"])),
   identity_mode: Schema.optional(Schema.Literals(["public", "anonymous"])),
   body: Schema.optional(Schema.NullOr(Schema.String)),
@@ -1130,6 +1131,7 @@ export type SongPublishedProjectionV1 = Schema.Schema.Type<typeof SongPublishedP
 
 const TextCommentReplyRequestV1 = Schema.Struct({
   idempotency_key: Schema.String,
+  persona_id: PersonaIdV1,
   body: Schema.String,
 });
 

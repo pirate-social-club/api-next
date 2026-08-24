@@ -198,6 +198,7 @@ const finalByKey = (
   transaction: Transaction,
   input: {
     readonly actorUserId: string;
+    readonly personaId: string;
     readonly idempotencyKey: string;
     readonly surface: TextSubmissionSurface;
   },
@@ -210,10 +211,10 @@ const finalByKey = (
                   published_comment_id, review_ref, created_at, updated_at,
                   response_snapshot_bytes, response_snapshot_sha256
              FROM text_content_submissions
-            WHERE actor_user_id = $1
-              AND surface = $2 AND idempotency_key = $3
+            WHERE actor_account_id = $1 AND author_persona_id = $2
+              AND surface = $3 AND idempotency_key = $4
             ${lock ? "FOR UPDATE" : ""}`,
-    values: [input.actorUserId, input.surface, input.idempotencyKey],
+    values: [input.actorUserId, input.personaId, input.surface, input.idempotencyKey],
     readonly: !lock,
   });
 
@@ -241,9 +242,10 @@ const lockKey = (transaction: Transaction, value: string) =>
 
 const idempotencyLockKey = (
   actorUserId: string,
+  personaId: string,
   surface: TextSubmissionSurface,
   key: string,
-): string => JSON.stringify([actorUserId, surface, key]);
+): string => JSON.stringify([actorUserId, personaId, surface, key]);
 
 const authority = (
   transaction: Transaction,
@@ -374,6 +376,7 @@ const commentBodyValid = (
   body: unknown,
 ): body is Readonly<{
   readonly idempotency_key: string;
+  readonly persona_id: string;
   readonly body: string;
 }> => {
   if (typeof body !== "object" || body === null) return false;
@@ -381,6 +384,8 @@ const commentBodyValid = (
   return (
     typeof value.idempotency_key === "string" &&
     value.idempotency_key.trim() !== "" &&
+    typeof value.persona_id === "string" &&
+    validId(value.persona_id) &&
     typeof value.body === "string" &&
     value.body.trim() !== ""
   );
@@ -486,7 +491,10 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
 
   const replay: RepositoryService["replay"] = (input) =>
     Effect.gen(function* () {
-      if (!actorInputValid(input.actor, input.communityId, input.idempotencyKey, input.requestHash))
+      if (
+        !actorInputValid(input.actor, input.communityId, input.idempotencyKey, input.requestHash) ||
+        !validId(input.personaId)
+      )
         return yield* Effect.fail(failure("replay", "constraint"));
       const surface = input.surface ?? "text_post";
       const db = yield* ControlPlaneDb;
@@ -494,6 +502,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
         db,
         {
           actorUserId: input.actor.userId,
+          personaId: input.personaId,
           idempotencyKey: input.idempotencyKey,
           surface,
         },
@@ -517,10 +526,15 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           : validId(target.postId) && (surface === "comment" || validId(target.parentCommentId)));
       const bodyValid =
         surface === "text_post"
-          ? body.post_type === "text" && body.idempotency_key === input.idempotencyKey
-          : commentBodyValid(input.body) && input.body.idempotency_key === input.idempotencyKey;
+          ? body.post_type === "text" &&
+            body.idempotency_key === input.idempotencyKey &&
+            body.persona_id === input.personaId
+          : commentBodyValid(input.body) &&
+            input.body.idempotency_key === input.idempotencyKey &&
+            input.body.persona_id === input.personaId;
       if (
         !actorInputValid(input.actor, input.communityId, input.idempotencyKey, input.requestHash) ||
+        !validId(input.personaId) ||
         !validId(input.operationId) ||
         !targetValid ||
         input.moderationInput.surface !== surface ||
@@ -556,12 +570,22 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           // reservation. Every accepted request still gets exactly one row.
           yield* lockKey(
             transaction,
-            idempotencyLockKey(input.actor.userId, surface, input.idempotencyKey),
+            idempotencyLockKey(input.actor.userId, input.personaId, surface, input.idempotencyKey),
           );
+          const persona = yield* transaction.execute({
+            label: "text-post.commit.persona-authority",
+            text: `SELECT 1 FROM personas
+                    WHERE account_id=$1 AND persona_id=$2 AND status='active'
+                    FOR SHARE`,
+            values: [input.actor.userId, input.personaId],
+            readonly: false,
+          });
+          if (persona.rows.length !== 1) return yield* Effect.fail(failure("commit", "not-found"));
           const existing = yield* finalByKey(
             transaction,
             {
               actorUserId: input.actor.userId,
+              personaId: input.personaId,
               idempotencyKey: input.idempotencyKey,
               surface,
             },
@@ -641,13 +665,15 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             yield* transaction.execute({
               label: "text-post.commit.post",
               text: `INSERT INTO posts
-                (community_id, post_id, author_user_id, post_type, status, visibility,
+                (community_id, post_id, author_user_id, author_persona_id,
+                 post_type, status, visibility,
                  title, body, created_at, updated_at, idempotency_key, idempotency_body_hash)
-               VALUES ($1, $2, $3, 'text', 'published', 'public', $4, $5, $6, $6, $7, $8)`,
+               VALUES ($1, $2, $3, $4, 'text', 'published', 'public', $5, $6, $7, $7, $8, $9)`,
               values: [
                 input.communityId,
                 postId,
                 input.actor.userId,
+                input.personaId,
                 input.moderationInput.title,
                 input.moderationInput.body,
                 at,
@@ -666,16 +692,18 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             yield* transaction.execute({
               label: "text-submission.commit.comment",
               text: `INSERT INTO comments (
-                  community_id, comment_id, post_id, parent_comment_id, author_user_id,
+                  community_id, comment_id, post_id, parent_comment_id,
+                  author_user_id, author_persona_id,
                   status, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
                   depth, reply_count
-                ) VALUES ($1, $2, $3, $4, $5, 'published', $6, $7, $7, $8, $9, $10, 0)`,
+                ) VALUES ($1, $2, $3, $4, $5, $6, 'published', $7, $8, $8, $9, $10, $11, 0)`,
               values: [
                 input.communityId,
                 commentId,
                 commentTarget.postId,
                 parentCommentId,
                 input.actor.userId,
+                input.personaId,
                 input.moderationInput.body,
                 at,
                 input.idempotencyKey,
@@ -705,15 +733,17 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             yield* transaction.execute({
               label: "text-submission.commit.comment-projection",
               text: `INSERT INTO comment_publication_projection (
-                  community_id, comment_id, post_id, parent_comment_id, author_user_id,
+                  community_id, comment_id, post_id, parent_comment_id,
+                  author_user_id, author_persona_id,
                   body, depth, status, projected_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'published', $8, $8)`,
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9, $9)`,
               values: [
                 input.communityId,
                 commentId,
                 commentTarget.postId,
                 parentCommentId,
                 input.actor.userId,
+                input.personaId,
                 input.moderationInput.body,
                 depth,
                 at,
@@ -729,9 +759,11 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                 policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
                 evidence_ref, published_post_id, published_comment_id, review_ref,
                 target_post_id, target_parent_comment_id,
-                created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256
+                created_at, updated_at, response_snapshot_bytes, response_snapshot_sha256,
+                author_persona_id
               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
-                $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $21, $22, encode(sha256($22), 'hex'))`,
+                $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $21, $22,
+                encode(sha256($22), 'hex'), $23)`,
             values: [
               input.communityId,
               submissionId,
@@ -755,6 +787,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
               targetParentCommentId,
               at,
               bytes,
+              input.personaId,
             ],
             readonly: false,
           });
@@ -1198,7 +1231,8 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             label: "moderation-action.lock-case",
             text: `SELECT cmc.community_id, cmc.case_ref, cmc.status AS comment_case_status,
                           tc.case_id AS text_case_id, tc.status AS case_status,
-                          s.submission_id, s.actor_user_id, s.status AS submission_status,
+                          s.submission_id, s.actor_user_id, s.author_persona_id,
+                          s.status AS submission_status,
                           s.surface, s.idempotency_key, s.request_hash,
                           s.target_post_id, s.target_parent_comment_id,
                           s.published_comment_id, h.body AS held_body,
@@ -1226,6 +1260,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
           const communityId = stringValue(row, "community_id");
           const submissionId = stringValue(row, "submission_id");
           const submissionActorId = stringValue(row, "actor_user_id");
+          const submissionPersonaId = stringValue(row, "author_persona_id");
           const submissionIdempotencyKey = stringValue(row, "idempotency_key");
           const submissionRequestHash = stringValue(row, "request_hash");
           const surface = stringValue(row, "surface");
@@ -1233,6 +1268,7 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             communityId === null ||
             submissionId === null ||
             submissionActorId === null ||
+            submissionPersonaId === null ||
             submissionIdempotencyKey === null ||
             !validHash(submissionRequestHash) ||
             !["comment", "reply"].includes(surface ?? "")
@@ -1335,16 +1371,18 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             yield* transaction.execute({
               label: "moderation-action.approve.comment",
               text: `INSERT INTO comments (
-                  community_id, comment_id, post_id, parent_comment_id, author_user_id,
+                  community_id, comment_id, post_id, parent_comment_id,
+                  author_user_id, author_persona_id,
                   status, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
                   depth, reply_count
-                ) VALUES ($1, $2, $3, $4, $5, 'published', $6, $7, $7, $8, $9, $10, 0)`,
+                ) VALUES ($1, $2, $3, $4, $5, $6, 'published', $7, $8, $8, $9, $10, $11, 0)`,
               values: [
                 communityId,
                 newCommentId,
                 targetPostId,
                 targetParentCommentId,
                 submissionActorId,
+                submissionPersonaId,
                 body,
                 at,
                 submissionIdempotencyKey,
@@ -1370,15 +1408,17 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
             yield* transaction.execute({
               label: "moderation-action.approve.projection",
               text: `INSERT INTO comment_publication_projection (
-                  community_id, comment_id, post_id, parent_comment_id, author_user_id,
+                  community_id, comment_id, post_id, parent_comment_id,
+                  author_user_id, author_persona_id,
                   body, depth, status, projected_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'published', $8, $8)`,
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'published', $9, $9)`,
               values: [
                 communityId,
                 newCommentId,
                 targetPostId,
                 targetParentCommentId,
                 submissionActorId,
+                submissionPersonaId,
                 body,
                 depth,
                 at,

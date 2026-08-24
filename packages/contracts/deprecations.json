@@ -74,19 +74,19 @@
   "cleanBreakOperations": [
     {
       "operationId": "post_communityCreationIntents",
-      "reason": "2026-08-23 optional-route v2 clean break: creation has no route request, projects exactly one human requirement, and delegates later namespace attachment to the sibling route aggregate."
+      "reason": "2026-08-24 account/persona amendment to the optional-route v2 clean break: creation requires one active owned persona_id in the route-free draft, freezes it into idempotency, and projects only the public owner persona while private account authority remains server-derived."
     },
     {
       "operationId": "get_communityCreationIntentsIntentId",
-      "reason": "2026-08-23 optional-route v2 clean break: creation replay projects exactly one human requirement and preserves the permanent generated community_... identity independently of namespace attachment."
+      "reason": "2026-08-24 account/persona amendment to the optional-route v2 clean break: creation reads preserve the permanent generated community_... identity and expose its public owner persona presentation without any account/user creator field."
     },
     {
       "operationId": "patch_communityCreationIntentsIntentId",
-      "reason": "2026-08-23 optional-route v2 clean break: draft mutation has no route-rebinding surface and leaves later namespace attachment to the sibling route aggregate."
+      "reason": "2026-08-24 account/persona amendment to the optional-route v2 clean break: draft mutation selects one active owned persona_id, binds it into the revision and idempotency hash, and retains no route-rebinding surface."
     },
     {
       "operationId": "post_communityCreationIntentsIntentIdCommit",
-      "reason": "2026-08-23 optional-route v2 clean break: commit requires the human ceremony only and returns the permanent generated-id href with a nullable canonical-route projection."
+      "reason": "2026-08-24 account/persona amendment to the optional-route v2 clean break: commit revalidates the persona frozen in the intent and returns its public owner presentation with the permanent generated-id href and nullable canonical route."
     },
     {
       "operationId": "get_cPathSegment",
@@ -102,11 +102,15 @@
     },
     {
       "operationId": "post_commentsCommentIdReplies",
-      "reason": "2026-08-22 Order 6 amendment: returns TextContentSubmissionV1 with HTTP 201, requires {idempotency_key, body}, and removes delegated-agent and legacy comment fields."
+      "reason": "2026-08-24 account/persona amendment to the Order 6 clean break: reply creation requires {idempotency_key, persona_id, body}, rejects absent, inactive, and foreign personas before effects, and binds the durable author lineage to that persona."
+    },
+    {
+      "operationId": "post_postsPostIdComments",
+      "reason": "2026-08-24 account/persona authorship amendment: comment creation requires {idempotency_key, persona_id, body}, rejects absent, inactive, and foreign personas before effects, and binds replay plus durable author lineage to that persona."
     },
     {
       "operationId": "post_communitiesCommunityIdPosts",
-      "reason": "2026-08-23 song-media R0 breaking amendment: this operation is text-only, removes all non-text request variants and media/song/commerce common fields including legacy commercial_rev_share_pct, and returns TextContentSubmissionV1 with HTTP 201."
+      "reason": "2026-08-24 account/persona amendment to the song-media R0 clean break: this operation remains text-only, requires the active owned persona_id selected by the authenticated account, and binds replay plus durable author lineage to that persona."
     },
     {
       "operationId": "post_communitiesCommunityIdMediaUploadReservations",

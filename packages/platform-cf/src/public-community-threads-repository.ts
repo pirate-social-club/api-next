@@ -9,6 +9,7 @@ import {
 } from "@pirate/application";
 import { GetPublicCommunityThreads } from "@pirate/contracts";
 import { Effect, type Layer, Schema } from "effect";
+import { publicPersonaFromSql } from "./public-persona-projection";
 
 const PAGE_SIZE = 20;
 const DEFAULT_LOCALE = "en";
@@ -220,7 +221,7 @@ const listTextPostsStatement = (input: {
   label: "public-community-threads.posts.list-text",
   text: `SELECT p.post_id,
                 p.community_id,
-                p.author_user_id,
+                public_persona_projection(p.author_persona_id) AS author_persona,
                 p.body,
                 p.title,
                 p.created_at,
@@ -314,7 +315,7 @@ const localizedTextPostFromRow = (
 ): Schema.Schema.Type<typeof GetPublicCommunityThreads.response>["items"][number] | null => {
   const postId = stringValue(row, "post_id");
   const communityId = stringValue(row, "community_id");
-  const authorUser = nullableStringValue(row, "author_user_id");
+  const authorPersona = publicPersonaFromSql(row.author_persona);
   const body = nullableStringValue(row, "body");
   const title = nullableStringValue(row, "title");
   const created = timestampMillis(row.created_at);
@@ -325,7 +326,7 @@ const localizedTextPostFromRow = (
     postId === null ||
     communityId === null ||
     communityId !== expectedCommunityId ||
-    !nullableStringFieldIsValid(row, "author_user_id") ||
+    authorPersona === undefined ||
     !nullableStringFieldIsValid(row, "body") ||
     !nullableStringFieldIsValid(row, "title") ||
     created === null ||
@@ -340,7 +341,7 @@ const localizedTextPostFromRow = (
       id: postId,
       object: "post",
       community: communityId,
-      author_user: authorUser,
+      author_persona: authorPersona,
       author_public_handle: null,
       authorship_mode: "human_direct",
       agent: null,

@@ -58,6 +58,13 @@ const validPost = {
   community_id: "community_1",
   post_id: "post_1",
   author_user_id: "usr_alice",
+  author_persona: {
+    persona_id: "persona_alice",
+    object: "persona",
+    display_name: "Alice",
+    avatar_ref: null,
+    primary_public_handle: "alice.pirate",
+  },
   post_type: "text",
   status: "published",
   visibility: "public",
@@ -439,7 +446,12 @@ describe("M2 content repository row and lock defenses", () => {
       repository.createPost({
         communityId: "community_1",
         actor: { userId: "usr_alice", kind: "user" },
-        body: { post_type: "text", idempotency_key: "post-key", body: "hello" },
+        body: {
+          post_type: "text",
+          persona_id: "persona_alice",
+          idempotency_key: "post-key",
+          body: "hello",
+        },
         idempotencyBodyHash: "a".repeat(64),
       }),
       membershipFake.db,
@@ -459,6 +471,7 @@ describe("M2 content repository row and lock defenses", () => {
           community_id: "community_1",
           post_id: "post_existing",
           author_user_id: "usr_alice",
+          author_persona: validPost.author_persona,
           post_type: "text",
           status: "processing",
           visibility: "public",
@@ -475,7 +488,12 @@ describe("M2 content repository row and lock defenses", () => {
       makeControlPlaneContentRepository().createPost({
         communityId: "community_1",
         actor: { userId: "usr_alice", kind: "user" },
-        body: { post_type: "text", idempotency_key: "post-key", body: "hello" },
+        body: {
+          post_type: "text",
+          persona_id: "persona_alice",
+          idempotency_key: "post-key",
+          body: "hello",
+        },
         idempotencyBodyHash: "a".repeat(64),
       }),
       fake.db,
@@ -489,7 +507,12 @@ describe("M2 content repository row and lock defenses", () => {
       repository.createPost({
         communityId: "community_1",
         actor: { userId: "usr_alice", kind: "user" },
-        body: { post_type: "text", idempotency_key: "post-key", body: "hello" },
+        body: {
+          post_type: "text",
+          persona_id: "persona_alice",
+          idempotency_key: "post-key",
+          body: "hello",
+        },
         idempotencyBodyHash: "A".repeat(64),
       }),
       fakeDb([]).db,

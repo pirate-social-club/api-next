@@ -50,6 +50,10 @@ import {
   makeControlPlaneNamespaceOwnershipStartStore,
 } from "@pirate/platform-cf/namespace-ownership-start-repository";
 import {
+  makeControlPlanePersonaStore,
+  makeControlPlanePersonaWalletStore,
+} from "@pirate/platform-cf/persona-repository";
+import {
   type HyperdriveConnection,
   makeHyperdriveControlPlaneLayer,
 } from "@pirate/platform-cf/postgres";
@@ -88,6 +92,7 @@ import {
 } from "./community-purchase-funding-handlers.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
+import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
@@ -418,6 +423,7 @@ export async function createProductionHttpWorker(
   const communityCreationStore = makeControlPlaneCommunityCreationStore(controlPlane, {
     namespace_provider_bindings: namespaceBindings,
   });
+  const personaStore = makeControlPlanePersonaStore(controlPlane);
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
   // The runtime is installed even when no provider credentials are enabled.
@@ -560,10 +566,14 @@ export async function createProductionHttpWorker(
     contentStore,
     textPostStore,
     textModeration,
+    personaStore,
     feedStore,
     identityStore,
   });
-  const communityCreationHandlers = makeCommunityCreationHandlers({ communityCreationStore });
+  const communityCreationHandlers = makeCommunityCreationHandlers({
+    communityCreationStore,
+    personaStore,
+  });
   const canonicalCommunityRouteHandlers = makeCanonicalCommunityRouteHandlers({
     canonicalCommunityRouteStore: makeControlPlaneCanonicalCommunityRouteStore(controlPlane),
   });
@@ -601,6 +611,23 @@ export async function createProductionHttpWorker(
       apiUrl: config.PRIVY_API_URL,
       appId: config.PRIVY_APP_ID,
       appSecret: Redacted.value(config.PRIVY_APP_SECRET),
+    },
+  });
+  const personaHandlers = makePersonaHandlers({
+    personas: {
+      store: personaStore,
+      nextPersonaId: () => Effect.sync(() => `persona_${crypto.randomUUID().replaceAll("-", "")}`),
+      nowIso: () => Effect.sync(() => new Date().toISOString()),
+    },
+    wallets: {
+      store: makeControlPlanePersonaWalletStore(controlPlane),
+      verifier: proofVerifier,
+      accounts: {
+        canonicalAccountId: (sourceUserId) =>
+          identityStore
+            .resolveCanonical({ sourceUserId })
+            .pipe(Effect.map((identity) => identity.canonicalUserId)),
+      },
     },
   });
   const tokenMinter = makeRs256SessionTokenMinter(sessionCrypto);
@@ -651,6 +678,7 @@ export async function createProductionHttpWorker(
       ...namespaceOwnershipHandlers,
       ...verificationHandlers,
       ...fundingHandlers,
+      ...personaHandlers,
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },

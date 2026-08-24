@@ -60,9 +60,11 @@ function failureOf<A, E>(exit: Exit.Exit<A, E>): E | undefined {
 }
 
 const actor: M2Actor = { userId: "usr_alice", kind: "user" };
+const actorPersonaId = "persona_content_alice";
+const bobPersonaId = "persona_content_bob";
 const requestHash = "a".repeat(64);
-const postBody = (key: string, body = "hello"): CreatePostBody =>
-  ({ post_type: "text", idempotency_key: key, body }) as CreatePostBody;
+const postBody = (key: string, body = "hello", personaId = actorPersonaId): CreatePostBody =>
+  ({ post_type: "text", persona_id: personaId, idempotency_key: key, body }) as CreatePostBody;
 type RouteState = "active" | "suspended" | "expired";
 
 async function seedEffectiveRoute(admin: Client, state: RouteState): Promise<void> {
@@ -258,6 +260,14 @@ async function seedEffectiveRoute(admin: Client, state: RouteState): Promise<voi
 async function seed(admin: Client, routeState: RouteState = "active"): Promise<void> {
   await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor.userId]);
   await admin.query("INSERT INTO users (user_id) VALUES ('usr_bob')");
+  await admin.query(
+    "INSERT INTO personas (persona_id,account_id,status,is_first_persona) VALUES ($1,$2,'active',FALSE),($3,'usr_bob','active',FALSE)",
+    [actorPersonaId, actor.userId, bobPersonaId],
+  );
+  await admin.query("INSERT INTO persona_profiles (persona_id,revision) VALUES ($1,1),($2,1)", [
+    actorPersonaId,
+    bobPersonaId,
+  ]);
   await seedEffectiveRoute(admin, routeState);
   await admin.query(
     `INSERT INTO community_memberships
@@ -267,15 +277,15 @@ async function seed(admin: Client, routeState: RouteState = "active"): Promise<v
   );
   await admin.query(
     `INSERT INTO posts
-      (community_id, post_id, author_user_id, post_type, status, visibility, body, created_at, updated_at)
-     VALUES ('community_1', 'post_parent', $1, 'text', 'published', 'public', 'parent', now(), now())`,
-    [actor.userId],
+      (community_id, post_id, author_user_id, author_persona_id, post_type, status, visibility, body, created_at, updated_at)
+     VALUES ('community_1', 'post_parent', $1, $2, 'text', 'published', 'public', 'parent', now(), now())`,
+    [actor.userId, actorPersonaId],
   );
   await admin.query(
     `INSERT INTO comments
-      (community_id, comment_id, post_id, parent_comment_id, author_user_id, status, body, created_at, updated_at)
-     VALUES ('community_1', 'comment_parent', 'post_parent', NULL, $1, 'published', 'parent comment', now(), now())`,
-    [actor.userId],
+      (community_id, comment_id, post_id, parent_comment_id, author_user_id, author_persona_id, status, body, created_at, updated_at)
+     VALUES ('community_1', 'comment_parent', 'post_parent', NULL, $1, $2, 'published', 'parent comment', now(), now())`,
+    [actor.userId, actorPersonaId],
   );
 }
 
@@ -683,7 +693,7 @@ suite("Postgres 17 content repository", () => {
           store.createPost({
             communityId: "community_1",
             actor: nonmember,
-            body: postBody("nonmember-key"),
+            body: postBody("nonmember-key", "hello", bobPersonaId),
             idempotencyBodyHash: "1".repeat(64),
           }),
         ),
@@ -798,6 +808,13 @@ suite("Postgres 17 content repository", () => {
       const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
       await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor.userId]);
       await admin.query(
+        "INSERT INTO personas (persona_id,account_id,status,is_first_persona) VALUES ($1,$2,'active',FALSE)",
+        [actorPersonaId, actor.userId],
+      );
+      await admin.query("INSERT INTO persona_profiles (persona_id,revision) VALUES ($1,1)", [
+        actorPersonaId,
+      ]);
+      await admin.query(
         `INSERT INTO communities (
            community_id, display_name, status, created_by_user_id,
            created_at, updated_at, route_slug, canonical_route_binding_id,
@@ -815,11 +832,11 @@ suite("Postgres 17 content repository", () => {
       );
       await admin.query(
         `INSERT INTO posts (
-           community_id, post_id, author_user_id, post_type, status, visibility,
+           community_id, post_id, author_user_id, author_persona_id, post_type, status, visibility,
            body, created_at, updated_at
-         ) VALUES ($1, 'post_namespaceless', $2, 'text', 'published', 'public',
+         ) VALUES ($1, 'post_namespaceless', $2, $3, 'text', 'published', 'public',
            'parent', clock_timestamp(), clock_timestamp())`,
-        [communityId, actor.userId],
+        [communityId, actor.userId, actorPersonaId],
       );
       const store = await storeFor(connection);
       await expect(

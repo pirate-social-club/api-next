@@ -110,16 +110,17 @@ describe("identity public-handle maintenance", () => {
     );
     expect(fake.statements.map(({ label }) => label)).toEqual([
       "identity.users.upsert-account",
+      "identity.personas.sync-first-profile",
       "identity.public-handles.redirect-previous",
       "identity.public-handles.upsert-current",
     ]);
-    expect(fake.statements[2]?.values).toEqual([
+    expect(fake.statements[3]?.values).toEqual([
       "handle_new",
       "captainnew",
       "captainnew.pirate",
       "usr_captain",
     ]);
-    expect(fake.statements[1]?.values).toEqual(["usr_captain", "handle_new"]);
+    expect(fake.statements[2]?.values).toEqual(["usr_captain", "handle_new"]);
   });
 
   test("rejects malformed or non-canonical account documents before writing", async () => {

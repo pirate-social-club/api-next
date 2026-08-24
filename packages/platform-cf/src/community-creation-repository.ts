@@ -19,6 +19,7 @@ import {
   type CommunityCreationIntentV2,
   CreateCommunityCreationIntent,
   OptionalRouteCommunityIdV2,
+  PublicPersonaV1,
   UpdateCommunityCreationIntent,
 } from "@pirate/contracts";
 import {
@@ -432,6 +433,9 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
   const providerId = asString(row.verification_provider_id);
   const expiresAt = asTimestamp(row.expires_at);
   const contractVersion = asString(row.creation_contract_version);
+  const publicPersona = Schema.decodeUnknownOption(PublicPersonaV1)(
+    jsonValue(row.persona_projection),
+  );
   const human = requirementFromValue(row.human_requirement, "human_identity");
   const namespace = requirementFromValue(row.namespace_requirement, "namespace_ownership");
   if (
@@ -446,10 +450,15 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
     human === null ||
     (contractVersion !== "route_v1" && contractVersion !== "optional_route_v2") ||
     (contractVersion === "route_v1" && namespace === null) ||
-    (contractVersion === "optional_route_v2" && row.namespace_requirement !== null)
+    (contractVersion === "optional_route_v2" && row.namespace_requirement !== null) ||
+    (contractVersion === "optional_route_v2" && Option.isNone(publicPersona))
   ) {
     return null;
   }
+  const personaRolePresentation =
+    contractVersion === "optional_route_v2" && Option.isSome(publicPersona)
+      ? ({ role: "owner" as const, persona: publicPersona.value } as const)
+      : null;
   const nextAction = nextActionFromRequirements(row, {
     intentId,
     status,
@@ -466,11 +475,13 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
     if (communityId === null || resourceHref === null) return null;
     committedStateResource = { community_id: communityId, href: resourceHref };
     if (contractVersion === "optional_route_v2") {
+      if (personaRolePresentation === null) return null;
       committedResource = {
         authority_version: "optional_route_v2",
         community_id: communityId,
         href: resourceHref,
         canonical_route: null,
+        persona_role_presentation: personaRolePresentation,
       };
     } else {
       const family = asString(row.committed_route_family);
@@ -533,6 +544,9 @@ function documentFromRow(row: Row): CommunityCreationIntentDocument | null {
           }),
     next_action: nextAction,
     expires_at: state.expires_at,
+    ...(personaRolePresentation === null
+      ? {}
+      : { persona_role_presentation: personaRolePresentation }),
     committed_resource: committedResource,
   };
   const decoded = Schema.decodeUnknownOption(CommunityCreationIntentContract)(publicIntent);
@@ -589,6 +603,12 @@ function routeV1ProjectionColumns(intentAlias: string): string {
   )`;
   return `${requirement("human_identity")} AS human_requirement,
           ${requirement("namespace_ownership")} AS namespace_requirement,
+          (
+            SELECT public_persona_projection(persona.persona_id)
+              FROM personas AS persona
+             WHERE persona.account_id = ${intentAlias}.actor_id
+               AND persona.persona_id = ${intentAlias}.draft ->> 'persona_id'
+          ) AS persona_projection,
           EXISTS (
             SELECT 1 FROM proof_sessions AS proof
              WHERE proof.creation_ceremony_intent_id = (
@@ -630,6 +650,30 @@ function lockActor(
     const row = oneRow(result.rows);
     if (row === undefined) return yield* Effect.fail(failure(operation, "invalid-row"));
     if (row === null || row.user_id !== actorId) {
+      return yield* Effect.fail(failure(operation, "constraint"));
+    }
+  });
+}
+
+function lockActiveOwnedPersona(
+  transaction: ControlPlaneTransaction,
+  actorId: string,
+  personaId: string,
+  operation: "create" | "update" | "commit",
+): Effect.Effect<void, CommunityCreationRepositoryFailure> {
+  return Effect.gen(function* () {
+    const result = yield* transaction.execute<Row>({
+      label: `community.creation.${operation}.lock-persona`,
+      text: `SELECT persona_id
+               FROM personas
+              WHERE account_id = $1 AND persona_id = $2 AND status = 'active'
+              FOR UPDATE`,
+      values: [actorId, personaId],
+      readonly: false,
+    });
+    const row = oneRow(result.rows);
+    if (row === undefined) return yield* Effect.fail(failure(operation, "invalid-row"));
+    if (row === null || row.persona_id !== personaId) {
       return yield* Effect.fail(failure(operation, "constraint"));
     }
   });
@@ -1838,6 +1882,12 @@ export function makeControlPlaneCommunityCreationRepository(
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
           yield* lockActor(transaction, input.actor.userId, "create");
+          yield* lockActiveOwnedPersona(
+            transaction,
+            input.actor.userId,
+            body.draft.persona_id,
+            "create",
+          );
           const replay = yield* replayByKey(transaction, {
             operation: "create",
             actorId: input.actor.userId,
@@ -1981,6 +2031,12 @@ export function makeControlPlaneCommunityCreationRepository(
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
           yield* lockActor(transaction, input.actor.userId, "update");
+          yield* lockActiveOwnedPersona(
+            transaction,
+            input.actor.userId,
+            body.draft.persona_id,
+            "update",
+          );
           const replay = yield* replayByKey(transaction, {
             operation: "update",
             actorId: input.actor.userId,
@@ -2099,6 +2155,12 @@ export function makeControlPlaneCommunityCreationRepository(
     row: Row,
   ) =>
     Effect.gen(function* () {
+      yield* lockActiveOwnedPersona(
+        transaction,
+        input.actor.userId,
+        document.draft.persona_id,
+        "commit",
+      );
       const compilation = compileCommunityGatePolicy(document.draft.policy);
       const compiledDraft = compileOptionalRouteDraft(document.draft.policy);
       if (
@@ -2470,6 +2532,7 @@ export function makeControlPlaneCommunityCreationRepository(
         community_id: communityId,
         href: `/c/${communityId}`,
         canonical_route: null,
+        persona_role_presentation: document.persona_role_presentation,
       };
       const transitioned = transitionCommunityCreationIntent(
         stateFromDocument(document, providerId),
@@ -2520,6 +2583,14 @@ export function makeControlPlaneCommunityCreationRepository(
                  joined_at, created_at, updated_at
                ) VALUES ($1, $2, $3, 'member', $4::timestamptz, $4::timestamptz, $4::timestamptz)`,
         values: [communityId, membershipId, input.actor.userId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-persona-role-presentation",
+        text: `INSERT INTO persona_role_presentations (
+                 community_id, account_id, persona_id, created_at, updated_at
+               ) VALUES ($1, $2, $3, $4::timestamptz, $4::timestamptz)`,
+        values: [communityId, input.actor.userId, document.draft.persona_id, activationNow],
         readonly: false,
       });
       yield* transaction.execute({

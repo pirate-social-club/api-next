@@ -125,6 +125,9 @@ CREATE TABLE persona_role_presentations (
 CREATE FUNCTION prevent_persona_identity_rewrite() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'persona identity cannot be deleted';
+  END IF;
   IF NEW.persona_id IS DISTINCT FROM OLD.persona_id
      OR NEW.account_id IS DISTINCT FROM OLD.account_id
      OR NEW.is_first_persona IS DISTINCT FROM OLD.is_first_persona THEN
@@ -137,8 +140,65 @@ BEGIN
 END
 $$;
 CREATE TRIGGER personas_identity_immutable
-BEFORE UPDATE ON personas
+BEFORE UPDATE OR DELETE ON personas
 FOR EACH ROW EXECUTE FUNCTION prevent_persona_identity_rewrite();
+
+CREATE FUNCTION prevent_persona_profile_delete() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'persona profile cannot be deleted';
+END
+$$;
+CREATE TRIGGER persona_profiles_delete_guard
+BEFORE DELETE ON persona_profiles
+FOR EACH ROW EXECUTE FUNCTION prevent_persona_profile_delete();
+
+CREATE FUNCTION prevent_persona_create_action_change() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'persona create action is append-only';
+END
+$$;
+CREATE TRIGGER persona_create_actions_append_only
+BEFORE UPDATE OR DELETE ON persona_create_actions
+FOR EACH ROW EXECUTE FUNCTION prevent_persona_create_action_change();
+
+CREATE FUNCTION guard_persona_wallet_assignment() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'persona wallet assignment cannot be deleted';
+  END IF;
+  IF NEW.assignment_id IS DISTINCT FROM OLD.assignment_id
+     OR NEW.persona_id IS DISTINCT FROM OLD.persona_id
+     OR NEW.account_id IS DISTINCT FROM OLD.account_id
+     OR NEW.chain_account_kind IS DISTINCT FROM OLD.chain_account_kind
+     OR NEW.hd_wallet_index IS DISTINCT FROM OLD.hd_wallet_index
+     OR NEW.reservation_idempotency_key IS DISTINCT FROM OLD.reservation_idempotency_key
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'persona wallet assignment identity is immutable';
+  END IF;
+  IF OLD.status = 'tombstoned' AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'tombstoned persona wallet assignment is immutable';
+  END IF;
+  IF OLD.status = 'active' AND NEW.status NOT IN ('active', 'tombstoned') THEN
+    RAISE EXCEPTION 'active persona wallet assignment cannot be reopened';
+  END IF;
+  IF OLD.status = 'pending' AND NEW.status NOT IN ('pending', 'active', 'tombstoned') THEN
+    RAISE EXCEPTION 'invalid persona wallet assignment transition';
+  END IF;
+  IF OLD.status <> 'pending'
+     AND (NEW.privy_wallet_id IS DISTINCT FROM OLD.privy_wallet_id
+       OR NEW.address IS DISTINCT FROM OLD.address
+       OR NEW.assigned_at IS DISTINCT FROM OLD.assigned_at) THEN
+    RAISE EXCEPTION 'assigned persona wallet authority is immutable';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER persona_wallet_assignments_state_guard
+BEFORE UPDATE OR DELETE ON persona_wallet_assignments
+FOR EACH ROW EXECUTE FUNCTION guard_persona_wallet_assignment();
 
 -- The first-persona insert is idempotent by account and intentionally uses a
 -- random public id: no public identifier is derived from the private account.
@@ -408,6 +468,112 @@ LANGUAGE sql STABLE AS $$
     ) AS handle ON true
    WHERE persona.persona_id = expected_persona_id
 $$;
+
+ALTER TABLE community_creation_intents
+  DROP CONSTRAINT community_creation_intents_optional_route_v2_draft_shape;
+
+-- Route-optional intents landed before personas existed. Freeze their exact
+-- first persona into the draft and replay snapshots without deriving any
+-- public identifier from the private account id. New create/update hashes are
+-- computed from the persona-bearing body; pre-0046 hashes remain historical
+-- clean-break evidence and intentionally do not replay the new wire shape.
+UPDATE community_creation_intents AS intent
+   SET draft = intent.draft
+               || jsonb_build_object('persona_id', persona.persona_id)
+  FROM personas AS persona
+ WHERE intent.creation_contract_version = 'optional_route_v2'
+   AND persona.account_id = intent.actor_id
+   AND persona.is_first_persona
+   AND NOT (intent.draft ? 'persona_id');
+
+ALTER TABLE community_creation_intents
+  ADD CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (
+    creation_contract_version <> 'optional_route_v2'
+    OR (
+      jsonb_typeof(draft) = 'object'
+      AND draft ? 'persona_id'
+      AND draft ? 'name'
+      AND draft ? 'description'
+      AND draft ? 'policy'
+      AND (draft - 'persona_id' - 'name' - 'description' - 'policy') = '{}'::jsonb
+      AND jsonb_typeof(draft -> 'persona_id') = 'string'
+      AND btrim(draft ->> 'persona_id') <> ''
+      AND jsonb_typeof(draft -> 'name') = 'string'
+      AND btrim(draft ->> 'name') <> ''
+      AND jsonb_typeof(draft -> 'description') IN ('string', 'null')
+      AND jsonb_typeof(draft -> 'policy') = 'object'
+      AND NOT (draft ? 'slug')
+      AND NOT (draft ? 'route_request')
+    )
+  );
+
+UPDATE community_creation_intent_revisions AS revision
+   SET state_snapshot = revision.state_snapshot
+                        || jsonb_build_object(
+                          'draft',
+                          (revision.state_snapshot -> 'draft')
+                          || jsonb_build_object('persona_id', persona.persona_id),
+                          'persona_role_presentation',
+                          jsonb_build_object(
+                            'role', 'owner',
+                            'persona', public_persona_projection(persona.persona_id)
+                          )
+                        )
+                        || CASE
+                          WHEN revision.state_snapshot -> 'committed_resource' IS NOT NULL
+                           AND revision.state_snapshot -> 'committed_resource' <> 'null'::jsonb
+                          THEN jsonb_build_object(
+                            'committed_resource',
+                            (revision.state_snapshot -> 'committed_resource')
+                            || jsonb_build_object(
+                              'persona_role_presentation',
+                              jsonb_build_object(
+                                'role', 'owner',
+                                'persona', public_persona_projection(persona.persona_id)
+                              )
+                            )
+                          )
+                          ELSE '{}'::jsonb
+                        END
+  FROM community_creation_intents AS intent
+  JOIN personas AS persona
+    ON persona.account_id = intent.actor_id
+   AND persona.is_first_persona
+ WHERE revision.intent_id = intent.intent_id
+   AND intent.creation_contract_version = 'optional_route_v2';
+
+-- The creator account remains private authority. Public owner attribution is
+-- a rotatable persona presentation and never exposes created_by_user_id.
+INSERT INTO persona_role_presentations (
+  community_id, account_id, persona_id, created_at, updated_at
+)
+SELECT community.community_id,
+       community.created_by_user_id,
+       persona.persona_id,
+       community.created_at,
+       community.updated_at
+  FROM communities AS community
+  JOIN community_memberships AS membership
+    ON membership.community_id = community.community_id
+   AND membership.user_id = community.created_by_user_id
+  JOIN personas AS persona
+    ON persona.account_id = community.created_by_user_id
+   AND persona.is_first_persona
+ON CONFLICT (community_id, account_id) DO NOTHING;
+
+CREATE FUNCTION require_active_role_persona() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT active_owned_persona(NEW.account_id, NEW.persona_id) THEN
+    RAISE EXCEPTION 'active owned persona required';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER persona_role_presentations_active_persona
+BEFORE INSERT OR UPDATE OF account_id, persona_id
+ON persona_role_presentations
+FOR EACH ROW EXECUTE FUNCTION require_active_role_persona();
 
 -- Existing author columns are retained for compatibility but are explicitly
 -- projected as private account identity in durable storage.
@@ -762,45 +928,27 @@ CREATE TRIGGER comments_active_persona
 BEFORE INSERT ON comments
 FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
--- Keep pre-0046 repository call sites source-compatible while they adopt
--- persona-aware inputs. Missing lineage is resolved to the account's
--- deterministic first persona before the active-persona guards run. Explicit
--- persona values remain subject to the composite ownership foreign keys.
+CREATE FUNCTION require_active_replay_persona() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.actor_persona_id IS NOT NULL
+     AND NOT active_owned_persona(NEW.actor_user_id, NEW.actor_persona_id) THEN
+    RAISE EXCEPTION 'active owned persona required';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER media_submission_command_replays_active_persona
+BEFORE INSERT ON media_submission_command_replays
+FOR EACH ROW EXECUTE FUNCTION require_active_replay_persona();
+
+-- Internal rows inherit the immutable author persona from their submission.
+-- Author-facing roots never receive a first-persona fallback: callers must
+-- select and authorize the exact persona before their first durable effect.
 CREATE FUNCTION populate_media_persona_lineage() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-  IF TG_TABLE_NAME = 'media_upload_reservations' THEN
-    IF NEW.actor_persona_id IS NULL THEN
-      SELECT persona_id INTO NEW.actor_persona_id
-        FROM personas
-       WHERE account_id = NEW.actor_user_id
-         AND is_first_persona
-       LIMIT 1;
-    END IF;
-  ELSIF TG_TABLE_NAME = 'media_post_submissions' THEN
-    IF NEW.author_persona_id IS NULL THEN
-      SELECT reservation.actor_persona_id INTO NEW.author_persona_id
-        FROM media_upload_reservations AS reservation
-       WHERE reservation.community_id = NEW.community_id
-         AND reservation.actor_user_id = NEW.actor_user_id
-         AND reservation.reservation_id = NEW.audio_reservation_id;
-      IF NEW.author_persona_id IS NULL THEN
-        SELECT persona_id INTO NEW.author_persona_id
-          FROM personas
-         WHERE account_id = NEW.actor_user_id
-           AND is_first_persona
-         LIMIT 1;
-      END IF;
-    END IF;
-  ELSIF TG_TABLE_NAME = 'media_submission_command_replays' THEN
-    IF NEW.actor_persona_id IS NULL
-       AND NEW.actor_user_id = NEW.submission_actor_user_id THEN
-      SELECT persona_id INTO NEW.actor_persona_id
-        FROM personas
-       WHERE account_id = NEW.actor_user_id
-         AND is_first_persona
-       LIMIT 1;
-    END IF;
+  IF TG_TABLE_NAME = 'media_submission_command_replays' THEN
     IF NEW.submission_author_persona_id IS NULL THEN
       SELECT submission.author_persona_id INTO NEW.submission_author_persona_id
         FROM media_post_submissions AS submission
@@ -809,21 +957,14 @@ BEGIN
          AND submission.submission_id = NEW.submission_id
          AND submission.operation_id = NEW.operation_id;
     END IF;
-  ELSIF TG_TABLE_NAME IN ('posts', 'comments') THEN
-    IF NEW.author_persona_id IS NULL AND NEW.author_user_id IS NOT NULL THEN
-      SELECT persona_id INTO NEW.author_persona_id
-        FROM personas
-       WHERE account_id = NEW.author_user_id
-         AND is_first_persona
-       LIMIT 1;
-    END IF;
   ELSE
-    IF NEW.author_persona_id IS NULL AND NEW.actor_user_id IS NOT NULL THEN
-      SELECT persona_id INTO NEW.author_persona_id
-        FROM personas
-       WHERE account_id = NEW.actor_user_id
-         AND is_first_persona
-       LIMIT 1;
+    IF NEW.author_persona_id IS NULL THEN
+      SELECT submission.author_persona_id INTO NEW.author_persona_id
+        FROM media_post_submissions AS submission
+       WHERE submission.community_id = NEW.community_id
+         AND submission.actor_user_id = NEW.actor_user_id
+         AND submission.submission_id = NEW.submission_id
+         AND submission.operation_id = NEW.operation_id;
     END IF;
   END IF;
   RETURN NEW;
@@ -835,8 +976,6 @@ DECLARE
   lineage_table TEXT;
 BEGIN
   FOREACH lineage_table IN ARRAY ARRAY[
-    'media_upload_reservations',
-    'media_post_submissions',
     'media_submission_command_replays',
     'media_submission_terms',
     'media_immutable_objects',
@@ -852,10 +991,7 @@ BEGIN
     'media_publication_projections',
     'media_timed_lyrics_artifacts',
     'media_alignment_projections',
-    'media_submission_outbox',
-    'text_content_submissions',
-    'posts',
-    'comments'
+    'media_submission_outbox'
   ] LOOP
     EXECUTE format(
       'CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON %I FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage()',

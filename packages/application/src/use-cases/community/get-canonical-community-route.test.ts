@@ -21,6 +21,17 @@ const spaces = {
   app_host: null,
 };
 
+const ownerPresentation = {
+  role: "owner" as const,
+  persona: {
+    persona_id: "persona-community-owner",
+    object: "persona" as const,
+    display_name: null,
+    avatar_ref: null,
+    primary_public_handle: null,
+  },
+};
+
 const service = (response: unknown, calls: string[]) => ({
   canonicalCommunityRouteStore: {
     resolveCanonicalRoute: ({ path_segment }: { readonly path_segment: string }) => {
@@ -44,6 +55,7 @@ describe("getCanonicalCommunityRoute", () => {
               community_id: communityId,
               href: `/c/${communityId}`,
               canonical_route: null,
+              persona_role_presentation: ownerPresentation,
             },
             calls,
           ),

@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
   ControlPlaneDb,
   type ControlPlaneStatement,
-  IdentityResolutionError,
   type IdentityStore,
   type PublicProfileLookup,
   PublicProfileRepositoryError,
@@ -16,14 +15,26 @@ const active = (overrides: Record<string, unknown> = {}) => ({
   label_display: "captainpublic.pirate",
   status: "active",
   owner_user_id: "usr_source",
+  owner_persona_id: "persona_source",
   redirect_target_handle_id: null,
+  ...overrides,
+});
+
+const profile = (overrides: Record<string, unknown> = {}) => ({
+  persona_id: "persona_source",
+  display_name: "Captain Public",
+  avatar_ref: null,
+  cover_ref: null,
+  bio: "Public profile",
+  preferred_locale: "en",
+  created_at: "2026-04-18T00:00:00.000Z",
   ...overrides,
 });
 
 function fakeDb(input: {
   readonly requested: Record<string, unknown>[];
   readonly target?: Record<string, unknown>[];
-  readonly communities?: Record<string, unknown>[];
+  readonly profile?: Record<string, unknown>[];
 }) {
   const statements: string[] = [];
   const execute: ControlPlaneDb["Service"]["execute"] = <Row = unknown>(
@@ -35,14 +46,9 @@ function fakeDb(input: {
         ? input.requested
         : statement.label === "public-profiles.handles.redirect-target"
           ? (input.target ?? [])
-          : (input.communities ?? [
-              {
-                community_id: "community-beta",
-                display_name: "Beta Club",
-                created_at: "2026-04-18T00:00:00.000Z",
-                route_slug: null,
-              },
-            ]);
+          : statement.label === "public-profiles.personas.profile"
+            ? (input.profile ?? [profile()])
+            : [];
     return Effect.succeed({ rows: rows as readonly Row[], rowCount: rows.length });
   };
   const db: ControlPlaneDb["Service"] = {
@@ -90,16 +96,15 @@ describe("public profile handle index repository", () => {
     if (result._tag !== "Success") return;
     const value = result.value as PublicProfileLookup;
     expect(value).toMatchObject({
-      canonicalUserId: "usr_canonical",
+      personaId: "persona_source",
+      displayName: "Captain Public",
       handleId: "handle_new",
       handleLabelNormalized: "captainpublic",
       handleStatus: "active",
-      createdCommunities: [{ community: "community-beta", route_slug: null }],
     });
     expect(output.statements[0]).toContain("WHERE label_normalized = $1");
     expect(output.statements[0]).toContain("FROM public_handle_index");
-    expect(output.statements[1]).toContain("created_by_user_id = $1");
-    expect(output.statements[1]).toContain("ORDER BY created_at DESC");
+    expect(output.statements[1]).toContain("persona.persona_id = $1");
     expect(output.statements.join("\n")).not.toContain("jsonb");
   });
 
@@ -139,14 +144,13 @@ describe("public profile handle index repository", () => {
     expect(await missing.result).toMatchObject({ _tag: "Success", value: null });
   });
 
-  test("maps alias cycles to a typed invalid-alias failure and retires stay hidden", async () => {
-    const cyclic = runLookup(
+  test("maps malformed persona projections to a typed invalid-alias failure and retires stay hidden", async () => {
+    const malformed = runLookup(
       { labelNormalized: "captainpublic" },
-      { requested: [active()] },
-      identityStore(() => Effect.fail(new IdentityResolutionError({ reason: "cyclic" }))),
+      { requested: [active()], profile: [profile({ persona_id: " persona_source " })] },
     );
-    const cycleResult = await cyclic.result;
-    expect(cycleResult).toMatchObject({ _tag: "Failure" });
+    const malformedResult = await malformed.result;
+    expect(malformedResult).toMatchObject({ _tag: "Failure" });
     const retired = runLookup(
       { labelNormalized: "retired" },
       {

@@ -26,7 +26,13 @@ const community = (overrides: Row = {}): Row => ({
 const post = (index: number, overrides: Row = {}): Row => ({
   post_id: `post_${index.toString().padStart(2, "0")}`,
   community_id: "community-a",
-  author_user_id: "usr_author",
+  author_persona: {
+    persona_id: "persona_author",
+    object: "persona",
+    display_name: "Author",
+    avatar_ref: null,
+    primary_public_handle: "author.pirate",
+  },
   body: `post ${index}`,
   title: null,
   created_at: new Date(1_787_000_000_000 - index * 1_000),
@@ -176,7 +182,7 @@ describe("public community threads Postgres repository", () => {
 
   test("fails closed on malformed non-null projected post scalars", async () => {
     for (const malformed of [
-      { author_user_id: " usr_author " },
+      { author_persona: { object: "persona", persona_id: " persona_author " } },
       { body: " body " },
       { title: " title " },
       { body: 7 },

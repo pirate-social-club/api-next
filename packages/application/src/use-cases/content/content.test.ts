@@ -13,6 +13,29 @@ import { createPost } from "./create-post.ts";
 import { getPost } from "./get-post.ts";
 
 const actor = { userId: "usr_alice", kind: "user" as const };
+const personaId = "persona-content-author";
+const personaStore = {
+  findOwned: () =>
+    Effect.succeed({
+      persona_id: personaId,
+      object: "persona" as const,
+      status: "active" as const,
+      profile: {
+        persona_id: personaId,
+        object: "persona_profile" as const,
+        revision: 1,
+        display_name: null,
+        avatar_ref: null,
+        cover_ref: null,
+        bio: null,
+        preferred_locale: null,
+        primary_public_handle: null,
+      },
+      wallet_set: { evm: null },
+      created_at: "2026-08-21T12:00:00.000Z",
+      retired_at: null,
+    }),
+};
 
 const fakeDocument = {
   id: "post_1",
@@ -68,6 +91,7 @@ const textPostStore = (
 
 const textRuntime = () => ({
   contentStore: fakeStore(),
+  personaStore,
   textPostStore: textPostStore(),
   textModeration: {
     evaluate: () => Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
@@ -96,7 +120,12 @@ describe("M2 content use cases", () => {
         {
           communityId: "community_1",
           actor,
-          body: { post_type: "text", idempotency_key: "key_1", body: "hello" },
+          body: {
+            post_type: "text",
+            persona_id: personaId,
+            idempotency_key: "key_1",
+            body: "hello",
+          },
         },
         { ...textRuntime(), textPostStore: store },
       ),
@@ -106,7 +135,12 @@ describe("M2 content use cases", () => {
         {
           communityId: "community_1",
           actor,
-          body: { body: "hello", idempotency_key: "key_1", post_type: "text" },
+          body: {
+            body: "hello",
+            idempotency_key: "key_1",
+            persona_id: personaId,
+            post_type: "text",
+          },
         },
         { ...textRuntime(), textPostStore: store },
       ),

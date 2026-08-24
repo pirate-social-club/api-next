@@ -61,6 +61,9 @@
                   "draft": {
                     "type": "object",
                     "properties": {
+                      "persona_id": {
+                        "type": "string"
+                      },
                       "name": {
                         "type": "string",
                         "allOf": [
@@ -371,6 +374,7 @@
                       }
                     },
                     "required": [
+                      "persona_id",
                       "name",
                       "description",
                       "policy"
@@ -428,6 +432,9 @@
                     "draft": {
                       "type": "object",
                       "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
                         "name": {
                           "type": "string",
                           "allOf": [
@@ -738,6 +745,7 @@
                         }
                       },
                       "required": [
+                        "persona_id",
                         "name",
                         "description",
                         "policy"
@@ -990,6 +998,9 @@
                     "expires_at": {
                       "type": "string"
                     },
+                    "persona_role_presentation": {
+                      "$ref": "#/$defs/Objects_"
+                    },
                     "committed_resource": {
                       "anyOf": [
                         {
@@ -1014,13 +1025,17 @@
                             },
                             "canonical_route": {
                               "type": "null"
+                            },
+                            "persona_role_presentation": {
+                              "$ref": "#/$defs/Objects_"
                             }
                           },
                           "required": [
                             "authority_version",
                             "community_id",
                             "href",
-                            "canonical_route"
+                            "canonical_route",
+                            "persona_role_presentation"
                           ],
                           "additionalProperties": false
                         },
@@ -1041,9 +1056,80 @@
                     "requirements",
                     "next_action",
                     "expires_at",
+                    "persona_role_presentation",
                     "committed_resource"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "owner"
+                          ]
+                        },
+                        "persona": {
+                          "type": "object",
+                          "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
+                            "object": {
+                              "type": "string",
+                              "enum": [
+                                "persona"
+                              ]
+                            },
+                            "display_name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "avatar_ref": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "primary_public_handle": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "persona_id",
+                            "object",
+                            "display_name",
+                            "avatar_ref",
+                            "primary_public_handle"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "persona"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -1088,6 +1174,9 @@
                     "draft": {
                       "type": "object",
                       "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
                         "name": {
                           "type": "string",
                           "allOf": [
@@ -1398,6 +1487,7 @@
                         }
                       },
                       "required": [
+                        "persona_id",
                         "name",
                         "description",
                         "policy"
@@ -1650,6 +1740,9 @@
                     "expires_at": {
                       "type": "string"
                     },
+                    "persona_role_presentation": {
+                      "$ref": "#/$defs/Objects_"
+                    },
                     "committed_resource": {
                       "anyOf": [
                         {
@@ -1674,13 +1767,17 @@
                             },
                             "canonical_route": {
                               "type": "null"
+                            },
+                            "persona_role_presentation": {
+                              "$ref": "#/$defs/Objects_"
                             }
                           },
                           "required": [
                             "authority_version",
                             "community_id",
                             "href",
-                            "canonical_route"
+                            "canonical_route",
+                            "persona_role_presentation"
                           ],
                           "additionalProperties": false
                         },
@@ -1701,9 +1798,80 @@
                     "requirements",
                     "next_action",
                     "expires_at",
+                    "persona_role_presentation",
                     "committed_resource"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "owner"
+                          ]
+                        },
+                        "persona": {
+                          "type": "object",
+                          "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
+                            "object": {
+                              "type": "string",
+                              "enum": [
+                                "persona"
+                              ]
+                            },
+                            "display_name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "avatar_ref": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "primary_public_handle": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "persona_id",
+                            "object",
+                            "display_name",
+                            "avatar_ref",
+                            "primary_public_handle"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "persona"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -1985,6 +2153,9 @@
                         "draft": {
                           "type": "object",
                           "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
                             "name": {
                               "type": "string",
                               "allOf": [
@@ -2008,6 +2179,7 @@
                             }
                           },
                           "required": [
+                            "persona_id",
                             "name",
                             "description",
                             "policy"
@@ -2247,6 +2419,9 @@
                         "expires_at": {
                           "type": "string"
                         },
+                        "persona_role_presentation": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "committed_resource": {
                           "anyOf": [
                             {
@@ -2271,13 +2446,17 @@
                                 },
                                 "canonical_route": {
                                   "type": "null"
+                                },
+                                "persona_role_presentation": {
+                                  "$ref": "#/$defs/Objects_1"
                                 }
                               },
                               "required": [
                                 "authority_version",
                                 "community_id",
                                 "href",
-                                "canonical_route"
+                                "canonical_route",
+                                "persona_role_presentation"
                               ],
                               "additionalProperties": false
                             },
@@ -2298,6 +2477,7 @@
                         "requirements",
                         "next_action",
                         "expires_at",
+                        "persona_role_presentation",
                         "committed_resource"
                       ],
                       "additionalProperties": false
@@ -2382,10 +2562,10 @@
                           "type": "object",
                           "properties": {
                             "human_identity": {
-                              "$ref": "#/$defs/Objects_1"
+                              "$ref": "#/$defs/Objects_2"
                             },
                             "namespace_ownership": {
-                              "$ref": "#/$defs/Objects_1"
+                              "$ref": "#/$defs/Objects_2"
                             }
                           },
                           "required": [
@@ -3007,6 +3187,74 @@
                         "reconciliation_pending"
                       ]
                     },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "owner"
+                          ]
+                        },
+                        "persona": {
+                          "type": "object",
+                          "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
+                            "object": {
+                              "type": "string",
+                              "enum": [
+                                "persona"
+                              ]
+                            },
+                            "display_name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "avatar_ref": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "primary_public_handle": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "persona_id",
+                            "object",
+                            "display_name",
+                            "avatar_ref",
+                            "primary_public_handle"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "persona"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_3": {
                       "type": "string",
                       "enum": [
@@ -3014,7 +3262,7 @@
                         "namespace_ownership"
                       ]
                     },
-                    "Objects_1": {
+                    "Objects_2": {
                       "type": "object",
                       "properties": {
                         "requirement": {
@@ -3278,6 +3526,9 @@
                   "draft": {
                     "type": "object",
                     "properties": {
+                      "persona_id": {
+                        "type": "string"
+                      },
                       "name": {
                         "type": "string",
                         "allOf": [
@@ -3588,6 +3839,7 @@
                       }
                     },
                     "required": [
+                      "persona_id",
                       "name",
                       "description",
                       "policy"
@@ -3646,6 +3898,9 @@
                     "draft": {
                       "type": "object",
                       "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
                         "name": {
                           "type": "string",
                           "allOf": [
@@ -3956,6 +4211,7 @@
                         }
                       },
                       "required": [
+                        "persona_id",
                         "name",
                         "description",
                         "policy"
@@ -4208,6 +4464,9 @@
                     "expires_at": {
                       "type": "string"
                     },
+                    "persona_role_presentation": {
+                      "$ref": "#/$defs/Objects_"
+                    },
                     "committed_resource": {
                       "anyOf": [
                         {
@@ -4232,13 +4491,17 @@
                             },
                             "canonical_route": {
                               "type": "null"
+                            },
+                            "persona_role_presentation": {
+                              "$ref": "#/$defs/Objects_"
                             }
                           },
                           "required": [
                             "authority_version",
                             "community_id",
                             "href",
-                            "canonical_route"
+                            "canonical_route",
+                            "persona_role_presentation"
                           ],
                           "additionalProperties": false
                         },
@@ -4259,9 +4522,80 @@
                     "requirements",
                     "next_action",
                     "expires_at",
+                    "persona_role_presentation",
                     "committed_resource"
                   ],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "owner"
+                          ]
+                        },
+                        "persona": {
+                          "type": "object",
+                          "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
+                            "object": {
+                              "type": "string",
+                              "enum": [
+                                "persona"
+                              ]
+                            },
+                            "display_name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "avatar_ref": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "primary_public_handle": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "persona_id",
+                            "object",
+                            "display_name",
+                            "avatar_ref",
+                            "primary_public_handle"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "persona"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -4625,6 +4959,9 @@
                         "draft": {
                           "type": "object",
                           "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
                             "name": {
                               "type": "string",
                               "allOf": [
@@ -4648,6 +4985,7 @@
                             }
                           },
                           "required": [
+                            "persona_id",
                             "name",
                             "description",
                             "policy"
@@ -4887,6 +5225,9 @@
                         "expires_at": {
                           "type": "string"
                         },
+                        "persona_role_presentation": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "committed_resource": {
                           "anyOf": [
                             {
@@ -4911,13 +5252,17 @@
                                 },
                                 "canonical_route": {
                                   "type": "null"
+                                },
+                                "persona_role_presentation": {
+                                  "$ref": "#/$defs/Objects_1"
                                 }
                               },
                               "required": [
                                 "authority_version",
                                 "community_id",
                                 "href",
-                                "canonical_route"
+                                "canonical_route",
+                                "persona_role_presentation"
                               ],
                               "additionalProperties": false
                             },
@@ -4938,6 +5283,7 @@
                         "requirements",
                         "next_action",
                         "expires_at",
+                        "persona_role_presentation",
                         "committed_resource"
                       ],
                       "additionalProperties": false
@@ -5022,10 +5368,10 @@
                           "type": "object",
                           "properties": {
                             "human_identity": {
-                              "$ref": "#/$defs/Objects_1"
+                              "$ref": "#/$defs/Objects_2"
                             },
                             "namespace_ownership": {
-                              "$ref": "#/$defs/Objects_1"
+                              "$ref": "#/$defs/Objects_2"
                             }
                           },
                           "required": [
@@ -5647,6 +5993,74 @@
                         "reconciliation_pending"
                       ]
                     },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "owner"
+                          ]
+                        },
+                        "persona": {
+                          "type": "object",
+                          "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
+                            "object": {
+                              "type": "string",
+                              "enum": [
+                                "persona"
+                              ]
+                            },
+                            "display_name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "avatar_ref": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "primary_public_handle": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "persona_id",
+                            "object",
+                            "display_name",
+                            "avatar_ref",
+                            "primary_public_handle"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "persona"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_3": {
                       "type": "string",
                       "enum": [
@@ -5654,7 +6068,7 @@
                         "namespace_ownership"
                       ]
                     },
-                    "Objects_1": {
+                    "Objects_2": {
                       "type": "object",
                       "properties": {
                         "requirement": {
@@ -5741,6 +6155,9 @@
                         "draft": {
                           "type": "object",
                           "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
                             "name": {
                               "type": "string",
                               "allOf": [
@@ -5764,6 +6181,7 @@
                             }
                           },
                           "required": [
+                            "persona_id",
                             "name",
                             "description",
                             "policy"
@@ -6003,6 +6421,9 @@
                         "expires_at": {
                           "type": "string"
                         },
+                        "persona_role_presentation": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "committed_resource": {
                           "anyOf": [
                             {
@@ -6027,13 +6448,17 @@
                                 },
                                 "canonical_route": {
                                   "type": "null"
+                                },
+                                "persona_role_presentation": {
+                                  "$ref": "#/$defs/Objects_1"
                                 }
                               },
                               "required": [
                                 "authority_version",
                                 "community_id",
                                 "href",
-                                "canonical_route"
+                                "canonical_route",
+                                "persona_role_presentation"
                               ],
                               "additionalProperties": false
                             },
@@ -6054,6 +6479,7 @@
                         "requirements",
                         "next_action",
                         "expires_at",
+                        "persona_role_presentation",
                         "committed_resource"
                       ],
                       "additionalProperties": false
@@ -6138,10 +6564,10 @@
                           "type": "object",
                           "properties": {
                             "human_identity": {
-                              "$ref": "#/$defs/Objects_1"
+                              "$ref": "#/$defs/Objects_2"
                             },
                             "namespace_ownership": {
-                              "$ref": "#/$defs/Objects_1"
+                              "$ref": "#/$defs/Objects_2"
                             }
                           },
                           "required": [
@@ -6763,6 +7189,74 @@
                         "reconciliation_pending"
                       ]
                     },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "enum": [
+                            "owner"
+                          ]
+                        },
+                        "persona": {
+                          "type": "object",
+                          "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
+                            "object": {
+                              "type": "string",
+                              "enum": [
+                                "persona"
+                              ]
+                            },
+                            "display_name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "avatar_ref": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "primary_public_handle": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "persona_id",
+                            "object",
+                            "display_name",
+                            "avatar_ref",
+                            "primary_public_handle"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "role",
+                        "persona"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Union_3": {
                       "type": "string",
                       "enum": [
@@ -6770,7 +7264,7 @@
                         "namespace_ownership"
                       ]
                     },
-                    "Objects_1": {
+                    "Objects_2": {
                       "type": "object",
                       "properties": {
                         "requirement": {
@@ -7154,13 +7648,82 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "persona_role_presentation": {
+                          "type": "object",
+                          "properties": {
+                            "role": {
+                              "type": "string",
+                              "enum": [
+                                "owner"
+                              ]
+                            },
+                            "persona": {
+                              "type": "object",
+                              "properties": {
+                                "persona_id": {
+                                  "type": "string"
+                                },
+                                "object": {
+                                  "type": "string",
+                                  "enum": [
+                                    "persona"
+                                  ]
+                                },
+                                "display_name": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "avatar_ref": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "primary_public_handle": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "persona_id",
+                                "object",
+                                "display_name",
+                                "avatar_ref",
+                                "primary_public_handle"
+                              ],
+                              "additionalProperties": false
+                            }
+                          },
+                          "required": [
+                            "role",
+                            "persona"
+                          ],
+                          "additionalProperties": false
                         }
                       },
                       "required": [
                         "authority_version",
                         "community_id",
                         "href",
-                        "canonical_route"
+                        "canonical_route",
+                        "persona_role_presentation"
                       ],
                       "additionalProperties": false
                     },
@@ -18026,8 +18589,57 @@
                     "Objects_1": {
                       "type": "object",
                       "properties": {
-                        "user": {
-                          "type": "string"
+                        "persona": {
+                          "type": "object",
+                          "properties": {
+                            "persona_id": {
+                              "type": "string"
+                            },
+                            "object": {
+                              "type": "string",
+                              "enum": [
+                                "persona"
+                              ]
+                            },
+                            "display_name": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "avatar_ref": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "primary_public_handle": {
+                              "anyOf": [
+                                {
+                                  "type": "string"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "persona_id",
+                            "object",
+                            "display_name",
+                            "avatar_ref",
+                            "primary_public_handle"
+                          ],
+                          "additionalProperties": false
                         },
                         "display_name": {
                           "type": "string"
@@ -18079,7 +18691,7 @@
                         }
                       },
                       "required": [
-                        "user",
+                        "persona",
                         "display_name",
                         "handle",
                         "role"
@@ -20682,6 +21294,9 @@
                   "idempotency_key": {
                     "type": "string"
                   },
+                  "persona_id": {
+                    "type": "string"
+                  },
                   "authorship_mode": {
                     "anyOf": [
                       {
@@ -20767,6 +21382,7 @@
                 },
                 "required": [
                   "idempotency_key",
+                  "persona_id",
                   "post_type"
                 ],
                 "additionalProperties": false
@@ -30431,12 +31047,12 @@
                         "community": {
                           "type": "string"
                         },
-                        "author_user": {
+                        "author_persona": {
                           "anyOf": [
                             {
                               "anyOf": [
                                 {
-                                  "type": "string"
+                                  "$ref": "#/$defs/Objects_"
                                 },
                                 {
                                   "type": "null"
@@ -30622,7 +31238,7 @@
                                 {
                                   "type": "array",
                                   "items": {
-                                    "$ref": "#/$defs/Objects_"
+                                    "$ref": "#/$defs/Objects_1"
                                   }
                                 },
                                 {
@@ -30929,7 +31545,7 @@
                             {
                               "anyOf": [
                                 {
-                                  "$ref": "#/$defs/Objects_"
+                                  "$ref": "#/$defs/Objects_1"
                                 },
                                 {
                                   "type": "null"
@@ -30948,7 +31564,7 @@
                                 {
                                   "type": "array",
                                   "items": {
-                                    "$ref": "#/$defs/Objects_"
+                                    "$ref": "#/$defs/Objects_1"
                                   }
                                 },
                                 {
@@ -30976,7 +31592,7 @@
                             {
                               "anyOf": [
                                 {
-                                  "$ref": "#/$defs/Objects_"
+                                  "$ref": "#/$defs/Objects_1"
                                 },
                                 {
                                   "type": "null"
@@ -30993,7 +31609,7 @@
                             {
                               "anyOf": [
                                 {
-                                  "$ref": "#/$defs/Objects_"
+                                  "$ref": "#/$defs/Objects_1"
                                 },
                                 {
                                   "type": "null"
@@ -31010,7 +31626,7 @@
                             {
                               "anyOf": [
                                 {
-                                  "$ref": "#/$defs/Objects_"
+                                  "$ref": "#/$defs/Objects_1"
                                 },
                                 {
                                   "type": "null"
@@ -31281,7 +31897,7 @@
                             {
                               "anyOf": [
                                 {
-                                  "$ref": "#/$defs/Objects_"
+                                  "$ref": "#/$defs/Objects_1"
                                 },
                                 {
                                   "type": "null"
@@ -31496,7 +32112,7 @@
                             {
                               "anyOf": [
                                 {
-                                  "$ref": "#/$defs/Objects_"
+                                  "$ref": "#/$defs/Objects_1"
                                 },
                                 {
                                   "type": "null"
@@ -32097,7 +32713,7 @@
                                     {
                                       "anyOf": [
                                         {
-                                          "$ref": "#/$defs/Objects_"
+                                          "$ref": "#/$defs/Objects_1"
                                         },
                                         {
                                           "type": "null"
@@ -32114,7 +32730,7 @@
                                     {
                                       "anyOf": [
                                         {
-                                          "$ref": "#/$defs/Objects_1"
+                                          "$ref": "#/$defs/Objects_2"
                                         },
                                         {
                                           "type": "null"
@@ -32129,7 +32745,7 @@
                                 "moderators": {
                                   "type": "array",
                                   "items": {
-                                    "$ref": "#/$defs/Objects_1"
+                                    "$ref": "#/$defs/Objects_2"
                                   }
                                 },
                                 "reference_links": {
@@ -32139,7 +32755,7 @@
                                         {
                                           "type": "array",
                                           "items": {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           }
                                         },
                                         {
@@ -32155,7 +32771,7 @@
                                 "membership_gate_summaries": {
                                   "type": "array",
                                   "items": {
-                                    "$ref": "#/$defs/Objects_2"
+                                    "$ref": "#/$defs/Objects_3"
                                   }
                                 },
                                 "membership_gate_expression": {
@@ -32174,7 +32790,7 @@
                                                   ]
                                                 },
                                                 "gate": {
-                                                  "$ref": "#/$defs/Objects_2"
+                                                  "$ref": "#/$defs/Objects_3"
                                                 }
                                               },
                                               "required": [
@@ -32196,7 +32812,7 @@
                                                 "children": {
                                                   "type": "array",
                                                   "items": {
-                                                    "$ref": "#/$defs/Objects_"
+                                                    "$ref": "#/$defs/Objects_1"
                                                   }
                                                 }
                                               },
@@ -32378,7 +32994,7 @@
                         {
                           "anyOf": [
                             {
-                              "$ref": "#/$defs/Objects_"
+                              "$ref": "#/$defs/Objects_1"
                             },
                             {
                               "type": "null"
@@ -32410,7 +33026,7 @@
                     "thread_snapshot": {
                       "anyOf": [
                         {
-                          "$ref": "#/$defs/Objects_"
+                          "$ref": "#/$defs/Objects_1"
                         },
                         {
                           "type": "null"
@@ -32422,7 +33038,7 @@
                         {
                           "anyOf": [
                             {
-                              "$ref": "#/$defs/Objects_"
+                              "$ref": "#/$defs/Objects_1"
                             },
                             {
                               "type": "null"
@@ -32439,7 +33055,7 @@
                         {
                           "anyOf": [
                             {
-                              "$ref": "#/$defs/Objects_"
+                              "$ref": "#/$defs/Objects_1"
                             },
                             {
                               "type": "null"
@@ -32456,7 +33072,7 @@
                         {
                           "anyOf": [
                             {
-                              "$ref": "#/$defs/Objects_"
+                              "$ref": "#/$defs/Objects_1"
                             },
                             {
                               "type": "null"
@@ -32473,7 +33089,7 @@
                         {
                           "anyOf": [
                             {
-                              "$ref": "#/$defs/Objects_"
+                              "$ref": "#/$defs/Objects_1"
                             },
                             {
                               "type": "null"
@@ -32490,7 +33106,7 @@
                         {
                           "anyOf": [
                             {
-                              "$ref": "#/$defs/Objects_"
+                              "$ref": "#/$defs/Objects_1"
                             },
                             {
                               "type": "null"
@@ -32507,7 +33123,7 @@
                         {
                           "anyOf": [
                             {
-                              "$ref": "#/$defs/Objects_"
+                              "$ref": "#/$defs/Objects_1"
                             },
                             {
                               "type": "null"
@@ -32524,7 +33140,7 @@
                         {
                           "anyOf": [
                             {
-                              "$ref": "#/$defs/Objects_"
+                              "$ref": "#/$defs/Objects_1"
                             },
                             {
                               "type": "null"
@@ -32543,7 +33159,7 @@
                             {
                               "type": "array",
                               "items": {
-                                "$ref": "#/$defs/Objects_"
+                                "$ref": "#/$defs/Objects_1"
                               }
                             },
                             {
@@ -32692,7 +33308,7 @@
                             {
                               "type": "array",
                               "items": {
-                                "$ref": "#/$defs/Objects_"
+                                "$ref": "#/$defs/Objects_1"
                               }
                             },
                             {
@@ -32725,6 +33341,58 @@
                   "additionalProperties": false,
                   "$defs": {
                     "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
                       "type": "object"
                     },
                     "Union_": {
@@ -32752,11 +33420,11 @@
                         }
                       ]
                     },
-                    "Objects_1": {
+                    "Objects_2": {
                       "type": "object",
                       "properties": {
-                        "user": {
-                          "type": "string"
+                        "persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "display_name": {
                           "type": "string"
@@ -32808,14 +33476,14 @@
                         }
                       },
                       "required": [
-                        "user",
+                        "persona",
                         "display_name",
                         "handle",
                         "role"
                       ],
                       "additionalProperties": false
                     },
-                    "Objects_2": {
+                    "Objects_3": {
                       "type": "object",
                       "properties": {
                         "gate_id": {
@@ -33346,12 +34014,16 @@
                   "idempotency_key": {
                     "type": "string"
                   },
+                  "persona_id": {
+                    "type": "string"
+                  },
                   "body": {
                     "type": "string"
                   }
                 },
                 "required": [
                   "idempotency_key",
+                  "persona_id",
                   "body"
                 ],
                 "additionalProperties": false
@@ -34766,12 +35438,16 @@
                   "idempotency_key": {
                     "type": "string"
                   },
+                  "persona_id": {
+                    "type": "string"
+                  },
                   "body": {
                     "type": "string"
                   }
                 },
                 "required": [
                   "idempotency_key",
+                  "persona_id",
                   "body"
                 ],
                 "additionalProperties": false
@@ -36315,12 +36991,12 @@
                                   "community": {
                                     "type": "string"
                                   },
-                                  "author_user": {
+                                  "author_persona": {
                                     "anyOf": [
                                       {
                                         "anyOf": [
                                           {
-                                            "type": "string"
+                                            "$ref": "#/$defs/Objects_"
                                           },
                                           {
                                             "type": "null"
@@ -36506,7 +37182,7 @@
                                           {
                                             "type": "array",
                                             "items": {
-                                              "$ref": "#/$defs/Objects_"
+                                              "$ref": "#/$defs/Objects_1"
                                             }
                                           },
                                           {
@@ -36813,7 +37489,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -36832,7 +37508,7 @@
                                           {
                                             "type": "array",
                                             "items": {
-                                              "$ref": "#/$defs/Objects_"
+                                              "$ref": "#/$defs/Objects_1"
                                             }
                                           },
                                           {
@@ -36860,7 +37536,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -36877,7 +37553,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -36894,7 +37570,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -37165,7 +37841,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -37380,7 +38056,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -37929,7 +38605,7 @@
                                               {
                                                 "anyOf": [
                                                   {
-                                                    "$ref": "#/$defs/Objects_"
+                                                    "$ref": "#/$defs/Objects_1"
                                                   },
                                                   {
                                                     "type": "null"
@@ -37946,7 +38622,7 @@
                                               {
                                                 "anyOf": [
                                                   {
-                                                    "$ref": "#/$defs/Objects_1"
+                                                    "$ref": "#/$defs/Objects_2"
                                                   },
                                                   {
                                                     "type": "null"
@@ -37961,7 +38637,7 @@
                                           "moderators": {
                                             "type": "array",
                                             "items": {
-                                              "$ref": "#/$defs/Objects_1"
+                                              "$ref": "#/$defs/Objects_2"
                                             }
                                           },
                                           "reference_links": {
@@ -37971,7 +38647,7 @@
                                                   {
                                                     "type": "array",
                                                     "items": {
-                                                      "$ref": "#/$defs/Objects_"
+                                                      "$ref": "#/$defs/Objects_1"
                                                     }
                                                   },
                                                   {
@@ -37987,7 +38663,7 @@
                                           "membership_gate_summaries": {
                                             "type": "array",
                                             "items": {
-                                              "$ref": "#/$defs/Objects_2"
+                                              "$ref": "#/$defs/Objects_3"
                                             }
                                           },
                                           "membership_gate_expression": {
@@ -38006,7 +38682,7 @@
                                                             ]
                                                           },
                                                           "gate": {
-                                                            "$ref": "#/$defs/Objects_2"
+                                                            "$ref": "#/$defs/Objects_3"
                                                           }
                                                         },
                                                         "required": [
@@ -38028,7 +38704,7 @@
                                                           "children": {
                                                             "type": "array",
                                                             "items": {
-                                                              "$ref": "#/$defs/Objects_"
+                                                              "$ref": "#/$defs/Objects_1"
                                                             }
                                                           }
                                                         },
@@ -38210,7 +38886,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -38242,7 +38918,7 @@
                               "thread_snapshot": {
                                 "anyOf": [
                                   {
-                                    "$ref": "#/$defs/Objects_"
+                                    "$ref": "#/$defs/Objects_1"
                                   },
                                   {
                                     "type": "null"
@@ -38254,7 +38930,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -38271,7 +38947,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -38288,7 +38964,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -38305,7 +38981,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -38322,7 +38998,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -38339,7 +39015,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -38356,7 +39032,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -38375,7 +39051,7 @@
                                       {
                                         "type": "array",
                                         "items": {
-                                          "$ref": "#/$defs/Objects_"
+                                          "$ref": "#/$defs/Objects_1"
                                         }
                                       },
                                       {
@@ -38524,7 +39200,7 @@
                                       {
                                         "type": "array",
                                         "items": {
-                                          "$ref": "#/$defs/Objects_"
+                                          "$ref": "#/$defs/Objects_1"
                                         }
                                       },
                                       {
@@ -38557,7 +39233,7 @@
                             "additionalProperties": false
                           },
                           "community": {
-                            "$ref": "#/$defs/Objects_3"
+                            "$ref": "#/$defs/Objects_4"
                           },
                           "booking": {
                             "anyOf": [
@@ -38615,7 +39291,7 @@
                     "top_communities": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/$defs/Objects_3"
+                        "$ref": "#/$defs/Objects_4"
                       }
                     },
                     "next_cursor": {
@@ -38643,6 +39319,58 @@
                   "additionalProperties": false,
                   "$defs": {
                     "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
                       "type": "object"
                     },
                     "Union_": {
@@ -38725,11 +39453,11 @@
                         }
                       ]
                     },
-                    "Objects_1": {
+                    "Objects_2": {
                       "type": "object",
                       "properties": {
-                        "user": {
-                          "type": "string"
+                        "persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "display_name": {
                           "type": "string"
@@ -38781,14 +39509,14 @@
                         }
                       },
                       "required": [
-                        "user",
+                        "persona",
                         "display_name",
                         "handle",
                         "role"
                       ],
                       "additionalProperties": false
                     },
-                    "Objects_2": {
+                    "Objects_3": {
                       "type": "object",
                       "properties": {
                         "gate_id": {
@@ -39119,7 +39847,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Objects_3": {
+                    "Objects_4": {
                       "type": "object",
                       "properties": {
                         "id": {
@@ -39466,12 +40194,12 @@
                               "community": {
                                 "type": "string"
                               },
-                              "author_user": {
+                              "author_persona": {
                                 "anyOf": [
                                   {
                                     "anyOf": [
                                       {
-                                        "type": "string"
+                                        "$ref": "#/$defs/Objects_3"
                                       },
                                       {
                                         "type": "null"
@@ -40978,11 +41706,63 @@
                     "Objects_1": {
                       "type": "object"
                     },
+                    "Objects_3": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
                     "Objects_2": {
                       "type": "object",
                       "properties": {
-                        "user": {
-                          "type": "string"
+                        "persona": {
+                          "$ref": "#/$defs/Objects_3"
                         },
                         "display_name": {
                           "type": "string"
@@ -41034,14 +41814,14 @@
                         }
                       },
                       "required": [
-                        "user",
+                        "persona",
                         "display_name",
                         "handle",
                         "role"
                       ],
                       "additionalProperties": false
                     },
-                    "Objects_3": {
+                    "Objects_4": {
                       "type": "object",
                       "properties": {
                         "gate_id": {
@@ -41995,7 +42775,7 @@
                         "membership_gate_summaries": {
                           "type": "array",
                           "items": {
-                            "$ref": "#/$defs/Objects_3"
+                            "$ref": "#/$defs/Objects_4"
                           }
                         },
                         "membership_gate_expression": {
@@ -42014,7 +42794,7 @@
                                           ]
                                         },
                                         "gate": {
-                                          "$ref": "#/$defs/Objects_3"
+                                          "$ref": "#/$defs/Objects_4"
                                         }
                                       },
                                       "required": [
@@ -42489,12 +43269,12 @@
                                   "community": {
                                     "type": "string"
                                   },
-                                  "author_user": {
+                                  "author_persona": {
                                     "anyOf": [
                                       {
                                         "anyOf": [
                                           {
-                                            "type": "string"
+                                            "$ref": "#/$defs/Objects_"
                                           },
                                           {
                                             "type": "null"
@@ -42680,7 +43460,7 @@
                                           {
                                             "type": "array",
                                             "items": {
-                                              "$ref": "#/$defs/Objects_"
+                                              "$ref": "#/$defs/Objects_1"
                                             }
                                           },
                                           {
@@ -42987,7 +43767,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -43006,7 +43786,7 @@
                                           {
                                             "type": "array",
                                             "items": {
-                                              "$ref": "#/$defs/Objects_"
+                                              "$ref": "#/$defs/Objects_1"
                                             }
                                           },
                                           {
@@ -43034,7 +43814,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -43051,7 +43831,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -43068,7 +43848,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -43339,7 +44119,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -43554,7 +44334,7 @@
                                       {
                                         "anyOf": [
                                           {
-                                            "$ref": "#/$defs/Objects_"
+                                            "$ref": "#/$defs/Objects_1"
                                           },
                                           {
                                             "type": "null"
@@ -44103,7 +44883,7 @@
                                               {
                                                 "anyOf": [
                                                   {
-                                                    "$ref": "#/$defs/Objects_"
+                                                    "$ref": "#/$defs/Objects_1"
                                                   },
                                                   {
                                                     "type": "null"
@@ -44120,7 +44900,7 @@
                                               {
                                                 "anyOf": [
                                                   {
-                                                    "$ref": "#/$defs/Objects_1"
+                                                    "$ref": "#/$defs/Objects_2"
                                                   },
                                                   {
                                                     "type": "null"
@@ -44135,7 +44915,7 @@
                                           "moderators": {
                                             "type": "array",
                                             "items": {
-                                              "$ref": "#/$defs/Objects_1"
+                                              "$ref": "#/$defs/Objects_2"
                                             }
                                           },
                                           "reference_links": {
@@ -44145,7 +44925,7 @@
                                                   {
                                                     "type": "array",
                                                     "items": {
-                                                      "$ref": "#/$defs/Objects_"
+                                                      "$ref": "#/$defs/Objects_1"
                                                     }
                                                   },
                                                   {
@@ -44161,7 +44941,7 @@
                                           "membership_gate_summaries": {
                                             "type": "array",
                                             "items": {
-                                              "$ref": "#/$defs/Objects_2"
+                                              "$ref": "#/$defs/Objects_3"
                                             }
                                           },
                                           "membership_gate_expression": {
@@ -44180,7 +44960,7 @@
                                                             ]
                                                           },
                                                           "gate": {
-                                                            "$ref": "#/$defs/Objects_2"
+                                                            "$ref": "#/$defs/Objects_3"
                                                           }
                                                         },
                                                         "required": [
@@ -44202,7 +44982,7 @@
                                                           "children": {
                                                             "type": "array",
                                                             "items": {
-                                                              "$ref": "#/$defs/Objects_"
+                                                              "$ref": "#/$defs/Objects_1"
                                                             }
                                                           }
                                                         },
@@ -44384,7 +45164,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -44416,7 +45196,7 @@
                               "thread_snapshot": {
                                 "anyOf": [
                                   {
-                                    "$ref": "#/$defs/Objects_"
+                                    "$ref": "#/$defs/Objects_1"
                                   },
                                   {
                                     "type": "null"
@@ -44428,7 +45208,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -44445,7 +45225,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -44462,7 +45242,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -44479,7 +45259,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -44496,7 +45276,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -44513,7 +45293,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -44530,7 +45310,7 @@
                                   {
                                     "anyOf": [
                                       {
-                                        "$ref": "#/$defs/Objects_"
+                                        "$ref": "#/$defs/Objects_1"
                                       },
                                       {
                                         "type": "null"
@@ -44549,7 +45329,7 @@
                                       {
                                         "type": "array",
                                         "items": {
-                                          "$ref": "#/$defs/Objects_"
+                                          "$ref": "#/$defs/Objects_1"
                                         }
                                       },
                                       {
@@ -44698,7 +45478,7 @@
                                       {
                                         "type": "array",
                                         "items": {
-                                          "$ref": "#/$defs/Objects_"
+                                          "$ref": "#/$defs/Objects_1"
                                         }
                                       },
                                       {
@@ -44731,7 +45511,7 @@
                             "additionalProperties": false
                           },
                           "community": {
-                            "$ref": "#/$defs/Objects_3"
+                            "$ref": "#/$defs/Objects_4"
                           },
                           "booking": {
                             "anyOf": [
@@ -44789,7 +45569,7 @@
                     "top_communities": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/$defs/Objects_3"
+                        "$ref": "#/$defs/Objects_4"
                       }
                     },
                     "next_cursor": {
@@ -44817,6 +45597,58 @@
                   "additionalProperties": false,
                   "$defs": {
                     "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
                       "type": "object"
                     },
                     "Union_": {
@@ -44899,11 +45731,11 @@
                         }
                       ]
                     },
-                    "Objects_1": {
+                    "Objects_2": {
                       "type": "object",
                       "properties": {
-                        "user": {
-                          "type": "string"
+                        "persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "display_name": {
                           "type": "string"
@@ -44955,14 +45787,14 @@
                         }
                       },
                       "required": [
-                        "user",
+                        "persona",
                         "display_name",
                         "handle",
                         "role"
                       ],
                       "additionalProperties": false
                     },
-                    "Objects_2": {
+                    "Objects_3": {
                       "type": "object",
                       "properties": {
                         "gate_id": {
@@ -45293,7 +46125,7 @@
                       ],
                       "additionalProperties": false
                     },
-                    "Objects_3": {
+                    "Objects_4": {
                       "type": "object",
                       "properties": {
                         "id": {

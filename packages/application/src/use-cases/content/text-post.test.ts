@@ -10,7 +10,35 @@ import {
 import { createTextPost, getTextContentSubmission } from "./text-post.ts";
 
 const actor = { userId: "usr_alice", kind: "user" as const };
-const body = { post_type: "text" as const, idempotency_key: "key_1", body: "hello" };
+const personaId = "persona-text-author";
+const body = {
+  post_type: "text" as const,
+  persona_id: personaId,
+  idempotency_key: "key_1",
+  body: "hello",
+};
+const personaStore = {
+  findOwned: () =>
+    Effect.succeed({
+      persona_id: personaId,
+      object: "persona" as const,
+      status: "active" as const,
+      profile: {
+        persona_id: personaId,
+        object: "persona_profile" as const,
+        revision: 1,
+        display_name: null,
+        avatar_ref: null,
+        cover_ref: null,
+        bio: null,
+        preferred_locale: null,
+        primary_public_handle: null,
+      },
+      wallet_set: { evm: null },
+      created_at: "2026-08-21T12:00:00.000Z",
+      retired_at: null,
+    }),
+};
 const published = {
   submission_id: "submission_1",
   href: "/text-content-submissions/submission_1",
@@ -66,6 +94,7 @@ describe("moderated text post application", () => {
       createTextPost(
         { communityId: "community_1", actor, body },
         {
+          personaStore,
           textPostStore: store({
             replay: () => Effect.succeed({ kind: "replay", snapshot: published }),
           }),
@@ -85,6 +114,7 @@ describe("moderated text post application", () => {
   test("includes the target community in the canonical request hash", async () => {
     const requestHashes: string[] = [];
     const services = {
+      personaStore,
       textPostStore: store({
         commitTerminal: ({ requestHash }) => {
           requestHashes.push(requestHash);
@@ -96,8 +126,8 @@ describe("moderated text post application", () => {
     await run(createTextPost({ communityId: "community_1", actor, body }, services));
     await run(createTextPost({ communityId: "community_2", actor, body }, services));
     expect(requestHashes).toEqual([
-      "c62573106ed332c6ae6e7df20615c494dfbe26d5ba3c352516db86957383a1ef",
-      "0c6ce98fa8a8dadb004b9a3bf8baa19b49ee045e5a7b941082cb19806338d307",
+      "a1d085158ec7b78f48ead88f3f02a1cc597f4e4ed91a0fa06b6850d4b367db8e",
+      "97bc1607c7044b4929f55f62cf4e519417c17a39c9955f3ecd6cf1bd9e2ee880",
     ]);
   });
 
@@ -107,6 +137,7 @@ describe("moderated text post application", () => {
       createTextPost(
         { communityId: "community_1", actor, body },
         {
+          personaStore,
           textPostStore: store({
             commitTerminal: ({ evaluation: value }) => {
               committed = value;
@@ -133,6 +164,7 @@ describe("moderated text post application", () => {
       createTextPost(
         { communityId: "community_1", actor, body },
         {
+          personaStore,
           textPostStore: store({
             commitTerminal: () => {
               commits += 1;
@@ -158,6 +190,7 @@ describe("moderated text post application", () => {
       createTextPost(
         { communityId: "community_1", actor, body },
         {
+          personaStore,
           textPostStore: store({
             replay: () => Effect.succeed({ kind: "conflict", submissionId: "submission_9" }),
           }),
@@ -186,6 +219,7 @@ describe("moderated text post application", () => {
       createTextPost(
         { communityId: "community_1", actor, body },
         {
+          personaStore,
           textPostStore: store({
             checkAuthority: () =>
               Effect.fail(

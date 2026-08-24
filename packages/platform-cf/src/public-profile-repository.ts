@@ -1,7 +1,6 @@
 import {
   ControlPlaneDb,
   type ControlPlaneError,
-  IdentityResolutionError,
   type IdentityStore,
   type PublicProfileLookup,
   PublicProfileRepositoryError,
@@ -16,14 +15,18 @@ type HandleRow = Readonly<{
   label_display: unknown;
   status: unknown;
   owner_user_id: unknown;
+  owner_persona_id: unknown;
   redirect_target_handle_id: unknown;
 }>;
 
-type CommunityRow = Readonly<{
-  community_id: unknown;
+type PersonaProfileRow = Readonly<{
+  persona_id: unknown;
   display_name: unknown;
+  avatar_ref: unknown;
+  cover_ref: unknown;
+  bio: unknown;
+  preferred_locale: unknown;
   created_at: unknown;
-  route_slug: unknown;
 }>;
 
 type ParsedHandle = Readonly<{
@@ -31,7 +34,7 @@ type ParsedHandle = Readonly<{
   labelNormalized: string;
   labelDisplay: string;
   status: "active" | "redirect";
-  ownerUserId: string;
+  ownerPersonaId: string;
   redirectTargetHandleId: string | null;
 }>;
 
@@ -46,7 +49,7 @@ const parseHandle = (row: HandleRow): ParsedHandle | null => {
     !validId(row.handle_id) ||
     !validId(row.label_normalized) ||
     !validId(row.label_display) ||
-    !validId(row.owner_user_id) ||
+    !validId(row.owner_persona_id) ||
     (row.status !== "active" && row.status !== "redirect")
   ) {
     return null;
@@ -67,52 +70,12 @@ const parseHandle = (row: HandleRow): ParsedHandle | null => {
     labelNormalized: row.label_normalized,
     labelDisplay: row.label_display,
     status: row.status,
-    ownerUserId: row.owner_user_id,
+    ownerPersonaId: row.owner_persona_id,
     redirectTargetHandleId: targetId,
   };
 };
 
-const asTimestamp = (value: unknown): number | null => {
-  if (value instanceof Date) {
-    const timestamp = value.getTime();
-    return Number.isFinite(timestamp) ? Math.floor(timestamp / 1_000) : null;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    const seconds = Math.abs(value) >= 100_000_000_000 ? value / 1_000 : value;
-    return Number.isSafeInteger(Math.floor(seconds)) ? Math.floor(seconds) : null;
-  }
-  if (typeof value === "string") {
-    const parsed = Date.parse(value);
-    return Number.isFinite(parsed) ? Math.floor(parsed / 1_000) : null;
-  }
-  return null;
-};
-
 const invalidAlias = () => new PublicProfileRepositoryError({ reason: "invalid-alias" });
-
-function resolveOwner(
-  identityStore: IdentityStore["Service"],
-  sourceUserId: string,
-): Effect.Effect<
-  { readonly canonicalUserId: string } | null,
-  PublicProfileRepositoryError | ControlPlaneError
-> {
-  return identityStore.resolveCanonical({ sourceUserId }).pipe(
-    Effect.catchIf(
-      (error): error is IdentityResolutionError =>
-        error instanceof IdentityResolutionError &&
-        (error.reason === "missing" || error.reason === "deleted"),
-      () => Effect.succeed(null),
-      (error) =>
-        Effect.fail(
-          error instanceof IdentityResolutionError ? invalidAlias() : (error as ControlPlaneError),
-        ),
-    ),
-    Effect.map((resolved) =>
-      resolved === null ? null : { canonicalUserId: resolved.canonicalUserId },
-    ),
-  );
-}
 
 interface PublicProfileRepository {
   readonly getByHandle: (
@@ -121,7 +84,7 @@ interface PublicProfileRepository {
 }
 
 export function makeControlPlanePublicProfileRepository(
-  identityStore: IdentityStore["Service"],
+  _identityStore: IdentityStore["Service"],
 ): PublicProfileRepository {
   const getByHandle: PublicProfileRepository["getByHandle"] = ({ labelNormalized }) =>
     Effect.gen(function* () {
@@ -130,7 +93,7 @@ export function makeControlPlanePublicProfileRepository(
       const handleResult = yield* db.execute<HandleRow>({
         label: "public-profiles.handles.lookup",
         text: `SELECT handle_id, label_normalized, label_display, status,
-                      owner_user_id, redirect_target_handle_id
+                      owner_user_id, owner_persona_id, redirect_target_handle_id
                  FROM public_handle_index
                 WHERE label_normalized = $1
                 LIMIT 1`,
@@ -148,7 +111,7 @@ export function makeControlPlanePublicProfileRepository(
         const targetResult = yield* db.execute<HandleRow>({
           label: "public-profiles.handles.redirect-target",
           text: `SELECT handle_id, label_normalized, label_display, status,
-                        owner_user_id, redirect_target_handle_id
+                        owner_user_id, owner_persona_id, redirect_target_handle_id
                    FROM public_handle_index
                   WHERE handle_id = $1
                   LIMIT 1`,
@@ -164,60 +127,72 @@ export function makeControlPlanePublicProfileRepository(
           target === null ||
           target.status !== "active" ||
           target.redirectTargetHandleId !== null ||
-          target.handleId === requestedHandle.handleId
+          target.handleId === requestedHandle.handleId ||
+          target.ownerPersonaId !== requestedHandle.ownerPersonaId
         ) {
           return null;
         }
         resolvedHandle = target;
       }
 
-      const sourceOwner = yield* resolveOwner(identityStore, requestedHandle.ownerUserId);
-      if (sourceOwner === null) return null;
-      const resolvedOwner = yield* resolveOwner(identityStore, resolvedHandle.ownerUserId);
-      if (resolvedOwner === null || resolvedOwner.canonicalUserId !== sourceOwner.canonicalUserId) {
-        return null;
-      }
-      const canonical = yield* identityStore.findUser(resolvedOwner.canonicalUserId);
-      if (canonical === null) return null;
-
-      const communitiesResult = yield* db.execute<CommunityRow>({
-        label: "public-profiles.communities.by-creator",
-        text: `SELECT community_id, display_name, created_at, NULL::text AS route_slug
-                 FROM communities
-                WHERE created_by_user_id = $1
-                  AND status = 'active'
-                ORDER BY created_at DESC, community_id ASC`,
-        values: [resolvedOwner.canonicalUserId],
+      const profileResult = yield* db.execute<PersonaProfileRow>({
+        label: "public-profiles.personas.profile",
+        text: `SELECT persona.persona_id, profile.display_name, profile.avatar_ref,
+                      profile.cover_ref, profile.bio, profile.preferred_locale,
+                      persona.created_at
+          FROM personas AS persona
+          JOIN users AS account
+            ON account.user_id = persona.account_id
+           AND account.status = 'active'
+          JOIN persona_profiles AS profile
+                   ON profile.persona_id = persona.persona_id
+                WHERE persona.persona_id = $1`,
+        values: [resolvedHandle.ownerPersonaId],
         readonly: true,
       });
-      const createdCommunities = communitiesResult.rows.map((row) => {
-        const created = asTimestamp(row.created_at);
-        if (
-          !validId(row.community_id) ||
-          typeof row.display_name !== "string" ||
-          created === null
-        ) {
-          throw invalidAlias();
-        }
-        if (row.route_slug !== null && typeof row.route_slug !== "string") throw invalidAlias();
-        return {
-          community: row.community_id,
-          display_name: row.display_name,
-          route_slug: row.route_slug,
-          created,
-        };
-      });
+      if (profileResult.rows.length !== 1 || profileResult.rows[0] === undefined) return null;
+      const profile = profileResult.rows[0];
+      const nullable = (value: unknown): string | null | undefined =>
+        value === null ? null : typeof value === "string" ? value : undefined;
+      const displayName = nullable(profile.display_name);
+      const avatarRef = nullable(profile.avatar_ref);
+      const coverRef = nullable(profile.cover_ref);
+      const bio = nullable(profile.bio);
+      const preferredLocale = nullable(profile.preferred_locale);
+      const createdAt =
+        profile.created_at instanceof Date
+          ? profile.created_at.toISOString()
+          : typeof profile.created_at === "string"
+            ? profile.created_at
+            : null;
+      if (
+        !validId(profile.persona_id) ||
+        displayName === undefined ||
+        avatarRef === undefined ||
+        coverRef === undefined ||
+        bio === undefined ||
+        preferredLocale === undefined ||
+        createdAt === null ||
+        !Number.isFinite(Date.parse(createdAt))
+      ) {
+        return yield* Effect.fail(invalidAlias());
+      }
 
       return {
-        account: canonical.account,
-        canonicalUserId: canonical.userId,
+        personaId: profile.persona_id,
+        displayName,
+        avatarRef,
+        coverRef,
+        bio,
+        preferredLocale,
+        createdAt,
         handleId: resolvedHandle.handleId,
+        resolvedHandleLabelDisplay: resolvedHandle.labelDisplay,
         handleLabelNormalized: resolvedHandle.labelNormalized,
         handleLabelDisplay: requestedHandle.labelNormalized.endsWith(".pirate")
           ? requestedHandle.labelNormalized
           : `${requestedHandle.labelNormalized}.pirate`,
         handleStatus: requestedHandle.status,
-        createdCommunities,
       } satisfies PublicProfileLookup;
     });
 

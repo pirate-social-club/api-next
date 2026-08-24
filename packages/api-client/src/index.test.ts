@@ -162,7 +162,12 @@ describe("generated api client", () => {
     await expect(
       client.post_communitiesCommunityIdPosts({
         path: { communityId: "community_1" },
-        body: { post_type: "text", idempotency_key: "key_1", body: "hello" },
+        body: {
+          post_type: "text",
+          persona_id: "persona_client_author",
+          idempotency_key: "key_1",
+          body: "hello",
+        },
       }),
     ).resolves.toEqual(submission);
     await expect(
@@ -192,7 +197,12 @@ describe("generated api client", () => {
     await expect(
       client.post_communitiesCommunityIdPosts({
         path: { communityId: "community_1" },
-        body: { post_type: "text", idempotency_key: "key_1", body: "hello" },
+        body: {
+          post_type: "text",
+          persona_id: "persona_client_author",
+          idempotency_key: "key_1",
+          body: "hello",
+        },
       }),
     ).rejects.toMatchObject({
       declaredName: "IdempotencyConflict",
@@ -263,7 +273,12 @@ describe("generated api client", () => {
     await expect(
       client.post_communitiesCommunityIdPosts({
         path: { communityId: "community_1" },
-        body: { post_type: "text", idempotency_key: "key_1", body: "hello" },
+        body: {
+          post_type: "text",
+          persona_id: "persona_client_author",
+          idempotency_key: "key_1",
+          body: "hello",
+        },
       }),
     ).rejects.toBeInstanceOf(ApiClientProtocolError);
   });

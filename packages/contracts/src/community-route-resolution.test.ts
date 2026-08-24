@@ -5,6 +5,17 @@ import {
   GetCanonicalCommunityRoute,
 } from "./community-route-resolution.ts";
 
+const ownerPresentation = {
+  role: "owner" as const,
+  persona: {
+    persona_id: "persona-community-owner",
+    object: "persona" as const,
+    display_name: null,
+    avatar_ref: null,
+    primary_public_handle: null,
+  },
+};
+
 describe("canonical community route resolution contract", () => {
   test("freezes the raw path parameter and public route shape", () => {
     expect(GetCanonicalCommunityRoute.path).toBe("/c/:path_segment");
@@ -50,6 +61,7 @@ describe("canonical community route resolution contract", () => {
         community_id: communityId,
         href: `/c/${communityId}`,
         canonical_route: null,
+        persona_role_presentation: ownerPresentation,
       }),
     ).toMatchObject({ community_id: communityId, canonical_route: null });
     expect(() =>
@@ -58,6 +70,7 @@ describe("canonical community route resolution contract", () => {
         community_id: communityId,
         href: "/c/app.jazleeuw",
         canonical_route: null,
+        persona_role_presentation: ownerPresentation,
       }),
     ).toThrow();
   });

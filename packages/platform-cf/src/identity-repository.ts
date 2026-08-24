@@ -271,12 +271,32 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
             readonly: false,
           });
           yield* transaction.execute({
+            label: "identity.personas.sync-first-profile",
+            text: `UPDATE persona_profiles AS profile
+                      SET display_name=$2::jsonb #>> '{profile,display_name}',
+                          avatar_ref=$2::jsonb #>> '{profile,avatar_ref}',
+                          cover_ref=$2::jsonb #>> '{profile,cover_ref}',
+                          bio=$2::jsonb #>> '{profile,bio}',
+                          preferred_locale=$2::jsonb #>> '{profile,preferred_locale}',
+                          revision=profile.revision+1,
+                          updated_at=clock_timestamp()
+                     FROM personas AS persona
+                    WHERE persona.persona_id=profile.persona_id
+                      AND persona.account_id=$1
+                      AND persona.is_first_persona`,
+            values: [userId, encodedAccount],
+            readonly: false,
+          });
+          yield* transaction.execute({
             label: "identity.public-handles.redirect-previous",
             text: `UPDATE public_handle_index
                       SET status = 'redirect',
                           redirect_target_handle_id = $2,
                           updated_at = now()
-                    WHERE owner_user_id = $1
+                    WHERE owner_persona_id = (
+                      SELECT persona_id FROM personas
+                       WHERE account_id=$1 AND is_first_persona
+                    )
                       AND status IN ('active', 'redirect')
                       AND handle_id <> $2`,
             values: [userId, document.global_handle.global_handle_id],
@@ -286,16 +306,22 @@ export function makeControlPlaneIdentityRepository(): IdentityRepository {
             label: "identity.public-handles.upsert-current",
             text: `INSERT INTO public_handle_index (
                      handle_id, label_normalized, label_display, status,
-                     owner_user_id, redirect_target_handle_id
-                   ) VALUES ($1, $2, $3, 'active', $4, NULL)
+                     owner_user_id, owner_persona_id, redirect_target_handle_id
+                   ) SELECT $1, $2, $3, 'active', $4, persona.persona_id, NULL
+                       FROM personas AS persona
+                      WHERE persona.account_id = $4
+                        AND persona.status = 'active'
+                        AND persona.is_first_persona
                    ON CONFLICT (handle_id) DO UPDATE
                      SET label_normalized = EXCLUDED.label_normalized,
                          label_display = EXCLUDED.label_display,
                          status = 'active',
                          owner_user_id = EXCLUDED.owner_user_id,
+                         owner_persona_id = EXCLUDED.owner_persona_id,
                          redirect_target_handle_id = NULL,
                          updated_at = now()
-                   WHERE public_handle_index.owner_user_id = EXCLUDED.owner_user_id`,
+                   WHERE public_handle_index.owner_user_id = EXCLUDED.owner_user_id
+                     AND public_handle_index.owner_persona_id = EXCLUDED.owner_persona_id`,
             values: [
               document.global_handle.global_handle_id,
               label.normalized,

@@ -277,6 +277,7 @@ export type MediaSubmissionCommand =
       submissionId: string;
       operationId: string;
       communityId: string;
+      personaId: string;
       title: string;
       songType: SongType;
       reservationId: string;
@@ -582,6 +583,7 @@ export function mediaSubmissionInvariant(state: MediaSubmissionState): string | 
       state.operationId,
       state.communityId,
       state.actorId,
+      state.personaId,
       state.title,
       state.reservationId,
     ].every(validId) ||
@@ -697,6 +699,7 @@ export function transitionMediaSubmission(
       operationId: command.operationId,
       communityId: command.communityId,
       actorId: command.actorId,
+      personaId: command.personaId,
       title: command.title,
       songType: command.songType,
       reservationId: command.reservationId,

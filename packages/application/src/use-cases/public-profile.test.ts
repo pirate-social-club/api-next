@@ -4,72 +4,19 @@ import { Effect } from "effect";
 import type { PublicProfileLookup, PublicProfileStoreService } from "../ports.ts";
 import { getPublicProfileByHandle, normalizePirateHandle } from "./public-profile.ts";
 
-const account = (userId = "usr_public", label = "captainpublic.pirate") => ({
-  user: {
-    user_id: userId,
-    primary_wallet_attachment_id: null,
-    capability_provider: null,
-    verification_capabilities_json: null,
-    verified_at: null,
-    created_at: "2026-08-16T12:00:00.000Z",
-  },
-  profile: {
-    user_id: userId,
-    display_name: "Public Captain",
-    bio: "A public bio",
-    bio_source: "manual",
-    avatar_ref: "https://cdn.test/avatar.png",
-    avatar_source: "upload",
-    cover_ref: null,
-    cover_source: "none",
-    preferred_locale: "en",
-    display_verified_nationality_badge: 0,
-    global_handle_id: "handle_public",
-    primary_linked_handle_id: null,
-    xmtp_inbox_id: "secret-xmtp",
-    created_at: "2026-08-16T12:00:00.000Z",
-  },
-  global_handle: {
-    global_handle_id: "handle_public",
-    label_display: label,
-    status: "active",
-    tier: "standard",
-    issuance_source: "generated_signup",
-    redirect_target_global_handle_id: null,
-    price_paid_cents: null,
-    free_rename_consumed: 0,
-    issued_at: "2026-08-16T12:00:00.000Z",
-    replaced_at: null,
-  },
-  linked_handles: [],
-  wallet_attachments: [],
-  onboarding: {
-    generated_handle_assigned: true,
-    cleanup_rename_available: false,
-    unique_human_verification_status: "not_started",
-    namespace_verification_status: "not_started",
-    community_creation_ready: false,
-    missing_requirements: [],
-    reddit_verification_status: "not_started",
-    reddit_import_status: "not_started",
-  },
-});
-
 const lookup = (overrides: Partial<PublicProfileLookup> = {}): PublicProfileLookup => ({
-  account: account(),
-  canonicalUserId: "usr_public",
+  personaId: "persona_public",
+  displayName: "Public Captain",
+  avatarRef: "https://cdn.test/avatar.png",
+  coverRef: null,
+  bio: "A public bio",
+  preferredLocale: "en",
+  createdAt: "2026-08-16T12:00:00.000Z",
   handleId: "handle_public",
+  resolvedHandleLabelDisplay: "captainpublic.pirate",
   handleLabelNormalized: "captainpublic",
   handleLabelDisplay: "captainpublic.pirate",
   handleStatus: "active",
-  createdCommunities: [
-    {
-      community: "community-beta",
-      display_name: "Beta Club",
-      created: 1_776_000_000,
-      route_slug: null,
-    },
-  ],
   ...overrides,
 });
 
@@ -98,7 +45,7 @@ describe("public profile by Pirate handle", () => {
     }
   });
 
-  test("projects a dedicated narrow body and includes real creator communities", async () => {
+  test("projects a persona-only body without account-created community leakage", async () => {
     const body = await Effect.runPromise(
       getPublicProfileByHandle(
         { handle: "@CAPTAINPUBLIC.pirate" },
@@ -107,15 +54,15 @@ describe("public profile by Pirate handle", () => {
     );
     expect(body).toEqual({
       profile: {
-        id: "usr_public",
+        id: "persona_public",
         object: "profile",
         display_name: "Public Captain",
         avatar_ref: "https://cdn.test/avatar.png",
-        avatar_source: "upload",
+        avatar_source: null,
         cover_ref: null,
-        cover_source: "none",
+        cover_source: null,
         bio: "A public bio",
-        bio_source: "manual",
+        bio_source: null,
         preferred_locale: "en",
         global_handle: {
           id: "gh_handle_public",
@@ -128,14 +75,7 @@ describe("public profile by Pirate handle", () => {
       requested_handle_label: "captainpublic.pirate",
       resolved_handle_label: "captainpublic.pirate",
       is_canonical: true,
-      created_communities: [
-        {
-          community: "community-beta",
-          display_name: "Beta Club",
-          created: 1_776_000_000,
-          route_slug: null,
-        },
-      ],
+      created_communities: [],
     });
     const forbidden = [
       "primary_wallet_address",
@@ -178,7 +118,7 @@ describe("public profile by Pirate handle", () => {
       Effect.flip(
         getPublicProfileByHandle(
           { handle: "captainpublic" },
-          { publicProfileStore: store(lookup({ account: {} })) },
+          { publicProfileStore: store(lookup({ createdAt: "not-a-date" })) },
         ),
       ),
     );

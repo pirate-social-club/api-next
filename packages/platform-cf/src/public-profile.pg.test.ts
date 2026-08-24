@@ -145,16 +145,14 @@ suite("Postgres 17 public profile by handle", () => {
       expect(current.is_canonical).toBe(true);
       expect(current.requested_handle_label).toBe("captainpublic.pirate");
       expect(current.resolved_handle_label).toBe("captainpublic.pirate");
-      expect(current.profile.id).toBe("usr_public");
-      expect(
-        current.created_communities.map(({ community, display_name }) => ({
-          community,
-          display_name,
-        })),
-      ).toEqual([
-        { community: "community-beta", display_name: "Beta Club" },
-        { community: "community-alpha", display_name: "Alpha Club" },
-      ]);
+      const ownerPersona = (
+        await admin.query<{ persona_id: string }>(
+          "SELECT persona_id FROM personas WHERE account_id='usr_public' AND is_first_persona",
+        )
+      ).rows[0]?.persona_id;
+      if (ownerPersona === undefined) throw new Error("missing first public-profile persona");
+      expect(current.profile.id).toBe(ownerPersona);
+      expect(current.created_communities).toEqual([]);
 
       const redirected = await Effect.runPromise(
         getPublicProfileByHandle({ handle: "oldcaptain" }, { publicProfileStore }),
@@ -203,20 +201,11 @@ suite("Postgres 17 public profile by handle", () => {
           LIMIT 1`,
       );
       expect(JSON.stringify(explain.rows)).toContain("public_handle_index_label_normalized_uidx");
-      const communityExplain = await admin.query<{ readonly plan: unknown }>(
-        `EXPLAIN (FORMAT JSON)
-         SELECT community_id FROM communities
-          WHERE created_by_user_id = 'usr_public' AND status = 'active'
-          ORDER BY created_at DESC, community_id DESC`,
-      );
-      expect(JSON.stringify(communityExplain.rows)).toContain(
-        "communities_creator_status_created_idx",
-      );
     });
     completedTestCount += 1;
   });
 
-  test("redacts deleted users and unresolved aliases as not found, but corrupt accounts as internal", async () => {
+  test("redacts deleted accounts and unresolved aliases as not found", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
@@ -234,18 +223,6 @@ suite("Postgres 17 public profile by handle", () => {
           getPublicProfileByHandle({ handle: "deletedcaptain" }, { publicProfileStore }),
         ),
       ).rejects.toMatchObject({ _tag: "NotFound" });
-
-      await admin.query("INSERT INTO users (user_id, account) VALUES ('usr_corrupt', '{}'::jsonb)");
-      await admin.query(
-        `INSERT INTO public_handle_index
-          (handle_id, label_normalized, label_display, status, owner_user_id)
-         VALUES ('handle_corrupt', 'corruptcaptain', 'corruptcaptain.pirate', 'active', 'usr_corrupt')`,
-      );
-      await expect(
-        Effect.runPromise(
-          getPublicProfileByHandle({ handle: "corruptcaptain" }, { publicProfileStore }),
-        ),
-      ).rejects.toMatchObject({ _tag: "InternalError" });
     });
     completedTestCount += 1;
   });

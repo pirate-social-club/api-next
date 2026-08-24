@@ -6,7 +6,6 @@ import {
   PublicProfileRepositoryError,
   type PublicProfileStoreService,
 } from "../ports.ts";
-import { projectIdentityAccount } from "./identity-account.ts";
 
 export type PublicProfileHandle = Readonly<{
   readonly stem: string;
@@ -54,46 +53,35 @@ function projectionFailure(): InternalError {
   return new InternalError({ message: "Public profile lookup failed" });
 }
 
-/** Build the dedicated public response from the existing validated account projection. */
+/** Build the public response from persona-only storage. */
 function projectPublicProfileDocument(lookup: PublicProfileLookup): PublicProfileDocument {
-  const projected = projectIdentityAccount({
-    userId: lookup.canonicalUserId,
-    account: lookup.account,
-  });
-  const globalHandle = projected.profile.global_handle;
-  if (
-    globalHandle.status !== "active" ||
-    globalHandle.id !== `gh_${lookup.handleId}` ||
-    normalizePirateHandle(globalHandle.label).stem !== lookup.handleLabelNormalized
-  ) {
-    throw projectionFailure();
-  }
-
+  const created = Date.parse(lookup.createdAt);
+  if (!Number.isFinite(created)) throw projectionFailure();
   const profile = {
-    id: projected.profile.id,
+    id: lookup.personaId,
     object: "profile" as const,
-    display_name: projected.profile.display_name ?? null,
-    avatar_ref: projected.profile.avatar_ref ?? null,
-    avatar_source: projected.profile.avatar_source ?? null,
-    cover_ref: projected.profile.cover_ref ?? null,
-    cover_source: projected.profile.cover_source ?? null,
-    bio: projected.profile.bio ?? null,
-    bio_source: projected.profile.bio_source ?? null,
-    preferred_locale: projected.profile.preferred_locale ?? null,
+    display_name: lookup.displayName,
+    avatar_ref: lookup.avatarRef,
+    avatar_source: null,
+    cover_ref: lookup.coverRef,
+    cover_source: null,
+    bio: lookup.bio,
+    bio_source: null,
+    preferred_locale: lookup.preferredLocale,
     global_handle: {
-      id: globalHandle.id,
+      id: `gh_${lookup.handleId}`,
       object: "global_handle" as const,
-      label: globalHandle.label,
-      status: globalHandle.status,
+      label: lookup.resolvedHandleLabelDisplay,
+      status: "active" as const,
     },
-    created: projected.profile.created,
+    created: Math.floor(created / 1_000),
   };
   const document = {
     profile,
     requested_handle_label: lookup.handleLabelDisplay,
-    resolved_handle_label: globalHandle.label,
+    resolved_handle_label: lookup.resolvedHandleLabelDisplay,
     is_canonical: lookup.handleStatus === "active",
-    created_communities: [...lookup.createdCommunities],
+    created_communities: [],
   } satisfies PublicProfileDocument;
   Schema.decodeUnknownSync(publicProfileResponse)(document);
   return document;
