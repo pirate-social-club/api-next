@@ -321,8 +321,8 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
     ...(options.now === undefined ? {} : { now: options.now }),
   };
   const transport = new R2S3StagingTransport(transportOptions);
-  const sourcePreflight = await transport.headObject(config.bucket, sourceKey);
-  const destinationPreflight = await transport.headObject(config.bucket, destinationKey);
+  const sourcePreflight = await transport.preflightObject(config.bucket, sourceKey);
+  const destinationPreflight = await transport.preflightObject(config.bucket, destinationKey);
   const safeToWrite = preflightSafe(sourcePreflight, destinationPreflight);
   const expectedObject = {
     sizeBytes: CONTENT.byteLength,

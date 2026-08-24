@@ -144,6 +144,31 @@ describe("staging R2 probe safety", () => {
     expect(request.headers.authorization).not.toContain(SECRET_ACCESS_KEY);
   });
 
+  test("preflights with bounded reads and rejects an untyped 404", async () => {
+    const requests: RequestInit[] = [];
+    const evidence = await runStagingProbe({
+      env: STAGING_ENV,
+      target: STAGING_TARGET,
+      acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
+      runId: "20260824-181500-untyped-404",
+      fetch: async (_url, init) => {
+        requests.push(init);
+        return response(404);
+      },
+    });
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.method).toBe("GET");
+      expect(new Headers(request.headers).get("range")).toBe("bytes=0-0");
+    }
+    expect(evidence.preflight).toMatchObject({
+      source: { status: 404, code: "NotFound" },
+      destination: { status: 404, code: "NotFound" },
+      safe_to_write: false,
+    });
+    expect(evidence.upload).toMatchObject({ status: 0, code: "NotAttempted" });
+  });
+
   test("constructs the exact copy headers and parses SHA-256 and VersionId independently of ETag", async () => {
     const bytes = new TextEncoder().encode("fixture");
     const requests: Array<{ url: string; init: RequestInit }> = [];
@@ -324,7 +349,7 @@ describe("staging R2 probe safety", () => {
     expect(evidence.sealing.destination_head).toBeNull();
     expect(evidence.cleanup.keys).toHaveLength(1);
     expect(evidence.cleanup.keys[0]?.absent).toBe(true);
-    expect(methods).toEqual(["HEAD", "HEAD", "PUT", "HEAD", "PUT", "HEAD", "DELETE", "HEAD"]);
+    expect(methods).toEqual(["GET", "GET", "PUT", "HEAD", "PUT", "HEAD", "DELETE", "HEAD"]);
   });
 
   test("registers and cleans an upload candidate when the PUT response is lost after commit", async () => {
@@ -379,7 +404,7 @@ describe("staging R2 probe safety", () => {
     ]);
     expect(evidence.sealing.conditional_copy.called).toBe(false);
     expect(expectedSha256).toHaveLength(64);
-    expect(methods).toEqual(["HEAD", "HEAD", "PUT", "HEAD", "DELETE", "HEAD"]);
+    expect(methods).toEqual(["GET", "GET", "PUT", "HEAD", "DELETE", "HEAD"]);
   });
 
   test("registers and cleans a copy candidate when the CopyObject response is lost after commit", async () => {
@@ -432,8 +457,8 @@ describe("staging R2 probe safety", () => {
     expect(evidence.cleanup.keys.map((key) => key.ownership)).toEqual(["confirmed", "ambiguous"]);
     expect(evidence.cleanup.keys.every((key) => key.candidate_verified && key.absent)).toBe(true);
     expect(methods).toEqual([
-      "HEAD",
-      "HEAD",
+      "GET",
+      "GET",
       "PUT",
       "HEAD",
       "PUT",

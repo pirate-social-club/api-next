@@ -133,6 +133,29 @@ export class R2S3StagingTransport {
     this.options = options;
   }
 
+  async preflightObject(bucket: string, key: string): Promise<StagingHeadResult> {
+    try {
+      const { response } = await signedFetch(this.options, {
+        accountId: this.options.accountId,
+        bucket,
+        key,
+        method: "GET",
+        headers: { range: "bytes=0-0" },
+      });
+      const code = await responseCode(response);
+      if (!response.bodyUsed) await response.body?.cancel();
+      if (response.status === 404 && code === "NoSuchKey") {
+        return { kind: "missing", status: response.status, code };
+      }
+      if (response.status === 200 || response.status === 206) {
+        return { kind: "found", status: response.status, code };
+      }
+      return { kind: "error", status: response.status, code };
+    } catch {
+      return { kind: "error", status: 0, code: "TransportError" };
+    }
+  }
+
   async headObject(bucket: string, key: string): Promise<StagingHeadResult> {
     try {
       const { response } = await signedFetch(this.options, {
