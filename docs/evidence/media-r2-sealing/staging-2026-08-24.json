@@ -1,0 +1,179 @@
+{
+  "schema_version": "r2-seal-staging-evidence-v1",
+  "run": {
+    "run_id": "20260824190858-f031c528-e788-45b5-8ca3-99f28557eb5d",
+    "started_at": "2026-08-24T19:08:58.936Z",
+    "completed_at": "2026-08-24T19:09:02.852Z",
+    "deterministic": false
+  },
+  "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
+  "bucket": "pirate-api-next-media-r2-seal-staging",
+  "prefix": "media-r2-seal-probe/20260824190858-f031c528-e788-45b5-8ca3-99f28557eb5d/",
+  "source_key": "media-r2-seal-probe/20260824190858-f031c528-e788-45b5-8ca3-99f28557eb5d/source.bin",
+  "destination_key": "media-r2-seal-probe/20260824190858-f031c528-e788-45b5-8ca3-99f28557eb5d/sealed.bin",
+  "mode": "staging-execute",
+  "transport": "r2-s3-sigv4",
+  "provider_contacted": true,
+  "credentials_read": true,
+  "preflight": {
+    "source": {
+      "called": true,
+      "status": 404,
+      "code": "NoSuchKey",
+      "etag": null,
+      "size_bytes": null,
+      "content_type": null,
+      "checksum_sha256": null,
+      "version_id": null
+    },
+    "destination": {
+      "called": true,
+      "status": 404,
+      "code": "NoSuchKey",
+      "etag": null,
+      "size_bytes": null,
+      "content_type": null,
+      "checksum_sha256": null,
+      "version_id": null
+    },
+    "safe_to_write": true
+  },
+  "upload": {
+    "called": true,
+    "status": 200,
+    "code": "OK",
+    "etag": "\"ab1661ae6e32e4e91ed4650f8272bba5\"",
+    "checksum_sha256": "c945e51e0c0a65cc1f7a46bf10a0894b5ae426abfa40d08cc88d8ad938455811",
+    "version_id": "7e5fcad2f4376373fd2bf2059a384077",
+    "owned_after_success": true,
+    "ownership": "confirmed",
+    "ownership_marker": "r2-seal:20260824190858-f031c528-e788-45b5-8ca3-99f28557eb5d"
+  },
+  "sealing": {
+    "outcome": "verification_mismatch",
+    "source_head": {
+      "called": true,
+      "status": 200,
+      "code": "OK",
+      "etag": "\"ab1661ae6e32e4e91ed4650f8272bba5\"",
+      "size_bytes": 25,
+      "content_type": "audio/mpeg",
+      "checksum_sha256": "c945e51e0c0a65cc1f7a46bf10a0894b5ae426abfa40d08cc88d8ad938455811",
+      "version_id": null
+    },
+    "conditional_copy": {
+      "called": true,
+      "status": 200,
+      "code": "OK",
+      "etag": "\"ab1661ae6e32e4e91ed4650f8272bba5\"",
+      "checksum_sha256": null,
+      "version_id": "7e5fcad2f0b0bdf6931f958d0d1388a5",
+      "source_version_id": "7e5fcad2f4376373fd2bf2059a384077"
+    },
+    "destination_head": {
+      "called": true,
+      "status": 200,
+      "code": "OK",
+      "etag": "\"ab1661ae6e32e4e91ed4650f8272bba5\"",
+      "size_bytes": 25,
+      "content_type": "audio/mpeg",
+      "checksum_sha256": null,
+      "version_id": null
+    },
+    "automatic_retry": false,
+    "destination_verified": false
+  },
+  "metadata": {
+    "source_etag": "\"ab1661ae6e32e4e91ed4650f8272bba5\"",
+    "destination_etag": "\"ab1661ae6e32e4e91ed4650f8272bba5\"",
+    "source_checksum_sha256": {
+      "available": true,
+      "value": "c945e51e0c0a65cc1f7a46bf10a0894b5ae426abfa40d08cc88d8ad938455811"
+    },
+    "destination_checksum_sha256": {
+      "available": false,
+      "value": null
+    },
+    "source_version_id": null,
+    "destination_version_id": null,
+    "version_binding": "mismatch"
+  },
+  "cleanup": {
+    "status": "complete",
+    "attempted": true,
+    "keys": [
+      {
+        "key": "media-r2-seal-probe/20260824190858-f031c528-e788-45b5-8ca3-99f28557eb5d/source.bin",
+        "ownership": "confirmed",
+        "ownership_marker": "r2-seal:20260824190858-f031c528-e788-45b5-8ca3-99f28557eb5d",
+        "marker_verified": true,
+        "expected_etag": "\"ab1661ae6e32e4e91ed4650f8272bba5\"",
+        "etag_verified": true,
+        "body_sha256_verified": false,
+        "candidate_verified": true,
+        "verification": {
+          "called": true,
+          "status": 200,
+          "code": "OK"
+        },
+        "residual_reason": "none",
+        "delete": {
+          "called": true,
+          "status": 204,
+          "code": "OK"
+        },
+        "absence": {
+          "called": true,
+          "status": 404,
+          "code": "NoSuchKey"
+        },
+        "absent": true
+      },
+      {
+        "key": "media-r2-seal-probe/20260824190858-f031c528-e788-45b5-8ca3-99f28557eb5d/sealed.bin",
+        "ownership": "confirmed",
+        "ownership_marker": "r2-seal:20260824190858-f031c528-e788-45b5-8ca3-99f28557eb5d",
+        "marker_verified": true,
+        "expected_etag": "\"ab1661ae6e32e4e91ed4650f8272bba5\"",
+        "etag_verified": true,
+        "body_sha256_verified": true,
+        "candidate_verified": true,
+        "verification": {
+          "called": true,
+          "status": 200,
+          "code": "OK"
+        },
+        "residual_reason": "none",
+        "delete": {
+          "called": true,
+          "status": 204,
+          "code": "OK"
+        },
+        "absence": {
+          "called": true,
+          "status": 404,
+          "code": "NoSuchKey"
+        },
+        "absent": true
+      }
+    ],
+    "bucket_deleted": false
+  },
+  "safety": {
+    "acknowledged_execute_flag": true,
+    "shared_412_is_ambiguous": true,
+    "conditional_copy_is_never_retried": true,
+    "post_412_destination_head": false,
+    "destination_head_only_after_copy_success": true,
+    "preexisting_keys_fail_closed": true,
+    "cleanup_is_exact_run_owned_keys": true,
+    "bucket_was_not_created_or_deleted": true,
+    "secrets_emitted": false,
+    "urls_headers_bodies_emitted": false
+  },
+  "remaining_decisions": [
+    "Ratify the public outcome for a shared 412 PreconditionFailed before accepting a production sealing adapter.",
+    "Ratify or reject production dependence on the beta cf-copy-destination-if-none-match extension.",
+    "Bind the live VersionId and SHA-256 observations to the reservation evidence contract."
+  ]
+}

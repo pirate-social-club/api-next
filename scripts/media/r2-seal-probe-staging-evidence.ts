@@ -20,6 +20,7 @@ export type StagingCleanupKey = Readonly<{
   marker_verified: boolean;
   expected_etag: string | null;
   etag_verified: boolean;
+  body_sha256_verified: boolean;
   candidate_verified: boolean;
   verification: StagingOperation;
   residual_reason:
@@ -160,6 +161,7 @@ function cleanUpKey(value: StagingCleanupKey): StagingCleanupKey {
     marker_verified: value.marker_verified,
     expected_etag: safeValue(value.expected_etag, "cleanup.expected_etag"),
     etag_verified: value.etag_verified,
+    body_sha256_verified: value.body_sha256_verified,
     candidate_verified: value.candidate_verified,
     verification: operation(value.verification),
     residual_reason: value.residual_reason,

@@ -46,6 +46,13 @@ export type StagingDeleteResult = Readonly<{
   code: string;
 }>;
 
+export type StagingBodySha256Result = Readonly<{
+  kind: "verified" | "error";
+  status: number;
+  code: string;
+  sha256?: string;
+}>;
+
 export type StagingTransportOptions = Readonly<{
   accountId: string;
   credentials: StagingCredentials;
@@ -67,7 +74,7 @@ function safeCode(value: string | undefined, fallback: string): string {
 async function responseCode(response: Response): Promise<string> {
   const explicit = header(response, "x-amz-error-code");
   if (explicit !== undefined) return safeCode(explicit, "ProviderError");
-  if (response.status === 200 || response.status === 201 || response.status === 204) {
+  if (response.status >= 200 && response.status < 300) {
     return "OK";
   }
   let body = "";
@@ -82,7 +89,13 @@ async function responseCode(response: Response): Promise<string> {
 
 function xmlValue(body: string, tag: string): string | undefined {
   const value = new RegExp(`<${tag}>([^<]*)</${tag}>`, "i").exec(body)?.[1];
-  return value === undefined || value.length === 0 ? undefined : value;
+  if (value === undefined || value.length === 0) return undefined;
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
 }
 
 function decodeBase64Sha256(value: string | undefined): string | undefined {
@@ -122,6 +135,11 @@ function responseSize(response: Response): number | undefined {
   return Number.isSafeInteger(size) ? size : undefined;
 }
 
+async function sha256Hex(value: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", value as BufferSource);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function isAmbiguousMutationStatus(status: number): boolean {
   return status === 408 || status === 425 || status === 429 || (status >= 500 && status <= 599);
 }
@@ -131,6 +149,72 @@ export class R2S3StagingTransport {
 
   constructor(options: StagingTransportOptions) {
     this.options = options;
+  }
+
+  async preflightObject(bucket: string, key: string): Promise<StagingHeadResult> {
+    try {
+      const { response } = await signedFetch(this.options, {
+        accountId: this.options.accountId,
+        bucket,
+        key,
+        method: "GET",
+        headers: { range: "bytes=0-0" },
+      });
+      const code = await responseCode(response);
+      if (!response.bodyUsed) await response.body?.cancel();
+      if (response.status === 404 && code === "NoSuchKey") {
+        return { kind: "missing", status: response.status, code };
+      }
+      if (response.status === 200 || response.status === 206) {
+        return { kind: "found", status: response.status, code };
+      }
+      return { kind: "error", status: response.status, code };
+    } catch {
+      return { kind: "error", status: 0, code: "TransportError" };
+    }
+  }
+
+  async readObjectSha256(
+    bucket: string,
+    key: string,
+    ifMatch: string,
+    expectedSizeBytes: number,
+  ): Promise<StagingBodySha256Result> {
+    if (
+      !Number.isSafeInteger(expectedSizeBytes) ||
+      expectedSizeBytes < 1 ||
+      expectedSizeBytes > 1024
+    ) {
+      return { kind: "error", status: 0, code: "CleanupBodyTooLarge" };
+    }
+    try {
+      const { response } = await signedFetch(this.options, {
+        accountId: this.options.accountId,
+        bucket,
+        key,
+        method: "GET",
+        headers: {
+          "if-match": ifMatch,
+          range: `bytes=0-${expectedSizeBytes - 1}`,
+        },
+      });
+      const code = await responseCode(response);
+      if (response.status !== 200 && response.status !== 206) {
+        return { kind: "error", status: response.status, code };
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength !== expectedSizeBytes) {
+        return { kind: "error", status: response.status, code: "CleanupBodySizeMismatch" };
+      }
+      return {
+        kind: "verified",
+        status: response.status,
+        code,
+        sha256: await sha256Hex(bytes),
+      };
+    } catch {
+      return { kind: "error", status: 0, code: "TransportError" };
+    }
   }
 
   async headObject(bucket: string, key: string): Promise<StagingHeadResult> {

@@ -1,9 +1,10 @@
 # Conditional R2 sealing evidence
 
-This directory defines the redacted evidence shape for the local-only R2
-sealing proof. The probe is a dry run. It uses the hostile fixture set and an
-in-memory fake transport; it does not read credentials, inspect environment
-variables, call `fetch`, contact R2, create a bucket, or deploy a Worker.
+This directory defines the redacted evidence shapes for the local and staging
+R2 sealing proofs. With no arguments the probe is a dry run: it uses the
+hostile fixture set and an in-memory fake transport, and it does not read
+credentials, inspect environment variables, call `fetch`, contact R2, create a
+bucket, or deploy a Worker.
 
 Run the probe from the api-next repository root:
 
@@ -113,9 +114,11 @@ staging invocation is the only path that reads credentials or calls `fetch`.
 The staging output is projected through the closed
 [staging schema](./staging-schema.json).
 
-The staging path generates one run-specific prefix and two exact keys. It
-checks both keys before writing and uses `If-None-Match: *` for the source
-upload, so a pre-existing key or an unknown preflight response fails closed.
+The staging path generates one run-specific prefix and two exact keys. It uses
+a one-byte ranged `GET` to obtain a typed `NoSuchKey` for each preflight because
+R2's missing-object `HEAD` response carries no typed error body. An untyped 404
+still fails closed. The source upload also uses `If-None-Match: *`, so a
+pre-existing key or an unknown preflight response cannot be overwritten.
 It requires an already-existing bucket and never creates or deletes a bucket.
 Mutation candidates are registered before each upload or copy dispatch, so a
 response lost after a provider-side commit remains cleanup-owned and is never
@@ -126,6 +129,13 @@ checksum, and an ETag, and deletes with the observed ETag condition. A
 confirmed response ETag is also rechecked when one was available. A marker,
 metadata, or confirmed-ETag mismatch is a residual/inconclusive result and
 fails closed.
+
+R2 does not expose destination SHA-256 metadata after CopyObject. For the tiny
+staging payload only, cleanup may therefore use an ETag-conditional ranged read
+after marker, ETag, size, and content-type verification. The read is capped at
+1 KiB and must equal the exact expected byte length and SHA-256 before deletion.
+Evidence records this separately as `body_sha256_verified`; production media
+cleanup must not inherit this small-body fallback.
 
 The sealing sequence is deliberately narrow: one source `HEAD`, one
 `CopyObject` sent as a destination `PUT` with the observed source ETag in
@@ -139,14 +149,17 @@ observations; an ETag is never treated as a checksum. HTTP 408, 425, 429, and
 all 5xx mutation responses are treated as ambiguous delivery, retain their
 cleanup candidates, and preserve the returned status/code.
 
-The live runner has not been authorized to contact a production bucket. The
-current staging account is not entitled to R2, so no `--execute-staging` run
-was performed in this tranche. The local and injected-fetch tests exercise
-signing, request construction, hostile responses, redaction, and cleanup
-without a network call. A future transcript must bind only the run/account/
-bucket/key identities, statuses, parsed codes, timestamps, ETags, checksum and
-version observations, and exact cleanup results. URLs, headers, bodies, media
-bytes, credentials, and raw provider responses are excluded.
+The live runner is not authorized to contact a production bucket. The
+workspace owner authorized only the disposable staging bucket. The redacted
+[2026-08-24 staging transcript](./staging-2026-08-24.json) proves that the
+combined source/destination conditional copy returned 200 and did not retry.
+The upload returned a checksum and VersionId; CopyObject returned distinct
+source and destination VersionIds. The destination `HEAD`, however, exposed
+neither destination checksum nor VersionId, so the closed result is
+`verification_mismatch` and the current public `sealed` contract cannot be
+projected from this protocol. Cleanup verified and removed both exact run-owned
+objects and proved typed absence without deleting the bucket. URLs, headers,
+raw bodies, media bytes, and credentials are excluded from the transcript.
 
 `runStagingProbe` also requires the exact `execute-staging` acknowledgement
 parameter; importing it directly without that token reads neither environment

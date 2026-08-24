@@ -179,7 +179,7 @@
     "cleanupKey": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["key", "ownership", "ownership_marker", "marker_verified", "expected_etag", "etag_verified", "candidate_verified", "verification", "residual_reason", "delete", "absence", "absent"],
+      "required": ["key", "ownership", "ownership_marker", "marker_verified", "expected_etag", "etag_verified", "body_sha256_verified", "candidate_verified", "verification", "residual_reason", "delete", "absence", "absent"],
       "properties": {
         "key": { "type": "string", "minLength": 1, "maxLength": 512 },
         "ownership": { "enum": ["confirmed", "ambiguous"] },
@@ -187,6 +187,7 @@
         "marker_verified": { "type": "boolean" },
         "expected_etag": { "$ref": "#/$defs/safeString" },
         "etag_verified": { "type": "boolean" },
+        "body_sha256_verified": { "type": "boolean" },
         "candidate_verified": { "type": "boolean" },
         "verification": { "$ref": "#/$defs/operation" },
         "residual_reason": { "enum": ["none", "not-found", "metadata-mismatch", "checksum-unavailable", "etag-unavailable", "ownership-marker-mismatch", "confirmed-etag-mismatch", "delete-failed", "absence-check-failed"] },

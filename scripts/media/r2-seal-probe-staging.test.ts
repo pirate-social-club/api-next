@@ -11,7 +11,7 @@ import {
   cleanupOwnedKeys,
   runWithCleanup,
 } from "./r2-seal-probe-staging-cleanup";
-import { redactStagingEvidence } from "./r2-seal-probe-staging-evidence";
+import { redactStagingEvidence, type StagingEvidence } from "./r2-seal-probe-staging-evidence";
 import { encodeR2CopySource, signR2Request } from "./r2-seal-probe-staging-signing";
 import { R2S3StagingTransport, sha256Base64 } from "./r2-seal-probe-staging-transport";
 
@@ -137,10 +137,36 @@ describe("staging R2 probe safety", () => {
     expect(request.headers["x-amz-content-sha256"]).toBe(
       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     );
+    expect(request.headers["x-amz-date"]).toBe("20200101T000000Z");
     expect(request.headers.authorization).toBe(
-      "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20200101/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=511da240ef74c6f6b25a7567043466a59cee70457633281e0b2b87b19c92b058",
+      "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20200101/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=8754ed9a3a960f0509c4fc7abf153507cf24ebae4201da012c5ad505ff887486",
     );
     expect(request.headers.authorization).not.toContain(SECRET_ACCESS_KEY);
+  });
+
+  test("preflights with bounded reads and rejects an untyped 404", async () => {
+    const requests: RequestInit[] = [];
+    const evidence = await runStagingProbe({
+      env: STAGING_ENV,
+      target: STAGING_TARGET,
+      acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
+      runId: "20260824-181500-untyped-404",
+      fetch: async (_url, init) => {
+        requests.push(init);
+        return response(404);
+      },
+    });
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.method).toBe("GET");
+      expect(new Headers(request.headers).get("range")).toBe("bytes=0-0");
+    }
+    expect(evidence.preflight).toMatchObject({
+      source: { status: 404, code: "NotFound" },
+      destination: { status: 404, code: "NotFound" },
+      safe_to_write: false,
+    });
+    expect(evidence.upload).toMatchObject({ status: 0, code: "NotAttempted" });
   });
 
   test("constructs the exact copy headers and parses SHA-256 and VersionId independently of ETag", async () => {
@@ -198,6 +224,54 @@ describe("staging R2 probe safety", () => {
     );
     expect(headers.get("x-amz-checksum-sha256")).toBeNull();
     expect(requests).toHaveLength(2);
+  });
+
+  test("hashes a bounded 206 cleanup response without consuming it as an error", async () => {
+    const transport = new R2S3StagingTransport({
+      accountId: ACCOUNT_ID,
+      credentials: { accessKeyId: ACCESS_KEY_ID, secretAccessKey: SECRET_ACCESS_KEY },
+      fetch: async (_url, init) => {
+        expect(init.method).toBe("GET");
+        const headers = new Headers(init.headers);
+        expect(headers.get("if-match")).toBe('"expected"');
+        expect(headers.get("range")).toBe("bytes=0-0");
+        return response(206, {}, "x");
+      },
+    });
+    await expect(
+      transport.readObjectSha256("fixture-bucket", "sealed.bin", '"expected"', 1),
+    ).resolves.toEqual({
+      kind: "verified",
+      status: 206,
+      code: "OK",
+      sha256: "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+    });
+  });
+
+  test("decodes the XML-escaped ETag returned by R2 CopyObject", async () => {
+    const transport = new R2S3StagingTransport({
+      accountId: ACCOUNT_ID,
+      credentials: { accessKeyId: ACCESS_KEY_ID, secretAccessKey: SECRET_ACCESS_KEY },
+      fetch: async () =>
+        response(
+          200,
+          {},
+          "<CopyObjectResult><ETag>&quot;copied-etag&quot;</ETag><VersionId>destination-version</VersionId></CopyObjectResult>",
+        ),
+    });
+    await expect(
+      transport.copyObject({
+        sourceBucket: "fixture-bucket",
+        destinationBucket: "fixture-bucket",
+        sourceKey: "source.bin",
+        destinationKey: "sealed.bin",
+        sourceEtag: '"source-etag"',
+      }),
+    ).resolves.toMatchObject({
+      kind: "copied",
+      destinationEtag: '"copied-etag"',
+      destinationVersionId: "destination-version",
+    });
   });
 
   test("uses the real signed transport for guard-mode diagnostics", async () => {
@@ -272,10 +346,12 @@ describe("staging R2 probe safety", () => {
 
   test("treats shared 412 as terminal and performs no destination HEAD or copy retry", async () => {
     const methods: string[] = [];
+    const urls: string[] = [];
     let requestNumber = 0;
     const content = new TextEncoder().encode("r2-seal-staging-proof-v1\n");
     const contentChecksum = await sha256Base64(content);
-    const fakeFetch = async (_url: string, init: RequestInit) => {
+    const fakeFetch = async (url: string, init: RequestInit) => {
+      urls.push(url);
       methods.push(init.method ?? "");
       requestNumber += 1;
       if (requestNumber === 1 || requestNumber === 2) {
@@ -323,7 +399,8 @@ describe("staging R2 probe safety", () => {
     expect(evidence.sealing.destination_head).toBeNull();
     expect(evidence.cleanup.keys).toHaveLength(1);
     expect(evidence.cleanup.keys[0]?.absent).toBe(true);
-    expect(methods).toEqual(["HEAD", "HEAD", "PUT", "HEAD", "PUT", "HEAD", "DELETE", "HEAD"]);
+    expect(urls.every((url) => url.includes(`/${STAGING_TARGET.bucket}/`))).toBe(true);
+    expect(methods).toEqual(["GET", "GET", "PUT", "HEAD", "PUT", "HEAD", "DELETE", "GET"]);
   });
 
   test("registers and cleans an upload candidate when the PUT response is lost after commit", async () => {
@@ -378,7 +455,7 @@ describe("staging R2 probe safety", () => {
     ]);
     expect(evidence.sealing.conditional_copy.called).toBe(false);
     expect(expectedSha256).toHaveLength(64);
-    expect(methods).toEqual(["HEAD", "HEAD", "PUT", "HEAD", "DELETE", "HEAD"]);
+    expect(methods).toEqual(["GET", "GET", "PUT", "HEAD", "DELETE", "GET"]);
   });
 
   test("registers and cleans a copy candidate when the CopyObject response is lost after commit", async () => {
@@ -431,17 +508,17 @@ describe("staging R2 probe safety", () => {
     expect(evidence.cleanup.keys.map((key) => key.ownership)).toEqual(["confirmed", "ambiguous"]);
     expect(evidence.cleanup.keys.every((key) => key.candidate_verified && key.absent)).toBe(true);
     expect(methods).toEqual([
-      "HEAD",
-      "HEAD",
+      "GET",
+      "GET",
       "PUT",
       "HEAD",
       "PUT",
       "HEAD",
       "DELETE",
-      "HEAD",
+      "GET",
       "HEAD",
       "DELETE",
-      "HEAD",
+      "GET",
     ]);
   });
 
@@ -564,7 +641,6 @@ describe("staging R2 probe safety", () => {
 
   test("cleanup deletes and verifies only exact run-owned keys", async () => {
     const calls: string[] = [];
-    let headCalls = 0;
     const cleanup = await cleanupOwnedKeys(
       {
         async deleteObject(_bucket, key) {
@@ -573,19 +649,20 @@ describe("staging R2 probe safety", () => {
         },
         async headObject(_bucket, key) {
           calls.push(`head:${key}`);
-          headCalls += 1;
-          return headCalls === 1
-            ? {
-                kind: "found",
-                status: 200,
-                code: "OK",
-                etag: '"expected"',
-                sizeBytes: 1,
-                contentType: "audio/mpeg",
-                sha256: "expected-sha256",
-                ownershipMarker: "r2-seal:test",
-              }
-            : { kind: "missing", status: 404, code: "NoSuchKey" };
+          return {
+            kind: "found",
+            status: 200,
+            code: "OK",
+            etag: '"expected"',
+            sizeBytes: 1,
+            contentType: "audio/mpeg",
+            sha256: "expected-sha256",
+            ownershipMarker: "r2-seal:test",
+          };
+        },
+        async preflightObject(_bucket, key) {
+          calls.push(`preflight:${key}`);
+          return { kind: "missing", status: 404, code: "NoSuchKey" };
         },
       },
       "fixture-bucket",
@@ -597,7 +674,7 @@ describe("staging R2 probe safety", () => {
     expect(calls).toEqual([
       "head:media-r2-seal-probe/run/source.bin",
       "delete:media-r2-seal-probe/run/source.bin",
-      "head:media-r2-seal-probe/run/source.bin",
+      "preflight:media-r2-seal-probe/run/source.bin",
     ]);
     await expect(
       cleanupOwnedKeys(
@@ -608,12 +685,63 @@ describe("staging R2 probe safety", () => {
           async headObject() {
             throw new Error("must not inspect foreign key");
           },
+          async preflightObject() {
+            throw new Error("must not inspect foreign key");
+          },
         },
         "fixture-bucket",
         "media-r2-seal-probe/run/",
         [cleanupCandidate("other-prefix/foreign")],
       ),
     ).rejects.toThrow("exact run-owned prefix");
+  });
+
+  test("cleanup conditionally hashes a tiny body when provider checksum metadata is absent", async () => {
+    const calls: string[] = [];
+    const key = "media-r2-seal-probe/run/sealed.bin";
+    const cleanup = await cleanupOwnedKeys(
+      {
+        async headObject() {
+          calls.push("head");
+          return {
+            kind: "found",
+            status: 200,
+            code: "OK",
+            etag: '"expected"',
+            sizeBytes: 1,
+            contentType: "audio/mpeg",
+            ownershipMarker: "r2-seal:test",
+          };
+        },
+        async readObjectSha256(_bucket, readKey, ifMatch, expectedSizeBytes) {
+          calls.push("body-sha256");
+          expect({ readKey, ifMatch, expectedSizeBytes }).toEqual({
+            readKey: key,
+            ifMatch: '"expected"',
+            expectedSizeBytes: 1,
+          });
+          return { kind: "verified", status: 206, code: "OK", sha256: "expected-sha256" };
+        },
+        async deleteObject() {
+          calls.push("delete");
+          return { kind: "deleted", status: 204, code: "OK" };
+        },
+        async preflightObject() {
+          calls.push("absence");
+          return { kind: "missing", status: 404, code: "NoSuchKey" };
+        },
+      },
+      "fixture-bucket",
+      "media-r2-seal-probe/run/",
+      [cleanupCandidate(key)],
+    );
+    expect(cleanup.status).toBe("complete");
+    expect(cleanup.keys[0]).toMatchObject({
+      body_sha256_verified: true,
+      candidate_verified: true,
+      absent: true,
+    });
+    expect(calls).toEqual(["head", "body-sha256", "delete", "absence"]);
   });
 
   test("retains a residual key as partial cleanup without widening the delete set", async () => {
@@ -637,6 +765,14 @@ describe("staging R2 probe safety", () => {
             ownershipMarker: "r2-seal:test",
           };
         },
+        async preflightObject(_bucket, key) {
+          calls.push(`preflight:${key}`);
+          return {
+            kind: "found",
+            status: 200,
+            code: "OK",
+          };
+        },
       },
       "fixture-bucket",
       "media-r2-seal-probe/run/",
@@ -652,7 +788,7 @@ describe("staging R2 probe safety", () => {
     expect(calls).toEqual([
       "head:media-r2-seal-probe/run/source.bin",
       "delete:media-r2-seal-probe/run/source.bin",
-      "head:media-r2-seal-probe/run/source.bin",
+      "preflight:media-r2-seal-probe/run/source.bin",
     ]);
   });
 
@@ -676,6 +812,9 @@ describe("staging R2 probe safety", () => {
               sha256: "expected-sha256",
               ...(ownershipMarker === undefined ? {} : { ownershipMarker }),
             };
+          },
+          async preflightObject() {
+            throw new Error("must not check absence for an unverified candidate");
           },
         },
         "fixture-bucket",
@@ -712,6 +851,9 @@ describe("staging R2 probe safety", () => {
             sha256: "expected-sha256",
             ownershipMarker: "r2-seal:test",
           };
+        },
+        async preflightObject() {
+          throw new Error("must not check absence for an unverified candidate");
         },
       },
       "fixture-bucket",
@@ -818,5 +960,12 @@ describe("staging R2 probe safety", () => {
     expect(() => redactStagingEvidence({ ...base, account_id: "https://secret.invalid" })).toThrow(
       "unsafe account_id",
     );
+  });
+
+  test("accepts the committed staging transcript through the closed evidence projector", async () => {
+    const transcript = (await Bun.file(
+      new URL("../../docs/evidence/media-r2-sealing/staging-2026-08-24.json", import.meta.url),
+    ).json()) as StagingEvidence;
+    expect(redactStagingEvidence(transcript)).toEqual(transcript);
   });
 });
