@@ -4,6 +4,7 @@ import type { StagingDeleteResult, StagingHeadResult } from "./r2-seal-probe-sta
 type CleanupTransport = Readonly<{
   deleteObject: (bucket: string, key: string, ifMatch?: string) => Promise<StagingDeleteResult>;
   headObject: (bucket: string, key: string) => Promise<StagingHeadResult>;
+  preflightObject: (bucket: string, key: string) => Promise<StagingHeadResult>;
 }>;
 
 export type CleanupCandidate = Readonly<{
@@ -113,7 +114,7 @@ export async function cleanupOwnedKeys(
       continue;
     }
     const deletion = await transport.deleteObject(bucket, key, verification.etag);
-    const absence = await transport.headObject(bucket, key);
+    const absence = await transport.preflightObject(bucket, key);
     const absent = absence.kind === "missing" && absence.code === "NoSuchKey";
     results.push({
       key,

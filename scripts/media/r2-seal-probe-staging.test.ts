@@ -349,7 +349,7 @@ describe("staging R2 probe safety", () => {
     expect(evidence.sealing.destination_head).toBeNull();
     expect(evidence.cleanup.keys).toHaveLength(1);
     expect(evidence.cleanup.keys[0]?.absent).toBe(true);
-    expect(methods).toEqual(["GET", "GET", "PUT", "HEAD", "PUT", "HEAD", "DELETE", "HEAD"]);
+    expect(methods).toEqual(["GET", "GET", "PUT", "HEAD", "PUT", "HEAD", "DELETE", "GET"]);
   });
 
   test("registers and cleans an upload candidate when the PUT response is lost after commit", async () => {
@@ -404,7 +404,7 @@ describe("staging R2 probe safety", () => {
     ]);
     expect(evidence.sealing.conditional_copy.called).toBe(false);
     expect(expectedSha256).toHaveLength(64);
-    expect(methods).toEqual(["GET", "GET", "PUT", "HEAD", "DELETE", "HEAD"]);
+    expect(methods).toEqual(["GET", "GET", "PUT", "HEAD", "DELETE", "GET"]);
   });
 
   test("registers and cleans a copy candidate when the CopyObject response is lost after commit", async () => {
@@ -464,10 +464,10 @@ describe("staging R2 probe safety", () => {
       "PUT",
       "HEAD",
       "DELETE",
-      "HEAD",
+      "GET",
       "HEAD",
       "DELETE",
-      "HEAD",
+      "GET",
     ]);
   });
 
@@ -590,7 +590,6 @@ describe("staging R2 probe safety", () => {
 
   test("cleanup deletes and verifies only exact run-owned keys", async () => {
     const calls: string[] = [];
-    let headCalls = 0;
     const cleanup = await cleanupOwnedKeys(
       {
         async deleteObject(_bucket, key) {
@@ -599,19 +598,20 @@ describe("staging R2 probe safety", () => {
         },
         async headObject(_bucket, key) {
           calls.push(`head:${key}`);
-          headCalls += 1;
-          return headCalls === 1
-            ? {
-                kind: "found",
-                status: 200,
-                code: "OK",
-                etag: '"expected"',
-                sizeBytes: 1,
-                contentType: "audio/mpeg",
-                sha256: "expected-sha256",
-                ownershipMarker: "r2-seal:test",
-              }
-            : { kind: "missing", status: 404, code: "NoSuchKey" };
+          return {
+            kind: "found",
+            status: 200,
+            code: "OK",
+            etag: '"expected"',
+            sizeBytes: 1,
+            contentType: "audio/mpeg",
+            sha256: "expected-sha256",
+            ownershipMarker: "r2-seal:test",
+          };
+        },
+        async preflightObject(_bucket, key) {
+          calls.push(`preflight:${key}`);
+          return { kind: "missing", status: 404, code: "NoSuchKey" };
         },
       },
       "fixture-bucket",
@@ -623,7 +623,7 @@ describe("staging R2 probe safety", () => {
     expect(calls).toEqual([
       "head:media-r2-seal-probe/run/source.bin",
       "delete:media-r2-seal-probe/run/source.bin",
-      "head:media-r2-seal-probe/run/source.bin",
+      "preflight:media-r2-seal-probe/run/source.bin",
     ]);
     await expect(
       cleanupOwnedKeys(
@@ -632,6 +632,9 @@ describe("staging R2 probe safety", () => {
             throw new Error("must not delete foreign key");
           },
           async headObject() {
+            throw new Error("must not inspect foreign key");
+          },
+          async preflightObject() {
             throw new Error("must not inspect foreign key");
           },
         },
@@ -663,6 +666,14 @@ describe("staging R2 probe safety", () => {
             ownershipMarker: "r2-seal:test",
           };
         },
+        async preflightObject(_bucket, key) {
+          calls.push(`preflight:${key}`);
+          return {
+            kind: "found",
+            status: 200,
+            code: "OK",
+          };
+        },
       },
       "fixture-bucket",
       "media-r2-seal-probe/run/",
@@ -678,7 +689,7 @@ describe("staging R2 probe safety", () => {
     expect(calls).toEqual([
       "head:media-r2-seal-probe/run/source.bin",
       "delete:media-r2-seal-probe/run/source.bin",
-      "head:media-r2-seal-probe/run/source.bin",
+      "preflight:media-r2-seal-probe/run/source.bin",
     ]);
   });
 
@@ -702,6 +713,9 @@ describe("staging R2 probe safety", () => {
               sha256: "expected-sha256",
               ...(ownershipMarker === undefined ? {} : { ownershipMarker }),
             };
+          },
+          async preflightObject() {
+            throw new Error("must not check absence for an unverified candidate");
           },
         },
         "fixture-bucket",
@@ -738,6 +752,9 @@ describe("staging R2 probe safety", () => {
             sha256: "expected-sha256",
             ownershipMarker: "r2-seal:test",
           };
+        },
+        async preflightObject() {
+          throw new Error("must not check absence for an unverified candidate");
         },
       },
       "fixture-bucket",
