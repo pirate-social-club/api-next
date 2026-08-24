@@ -8621,8 +8621,6 @@ CREATE TRIGGER media_immutable_object_insert_guard BEFORE INSERT ON media_immuta
 
 CREATE TRIGGER media_immutable_objects_append_only BEFORE DELETE OR UPDATE ON media_immutable_objects FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
-CREATE TRIGGER media_moderation_action_append_only BEFORE DELETE OR UPDATE ON media_moderation_actions FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
-
 CREATE TRIGGER media_moderation_action_authority_guard BEFORE INSERT ON media_moderation_actions FOR EACH ROW EXECUTE FUNCTION validate_media_moderation_action_insert();
 
 CREATE TRIGGER media_moderation_actions_append_only BEFORE DELETE OR UPDATE ON media_moderation_actions FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();

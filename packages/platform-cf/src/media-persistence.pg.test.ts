@@ -324,6 +324,33 @@ async function insertAnalysisSnapshotVariant(
 suite("song media persistence PostgreSQL 17 race suite", () => {
   test("applies 0043 over populated 0042 and atomically publishes owned lineage", async () => {
     await withSchema(async (admin, connection) => {
+      const appendOnlyTriggers = await admin.query<{ trigger_name: string }>(
+        `SELECT trigger.tgname AS trigger_name
+         FROM pg_trigger AS trigger
+         JOIN pg_class AS relation ON relation.oid = trigger.tgrelid
+         JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+         WHERE namespace.nspname = current_schema()
+           AND NOT trigger.tgisinternal
+           AND relation.relname LIKE 'media_%'
+           AND trigger.tgname LIKE 'media%_append_only'
+         ORDER BY trigger.tgname`,
+      );
+      expect(appendOnlyTriggers.rows.map(({ trigger_name }) => trigger_name)).toEqual([
+        "media_analysis_evidence_append_only",
+        "media_audio_revisions_append_only",
+        "media_immutable_objects_append_only",
+        "media_moderation_actions_append_only",
+        "media_publication_decisions_append_only",
+        "media_reference_evidence_append_only",
+        "media_submission_command_replays_append_only",
+        "media_submission_events_append_only",
+        "media_submission_terms_append_only",
+        "media_timed_lyrics_artifacts_append_only",
+        "media_transcript_artifacts_append_only",
+      ]);
+      expect(appendOnlyTriggers.rows.map(({ trigger_name }) => trigger_name)).not.toContain(
+        "media_moderation_action_append_only",
+      );
       await createThroughDecision(connection);
       const decoded = await run(connection, (store) =>
         store.getForAuthor({

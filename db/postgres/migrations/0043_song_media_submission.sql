@@ -720,7 +720,6 @@ BEGIN
 END;
 $$;
 CREATE TRIGGER media_moderation_action_authority_guard BEFORE INSERT ON media_moderation_actions FOR EACH ROW EXECUTE FUNCTION validate_media_moderation_action_insert();
-CREATE TRIGGER media_moderation_action_append_only BEFORE UPDATE OR DELETE ON media_moderation_actions FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
 CREATE FUNCTION guard_media_moderation_projection_update() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE submission_record media_post_submissions%ROWTYPE;
