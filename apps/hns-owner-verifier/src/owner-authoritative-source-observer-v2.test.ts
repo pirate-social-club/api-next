@@ -430,38 +430,57 @@ describe("HNS owner-authority custody runtime", () => {
     expect(dnsCalls).toBe(0);
   });
 
-  test("rejects a resolver-advertised digest that differs from the exact bytes", async () => {
-    const value = await fixture();
-    const outcome = await observeInventoryFailure(value, {
-      authority_inventory_reference: value.inventory.authority_inventory_reference,
-      authority_inventory_version: value.inventory.authority_inventory_version,
-      authority_inventory_digest: "f".repeat(
-        64,
-      ) as HnsAuthorityInventoryResolvedV1["authority_inventory_digest"],
-      inventory_bytes: value.inventoryBytes,
-    });
-    expect(outcome.result).toMatchObject({
-      status: "unavailable",
-      reason_code: "authority_inventory_unavailable",
-    });
-    expect(outcome.hsdCalls).toHaveLength(0);
-    expect(outcome.dnsCalls).toBe(0);
-  });
+  test("rejects each resolver tuple mismatch before HSD or DNS", async () => {
+    const hostileCases = [
+      {
+        name: "reference",
+        resolve: (value: Awaited<ReturnType<typeof fixture>>) => ({
+          authority_inventory_reference: "authority-inventory:wrong",
+          authority_inventory_version: value.inventory.authority_inventory_version,
+          authority_inventory_digest: value.inventoryDigest,
+          inventory_bytes: value.inventoryBytes,
+        }),
+      },
+      {
+        name: "version",
+        resolve: (value: Awaited<ReturnType<typeof fixture>>) => ({
+          authority_inventory_reference: value.inventory.authority_inventory_reference,
+          authority_inventory_version: "authority-inventory-v1-wrong",
+          authority_inventory_digest: value.inventoryDigest,
+          inventory_bytes: value.inventoryBytes,
+        }),
+      },
+      {
+        name: "digest",
+        resolve: (value: Awaited<ReturnType<typeof fixture>>) => ({
+          authority_inventory_reference: value.inventory.authority_inventory_reference,
+          authority_inventory_version: value.inventory.authority_inventory_version,
+          authority_inventory_digest: "f".repeat(
+            64,
+          ) as HnsAuthorityInventoryResolvedV1["authority_inventory_digest"],
+          inventory_bytes: value.inventoryBytes,
+        }),
+      },
+      {
+        name: "bytes",
+        resolve: (value: Awaited<ReturnType<typeof fixture>>) => ({
+          authority_inventory_reference: value.inventory.authority_inventory_reference,
+          authority_inventory_version: value.inventory.authority_inventory_version,
+          authority_inventory_digest: value.inventoryDigest,
+          inventory_bytes: value.inventoryBytes.slice(0, -1),
+        }),
+      },
+    ] as const;
 
-  test("rejects a resolver reference/version tuple that differs from decoded inventory", async () => {
-    const value = await fixture();
-    const outcome = await observeInventoryFailure(value, {
-      authority_inventory_reference: "authority-inventory:wrong",
-      authority_inventory_version: "authority-inventory-v1-wrong",
-      authority_inventory_digest:
-        value.inventoryDigest as HnsAuthorityInventoryResolvedV1["authority_inventory_digest"],
-      inventory_bytes: value.inventoryBytes,
-    });
-    expect(outcome.result).toMatchObject({
-      status: "unavailable",
-      reason_code: "authority_inventory_unavailable",
-    });
-    expect(outcome.hsdCalls).toHaveLength(0);
-    expect(outcome.dnsCalls).toBe(0);
+    for (const hostileCase of hostileCases) {
+      const value = await fixture();
+      const outcome = await observeInventoryFailure(value, hostileCase.resolve(value));
+      expect(outcome.result, hostileCase.name).toMatchObject({
+        status: "unavailable",
+        reason_code: "authority_inventory_unavailable",
+      });
+      expect(outcome.hsdCalls, hostileCase.name).toHaveLength(0);
+      expect(outcome.dnsCalls, hostileCase.name).toBe(0);
+    }
   });
 });

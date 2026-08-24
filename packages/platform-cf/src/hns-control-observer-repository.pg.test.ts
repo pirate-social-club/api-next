@@ -799,23 +799,40 @@ suite("Postgres 17 HNS control observer persistence", () => {
     completedTestCount += 1;
   });
 
-  test("retains one v2 custody terminal and rejects cross-version or changed authority", async () => {
+  test("retains one v2 custody terminal, rejects cross-version, and blocks post-terminal append", async () => {
     if (admin === undefined) throw new Error("Postgres test schema is unavailable");
     const inventory = await authorityInventoryFixture("inventory-v1");
     await seedAuthorityInventory(inventory);
     const input = await custodyReservationInput("observer-pg-custody-ineligible-01");
     const store = makeControlPlaneHnsControlObserverSnapshotStoreV2(runtime());
     const authority = acquired(await store.reserve(input, runOptions()));
-    const terminal = await custodyIneligibleFinalizeInput(input, authority, inventory);
+    const v2Terminal = await custodyIneligibleFinalizeInput(input, authority, inventory);
 
     const v1Store = makeControlPlaneHnsControlObserverSnapshotStore(runtime());
+    const v2TerminalAsV1 = { ...v2Terminal } as unknown as HnsControlObserverSnapshotFinalizeInput;
+    for (const key of [
+      "authority_inventory_bytes",
+      "authority_inventory_reference_or_null",
+      "authority_inventory_version_or_null",
+      "authority_inventory_digest_or_null",
+      "transcript_manifest_sha256",
+      "semantic_facts_sha256",
+      "observer_snapshot_sha256",
+    ]) {
+      delete (v2TerminalAsV1 as unknown as Record<string, unknown>)[key];
+    }
+    await expect(v1Store.finalize(v2TerminalAsV1, runOptions())).rejects.toThrow("strict decoding");
+    const v1Terminal = await finalizeInput(input, authority);
     await expect(
-      v1Store.finalize(await finalizeInput(input, authority), runOptions()),
+      store.finalize(
+        v1Terminal as unknown as HnsControlObserverSnapshotFinalizeInputV2,
+        runOptions(),
+      ),
     ).rejects.toThrow("strict decoding");
     await expect(
       store.finalize(
         {
-          ...terminal,
+          ...v2Terminal,
           authority_inventory_digest_or_null: "9".repeat(64) as Sha256HexValue,
         },
         runOptions(),
@@ -823,8 +840,8 @@ suite("Postgres 17 HNS control observer persistence", () => {
     ).rejects.toThrow("inventory digest");
 
     const outcomes = await Promise.all([
-      store.finalize(terminal, runOptions()),
-      store.finalize(terminal, runOptions()),
+      store.finalize(v2Terminal, runOptions()),
+      store.finalize(v2Terminal, runOptions()),
     ]);
     expect(outcomes.map((outcome) => outcome.kind).sort()).toEqual(["replay", "retained"]);
     const retained = await admin.query<{
@@ -844,15 +861,26 @@ suite("Postgres 17 HNS control observer persistence", () => {
     expect(retained.rows).toEqual([
       {
         authority_inventory_digest: inventory.inventoryDigest,
-        observer_snapshot_sha256: terminal.observer_snapshot_sha256,
+        observer_snapshot_sha256: v2Terminal.observer_snapshot_sha256,
         result_status: "ineligible",
-        transcript_manifest_sha256: terminal.transcript_manifest_sha256,
+        transcript_manifest_sha256: v2Terminal.transcript_manifest_sha256,
       },
     ]);
+    await expect(
+      store.finalize(
+        {
+          ...v2Terminal,
+          result_bytes: new Uint8Array([...v2Terminal.result_bytes, 0]),
+          result_sha256: "0".repeat(64) as Sha256HexValue,
+        },
+        runOptions(),
+      ),
+    ).resolves.toEqual({ kind: "mismatch" });
+    expect(await rowCount("hns_control_observer_snapshots")).toBe(1);
     await expect(store.reserve(input, runOptions())).resolves.toMatchObject({
       kind: "replay",
-      result_sha256: terminal.result_sha256,
-      result_bytes: terminal.result_bytes,
+      result_sha256: v2Terminal.result_sha256,
+      result_bytes: v2Terminal.result_bytes,
     });
     completedTestCount += 1;
   });
@@ -988,7 +1016,23 @@ suite("Postgres 17 HNS control observer persistence", () => {
     const v2Terminal = await custodyIneligibleFinalizeInput(input, authority, inventory);
     const v1Store = makeControlPlaneHnsControlObserverSnapshotStore(runtime());
     const v2Store = makeControlPlaneHnsControlObserverSnapshotStoreV2(runtime());
-    await expect(v1Store.finalize(v1Terminal, runOptions())).rejects.toThrow("strict decoding");
+    const v2TerminalCastAsV1 = {
+      ...v2Terminal,
+    } as unknown as HnsControlObserverSnapshotFinalizeInput;
+    for (const key of [
+      "authority_inventory_bytes",
+      "authority_inventory_reference_or_null",
+      "authority_inventory_version_or_null",
+      "authority_inventory_digest_or_null",
+      "transcript_manifest_sha256",
+      "semantic_facts_sha256",
+      "observer_snapshot_sha256",
+    ]) {
+      delete (v2TerminalCastAsV1 as unknown as Record<string, unknown>)[key];
+    }
+    await expect(v1Store.finalize(v2TerminalCastAsV1, runOptions())).rejects.toThrow(
+      "strict decoding",
+    );
     await expect(
       v2Store.finalize(
         v1Terminal as unknown as HnsControlObserverSnapshotFinalizeInputV2,
