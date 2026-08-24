@@ -1,6 +1,7 @@
 import { Predicate } from "effect";
 import {
   ELEVENLABS_ALIGNMENT_ADAPTER_REVISION,
+  ELEVENLABS_ALIGNMENT_BOUNDARY_RANDOM_BYTES,
   ELEVENLABS_ALIGNMENT_HARD_MAX_API_KEY_BYTES,
   ELEVENLABS_ALIGNMENT_HARD_MAX_AUDIO_BYTES,
   ELEVENLABS_ALIGNMENT_HARD_MAX_REQUEST_BYTES,
@@ -9,12 +10,13 @@ import {
   ELEVENLABS_ALIGNMENT_HARD_MAX_TIMING_MS,
   ELEVENLABS_ALIGNMENT_HARD_MAX_TIMINGS,
   ELEVENLABS_ALIGNMENT_HARD_MAX_TRANSCRIPT_BYTES,
-  ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY,
+  ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY_PREFIX,
   type ElevenLabsAlignmentAudioRevision,
   type ElevenLabsAlignmentContext,
   type ElevenLabsAlignmentInput,
   type ElevenLabsAlignmentLimits,
   type ElevenLabsAlignmentOutcome,
+  type ElevenLabsAlignmentRandomBytes,
   type ElevenLabsAlignmentRequestBody,
   type ElevenLabsAlignmentValidatedInput,
 } from "./elevenlabs-alignment-types.ts";
@@ -199,6 +201,40 @@ export function validateInput(
   return { input, context: contextFor(input) };
 }
 
+export class ElevenLabsAlignmentBodyError extends Error {
+  readonly reason: "boundary_collision" | "audio_length_mismatch" | "invalid_audio_chunk";
+
+  constructor(reason: ElevenLabsAlignmentBodyError["reason"]) {
+    super(reason);
+    this.name = "ElevenLabsAlignmentBodyError";
+    this.reason = reason;
+  }
+}
+
+function cryptographicRandomBytes(length: number): Uint8Array {
+  const bytes = new Uint8Array(length);
+  globalThis.crypto.getRandomValues(bytes);
+  return bytes;
+}
+
+function makeBoundary(randomBytes: ElevenLabsAlignmentRandomBytes): string | null {
+  let bytes: Uint8Array;
+  try {
+    bytes = randomBytes(ELEVENLABS_ALIGNMENT_BOUNDARY_RANDOM_BYTES);
+  } catch {
+    return null;
+  }
+  if (
+    !(bytes instanceof Uint8Array) ||
+    bytes.byteLength !== ELEVENLABS_ALIGNMENT_BOUNDARY_RANDOM_BYTES
+  ) {
+    return null;
+  }
+  let hex = "";
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+  return `${ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY_PREFIX}${hex}`;
+}
+
 function prefixTable(pattern: Uint8Array): Uint32Array {
   const table = new Uint32Array(pattern.byteLength);
   for (let index = 1, matched = 0; index < pattern.byteLength; index += 1) {
@@ -209,30 +245,19 @@ function prefixTable(pattern: Uint8Array): Uint32Array {
   return table;
 }
 
-async function scanAudioSource(
-  source: ElevenLabsAlignmentAudioRevision["source"],
+function hasBoundary(
+  chunk: Uint8Array,
   boundary: Uint8Array,
-): Promise<"ok" | "collision" | "invalid"> {
-  const table = prefixTable(boundary);
-  let matched = 0;
-  let total = 0;
-  try {
-    for await (const chunk of source.open()) {
-      if (!(chunk instanceof Uint8Array)) return "invalid";
-      total += chunk.byteLength;
-      if (total > source.byteLength || total > ELEVENLABS_ALIGNMENT_HARD_MAX_AUDIO_BYTES) {
-        return "invalid";
-      }
-      for (const byte of chunk) {
-        while (matched > 0 && byte !== boundary[matched]) matched = table[matched - 1] ?? 0;
-        if (byte === boundary[matched]) matched += 1;
-        if (matched === boundary.byteLength) return "collision";
-      }
-    }
-  } catch {
-    return "invalid";
+  table: Uint32Array,
+  startingMatch: number,
+): { readonly collision: boolean; readonly match: number } {
+  let matched = startingMatch;
+  for (const byte of chunk) {
+    while (matched > 0 && byte !== boundary[matched]) matched = table[matched - 1] ?? 0;
+    if (byte === boundary[matched]) matched += 1;
+    if (matched === boundary.byteLength) return { collision: true, match: matched };
   }
-  return total === source.byteLength ? "ok" : "invalid";
+  return { collision: false, match: matched };
 }
 
 function containsBytes(haystack: Uint8Array, needle: Uint8Array): boolean {
@@ -251,12 +276,13 @@ function multipartHeader(value: string): Uint8Array {
 }
 
 /** Builds a replayable chunked body without copying the caller's audio. */
-export async function encodeElevenLabsAlignmentMultipart(
+export function encodeElevenLabsAlignmentMultipart(
   input: Readonly<{
     readonly audio: ElevenLabsAlignmentAudioRevision;
     readonly transcript: string;
+    readonly random_bytes?: ElevenLabsAlignmentRandomBytes;
   }>,
-): Promise<ElevenLabsAlignmentRequestBody | null> {
+): ElevenLabsAlignmentRequestBody | null {
   if (
     !Predicate.isObject(input) ||
     !Predicate.isObject(input.audio) ||
@@ -266,34 +292,40 @@ export async function encodeElevenLabsAlignmentMultipart(
   ) {
     return null;
   }
+  const source = Object.freeze({
+    byteLength: input.audio.source.byteLength,
+    open: input.audio.source.open,
+  });
+  const transcript = input.transcript;
+  const randomBytes = input.random_bytes ?? cryptographicRandomBytes;
+  const boundary = makeBoundary(randomBytes);
+  if (boundary === null) return null;
   const encoder = new TextEncoder();
   const filename = input.audio.filename ?? "alignment-audio.bin";
-  const transcriptBytes = encoder.encode(input.transcript);
-  const boundaryBytes = encoder.encode(ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY);
+  const transcriptBytes = encoder.encode(transcript);
+  const boundaryBytes = encoder.encode(boundary);
   if (
-    !Predicate.isNumber(input.audio.source.byteLength) ||
-    !Number.isSafeInteger(input.audio.source.byteLength) ||
-    input.audio.source.byteLength <= 0 ||
-    input.audio.source.byteLength > ELEVENLABS_ALIGNMENT_HARD_MAX_AUDIO_BYTES ||
-    new TextEncoder().encode(input.transcript).byteLength >
-      ELEVENLABS_ALIGNMENT_HARD_MAX_TRANSCRIPT_BYTES
+    !Predicate.isNumber(source.byteLength) ||
+    !Number.isSafeInteger(source.byteLength) ||
+    source.byteLength <= 0 ||
+    source.byteLength > ELEVENLABS_ALIGNMENT_HARD_MAX_AUDIO_BYTES ||
+    transcriptBytes.byteLength > ELEVENLABS_ALIGNMENT_HARD_MAX_TRANSCRIPT_BYTES
   ) {
     return null;
   }
   if (containsBytes(transcriptBytes, boundaryBytes)) return null;
-  if ((await scanAudioSource(input.audio.source, boundaryBytes)) !== "ok") return null;
 
   const fileHeader = multipartHeader(
-    `--${ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${input.audio.mime_type}\r\n\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${input.audio.mime_type}\r\n\r\n`,
   );
   const fileSuffix = multipartHeader("\r\n");
   const textHeader = multipartHeader(
-    `--${ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY}\r\nContent-Disposition: form-data; name="text"\r\n\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="text"\r\n\r\n`,
   );
-  const closing = multipartHeader(`\r\n--${ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY}--\r\n`);
+  const closing = multipartHeader(`\r\n--${boundary}--\r\n`);
   const byteLength =
     fileHeader.byteLength +
-    input.audio.source.byteLength +
+    source.byteLength +
     fileSuffix.byteLength +
     textHeader.byteLength +
     transcriptBytes.byteLength +
@@ -302,19 +334,29 @@ export async function encodeElevenLabsAlignmentMultipart(
 
   return {
     byteLength,
-    open: async function* () {
+    contentType: `multipart/form-data; boundary=${boundary}`,
+    open: async function* (signal?: AbortSignal) {
+      if (signal?.aborted) throw new DOMException("cancelled", "AbortError");
       yield fileHeader;
       let actualAudioBytes = 0;
-      for await (const chunk of input.audio.source.open()) {
-        if (!(chunk instanceof Uint8Array)) throw new Error("invalid_audio_chunk");
-        actualAudioBytes += chunk.byteLength;
-        if (actualAudioBytes > input.audio.source.byteLength) {
-          throw new Error("audio_length_mismatch");
+      const table = prefixTable(boundaryBytes);
+      let boundaryMatch = 0;
+      for await (const chunk of source.open(signal)) {
+        if (signal?.aborted) throw new DOMException("cancelled", "AbortError");
+        if (!(chunk instanceof Uint8Array)) {
+          throw new ElevenLabsAlignmentBodyError("invalid_audio_chunk");
         }
+        actualAudioBytes += chunk.byteLength;
+        if (actualAudioBytes > source.byteLength) {
+          throw new ElevenLabsAlignmentBodyError("audio_length_mismatch");
+        }
+        const match = hasBoundary(chunk, boundaryBytes, table, boundaryMatch);
+        if (match.collision) throw new ElevenLabsAlignmentBodyError("boundary_collision");
+        boundaryMatch = match.match;
         yield chunk;
       }
-      if (actualAudioBytes !== input.audio.source.byteLength) {
-        throw new Error("audio_length_mismatch");
+      if (actualAudioBytes !== source.byteLength) {
+        throw new ElevenLabsAlignmentBodyError("audio_length_mismatch");
       }
       yield fileSuffix;
       yield textHeader;

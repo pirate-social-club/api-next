@@ -12,6 +12,7 @@ import {
   type ElevenLabsAlignmentAudioSource,
   type ElevenLabsAlignmentInput,
   type ElevenLabsAlignmentRequestBody,
+  type ElevenLabsAlignmentResponseBody,
   type ElevenLabsAlignmentTransportRequest,
   type ElevenLabsAlignmentTransportResponse,
   encodeElevenLabsAlignmentMultipart,
@@ -27,6 +28,8 @@ const limits = {
   max_timing_ms: 86_400_000,
 } as const;
 
+const testRandomBytes = (length: number) => new Uint8Array(length).fill(0x2a);
+
 function source(bytes: Uint8Array, chunkSize = bytes.byteLength): ElevenLabsAlignmentAudioSource {
   return {
     byteLength: bytes.byteLength,
@@ -38,10 +41,33 @@ function source(bytes: Uint8Array, chunkSize = bytes.byteLength): ElevenLabsAlig
   };
 }
 
-async function consumeBody(body: ElevenLabsAlignmentRequestBody): Promise<Uint8Array> {
+function hangingSource(onAbort: () => void): ElevenLabsAlignmentAudioSource {
+  return {
+    byteLength: 4,
+    open: (signal) =>
+      (async function* () {
+        await new Promise<never>((_resolve, reject) => {
+          const abort = () => {
+            onAbort();
+            reject(new DOMException("cancelled", "AbortError"));
+          };
+          if (signal?.aborted) {
+            abort();
+          } else {
+            signal?.addEventListener("abort", abort, { once: true });
+          }
+        });
+      })(),
+  };
+}
+
+async function consumeBody(
+  body: ElevenLabsAlignmentRequestBody,
+  signal?: AbortSignal,
+): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for await (const chunk of body.open()) {
+  for await (const chunk of body.open(signal)) {
     chunks.push(chunk);
     total += chunk.byteLength;
   }
@@ -84,11 +110,52 @@ function response(
   status = 200,
   headers: Record<string, string> = {},
 ): ElevenLabsAlignmentTransportResponse {
+  const bytes = new TextEncoder().encode(JSON.stringify(body));
   return {
     status,
     headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body),
+    body: responseBody(bytes),
   };
+}
+
+function responseBody(
+  bytes: Uint8Array,
+  chunkSize = bytes.byteLength,
+  onCancel: () => void = () => undefined,
+): ElevenLabsAlignmentResponseBody {
+  return {
+    open: async function* () {
+      for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+        yield bytes.subarray(offset, Math.min(offset + chunkSize, bytes.byteLength));
+      }
+    },
+    cancel: onCancel,
+  };
+}
+
+function hangingResponseBody(onCancel: () => void): ElevenLabsAlignmentResponseBody {
+  let release: (() => void) | undefined;
+  return {
+    open: async function* () {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return;
+    },
+    cancel: () => {
+      onCancel();
+      release?.();
+    },
+  };
+}
+
+function rawResponse(
+  body: string | Uint8Array,
+  status = 200,
+  headers: Record<string, string> = {},
+): ElevenLabsAlignmentTransportResponse {
+  const bytes = typeof body === "string" ? new TextEncoder().encode(body) : body;
+  return { status, headers, body: responseBody(bytes) };
 }
 
 function fakeTransport(
@@ -102,7 +169,7 @@ function fakeTransport(
   const consumedBodies: Uint8Array[] = [];
   const transport = async (request: ElevenLabsAlignmentTransportRequest) => {
     requests.push(request);
-    consumedBodies.push(await consumeBody(request.body));
+    consumedBodies.push(await consumeBody(request.body, request.signal));
     return typeof next === "function" ? next(request) : next;
   };
   return { requests, consumedBodies, transport };
@@ -119,6 +186,7 @@ function adapter(
     api_key: "xi-secret-test-key",
     transport,
     limits,
+    random_bytes: testRandomBytes,
     ...options,
   });
 }
@@ -145,7 +213,9 @@ describe("ElevenLabs forced-alignment adapter", () => {
     const transport = fakeTransport({
       status: 502,
       headers: { "content-type": "application/json" },
-      body: "provider detail must not cross the adapter boundary",
+      body: responseBody(
+        new TextEncoder().encode("provider detail must not cross the adapter boundary"),
+      ),
     });
     const instance = adapter(transport.transport);
     const result = await instance.align(input());
@@ -183,34 +253,22 @@ describe("ElevenLabs forced-alignment adapter", () => {
         fakeTransport(
           response({
             ...multilingualWordsResponse,
-            characters: ["different"],
-            character_start_times_seconds: [0],
-            character_end_times_seconds: [1],
-            words: [{ text: "different", start: 0, end: 1 }],
+            characters: [{ text: "different", start: 0, end: 1 }],
+            words: [{ text: "different", start: 0, end: 1, loss: 0.1 }],
           }),
         ).transport,
       ).align(input()),
+      await adapter(fakeTransport(rawResponse(providerBody, 503)).transport).align(input()),
+      await adapter(fakeTransport(rawResponse(providerBody, 401)).transport).align(input()),
       await adapter(
-        fakeTransport({ status: 503, headers: {}, body: providerBody }).transport,
-      ).align(input()),
-      await adapter(
-        fakeTransport({ status: 401, headers: {}, body: providerBody }).transport,
-      ).align(input()),
-      await adapter(
-        fakeTransport({
-          status: 200,
-          headers: { "content-type": "text/plain" },
-          body: providerBody,
-        }).transport,
+        fakeTransport(rawResponse(providerBody, 200, { "content-type": "text/plain" })).transport,
       ).align(input()),
       await new ElevenLabsAlignmentAdapter({
         enabled: true,
         api_key: "xi-secret-test-key",
-        transport: fakeTransport({
-          status: 200,
-          headers: { "content-type": "application/json" },
-          body: providerBody,
-        }).transport,
+        transport: fakeTransport(
+          rawResponse(providerBody, 200, { "content-type": "application/json" }),
+        ).transport,
       }).align(input()),
       timeoutOutcome,
       cancelledOutcome,
@@ -300,8 +358,8 @@ describe("ElevenLabs forced-alignment adapter", () => {
     expect(JSON.stringify(result)).not.toContain("Привет");
     expect(JSON.stringify(result)).not.toContain("世界");
     if (result.outcome !== "ready") throw new Error("expected ready alignment");
-    expect(result.timings.map((timing) => timing.token_index)).toEqual([0, 1, 2, 3]);
-    expect(result.timings[2]).toMatchObject({ token_index: 2, start_ms: 500, end_ms: 900 });
+    expect(result.timings.map((timing) => timing.token_index)).toEqual([0, 1]);
+    expect(result.timings[1]).toMatchObject({ token_index: 1, start_ms: 500, end_ms: 1000 });
 
     const repeatedInput = input({
       transcript: {
@@ -321,7 +379,7 @@ describe("ElevenLabs forced-alignment adapter", () => {
       repeatedResult.timings
         .filter((timing) => timing.kind === "word")
         .map((timing) => timing.token_index),
-    ).toEqual([0, 2]);
+    ).toEqual([0, 1]);
   });
 
   test("validates combined character and word timings for non-Latin combining characters", async () => {
@@ -343,24 +401,33 @@ describe("ElevenLabs forced-alignment adapter", () => {
     expect(result.timings.map((timing) => timing.token_index)).toEqual([0]);
   });
 
-  test("maps the documented empty combined response to the closed no-speech outcome", async () => {
+  test("does not call an empty provider response no-speech for a non-empty transcript", async () => {
     const transport = fakeTransport(response(noSpeechResponse));
     const result = await adapter(transport.transport).align(input());
     expect(result).toMatchObject({
       alignment: "unavailable",
-      outcome: "no_speech",
-      reason: "no_speech",
+      outcome: "malformed",
+      reason: "malformed_response",
     });
+    expect(transport.requests).toHaveLength(1);
+
+    const whitespaceTransport = fakeTransport(response(noSpeechResponse));
+    const whitespaceResult = await adapter(whitespaceTransport.transport).align(
+      input({ transcript: { ...input().transcript, transcript: " " } }),
+    );
+    expect(whitespaceResult).toMatchObject({
+      outcome: "malformed",
+      reason: "malformed_response",
+    });
+    expect(whitespaceTransport.requests).toHaveLength(1);
   });
 
   test("rejects mismatched transcript and invalid or overlapping timings", async () => {
     const mismatch = fakeTransport(
       response({
         ...multilingualWordsResponse,
-        characters: ["different"],
-        character_start_times_seconds: [0],
-        character_end_times_seconds: [1],
-        words: [{ text: "different", start: 0, end: 1 }],
+        characters: [{ text: "different", start: 0, end: 1 }],
+        words: [{ text: "different", start: 0, end: 1, loss: 0.1 }],
       }),
     );
     const mismatchResult = await adapter(mismatch.transport).align(input());
@@ -407,21 +474,37 @@ describe("ElevenLabs forced-alignment adapter", () => {
     });
   });
 
-  test("rejects wrong content type and malformed JSON without retaining provider bytes", async () => {
-    const wrongType = fakeTransport({
-      status: 200,
-      headers: { "content-type": "text/plain" },
-      body: "secret provider body",
+  test("rejects negative root or per-word loss values", async () => {
+    const rootLoss = fakeTransport(response({ ...multilingualWordsResponse, loss: -0.1 }));
+    await expect(adapter(rootLoss.transport).align(input())).resolves.toMatchObject({
+      outcome: "malformed",
+      reason: "malformed_response",
     });
+    const wordLoss = fakeTransport(
+      response({
+        ...multilingualWordsResponse,
+        words: multilingualWordsResponse.words.map((word, index) =>
+          index === 0 ? { ...word, loss: -0.1 } : word,
+        ),
+      }),
+    );
+    await expect(adapter(wordLoss.transport).align(input())).resolves.toMatchObject({
+      outcome: "malformed",
+      reason: "malformed_response",
+    });
+  });
+
+  test("rejects wrong content type and malformed JSON without retaining provider bytes", async () => {
+    const wrongType = fakeTransport(
+      rawResponse("secret provider body", 200, { "content-type": "text/plain" }),
+    );
     const wrongTypeResult = await adapter(wrongType.transport).align(input());
     expect(wrongTypeResult).toMatchObject({ outcome: "malformed", reason: "malformed_response" });
     expect(JSON.stringify(wrongTypeResult)).not.toContain("secret provider body");
 
-    const malformed = fakeTransport({
-      status: 200,
-      headers: { "content-type": "application/json" },
-      body: "not-json",
-    });
+    const malformed = fakeTransport(
+      rawResponse("not-json", 200, { "content-type": "application/json" }),
+    );
     const malformedResult = await adapter(malformed.transport).align(input());
     expect(malformedResult).toMatchObject({ outcome: "malformed", reason: "malformed_response" });
   });
@@ -449,6 +532,20 @@ describe("ElevenLabs forced-alignment adapter", () => {
     });
   });
 
+  test("cancels an unused provider body on non-success status", async () => {
+    let cancelled = false;
+    const transport = fakeTransport({
+      status: 503,
+      headers: { "content-type": "application/json" },
+      body: responseBody(new TextEncoder().encode("discard me"), undefined, () => {
+        cancelled = true;
+      }),
+    });
+    const result = await adapter(transport.transport).align(input());
+    expect(result).toMatchObject({ outcome: "retryable", reason: "provider_unavailable" });
+    expect(cancelled).toBe(true);
+  });
+
   test("bounds input and response sizes", async () => {
     const oversizedAudio = input({
       audio: {
@@ -465,11 +562,11 @@ describe("ElevenLabs forced-alignment adapter", () => {
     });
     expect(noCall.requests).toHaveLength(0);
 
-    const oversizedResponse = fakeTransport({
-      status: 200,
-      headers: { "content-type": "application/json" },
-      body: new Uint8Array(limits.max_response_bytes + 1),
-    });
+    const oversizedResponse = fakeTransport(
+      rawResponse(new Uint8Array(limits.max_response_bytes + 1), 200, {
+        "content-type": "application/json",
+      }),
+    );
     await expect(adapter(oversizedResponse.transport).align(input())).resolves.toMatchObject({
       outcome: "malformed",
       reason: "oversized_response",
@@ -505,16 +602,48 @@ describe("ElevenLabs forced-alignment adapter", () => {
     expect(cancelSignal?.aborted).toBe(true);
   });
 
+  test("timeout aborts a multipart source that has not produced its first chunk", async () => {
+    let sourceAborted = false;
+    const transport = fakeTransport(response(multilingualWordsResponse));
+    const result = await adapter(transport.transport, {
+      limits: { ...limits, timeout_ms: 5 },
+    }).align(
+      input({ audio: { ...input().audio, source: hangingSource(() => (sourceAborted = true)) } }),
+    );
+    expect(result).toMatchObject({ outcome: "timeout", reason: "timeout" });
+    expect(sourceAborted).toBe(true);
+  });
+
+  test("timeout aborts a response body that hangs after headers", async () => {
+    let cancelled = false;
+    const transport = fakeTransport({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: hangingResponseBody(() => {
+        cancelled = true;
+      }),
+    });
+    const result = await adapter(transport.transport, {
+      limits: { ...limits, timeout_ms: 5 },
+    }).align(input());
+    expect(result).toMatchObject({ outcome: "timeout", reason: "timeout" });
+    expect(cancelled).toBe(true);
+  });
+
   test("multipart encoding rejects a boundary collision rather than creating ambiguous bytes", async () => {
-    const body = await encodeElevenLabsAlignmentMultipart({
+    const boundary = `pirate-elevenlabs-alignment-${"2a".repeat(18)}`;
+    const body = encodeElevenLabsAlignmentMultipart({
       audio: {
         audio_revision: 1,
         canonical_audio_sha256: sha,
-        source: source(new TextEncoder().encode("pirate-elevenlabs-alignment-v1-fixed-boundary")),
+        source: source(new TextEncoder().encode(boundary)),
         mime_type: "audio/mpeg",
       },
       transcript: "safe",
+      random_bytes: testRandomBytes,
     });
-    expect(body).toBeNull();
+    expect(body).not.toBeNull();
+    if (body === null) throw new Error("expected a replayable body");
+    await expect(consumeBody(body)).rejects.toThrow("boundary_collision");
   });
 });

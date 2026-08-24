@@ -2,8 +2,8 @@
 
 export const ELEVENLABS_ALIGNMENT_ENDPOINT = "https://api.elevenlabs.io/v1/forced-alignment";
 export const ELEVENLABS_ALIGNMENT_ADAPTER_REVISION = "elevenlabs-alignment-adapter-v1";
-export const ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY =
-  "pirate-elevenlabs-alignment-v1-fixed-boundary";
+export const ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY_PREFIX = "pirate-elevenlabs-alignment-";
+export const ELEVENLABS_ALIGNMENT_BOUNDARY_RANDOM_BYTES = 18;
 
 /*
  * These are implementation hard caps only. They are not ElevenLabs limits,
@@ -37,13 +37,15 @@ export type ElevenLabsAlignmentLimits = Readonly<{
 }>;
 
 /**
- * Replay-openable audio owned by the caller. `open` must return the same bytes
- * and declared length on each call; the adapter never copies the audio.
+ * One-pass audio owned by the caller. The adapter opens it once per request,
+ * passes the cancellation signal through, and never copies the audio.
  */
 export type ElevenLabsAlignmentAudioSource = Readonly<{
   readonly byteLength: number;
-  readonly open: () => AsyncIterable<Uint8Array>;
+  readonly open: (signal?: AbortSignal) => AsyncIterable<Uint8Array>;
 }>;
+
+export type ElevenLabsAlignmentRandomBytes = (length: number) => Uint8Array;
 
 export type ElevenLabsAlignmentAudioRevision = Readonly<{
   readonly audio_revision: number;
@@ -83,13 +85,20 @@ export type ElevenLabsAlignmentTransportRequest = Readonly<{
 /** Replayable multipart chunks; no complete multipart buffer is retained. */
 export type ElevenLabsAlignmentRequestBody = Readonly<{
   readonly byteLength: number;
-  readonly open: () => AsyncIterable<Uint8Array>;
+  readonly contentType: string;
+  readonly open: (signal?: AbortSignal) => AsyncIterable<Uint8Array>;
+}>;
+
+export type ElevenLabsAlignmentResponseBody = Readonly<{
+  readonly open: (signal?: AbortSignal) => AsyncIterable<Uint8Array>;
+  /** Bounded cancellation/discard of an unused or interrupted provider body. */
+  readonly cancel: (reason?: unknown) => void | PromiseLike<void>;
 }>;
 
 export type ElevenLabsAlignmentTransportResponse = Readonly<{
   readonly status: number;
   readonly headers: Readonly<Record<string, string>> | Headers;
-  readonly body: Uint8Array | ArrayBuffer | string;
+  readonly body: ElevenLabsAlignmentResponseBody;
 }>;
 
 export type ElevenLabsAlignmentTransport = (
