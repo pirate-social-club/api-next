@@ -216,6 +216,41 @@ function normalizeDump(dump: string): string {
         .replaceAll(
           /\(\(octet_length\(upstream_session_ref\) >= 1\) AND \(octet_length\(upstream_session_ref\) <= 16384\)\)/g,
           "(octet_length(upstream_session_ref) BETWEEN 1 AND 16384)",
+        )
+        // pg_dump adds a grouping pair around the first expanded BETWEEN in
+        // these multi-term checks. Replaying that dump then retains the pair,
+        // while the migration catalog has the equivalent flat AND tree.
+        .replaceAll(
+          "CHECK ((((expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740991'::bigint)) AND",
+          "CHECK (((expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740991'::bigint) AND",
+        )
+        .replaceAll(
+          "CHECK ((((octet_length(activation_document_bytes) >= 1) AND (octet_length(activation_document_bytes) <= 65536)) AND",
+          "CHECK (((octet_length(activation_document_bytes) >= 1) AND (octet_length(activation_document_bytes) <= 65536) AND",
+        )
+        .replaceAll(
+          "CHECK ((((dns_zone_activation_generation >= 1) AND (dns_zone_activation_generation <= '9007199254740991'::bigint)) AND",
+          "CHECK (((dns_zone_activation_generation >= 1) AND (dns_zone_activation_generation <= '9007199254740991'::bigint) AND",
+        )
+        .replaceAll(
+          "CHECK ((((health_generation >= 1) AND (health_generation <= '9007199254740991'::bigint)) AND",
+          "CHECK (((health_generation >= 1) AND (health_generation <= '9007199254740991'::bigint) AND",
+        )
+        .replaceAll(
+          "(expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740991'::bigint)",
+          "(expected_activation_generation BETWEEN 0 AND '9007199254740991'::bigint)",
+        )
+        .replaceAll(
+          "(octet_length(activation_document_bytes) >= 1) AND (octet_length(activation_document_bytes) <= 65536)",
+          "(octet_length(activation_document_bytes) BETWEEN 1 AND 65536)",
+        )
+        .replaceAll(
+          "(dns_zone_activation_generation >= 1) AND (dns_zone_activation_generation <= '9007199254740991'::bigint)",
+          "(dns_zone_activation_generation BETWEEN 1 AND '9007199254740991'::bigint)",
+        )
+        .replaceAll(
+          "(health_generation >= 1) AND (health_generation <= '9007199254740991'::bigint)",
+          "(health_generation BETWEEN 1 AND '9007199254740991'::bigint)",
         ),
     );
 

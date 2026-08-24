@@ -1,4 +1,5 @@
 export * from "./hns-forwarder-v3.ts";
+export * from "./hns-host-persistence.ts";
 export * from "./hns-host-serving.ts";
 export * from "./money/community-purchase-funding.ts";
 export * from "./money/community-purchase-funding-admission.ts";
