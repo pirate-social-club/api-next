@@ -35,7 +35,20 @@ export const validProviderResponse = {
       total: 1,
       available: [{ provider: "FixtureProvider", model: "fixture/model", selected: true }],
     },
+    params: {
+      quality_floor: 0.5,
+      additive_router_hint: { bounded: true },
+    },
     attempts: [{ provider: "FixtureProvider", model: "fixture/model", status: 200 }],
+    pipeline: [
+      {
+        type: "guardrail",
+        name: "fixture-stage",
+        guardrail_id: "grd-fixture",
+        guardrail_scope: "api-key",
+        data: { flagged: false, additive_stage_data: ["bounded"] },
+      },
+    ],
   },
   choices: [
     {
@@ -81,6 +94,21 @@ export const multipleChoicesResponse = {
   choices: [validProviderResponse.choices[0], validProviderResponse.choices[0]],
 } as const;
 
+export const zeroChoicesResponse = {
+  ...validProviderResponse,
+  choices: [],
+} as const;
+
+export const wrongIndexResponse = {
+  ...validProviderResponse,
+  choices: [{ ...validProviderResponse.choices[0], index: 1 }],
+} as const;
+
+export const nonStopFinishResponse = {
+  ...validProviderResponse,
+  choices: [{ ...validProviderResponse.choices[0], finish_reason: "length" }],
+} as const;
+
 export const identityMismatchResponse = {
   ...validProviderResponse,
   model: "different/model",
@@ -121,9 +149,104 @@ export const authorityChoiceResponse = {
   ],
 } as const;
 
+export const identityMatrixResponses = {
+  missing_metadata: { ...validProviderResponse, openrouter_metadata: undefined },
+  missing_completion_id: { ...validProviderResponse, id: undefined },
+  null_completion_id: { ...validProviderResponse, id: null },
+  missing_served_model: { ...validProviderResponse, model: undefined },
+  null_served_model: { ...validProviderResponse, model: null },
+  missing_requested_model: {
+    ...validProviderResponse,
+    openrouter_metadata: { ...validProviderResponse.openrouter_metadata, requested: undefined },
+  },
+  null_requested_model: {
+    ...validProviderResponse,
+    openrouter_metadata: { ...validProviderResponse.openrouter_metadata, requested: null },
+  },
+  requested_model_mismatch: {
+    ...validProviderResponse,
+    openrouter_metadata: { ...validProviderResponse.openrouter_metadata, requested: "other/model" },
+  },
+  missing_endpoints: {
+    ...validProviderResponse,
+    openrouter_metadata: { ...validProviderResponse.openrouter_metadata, endpoints: undefined },
+  },
+  missing_selected_provider: {
+    ...validProviderResponse,
+    openrouter_metadata: {
+      ...validProviderResponse.openrouter_metadata,
+      endpoints: {
+        total: 1,
+        available: [{ model: "fixture/model", selected: true }],
+      },
+    },
+  },
+  missing_endpoint_model: {
+    ...validProviderResponse,
+    openrouter_metadata: {
+      ...validProviderResponse.openrouter_metadata,
+      endpoints: {
+        total: 1,
+        available: [{ provider: "FixtureProvider", selected: true }],
+      },
+    },
+  },
+  null_selected_provider: {
+    ...validProviderResponse,
+    openrouter_metadata: {
+      ...validProviderResponse.openrouter_metadata,
+      endpoints: {
+        total: 1,
+        available: [{ provider: null, model: "fixture/model", selected: true }],
+      },
+    },
+  },
+  null_endpoint_model: {
+    ...validProviderResponse,
+    openrouter_metadata: {
+      ...validProviderResponse.openrouter_metadata,
+      endpoints: {
+        total: 1,
+        available: [{ provider: "FixtureProvider", model: null, selected: true }],
+      },
+    },
+  },
+  missing_selection: {
+    ...validProviderResponse,
+    openrouter_metadata: {
+      ...validProviderResponse.openrouter_metadata,
+      endpoints: {
+        total: 1,
+        available: [{ provider: "FixtureProvider", model: "fixture/model" }],
+      },
+    },
+  },
+  selection_conflict: {
+    ...validProviderResponse,
+    openrouter_metadata: {
+      ...validProviderResponse.openrouter_metadata,
+      endpoints: {
+        total: 2,
+        available: [
+          { provider: "FixtureProvider", model: "fixture/model", selected: true },
+          { provider: "SecondProvider", model: "fixture/model", selected: true },
+        ],
+      },
+    },
+  },
+} as const;
+
 export const unknownRootFieldResponse = {
   ...validProviderResponse,
   authority: "must-not-be-accepted",
+} as const;
+
+export const unboundedMetadataResponse = {
+  ...validProviderResponse,
+  openrouter_metadata: {
+    ...validProviderResponse.openrouter_metadata,
+    params: { oversized: "x".repeat(5_000) },
+  },
 } as const;
 
 export const statusFixtures = {
