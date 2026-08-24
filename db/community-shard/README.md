@@ -10,3 +10,9 @@ template, and `migrations/checksums.json` pins their SHA-256 contents. The
 test-only harness in `packages/testing/src/community-schema.ts` verifies the
 manifest before applying any fixture and can build a database through the
 previous migration for N-1 checks.
+
+Migration ordinals must be unique for every new fixture. Applied history is not
+renumbered: ordinals 1037, 1089, and 1123 each have two historical files, and
+the fixture validator permits only those exact filename pairs. Any new duplicate
+ordinal, including an additional file under one of those three ordinals, fails
+the compatibility gate.

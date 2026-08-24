@@ -17,6 +17,48 @@ type ChecksumsManifest = {
   readonly migrations: Readonly<Record<string, string>>;
 };
 
+const COMMUNITY_MIGRATION_NAME_PATTERN = /^(\d{4})_[a-z0-9_]+\.sql$/;
+
+const HISTORICAL_DUPLICATE_COMMUNITY_MIGRATION_ORDINALS: Readonly<
+  Record<string, readonly string[]>
+> = Object.freeze({
+  "1037": Object.freeze([
+    "1037_community_text_localization.sql",
+    "1037_rebuild_comments_guest_authorship.sql",
+  ]),
+  "1089": Object.freeze([
+    "1089_community_assistant_text_and_voice_mode.sql",
+    "1089_post_events.sql",
+  ]),
+  "1123": Object.freeze([
+    "1123_karaoke_attempts.sql",
+    "1123_song_engagement_activity_timezone.sql",
+  ]),
+});
+
+export function assertCommunityMigrationOrdinalUniqueness(names: readonly string[]): void {
+  const namesByOrdinal = new Map<string, string[]>();
+  for (const name of names) {
+    const match = COMMUNITY_MIGRATION_NAME_PATTERN.exec(name);
+    if (match === null) {
+      throw new Error(`Invalid community migration fixture filename: ${name}`);
+    }
+    const ordinal = match[1] ?? "";
+    const ordinalNames = namesByOrdinal.get(ordinal) ?? [];
+    ordinalNames.push(name);
+    namesByOrdinal.set(ordinal, ordinalNames);
+  }
+
+  for (const [ordinal, ordinalNames] of namesByOrdinal) {
+    if (ordinalNames.length < 2) continue;
+    const actual = [...ordinalNames].sort();
+    const historical = HISTORICAL_DUPLICATE_COMMUNITY_MIGRATION_ORDINALS[ordinal];
+    if (historical === undefined || actual.join("\n") !== historical.join("\n")) {
+      throw new Error(`Duplicate community migration ordinal ${ordinal}: ${actual.join(", ")}`);
+    }
+  }
+}
+
 function communityMigrationFixtureDirectory(): URL {
   return new URL("../../../db/community-shard/migrations/", import.meta.url);
 }
@@ -46,6 +88,7 @@ export async function listCommunityMigrationFixtures(): Promise<CommunityMigrati
   if (names.join("\n") !== manifestNames.join("\n")) {
     throw new Error("Community migration fixture set does not match its checksum manifest");
   }
+  assertCommunityMigrationOrdinalUniqueness(names);
 
   const fixtures: CommunityMigrationFixture[] = [];
   for (const name of names) {
