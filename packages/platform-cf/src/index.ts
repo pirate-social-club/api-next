@@ -94,7 +94,6 @@ export {
   type IdentityRepository,
   IdentityRepositoryError,
   type IdentityUser,
-  MAX_CANONICAL_ALIAS_HOPS,
   makeControlPlaneIdentityRepository,
   makeControlPlaneIdentityStore,
 } from "./identity-repository";
