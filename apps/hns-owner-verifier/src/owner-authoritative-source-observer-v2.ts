@@ -161,11 +161,15 @@ async function retainResolvedInventory(
   maximumBytes: number,
 ): Promise<InventoryRetention> {
   const bytes = new Uint8Array(resolved.inventory_bytes.slice(0, maximumBytes + 1));
+  const recomputedDigest = await sha256(bytes);
+  if (resolved.authority_inventory_digest !== recomputedDigest) {
+    throw new TypeError("HNS custody resolver inventory digest differs from exact bytes");
+  }
   return Object.freeze({
     authority_inventory_bytes: bytes,
     authority_inventory_reference_or_null: resolved.authority_inventory_reference,
     authority_inventory_version_or_null: resolved.authority_inventory_version,
-    authority_inventory_digest_or_null: await sha256(bytes),
+    authority_inventory_digest_or_null: resolved.authority_inventory_digest,
   });
 }
 
