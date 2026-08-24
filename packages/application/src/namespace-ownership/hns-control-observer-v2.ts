@@ -3,11 +3,13 @@ import { Sha256Hex, type Sha256Hex as Sha256HexValue } from "@pirate/domain/veri
 import { Option, Predicate, Schema } from "effect";
 import {
   decodeHnsControlObservationResultBytes,
+  deriveHnsEvidenceLease,
   HNS_CONTROL_OBSERVATION_RESULT_MAX_BYTES,
   HNS_CONTROL_OBSERVATION_RESULT_VERSION,
   type HnsControlObservationDecodedResult,
   type HnsControlObservationRequestV1,
   type HnsControlObservationUnavailableReason,
+  type HnsEvidenceLeasePolicy,
   hnsControlIdentityDigest,
   hnsControlObservationRequestHash,
 } from "./hns-control-observer.ts";
@@ -69,6 +71,11 @@ const rejectedReasonValues = [
   "root_inactive",
   "txt_absent",
   "txt_value_mismatch",
+  "expiry_horizon_insufficient",
+] as const;
+const targetRejectedReasonValues = [
+  "root_absent",
+  "root_inactive",
   "expiry_horizon_insufficient",
 ] as const;
 const registryReferencePattern = /^[a-z][a-z0-9-]{0,63}:[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/u;
@@ -890,6 +897,67 @@ export function hnsControlObserverSnapshotLogicalByteLengthV2(
   return Number.isSafeInteger(total) ? total : Number.POSITIVE_INFINITY;
 }
 
+const TargetEvidenceReference = boundedString(512, "target evidence reference");
+
+const TargetVerifiedV3Schema = Schema.Struct({
+  status: Schema.Literal("verified"),
+  observation_contract_version: Schema.Literal(HNS_TARGET_OBSERVATION_V3_VERSION),
+  provider_evidence_ref: TargetEvidenceReference,
+  upstream_session_ref: boundedString(16_384, "upstream session reference"),
+  ownership_source: Schema.Literals(sourceValues),
+  challenge_name: TxtName,
+  challenge_value: boundedString(16_384, "challenge value"),
+  expected_txt_value_sha256: Sha256Hex,
+  control_identity_digest: Sha256Hex,
+  chain_authority_digest: Sha256Hex,
+  observer_snapshot_sha256: Sha256Hex,
+  observer_result_sha256: Sha256Hex,
+  root_exists: Schema.Literal(true),
+  root_control_verified: Schema.Literal(true),
+  expiry_horizon_sufficient: Schema.Literal(true),
+  chain_network: Identifier,
+  chain_anchor_height: NonNegativeSafeInteger,
+  chain_anchor_block_hash: Sha256Hex,
+  chain_anchor_median_time: NonNegativeSafeInteger,
+  expiry_height: NonNegativeSafeInteger,
+  observed_at: CanonicalInstant,
+  expires_at: CanonicalInstant,
+});
+
+const TargetRejectedV3Schema = Schema.Struct({
+  status: Schema.Literal("rejected"),
+  observation_contract_version: Schema.Literal(HNS_TARGET_OBSERVATION_V3_VERSION),
+  reason_code: Schema.Literals(targetRejectedReasonValues),
+  observer_snapshot_sha256: Sha256Hex,
+  observer_result_sha256: Sha256Hex,
+  provider_evidence_ref: TargetEvidenceReference,
+});
+
+const TargetPendingV3Schema = Schema.Struct({
+  status: Schema.Literal("pending"),
+  observation_contract_version: Schema.Literal(HNS_TARGET_OBSERVATION_V3_VERSION),
+  reason_code: Schema.Literals(["txt_absent", "txt_value_mismatch"]),
+  observer_snapshot_sha256: Sha256Hex,
+  observer_result_sha256: Sha256Hex,
+  provider_evidence_ref: TargetEvidenceReference,
+});
+
+const TargetUnavailableV3Schema = Schema.Struct({
+  status: Schema.Literal("unavailable"),
+  observation_contract_version: Schema.Literal(HNS_TARGET_OBSERVATION_V3_VERSION),
+  reason_code: Schema.Literals(unavailableReasonValues),
+  retry_after_seconds: Schema.NullOr(PositiveRetrySeconds),
+  observer_snapshot_sha256: Sha256Hex,
+  diagnostic_ref: SnapshotReference,
+});
+
+export type HnsOwnerTargetVerifiedObservationV3 = Schema.Schema.Type<typeof TargetVerifiedV3Schema>;
+export type HnsOwnerTargetRejectedObservationV3 = Schema.Schema.Type<typeof TargetRejectedV3Schema>;
+export type HnsOwnerTargetPendingObservationV3 = Schema.Schema.Type<typeof TargetPendingV3Schema>;
+export type HnsOwnerTargetUnavailableObservationV3 = Schema.Schema.Type<
+  typeof TargetUnavailableV3Schema
+>;
+
 const TargetIneligibleV3Schema = Schema.Struct({
   status: Schema.Literal("ineligible"),
   observation_contract_version: Schema.Literal(HNS_TARGET_OBSERVATION_V3_VERSION),
@@ -909,6 +977,55 @@ export type HnsOwnerTargetIneligibleObservationV3 = Schema.Schema.Type<
   typeof TargetIneligibleV3Schema
 >;
 
+export type HnsOwnerTargetObservationV3 =
+  | HnsOwnerTargetVerifiedObservationV3
+  | HnsOwnerTargetRejectedObservationV3
+  | HnsOwnerTargetPendingObservationV3
+  | HnsOwnerTargetUnavailableObservationV3
+  | HnsOwnerTargetIneligibleObservationV3;
+
+const targetVerifiedV3Keys = [
+  "status",
+  "observation_contract_version",
+  "provider_evidence_ref",
+  "upstream_session_ref",
+  "ownership_source",
+  "challenge_name",
+  "challenge_value",
+  "expected_txt_value_sha256",
+  "control_identity_digest",
+  "chain_authority_digest",
+  "observer_snapshot_sha256",
+  "observer_result_sha256",
+  "root_exists",
+  "root_control_verified",
+  "expiry_horizon_sufficient",
+  "chain_network",
+  "chain_anchor_height",
+  "chain_anchor_block_hash",
+  "chain_anchor_median_time",
+  "expiry_height",
+  "observed_at",
+  "expires_at",
+] as const;
+const targetRejectedV3Keys = [
+  "status",
+  "observation_contract_version",
+  "reason_code",
+  "observer_snapshot_sha256",
+  "observer_result_sha256",
+  "provider_evidence_ref",
+] as const;
+const targetPendingV3Keys = targetRejectedV3Keys;
+const targetUnavailableV3Keys = [
+  "status",
+  "observation_contract_version",
+  "reason_code",
+  "retry_after_seconds",
+  "observer_snapshot_sha256",
+  "diagnostic_ref",
+] as const;
+
 const targetIneligibleV3Keys = [
   "status",
   "observation_contract_version",
@@ -923,6 +1040,158 @@ const targetIneligibleV3Keys = [
   "observer_result_sha256",
   "diagnostic_ref",
 ] as const;
+
+function assertTargetV3EvidenceReference(
+  providerEvidenceRef: string,
+  observerResultSha256: Sha256HexValue,
+): void {
+  const prefix = `hns-observer-v2:sha256:${observerResultSha256}:`;
+  if (
+    !providerEvidenceRef.startsWith(prefix) ||
+    !isHnsControlObserverSnapshotReference(providerEvidenceRef.slice(prefix.length))
+  ) {
+    throw new HnsControlObservationV2DecodeError(
+      "Target-v3 evidence reference does not bind its observer result",
+    );
+  }
+}
+
+async function assertTargetV3Common(response: HnsOwnerTargetObservationV3): Promise<void> {
+  if (response.status === "verified") {
+    assertTargetV3EvidenceReference(
+      response.provider_evidence_ref,
+      response.observer_result_sha256,
+    );
+    if (
+      response.challenge_value !== `pirate-verification=${response.upstream_session_ref}` ||
+      response.expected_txt_value_sha256 !== (await sha256Utf8(response.challenge_value)) ||
+      response.expires_at <= response.observed_at
+    ) {
+      throw new HnsControlObservationV2DecodeError(
+        "Target-v3 verified challenge or evidence time is invalid",
+      );
+    }
+    const expectedName =
+      response.ownership_source === "hns_parent_chain_txt"
+        ? response.challenge_name
+        : response.challenge_name.startsWith("_pirate.")
+          ? response.challenge_name
+          : null;
+    if (expectedName === null) {
+      throw new HnsControlObservationV2DecodeError(
+        "Target-v3 verified source and challenge name disagree",
+      );
+    }
+    return;
+  }
+  if (response.status === "rejected" || response.status === "pending") {
+    assertTargetV3EvidenceReference(
+      response.provider_evidence_ref,
+      response.observer_result_sha256,
+    );
+  }
+}
+
+function assertUpstreamChallengeBinding(
+  input: Readonly<{
+    readonly request: HnsControlObservationRequestV1;
+    readonly upstream_session_ref: string;
+  }>,
+): void {
+  if (
+    input.upstream_session_ref.trim() !== input.upstream_session_ref ||
+    input.upstream_session_ref.length === 0 ||
+    !isSafeText(input.upstream_session_ref) ||
+    utf8Length(input.upstream_session_ref) > 16_384 ||
+    input.request.expected_txt_value !== `pirate-verification=${input.upstream_session_ref}`
+  ) {
+    throw new TypeError("Observer request is not bound to the upstream challenge");
+  }
+}
+
+export async function mapHnsControlObservationToTargetV3(
+  input: Readonly<{
+    readonly request: HnsControlObservationRequestV1;
+    readonly result_bytes: Uint8Array;
+    readonly upstream_session_ref: string;
+    readonly policy: HnsEvidenceLeasePolicy;
+  }>,
+): Promise<HnsOwnerTargetObservationV3> {
+  assertUpstreamChallengeBinding(input);
+  const decoded = await decodeHnsControlObservationResultV2Bytes(input.result_bytes, input.request);
+  const result = decoded.result;
+  if (result.status === "unavailable") {
+    return {
+      status: "unavailable",
+      observation_contract_version: HNS_TARGET_OBSERVATION_V3_VERSION,
+      reason_code: result.reason_code,
+      retry_after_seconds: result.retry_after_seconds,
+      observer_snapshot_sha256: result.observer_snapshot_sha256,
+      diagnostic_ref: result.diagnostic_ref,
+    };
+  }
+  if (result.status === "ineligible") {
+    return {
+      status: "ineligible",
+      observation_contract_version: HNS_TARGET_OBSERVATION_V3_VERSION,
+      reason_code: result.reason_code,
+      ownership_source: result.ownership_source,
+      root_label: result.root_label,
+      chain_authority_digest: result.chain_authority_digest,
+      authority_inventory_reference: result.authority_inventory_reference,
+      authority_inventory_version: result.authority_inventory_version,
+      authority_inventory_digest: result.authority_inventory_digest,
+      observer_snapshot_sha256: result.observer_snapshot_sha256,
+      observer_result_sha256: decoded.result_sha256,
+      diagnostic_ref: result.diagnostic_ref,
+    };
+  }
+  const providerEvidenceRef = `hns-observer-v2:sha256:${decoded.result_sha256}:${result.provider_evidence_ref}`;
+  if (result.status === "rejected") {
+    return result.reason_code === "txt_absent" || result.reason_code === "txt_value_mismatch"
+      ? {
+          status: "pending",
+          observation_contract_version: HNS_TARGET_OBSERVATION_V3_VERSION,
+          reason_code: result.reason_code,
+          observer_snapshot_sha256: result.observer_snapshot_sha256,
+          observer_result_sha256: decoded.result_sha256,
+          provider_evidence_ref: providerEvidenceRef,
+        }
+      : {
+          status: "rejected",
+          observation_contract_version: HNS_TARGET_OBSERVATION_V3_VERSION,
+          reason_code: result.reason_code,
+          observer_snapshot_sha256: result.observer_snapshot_sha256,
+          observer_result_sha256: decoded.result_sha256,
+          provider_evidence_ref: providerEvidenceRef,
+        };
+  }
+  const lease = deriveHnsEvidenceLease(result, input.policy);
+  return {
+    status: "verified",
+    observation_contract_version: HNS_TARGET_OBSERVATION_V3_VERSION,
+    provider_evidence_ref: providerEvidenceRef,
+    upstream_session_ref: input.upstream_session_ref,
+    ownership_source: input.request.ownership_source,
+    challenge_name: input.request.txt_name,
+    challenge_value: input.request.expected_txt_value,
+    expected_txt_value_sha256: await sha256Utf8(input.request.expected_txt_value),
+    control_identity_digest: result.control_identity_digest,
+    chain_authority_digest: result.chain_authority_digest,
+    observer_snapshot_sha256: result.observer_snapshot_sha256,
+    observer_result_sha256: decoded.result_sha256,
+    root_exists: true,
+    root_control_verified: true,
+    expiry_horizon_sufficient: true,
+    chain_network: result.chain_network,
+    chain_anchor_height: result.chain_anchor_height,
+    chain_anchor_block_hash: result.chain_anchor_block_hash,
+    chain_anchor_median_time: result.chain_anchor_median_time,
+    expiry_height: result.expiry_height,
+    observed_at: lease.observed_at,
+    expires_at: lease.expires_at,
+  };
+}
 
 export async function mapHnsControlObservationIneligibleToTargetV3(
   input: Readonly<{
@@ -951,24 +1220,74 @@ export async function mapHnsControlObservationIneligibleToTargetV3(
   };
 }
 
+export async function decodeHnsOwnerTargetObservationV3Bytes(value: unknown): Promise<
+  Readonly<{
+    response: HnsOwnerTargetObservationV3;
+    response_bytes: Uint8Array;
+    response_sha256: Sha256HexValue;
+  }>
+> {
+  if (!(value instanceof Uint8Array) || value.byteLength === 0 || value.byteLength > 1_048_576) {
+    throw new HnsControlObservationV2DecodeError("Target-v3 response exceeds its bound");
+  }
+  const bytes = new Uint8Array(value);
+  const json = decodeStrictHnsJsonBytes(bytes, 1_048_576);
+  const status =
+    Predicate.isObject(json) && !Array.isArray(json)
+      ? (json as Readonly<Record<string, unknown>>).status
+      : undefined;
+  let response: HnsOwnerTargetObservationV3;
+  if (status === "verified") {
+    assertObjectOrder(json, targetVerifiedV3Keys, "Target verified response-v3");
+    response = decodeSchema(TargetVerifiedV3Schema, json, "Target verified response-v3 is invalid");
+  } else if (status === "rejected") {
+    assertObjectOrder(json, targetRejectedV3Keys, "Target rejected response-v3");
+    response = decodeSchema(TargetRejectedV3Schema, json, "Target rejected response-v3 is invalid");
+  } else if (status === "pending") {
+    assertObjectOrder(json, targetPendingV3Keys, "Target pending response-v3");
+    response = decodeSchema(TargetPendingV3Schema, json, "Target pending response-v3 is invalid");
+  } else if (status === "unavailable") {
+    assertObjectOrder(json, targetUnavailableV3Keys, "Target unavailable response-v3");
+    response = decodeSchema(
+      TargetUnavailableV3Schema,
+      json,
+      "Target unavailable response-v3 is invalid",
+    );
+  } else {
+    assertObjectOrder(json, targetIneligibleV3Keys, "Target ineligible response-v3");
+    response = decodeSchema(
+      TargetIneligibleV3Schema,
+      json,
+      "Target ineligible response-v3 is invalid",
+    );
+  }
+  await assertTargetV3Common(response);
+  return {
+    response,
+    response_bytes: bytes,
+    response_sha256: await sha256Bytes(bytes),
+  };
+}
+
+export async function encodeHnsOwnerTargetObservationV3(
+  input: HnsOwnerTargetObservationV3,
+): Promise<Uint8Array> {
+  return (await decodeHnsOwnerTargetObservationV3Bytes(encoder.encode(JSON.stringify(input))))
+    .response_bytes;
+}
+
 export async function decodeHnsOwnerTargetIneligibleObservationV3Bytes(
   value: unknown,
 ): Promise<
   Readonly<{ response: HnsOwnerTargetIneligibleObservationV3; response_sha256: Sha256HexValue }>
 > {
-  if (!(value instanceof Uint8Array) || value.byteLength === 0 || value.byteLength > 1_048_576) {
-    throw new HnsControlObservationV2DecodeError("Target ineligible response exceeds its bound");
+  const decoded = await decodeHnsOwnerTargetObservationV3Bytes(value);
+  if (decoded.response.status !== "ineligible") {
+    throw new HnsControlObservationV2DecodeError("Expected target ineligible response-v3");
   }
-  const bytes = new Uint8Array(value);
-  const json = decodeStrictHnsJsonBytes(bytes, 1_048_576);
-  assertObjectOrder(json, targetIneligibleV3Keys, "Target ineligible response-v3");
   return {
-    response: decodeSchema(
-      TargetIneligibleV3Schema,
-      json,
-      "Target ineligible response-v3 is invalid",
-    ),
-    response_sha256: await sha256Bytes(bytes),
+    response: decoded.response,
+    response_sha256: decoded.response_sha256,
   };
 }
 
