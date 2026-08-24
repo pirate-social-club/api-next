@@ -20,13 +20,16 @@ runtime already owned by the VPS deployment-verification role. The bundle
 accepts exactly one of the two source-closed modes and always verifies the
 frozen profile digest before listening.
 
-The TLS terminator must remove caller-supplied reserved headers and inject the
-exact request headers in
+The TLS terminator must remove caller-supplied reserved headers with the two
+`pre_proxy_handlers` and then inject the exact request headers with
+`reverse_proxy_headers` from
 `caddy/static-platform-reverse-proxy-headers.json` on the HTTPS catchall's one
-`127.0.0.1:4049` reverse proxy. The SNI placeholder is owned by Caddy after TLS
-termination. Do not add those headers to the plaintext port-80 server, the
-WebPKI verifier route, or the DoH route. The target gateway independently
-rejects missing, duplicate, malformed, or Host-mismatched values.
+`127.0.0.1:4049` reverse proxy. Caddy must keep these as separate operations:
+combining the wildcard deletions and exact assignments in one reverse-proxy
+header operation deletes the assigned headers. The SNI placeholder is owned by
+Caddy after TLS termination. Do not add those headers to the plaintext port-80
+server, the WebPKI verifier route, or the DoH route. The target gateway
+independently rejects missing, duplicate, malformed, or Host-mismatched values.
 
 Before a Caddy reload, require exactly one HTTPS server on `:443`, exactly one
 catchall reverse proxy to `127.0.0.1:4049` inside that server, the retained
