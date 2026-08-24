@@ -428,7 +428,6 @@ export const startHnsRouteRevalidation = Effect.fn("startHnsRouteRevalidation")(
   return yield* new HnsRouteRevalidationStartRejected({ reason: "conflict" });
 });
 
-/** Short alias used by scheduler integrations. */
 export {
   HNS_ROUTE_REVALIDATION_PROTOCOL_VERSION,
   HNS_ROUTE_REVALIDATION_PROVIDER_ID,
