@@ -21,7 +21,9 @@ import {
   type HnsControlObserverSnapshotFinalizeInputV2,
   hnsAuthorityCapabilitySetDigest,
   hnsChainAuthorityDigest,
+  hnsControlObserverSnapshotAccountingEnvelopeV2Bytes,
   hnsControlObserverSnapshotDigestV2,
+  hnsControlObserverSnapshotLogicalByteLengthV2,
   hnsControlObserverTranscriptManifestDigestV2,
   hnsControlObserverTranscriptManifestV2,
   hnsObservedTxtValuesDigest,
@@ -53,7 +55,7 @@ if (required && connectionString === undefined) {
 
 const suite = connectionString === undefined ? describe.skip : describe;
 const encoder = new TextEncoder();
-const testCount = 18;
+const testCount = 23;
 let completedTestCount = 0;
 let admin: Client | undefined;
 let schema = "";
@@ -595,6 +597,65 @@ async function custodyIneligibleFinalizeInput(
   };
 }
 
+async function custodyInventoryUnavailableFinalizeInput(
+  reservation: HnsControlObserverReservationInput,
+  authority: Extract<HnsControlObserverReservationOutcome, { readonly kind: "acquired" }>,
+): Promise<HnsControlObserverSnapshotFinalizeInputV2> {
+  const request = await decodeHnsControlObservationRequestBytes(reservation.request_bytes);
+  const semanticFactsBytes = encodeHnsAuthoritativeDnsSemanticFactsV1([]);
+  const transcriptManifestSha256 = await hnsControlObserverTranscriptManifestDigestV2(
+    hnsControlObserverTranscriptManifestV2([]),
+  );
+  const semanticFactsSha256 = await rawSha256(semanticFactsBytes);
+  const observerSnapshotSha256 = await hnsControlObserverSnapshotDigestV2({
+    observation_id: reservation.observation_id,
+    request_sha256: reservation.request_sha256,
+    provider_configuration_digest: reservation.provider_configuration_digest,
+    authority_inventory_reference_or_null: null,
+    authority_inventory_version_or_null: null,
+    authority_inventory_digest_or_null: null,
+    reservation_database_time: authority.reservation_database_time,
+    snapshot_reference: authority.snapshot_reference,
+    transcript_manifest_sha256: transcriptManifestSha256,
+    semantic_facts_sha256: semanticFactsSha256,
+  });
+  const resultBytes = await encodeHnsControlObservationResultV2(
+    {
+      version: "pirate-hns-control-observation-result-v2",
+      observation_id: reservation.observation_id,
+      request_sha256: reservation.request_sha256,
+      status: "unavailable",
+      reason_code: "authority_inventory_unavailable",
+      retry_after_seconds: null,
+      observer_snapshot_sha256: observerSnapshotSha256,
+      diagnostic_ref: authority.snapshot_reference,
+    },
+    request.request,
+  );
+  const decodedResult = await decodeHnsControlObservationResultV2Bytes(
+    resultBytes,
+    request.request,
+  );
+  return {
+    observation_id: reservation.observation_id,
+    observer_fence: authority.observer_fence,
+    request_sha256: reservation.request_sha256,
+    provider_configuration_digest: reservation.provider_configuration_digest,
+    snapshot_reference: authority.snapshot_reference,
+    authority_inventory_bytes: null,
+    authority_inventory_reference_or_null: null,
+    authority_inventory_version_or_null: null,
+    authority_inventory_digest_or_null: null,
+    transcript: [],
+    transcript_manifest_sha256: transcriptManifestSha256,
+    semantic_facts_bytes: semanticFactsBytes,
+    semantic_facts_sha256: semanticFactsSha256,
+    observer_snapshot_sha256: observerSnapshotSha256,
+    result_bytes: resultBytes,
+    result_sha256: decodedResult.result_sha256,
+  };
+}
+
 async function expireReservation(observationId: string): Promise<void> {
   if (admin === undefined) throw new Error("Postgres test schema is unavailable");
   await admin.query(
@@ -796,6 +857,182 @@ suite("Postgres 17 HNS control observer persistence", () => {
     completedTestCount += 1;
   });
 
+  test("retains a v2 inventory-unavailable authority with no inventory tuple", async () => {
+    if (admin === undefined) throw new Error("Postgres test schema is unavailable");
+    const input = await custodyReservationInput("observer-pg-custody-unavailable-01");
+    const store = makeControlPlaneHnsControlObserverSnapshotStoreV2(runtime());
+    const authority = acquired(await store.reserve(input, runOptions()));
+    const terminal = await custodyInventoryUnavailableFinalizeInput(input, authority);
+    await expect(store.finalize(terminal, runOptions())).resolves.toMatchObject({
+      kind: "retained",
+    });
+    const retained = await admin.query<{
+      authority_inventory_bytes: Uint8Array | null;
+      authority_inventory_reference: string | null;
+      authority_inventory_version: string | null;
+      authority_inventory_digest: string | null;
+      result_status: string;
+    }>({
+      text: `SELECT authority_inventory_bytes,
+                    authority_inventory_reference,
+                    authority_inventory_version,
+                    authority_inventory_digest,
+                    result_status
+               FROM hns_control_observer_snapshots
+              WHERE observation_id = $1`,
+      values: [input.observation_id],
+    });
+    expect(retained.rows).toEqual([
+      {
+        authority_inventory_bytes: null,
+        authority_inventory_reference: null,
+        authority_inventory_version: null,
+        authority_inventory_digest: null,
+        result_status: "unavailable",
+      },
+    ]);
+    await expect(store.reserve(input, runOptions())).resolves.toMatchObject({
+      kind: "replay",
+      result_bytes: terminal.result_bytes,
+      result_sha256: terminal.result_sha256,
+    });
+    completedTestCount += 1;
+  });
+
+  test("accounts exact inventory-inclusive v2 logical bytes", async () => {
+    if (admin === undefined) throw new Error("Postgres test schema is unavailable");
+    const inventory = await authorityInventoryFixture("inventory-accounting-v1");
+    await seedAuthorityInventory(inventory);
+    const input = await custodyReservationInput("observer-pg-custody-accounting-01");
+    const store = makeControlPlaneHnsControlObserverSnapshotStoreV2(runtime());
+    const authority = acquired(await store.reserve(input, runOptions()));
+    const terminal = await custodyIneligibleFinalizeInput(input, authority, inventory);
+    await expect(store.finalize(terminal, runOptions())).resolves.toMatchObject({
+      kind: "retained",
+    });
+    const expectedPayload = {
+      observation_id: input.observation_id,
+      observer_fence: authority.observer_fence,
+      reservation_database_time: authority.reservation_database_time,
+      lease_expires_at: authority.lease_expires_at,
+      request_bytes: input.request_bytes,
+      request_sha256: input.request_sha256,
+      configuration_bytes: input.configuration_bytes,
+      provider_configuration_digest: input.provider_configuration_digest,
+      authority_inventory_bytes: inventory.inventoryBytes,
+      authority_inventory_reference_or_null: inventory.inventory.authority_inventory_reference,
+      authority_inventory_version_or_null: inventory.inventory.authority_inventory_version,
+      authority_inventory_digest_or_null: inventory.inventoryDigest,
+      snapshot_reference: authority.snapshot_reference,
+      transcript: terminal.transcript,
+      transcript_manifest_sha256: terminal.transcript_manifest_sha256,
+      semantic_facts_bytes: terminal.semantic_facts_bytes,
+      semantic_facts_sha256: terminal.semantic_facts_sha256,
+      observer_snapshot_sha256: terminal.observer_snapshot_sha256,
+      result_status: "ineligible" as const,
+      result_reference_kind: "diagnostic_ref" as const,
+      result_bytes: terminal.result_bytes,
+      result_sha256: terminal.result_sha256,
+    };
+    const expectedAccounting = hnsControlObserverSnapshotAccountingEnvelopeV2Bytes(expectedPayload);
+    const expectedLogicalLength = hnsControlObserverSnapshotLogicalByteLengthV2(expectedPayload);
+    const retained = await admin.query<{
+      accounting_envelope_bytes: Uint8Array;
+      logical_snapshot_byte_length: number;
+    }>({
+      text: `SELECT accounting_envelope_bytes, logical_snapshot_byte_length
+               FROM hns_control_observer_snapshots
+              WHERE observation_id = $1`,
+      values: [input.observation_id],
+    });
+    expect(retained.rows).toHaveLength(1);
+    expect(retained.rows[0]?.accounting_envelope_bytes).toEqual(expectedAccounting);
+    expect(Number(retained.rows[0]?.logical_snapshot_byte_length)).toBe(expectedLogicalLength);
+    completedTestCount += 1;
+  });
+
+  test("rejects every partial v2 inventory tuple before insertion", async () => {
+    const inventory = await authorityInventoryFixture("inventory-partial-v1");
+    await seedAuthorityInventory(inventory);
+    const input = await custodyReservationInput("observer-pg-custody-partial-01");
+    const store = makeControlPlaneHnsControlObserverSnapshotStoreV2(runtime());
+    const authority = acquired(await store.reserve(input, runOptions()));
+    const terminal = await custodyIneligibleFinalizeInput(input, authority, inventory);
+    await expect(
+      store.finalize({ ...terminal, authority_inventory_bytes: null }, runOptions()),
+    ).rejects.toThrow("partial nullable tuple");
+    await expect(
+      store.finalize({ ...terminal, authority_inventory_reference_or_null: null }, runOptions()),
+    ).rejects.toThrow("partial nullable tuple");
+    await expect(
+      store.finalize({ ...terminal, authority_inventory_version_or_null: null }, runOptions()),
+    ).rejects.toThrow("partial nullable tuple");
+    await expect(
+      store.finalize({ ...terminal, authority_inventory_digest_or_null: null }, runOptions()),
+    ).rejects.toThrow("partial nullable tuple");
+    expect(await rowCount("hns_control_observer_snapshots")).toBe(0);
+    completedTestCount += 1;
+  });
+
+  test("rejects v1 and v2 cross-substitution in both store directions", async () => {
+    const inventory = await authorityInventoryFixture("inventory-cross-version-v1");
+    await seedAuthorityInventory(inventory);
+    const input = await custodyReservationInput("observer-pg-custody-cross-version-01");
+    const authority = acquired(
+      await makeControlPlaneHnsControlObserverSnapshotStoreV2(runtime()).reserve(
+        input,
+        runOptions(),
+      ),
+    );
+    const v1Terminal = await finalizeInput(input, authority);
+    const v2Terminal = await custodyIneligibleFinalizeInput(input, authority, inventory);
+    const v1Store = makeControlPlaneHnsControlObserverSnapshotStore(runtime());
+    const v2Store = makeControlPlaneHnsControlObserverSnapshotStoreV2(runtime());
+    await expect(v1Store.finalize(v1Terminal, runOptions())).rejects.toThrow("strict decoding");
+    await expect(
+      v2Store.finalize(
+        v1Terminal as unknown as HnsControlObserverSnapshotFinalizeInputV2,
+        runOptions(),
+      ),
+    ).rejects.toThrow("strict decoding");
+    await expect(v2Store.finalize(v2Terminal, runOptions())).resolves.toMatchObject({
+      kind: "retained",
+    });
+    completedTestCount += 1;
+  });
+
+  test("rejects late v2 finalization after database-time expiry without a write", async () => {
+    if (admin === undefined) throw new Error("Postgres test schema is unavailable");
+    const inventory = await authorityInventoryFixture("inventory-expiry-v1");
+    await seedAuthorityInventory(inventory);
+    const input = await custodyReservationInput("observer-pg-custody-expired-01");
+    const store = makeControlPlaneHnsControlObserverSnapshotStoreV2(runtime());
+    const authority = acquired(await store.reserve(input, runOptions()));
+    await expireReservation(input.observation_id);
+    const expiredReservation = await admin.query<{
+      reservation_database_time: string;
+      lease_expires_at: string;
+    }>({
+      text: `SELECT to_char(reservation_database_time AT TIME ZONE 'UTC',
+                            'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS reservation_database_time,
+                    to_char(lease_expires_at AT TIME ZONE 'UTC',
+                            'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS lease_expires_at
+               FROM hns_control_observer_reservations
+              WHERE observation_id = $1`,
+      values: [input.observation_id],
+    });
+    const expiredAuthority = {
+      ...authority,
+      reservation_database_time: expiredReservation.rows[0]?.reservation_database_time ?? "",
+      lease_expires_at: expiredReservation.rows[0]?.lease_expires_at ?? "",
+    };
+    const terminal = await custodyIneligibleFinalizeInput(input, expiredAuthority, inventory);
+    await expect(store.finalize(terminal, runOptions())).resolves.toEqual({ kind: "lost" });
+    expect(await rowCount("hns_control_observer_snapshots")).toBe(0);
+    expect(await rowCount("hns_control_observer_snapshot_transcript_entries")).toBe(0);
+    completedTestCount += 1;
+  });
+
   test("serializes first reservation, exact busy replay, and changed-byte mismatch", async () => {
     const input = await reservationInput("observer-pg-reserve-01");
     const left = makeControlPlaneHnsControlObserverSnapshotStore(runtime());
@@ -942,6 +1179,16 @@ suite("Postgres 17 HNS control observer persistence", () => {
       right.finalize(terminal, runOptions()),
     ]);
     expect(outcomes.map((outcome) => outcome.kind).sort()).toEqual(["replay", "retained"]);
+    await expect(
+      left.finalize(
+        {
+          ...terminal,
+          result_bytes: new Uint8Array([...terminal.result_bytes, 0]),
+          result_sha256: "0".repeat(64) as Sha256HexValue,
+        },
+        runOptions(),
+      ),
+    ).resolves.toEqual({ kind: "mismatch" });
     expect(await rowCount("hns_control_observer_snapshots")).toBe(1);
     expect(await rowCount("hns_control_observer_snapshot_transcript_entries")).toBe(1);
     await expect(

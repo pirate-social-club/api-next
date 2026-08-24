@@ -4,6 +4,7 @@ import {
   encodeHnsAuthorityInventory,
   encodeHnsControlObservationRequest,
   encodeHnsControlObserverConfigurationV2,
+  type HnsAuthorityInventoryResolvedV1,
   type HnsAuthorityInventoryV1,
   type HnsControlObservationRequestV1,
   type HnsControlObserverConfigurationV2,
@@ -186,6 +187,81 @@ async function fixture(staleInventory = false) {
   };
 }
 
+async function observeInventoryFailure(
+  value: Awaited<ReturnType<typeof fixture>>,
+  resolvedInventory: HnsAuthorityInventoryResolvedV1,
+) {
+  const hsdCalls: string[] = [];
+  let dnsCalls = 0;
+  const observer = makeHnsOwnerAuthoritativeDnsTargetObserverV2({
+    configuration_resolver: { resolve: async () => value.configurationBytes },
+    capabilities: {
+      provider_id: "hns.owner.v1",
+      environment: "test",
+      chain_driver_reference: value.configuration.chain.driver_reference,
+      authoritative_dns_driver_reference:
+        value.configuration.authoritative_dns?.driver_reference ?? null,
+      snapshot_store_reference: value.configuration.snapshot_store_reference,
+      authority_inventory_registry_reference:
+        value.configuration.authority_inventory?.registry_reference ?? "",
+      authority_inventory_runtime_capability_set_digest: value.capabilitySetDigest,
+    },
+    authority_inventory_resolver: { resolve: async () => resolvedInventory },
+    snapshot_store: {
+      reserve: async () => ({
+        kind: "acquired",
+        observer_fence: 1,
+        reservation_database_time: databaseTime,
+        lease_expires_at: "2026-02-02T03:04:20.000Z",
+        snapshot_reference: "hns-observer:regtest:custody-hostile-01",
+      }),
+      finalize: async (input) => ({
+        kind: "retained",
+        snapshot_reference: input.snapshot_reference,
+        result_bytes: input.result_bytes,
+        result_sha256: input.result_sha256,
+      }),
+    },
+    hsd_transport: {
+      exchange: async () => {
+        hsdCalls.push("unexpected");
+        throw new Error("HSD must not run for hostile inventory");
+      },
+    },
+    authoritative_dns_transport: {
+      exchange: async () => {
+        dnsCalls += 1;
+        throw new Error("DNS must not run for hostile inventory");
+      },
+    },
+    message_ids: { next_id: () => 1 },
+    validator: {
+      policy_id: "pirate-hns-authoritative-dns-validator-policy-v1",
+      validate: async () => {
+        throw new Error("validator must not run for hostile inventory");
+      },
+    },
+  });
+  const resultBytes = await observer.observe(
+    {
+      request: value.request,
+      request_bytes: value.requestBytes,
+      lease_policy: {
+        expected_block_interval_seconds: 600,
+        minimum_safe_remaining_blocks: 144,
+        expiry_safety_blocks: 144,
+        evidence_lease_seconds: 2_592_000,
+      },
+    },
+    { deadline_ms: 12_000, signal: new AbortController().signal },
+  );
+  return {
+    result: (await decodeHnsControlObservationResultV2Bytes(resultBytes, value.request)).result,
+    hsdCalls,
+    dnsCalls,
+  };
+}
+
 describe("HNS owner-authority custody runtime", () => {
   test("derives Pirate custody after the stable bracket and performs no DNS exchange", async () => {
     const value = await fixture();
@@ -352,5 +428,40 @@ describe("HNS owner-authority custody runtime", () => {
     });
     expect(hsdCalls).toBe(0);
     expect(dnsCalls).toBe(0);
+  });
+
+  test("rejects a resolver-advertised digest that differs from the exact bytes", async () => {
+    const value = await fixture();
+    const outcome = await observeInventoryFailure(value, {
+      authority_inventory_reference: value.inventory.authority_inventory_reference,
+      authority_inventory_version: value.inventory.authority_inventory_version,
+      authority_inventory_digest: "f".repeat(
+        64,
+      ) as HnsAuthorityInventoryResolvedV1["authority_inventory_digest"],
+      inventory_bytes: value.inventoryBytes,
+    });
+    expect(outcome.result).toMatchObject({
+      status: "unavailable",
+      reason_code: "authority_inventory_unavailable",
+    });
+    expect(outcome.hsdCalls).toHaveLength(0);
+    expect(outcome.dnsCalls).toBe(0);
+  });
+
+  test("rejects a resolver reference/version tuple that differs from decoded inventory", async () => {
+    const value = await fixture();
+    const outcome = await observeInventoryFailure(value, {
+      authority_inventory_reference: "authority-inventory:wrong",
+      authority_inventory_version: "authority-inventory-v1-wrong",
+      authority_inventory_digest:
+        value.inventoryDigest as HnsAuthorityInventoryResolvedV1["authority_inventory_digest"],
+      inventory_bytes: value.inventoryBytes,
+    });
+    expect(outcome.result).toMatchObject({
+      status: "unavailable",
+      reason_code: "authority_inventory_unavailable",
+    });
+    expect(outcome.hsdCalls).toHaveLength(0);
+    expect(outcome.dnsCalls).toBe(0);
   });
 });
