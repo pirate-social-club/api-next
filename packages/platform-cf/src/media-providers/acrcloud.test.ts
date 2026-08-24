@@ -27,6 +27,13 @@ const hostileFixtures = (await Bun.file(
     readonly expected_signature: string;
   }>;
   readonly responses: Readonly<Record<string, unknown>>;
+  readonly stream_lifecycle: Readonly<{
+    readonly headers_then_hanging_body: Readonly<{
+      readonly status: number;
+      readonly content_type: string;
+      readonly provider_code: number;
+    }>;
+  }>;
 };
 
 const acceptedLimits: AcrCloudAcceptedLimits = {
@@ -57,6 +64,53 @@ function streamBody(bytes: Uint8Array): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+function hangingBody(bytes: Uint8Array): {
+  readonly body: ReadableStream<Uint8Array>;
+  readonly isCancelled: () => boolean;
+} {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(bytes);
+    },
+    pull() {
+      return new Promise<void>(() => {});
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  return { body, isCancelled: () => cancelled };
+}
+
+function unreadBody(): {
+  readonly body: ReadableStream<Uint8Array>;
+  readonly isCancelled: () => boolean;
+} {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull() {
+      return new Promise<void>(() => {});
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  return { body, isCancelled: () => cancelled };
+}
+
+async function expectBodyReleased(
+  body: ReadableStream<Uint8Array>,
+  isCancelled: () => boolean,
+): Promise<void> {
+  for (let attempt = 0; attempt < 25; attempt += 1) {
+    if (isCancelled() && !body.locked) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  expect(isCancelled()).toBe(true);
+  expect(body.locked).toBe(false);
 }
 
 function jsonResponse(value: unknown, status = 200, contentType = "application/json") {
@@ -292,14 +346,21 @@ describe("ACRCloud closed outcomes", () => {
     });
     expectContext(malformed);
 
-    const wrongContentType = await resultOf(
-      jsonResponse({ status: { code: 0 } }, 200, "text/plain"),
+    for (const contentType of ["text/plain", "application/jsonx"]) {
+      const wrongContentType = await resultOf(
+        jsonResponse({ status: { code: 0 } }, 200, contentType),
+      );
+      expect(wrongContentType).toMatchObject({
+        outcome: "malformed_or_unsupported_response",
+        reason: "wrong_content_type",
+      });
+      expectContext(wrongContentType);
+    }
+    const parameterizedJson = await resultOf(
+      jsonResponse({ status: { code: 1001 } }, 200, "application/json ; charset=utf-8"),
     );
-    expect(wrongContentType).toMatchObject({
-      outcome: "malformed_or_unsupported_response",
-      reason: "wrong_content_type",
-    });
-    expectContext(wrongContentType);
+    expect(parameterizedJson).toMatchObject({ outcome: "no_match" });
+    expectContext(parameterizedJson);
 
     const duplicate = await resultOf(
       jsonResponse({
@@ -346,6 +407,49 @@ describe("ACRCloud closed outcomes", () => {
     });
     expectContext(result);
     expect(cancelled).toBe(true);
+  });
+
+  test("cancels and releases streams for every early response decision", async () => {
+    const cases = [
+      [99, "application/json", "malformed_or_unsupported_response", "unsupported_shape"],
+      [429, "application/json", "retryable_failure", "throttled"],
+      [408, "application/json", "retryable_failure", "provider"],
+      [500, "application/json", "retryable_failure", "provider"],
+      [400, "application/json", "permanent_provider_rejection", "provider_rejected"],
+      [401, "application/json", "permanent_provider_rejection", "unauthorized"],
+      [200, "application/jsonx", "malformed_or_unsupported_response", "wrong_content_type"],
+    ] as const;
+    for (const [status, contentType, outcome, reason] of cases) {
+      const tracked = unreadBody();
+      const result = await resultOf({
+        status,
+        headers: { "content-type": contentType },
+        body: tracked.body,
+      });
+      expect(result).toMatchObject({ outcome, reason });
+      expectContext(result);
+      await expectBodyReleased(tracked.body, tracked.isCancelled);
+    }
+
+    let cancelRejected = false;
+    const rejectingBody = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelRejected = true;
+        throw new Error("fixture cancellation failure");
+      },
+    });
+    const rejectedCancelResult = await resultOf({
+      status: 429,
+      headers: { "content-type": "application/json" },
+      body: rejectingBody,
+    });
+    expect(rejectedCancelResult).toMatchObject({
+      outcome: "retryable_failure",
+      reason: "throttled",
+    });
+    expectContext(rejectedCancelResult);
+    expect(cancelRejected).toBe(true);
+    expect(rejectingBody.locked).toBe(false);
   });
 
   test("maps every documented provider status code through the closed outcome union", async () => {
@@ -436,6 +540,51 @@ describe("ACRCloud bounded transport failures", () => {
     const inFlightResult = await inFlight;
     expect(inFlightResult).toMatchObject({ outcome: "retryable_failure", reason: "cancelled" });
     expectContext(inFlightResult);
+  });
+
+  test("cancels and releases a hanging response body on adapter timeout", async () => {
+    const fixture = hostileFixtures.stream_lifecycle.headers_then_hanging_body;
+    const tracked = hangingBody(
+      new TextEncoder().encode(JSON.stringify({ status: { code: fixture.provider_code } })),
+    );
+    const response = {
+      status: fixture.status,
+      headers: { "content-type": fixture.content_type },
+      body: tracked.body,
+    };
+    const result = await Effect.runPromise(
+      adapter(null, {
+        timeoutMs: 5,
+        request: () => Effect.succeed(response),
+      }).identify(input),
+    );
+    expect(result).toMatchObject({ outcome: "retryable_failure", reason: "timeout" });
+    expectContext(result);
+    await expectBodyReleased(tracked.body, tracked.isCancelled);
+  });
+
+  test("cancels and releases a hanging response body on caller cancellation", async () => {
+    const fixture = hostileFixtures.stream_lifecycle.headers_then_hanging_body;
+    const tracked = hangingBody(
+      new TextEncoder().encode(JSON.stringify({ status: { code: fixture.provider_code } })),
+    );
+    const response = {
+      status: fixture.status,
+      headers: { "content-type": fixture.content_type },
+      body: tracked.body,
+    };
+    const controller = new AbortController();
+    const running = Effect.runPromise(
+      adapter(null, { request: () => Effect.succeed(response) }).identify({
+        ...input,
+        signal: controller.signal,
+      }),
+    );
+    setTimeout(() => controller.abort(), 5);
+    const result = await running;
+    expect(result).toMatchObject({ outcome: "retryable_failure", reason: "cancelled" });
+    expectContext(result);
+    await expectBodyReleased(tracked.body, tracked.isCancelled);
   });
 });
 

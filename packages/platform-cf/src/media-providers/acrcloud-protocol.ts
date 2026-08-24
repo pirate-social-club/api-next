@@ -72,6 +72,10 @@ export class AcrCloudResponseStreamFailure extends Data.TaggedError(
   "AcrCloudResponseStreamFailure",
 )<Record<never, never>> {}
 
+export class AcrCloudResponseReadAborted extends Data.TaggedError("AcrCloudResponseReadAborted")<
+  Record<never, never>
+> {}
+
 export class AcrCloudResponseBodyTooLarge extends Data.TaggedError("AcrCloudResponseBodyTooLarge")<
   Record<never, never>
 > {}

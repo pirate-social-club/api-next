@@ -67,5 +67,12 @@
     "provider_wrong_access_key": { "status": { "code": 3001 } },
     "provider_invalid_signature": { "status": { "code": 3014 } },
     "provider_unknown": { "status": { "code": 3016 } }
+  },
+  "stream_lifecycle": {
+    "headers_then_hanging_body": {
+      "status": 200,
+      "content_type": "application/json",
+      "provider_code": 1001
+    }
   }
 }

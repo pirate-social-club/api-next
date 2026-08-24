@@ -21,6 +21,7 @@ import {
   ACRCLOUD_SIGNATURE_VERSION,
   type AcrCloudMultipart,
   AcrCloudMultipartBoundaryCollision,
+  AcrCloudResponseReadAborted,
   AcrCloudTransportFailure,
   acrCloudSignature,
   clockSeconds,
@@ -206,8 +207,12 @@ export function makeAcrCloudAdapter(
           }),
         );
         return yield* Effect.tryPromise({
-          try: () => acrCloudResponseOutcome(response, config.limits.maxResponseBytes),
-          catch: () => new AcrCloudTransportFailure({ reason: "network" }),
+          try: () =>
+            acrCloudResponseOutcome(response, config.limits.maxResponseBytes, controller.signal),
+          catch: (error) =>
+            error instanceof AcrCloudResponseReadAborted
+              ? new AcrCloudTransportFailure({ reason: "aborted" })
+              : new AcrCloudTransportFailure({ reason: "network" }),
         });
       }).pipe(
         Effect.onExit(() =>

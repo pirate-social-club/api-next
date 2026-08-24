@@ -5,6 +5,7 @@ import {
   ACRCLOUD_INTERNAL_MAX_JSON_DEPTH,
   ACRCLOUD_INTERNAL_MAX_JSON_PROPERTIES,
   AcrCloudResponseBodyTooLarge,
+  AcrCloudResponseReadAborted,
   AcrCloudResponseStreamFailure,
   type AcrCloudTransportResponse,
 } from "./acrcloud-protocol.ts";
@@ -66,6 +67,66 @@ function headerValue(
     if (key.toLowerCase() === lower) return value;
   }
   return null;
+}
+
+function trimOws(value: string): string {
+  return value.replace(/^[\t ]+|[\t ]+$/gu, "");
+}
+
+function isToken(value: string): boolean {
+  return /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/u.test(value);
+}
+
+function isQuotedString(value: string): boolean {
+  if (value.length < 2 || value[0] !== '"' || value[value.length - 1] !== '"') return false;
+  for (let index = 1; index < value.length - 1; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code === 0x5c) {
+      index += 1;
+      if (index >= value.length - 1) return false;
+      const escaped = value.charCodeAt(index);
+      if (escaped < 0x09 || escaped > 0x7e || escaped === 0x0a || escaped === 0x0d) {
+        return false;
+      }
+      continue;
+    }
+    if (code < 0x20 || code > 0x7e || code === 0x22) return false;
+  }
+  return true;
+}
+
+function isJsonMediaType(value: string): boolean {
+  const parts = value.split(";");
+  if (trimOws(parts[0] ?? "").toLowerCase() !== "application/json") return false;
+  for (const rawParameter of parts.slice(1)) {
+    const parameter = trimOws(rawParameter);
+    const equals = parameter.indexOf("=");
+    if (equals <= 0) return false;
+    const name = trimOws(parameter.slice(0, equals));
+    const parameterValue = trimOws(parameter.slice(equals + 1));
+    if (!isToken(name) || (!isToken(parameterValue) && !isQuotedString(parameterValue))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function disposeAcrCloudBody(body: ReadableStream<Uint8Array>): Promise<void> {
+  try {
+    const reader = body.getReader();
+    try {
+      await reader.cancel();
+    } catch {
+      // Disposal is best effort. The already-determined provider outcome wins.
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // The reader may already have released its lock while cancelling.
+    }
+  } catch {
+    // A malformed transport body cannot change the already-determined outcome.
+  }
 }
 
 function isBoundedJson(value: unknown, depth = 0, properties = { count: 0 }): boolean {
@@ -217,28 +278,75 @@ function parseProviderResponse(body: Uint8Array): AcrCloudOutcomeKind {
 export async function readBoundedAcrCloudBody(
   stream: ReadableStream<Uint8Array>,
   maxResponseBytes: number,
+  signal?: AbortSignal,
 ): Promise<Uint8Array> {
   const reader = stream.getReader();
   const parts: Uint8Array[] = [];
   let total = 0;
+  let cleanupPromise: Promise<void> | undefined;
+  const cancelAndRelease = (): Promise<void> => {
+    if (cleanupPromise !== undefined) return cleanupPromise;
+    cleanupPromise = (async () => {
+      try {
+        await reader.cancel();
+      } catch {
+        // Cancellation is cleanup and must not replace the classified failure.
+      } finally {
+        try {
+          reader.releaseLock();
+        } catch {
+          // A stream may have released the lock during cancellation.
+        }
+      }
+    })();
+    return cleanupPromise;
+  };
+  const readNext = async () => {
+    if (signal === undefined) return reader.read();
+    if (signal.aborted) {
+      void cancelAndRelease();
+      throw new AcrCloudResponseReadAborted();
+    }
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => {
+        void cancelAndRelease();
+        reject(new AcrCloudResponseReadAborted());
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([reader.read(), aborted]);
+    } finally {
+      if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+    }
+  };
   try {
     while (true) {
-      const next = await reader.read();
+      const next = await readNext();
       if (next.done) break;
       if (!(next.value instanceof Uint8Array)) throw new AcrCloudResponseStreamFailure();
       if (next.value.byteLength > maxResponseBytes - total) {
-        await reader.cancel();
         throw new AcrCloudResponseBodyTooLarge();
       }
       total += next.value.byteLength;
       parts.push(next.value);
     }
   } catch (error) {
+    if (error instanceof AcrCloudResponseReadAborted) {
+      void cancelAndRelease();
+      throw error;
+    }
+    await cancelAndRelease();
     if (error instanceof AcrCloudResponseBodyTooLarge) throw error;
     if (error instanceof AcrCloudResponseStreamFailure) throw error;
     throw new AcrCloudResponseStreamFailure();
   } finally {
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      // Cancellation may already have released the reader.
+    }
   }
   const body = new Uint8Array(total);
   let offset = 0;
@@ -252,24 +360,39 @@ export async function readBoundedAcrCloudBody(
 export async function acrCloudResponseOutcome(
   response: AcrCloudTransportResponse,
   maxResponseBytes: number,
+  signal?: AbortSignal,
 ): Promise<AcrCloudOutcomeKind> {
   if (!Number.isInteger(response.status) || response.status < 100 || response.status > 599) {
+    await disposeAcrCloudBody(response.body);
     return malformed("unsupported_shape");
   }
-  if (response.status === 429) return retryable("throttled");
-  if (response.status === 408 || response.status >= 500) return retryable("provider");
+  if (response.status === 429) {
+    await disposeAcrCloudBody(response.body);
+    return retryable("throttled");
+  }
+  if (response.status === 408 || response.status >= 500) {
+    await disposeAcrCloudBody(response.body);
+    return retryable("provider");
+  }
   if (response.status < 200 || response.status >= 300) {
+    await disposeAcrCloudBody(response.body);
     return response.status === 401 || response.status === 403
       ? permanent("unauthorized")
       : response.status === 413
         ? permanent("sample_too_large")
         : permanent("provider_rejected");
   }
-  const contentType = headerValue(response.headers, "content-type")?.toLowerCase() ?? "";
-  if (!contentType.startsWith("application/json")) return malformed("wrong_content_type");
+  const contentType = headerValue(response.headers, "content-type") ?? "";
+  if (!isJsonMediaType(contentType)) {
+    await disposeAcrCloudBody(response.body);
+    return malformed("wrong_content_type");
+  }
   try {
-    return parseProviderResponse(await readBoundedAcrCloudBody(response.body, maxResponseBytes));
+    return parseProviderResponse(
+      await readBoundedAcrCloudBody(response.body, maxResponseBytes, signal),
+    );
   } catch (error) {
+    if (error instanceof AcrCloudResponseReadAborted) throw error;
     return error instanceof AcrCloudResponseBodyTooLarge
       ? malformed("response_too_large")
       : retryable("transport");
