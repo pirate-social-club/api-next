@@ -11,7 +11,7 @@ import {
   cleanupOwnedKeys,
   runWithCleanup,
 } from "./r2-seal-probe-staging-cleanup";
-import { redactStagingEvidence } from "./r2-seal-probe-staging-evidence";
+import { redactStagingEvidence, type StagingEvidence } from "./r2-seal-probe-staging-evidence";
 import { encodeR2CopySource, signR2Request } from "./r2-seal-probe-staging-signing";
 import { R2S3StagingTransport, sha256Base64 } from "./r2-seal-probe-staging-transport";
 
@@ -960,5 +960,12 @@ describe("staging R2 probe safety", () => {
     expect(() => redactStagingEvidence({ ...base, account_id: "https://secret.invalid" })).toThrow(
       "unsafe account_id",
     );
+  });
+
+  test("accepts the committed staging transcript through the closed evidence projector", async () => {
+    const transcript = (await Bun.file(
+      new URL("../../docs/evidence/media-r2-sealing/staging-2026-08-24.json", import.meta.url),
+    ).json()) as StagingEvidence;
+    expect(redactStagingEvidence(transcript)).toEqual(transcript);
   });
 });
