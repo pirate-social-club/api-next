@@ -226,6 +226,28 @@ describe("staging R2 probe safety", () => {
     expect(requests).toHaveLength(2);
   });
 
+  test("hashes a bounded 206 cleanup response without consuming it as an error", async () => {
+    const transport = new R2S3StagingTransport({
+      accountId: ACCOUNT_ID,
+      credentials: { accessKeyId: ACCESS_KEY_ID, secretAccessKey: SECRET_ACCESS_KEY },
+      fetch: async (_url, init) => {
+        expect(init.method).toBe("GET");
+        const headers = new Headers(init.headers);
+        expect(headers.get("if-match")).toBe('"expected"');
+        expect(headers.get("range")).toBe("bytes=0-0");
+        return response(206, {}, "x");
+      },
+    });
+    await expect(
+      transport.readObjectSha256("fixture-bucket", "sealed.bin", '"expected"', 1),
+    ).resolves.toEqual({
+      kind: "verified",
+      status: 206,
+      code: "OK",
+      sha256: "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881",
+    });
+  });
+
   test("uses the real signed transport for guard-mode diagnostics", async () => {
     const requests: RequestInit[] = [];
     const transport = new R2S3StagingTransport({

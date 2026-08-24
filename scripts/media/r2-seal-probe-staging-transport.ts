@@ -74,7 +74,7 @@ function safeCode(value: string | undefined, fallback: string): string {
 async function responseCode(response: Response): Promise<string> {
   const explicit = header(response, "x-amz-error-code");
   if (explicit !== undefined) return safeCode(explicit, "ProviderError");
-  if (response.status === 200 || response.status === 201 || response.status === 204) {
+  if (response.status >= 200 && response.status < 300) {
     return "OK";
   }
   let body = "";
