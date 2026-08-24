@@ -2,6 +2,14 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/application/hns-forwarder-v3": new URL(
+    "../../packages/application/src/hns-forwarder-v3.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/hns-host-serving": new URL(
+    "../../packages/application/src/hns-host-serving.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/route-revalidation": new URL(
     "../../packages/application/src/route-revalidation/index.ts",
     import.meta.url,
@@ -68,6 +76,10 @@ const alias = {
   "@pirate/domain": new URL("../../packages/domain/src/index.ts", import.meta.url).pathname,
   "@pirate/platform-cf/namespace-ownership-provider-registry": new URL(
     "../../packages/platform-cf/src/namespace-ownership/provider-registry.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/hns-forwarder-v3": new URL(
+    "../../packages/platform-cf/src/hns-forwarder-v3.ts",
     import.meta.url,
   ).pathname,
   "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)

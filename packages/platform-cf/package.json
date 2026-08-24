@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./hns-forwarder-v3": "./src/hns-forwarder-v3.ts",
     "./config": "./config/index.ts",
     "./community-repository": "./src/community-repository.ts",
     "./community-route-repository": "./src/community-route-repository.ts",
