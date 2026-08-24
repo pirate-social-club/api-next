@@ -35,11 +35,13 @@ CREATE TABLE media_upload_reservations (
     AND encode(sha256(response_snapshot_bytes), 'hex') = response_snapshot_sha256
   ),
   CONSTRAINT media_upload_reservations_state_shape CHECK (
-    (state IN ('issued', 'expired') AND submission_id IS NULL AND operation_id IS NULL)
+    (state = 'issued' AND submission_id IS NULL AND operation_id IS NULL)
+    OR (state = 'expired' AND ((submission_id IS NULL AND operation_id IS NULL) OR (submission_id IS NOT NULL AND operation_id IS NOT NULL)))
     OR (state IN ('claimed', 'sealed', 'rejected') AND submission_id IS NOT NULL AND operation_id IS NOT NULL)
   ),
   CONSTRAINT media_upload_reservations_claim_shape CHECK (
-    (state IN ('issued', 'expired') AND claim_fence = 0)
+    (state = 'issued' AND claim_fence = 0)
+    OR (state = 'expired' AND ((submission_id IS NULL AND claim_fence = 0) OR (submission_id IS NOT NULL AND claim_fence > 0)))
     OR (state IN ('claimed', 'sealed', 'rejected') AND claim_fence > 0)
   ),
   CONSTRAINT media_upload_reservations_terminal_shape CHECK (
@@ -764,7 +766,7 @@ CREATE FUNCTION guard_media_reservation_update() RETURNS trigger LANGUAGE plpgsq
 DECLARE submission_record media_post_submissions%ROWTYPE;
 BEGIN
   IF ROW(NEW.reservation_id, NEW.community_id, NEW.actor_user_id, NEW.endpoint_template, NEW.idempotency_key, NEW.request_hash, NEW.expected_content_type, NEW.expected_size_bytes, NEW.expected_sha256, NEW.upload_url, NEW.upload_headers, NEW.expires_at, NEW.response_snapshot_bytes, NEW.response_snapshot_sha256, NEW.created_at) IS DISTINCT FROM ROW(OLD.reservation_id, OLD.community_id, OLD.actor_user_id, OLD.endpoint_template, OLD.idempotency_key, OLD.request_hash, OLD.expected_content_type, OLD.expected_size_bytes, OLD.expected_sha256, OLD.upload_url, OLD.upload_headers, OLD.expires_at, OLD.response_snapshot_bytes, OLD.response_snapshot_sha256, OLD.created_at) THEN RAISE EXCEPTION 'media reservation authority is immutable'; END IF;
-  IF OLD.state IN ('sealed', 'rejected', 'expired') OR NOT ((OLD.state = 'issued' AND NEW.state = 'claimed') OR (OLD.state = 'issued' AND NEW.state = 'expired' AND OLD.expires_at <= clock_timestamp()) OR (OLD.state = 'claimed' AND NEW.state IN ('sealed', 'rejected'))) OR NEW.updated_at <= OLD.updated_at THEN RAISE EXCEPTION 'media reservation transition is not allowed'; END IF;
+  IF OLD.state IN ('sealed', 'rejected', 'expired') OR NOT ((OLD.state = 'issued' AND NEW.state = 'claimed') OR (OLD.state = 'issued' AND NEW.state = 'expired' AND OLD.expires_at <= clock_timestamp()) OR (OLD.state = 'claimed' AND NEW.state IN ('sealed', 'rejected')) OR (OLD.state = 'claimed' AND NEW.state = 'expired' AND OLD.expires_at <= clock_timestamp())) OR NEW.updated_at <= OLD.updated_at THEN RAISE EXCEPTION 'media reservation transition is not allowed'; END IF;
   IF OLD.state = 'issued' AND NEW.state = 'claimed' AND (NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.terminal_reason IS NOT NULL OR NEW.terminal_evidence_ref IS NOT NULL OR NEW.terminal_evidence_digest IS NOT NULL OR NEW.terminal_at IS NOT NULL OR NEW.terminal_fence IS NOT NULL) THEN RAISE EXCEPTION 'media reservation claim fence is not exact'; END IF;
   IF OLD.state = 'claimed' AND (NEW.submission_id IS DISTINCT FROM OLD.submission_id OR NEW.operation_id IS DISTINCT FROM OLD.operation_id) THEN RAISE EXCEPTION 'media reservation claim identity is immutable'; END IF;
   IF OLD.state = 'claimed' AND NEW.state = 'rejected' THEN
@@ -782,6 +784,22 @@ BEGIN
        OR submission_record.status NOT IN ('abandoned', 'processing_failed')
        THEN
       RAISE EXCEPTION 'media reservation rejection is not bound to its terminal submission';
+    END IF;
+  END IF;
+  IF OLD.state = 'claimed' AND NEW.state = 'expired' THEN
+    SELECT * INTO submission_record FROM media_post_submissions
+      WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+        AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id FOR SHARE;
+    IF submission_record.submission_id IS NULL
+       OR submission_record.status IS DISTINCT FROM 'abandoned'
+       OR submission_record.abandonment_reason IS DISTINCT FROM 'reservation_expired'
+       OR NEW.claim_fence IS DISTINCT FROM OLD.claim_fence
+       OR NEW.submission_id IS NULL OR NEW.operation_id IS NULL
+       OR NEW.terminal_reason IS NOT NULL OR NEW.terminal_evidence_ref IS NOT NULL
+       OR NEW.terminal_evidence_digest IS NOT NULL OR NEW.terminal_at IS NOT NULL
+       OR NEW.terminal_fence IS NOT NULL
+       OR NEW.expires_at > clock_timestamp() THEN
+      RAISE EXCEPTION 'media reservation expiry is not bound to its terminal submission';
     END IF;
   END IF;
   RETURN NEW;
@@ -983,7 +1001,7 @@ BEGIN
   IF (NEW.status = 'processing' AND NEW.phase = 'publish') OR NEW.status = 'published' THEN
     SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision = NEW.analysis_revision FOR SHARE;
     SELECT * INTO decision_record FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision = NEW.decision_revision FOR SHARE;
-    IF analysis_record.submission_id IS NULL OR decision_record.submission_id IS NULL OR decision_record.outcome <> 'allow' OR decision_record.creation_revision <> NEW.creation_revision OR decision_record.audio_revision <> NEW.audio_revision OR decision_record.analysis_revision <> NEW.analysis_revision OR decision_record.canonical_audio_sha256 <> analysis_record.canonical_audio_sha256 OR ROW(analysis_record.bound_reference_asset_id,analysis_record.bound_reference_audio_revision,analysis_record.bound_reference_analysis_revision,analysis_record.bound_reference_audio_sha256,analysis_record.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(NEW.bound_reference_asset_id,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) OR analysis_record.media_safety <> 'allow' OR analysis_record.lyrics_safety NOT IN ('skipped', 'allow') OR analysis_record.speech_status = 'unavailable' OR analysis_record.explicitness NOT IN ('not_explicit', 'no_lyrics') OR (analysis_record.acr_decision = 'inconclusive' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code IN ('acr_inconclusive','acr_exhausted'))) OR (analysis_record.acr_decision = 'skipped' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code='acr_skipped')) OR (analysis_record.acr_decision = 'requires_reference' AND NEW.bound_reference_asset_id IS NULL) OR NOT EXISTS (SELECT 1 FROM media_submission_terms WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND creation_revision = NEW.creation_revision) THEN RAISE EXCEPTION 'media publication evidence is not ratified'; END IF;
+    IF analysis_record.submission_id IS NULL OR decision_record.submission_id IS NULL OR decision_record.outcome <> 'allow' OR decision_record.creation_revision <> NEW.creation_revision OR decision_record.audio_revision <> NEW.audio_revision OR decision_record.analysis_revision <> NEW.analysis_revision OR decision_record.canonical_audio_sha256 <> analysis_record.canonical_audio_sha256 OR analysis_record.media_safety <> 'allow' OR analysis_record.lyrics_safety NOT IN ('skipped', 'allow') OR analysis_record.speech_status = 'unavailable' OR analysis_record.explicitness NOT IN ('not_explicit', 'no_lyrics') OR (analysis_record.acr_decision = 'inconclusive' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code IN ('acr_inconclusive','acr_exhausted'))) OR (analysis_record.acr_decision = 'skipped' AND NOT EXISTS (SELECT 1 FROM media_moderation_actions m WHERE m.community_id=NEW.community_id AND m.actor_user_id=NEW.actor_user_id AND m.submission_id=NEW.submission_id AND m.operation_id=NEW.operation_id AND m.action_id=NEW.moderator_action_id AND m.approval_kind='acr_override' AND m.reason_code='acr_skipped')) OR (analysis_record.acr_decision = 'requires_reference' AND NEW.bound_reference_asset_id IS NULL) OR NOT EXISTS (SELECT 1 FROM media_submission_terms WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id = NEW.submission_id AND operation_id=NEW.operation_id AND creation_revision = NEW.creation_revision) THEN RAISE EXCEPTION 'media publication evidence is not ratified'; END IF;
   END IF;
   IF NEW.status = 'published' THEN
     SELECT * INTO post_record FROM posts WHERE community_id = NEW.community_id AND post_id = NEW.post_id FOR SHARE;
@@ -1000,6 +1018,29 @@ BEGIN
 END;
 $$;
 CREATE TRIGGER media_submission_update_guard BEFORE UPDATE ON media_post_submissions FOR EACH ROW EXECUTE FUNCTION guard_media_submission_update();
+
+CREATE FUNCTION validate_media_reference_binding() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.bound_reference_asset_id IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM media_reference_evidence r
+       WHERE r.community_id=NEW.community_id
+         AND r.actor_user_id=NEW.actor_user_id
+         AND r.submission_id=NEW.submission_id
+         AND r.operation_id=NEW.operation_id
+         AND r.asset_id=NEW.bound_reference_asset_id
+         AND r.evidence_ref=NEW.bound_reference_evidence_ref
+         AND r.evidence_audio_revision=NEW.bound_reference_audio_revision
+         AND r.evidence_analysis_revision=NEW.bound_reference_analysis_revision
+         AND r.evidence_audio_sha256=NEW.bound_reference_audio_sha256
+         AND r.upstream_commercial_rev_share_bps IS NOT DISTINCT FROM NEW.bound_reference_upstream_share_bps
+     ) THEN
+    RAISE EXCEPTION 'current reference binding lacks its immutable evidence';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER media_reference_binding_pair AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_media_reference_binding();
 
 CREATE FUNCTION validate_media_submission_event_pair() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE expected_event TEXT; event_record media_submission_events%ROWTYPE; reservation_record media_upload_reservations%ROWTYPE;
@@ -1052,6 +1093,23 @@ BEGIN
       RAISE EXCEPTION 'terminal upload reservation is not paired with its submission failure';
     END IF;
   END IF;
+  IF NEW.status = 'abandoned' AND NEW.abandonment_reason = 'reservation_expired' THEN
+    SELECT * INTO reservation_record FROM media_upload_reservations
+      WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+        AND reservation_id=NEW.audio_reservation_id FOR SHARE;
+    IF reservation_record.reservation_id IS NULL
+       OR reservation_record.state IS DISTINCT FROM 'expired'
+       OR reservation_record.submission_id IS DISTINCT FROM NEW.submission_id
+       OR reservation_record.operation_id IS DISTINCT FROM NEW.operation_id
+       OR reservation_record.claim_fence <= 0
+       OR reservation_record.terminal_reason IS NOT NULL
+       OR reservation_record.terminal_evidence_ref IS NOT NULL
+       OR reservation_record.terminal_evidence_digest IS NOT NULL
+       OR reservation_record.terminal_at IS NOT NULL
+       OR reservation_record.terminal_fence IS NOT NULL THEN
+      RAISE EXCEPTION 'expired upload reservation is not paired with its submission abandonment';
+    END IF;
+  END IF;
   IF expected_event = 'publication_committed' AND (
     NOT EXISTS (SELECT 1 FROM posts p WHERE p.community_id=NEW.community_id AND p.post_id=NEW.post_id AND p.author_user_id=NEW.actor_user_id AND p.post_type='song' AND p.status='published' AND p.visibility='public' AND p.title=NEW.title)
     OR NOT EXISTS (SELECT 1 FROM media_publication_projections p WHERE p.community_id=NEW.community_id AND p.actor_user_id=NEW.actor_user_id AND p.submission_id=NEW.submission_id AND p.operation_id=NEW.operation_id AND p.post_id=NEW.post_id AND p.creation_revision=NEW.creation_revision AND p.audio_revision=NEW.audio_revision AND p.analysis_revision=NEW.analysis_revision AND p.decision_revision=NEW.decision_revision AND p.canonical_audio_sha256=(SELECT canonical_sha256 FROM media_audio_revisions a WHERE a.community_id=NEW.community_id AND a.actor_user_id=NEW.actor_user_id AND a.submission_id=NEW.submission_id AND a.operation_id=NEW.operation_id AND a.audio_revision=NEW.audio_revision) AND p.alignment='pending')
@@ -1090,7 +1148,7 @@ CREATE CONSTRAINT TRIGGER media_submission_initial_event AFTER INSERT ON media_p
 CREATE FUNCTION validate_media_reservation_claim_pair() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE submission_record media_post_submissions%ROWTYPE; event_record media_submission_events%ROWTYPE; issued_event_record media_submission_events%ROWTYPE;
 BEGIN
-  IF NEW.state IN ('claimed', 'sealed', 'rejected') THEN
+  IF NEW.state IN ('claimed', 'sealed', 'rejected', 'expired') AND NEW.submission_id IS NOT NULL THEN
     SELECT * INTO submission_record FROM media_post_submissions
       WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
         AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id
@@ -1258,8 +1316,30 @@ BEGIN
     IF NEW.analysis_snapshot->'speechLyrics'->>'status' = 'ready' AND (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot->'speechLyrics') AS key) IS DISTINCT FROM ARRAY['adapterRevision','evidenceRef','explicitness','primaryLanguageBcp47','policyRevision','secondaryLanguageBcp47','status','transcriptArtifactRef','transcriptSha256']::TEXT[] THEN
       RAISE EXCEPTION 'ready speech snapshot keys are not exact';
     END IF;
-    IF NEW.analysis_snapshot->'speechLyrics'->>'status' IN ('no_speech','unavailable') AND (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot->'speechLyrics') AS key) IS DISTINCT FROM ARRAY['adapterRevision','evidenceRef','explicitness','policyRevision','status']::TEXT[] THEN
+    IF NEW.analysis_snapshot->'speechLyrics'->>'status' IN ('no_speech','unavailable') AND (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot->'speechLyrics') AS key) IS DISTINCT FROM ARRAY['adapterRevision','evidenceRef','explicitness','policyRevision','primaryLanguageBcp47','secondaryLanguageBcp47','status','transcriptArtifactRef','transcriptSha256']::TEXT[] THEN
       RAISE EXCEPTION 'non-ready speech snapshot keys are not exact';
+    END IF;
+    IF jsonb_typeof(NEW.analysis_snapshot->'speechLyrics'->'status') IS DISTINCT FROM 'string'
+       OR NEW.analysis_snapshot->'speechLyrics'->>'status' NOT IN ('ready','no_speech','unavailable')
+       OR jsonb_typeof(NEW.analysis_snapshot->'speechLyrics'->'explicitness') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(NEW.analysis_snapshot->'speechLyrics'->'evidenceRef') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(NEW.analysis_snapshot->'speechLyrics'->'policyRevision') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(NEW.analysis_snapshot->'speechLyrics'->'adapterRevision') IS DISTINCT FROM 'string' THEN
+      RAISE EXCEPTION 'speech snapshot discriminator types are not exact';
+    END IF;
+    IF NEW.analysis_snapshot->'speechLyrics'->>'status' = 'ready'
+       AND (jsonb_typeof(NEW.analysis_snapshot->'speechLyrics'->'transcriptArtifactRef') IS DISTINCT FROM 'string'
+         OR jsonb_typeof(NEW.analysis_snapshot->'speechLyrics'->'transcriptSha256') IS DISTINCT FROM 'string'
+         OR jsonb_typeof(NEW.analysis_snapshot->'speechLyrics'->'primaryLanguageBcp47') IS DISTINCT FROM 'string'
+         OR (jsonb_typeof(NEW.analysis_snapshot->'speechLyrics'->'secondaryLanguageBcp47') IS DISTINCT FROM 'string' AND NEW.analysis_snapshot->'speechLyrics'->'secondaryLanguageBcp47' IS DISTINCT FROM 'null'::jsonb)) THEN
+      RAISE EXCEPTION 'ready speech snapshot scalar types are not exact';
+    END IF;
+    IF NEW.analysis_snapshot->'speechLyrics'->>'status' IN ('no_speech','unavailable')
+       AND (NEW.analysis_snapshot->'speechLyrics'->'transcriptArtifactRef' IS DISTINCT FROM 'null'::jsonb
+         OR NEW.analysis_snapshot->'speechLyrics'->'transcriptSha256' IS DISTINCT FROM 'null'::jsonb
+         OR NEW.analysis_snapshot->'speechLyrics'->'primaryLanguageBcp47' IS DISTINCT FROM 'null'::jsonb
+         OR NEW.analysis_snapshot->'speechLyrics'->'secondaryLanguageBcp47' IS DISTINCT FROM 'null'::jsonb) THEN
+      RAISE EXCEPTION 'non-ready speech nullable fields must be explicit JSON null';
     END IF;
     IF jsonb_typeof(NEW.analysis_snapshot->'analysisRevision') IS DISTINCT FROM 'number'
        OR NEW.analysis_snapshot->>'analysisRevision' !~ '^[0-9]+$'
@@ -1376,7 +1456,6 @@ BEGIN
   SELECT * INTO analysis_record FROM media_analysis_evidence WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND analysis_revision=NEW.analysis_revision FOR SHARE;
   SELECT * INTO decision_record FROM media_publication_decisions WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id AND decision_revision=NEW.decision_revision FOR SHARE;
   IF analysis_record.submission_id IS NULL
-     OR ROW(analysis_record.bound_reference_asset_id,analysis_record.bound_reference_audio_revision,analysis_record.bound_reference_analysis_revision,analysis_record.bound_reference_audio_sha256,analysis_record.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(submission_record.bound_reference_asset_id,submission_record.bound_reference_audio_revision,submission_record.bound_reference_analysis_revision,submission_record.bound_reference_audio_sha256,submission_record.bound_reference_upstream_share_bps)
      OR analysis_record.audio_revision IS DISTINCT FROM submission_record.audio_revision
      OR analysis_record.canonical_audio_sha256 IS DISTINCT FROM audio_record.canonical_sha256 THEN
     RAISE EXCEPTION 'publication analysis bound reference lineage is not exact';

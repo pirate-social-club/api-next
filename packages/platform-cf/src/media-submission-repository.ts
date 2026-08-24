@@ -45,6 +45,16 @@ const canonicalJson = (value: unknown): string => {
 };
 const trustedAnalysisSnapshot = (analysis: TrustedSongAnalysis): unknown => ({
   ...analysis,
+  speechLyrics:
+    analysis.speechLyrics.status === "ready"
+      ? analysis.speechLyrics
+      : {
+          ...analysis.speechLyrics,
+          transcriptArtifactRef: null,
+          transcriptSha256: null,
+          primaryLanguageBcp47: null,
+          secondaryLanguageBcp47: null,
+        },
   boundReference:
     analysis.boundReference === null
       ? null
@@ -638,6 +648,7 @@ function decodeState(
         };
   if (
     storedAnalysis !== null &&
+    storedBoundReference !== null &&
     canonicalJson(storedBoundReference) !== canonicalJson(boundReferenceCore)
   )
     throw fail(
@@ -648,27 +659,27 @@ function decodeState(
   const projectedAnalysis =
     storedAnalysis === null
       ? null
-      : storedBoundReference === null
-        ? storedAnalysis
-        : boundReference === null
-          ? (() => {
-              throw fail(operation, "invalid-row");
-            })()
-          : ({
-              ...storedAnalysis,
-              boundReference: {
-                ...storedBoundReference,
-                evidenceRef: boundReference.evidenceRef,
-                ...(boundReference.inheritedLicensePreset === undefined
-                  ? {}
-                  : { inheritedLicensePreset: boundReference.inheritedLicensePreset }),
-                ...(boundReference.inheritedCommercialRevShareBps === undefined
-                  ? {}
-                  : {
-                      inheritedCommercialRevShareBps: boundReference.inheritedCommercialRevShareBps,
-                    }),
-              },
-            } satisfies TrustedSongAnalysis);
+      : ({
+          ...storedAnalysis,
+          boundReference:
+            boundReference === null
+              ? null
+              : storedBoundReference === null
+                ? boundReference
+                : {
+                    ...storedBoundReference,
+                    evidenceRef: boundReference.evidenceRef,
+                    ...(boundReference.inheritedLicensePreset === undefined
+                      ? {}
+                      : { inheritedLicensePreset: boundReference.inheritedLicensePreset }),
+                    ...(boundReference.inheritedCommercialRevShareBps === undefined
+                      ? {}
+                      : {
+                          inheritedCommercialRevShareBps:
+                            boundReference.inheritedCommercialRevShareBps,
+                        }),
+                  },
+        } satisfies TrustedSongAnalysis);
   const action =
     row.action_kind === null
       ? null
@@ -1747,6 +1758,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         reason: "expectation_mismatch" | "source_precondition_failed" | "destination_conflict";
         evidenceRef: string;
       }>;
+      readonly reservationExpiry?: boolean;
     },
   ) =>
     Effect.gen(function* () {
@@ -1821,6 +1833,24 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 fail(operation, "constraint", { submissionId: current.submissionId }),
               );
           }
+          if (projection.reservationExpiry === true) {
+            const expired = yield* tx.execute({
+              label: "media-upload-reservation.expire",
+              text: "UPDATE media_upload_reservations SET state='expired',updated_at=clock_timestamp() WHERE community_id=$1 AND actor_user_id=$2 AND reservation_id=$3 AND submission_id=$4 AND operation_id=$5 AND state='claimed' AND expires_at<=clock_timestamp()",
+              values: [
+                current.communityId,
+                current.actorId,
+                current.reservationId,
+                current.submissionId,
+                current.operationId,
+              ],
+              readonly: false,
+            });
+            if (expired.rowCount !== 1)
+              return yield* Effect.fail(
+                fail(operation, "constraint", { submissionId: current.submissionId }),
+              );
+          }
           if (operation === "review") {
             const projection = yield* tx.execute({
               label: "media-moderation.open",
@@ -1891,7 +1921,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       }),
       (next, current) => ({
         event: "reference_bound",
-        text: "WITH reference_evidence AS (INSERT INTO media_reference_evidence (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256,evidence_ref,upstream_commercial_rev_share_bps,inherited_license_preset,inherited_commercial_rev_share_bps) VALUES ($10,$11,$12,$13,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256) DO NOTHING) UPDATE media_post_submissions SET creation_revision=$1,bound_reference_asset_id=$2,bound_reference_evidence_ref=$6,bound_reference_audio_revision=$3,bound_reference_analysis_revision=$4,bound_reference_audio_sha256=$5,bound_reference_upstream_share_bps=$7,status='processing',phase='analysis',action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,held_revision=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND creation_revision=$14 AND EXISTS (SELECT 1 FROM media_reference_evidence WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND operation_id=$13 AND asset_id=$2 AND evidence_ref=$6 AND evidence_audio_revision=$3 AND evidence_analysis_revision=$4 AND evidence_audio_sha256=$5 AND upstream_commercial_rev_share_bps IS NOT DISTINCT FROM $7)",
+        text: "WITH reference_evidence AS (INSERT INTO media_reference_evidence (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256,evidence_ref,upstream_commercial_rev_share_bps,inherited_license_preset,inherited_commercial_rev_share_bps) VALUES ($10,$11,$12,$13,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256) DO NOTHING RETURNING 1) UPDATE media_post_submissions SET creation_revision=$1,bound_reference_asset_id=$2,bound_reference_evidence_ref=$6,bound_reference_audio_revision=$3,bound_reference_analysis_revision=$4,bound_reference_audio_sha256=$5,bound_reference_upstream_share_bps=$7,status='processing',phase='analysis',action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,held_revision=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND creation_revision=$14 AND EXISTS (SELECT 1 FROM reference_evidence UNION ALL SELECT 1 FROM media_reference_evidence WHERE community_id=$10 AND actor_user_id=$11 AND submission_id=$12 AND operation_id=$13 AND asset_id=$2 AND evidence_ref=$6 AND evidence_audio_revision=$3 AND evidence_analysis_revision=$4 AND evidence_audio_sha256=$5 AND upstream_commercial_rev_share_bps IS NOT DISTINCT FROM $7)",
         values: [
           next.creationRevision,
           input.reference.assetId,
@@ -2287,7 +2317,9 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 evidenceRef: input.evidenceRef ?? "",
               },
             }
-          : {}),
+          : event === "reservation_expired"
+            ? { reservationExpiry: true }
+            : {}),
       }),
     );
   const actionDeadlineElapsed: MediaSubmissionStore["actionDeadlineElapsed"] = (input) =>

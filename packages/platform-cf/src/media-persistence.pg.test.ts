@@ -25,7 +25,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 14;
+const testCount = 16;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -787,7 +787,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         (
           await admin.query(
-            "SELECT status,abandonment_reason,retention_disposition FROM media_post_submissions WHERE submission_id=$1",
+            "SELECT status,abandonment_reason,retention_disposition,(SELECT state FROM media_upload_reservations WHERE reservation_id=audio_reservation_id) AS reservation_state FROM media_post_submissions WHERE submission_id=$1",
             [submission],
           )
         ).rows[0],
@@ -795,7 +795,146 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         status: "abandoned",
         abandonment_reason: "author_cancelled",
         retention_disposition: "no_object",
+        reservation_state: "claimed",
       });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("expires a claimed reservation only with its abandoned submission", async () => {
+    await withSchema(async (admin, connection) => {
+      expect(
+        await run(connection, (store) =>
+          store.reserve({
+            communityId: community,
+            actorUserId: actor,
+            idempotencyKey: "expire-reserve",
+            requestHash,
+            expectedContentType: "audio/mpeg",
+            expectedSizeBytes: audioBytes.byteLength,
+            expectedSha256: audioSha256,
+            uploadUrl: "https://upload.test/media",
+            expiresAt: new Date(Date.now() + 100).toISOString(),
+            responseBytes,
+            responseSha256,
+            reservationId: reservation,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.createSubmission({
+            communityId: community,
+            actorUserId: actor,
+            idempotencyKey: "expire-create",
+            requestHash,
+            title: "Fixture song",
+            songType: "original",
+            reservationId: reservation,
+            submissionId: submission,
+            operationId: operation,
+            responseBytes,
+            responseSha256,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await admin.query("BEGIN");
+      await admin.query(
+        "UPDATE media_post_submissions SET status='abandoned',phase=NULL,abandonment_reason='reservation_expired',retention_disposition='no_object',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+        [submission],
+      );
+      await admin.query(
+        "INSERT INTO media_submission_events (submission_id,community_id,actor_user_id,operation_id,event_sequence,event_id,event_kind,creation_revision,audio_revision,analysis_revision,decision_revision,workflow_revision,evidence) VALUES ($1,$2,$3,$4,3,'media_pg_forged_expiry','reservation_expired',1,0,0,0,0,jsonb_build_object('event_kind','reservation_expired'))",
+        [submission, community, actor, operation],
+      );
+      await expect(admin.query("COMMIT")).rejects.toThrow();
+      await admin.query("ROLLBACK").catch(() => undefined);
+      expect(
+        await run(connection, (store) =>
+          store.reservationExpire({
+            ...command("/media-post-submissions/:submissionId/expire", "expire-key"),
+            expectedCreationRevision: 1,
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      expect(
+        (
+          await admin.query(
+            "SELECT s.status,s.abandonment_reason,r.state,r.submission_id,r.claim_fence FROM media_post_submissions s JOIN media_upload_reservations r ON r.reservation_id=s.audio_reservation_id WHERE s.submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "abandoned",
+        abandonment_reason: "reservation_expired",
+        state: "expired",
+        submission_id: submission,
+        claim_fence: "1",
+      });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("binds reference evidence atomically while reusing immutable analysis", async () => {
+    await withSchema(async (admin, connection) => {
+      const requiresReference = {
+        ...analysis,
+        acr: { ...analysis.acr, decision: "requires_reference" as const },
+      };
+      await createThroughDecision(connection, decision, requiresReference, true);
+      expect(
+        await run(connection, (store) =>
+          store.requireReference({
+            ...command("/media-post-submissions/:submissionId/reference", "reference-required"),
+            expectedCreationRevision: 2,
+            expectedAudioRevision: 1,
+            expectedAnalysisRevision: 1,
+            referenceRequestRef: "reference-request",
+            actionExpiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      expect(
+        await run(connection, (store) =>
+          store.bindReference({
+            ...command("/media-post-submissions/:submissionId/reference", "reference-bound"),
+            expectedCreationRevision: 2,
+            reference: {
+              assetId: "upstream-asset",
+              evidenceAudioRevision: 1,
+              evidenceAnalysisRevision: 1,
+              evidenceAudioSha256: audioSha256,
+              upstreamCommercialRevShareBps: 1000,
+              evidenceRef: "upstream-evidence",
+            },
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      expect(
+        await run(connection, (store) =>
+          store.getForAuthor({
+            communityId: community,
+            submissionId: submission,
+            actorUserId: actor,
+          }),
+        ),
+      ).toMatchObject({
+        creationRevision: 3,
+        analysisRevision: 1,
+        status: "processing",
+        phase: "analysis",
+        boundReference: { assetId: "upstream-asset", evidenceRef: "upstream-evidence" },
+        analysis: {
+          boundReference: { assetId: "upstream-asset", evidenceRef: "upstream-evidence" },
+        },
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT analysis_snapshot->'boundReference' AS analysis_reference,(SELECT count(*)::text FROM media_reference_evidence WHERE submission_id=$1) AS evidence_count FROM media_analysis_evidence WHERE submission_id=$1 AND analysis_revision=1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ analysis_reference: null, evidence_count: "1" });
     });
     completedTestCount += 1;
   }, 40_000);
