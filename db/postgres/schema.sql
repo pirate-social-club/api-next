@@ -3,6 +3,21 @@
 
 SET check_function_bodies = false;
 
+CREATE FUNCTION active_community_effect(expected_community_id text, expected_user_id text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM communities AS community
+      JOIN community_memberships AS membership
+        ON membership.community_id = community.community_id
+       AND membership.user_id = expected_user_id
+       AND membership.status = 'member'
+     WHERE community.community_id = expected_community_id
+       AND community.status = 'active'
+  )
+$$;
+
 CREATE FUNCTION effective_active_route(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, path_segment text, href text, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
     LANGUAGE sql STABLE
     AS $$
@@ -853,6 +868,250 @@ BEGIN
     RETURN NEW;
   END IF;
   RAISE EXCEPTION 'community purchase quote transition is not allowed: % -> %', OLD.status, NEW.status;
+END;
+$$;
+
+CREATE FUNCTION guard_community_route_attachment_intent() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  community_record communities%ROWTYPE;
+  grant_record community_route_authority_grants%ROWTYPE;
+  binding_record community_canonical_route_bindings%ROWTYPE;
+  evidence_record community_route_ownership_evidence%ROWTYPE;
+  attempt_record community_route_attachment_ceremony_attempts%ROWTYPE;
+  result_record community_route_attachment_ceremony_results%ROWTYPE;
+  state_record community_route_attachment_requirement_states%ROWTYPE;
+BEGIN
+  IF TG_OP = 'UPDATE' AND ROW(
+    NEW.attachment_intent_id,
+    NEW.community_id,
+    NEW.actor_id,
+    NEW.authority_grant_id,
+    NEW.create_idempotency_key,
+    NEW.create_request_hash,
+    NEW.family,
+    NEW.root_label,
+    NEW.root_label_display,
+    NEW.requirement_hash,
+    NEW.provider_id,
+    NEW.provider_binding_hash,
+    NEW.provider_configuration_kind,
+    NEW.provider_configuration_ref,
+    NEW.provider_configuration_version,
+    NEW.protocol_version,
+    NEW.expires_at,
+    NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.attachment_intent_id,
+    OLD.community_id,
+    OLD.actor_id,
+    OLD.authority_grant_id,
+    OLD.create_idempotency_key,
+    OLD.create_request_hash,
+    OLD.family,
+    OLD.root_label,
+    OLD.root_label_display,
+    OLD.requirement_hash,
+    OLD.provider_id,
+    OLD.provider_binding_hash,
+    OLD.provider_configuration_kind,
+    OLD.provider_configuration_ref,
+    OLD.provider_configuration_version,
+    OLD.protocol_version,
+    OLD.expires_at,
+    OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'route attachment authority and requested root are immutable';
+  END IF;
+
+  IF TG_OP = 'INSERT'
+    AND (NEW.revision <> 1 OR NEW.status <> 'verification_required') THEN
+    RAISE EXCEPTION 'route attachment must begin at revision one awaiting verification';
+  END IF;
+  IF TG_OP = 'UPDATE' AND (
+    NEW.revision <> OLD.revision + 1
+    OR OLD.status IN ('committed', 'failed', 'expired', 'cancelled')
+    OR NOT (
+      (OLD.status = 'verification_required'
+        AND NEW.status IN (
+          'verification_required', 'commit_ready', 'failed', 'expired', 'cancelled'
+        ))
+      OR (OLD.status = 'commit_ready'
+        AND NEW.status IN ('committed', 'failed', 'expired', 'cancelled'))
+    )
+  ) THEN
+    RAISE EXCEPTION 'route attachment intent transition is not allowed: % -> %',
+      OLD.status,
+      NEW.status;
+  END IF;
+
+  SELECT * INTO community_record
+    FROM communities
+   WHERE community_id = NEW.community_id;
+  SELECT * INTO grant_record
+    FROM community_route_authority_grants
+   WHERE grant_id = NEW.authority_grant_id;
+
+  IF community_record.community_id IS NULL
+    OR community_record.status <> 'active'
+    OR community_record.route_authority_version <> 'optional_route_v2'
+    OR grant_record.grant_id IS NULL
+    OR grant_record.community_id <> NEW.community_id
+    OR grant_record.principal_user_id <> NEW.actor_id
+    OR grant_record.authority <> 'manage_routes'
+    OR grant_record.status <> 'active' THEN
+    RAISE EXCEPTION 'route attachment requires active community manage_routes authority';
+  END IF;
+
+  IF TG_OP = 'INSERT' AND community_record.canonical_route_binding_id IS NOT NULL THEN
+    RAISE EXCEPTION 'route attachment is only available to an unrouted community';
+  END IF;
+
+  IF NEW.status <> 'committed' THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT * INTO binding_record
+    FROM community_canonical_route_bindings
+   WHERE route_binding_id = NEW.committed_route_binding_id
+     AND community_id = NEW.community_id;
+  SELECT * INTO evidence_record
+    FROM community_route_ownership_evidence
+   WHERE evidence_ref = binding_record.verified_evidence_ref;
+  SELECT * INTO attempt_record
+    FROM community_route_attachment_ceremony_attempts
+   WHERE ceremony_intent_id = evidence_record.route_attachment_ceremony_intent_id;
+  SELECT * INTO result_record
+    FROM community_route_attachment_ceremony_results
+   WHERE ceremony_intent_id = attempt_record.ceremony_intent_id;
+  SELECT * INTO state_record
+    FROM community_route_attachment_requirement_states
+   WHERE attachment_intent_id = NEW.attachment_intent_id
+     AND requirement_kind = 'namespace_ownership';
+  IF binding_record.route_binding_id IS NULL
+    OR community_record.canonical_route_binding_id <> binding_record.route_binding_id
+    OR binding_record.family <> NEW.family
+    OR binding_record.root_label <> NEW.root_label
+    OR binding_record.root_label_display <> NEW.root_label_display
+    OR binding_record.ownership_status <> 'verified'
+    OR binding_record.route_lifecycle_status <> 'active'
+    OR evidence_record.origin <> 'route_attachment'
+    OR evidence_record.route_attachment_ceremony_intent_id IS NULL
+    OR attempt_record.ceremony_intent_id IS NULL
+    OR result_record.ceremony_intent_id IS NULL
+    OR state_record.attachment_intent_id IS NULL
+    OR attempt_record.attachment_intent_id <> NEW.attachment_intent_id
+    OR attempt_record.actor_id <> NEW.actor_id
+    OR result_record.attachment_intent_id <> NEW.attachment_intent_id
+    OR result_record.outcome_status <> 'satisfied'
+    OR result_record.evidence_ref <> evidence_record.evidence_ref
+    OR result_record.evidence_digest <> evidence_record.evidence_digest
+    OR result_record.provider_identity_digest <> evidence_record.provider_identity_digest
+    OR state_record.status <> 'satisfied'
+    OR state_record.generation <> attempt_record.generation
+    OR state_record.current_ceremony_intent_id <> attempt_record.ceremony_intent_id
+    OR evidence_record.family <> binding_record.family
+    OR evidence_record.root_label <> binding_record.root_label
+    OR evidence_record.root_label_display <> binding_record.root_label_display
+    OR evidence_record.path_segment <> binding_record.path_segment
+    OR evidence_record.binding_generation <> binding_record.binding_generation
+    OR evidence_record.verified_at > clock_timestamp()
+    OR (evidence_record.expires_at IS NOT NULL AND evidence_record.expires_at <= clock_timestamp())
+    OR NEW.committed_resource <> jsonb_build_object(
+      'authority_version', 'optional_route_v2',
+      'community_id', NEW.community_id,
+      'href', '/c/' || NEW.community_id,
+      'canonical_route', jsonb_build_object(
+        'family', binding_record.family,
+        'root_label', binding_record.root_label,
+        'root_label_display', binding_record.root_label_display,
+        'path_segment', binding_record.path_segment,
+        'href', binding_record.href,
+        'app_host', NULL
+      )
+    ) THEN
+    RAISE EXCEPTION 'committed route attachment lacks matching active verified authority';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_community_route_attachment_requirement_state() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'community route attachment requirement state cannot be deleted';
+  END IF;
+  IF ROW(
+    NEW.attachment_intent_id, NEW.actor_id, NEW.requirement_kind,
+    NEW.requirement_hash, NEW.provider_id, NEW.provider_binding_hash,
+    NEW.provider_configuration_kind, NEW.provider_configuration_ref,
+    NEW.provider_configuration_version, NEW.family, NEW.root_label,
+    NEW.root_label_display, NEW.path_segment, NEW.created_at
+  ) IS DISTINCT FROM ROW(
+    OLD.attachment_intent_id, OLD.actor_id, OLD.requirement_kind,
+    OLD.requirement_hash, OLD.provider_id, OLD.provider_binding_hash,
+    OLD.provider_configuration_kind, OLD.provider_configuration_ref,
+    OLD.provider_configuration_version, OLD.family, OLD.root_label,
+    OLD.root_label_display, OLD.path_segment, OLD.created_at
+  ) THEN
+    RAISE EXCEPTION 'community route attachment requirement authority is immutable';
+  END IF;
+  IF NOT (
+    (
+      OLD.status IN ('unmet', 'failed', 'expired')
+      AND NEW.status = 'pending'
+      AND NEW.generation = OLD.generation + 1
+      AND NEW.current_ceremony_intent_id IS NOT NULL
+      AND NEW.satisfied_at IS NULL
+    )
+    OR (
+      OLD.status = 'pending'
+      AND NEW.status IN ('satisfied', 'failed', 'expired')
+      AND NEW.generation = OLD.generation
+      AND NEW.current_ceremony_intent_id = OLD.current_ceremony_intent_id
+    )
+  ) THEN
+    RAISE EXCEPTION 'community route attachment requirement transition is not allowed: % -> %',
+      OLD.status,
+      NEW.status;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_community_route_authority_grant_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(
+    NEW.grant_id,
+    NEW.community_id,
+    NEW.principal_user_id,
+    NEW.authority,
+    NEW.source_kind,
+    NEW.source_policy_ref,
+    NEW.granted_at,
+    NEW.granted_by_user_id
+  ) IS DISTINCT FROM ROW(
+    OLD.grant_id,
+    OLD.community_id,
+    OLD.principal_user_id,
+    OLD.authority,
+    OLD.source_kind,
+    OLD.source_policy_ref,
+    OLD.granted_at,
+    OLD.granted_by_user_id
+  ) THEN
+    RAISE EXCEPTION 'community route authority grant identity is immutable';
+  END IF;
+  IF OLD.status = 'revoked' THEN
+    RAISE EXCEPTION 'revoked community route authority grants are terminal';
+  END IF;
+  RETURN NEW;
 END;
 $$;
 
@@ -2011,6 +2270,19 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION has_community_route_authority(expected_community_id text, expected_principal_user_id text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM community_route_authority_grants AS authority_grant
+     WHERE authority_grant.community_id = expected_community_id
+       AND authority_grant.principal_user_id = expected_principal_user_id
+       AND authority_grant.authority = 'manage_routes'
+       AND authority_grant.status = 'active'
+  )
+$$;
+
 CREATE FUNCTION identity_credentials_enforce_lifecycle() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2175,11 +2447,27 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_community_route_attachment_immutable_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'community route attachment evidence is append-only';
+END;
+$$;
+
 CREATE FUNCTION reject_community_route_lifecycle_transition_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
   RAISE EXCEPTION 'community route lifecycle transitions are append-only';
+END;
+$$;
+
+CREATE FUNCTION reject_community_route_operator_override_audit_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'community route operator override audit is append-only';
 END;
 $$;
 
@@ -2541,6 +2829,244 @@ BEGIN
   END IF;
 
   RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION validate_community_route_attachment_attempt_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  intent_record community_route_attachment_intents%ROWTYPE;
+  state_record community_route_attachment_requirement_states%ROWTYPE;
+BEGIN
+  SELECT * INTO intent_record
+    FROM community_route_attachment_intents
+   WHERE attachment_intent_id = NEW.attachment_intent_id
+     AND actor_id = NEW.actor_id
+   FOR SHARE;
+  SELECT * INTO state_record
+    FROM community_route_attachment_requirement_states
+   WHERE attachment_intent_id = NEW.attachment_intent_id
+     AND requirement_kind = NEW.requirement_kind
+   FOR UPDATE;
+  IF intent_record.attachment_intent_id IS NULL
+    OR intent_record.status <> 'verification_required'
+    OR intent_record.expires_at <= clock_timestamp()
+    OR NEW.expires_at > intent_record.expires_at
+    OR state_record.attachment_intent_id IS NULL
+    OR state_record.actor_id <> NEW.actor_id
+    OR state_record.status NOT IN ('unmet', 'failed', 'expired')
+    OR NEW.generation <> state_record.generation + 1
+    OR NEW.requirement_hash <> state_record.requirement_hash
+    OR NEW.provider_id <> state_record.provider_id
+    OR NEW.provider_binding_hash <> state_record.provider_binding_hash
+    OR NEW.provider_configuration_kind <> state_record.provider_configuration_kind
+    OR NEW.provider_configuration_ref <> state_record.provider_configuration_ref
+    OR NEW.provider_configuration_version <> state_record.provider_configuration_version
+    OR NEW.family <> state_record.family
+    OR NEW.root_label <> state_record.root_label
+    OR NEW.root_label_display <> state_record.root_label_display
+    OR NEW.path_segment <> state_record.path_segment THEN
+    RAISE EXCEPTION 'route attachment ceremony does not match its current requirement authority';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_community_route_attachment_binding_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  community_record communities%ROWTYPE;
+  evidence_record community_route_ownership_evidence%ROWTYPE;
+  attempt_record community_route_attachment_ceremony_attempts%ROWTYPE;
+  intent_record community_route_attachment_intents%ROWTYPE;
+BEGIN
+  SELECT * INTO evidence_record
+    FROM community_route_ownership_evidence
+   WHERE evidence_ref = NEW.verified_evidence_ref;
+  IF evidence_record.evidence_ref IS NULL
+    OR evidence_record.origin <> 'route_attachment' THEN
+    RETURN NEW;
+  END IF;
+  SELECT * INTO attempt_record
+    FROM community_route_attachment_ceremony_attempts
+   WHERE ceremony_intent_id = evidence_record.route_attachment_ceremony_intent_id;
+  SELECT * INTO community_record
+    FROM communities
+   WHERE community_id = NEW.community_id
+   FOR UPDATE;
+  SELECT * INTO intent_record
+    FROM community_route_attachment_intents
+   WHERE attachment_intent_id = attempt_record.attachment_intent_id
+   FOR SHARE;
+  IF community_record.community_id IS NULL
+    OR community_record.status <> 'active'
+    OR community_record.route_authority_version <> 'optional_route_v2'
+    OR community_record.canonical_route_binding_id IS NOT NULL
+    OR intent_record.attachment_intent_id IS NULL
+    OR intent_record.community_id <> NEW.community_id
+    OR intent_record.status <> 'commit_ready'
+    OR intent_record.committed_route_binding_id IS NOT NULL
+    OR attempt_record.actor_id <> intent_record.actor_id
+    OR evidence_record.family <> NEW.family
+    OR evidence_record.root_label <> NEW.root_label
+    OR evidence_record.root_label_display <> NEW.root_label_display
+    OR evidence_record.path_segment <> NEW.path_segment
+    OR evidence_record.binding_generation <> NEW.binding_generation
+    OR NEW.ownership_status <> 'verified'
+    OR NEW.route_lifecycle_status <> 'active' THEN
+    RAISE EXCEPTION 'route attachment commit requires the community to remain unrouted';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_community_route_attachment_evidence_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  intent_record community_route_attachment_intents%ROWTYPE;
+  attempt_record community_route_attachment_ceremony_attempts%ROWTYPE;
+  result_record community_route_attachment_ceremony_results%ROWTYPE;
+  state_record community_route_attachment_requirement_states%ROWTYPE;
+BEGIN
+  SELECT * INTO attempt_record
+    FROM community_route_attachment_ceremony_attempts
+   WHERE ceremony_intent_id = NEW.route_attachment_ceremony_intent_id;
+  SELECT * INTO intent_record
+    FROM community_route_attachment_intents
+   WHERE attachment_intent_id = attempt_record.attachment_intent_id
+   FOR SHARE;
+  SELECT * INTO state_record
+    FROM community_route_attachment_requirement_states
+   WHERE attachment_intent_id = attempt_record.attachment_intent_id
+     AND requirement_kind = attempt_record.requirement_kind
+   FOR SHARE;
+  SELECT * INTO result_record
+    FROM community_route_attachment_ceremony_results
+   WHERE ceremony_intent_id = attempt_record.ceremony_intent_id;
+  IF intent_record.attachment_intent_id IS NULL
+    OR intent_record.actor_id <> attempt_record.actor_id
+    OR intent_record.status NOT IN ('verification_required', 'commit_ready')
+    OR attempt_record.ceremony_intent_id IS NULL
+    OR state_record.attachment_intent_id IS NULL
+    OR state_record.status <> 'satisfied'
+    OR state_record.generation <> attempt_record.generation
+    OR state_record.current_ceremony_intent_id <> attempt_record.ceremony_intent_id
+    OR result_record.ceremony_intent_id IS NULL
+    OR result_record.outcome_status <> 'satisfied'
+    OR result_record.evidence_ref <> NEW.evidence_ref
+    OR result_record.evidence_digest <> NEW.evidence_digest
+    OR result_record.provider_identity_digest <> NEW.provider_identity_digest
+    OR result_record.satisfied_at <> NEW.verified_at
+    OR NEW.verified_by_actor_id <> attempt_record.actor_id
+    OR NEW.family <> attempt_record.family
+    OR NEW.root_label <> attempt_record.root_label
+    OR NEW.root_label_display <> attempt_record.root_label_display
+    OR NEW.path_segment <> attempt_record.path_segment
+    OR NEW.requirement_hash <> attempt_record.requirement_hash
+    OR NEW.provider_id <> attempt_record.provider_id
+    OR NEW.provider_binding_hash <> attempt_record.provider_binding_hash
+    OR NEW.provider_configuration_version <> attempt_record.provider_configuration_version
+    OR NEW.binding_generation <> attempt_record.generation THEN
+    RAISE EXCEPTION 'route ownership evidence does not match its attachment ceremony';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_community_route_attachment_requirement_cardinality() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  checked_intent_id TEXT;
+  requirement_count BIGINT;
+BEGIN
+  checked_intent_id := CASE
+    WHEN TG_OP = 'DELETE' THEN OLD.attachment_intent_id
+    ELSE NEW.attachment_intent_id
+  END;
+  IF NOT EXISTS (
+    SELECT 1 FROM community_route_attachment_intents
+     WHERE attachment_intent_id = checked_intent_id
+  ) THEN
+    RETURN NULL;
+  END IF;
+  SELECT COUNT(*) INTO requirement_count
+    FROM community_route_attachment_requirement_states
+   WHERE attachment_intent_id = checked_intent_id
+     AND requirement_kind = 'namespace_ownership';
+  IF requirement_count <> 1 THEN
+    RAISE EXCEPTION 'route attachment requires exactly one namespace ownership requirement row';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION validate_community_route_attachment_requirement_result() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  ceremony_id TEXT;
+  state_record community_route_attachment_requirement_states%ROWTYPE;
+  result_record community_route_attachment_ceremony_results%ROWTYPE;
+BEGIN
+  IF TG_TABLE_NAME = 'community_route_attachment_ceremony_results' THEN
+    ceremony_id := NEW.ceremony_intent_id;
+  ELSE
+    ceremony_id := NEW.current_ceremony_intent_id;
+  END IF;
+  IF ceremony_id IS NULL THEN
+    RETURN NULL;
+  END IF;
+  SELECT * INTO state_record
+    FROM community_route_attachment_requirement_states
+   WHERE current_ceremony_intent_id = ceremony_id;
+  SELECT * INTO result_record
+    FROM community_route_attachment_ceremony_results
+   WHERE ceremony_intent_id = ceremony_id;
+  IF state_record.attachment_intent_id IS NULL THEN
+    IF TG_TABLE_NAME = 'community_route_attachment_ceremony_results' THEN
+      RAISE EXCEPTION 'route attachment result does not match current requirement state';
+    END IF;
+    RETURN NULL;
+  END IF;
+  IF state_record.status IN ('satisfied', 'failed', 'expired') THEN
+    IF result_record.ceremony_intent_id IS NULL
+      OR result_record.actor_id <> state_record.actor_id
+      OR result_record.attachment_intent_id <> state_record.attachment_intent_id
+      OR result_record.requirement_kind <> state_record.requirement_kind
+      OR result_record.generation <> state_record.generation
+      OR result_record.outcome_status <> state_record.status
+      OR result_record.satisfied_at IS DISTINCT FROM state_record.satisfied_at THEN
+      RAISE EXCEPTION 'route attachment terminal result does not match requirement state';
+    END IF;
+  ELSIF result_record.ceremony_intent_id IS NOT NULL THEN
+    RAISE EXCEPTION 'nonterminal route attachment requirement cannot have a result';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION validate_community_route_attachment_result_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  attempt_record community_route_attachment_ceremony_attempts%ROWTYPE;
+BEGIN
+  SELECT * INTO attempt_record
+    FROM community_route_attachment_ceremony_attempts
+   WHERE ceremony_intent_id = NEW.ceremony_intent_id
+   FOR SHARE;
+  IF attempt_record.ceremony_intent_id IS NULL
+    OR NEW.actor_id <> attempt_record.actor_id
+    OR NEW.attachment_intent_id <> attempt_record.attachment_intent_id
+    OR NEW.requirement_kind <> attempt_record.requirement_kind
+    OR NEW.generation <> attempt_record.generation THEN
+    RAISE EXCEPTION 'route attachment result does not match its immutable ceremony';
+  END IF;
+  RETURN NEW;
 END;
 $$;
 
@@ -4504,6 +5030,79 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION validate_optional_route_v2_committed_community() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  community_record communities%ROWTYPE;
+  human_count BIGINT;
+  membership_count BIGINT;
+  authority_count BIGINT;
+  claim_count BIGINT;
+BEGIN
+  IF NEW.creation_contract_version <> 'optional_route_v2'
+    OR NEW.status <> 'committed' THEN
+    RETURN NULL;
+  END IF;
+
+  SELECT * INTO community_record
+    FROM communities
+   WHERE community_id = NEW.committed_community_id;
+  IF community_record.community_id IS NULL
+    OR community_record.status <> 'active'
+    OR community_record.route_authority_version <> 'optional_route_v2'
+    OR community_record.created_by_user_id <> NEW.actor_id
+    OR community_record.canonical_route_binding_id IS NOT NULL
+    OR NEW.committed_resource_href <> '/c/' || community_record.community_id THEN
+    RAISE EXCEPTION 'optional-route-v2 commit requires an active unrouted generated-id community';
+  END IF;
+
+  SELECT COUNT(*) INTO human_count
+    FROM community_creation_requirement_states
+   WHERE intent_id = NEW.intent_id
+     AND actor_id = NEW.actor_id
+     AND requirement_kind = 'human_identity'
+     AND status = 'satisfied';
+  SELECT COUNT(*) INTO membership_count
+    FROM community_memberships
+   WHERE community_id = community_record.community_id
+     AND user_id = NEW.actor_id
+     AND status = 'member';
+  SELECT COUNT(*) INTO authority_count
+    FROM community_route_authority_grants
+   WHERE community_id = community_record.community_id
+     AND principal_user_id = NEW.actor_id
+     AND authority = 'manage_routes'
+     AND source_kind = 'creator_owner'
+     AND status = 'active';
+  SELECT COUNT(*) INTO claim_count
+    FROM community_creation_subject_claims AS claim
+    JOIN evidence_receipts AS receipt
+      ON receipt.evidence_receipt_id = claim.evidence_receipt_id
+     AND receipt.proof_session_id = claim.proof_session_id
+     AND receipt.user_id = NEW.actor_id
+    JOIN active_subject_key_bindings AS active_binding
+      ON active_binding.subject_key_id = claim.subject_key_id
+     AND active_binding.user_id = NEW.actor_id
+     AND active_binding.binding_event_id = receipt.subject_binding_event_id
+     AND active_binding.binding_epoch = receipt.subject_binding_epoch
+   WHERE claim.intent_id = NEW.intent_id
+     AND claim.community_id = community_record.community_id
+     AND claim.actor_id = NEW.actor_id
+     AND claim.verification_requirement_hash = NEW.verification_requirement_hash
+     AND (receipt.expires_at IS NULL OR receipt.expires_at > clock_timestamp());
+
+  IF human_count <> 1
+    OR membership_count <> 1
+    OR authority_count <> 1
+    OR claim_count <> 1 THEN
+    RAISE EXCEPTION 'optional-route-v2 commit lacks human, membership, quota, or route authority state';
+  END IF;
+
+  RETURN NULL;
+END;
+$$;
+
 CREATE FUNCTION validate_route_v1_committed_community() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -4644,7 +5243,7 @@ BEGIN
     FROM community_creation_intents
    WHERE intent_id = checked_intent_id;
 
-  IF NOT FOUND OR contract_version <> 'route_v1' THEN
+  IF NOT FOUND OR contract_version = 'legacy_slug_v1' THEN
     RETURN NULL;
   END IF;
 
@@ -4655,8 +5254,14 @@ BEGIN
     FROM community_creation_requirement_states
    WHERE intent_id = checked_intent_id;
 
-  IF human_count <> 1 OR namespace_count <> 1 THEN
-    RAISE EXCEPTION 'route-v1 community creation requires exactly two requirement rows';
+  IF contract_version = 'route_v1'
+    AND (human_count <> 1 OR namespace_count <> 1) THEN
+    RAISE EXCEPTION 'route-v1 community creation requires one human and one namespace requirement row';
+  END IF;
+
+  IF contract_version = 'optional_route_v2'
+    AND (human_count <> 1 OR namespace_count <> 0) THEN
+    RAISE EXCEPTION 'optional-route-v2 community creation requires exactly one human requirement row and no namespace requirement row';
   END IF;
 
   RETURN NULL;
@@ -5004,10 +5609,11 @@ CREATE TABLE communities (
     CONSTRAINT communities_human_verification_lane_check CHECK (((human_verification_lane IS NULL) OR (human_verification_lane = ANY (ARRAY['very'::text, 'self'::text])))),
     CONSTRAINT communities_id_not_blank CHECK ((btrim(community_id) <> ''::text)),
     CONSTRAINT communities_membership_mode_check CHECK ((membership_mode = ANY (ARRAY['open'::text, 'request'::text, 'gated'::text]))),
-    CONSTRAINT communities_route_authority_version_check CHECK ((route_authority_version = ANY (ARRAY['legacy_slug_v1'::text, 'route_v1'::text]))),
+    CONSTRAINT communities_optional_route_v2_identity_shape CHECK (((route_authority_version <> 'optional_route_v2'::text) OR ((community_id ~ '^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text) AND (route_slug IS NULL)))),
+    CONSTRAINT communities_route_authority_binding_shape CHECK (((route_authority_version <> 'route_v1'::text) OR (status <> 'active'::text) OR (canonical_route_binding_id IS NOT NULL))),
+    CONSTRAINT communities_route_authority_version_check CHECK ((route_authority_version = ANY (ARRAY['legacy_slug_v1'::text, 'route_v1'::text, 'optional_route_v2'::text]))),
     CONSTRAINT communities_route_slug_format_check CHECK (((route_slug IS NULL) OR (route_slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'::text))),
     CONSTRAINT communities_route_slug_length_check CHECK (((route_slug IS NULL) OR (char_length(route_slug) <= 256))),
-    CONSTRAINT communities_route_v1_binding_presence CHECK (((route_authority_version <> 'route_v1'::text) OR (status <> 'active'::text) OR (canonical_route_binding_id IS NOT NULL))),
     CONSTRAINT communities_status_check CHECK ((status = ANY (ARRAY['active'::text, 'hidden'::text, 'archived'::text])))
 );
 
@@ -5262,9 +5868,11 @@ CREATE TABLE community_creation_intents (
     CONSTRAINT community_creation_intents_canonical_policy_revision_check CHECK ((canonical_policy_revision > 0)),
     CONSTRAINT community_creation_intents_committed_shape CHECK ((((status = 'committed'::text) AND (committed_community_id IS NOT NULL) AND (committed_resource_href IS NOT NULL) AND (committed_resource_href ~~ '/%'::text)) OR ((status <> 'committed'::text) AND (committed_community_id IS NULL) AND (committed_resource_href IS NULL)))),
     CONSTRAINT community_creation_intents_create_request_hash_check CHECK ((create_request_hash ~ '^[0-9a-f]{64}$'::text)),
-    CONSTRAINT community_creation_intents_creation_contract_version_check CHECK ((creation_contract_version = ANY (ARRAY['legacy_slug_v1'::text, 'route_v1'::text]))),
+    CONSTRAINT community_creation_intents_creation_contract_version_check CHECK ((creation_contract_version = ANY (ARRAY['legacy_slug_v1'::text, 'route_v1'::text, 'optional_route_v2'::text]))),
     CONSTRAINT community_creation_intents_draft_check CHECK ((jsonb_typeof(draft) = 'object'::text)),
     CONSTRAINT community_creation_intents_identifiers_not_blank CHECK (((btrim(intent_id) <> ''::text) AND (intent_id = btrim(intent_id)) AND (btrim(actor_id) <> ''::text) AND (actor_id = btrim(actor_id)) AND (btrim(create_idempotency_key) <> ''::text) AND (create_idempotency_key = btrim(create_idempotency_key)) AND (btrim(verification_provider_id) <> ''::text) AND (verification_provider_id = btrim(verification_provider_id)) AND (btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))),
+    CONSTRAINT community_creation_intents_optional_route_v2_committed_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR (status <> 'committed'::text) OR ((committed_community_id ~ '^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text) AND (committed_resource_href = ('/c/'::text || committed_community_id))))),
+    CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR ((jsonb_typeof(draft) = 'object'::text) AND (draft ? 'name'::text) AND (draft ? 'description'::text) AND (draft ? 'policy'::text) AND ((((draft - 'name'::text) - 'description'::text) - 'policy'::text) = '{}'::jsonb) AND (jsonb_typeof((draft -> 'name'::text)) = 'string'::text) AND (btrim((draft ->> 'name'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'description'::text)) = ANY (ARRAY['string'::text, 'null'::text])) AND (jsonb_typeof((draft -> 'policy'::text)) = 'object'::text) AND (NOT (draft ? 'slug'::text)) AND (NOT (draft ? 'route_request'::text))))),
     CONSTRAINT community_creation_intents_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
     CONSTRAINT community_creation_intents_revision_check CHECK ((revision > 0)),
     CONSTRAINT community_creation_intents_route_v1_committed_href CHECK (((creation_contract_version <> 'route_v1'::text) OR (status <> 'committed'::text) OR (committed_resource_href ~~ '/c/%'::text))),
@@ -5732,6 +6340,188 @@ CREATE TABLE community_route_app_host_health (
     CONSTRAINT community_route_app_host_health_health_status_check CHECK ((health_status = ANY (ARRAY['unconfigured'::text, 'pending'::text, 'healthy'::text, 'unhealthy'::text, 'stale'::text])))
 );
 
+CREATE TABLE community_route_attachment_ceremony_attempts (
+    ceremony_intent_id text NOT NULL,
+    attachment_intent_id text NOT NULL,
+    actor_id text NOT NULL,
+    requirement_kind text NOT NULL,
+    generation bigint NOT NULL,
+    requirement_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_binding_hash text NOT NULL,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_ref text NOT NULL,
+    provider_configuration_version text NOT NULL,
+    family text NOT NULL,
+    root_label text NOT NULL,
+    root_label_display text NOT NULL,
+    path_segment text NOT NULL,
+    reservation_request_hash text NOT NULL,
+    reservation_request jsonb NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_ce_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT community_route_attachment_cerem_reservation_request_hash_check CHECK ((reservation_request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_ceremony_atte_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_ceremony_atte_requirement_kind_check CHECK ((requirement_kind = 'namespace_ownership'::text)),
+    CONSTRAINT community_route_attachment_ceremony_attempts_family_check CHECK ((family = ANY (ARRAY['hns'::text, 'spaces'::text]))),
+    CONSTRAINT community_route_attachment_ceremony_attempts_generation_check CHECK ((generation > 0)),
+    CONSTRAINT community_route_attachment_ceremony_attempts_route_shape CHECK (((is_community_route_root_label(family, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE) AND (path_segment =
+CASE family
+    WHEN 'hns'::text THEN ('app.'::text || root_label)
+    WHEN 'spaces'::text THEN ('@'::text || root_label)
+    ELSE NULL::text
+END))),
+    CONSTRAINT community_route_attachment_ceremony_provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE community_route_attachment_ceremony_results (
+    ceremony_intent_id text NOT NULL,
+    actor_id text NOT NULL,
+    attachment_intent_id text NOT NULL,
+    requirement_kind text NOT NULL,
+    generation bigint NOT NULL,
+    callback_idempotency_key text NOT NULL,
+    callback_request_hash text NOT NULL,
+    outcome_status text NOT NULL,
+    result_hash text NOT NULL,
+    evidence_ref text,
+    evidence_digest text,
+    provider_identity_digest text,
+    terminal_at timestamp with time zone NOT NULL,
+    satisfied_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_cerem_provider_identity_digest_check CHECK (((provider_identity_digest IS NULL) OR (provider_identity_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT community_route_attachment_ceremony_callback_request_hash_check CHECK ((callback_request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_ceremony_resu_requirement_kind_check CHECK ((requirement_kind = 'namespace_ownership'::text)),
+    CONSTRAINT community_route_attachment_ceremony_resul_evidence_digest_check CHECK (((evidence_digest IS NULL) OR (evidence_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT community_route_attachment_ceremony_result_outcome_status_check CHECK ((outcome_status = ANY (ARRAY['satisfied'::text, 'failed'::text, 'expired'::text]))),
+    CONSTRAINT community_route_attachment_ceremony_results_generation_check CHECK ((generation > 0)),
+    CONSTRAINT community_route_attachment_ceremony_results_outcome_shape CHECK ((((outcome_status = 'satisfied'::text) AND (evidence_ref IS NOT NULL) AND (evidence_digest IS NOT NULL) AND (provider_identity_digest IS NOT NULL) AND (satisfied_at = terminal_at)) OR ((outcome_status = ANY (ARRAY['failed'::text, 'expired'::text])) AND (evidence_ref IS NULL) AND (evidence_digest IS NULL) AND (provider_identity_digest IS NULL) AND (satisfied_at IS NULL)))),
+    CONSTRAINT community_route_attachment_ceremony_results_result_hash_check CHECK ((result_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE community_route_attachment_intent_revisions (
+    attachment_intent_id text NOT NULL,
+    revision bigint NOT NULL,
+    actor_id text NOT NULL,
+    operation_kind text NOT NULL,
+    idempotency_key text,
+    request_hash text NOT NULL,
+    status text NOT NULL,
+    state_snapshot jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_intent_revision_operation_kind_check CHECK ((operation_kind = ANY (ARRAY['create'::text, 'verification'::text, 'commit'::text, 'expire'::text, 'cancel'::text]))),
+    CONSTRAINT community_route_attachment_intent_revisions_operation_shape CHECK ((((operation_kind = ANY (ARRAY['create'::text, 'commit'::text])) AND (idempotency_key IS NOT NULL)) OR ((operation_kind <> ALL (ARRAY['create'::text, 'commit'::text])) AND (idempotency_key IS NULL)))),
+    CONSTRAINT community_route_attachment_intent_revisions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_intent_revisions_revision_check CHECK ((revision > 0))
+);
+
+CREATE TABLE community_route_attachment_intents (
+    attachment_intent_id text NOT NULL,
+    community_id text NOT NULL,
+    actor_id text NOT NULL,
+    authority_grant_id text NOT NULL,
+    create_idempotency_key text NOT NULL,
+    create_request_hash text NOT NULL,
+    revision bigint DEFAULT 1 NOT NULL,
+    status text NOT NULL,
+    family text NOT NULL,
+    root_label text NOT NULL,
+    root_label_display text NOT NULL,
+    path_segment text GENERATED ALWAYS AS (
+CASE family
+    WHEN 'hns'::text THEN ('app.'::text || root_label)
+    WHEN 'spaces'::text THEN ('@'::text || root_label)
+    ELSE NULL::text
+END) STORED,
+    href text GENERATED ALWAYS AS (('/c/'::text ||
+CASE family
+    WHEN 'hns'::text THEN ('app.'::text || root_label)
+    WHEN 'spaces'::text THEN ('@'::text || root_label)
+    ELSE NULL::text
+END)) STORED,
+    requirement_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_binding_hash text NOT NULL,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_ref text NOT NULL,
+    provider_configuration_version text NOT NULL,
+    protocol_version text NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    committed_route_binding_id text,
+    committed_resource jsonb,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_in_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT community_route_attachment_intents_commit_shape CHECK ((((status = 'committed'::text) AND (committed_route_binding_id IS NOT NULL) AND (jsonb_typeof(committed_resource) = 'object'::text)) OR ((status <> 'committed'::text) AND (committed_route_binding_id IS NULL) AND (committed_resource IS NULL)))),
+    CONSTRAINT community_route_attachment_intents_create_request_hash_check CHECK ((create_request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_intents_family_check CHECK ((family = ANY (ARRAY['hns'::text, 'spaces'::text]))),
+    CONSTRAINT community_route_attachment_intents_provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_intents_provider_shape CHECK (((btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)) AND (btrim(protocol_version) <> ''::text) AND (protocol_version = btrim(protocol_version)))),
+    CONSTRAINT community_route_attachment_intents_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_intents_revision_check CHECK ((revision > 0)),
+    CONSTRAINT community_route_attachment_intents_route_shape CHECK (((is_community_route_root_label(family, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE))),
+    CONSTRAINT community_route_attachment_intents_status_check CHECK ((status = ANY (ARRAY['verification_required'::text, 'commit_ready'::text, 'committed'::text, 'failed'::text, 'expired'::text, 'cancelled'::text]))),
+    CONSTRAINT community_route_attachment_intents_time_order CHECK (((updated_at >= created_at) AND (expires_at > created_at)))
+);
+
+CREATE TABLE community_route_attachment_requirement_states (
+    attachment_intent_id text NOT NULL,
+    actor_id text NOT NULL,
+    requirement_kind text NOT NULL,
+    status text NOT NULL,
+    requirement_hash text NOT NULL,
+    provider_id text NOT NULL,
+    provider_binding_hash text NOT NULL,
+    provider_configuration_kind text NOT NULL,
+    provider_configuration_ref text NOT NULL,
+    provider_configuration_version text NOT NULL,
+    family text NOT NULL,
+    root_label text NOT NULL,
+    root_label_display text NOT NULL,
+    path_segment text NOT NULL,
+    generation bigint DEFAULT 0 NOT NULL,
+    current_ceremony_intent_id text,
+    satisfied_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_route_attachment_re_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
+    CONSTRAINT community_route_attachment_requirem_provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_requirement_s_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_route_attachment_requirement_s_requirement_kind_check CHECK ((requirement_kind = 'namespace_ownership'::text)),
+    CONSTRAINT community_route_attachment_requirement_states_family_check CHECK ((family = ANY (ARRAY['hns'::text, 'spaces'::text]))),
+    CONSTRAINT community_route_attachment_requirement_states_generation_check CHECK ((generation >= 0)),
+    CONSTRAINT community_route_attachment_requirement_states_progress_shape CHECK ((((status = 'unmet'::text) AND (generation = 0) AND (current_ceremony_intent_id IS NULL) AND (satisfied_at IS NULL)) OR ((status = 'pending'::text) AND (generation > 0) AND (current_ceremony_intent_id IS NOT NULL) AND (satisfied_at IS NULL)) OR ((status = 'satisfied'::text) AND (generation > 0) AND (current_ceremony_intent_id IS NOT NULL) AND (satisfied_at IS NOT NULL)) OR ((status = ANY (ARRAY['failed'::text, 'expired'::text])) AND (generation > 0) AND (current_ceremony_intent_id IS NOT NULL) AND (satisfied_at IS NULL)))),
+    CONSTRAINT community_route_attachment_requirement_states_route_shape CHECK (((is_community_route_root_label(family, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE) AND (path_segment =
+CASE family
+    WHEN 'hns'::text THEN ('app.'::text || root_label)
+    WHEN 'spaces'::text THEN ('@'::text || root_label)
+    ELSE NULL::text
+END))),
+    CONSTRAINT community_route_attachment_requirement_states_status_check CHECK ((status = ANY (ARRAY['unmet'::text, 'pending'::text, 'satisfied'::text, 'failed'::text, 'expired'::text])))
+);
+
+CREATE TABLE community_route_authority_grants (
+    grant_id text NOT NULL,
+    community_id text NOT NULL,
+    principal_user_id text NOT NULL,
+    authority text NOT NULL,
+    source_kind text NOT NULL,
+    source_policy_ref text,
+    status text NOT NULL,
+    granted_at timestamp with time zone NOT NULL,
+    granted_by_user_id text NOT NULL,
+    revoked_at timestamp with time zone,
+    revoked_by_user_id text,
+    CONSTRAINT community_route_authority_grants_authority_check CHECK ((authority = 'manage_routes'::text)),
+    CONSTRAINT community_route_authority_grants_id_shape CHECK (((btrim(grant_id) <> ''::text) AND (grant_id = btrim(grant_id)) AND (octet_length(grant_id) <= 512))),
+    CONSTRAINT community_route_authority_grants_source_kind_check CHECK ((source_kind = ANY (ARRAY['creator_owner'::text, 'community_policy'::text]))),
+    CONSTRAINT community_route_authority_grants_source_shape CHECK ((((source_kind = 'creator_owner'::text) AND (source_policy_ref IS NULL)) OR ((source_kind = 'community_policy'::text) AND (btrim(source_policy_ref) <> ''::text)))),
+    CONSTRAINT community_route_authority_grants_status_check CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text]))),
+    CONSTRAINT community_route_authority_grants_status_shape CHECK ((((status = 'active'::text) AND (revoked_at IS NULL) AND (revoked_by_user_id IS NULL)) OR ((status = 'revoked'::text) AND (revoked_at IS NOT NULL) AND (revoked_by_user_id IS NOT NULL))))
+);
+
 CREATE TABLE community_route_lifecycle_transitions (
     route_lifecycle_transition_id text NOT NULL,
     version text NOT NULL,
@@ -5763,6 +6553,19 @@ END))),
     CONSTRAINT community_route_lifecycle_transition_time_check CHECK ((observed_evidence_expires_at <= transitioned_at))
 );
 
+CREATE TABLE community_route_operator_override_audit (
+    override_audit_id text NOT NULL,
+    community_id text NOT NULL,
+    operator_principal_id text NOT NULL,
+    action_kind text NOT NULL,
+    reason text NOT NULL,
+    request_hash text NOT NULL,
+    occurred_at timestamp with time zone NOT NULL,
+    CONSTRAINT community_route_operator_override_audit_action_kind_check CHECK ((action_kind = ANY (ARRAY['attachment_intent_created'::text, 'attachment_committed'::text]))),
+    CONSTRAINT community_route_operator_override_audit_identity_shape CHECK (((btrim(override_audit_id) <> ''::text) AND (override_audit_id = btrim(override_audit_id)) AND (btrim(operator_principal_id) <> ''::text) AND (operator_principal_id = btrim(operator_principal_id)) AND (btrim(reason) <> ''::text))),
+    CONSTRAINT community_route_operator_override_audit_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE community_route_ownership_evidence (
     evidence_ref text NOT NULL,
     creation_ceremony_intent_id text,
@@ -5784,12 +6587,13 @@ CREATE TABLE community_route_ownership_evidence (
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     origin text DEFAULT 'creation_ceremony'::text NOT NULL,
     route_revalidation_attempt_id text,
+    route_attachment_ceremony_intent_id text,
     CONSTRAINT community_route_ownership_eviden_provider_identity_digest_check CHECK ((provider_identity_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_binding_generation_check CHECK ((binding_generation > 0)),
     CONSTRAINT community_route_ownership_evidence_evidence_digest_check CHECK ((evidence_digest ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_family_check CHECK ((family = ANY (ARRAY['hns'::text, 'spaces'::text]))),
     CONSTRAINT community_route_ownership_evidence_identifiers_not_blank CHECK (((btrim(evidence_ref) <> ''::text) AND (evidence_ref = btrim(evidence_ref)) AND (btrim(provider_id) <> ''::text) AND (provider_id = btrim(provider_id)) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))),
-    CONSTRAINT community_route_ownership_evidence_origin_shape CHECK ((((origin = 'creation_ceremony'::text) AND (creation_ceremony_intent_id IS NOT NULL) AND (route_revalidation_attempt_id IS NULL) AND (verified_by_actor_id IS NOT NULL)) OR ((origin = 'route_revalidation'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NOT NULL) AND (verified_by_actor_id IS NULL)))),
+    CONSTRAINT community_route_ownership_evidence_origin_shape CHECK ((((origin = 'creation_ceremony'::text) AND (creation_ceremony_intent_id IS NOT NULL) AND (route_revalidation_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (verified_by_actor_id IS NOT NULL)) OR ((origin = 'route_revalidation'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NOT NULL) AND (route_attachment_ceremony_intent_id IS NULL) AND (verified_by_actor_id IS NULL)) OR ((origin = 'route_attachment'::text) AND (creation_ceremony_intent_id IS NULL) AND (route_revalidation_attempt_id IS NULL) AND (route_attachment_ceremony_intent_id IS NOT NULL) AND (verified_by_actor_id IS NOT NULL)))),
     CONSTRAINT community_route_ownership_evidence_provider_binding_hash_check CHECK ((provider_binding_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_requirement_hash_check CHECK ((requirement_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT community_route_ownership_evidence_route_shape CHECK (((is_community_route_root_label(family, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE) AND (path_segment =
@@ -7785,11 +8589,44 @@ ALTER TABLE ONLY community_purchase_verification_snapshots
 ALTER TABLE ONLY community_route_app_host_health
     ADD CONSTRAINT community_route_app_host_health_pkey PRIMARY KEY (route_binding_id);
 
+ALTER TABLE ONLY community_route_attachment_ceremony_attempts
+    ADD CONSTRAINT community_route_attachment_ceremony_attempts_identity_unique UNIQUE (actor_id, attachment_intent_id, requirement_kind, generation, ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_ceremony_attempts
+    ADD CONSTRAINT community_route_attachment_ceremony_attempts_pkey PRIMARY KEY (ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_ceremony_results
+    ADD CONSTRAINT community_route_attachment_ceremony_results_callback_unique UNIQUE (actor_id, ceremony_intent_id, callback_idempotency_key);
+
+ALTER TABLE ONLY community_route_attachment_ceremony_results
+    ADD CONSTRAINT community_route_attachment_ceremony_results_pkey PRIMARY KEY (ceremony_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_intent_revisions
+    ADD CONSTRAINT community_route_attachment_intent_revisions_pkey PRIMARY KEY (attachment_intent_id, revision);
+
+ALTER TABLE ONLY community_route_attachment_intents
+    ADD CONSTRAINT community_route_attachment_intents_actor_identity_unique UNIQUE (actor_id, attachment_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_intents
+    ADD CONSTRAINT community_route_attachment_intents_create_idempotency_unique UNIQUE (actor_id, create_idempotency_key);
+
+ALTER TABLE ONLY community_route_attachment_intents
+    ADD CONSTRAINT community_route_attachment_intents_pkey PRIMARY KEY (attachment_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_requirement_states
+    ADD CONSTRAINT community_route_attachment_requirement_states_pkey PRIMARY KEY (attachment_intent_id, requirement_kind);
+
+ALTER TABLE ONLY community_route_authority_grants
+    ADD CONSTRAINT community_route_authority_grants_pkey PRIMARY KEY (grant_id);
+
 ALTER TABLE ONLY community_route_lifecycle_transitions
     ADD CONSTRAINT community_route_lifecycle_transition_generation_unique UNIQUE (route_binding_id, expected_binding_generation);
 
 ALTER TABLE ONLY community_route_lifecycle_transitions
     ADD CONSTRAINT community_route_lifecycle_transitions_pkey PRIMARY KEY (route_lifecycle_transition_id);
+
+ALTER TABLE ONLY community_route_operator_override_audit
+    ADD CONSTRAINT community_route_operator_override_audit_pkey PRIMARY KEY (override_audit_id);
 
 ALTER TABLE ONLY community_route_ownership_evidence
     ADD CONSTRAINT community_route_ownership_evidence_pkey PRIMARY KEY (evidence_ref);
@@ -8317,7 +9154,17 @@ CREATE UNIQUE INDEX community_purchase_intents_open_unique ON community_purchase
 
 CREATE INDEX community_purchase_quote_actor_status_idx ON community_purchase_quotes USING btree (actor_id, status, expires_at, quote_id);
 
+CREATE UNIQUE INDEX community_route_attachment_intent_replay_uidx ON community_route_attachment_intent_revisions USING btree (actor_id, operation_kind, idempotency_key) WHERE (idempotency_key IS NOT NULL);
+
+CREATE UNIQUE INDEX community_route_attachment_intents_one_open_per_community_uidx ON community_route_attachment_intents USING btree (community_id) WHERE (status = ANY (ARRAY['verification_required'::text, 'commit_ready'::text]));
+
+CREATE UNIQUE INDEX community_route_authority_grants_active_uidx ON community_route_authority_grants USING btree (community_id, principal_user_id, authority) WHERE (status = 'active'::text);
+
+CREATE INDEX community_route_authority_grants_principal_idx ON community_route_authority_grants USING btree (principal_user_id, community_id, status);
+
 CREATE INDEX community_route_lifecycle_transitions_time_idx ON community_route_lifecycle_transitions USING btree (transitioned_at, route_binding_id, expected_binding_generation);
+
+CREATE UNIQUE INDEX community_route_ownership_evidence_attachment_ceremony_uidx ON community_route_ownership_evidence USING btree (route_attachment_ceremony_intent_id) WHERE (origin = 'route_attachment'::text);
 
 CREATE INDEX community_route_ownership_evidence_expiry_idx ON community_route_ownership_evidence USING btree (expires_at, evidence_ref) WHERE (expires_at IS NOT NULL);
 
@@ -8497,6 +9344,8 @@ CREATE TRIGGER community_creation_intent_revision_append_only BEFORE DELETE OR U
 
 CREATE TRIGGER community_creation_intent_update_guard BEFORE UPDATE ON community_creation_intents FOR EACH ROW EXECUTE FUNCTION guard_community_creation_intent_update();
 
+CREATE CONSTRAINT TRIGGER community_creation_optional_route_v2_commit_guard AFTER INSERT OR UPDATE ON community_creation_intents DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_optional_route_v2_committed_community();
+
 CREATE TRIGGER community_creation_quota_approval_append_only BEFORE DELETE OR UPDATE ON community_creation_quota_approvals FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
 
 CREATE CONSTRAINT TRIGGER community_creation_requirement_result_state_guard AFTER INSERT OR UPDATE ON community_creation_requirement_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_creation_requirement_result();
@@ -8545,13 +9394,43 @@ CREATE TRIGGER community_purchase_settlement_snapshot_append_only BEFORE DELETE 
 
 CREATE TRIGGER community_purchase_verification_snapshot_append_only BEFORE DELETE OR UPDATE ON community_purchase_verification_snapshots FOR EACH ROW EXECUTE FUNCTION reject_community_commerce_immutable_change();
 
+CREATE TRIGGER community_route_attachment_attempt_append_only BEFORE DELETE OR UPDATE ON community_route_attachment_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION reject_community_route_attachment_immutable_change();
+
+CREATE TRIGGER community_route_attachment_attempt_insert_guard BEFORE INSERT ON community_route_attachment_ceremony_attempts FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_attempt_insert();
+
+CREATE TRIGGER community_route_attachment_binding_insert_guard BEFORE INSERT ON community_canonical_route_bindings FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_binding_insert();
+
+CREATE TRIGGER community_route_attachment_evidence_insert_guard BEFORE INSERT ON community_route_ownership_evidence FOR EACH ROW WHEN ((new.origin = 'route_attachment'::text)) EXECUTE FUNCTION validate_community_route_attachment_evidence_insert();
+
+CREATE TRIGGER community_route_attachment_intent_guard BEFORE INSERT OR UPDATE ON community_route_attachment_intents FOR EACH ROW EXECUTE FUNCTION guard_community_route_attachment_intent();
+
+CREATE CONSTRAINT TRIGGER community_route_attachment_intent_requirement_cardinality AFTER INSERT OR UPDATE ON community_route_attachment_intents DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_requirement_cardinality();
+
+CREATE CONSTRAINT TRIGGER community_route_attachment_requirement_cardinality AFTER INSERT OR DELETE OR UPDATE ON community_route_attachment_requirement_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_requirement_cardinality();
+
+CREATE CONSTRAINT TRIGGER community_route_attachment_requirement_result_state_guard AFTER INSERT OR UPDATE ON community_route_attachment_requirement_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_requirement_result();
+
+CREATE TRIGGER community_route_attachment_requirement_state_guard BEFORE DELETE OR UPDATE ON community_route_attachment_requirement_states FOR EACH ROW EXECUTE FUNCTION guard_community_route_attachment_requirement_state();
+
+CREATE TRIGGER community_route_attachment_result_append_only BEFORE DELETE OR UPDATE ON community_route_attachment_ceremony_results FOR EACH ROW EXECUTE FUNCTION reject_community_route_attachment_immutable_change();
+
+CREATE TRIGGER community_route_attachment_result_insert_guard BEFORE INSERT ON community_route_attachment_ceremony_results FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_result_insert();
+
+CREATE CONSTRAINT TRIGGER community_route_attachment_result_state_guard AFTER INSERT ON community_route_attachment_ceremony_results DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_route_attachment_requirement_result();
+
+CREATE TRIGGER community_route_attachment_revision_append_only BEFORE DELETE OR UPDATE ON community_route_attachment_intent_revisions FOR EACH ROW EXECUTE FUNCTION reject_community_route_attachment_immutable_change();
+
+CREATE TRIGGER community_route_authority_grants_change_guard BEFORE UPDATE ON community_route_authority_grants FOR EACH ROW EXECUTE FUNCTION guard_community_route_authority_grant_change();
+
 CREATE TRIGGER community_route_lifecycle_transition_append_only BEFORE DELETE OR UPDATE ON community_route_lifecycle_transitions FOR EACH ROW EXECUTE FUNCTION reject_community_route_lifecycle_transition_change();
 
 CREATE TRIGGER community_route_lifecycle_transition_insert_guard BEFORE INSERT ON community_route_lifecycle_transitions FOR EACH ROW EXECUTE FUNCTION validate_community_route_lifecycle_transition_insert();
 
+CREATE TRIGGER community_route_operator_override_audit_change_guard BEFORE DELETE OR UPDATE ON community_route_operator_override_audit FOR EACH ROW EXECUTE FUNCTION reject_community_route_operator_override_audit_change();
+
 CREATE TRIGGER community_route_ownership_evidence_append_only BEFORE DELETE OR UPDATE ON community_route_ownership_evidence FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
 
-CREATE TRIGGER community_route_ownership_evidence_insert_guard BEFORE INSERT ON community_route_ownership_evidence FOR EACH ROW EXECUTE FUNCTION validate_community_route_ownership_evidence_insert();
+CREATE TRIGGER community_route_ownership_evidence_insert_guard BEFORE INSERT ON community_route_ownership_evidence FOR EACH ROW WHEN ((new.origin = ANY (ARRAY['creation_ceremony'::text, 'route_revalidation'::text]))) EXECUTE FUNCTION validate_community_route_ownership_evidence_insert();
 
 CREATE TRIGGER community_route_revalidation_attempt_guard BEFORE INSERT OR DELETE OR UPDATE ON community_route_revalidation_completion_attempts FOR EACH ROW EXECUTE FUNCTION guard_community_route_revalidation_attempt();
 
@@ -9110,11 +9989,59 @@ ALTER TABLE ONLY community_purchase_verification_snapshots
 ALTER TABLE ONLY community_route_app_host_health
     ADD CONSTRAINT community_route_app_host_health_route_fk FOREIGN KEY (route_binding_id, family) REFERENCES community_canonical_route_bindings(route_binding_id, family);
 
+ALTER TABLE ONLY community_route_attachment_ceremony_attempts
+    ADD CONSTRAINT community_route_attachment_ceremony_attempts_intent_fk FOREIGN KEY (actor_id, attachment_intent_id) REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_attachment_ceremony_attempts
+    ADD CONSTRAINT community_route_attachment_ceremony_attempts_state_fk FOREIGN KEY (attachment_intent_id, requirement_kind) REFERENCES community_route_attachment_requirement_states(attachment_intent_id, requirement_kind) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_attachment_ceremony_results
+    ADD CONSTRAINT community_route_attachment_ceremony_results_attempt_fk FOREIGN KEY (actor_id, attachment_intent_id, requirement_kind, generation, ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(actor_id, attachment_intent_id, requirement_kind, generation, ceremony_intent_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_attachment_ceremony_results
+    ADD CONSTRAINT community_route_attachment_ceremony_results_evidence_fk FOREIGN KEY (evidence_ref) REFERENCES community_route_ownership_evidence(evidence_ref) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_attachment_intent_revisions
+    ADD CONSTRAINT community_route_attachment_intent_rev_attachment_intent_id_fkey FOREIGN KEY (attachment_intent_id) REFERENCES community_route_attachment_intents(attachment_intent_id);
+
+ALTER TABLE ONLY community_route_attachment_intents
+    ADD CONSTRAINT community_route_attachment_intents_actor_id_fkey FOREIGN KEY (actor_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_route_attachment_intents
+    ADD CONSTRAINT community_route_attachment_intents_authority_grant_id_fkey FOREIGN KEY (authority_grant_id) REFERENCES community_route_authority_grants(grant_id);
+
+ALTER TABLE ONLY community_route_attachment_intents
+    ADD CONSTRAINT community_route_attachment_intents_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_route_attachment_requirement_states
+    ADD CONSTRAINT community_route_attachment_requirement_current_ceremony_fk FOREIGN KEY (current_ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_attachment_requirement_states
+    ADD CONSTRAINT community_route_attachment_requirement_states_intent_fk FOREIGN KEY (actor_id, attachment_intent_id) REFERENCES community_route_attachment_intents(actor_id, attachment_intent_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_route_authority_grants
+    ADD CONSTRAINT community_route_authority_grants_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_route_authority_grants
+    ADD CONSTRAINT community_route_authority_grants_granted_by_user_id_fkey FOREIGN KEY (granted_by_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_route_authority_grants
+    ADD CONSTRAINT community_route_authority_grants_principal_user_id_fkey FOREIGN KEY (principal_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_route_authority_grants
+    ADD CONSTRAINT community_route_authority_grants_revoked_by_user_id_fkey FOREIGN KEY (revoked_by_user_id) REFERENCES users(user_id);
+
 ALTER TABLE ONLY community_route_lifecycle_transitions
     ADD CONSTRAINT community_route_lifecycle_transition_binding_fk FOREIGN KEY (community_id, route_binding_id) REFERENCES community_canonical_route_bindings(community_id, route_binding_id);
 
 ALTER TABLE ONLY community_route_lifecycle_transitions
     ADD CONSTRAINT community_route_lifecycle_transition_evidence_fk FOREIGN KEY (expected_verified_evidence_ref) REFERENCES community_route_ownership_evidence(evidence_ref);
+
+ALTER TABLE ONLY community_route_operator_override_audit
+    ADD CONSTRAINT community_route_operator_override_audit_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_route_ownership_evidence
+    ADD CONSTRAINT community_route_ownership_evidence_attachment_ceremony_fk FOREIGN KEY (route_attachment_ceremony_intent_id) REFERENCES community_route_attachment_ceremony_attempts(ceremony_intent_id) DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY community_route_ownership_evidence
     ADD CONSTRAINT community_route_ownership_evidence_creation_ceremony_fk FOREIGN KEY (creation_ceremony_intent_id) REFERENCES community_creation_ceremony_attempts(ceremony_intent_id) DEFERRABLE INITIALLY DEFERRED;

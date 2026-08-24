@@ -29,6 +29,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-media-persistence-suite-complete\n",
   },
   {
+    name: "postgres optional route v2 migration",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_OPTIONAL_ROUTE_V2_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-optional-route-v2-suite-complete",
+    contents: "api-next-control-plane-postgres-optional-route-v2-suite-complete\n",
+  },
+  {
     name: "postgres namespace ownership persistence",
     path:
       process.env.CONTROL_PLANE_POSTGRES_NAMESPACE_OWNERSHIP_TEST_SENTINEL ??

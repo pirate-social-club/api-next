@@ -8,6 +8,12 @@ if (required && connectionString === undefined) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 }
 const suite = connectionString === undefined ? describe.skip : describe;
+const sentinelPath =
+  process.env.CONTROL_PLANE_POSTGRES_OPTIONAL_ROUTE_V2_TEST_SENTINEL ??
+  "/tmp/api-next-control-plane-postgres-optional-route-v2-suite-complete";
+const sentinelContents = "api-next-control-plane-postgres-optional-route-v2-suite-complete\n";
+const testCount = 1;
+let completedTestCount = 0;
 
 function schemaName(): string {
   return `api_next_optional_route_v2_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -55,6 +61,7 @@ afterAll(async () => {
   } finally {
     await admin.end();
   }
+  if (completedTestCount === testCount) await Bun.write(sentinelPath, sentinelContents);
 });
 
 suite("optional-route-v2 sibling attachment aggregate", () => {
@@ -404,5 +411,6 @@ suite("optional-route-v2 sibling attachment aggregate", () => {
         },
       ]);
     });
+    completedTestCount += 1;
   }, 30_000);
 });

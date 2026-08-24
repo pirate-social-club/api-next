@@ -25,6 +25,7 @@ async function sentinelSet(): Promise<{
     "adapter",
     "foundation",
     "media-persistence",
+    "optional-route-v2",
     "migration",
     "identity",
     "community",
@@ -80,6 +81,13 @@ describe("Postgres suite sentinel verification", () => {
     const sentinel = sentinels.find(({ name }) => name === "media-persistence");
     await rm(sentinel?.path ?? "", { force: true });
     await expect(verifyPostgresTestSentinels(sentinels)).rejects.toThrow("media-persistence");
+  });
+
+  test("fails when the optional-route-v2 suite is skipped or omitted", async () => {
+    const { sentinels } = await sentinelSet();
+    const sentinel = sentinels.find(({ name }) => name === "optional-route-v2");
+    await rm(sentinel?.path ?? "", { force: true });
+    await expect(verifyPostgresTestSentinels(sentinels)).rejects.toThrow("optional-route-v2");
   });
 
   test("keeps the gates-v2 suite and completion marker wired into Postgres CI", async () => {
@@ -143,6 +151,22 @@ describe("Postgres suite sentinel verification", () => {
     );
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-media-persistence-suite-complete/gu),
+    ).toHaveLength(2);
+  });
+
+  test("keeps optional-route-v2 cardinality and race coverage fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain("packages/platform-cf/src/optional-route-v2-migration.pg.test.ts");
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_OPTIONAL_ROUTE_V2_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-optional-route-v2-suite-complete",
+    );
+    expect(
+      workflow.match(/\/tmp\/api-next-control-plane-postgres-optional-route-v2-suite-complete/gu),
     ).toHaveLength(2);
   });
 });

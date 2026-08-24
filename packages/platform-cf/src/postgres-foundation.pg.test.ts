@@ -233,6 +233,9 @@ const hnsControlObserverPersistenceMigrationSql = await Bun.file(
 const mediaSubmissionMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0043_song_media_submission.sql", import.meta.url),
 ).text();
+const optionalRouteV2MigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0044_optional_route_v2.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -455,6 +458,11 @@ const mediaSubmissionMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0043_song_media_submission.sql"] ?? "",
   sql: mediaSubmissionMigrationSql,
 };
+const optionalRouteV2Migration: PostgresMigration = {
+  version: "0044_optional_route_v2.sql",
+  checksum: checksumManifest.migrations["0044_optional_route_v2.sql"] ?? "",
+  sql: optionalRouteV2MigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -499,6 +507,7 @@ const migrations: readonly PostgresMigration[] = [
   communityRouteDatabaseExpiryMigration,
   hnsControlObserverPersistenceMigration,
   mediaSubmissionMigration,
+  optionalRouteV2Migration,
 ];
 
 function checksum(value: string): string {
@@ -737,6 +746,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         hnsControlObserverPersistenceMigration.checksum,
       );
       expect(checksum(mediaSubmissionMigrationSql)).toBe(mediaSubmissionMigration.checksum);
+      expect(checksum(optionalRouteV2MigrationSql)).toBe(optionalRouteV2Migration.checksum);
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -814,7 +824,14 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_purchase_settlement_snapshots",
         "community_purchase_verification_snapshots",
         "community_route_app_host_health",
+        "community_route_attachment_ceremony_attempts",
+        "community_route_attachment_ceremony_results",
+        "community_route_attachment_intent_revisions",
+        "community_route_attachment_intents",
+        "community_route_attachment_requirement_states",
+        "community_route_authority_grants",
         "community_route_lifecycle_transitions",
+        "community_route_operator_override_audit",
         "community_route_ownership_evidence",
         "community_route_revalidation_completion_attempts",
         "community_route_revalidation_evidence_snapshots",
@@ -987,6 +1004,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_purchase_route_snapshot_append_only",
         "community_purchase_settlement_snapshot_append_only",
         "community_purchase_verification_snapshot_append_only",
+        "community_route_attachment_attempt_append_only",
+        "community_route_attachment_result_append_only",
+        "community_route_attachment_revision_append_only",
         "community_route_lifecycle_transition_append_only",
         "community_route_ownership_evidence_append_only",
         "community_route_revalidation_snapshot_append_only",
