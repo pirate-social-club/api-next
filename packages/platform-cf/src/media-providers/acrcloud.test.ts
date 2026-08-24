@@ -33,6 +33,16 @@ const hostileFixtures = (await Bun.file(
       readonly content_type: string;
       readonly provider_code: number;
     }>;
+    readonly early_status_never_settling_cancel: Readonly<{
+      readonly status: number;
+      readonly content_type: string;
+      readonly provider_code: number;
+    }>;
+    readonly hanging_body_never_settling_cancel: Readonly<{
+      readonly status: number;
+      readonly content_type: string;
+      readonly provider_code: number;
+    }>;
   }>;
 };
 
@@ -80,6 +90,26 @@ function hangingBody(bytes: Uint8Array): {
     },
     cancel() {
       cancelled = true;
+    },
+  });
+  return { body, isCancelled: () => cancelled };
+}
+
+function neverSettlingCancelBody(bytes?: Uint8Array): {
+  readonly body: ReadableStream<Uint8Array>;
+  readonly isCancelled: () => boolean;
+} {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      if (bytes !== undefined) controller.enqueue(bytes);
+    },
+    pull() {
+      return new Promise<void>(() => {});
+    },
+    cancel() {
+      cancelled = true;
+      return new Promise<void>(() => {});
     },
   });
   return { body, isCancelled: () => cancelled };
@@ -452,6 +482,20 @@ describe("ACRCloud closed outcomes", () => {
     expect(rejectingBody.locked).toBe(false);
   });
 
+  test("preserves an early status outcome when body cancellation never settles", async () => {
+    const fixture = hostileFixtures.stream_lifecycle.early_status_never_settling_cancel;
+    const tracked = neverSettlingCancelBody();
+    const result = await resultOf({
+      status: fixture.status,
+      headers: { "content-type": fixture.content_type },
+      body: tracked.body,
+    });
+    expect(result).toMatchObject({ outcome: "retryable_failure", reason: "throttled" });
+    expectContext(result);
+    expect(tracked.isCancelled()).toBe(true);
+    expect(tracked.body.locked).toBe(false);
+  });
+
   test("maps every documented provider status code through the closed outcome union", async () => {
     const cases = [
       ["provider_throttled_count", "retryable_failure", "throttled"],
@@ -585,6 +629,48 @@ describe("ACRCloud bounded transport failures", () => {
     expect(result).toMatchObject({ outcome: "retryable_failure", reason: "cancelled" });
     expectContext(result);
     await expectBodyReleased(tracked.body, tracked.isCancelled);
+  });
+
+  test("preserves timeout and caller cancellation with a never-settling body cancel", async () => {
+    const fixture = hostileFixtures.stream_lifecycle.hanging_body_never_settling_cancel;
+    const bytes = new TextEncoder().encode(
+      JSON.stringify({ status: { code: fixture.provider_code } }),
+    );
+    const timedOutBody = neverSettlingCancelBody(bytes);
+    const timedOut = await Effect.runPromise(
+      adapter(null, {
+        timeoutMs: 5,
+        request: () =>
+          Effect.succeed({
+            status: fixture.status,
+            headers: { "content-type": fixture.content_type },
+            body: timedOutBody.body,
+          }),
+      }).identify(input),
+    );
+    expect(timedOut).toMatchObject({ outcome: "retryable_failure", reason: "timeout" });
+    expectContext(timedOut);
+    expect(timedOutBody.isCancelled()).toBe(true);
+    expect(timedOutBody.body.locked).toBe(false);
+
+    const callerBody = neverSettlingCancelBody(bytes);
+    const controller = new AbortController();
+    const running = Effect.runPromise(
+      adapter(null, {
+        request: () =>
+          Effect.succeed({
+            status: fixture.status,
+            headers: { "content-type": fixture.content_type },
+            body: callerBody.body,
+          }),
+      }).identify({ ...input, signal: controller.signal }),
+    );
+    setTimeout(() => controller.abort(), 5);
+    const cancelled = await running;
+    expect(cancelled).toMatchObject({ outcome: "retryable_failure", reason: "cancelled" });
+    expectContext(cancelled);
+    expect(callerBody.isCancelled()).toBe(true);
+    expect(callerBody.body.locked).toBe(false);
   });
 });
 

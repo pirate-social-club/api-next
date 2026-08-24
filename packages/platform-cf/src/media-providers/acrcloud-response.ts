@@ -111,19 +111,36 @@ function isJsonMediaType(value: string): boolean {
   return true;
 }
 
-async function disposeAcrCloudBody(body: ReadableStream<Uint8Array>): Promise<void> {
+function releaseReaderLock(reader: ReturnType<ReadableStream<Uint8Array>["getReader"]>): void {
+  try {
+    reader.releaseLock();
+  } catch {
+    // A pending read can briefly retain the lock; the cancellation callback retries below.
+    queueMicrotask(() => {
+      try {
+        reader.releaseLock();
+      } catch {
+        // The transport owns any still-pending native read.
+      }
+    });
+  }
+}
+
+function cancelAndReleaseReader(reader: ReturnType<ReadableStream<Uint8Array>["getReader"]>): void {
+  try {
+    void Promise.resolve(reader.cancel()).catch(() => {
+      // Cancellation is cleanup and must not replace the classified failure.
+    });
+  } catch {
+    // A malformed reader cannot change the already-determined outcome.
+  }
+  releaseReaderLock(reader);
+}
+
+function disposeAcrCloudBody(body: ReadableStream<Uint8Array>): void {
   try {
     const reader = body.getReader();
-    try {
-      await reader.cancel();
-    } catch {
-      // Disposal is best effort. The already-determined provider outcome wins.
-    }
-    try {
-      reader.releaseLock();
-    } catch {
-      // The reader may already have released its lock while cancelling.
-    }
+    cancelAndReleaseReader(reader);
   } catch {
     // A malformed transport body cannot change the already-determined outcome.
   }
@@ -283,34 +300,16 @@ export async function readBoundedAcrCloudBody(
   const reader = stream.getReader();
   const parts: Uint8Array[] = [];
   let total = 0;
-  let cleanupPromise: Promise<void> | undefined;
-  const cancelAndRelease = (): Promise<void> => {
-    if (cleanupPromise !== undefined) return cleanupPromise;
-    cleanupPromise = (async () => {
-      try {
-        await reader.cancel();
-      } catch {
-        // Cancellation is cleanup and must not replace the classified failure.
-      } finally {
-        try {
-          reader.releaseLock();
-        } catch {
-          // A stream may have released the lock during cancellation.
-        }
-      }
-    })();
-    return cleanupPromise;
-  };
   const readNext = async () => {
     if (signal === undefined) return reader.read();
     if (signal.aborted) {
-      void cancelAndRelease();
+      cancelAndReleaseReader(reader);
       throw new AcrCloudResponseReadAborted();
     }
     let onAbort: (() => void) | undefined;
     const aborted = new Promise<never>((_resolve, reject) => {
       onAbort = () => {
-        void cancelAndRelease();
+        cancelAndReleaseReader(reader);
         reject(new AcrCloudResponseReadAborted());
       };
       signal.addEventListener("abort", onAbort, { once: true });
@@ -334,19 +333,15 @@ export async function readBoundedAcrCloudBody(
     }
   } catch (error) {
     if (error instanceof AcrCloudResponseReadAborted) {
-      void cancelAndRelease();
+      cancelAndReleaseReader(reader);
       throw error;
     }
-    await cancelAndRelease();
+    cancelAndReleaseReader(reader);
     if (error instanceof AcrCloudResponseBodyTooLarge) throw error;
     if (error instanceof AcrCloudResponseStreamFailure) throw error;
     throw new AcrCloudResponseStreamFailure();
   } finally {
-    try {
-      reader.releaseLock();
-    } catch {
-      // Cancellation may already have released the reader.
-    }
+    releaseReaderLock(reader);
   }
   const body = new Uint8Array(total);
   let offset = 0;
@@ -363,19 +358,19 @@ export async function acrCloudResponseOutcome(
   signal?: AbortSignal,
 ): Promise<AcrCloudOutcomeKind> {
   if (!Number.isInteger(response.status) || response.status < 100 || response.status > 599) {
-    await disposeAcrCloudBody(response.body);
+    disposeAcrCloudBody(response.body);
     return malformed("unsupported_shape");
   }
   if (response.status === 429) {
-    await disposeAcrCloudBody(response.body);
+    disposeAcrCloudBody(response.body);
     return retryable("throttled");
   }
   if (response.status === 408 || response.status >= 500) {
-    await disposeAcrCloudBody(response.body);
+    disposeAcrCloudBody(response.body);
     return retryable("provider");
   }
   if (response.status < 200 || response.status >= 300) {
-    await disposeAcrCloudBody(response.body);
+    disposeAcrCloudBody(response.body);
     return response.status === 401 || response.status === 403
       ? permanent("unauthorized")
       : response.status === 413
@@ -384,7 +379,7 @@ export async function acrCloudResponseOutcome(
   }
   const contentType = headerValue(response.headers, "content-type") ?? "";
   if (!isJsonMediaType(contentType)) {
-    await disposeAcrCloudBody(response.body);
+    disposeAcrCloudBody(response.body);
     return malformed("wrong_content_type");
   }
   try {

@@ -73,6 +73,16 @@
       "status": 200,
       "content_type": "application/json",
       "provider_code": 1001
+    },
+    "early_status_never_settling_cancel": {
+      "status": 429,
+      "content_type": "application/json",
+      "provider_code": 0
+    },
+    "hanging_body_never_settling_cancel": {
+      "status": 200,
+      "content_type": "application/json",
+      "provider_code": 1001
     }
   }
 }
