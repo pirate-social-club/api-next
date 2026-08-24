@@ -9,8 +9,6 @@ import {
   repeatedWordResponse,
 } from "../../../../tests/fixtures/media-alignment/elevenlabs/responses.ts";
 import {
-  ELEVENLABS_ALIGNMENT_MAX_AUDIO_BYTES,
-  ELEVENLABS_ALIGNMENT_MAX_RESPONSE_BYTES,
   ElevenLabsAlignmentAdapter,
   type ElevenLabsAlignmentInput,
   type ElevenLabsAlignmentTransportRequest,
@@ -19,6 +17,14 @@ import {
 } from "./elevenlabs-alignment.ts";
 
 const sha = "a".repeat(64);
+const limits = {
+  max_audio_bytes: 25_000_000,
+  max_transcript_bytes: 200_000,
+  timeout_ms: 500,
+  max_response_bytes: 1_048_576,
+  max_timings: 10_000,
+  max_timing_ms: 86_400_000,
+} as const;
 
 function input(overrides: Partial<ElevenLabsAlignmentInput> = {}): ElevenLabsAlignmentInput {
   return {
@@ -81,7 +87,7 @@ function adapter(
     enabled: true,
     api_key: "xi-secret-test-key",
     transport,
-    timeout_ms: 500,
+    limits,
     ...options,
   });
 }
@@ -117,6 +123,87 @@ describe("ElevenLabs forced-alignment adapter", () => {
     expect(JSON.stringify(result)).not.toContain("provider detail");
   });
 
+  test("never serializes transcript text, provider bodies, or secrets in any outcome", async () => {
+    const providerBody = "PROVIDER_BODY_MUST_NOT_CROSS_BOUNDARY";
+    const timeoutOutcome = await new ElevenLabsAlignmentAdapter({
+      enabled: true,
+      api_key: "xi-secret-test-key",
+      limits: { ...limits, timeout_ms: 5 },
+      transport: async () => new Promise<ElevenLabsAlignmentTransportResponse>(() => undefined),
+    }).align(input());
+    const cancellationController = new AbortController();
+    const cancellationPromise = new ElevenLabsAlignmentAdapter({
+      enabled: true,
+      api_key: "xi-secret-test-key",
+      limits,
+      transport: async () => new Promise<ElevenLabsAlignmentTransportResponse>(() => undefined),
+    }).align(input({ signal: cancellationController.signal }));
+    cancellationController.abort();
+    const cancelledOutcome = await cancellationPromise;
+    const outcomes = [
+      await new ElevenLabsAlignmentAdapter().align(input()),
+      await adapter(fakeTransport(response(multilingualWordsResponse)).transport).align(
+        input({
+          transcript: { ...input().transcript, transcript: "" },
+        }),
+      ),
+      await adapter(fakeTransport(response(multilingualWordsResponse)).transport).align(input()),
+      await adapter(
+        fakeTransport(response({ words: [{ text: "different", start: 0, end: 1, type: "word" }] }))
+          .transport,
+      ).align(input()),
+      await adapter(
+        fakeTransport({ status: 503, headers: {}, body: providerBody }).transport,
+      ).align(input()),
+      await adapter(
+        fakeTransport({ status: 401, headers: {}, body: providerBody }).transport,
+      ).align(input()),
+      await adapter(
+        fakeTransport({
+          status: 200,
+          headers: { "content-type": "text/plain" },
+          body: providerBody,
+        }).transport,
+      ).align(input()),
+      await new ElevenLabsAlignmentAdapter({
+        enabled: true,
+        api_key: "xi-secret-test-key",
+        transport: fakeTransport({
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: providerBody,
+        }).transport,
+      }).align(input()),
+      timeoutOutcome,
+      cancelledOutcome,
+    ];
+    const serialized = JSON.stringify(outcomes);
+    expect(serialized).not.toContain("Привет");
+    expect(serialized).not.toContain("世界");
+    expect(serialized).not.toContain("PROVIDER_BODY_MUST_NOT_CROSS_BOUNDARY");
+    expect(serialized).not.toContain("xi-secret-test-key");
+  });
+
+  test("requires every accepted request limit when enabled", async () => {
+    const transport = fakeTransport(response(multilingualWordsResponse));
+    const missing = await new ElevenLabsAlignmentAdapter({
+      enabled: true,
+      api_key: "xi-secret-test-key",
+      transport: transport.transport,
+    }).align(input());
+    expect(missing).toMatchObject({ outcome: "permanent", reason: "configuration" });
+    expect(transport.requests).toHaveLength(0);
+
+    const invalid = await new ElevenLabsAlignmentAdapter({
+      enabled: true,
+      api_key: "xi-secret-test-key",
+      transport: transport.transport,
+      limits: { ...limits, max_audio_bytes: 0 },
+    }).align(input());
+    expect(invalid).toMatchObject({ outcome: "permanent", reason: "configuration" });
+    expect(transport.requests).toHaveLength(0);
+  });
+
   test("builds a deterministic bounded multipart request with the exact transcript", async () => {
     const first = fakeTransport(response(multilingualWordsResponse));
     const second = fakeTransport(response(multilingualWordsResponse));
@@ -144,9 +231,11 @@ describe("ElevenLabs forced-alignment adapter", () => {
       mode: "word",
       context: { audio_revision: 1, analysis_revision: 2 },
     });
+    expect(JSON.stringify(result)).not.toContain("Привет");
+    expect(JSON.stringify(result)).not.toContain("世界");
     if (result.outcome !== "ready") throw new Error("expected ready alignment");
-    expect(result.timings.map((timing) => timing.text).join("")).toBe("Привет 世界!");
-    expect(result.timings[2]).toMatchObject({ text: "世界", start_ms: 500, end_ms: 900 });
+    expect(result.timings.map((timing) => timing.token_index)).toEqual([0, 1, 2, 3]);
+    expect(result.timings[2]).toMatchObject({ token_index: 2, start_ms: 500, end_ms: 900 });
 
     const repeatedInput = input({
       transcript: {
@@ -165,8 +254,8 @@ describe("ElevenLabs forced-alignment adapter", () => {
     expect(
       repeatedResult.timings
         .filter((timing) => timing.kind === "word")
-        .map((timing) => timing.text),
-    ).toEqual(["go", "go"]);
+        .map((timing) => timing.token_index),
+    ).toEqual([0, 2]);
   });
 
   test("accepts character timing arrays, including non-Latin combining characters", async () => {
@@ -185,7 +274,7 @@ describe("ElevenLabs forced-alignment adapter", () => {
     );
     expect(result).toMatchObject({ outcome: "ready", mode: "character" });
     if (result.outcome !== "ready") throw new Error("expected character alignment");
-    expect(result.timings.map((timing) => timing.text).join("")).toBe("नमस्ते");
+    expect(result.timings.map((timing) => timing.token_index)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
   test("maps empty provider timings and explicit no-speech to the closed no-speech outcome", async () => {
@@ -281,7 +370,7 @@ describe("ElevenLabs forced-alignment adapter", () => {
       audio: {
         audio_revision: 1,
         canonical_audio_sha256: sha,
-        bytes: new Uint8Array(ELEVENLABS_ALIGNMENT_MAX_AUDIO_BYTES + 1),
+        bytes: new Uint8Array(limits.max_audio_bytes + 1),
         mime_type: "audio/mpeg",
       },
     });
@@ -295,7 +384,7 @@ describe("ElevenLabs forced-alignment adapter", () => {
     const oversizedResponse = fakeTransport({
       status: 200,
       headers: { "content-type": "application/json" },
-      body: new Uint8Array(ELEVENLABS_ALIGNMENT_MAX_RESPONSE_BYTES + 1),
+      body: new Uint8Array(limits.max_response_bytes + 1),
     });
     await expect(adapter(oversizedResponse.transport).align(input())).resolves.toMatchObject({
       outcome: "malformed",
@@ -310,7 +399,7 @@ describe("ElevenLabs forced-alignment adapter", () => {
       return new Promise<ElevenLabsAlignmentTransportResponse>(() => undefined);
     });
     await expect(
-      adapter(timeoutTransport.transport, { timeout_ms: 5 }).align(input()),
+      adapter(timeoutTransport.transport, { limits: { ...limits, timeout_ms: 5 } }).align(input()),
     ).resolves.toMatchObject({ outcome: "timeout", reason: "timeout" });
     expect(timeoutSignal?.aborted).toBe(true);
 
