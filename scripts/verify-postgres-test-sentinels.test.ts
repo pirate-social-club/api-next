@@ -24,6 +24,7 @@ async function sentinelSet(): Promise<{
   const sentinels = [
     "adapter",
     "foundation",
+    "media-persistence",
     "migration",
     "identity",
     "community",
@@ -74,6 +75,13 @@ describe("Postgres suite sentinel verification", () => {
     await expect(verifyPostgresTestSentinels(sentinels)).rejects.toThrow("verification-start");
   });
 
+  test("fails when the media persistence suite is skipped or omitted", async () => {
+    const { sentinels } = await sentinelSet();
+    const sentinel = sentinels.find(({ name }) => name === "media-persistence");
+    await rm(sentinel?.path ?? "", { force: true });
+    await expect(verifyPostgresTestSentinels(sentinels)).rejects.toThrow("media-persistence");
+  });
+
   test("keeps the gates-v2 suite and completion marker wired into Postgres CI", async () => {
     const workflow = await readFile(
       new URL("../.github/workflows/ci.yml", import.meta.url),
@@ -119,6 +127,22 @@ describe("Postgres suite sentinel verification", () => {
     );
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-hns-observer-suite-complete/gu),
+    ).toHaveLength(2);
+  });
+
+  test("keeps media persistence fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain("packages/platform-cf/src/media-persistence.pg.test.ts");
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete",
+    );
+    expect(
+      workflow.match(/\/tmp\/api-next-control-plane-postgres-media-persistence-suite-complete/gu),
     ).toHaveLength(2);
   });
 });
