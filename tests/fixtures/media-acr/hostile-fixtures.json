@@ -1,0 +1,61 @@
+{
+  "version": "media-acr-fixtures-v1",
+  "signature": {
+    "access_key": "fixture-access-key",
+    "path": "/v1/identify",
+    "timestamp": "1700000000",
+    "string_to_sign": "POST\n/v1/identify\nfixture-access-key\naudio\n1\n1700000000",
+    "expected_signature": "fvc8TK9F7gaKQqkKb9/Mu0pS4Ac="
+  },
+  "responses": {
+    "retained_music_match": {
+      "status": { "code": 0 },
+      "metadata": {
+        "music": [
+          {
+            "acrid": "music-1",
+            "title": "Fixture Song",
+            "artists": [{ "name": "Fixture Artist" }],
+            "score": 97.5
+          }
+        ]
+      }
+    },
+    "retained_custom_match": {
+      "status": { "code": 0 },
+      "metadata": {
+        "custom_files": [
+          {
+            "acr_id": "custom-1",
+            "name": "catalog-file",
+            "user_defined": { "catalog": "fixture" }
+          }
+        ]
+      }
+    },
+    "removed_video_audio_match": {
+      "status": { "code": 0 },
+      "metadata": {
+        "custom_files": [
+          {
+            "acr_id": "video-audio-1",
+            "user_defined": { "content_type": "video_audio" }
+          }
+        ]
+      }
+    },
+    "no_match": { "status": { "code": 1001 } },
+    "empty_result": { "status": { "code": 0 }, "metadata": {} },
+    "inconclusive": { "status": { "code": 2004 } },
+    "duplicate_candidates": {
+      "status": { "code": 0 },
+      "metadata": {
+        "music": [{ "acrid": "same-id" }, { "acrid": "same-id" }]
+      }
+    },
+    "malformed_json": "{not-json",
+    "oversized_response": "fixture-oversized-response",
+    "provider_throttled": { "status": { "code": 429 } },
+    "provider_unknown": { "status": { "code": 3016 } }
+  }
+}
