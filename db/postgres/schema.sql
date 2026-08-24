@@ -3695,7 +3695,7 @@ BEGIN
        OR jsonb_typeof(NEW.analysis_snapshot->'acr'->'policyRevision') IS DISTINCT FROM 'string' THEN
       RAISE EXCEPTION 'ACR snapshot shape is not exact';
     END IF;
-    IF NEW.analysis_snapshot->'speechLyrics'->>'status' = 'ready' AND (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot->'speechLyrics') AS key) IS DISTINCT FROM ARRAY['adapterRevision','evidenceRef','explicitness','primaryLanguageBcp47','policyRevision','secondaryLanguageBcp47','status','transcriptArtifactRef','transcriptSha256']::TEXT[] THEN
+    IF NEW.analysis_snapshot->'speechLyrics'->>'status' = 'ready' AND (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot->'speechLyrics') AS key) IS DISTINCT FROM ARRAY['adapterRevision','evidenceRef','explicitness','policyRevision','primaryLanguageBcp47','secondaryLanguageBcp47','status','transcriptArtifactRef','transcriptSha256']::TEXT[] THEN
       RAISE EXCEPTION 'ready speech snapshot keys are not exact';
     END IF;
     IF NEW.analysis_snapshot->'speechLyrics'->>'status' IN ('no_speech','unavailable') AND (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(NEW.analysis_snapshot->'speechLyrics') AS key) IS DISTINCT FROM ARRAY['adapterRevision','evidenceRef','explicitness','policyRevision','primaryLanguageBcp47','secondaryLanguageBcp47','status','transcriptArtifactRef','transcriptSha256']::TEXT[] THEN

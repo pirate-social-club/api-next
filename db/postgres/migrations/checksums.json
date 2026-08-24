@@ -43,6 +43,6 @@
     "0040_post_vote_actions.sql": "5fc51ad2ab08717fce95fae558e4ac1fad06e01bd952c4bdc5e307f4fa1e9df7",
     "0041_community_route_database_expiry.sql": "1c1cce2549d8568843c44e1ab0025ef90129a2feb01cf1c929454887ed52de9a",
     "0042_hns_control_observer_persistence.sql": "7366dd7df2e5d628406d1a638ea5217199044e84e1e03592be12698b545dc186",
-    "0043_song_media_submission.sql": "b2ca16e7884dd1b64d73454b281bccf46503dc54e46067b7f62bf482f449d67e"
+    "0043_song_media_submission.sql": "c063a0324e30749c66ee8e356f07cfaef9ce858d5f42fc80a9c49ad87e35d141"
   }
 }

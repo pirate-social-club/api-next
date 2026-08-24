@@ -25,7 +25,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 16;
+const testCount = 17;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -204,6 +204,10 @@ async function createThroughDecision(
   selectedDecision: PublicationDecision = decision,
   selectedAnalysis: TrustedSongAnalysis = analysis,
   skipDecision = false,
+  transcriptArtifact?: Readonly<{
+    transcript: string;
+    segments: readonly Readonly<{ start_ms: number; end_ms: number; text: string }>[];
+  }>,
 ): Promise<void> {
   expect(
     await run(connection, (store) =>
@@ -288,6 +292,7 @@ async function createThroughDecision(
         expectedAudioRevision: 1,
         expectedCanonicalAudioSha256: audioSha256,
         analysis: selectedAnalysis,
+        ...(transcriptArtifact === undefined ? {} : { transcriptArtifact }),
       }),
     ),
   ).toEqual({ kind: "committed", submissionId: submission });
@@ -303,6 +308,17 @@ async function createThroughDecision(
       }),
     ),
   ).toEqual({ kind: "committed", submissionId: submission });
+}
+
+async function insertAnalysisSnapshotVariant(
+  admin: Client,
+  analysisRevision: number,
+  snapshot: Readonly<Record<string, unknown>>,
+): Promise<void> {
+  await admin.query(
+    "INSERT INTO media_analysis_evidence (submission_id,community_id,actor_user_id,operation_id,analysis_version,audio_revision,analysis_revision,canonical_audio_sha256,finalized_audio_ref,probe_evidence_ref,embedded_metadata_evidence_ref,embedded_metadata_adapter_revision,embedded_title,embedded_title_provenance,cover_status,cover_artifact_ref,cover_artifact_sha256,cover_media_type,cover_width,cover_height,cover_normalization_revision,cover_safety_policy_revision,cover_facts,speech_status,transcript_artifact_ref,transcript_sha256,explicitness,primary_language_bcp47,secondary_language_bcp47,speech_evidence_ref,speech_policy_revision,speech_adapter_revision,acr_decision,acr_evidence_ref,acr_policy_revision,acr_adapter_revision,media_safety,lyrics_safety,bound_reference_asset_id,bound_reference_audio_revision,bound_reference_analysis_revision,bound_reference_audio_sha256,bound_reference_upstream_share_bps,analysis_snapshot) SELECT submission_id,community_id,actor_user_id,operation_id,analysis_version,audio_revision,$2::bigint,canonical_audio_sha256,finalized_audio_ref,probe_evidence_ref,embedded_metadata_evidence_ref,embedded_metadata_adapter_revision,embedded_title,embedded_title_provenance,cover_status,cover_artifact_ref,cover_artifact_sha256,cover_media_type,cover_width,cover_height,cover_normalization_revision,cover_safety_policy_revision,cover_facts,speech_status,transcript_artifact_ref,transcript_sha256,explicitness,primary_language_bcp47,secondary_language_bcp47,speech_evidence_ref,speech_policy_revision,speech_adapter_revision,acr_decision,acr_evidence_ref,acr_policy_revision,acr_adapter_revision,media_safety,lyrics_safety,bound_reference_asset_id,bound_reference_audio_revision,bound_reference_analysis_revision,bound_reference_audio_sha256,bound_reference_upstream_share_bps,$3::jsonb FROM media_analysis_evidence WHERE submission_id=$1 AND analysis_revision=1",
+    [submission, analysisRevision, JSON.stringify(snapshot)],
+  );
 }
 
 suite("song media persistence PostgreSQL 17 race suite", () => {
@@ -1151,6 +1167,67 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       const admin = new Client({ connectionString: connection });
       await admin.connect();
       await createThroughDecision(connection, decision, analysis, true);
+      const normalizedNoSpeech = await admin.query(
+        "SELECT analysis_snapshot->'speechLyrics'->'transcriptArtifactRef' AS transcript_artifact_ref,analysis_snapshot->'speechLyrics'->'transcriptSha256' AS transcript_sha256,analysis_snapshot->'speechLyrics'->'primaryLanguageBcp47' AS primary_language,analysis_snapshot->'speechLyrics'->'secondaryLanguageBcp47' AS secondary_language FROM media_analysis_evidence WHERE submission_id=$1 AND analysis_revision=1",
+        [submission],
+      );
+      expect(normalizedNoSpeech.rows[0]).toEqual({
+        transcript_artifact_ref: null,
+        transcript_sha256: null,
+        primary_language: null,
+        secondary_language: null,
+      });
+      const storedSnapshotValue = (
+        await admin.query(
+          "SELECT analysis_snapshot FROM media_analysis_evidence WHERE submission_id=$1",
+          [submission],
+        )
+      ).rows[0]?.analysis_snapshot;
+      const storedSnapshot = (
+        typeof storedSnapshotValue === "string"
+          ? JSON.parse(storedSnapshotValue)
+          : storedSnapshotValue
+      ) as Record<string, unknown>;
+      const storedSpeech = storedSnapshot.speechLyrics as Record<string, unknown>;
+      const rejectSnapshot = async (snapshot: Record<string, unknown>): Promise<void> => {
+        await admin.query("BEGIN");
+        await expect(insertAnalysisSnapshotVariant(admin, 2, snapshot)).rejects.toThrow();
+        await admin.query("ROLLBACK");
+      };
+      await rejectSnapshot({
+        ...storedSnapshot,
+        analysisRevision: 2,
+        speechLyrics: {
+          status: "no_speech",
+          explicitness: "no_lyrics",
+          evidenceRef: storedSpeech.evidenceRef,
+          policyRevision: storedSpeech.policyRevision,
+          adapterRevision: storedSpeech.adapterRevision,
+        },
+      });
+      await rejectSnapshot({
+        ...storedSnapshot,
+        analysisRevision: 2,
+        speechLyrics: {
+          ...storedSpeech,
+          transcriptArtifactRef: "forged-transcript",
+          transcriptSha256: "forged-transcript-hash",
+          primaryLanguageBcp47: "en",
+          secondaryLanguageBcp47: "fr",
+        },
+      });
+      for (const key of ["evidenceRef", "policyRevision", "adapterRevision"] as const)
+        await rejectSnapshot({
+          ...storedSnapshot,
+          analysisRevision: 2,
+          speechLyrics: { ...storedSpeech, [key]: 7 },
+        });
+      for (const key of ["transcriptArtifactRef", "transcriptSha256"] as const)
+        await rejectSnapshot({
+          ...storedSnapshot,
+          analysisRevision: 2,
+          speechLyrics: { ...storedSpeech, [key]: 7 },
+        });
       await admin.query("BEGIN");
       await admin.query(
         "INSERT INTO media_upload_reservations (reservation_id,community_id,actor_user_id,idempotency_key,request_hash,expected_content_type,expected_size_bytes,upload_url,expires_at,state,submission_id,operation_id,claim_fence,response_snapshot_bytes,response_snapshot_sha256) VALUES ('orphan-claimed-reservation',$1,$2,'orphan-claimed-key',$3,'audio/wav',1,'https://upload.example/orphan',clock_timestamp()+interval '1 hour','claimed','orphan-submission','orphan-operation',1,$4,$5)",
@@ -1317,6 +1394,153 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       ).rejects.toThrow();
       await admin.query("ROLLBACK");
       await admin.end();
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("accepts normalized unavailable and ready speech snapshots and closes ready scalar refs", async () => {
+    await withSchema(async (admin, connection) => {
+      const unavailable: TrustedSongAnalysis = {
+        ...analysis,
+        speechLyrics: {
+          status: "unavailable",
+          explicitness: "uncertain",
+          evidenceRef: "speech_unavailable_evidence",
+          policyRevision: "speech_unavailable_policy",
+          adapterRevision: "speech_unavailable_adapter",
+        },
+        lyricsSafety: "review_required",
+      };
+      await createThroughDecision(connection, decision, unavailable, true);
+      expect(
+        (
+          await admin.query(
+            "SELECT speech_status,lyrics_safety,analysis_snapshot->'speechLyrics'->'transcriptArtifactRef' AS transcript_artifact_ref,analysis_snapshot->'speechLyrics'->'transcriptSha256' AS transcript_sha256,analysis_snapshot->'speechLyrics'->'primaryLanguageBcp47' AS primary_language,analysis_snapshot->'speechLyrics'->'secondaryLanguageBcp47' AS secondary_language FROM media_analysis_evidence WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({
+        speech_status: "unavailable",
+        lyrics_safety: "review_required",
+        transcript_artifact_ref: null,
+        transcript_sha256: null,
+        primary_language: null,
+        secondary_language: null,
+      });
+      const storedSnapshotValue = (
+        await admin.query(
+          "SELECT analysis_snapshot FROM media_analysis_evidence WHERE submission_id=$1",
+          [submission],
+        )
+      ).rows[0]?.analysis_snapshot;
+      const storedSnapshot = (
+        typeof storedSnapshotValue === "string"
+          ? JSON.parse(storedSnapshotValue)
+          : storedSnapshotValue
+      ) as Record<string, unknown>;
+      const storedSpeech = storedSnapshot.speechLyrics as Record<string, unknown>;
+      const rejectSnapshot = async (snapshot: Record<string, unknown>): Promise<void> => {
+        await admin.query("BEGIN");
+        await expect(insertAnalysisSnapshotVariant(admin, 2, snapshot)).rejects.toThrow();
+        await admin.query("ROLLBACK");
+      };
+      await rejectSnapshot({
+        ...storedSnapshot,
+        analysisRevision: 2,
+        speechLyrics: {
+          status: "unavailable",
+          explicitness: "uncertain",
+          evidenceRef: storedSpeech.evidenceRef,
+          policyRevision: storedSpeech.policyRevision,
+          adapterRevision: storedSpeech.adapterRevision,
+        },
+      });
+      await rejectSnapshot({
+        ...storedSnapshot,
+        analysisRevision: 2,
+        speechLyrics: {
+          ...storedSpeech,
+          transcriptArtifactRef: "forged-transcript",
+          transcriptSha256: "forged-transcript-hash",
+          primaryLanguageBcp47: "en",
+          secondaryLanguageBcp47: "fr",
+        },
+      });
+    });
+    await withSchema(async (admin, connection) => {
+      const readyTranscriptSha256 = sha256(new TextEncoder().encode(""));
+      const ready: TrustedSongAnalysis = {
+        ...analysis,
+        embeddedMetadata: {
+          ...analysis.embeddedMetadata,
+          cover: {
+            status: "ready",
+            artifactRef: "media_pg_cover_artifact",
+            artifactSha256: sha256(new TextEncoder().encode("cover")),
+            mediaType: "image/png",
+            width: 640,
+            height: 480,
+            normalizationRevision: "cover_normalization_1",
+            safetyPolicyRevision: "cover_policy_1",
+          },
+        },
+        speechLyrics: {
+          status: "ready",
+          transcriptArtifactRef: "media_pg_transcript_artifact",
+          transcriptSha256: readyTranscriptSha256,
+          explicitness: "not_explicit",
+          primaryLanguageBcp47: "en",
+          secondaryLanguageBcp47: null,
+          evidenceRef: "speech_ready_evidence",
+          policyRevision: "speech_ready_policy",
+          adapterRevision: "speech_ready_adapter",
+        },
+        lyricsSafety: "allow",
+      };
+      await createThroughDecision(connection, decision, ready, true, {
+        transcript: "",
+        segments: [],
+      });
+      const storedSnapshotValue = (
+        await admin.query(
+          "SELECT analysis_snapshot FROM media_analysis_evidence WHERE submission_id=$1",
+          [submission],
+        )
+      ).rows[0]?.analysis_snapshot;
+      const storedSnapshot = (
+        typeof storedSnapshotValue === "string"
+          ? JSON.parse(storedSnapshotValue)
+          : storedSnapshotValue
+      ) as Record<string, unknown>;
+      const storedEmbedded = storedSnapshot.embeddedMetadata as Record<string, unknown>;
+      const storedCover = storedEmbedded.cover as Record<string, unknown>;
+      const storedSpeech = storedSnapshot.speechLyrics as Record<string, unknown>;
+      const rejectSnapshot = async (snapshot: Record<string, unknown>): Promise<void> => {
+        await admin.query("BEGIN");
+        await expect(insertAnalysisSnapshotVariant(admin, 2, snapshot)).rejects.toThrow();
+        await admin.query("ROLLBACK");
+      };
+      for (const [key, value] of [
+        ["artifactRef", 7],
+        ["normalizationRevision", 7],
+        ["safetyPolicyRevision", 7],
+      ] as const)
+        await rejectSnapshot({
+          ...storedSnapshot,
+          analysisRevision: 2,
+          embeddedMetadata: { ...storedEmbedded, cover: { ...storedCover, [key]: value } },
+        });
+      for (const [path, value] of [
+        ["evidenceRef", 7],
+        ["policyRevision", 7],
+        ["adapterRevision", 7],
+        ["transcriptArtifactRef", 7],
+        ["transcriptSha256", 7],
+      ] as const)
+        await rejectSnapshot({
+          ...storedSnapshot,
+          analysisRevision: 2,
+          speechLyrics: { ...storedSpeech, [path]: value },
+        });
     });
     completedTestCount += 1;
   }, 40_000);
