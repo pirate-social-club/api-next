@@ -36,6 +36,7 @@ const hostileFixtures = (await Bun.file(
     readonly oversized: Readonly<{ readonly character: string; readonly length: number }>;
     readonly pin_ls_empty: unknown;
     readonly pin_ls_recursive: unknown;
+    readonly pin_ls_direct: unknown;
   }>;
   readonly secret: string;
 };
@@ -228,12 +229,14 @@ describe("Filebase IPFS pinning adapter", () => {
     });
     expect(fake.requests.map((request) => request.url)).toEqual([
       `https://rpc.filebase.io${FILEBASE_IPFS_ADD_PATH}${FILEBASE_IPFS_ADD_QUERY}`,
-      `https://rpc.filebase.io${FILEBASE_IPFS_PIN_ADD_PATH}?arg=${encodeURIComponent(CID)}&recursive=true&progress=false`,
-      `https://rpc.filebase.io${FILEBASE_IPFS_PIN_LS_PATH}?arg=${encodeURIComponent(CID)}&type=recursive&stream=false&names=false`,
+      `https://rpc.filebase.io${FILEBASE_IPFS_PIN_ADD_PATH}?arg=${encodeURIComponent(CID)}`,
+      `https://rpc.filebase.io${FILEBASE_IPFS_PIN_LS_PATH}?arg=${encodeURIComponent(CID)}&stream=false&names=false`,
       `https://rpc.filebase.io${FILEBASE_IPFS_CAT_PATH}?arg=${encodeURIComponent(CID)}`,
     ]);
     expect(fake.requests[1]?.body.byte_length).toBe(0);
     expect(fake.requests[1]?.body.content_type).not.toBe("application/json");
+    expect(fake.requests[3]?.body.byte_length).toBe(0);
+    expect(fake.requests[3]?.body.content_type).toBe("application/octet-stream");
     expect(fake.requests.every((request) => request.redirect === "error")).toBe(true);
     expect(fake.requests[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
   });
@@ -246,7 +249,9 @@ describe("Filebase IPFS pinning adapter", () => {
       source: {
         byte_length: collisionBytes.byteLength,
         open: async function* () {
-          yield collisionBytes;
+          const splitAt = hostileFixtures.multipart.boundary_collision_payload.indexOf("--") + 3;
+          yield collisionBytes.slice(0, splitAt);
+          yield collisionBytes.slice(splitAt);
         },
       },
       expected_byte_length: collisionBytes.byteLength,
@@ -299,6 +304,23 @@ describe("Filebase IPFS pinning adapter", () => {
     const third = lsTimes[2] ?? 0;
     expect(second - first).toBeGreaterThanOrEqual(8);
     expect(third - second).toBeGreaterThanOrEqual(8);
+  });
+
+  test("does not converge a direct pin as recursive", async () => {
+    const base = transportFor();
+    const result = await Effect.runPromise(
+      adapter(async (request) => {
+        const response = await base.transport(request);
+        return request.path === FILEBASE_IPFS_PIN_LS_PATH
+          ? json(hostileFixtures.responses.pin_ls_direct)
+          : response;
+      }).pin(input()),
+    );
+    expect(result).toEqual({
+      status: "retryable",
+      outcome: "retryable",
+      reason: "pin_not_converged",
+    });
   });
 
   test("treats a duplicate pin as success only after canonical recursive pin/ls", async () => {

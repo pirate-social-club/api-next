@@ -22,8 +22,7 @@ export const FILEBASE_IPFS_ADD_PATH = "/api/v0/add" as const;
 export const FILEBASE_IPFS_PIN_ADD_PATH = "/api/v0/pin/add" as const;
 export const FILEBASE_IPFS_PIN_LS_PATH = "/api/v0/pin/ls" as const;
 export const FILEBASE_IPFS_CAT_PATH = "/api/v0/cat" as const;
-export const FILEBASE_IPFS_ADD_QUERY =
-  "?cid-version=1&wrap-with-directory=false&progress=false" as const;
+export const FILEBASE_IPFS_ADD_QUERY = "?cid-version=1&wrap-with-directory=false" as const;
 export const FILEBASE_IPFS_MULTIPART_BOUNDARY_PREFIX = "----pirate-filebase-ipfs-v1-" as const;
 export const FILEBASE_IPFS_BOUNDARY_RANDOM_BYTES = 18 as const;
 export const FILEBASE_IPFS_ADAPTER_REVISION = "filebase-ipfs-pinning-v1" as const;
@@ -578,18 +577,6 @@ class Sha256 {
   }
 }
 
-function jsonBody(value: unknown): FilebaseIpfsRequestBody {
-  const bytes = new TextEncoder().encode(JSON.stringify(value));
-  return {
-    byte_length: bytes.byteLength,
-    content_type: "application/json",
-    open: async function* (signal) {
-      if (signal.aborted) throw abortError(signal);
-      yield bytes;
-    },
-  };
-}
-
 function emptyBody(): FilebaseIpfsRequestBody {
   return {
     byte_length: 0,
@@ -825,7 +812,9 @@ function parsePinLsResponse(value: Record<string, unknown>, cid: string): boolea
       throw new ResponseBodyError("malformed");
     }
   }
-  return Object.hasOwn(keys, cid);
+  const matchingEntry = keys[cid];
+  if (matchingEntry === undefined) return false;
+  return Predicate.isObject(matchingEntry) && matchingEntry.Type === "recursive";
 }
 
 function resultForHttpStatus(
@@ -1005,7 +994,7 @@ export function makeFilebaseIpfsPinningAdapter(
           const pinAdd = await call(
             FILEBASE_IPFS_PIN_ADD_PATH,
             emptyBody(),
-            `?arg=${encodeURIComponent(cid)}&recursive=true&progress=false`,
+            `?arg=${encodeURIComponent(cid)}`,
           );
           const pinAddStatus = statusPath(FILEBASE_IPFS_PIN_ADD_PATH, pinAdd.status);
           if (pinAddStatus !== null) {
@@ -1027,7 +1016,7 @@ export function makeFilebaseIpfsPinningAdapter(
             const pinLs = await call(
               FILEBASE_IPFS_PIN_LS_PATH,
               emptyBody(),
-              `?arg=${encodeURIComponent(cid)}&type=recursive&stream=false&names=false`,
+              `?arg=${encodeURIComponent(cid)}&stream=false&names=false`,
             );
             const pinLsStatus = statusPath(FILEBASE_IPFS_PIN_LS_PATH, pinLs.status);
             if (pinLsStatus !== null) {
@@ -1059,7 +1048,7 @@ export function makeFilebaseIpfsPinningAdapter(
 
           const cat = await call(
             FILEBASE_IPFS_CAT_PATH,
-            jsonBody({ arg: cid }),
+            emptyBody(),
             `?arg=${encodeURIComponent(cid)}`,
           );
           const catStatus = statusPath(FILEBASE_IPFS_CAT_PATH, cat.status);

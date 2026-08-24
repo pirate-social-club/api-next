@@ -16,7 +16,8 @@
     "ndjson": "{\"Hash\":\"not-a-cid\",\"Size\":\"4\"}\n{\"Hash\":\"second\"}\n",
     "oversized": { "character": "x", "length": 2048 },
     "pin_ls_empty": { "Keys": {} },
-    "pin_ls_recursive": { "Keys": { "bafkreie7mstupynzp4jr7k5wwrdss3e3n4badz47wpctk3tmo7ujw2uani": { "Name": "sample.bin", "Type": "recursive" } } }
+    "pin_ls_recursive": { "Keys": { "bafkreie7mstupynzp4jr7k5wwrdss3e3n4badz47wpctk3tmo7ujw2uani": { "Name": "sample.bin", "Type": "recursive" } } },
+    "pin_ls_direct": { "Keys": { "bafkreie7mstupynzp4jr7k5wwrdss3e3n4badz47wpctk3tmo7ujw2uani": { "Name": "sample.bin", "Type": "direct" } } }
   },
   "secret": "filebase-test-token-must-not-leak"
 }
