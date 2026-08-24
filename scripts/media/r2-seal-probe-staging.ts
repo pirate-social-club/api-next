@@ -287,11 +287,16 @@ function preflightSafe(source: StagingHeadResult, destination: StagingHeadResult
   );
 }
 
-function defaultScenario(sourceKey: string, destinationKey: string, expectedSha256: string) {
+function defaultScenario(
+  bucket: string,
+  sourceKey: string,
+  destinationKey: string,
+  expectedSha256: string,
+) {
   return {
     name: "success" as const,
-    sourceBucket: "unused",
-    destinationBucket: "unused",
+    sourceBucket: bucket,
+    destinationBucket: bucket,
     sourceKey,
     destinationKey,
     source: null,
@@ -338,7 +343,7 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
         code: "NotAttempted",
       };
       let scenario: ScenarioEvidence = emptyScenarioEvidence(
-        defaultScenario(sourceKey, destinationKey, expectedSha256),
+        defaultScenario(config.bucket, sourceKey, destinationKey, expectedSha256),
       );
       let sealingTransport: RecordingSealTransport | undefined;
       if (safeToWrite) {
@@ -372,7 +377,7 @@ export async function runStagingProbe(options: StagingRunOptions = {}): Promise<
             });
           });
           scenario = await probeScenario(
-            defaultScenario(sourceKey, destinationKey, expectedSha256),
+            defaultScenario(config.bucket, sourceKey, destinationKey, expectedSha256),
             sealingTransport,
           );
           if (sealingTransport.copy?.kind === "copied") {

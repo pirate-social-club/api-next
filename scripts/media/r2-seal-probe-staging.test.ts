@@ -298,10 +298,12 @@ describe("staging R2 probe safety", () => {
 
   test("treats shared 412 as terminal and performs no destination HEAD or copy retry", async () => {
     const methods: string[] = [];
+    const urls: string[] = [];
     let requestNumber = 0;
     const content = new TextEncoder().encode("r2-seal-staging-proof-v1\n");
     const contentChecksum = await sha256Base64(content);
-    const fakeFetch = async (_url: string, init: RequestInit) => {
+    const fakeFetch = async (url: string, init: RequestInit) => {
+      urls.push(url);
       methods.push(init.method ?? "");
       requestNumber += 1;
       if (requestNumber === 1 || requestNumber === 2) {
@@ -349,6 +351,7 @@ describe("staging R2 probe safety", () => {
     expect(evidence.sealing.destination_head).toBeNull();
     expect(evidence.cleanup.keys).toHaveLength(1);
     expect(evidence.cleanup.keys[0]?.absent).toBe(true);
+    expect(urls.every((url) => url.includes(`/${STAGING_TARGET.bucket}/`))).toBe(true);
     expect(methods).toEqual(["GET", "GET", "PUT", "HEAD", "PUT", "HEAD", "DELETE", "GET"]);
   });
 
