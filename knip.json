@@ -1,9 +1,10 @@
 {
-  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "ignoreDependencies": ["@effect/language-service", "cloudflare"],
   "workspaces": {
     ".": {
-      "entry": ["packages/*/src/index.ts", "apps/*/src/index.ts"],
-      "project": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts"]
+      "entry": ["scripts/**/*.ts", "tests/**/entry.ts", "infra/**/src/index.ts"],
+      "project": ["scripts/**/*.ts", "tests/**/*.ts", "infra/**/*.ts"]
     }
   }
 }
