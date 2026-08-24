@@ -109,12 +109,13 @@ function response(
   body: unknown,
   status = 200,
   headers: Record<string, string> = {},
+  onCancel: () => void = () => undefined,
 ): ElevenLabsAlignmentTransportResponse {
   const bytes = new TextEncoder().encode(JSON.stringify(body));
   return {
     status,
     headers: { "content-type": "application/json", ...headers },
-    body: responseBody(bytes),
+    body: responseBody(bytes, undefined, onCancel),
   };
 }
 
@@ -600,6 +601,72 @@ describe("ElevenLabs forced-alignment adapter", () => {
     controller.abort();
     await expect(pending).resolves.toMatchObject({ outcome: "cancelled", reason: "cancelled" });
     expect(cancelSignal?.aborted).toBe(true);
+
+    let timeoutLateBodyCancelled = false;
+    let resolveTimeoutLateResponse:
+      | ((response: ElevenLabsAlignmentTransportResponse) => void)
+      | undefined;
+    let resolveTimeoutLateStarted: (() => void) | undefined;
+    const timeoutLateStarted = new Promise<void>((resolve) => {
+      resolveTimeoutLateStarted = resolve;
+    });
+    const timeoutLateResponse = response(
+      multilingualWordsResponse,
+      200,
+      {},
+      () => (timeoutLateBodyCancelled = true),
+    );
+    const timeoutLateTransport = async () => {
+      resolveTimeoutLateStarted?.();
+      return new Promise<ElevenLabsAlignmentTransportResponse>((resolve) => {
+        resolveTimeoutLateResponse = resolve;
+      });
+    };
+    const timeoutLatePending = adapter(timeoutLateTransport, {
+      limits: { ...limits, timeout_ms: 5 },
+    }).align(input());
+    await timeoutLateStarted;
+    await expect(timeoutLatePending).resolves.toMatchObject({
+      outcome: "timeout",
+      reason: "timeout",
+    });
+    resolveTimeoutLateResponse?.(timeoutLateResponse);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(timeoutLateBodyCancelled).toBe(true);
+
+    let cancellationLateBodyCancelled = false;
+    let resolveCancellationLateResponse:
+      | ((response: ElevenLabsAlignmentTransportResponse) => void)
+      | undefined;
+    let resolveCancellationLateStarted: (() => void) | undefined;
+    const cancellationLateStarted = new Promise<void>((resolve) => {
+      resolveCancellationLateStarted = resolve;
+    });
+    const cancellationLateResponse = response(
+      multilingualWordsResponse,
+      200,
+      {},
+      () => (cancellationLateBodyCancelled = true),
+    );
+    const cancellationLateTransport = async () => {
+      resolveCancellationLateStarted?.();
+      return new Promise<ElevenLabsAlignmentTransportResponse>((resolve) => {
+        resolveCancellationLateResponse = resolve;
+      });
+    };
+    const cancellationController = new AbortController();
+    const cancellationLatePending = adapter(cancellationLateTransport).align(
+      input({ signal: cancellationController.signal }),
+    );
+    await cancellationLateStarted;
+    cancellationController.abort();
+    await expect(cancellationLatePending).resolves.toMatchObject({
+      outcome: "cancelled",
+      reason: "cancelled",
+    });
+    resolveCancellationLateResponse?.(cancellationLateResponse);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(cancellationLateBodyCancelled).toBe(true);
   });
 
   test("timeout aborts a multipart source that has not produced its first chunk", async () => {

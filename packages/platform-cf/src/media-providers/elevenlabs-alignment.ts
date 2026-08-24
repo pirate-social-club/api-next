@@ -55,6 +55,14 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
+function disposeLateResponse(response: ElevenLabsAlignmentTransportResponse): void {
+  try {
+    void Promise.resolve(response.body.cancel("late_transport_response")).catch(() => undefined);
+  } catch {
+    // A late transport response must never alter the already-selected outcome.
+  }
+}
+
 function cancellation(
   reason: "timeout" | "cancelled",
   context: Parameters<typeof parseElevenLabsAlignmentResponse>[0]["context"],
@@ -199,16 +207,33 @@ export class ElevenLabsAlignmentAdapter {
     } catch {
       transportPromise = Promise.reject(new Error("transport_failure"));
     }
-    void transportPromise.catch(() => undefined);
+    let abortWon = false;
+    let responseClaimed = false;
+    let operationFinished = false;
+    const guardedTransportPromise = transportPromise.then(
+      (response) => {
+        if (abortWon || operationFinished) {
+          disposeLateResponse(response);
+          return new Promise<never>(() => undefined);
+        }
+        responseClaimed = true;
+        return response;
+      },
+      (error: unknown) => Promise.reject(error),
+    );
+    void guardedTransportPromise.catch(() => undefined);
     const abortPromise = new Promise<never>((_resolve, reject) => {
       const check = () => {
-        if (abortReason !== undefined) reject(new AlignmentAbort(abortReason));
+        if (abortReason !== undefined) {
+          abortWon = true;
+          reject(new AlignmentAbort(abortReason));
+        }
       };
       controller.signal.addEventListener("abort", check, { once: true });
       check();
     });
     try {
-      const response = await Promise.race([transportPromise, abortPromise]);
+      const response = await Promise.race([guardedTransportPromise, abortPromise]);
       return await parseElevenLabsAlignmentResponse({
         ...response,
         transcript: requestInput.transcript.transcript,
@@ -228,6 +253,8 @@ export class ElevenLabsAlignmentAdapter {
       }
       return retryable("transport", context);
     } finally {
+      operationFinished = true;
+      if (!responseClaimed && abortReason !== undefined) abortWon = true;
       clearTimeout(timer);
       externalSignal?.removeEventListener("abort", onAbort);
     }
