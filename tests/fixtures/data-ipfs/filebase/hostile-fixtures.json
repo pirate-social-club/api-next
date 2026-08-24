@@ -1,0 +1,18 @@
+{
+  "content": {
+    "bytes_hex": "01020304",
+    "length": 4,
+    "sha256": "9f64a747e1b97f131fabb6b447296c9b6f0201e79fb3c5356e6c77e89b6a806a",
+    "cid_v1": "bafkreie7mstupynzp4jr7k5wwrdss3e3n4badz47wpctk3tmo7ujw2uani"
+  },
+  "multipart": {
+    "boundary": "----pirate-filebase-ipfs-v1",
+    "injection_filename": "bad\r\nX-Leak: true"
+  },
+  "responses": {
+    "wrong_content_type": "text/html",
+    "ndjson": "{\"Hash\":\"not-a-cid\",\"Size\":\"4\"}\n{\"Hash\":\"second\"}\n",
+    "oversized": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  },
+  "secret": "filebase-test-token-must-not-leak"
+}
