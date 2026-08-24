@@ -89,7 +89,13 @@ async function responseCode(response: Response): Promise<string> {
 
 function xmlValue(body: string, tag: string): string | undefined {
   const value = new RegExp(`<${tag}>([^<]*)</${tag}>`, "i").exec(body)?.[1];
-  return value === undefined || value.length === 0 ? undefined : value;
+  if (value === undefined || value.length === 0) return undefined;
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&apos;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
 }
 
 function decodeBase64Sha256(value: string | undefined): string | undefined {

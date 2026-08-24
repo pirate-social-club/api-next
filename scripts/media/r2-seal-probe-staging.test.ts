@@ -248,6 +248,32 @@ describe("staging R2 probe safety", () => {
     });
   });
 
+  test("decodes the XML-escaped ETag returned by R2 CopyObject", async () => {
+    const transport = new R2S3StagingTransport({
+      accountId: ACCOUNT_ID,
+      credentials: { accessKeyId: ACCESS_KEY_ID, secretAccessKey: SECRET_ACCESS_KEY },
+      fetch: async () =>
+        response(
+          200,
+          {},
+          "<CopyObjectResult><ETag>&quot;copied-etag&quot;</ETag><VersionId>destination-version</VersionId></CopyObjectResult>",
+        ),
+    });
+    await expect(
+      transport.copyObject({
+        sourceBucket: "fixture-bucket",
+        destinationBucket: "fixture-bucket",
+        sourceKey: "source.bin",
+        destinationKey: "sealed.bin",
+        sourceEtag: '"source-etag"',
+      }),
+    ).resolves.toMatchObject({
+      kind: "copied",
+      destinationEtag: '"copied-etag"',
+      destinationVersionId: "destination-version",
+    });
+  });
+
   test("uses the real signed transport for guard-mode diagnostics", async () => {
     const requests: RequestInit[] = [];
     const transport = new R2S3StagingTransport({
