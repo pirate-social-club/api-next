@@ -6,29 +6,24 @@ import {
   type HnsAuthoritativeDnsValidatorPortV1,
   type HnsControlObservationRejectedReason,
   type HnsControlObservationResultV1,
-  type HnsControlObserverConfigurationResolverPort,
   type HnsControlObserverHsdTransportPort,
-  type HnsControlObserverRuntimeCapabilities,
-  type HnsControlObserverSnapshotStorePort,
   type HnsControlObserverTranscriptEntryV1,
   HnsControlObserverTranscriptError,
   hnsControlIdentityDigest,
   validateHnsControlObserverTranscript,
 } from "@pirate/application/namespace-ownership";
 import {
-  HnsParentChainObserverError,
   HnsStableHsdBracketError,
   type HnsStableHsdBracketResultV1,
   type HnsStableHsdBracketV1,
   type HnsTargetObserverLifecycleSourceInput,
-  makeHnsTargetObserverSnapshotLifecycle,
   observeHnsStableHsdBracket,
 } from "./hsd-parent-chain-observer.ts";
 import {
   HnsOwnerAuthoritativeDnsObserverError,
   observeHnsOwnerAuthoritativeDns,
 } from "./owner-authoritative-dns-observer.ts";
-import { type HnsTargetObserverPort, HnsTargetObserverPortError } from "./target-observer.ts";
+import { HnsTargetObserverPortError } from "./target-observer.ts";
 import {
   finalizeHnsControlObserverResult,
   type HnsTargetObserverExecutionResult,
@@ -154,30 +149,6 @@ function mapDnsError(
     error.reason === "aborted" ? "transport_unavailable" : error.reason,
     error.message,
   );
-}
-
-export function makeHnsOwnerObserverCapacityResult(
-  input: Readonly<{
-    readonly request: HnsTargetObserverLifecycleSourceInput["request"];
-    readonly request_sha256: HnsTargetObserverLifecycleSourceInput["request_sha256"];
-    readonly snapshot_reference: string;
-    readonly transcript: ReadonlyArray<HnsControlObserverTranscriptEntryV1>;
-    readonly signal: AbortSignal;
-  }>,
-): Promise<HnsTargetObserverExecutionResult> {
-  return finalizeHnsControlObserverResult({
-    request: input.request,
-    result: makeHnsUnavailableControlResult({
-      request: input.request,
-      request_sha256: input.request_sha256,
-      reason: "observer_capacity",
-      snapshot_reference: input.snapshot_reference,
-    }),
-    transcript: input.transcript,
-    semantic_facts_bytes: encodeHnsAuthoritativeDnsSemanticFactsV1([]),
-    signal: input.signal,
-    abort_error: ownerAbortError,
-  });
 }
 
 export async function observeHnsOwnerAuthoritativeDnsSource(
@@ -380,56 +351,4 @@ export async function observeHnsOwnerAuthoritativeDnsSource(
     transcript: dnsResult.transcript,
     semantic_facts_bytes: dnsResult.semantic_facts_bytes,
   });
-}
-
-export function makeHnsOwnerAuthoritativeDnsTargetObserver(
-  input: Readonly<{
-    readonly configuration_resolver: HnsControlObserverConfigurationResolverPort;
-    readonly capabilities: HnsControlObserverRuntimeCapabilities;
-    readonly snapshot_store: HnsControlObserverSnapshotStorePort;
-    readonly hsd_transport: HnsControlObserverHsdTransportPort;
-    readonly authoritative_dns_transport: HnsAuthoritativeDnsTransportPortV1;
-    readonly message_ids: HnsAuthoritativeDnsMessageIdPortV1;
-    readonly validator: HnsAuthoritativeDnsValidatorPortV1;
-  }>,
-): HnsTargetObserverPort {
-  if (input.validator.policy_id !== HNS_AUTHORITATIVE_DNS_VALIDATOR_POLICY_ID) {
-    throw new HnsOwnerAuthoritativeTargetObserverError(
-      "misconfigured",
-      "HNS authoritative DNS validator policy is not the configured immutable policy",
-    );
-  }
-  const validate = input.validator.validate.bind(input.validator);
-  const validator = Object.freeze({
-    policy_id: HNS_AUTHORITATIVE_DNS_VALIDATOR_POLICY_ID,
-    validate,
-  });
-  const lifecycle = makeHnsTargetObserverSnapshotLifecycle({
-    ownership_source: "owner_authoritative_dns_txt",
-    configuration_resolver: input.configuration_resolver,
-    capabilities: input.capabilities,
-    snapshot_store: input.snapshot_store,
-    observe_source: (sourceInput) =>
-      observeHnsOwnerAuthoritativeDnsSource({
-        ...sourceInput,
-        hsd_transport: input.hsd_transport,
-        authoritative_dns_transport: input.authoritative_dns_transport,
-        message_ids: input.message_ids,
-        validator,
-      }),
-    make_capacity_result: makeHnsOwnerObserverCapacityResult,
-  });
-  return {
-    observe: async (observation, options) => {
-      try {
-        return await lifecycle.observe(observation, options);
-      } catch (error) {
-        if (error instanceof HnsOwnerAuthoritativeTargetObserverError) throw error;
-        if (error instanceof HnsParentChainObserverError) {
-          throw new HnsOwnerAuthoritativeTargetObserverError(error.reason, error.message);
-        }
-        throw error;
-      }
-    },
-  };
 }
