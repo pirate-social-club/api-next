@@ -21360,6 +21360,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "persona_id": {
+                    "type": "string"
+                  },
                   "idempotency_key": {
                     "type": "string",
                     "allOf": [
@@ -21414,6 +21417,7 @@
                   }
                 },
                 "required": [
+                  "persona_id",
                   "idempotency_key",
                   "track",
                   "slot",
@@ -21899,6 +21903,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "persona_id": {
+                    "type": "string"
+                  },
                   "version": {
                     "type": "string",
                     "enum": [
@@ -21941,6 +21948,7 @@
                   }
                 },
                 "required": [
+                  "persona_id",
                   "version",
                   "title",
                   "audio_reservation_id",
@@ -21969,6 +21977,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -22021,6 +22032,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -22040,6 +22052,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -22114,6 +22129,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -22133,6 +22149,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -22189,6 +22208,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -22209,6 +22229,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -22276,6 +22299,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -22295,6 +22319,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -22342,6 +22369,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -22361,6 +22389,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -22426,6 +22457,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -22447,6 +22479,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -22498,6 +22533,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -22507,7 +22543,61 @@
                       ],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -22887,6 +22977,9 @@
                           "public"
                         ]
                       },
+                      "persona_id": {
+                        "type": "string"
+                      },
                       "license_preset": {
                         "type": "string",
                         "enum": [
@@ -22915,6 +23008,7 @@
                     "required": [
                       "royalty_allocations",
                       "access_mode",
+                      "persona_id",
                       "license_preset",
                       "idempotency_key",
                       "expected_creation_revision"
@@ -22932,6 +23026,9 @@
                         "enum": [
                           "public"
                         ]
+                      },
+                      "persona_id": {
+                        "type": "string"
                       },
                       "license_preset": {
                         "type": "string",
@@ -22972,6 +23069,7 @@
                     "required": [
                       "royalty_allocations",
                       "access_mode",
+                      "persona_id",
                       "license_preset",
                       "idempotency_key",
                       "expected_creation_revision"
@@ -23038,6 +23136,9 @@
                             }
                           ]
                         },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
+                        },
                         "href": {
                           "type": "string",
                           "allOf": [
@@ -23089,6 +23190,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -23108,6 +23210,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -23182,6 +23287,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -23201,6 +23307,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -23257,6 +23366,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -23277,6 +23387,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -23344,6 +23457,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -23363,6 +23477,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -23410,6 +23527,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -23429,6 +23547,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -23494,6 +23615,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -23515,6 +23637,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -23566,6 +23691,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -23575,7 +23701,61 @@
                       ],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -23890,6 +24070,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "persona_id": {
+                    "type": "string"
+                  },
                   "idempotency_key": {
                     "type": "string",
                     "allOf": [
@@ -23917,6 +24100,7 @@
                   }
                 },
                 "required": [
+                  "persona_id",
                   "idempotency_key",
                   "expected_creation_revision",
                   "reservation_id"
@@ -23943,6 +24127,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -23995,6 +24182,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -24014,6 +24202,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -24088,6 +24279,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -24107,6 +24299,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -24163,6 +24358,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -24183,6 +24379,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -24250,6 +24449,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -24269,6 +24469,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -24316,6 +24519,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -24335,6 +24539,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -24400,6 +24607,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -24421,6 +24629,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -24472,6 +24683,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -24481,7 +24693,61 @@
                       ],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -24836,6 +25102,9 @@
                             }
                           ]
                         },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
+                        },
                         "href": {
                           "type": "string",
                           "allOf": [
@@ -24887,6 +25156,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -24906,6 +25176,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -24980,6 +25253,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -24999,6 +25273,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -25055,6 +25332,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -25075,6 +25353,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -25142,6 +25423,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -25161,6 +25443,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -25208,6 +25493,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -25227,6 +25513,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -25292,6 +25581,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -25313,6 +25603,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -25364,6 +25657,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -25373,7 +25667,61 @@
                       ],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -25570,6 +25918,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "persona_id": {
+                    "type": "string"
+                  },
                   "idempotency_key": {
                     "type": "string",
                     "allOf": [
@@ -25605,6 +25956,7 @@
                   }
                 },
                 "required": [
+                  "persona_id",
                   "idempotency_key",
                   "expected_creation_revision",
                   "reference_request_ref",
@@ -25632,6 +25984,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -25684,6 +26039,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -25703,6 +26059,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -25777,6 +26136,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -25796,6 +26156,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -25852,6 +26215,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -25872,6 +26236,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -25939,6 +26306,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -25958,6 +26326,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -26005,6 +26376,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -26024,6 +26396,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -26089,6 +26464,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -26110,6 +26486,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -26161,6 +26540,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -26170,7 +26550,61 @@
                       ],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -26485,6 +26919,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "persona_id": {
+                    "type": "string"
+                  },
                   "idempotency_key": {
                     "type": "string",
                     "allOf": [
@@ -26504,6 +26941,7 @@
                   }
                 },
                 "required": [
+                  "persona_id",
                   "idempotency_key",
                   "expected_creation_revision"
                 ],
@@ -26529,6 +26967,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -26581,6 +27022,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -26600,6 +27042,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -26674,6 +27119,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -26693,6 +27139,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -26749,6 +27198,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -26769,6 +27219,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -26836,6 +27289,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -26855,6 +27309,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -26902,6 +27359,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -26921,6 +27379,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -26986,6 +27447,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -27007,6 +27469,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -27058,6 +27523,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -27067,7 +27533,61 @@
                       ],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -27382,6 +27902,9 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "persona_id": {
+                    "type": "string"
+                  },
                   "idempotency_key": {
                     "type": "string",
                     "allOf": [
@@ -27401,6 +27924,7 @@
                   }
                 },
                 "required": [
+                  "persona_id",
                   "idempotency_key",
                   "expected_creation_revision"
                 ],
@@ -27426,6 +27950,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -27478,6 +28005,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -27497,6 +28025,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -27571,6 +28102,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -27590,6 +28122,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -27646,6 +28181,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -27666,6 +28202,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -27733,6 +28272,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -27752,6 +28292,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -27799,6 +28342,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -27818,6 +28362,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -27883,6 +28430,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -27904,6 +28452,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -27955,6 +28506,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -27964,7 +28516,61 @@
                       ],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }
@@ -28451,6 +29057,9 @@
                             }
                           ]
                         },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
+                        },
                         "href": {
                           "type": "string",
                           "allOf": [
@@ -28502,6 +29111,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -28521,6 +29131,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -28595,6 +29208,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -28614,6 +29228,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -28670,6 +29287,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -28690,6 +29308,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -28757,6 +29378,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -28776,6 +29398,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -28823,6 +29448,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -28842,6 +29468,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -28907,6 +29536,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -28928,6 +29558,9 @@
                               "minLength": 1
                             }
                           ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
                         },
                         "href": {
                           "type": "string",
@@ -28979,6 +29612,7 @@
                       },
                       "required": [
                         "submission_id",
+                        "author_persona",
                         "href",
                         "track",
                         "creation_revision",
@@ -28988,7 +29622,61 @@
                       ],
                       "additionalProperties": false
                     }
-                  ]
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }

@@ -42,7 +42,16 @@ const decode = (schema: Schema.Schema<unknown>, value: unknown): unknown =>
     onExcessProperty: "error",
   })(value);
 
+const authorPersona = {
+  persona_id: "persona_charizard",
+  object: "persona",
+  display_name: "Captain Charizard",
+  avatar_ref: null,
+  primary_public_handle: "captain.charizard",
+} as const;
+
 const songInput = {
+  persona_id: authorPersona.persona_id,
   version: "song-start-input-v1",
   title: "A song",
   audio_reservation_id: "res_1",
@@ -51,6 +60,7 @@ const songInput = {
 } as const;
 
 const songTerms = {
+  persona_id: authorPersona.persona_id,
   license_preset: "commercial-remix",
   royalty_allocations: [{ recipient_id: "author_1", share_bps: 10_000 }],
   access_mode: "public",
@@ -60,6 +70,7 @@ const songTerms = {
 
 const published = {
   submission_id: "sub_1",
+  author_persona: authorPersona,
   href: "/media-post-submissions/sub_1",
   track: "song",
   creation_revision: 1,
@@ -69,6 +80,75 @@ const published = {
 } as const;
 
 describe("song media R1 derived-analysis contracts", () => {
+  test("requires an explicit persona on every author mutation and projects no account identity", () => {
+    const authorCommands: ReadonlyArray<
+      readonly [Schema.Schema<unknown>, Record<string, unknown>]
+    > = [
+      [
+        CreateMediaUploadReservation.request?.body as Schema.Schema<unknown>,
+        {
+          persona_id: authorPersona.persona_id,
+          idempotency_key: "reserve_1",
+          track: "song",
+          slot: "primary_audio",
+          expected_content_type: "audio/mpeg",
+          expected_size_bytes: 1,
+        },
+      ],
+      [CreateMediaPostSubmission.request?.body as Schema.Schema<unknown>, songInput],
+      [BindMediaPostSubmissionTerms.request?.body as Schema.Schema<unknown>, songTerms],
+      [
+        FinalizeMediaPostSubmission.request?.body as Schema.Schema<unknown>,
+        {
+          persona_id: authorPersona.persona_id,
+          idempotency_key: "finalize_1",
+          expected_creation_revision: 1,
+          reservation_id: "res_1",
+        },
+      ],
+      [
+        BindMediaPostSubmissionReference.request?.body as Schema.Schema<unknown>,
+        {
+          persona_id: authorPersona.persona_id,
+          idempotency_key: "reference_1",
+          expected_creation_revision: 1,
+          reference_request_ref: "request_1",
+          upstream_asset_id: "asset_1",
+        },
+      ],
+      [
+        RetryMediaPostSubmission.request?.body as Schema.Schema<unknown>,
+        {
+          persona_id: authorPersona.persona_id,
+          idempotency_key: "retry_1",
+          expected_creation_revision: 1,
+        },
+      ],
+      [
+        CancelMediaPostSubmission.request?.body as Schema.Schema<unknown>,
+        {
+          persona_id: authorPersona.persona_id,
+          idempotency_key: "cancel_1",
+          expected_creation_revision: 1,
+        },
+      ],
+    ];
+
+    for (const [schema, body] of authorCommands) {
+      expect(decode(schema, body)).toMatchObject({ persona_id: authorPersona.persona_id });
+      const { persona_id: _, ...withoutPersona } = body;
+      expect(() => decode(schema, withoutPersona)).toThrow();
+    }
+
+    const projectionJson = JSON.stringify(decode(MediaPostSubmissionV1, published));
+    expect(projectionJson).toContain('"author_persona"');
+    expect(projectionJson).not.toContain("account_id");
+    expect(projectionJson).not.toContain("user_id");
+    expect(() =>
+      decode(MediaPostSubmissionV1, { ...published, actor_account_id: "account_1" }),
+    ).toThrow();
+  });
+
   test("exposes the exact command routes and status responses", () => {
     expect(CreateMediaUploadReservation.path).toBe(
       "/communities/:communityId/media-upload-reservations",
@@ -103,6 +183,7 @@ describe("song media R1 derived-analysis contracts", () => {
     const reservation = decode(
       CreateMediaUploadReservation.request?.body as Schema.Schema<unknown>,
       {
+        persona_id: authorPersona.persona_id,
         idempotency_key: "reserve_1",
         track: "song",
         slot: "primary_audio",
@@ -114,6 +195,7 @@ describe("song media R1 derived-analysis contracts", () => {
     expect(reservation).toMatchObject({ track: "song", slot: "primary_audio" });
     expect(() =>
       decode(CreateMediaUploadReservation.request?.body as Schema.Schema<unknown>, {
+        persona_id: authorPersona.persona_id,
         idempotency_key: "reserve_1",
         track: "song",
         slot: "primary_audio",
@@ -124,6 +206,7 @@ describe("song media R1 derived-analysis contracts", () => {
     ).toThrow();
     expect(() =>
       decode(ReserveSongAudioV1, {
+        persona_id: authorPersona.persona_id,
         idempotency_key: "reserve_1",
         track: "song",
         slot: "primary_audio",
@@ -133,6 +216,7 @@ describe("song media R1 derived-analysis contracts", () => {
     ).toThrow();
     expect(() =>
       decode(ReserveSongAudioV1, {
+        persona_id: authorPersona.persona_id,
         idempotency_key: "reserve_1",
         track: "song",
         slot: "primary_audio",
@@ -142,6 +226,7 @@ describe("song media R1 derived-analysis contracts", () => {
     ).toThrow();
     expect(() =>
       decode(ReserveSongAudioV1, {
+        persona_id: authorPersona.persona_id,
         idempotency_key: "reserve_1",
         track: "song",
         slot: "primary_audio",
@@ -225,6 +310,7 @@ describe("song media R1 derived-analysis contracts", () => {
     expect(() => decode(mediaSubmissionSchema, { ...published, track: "video" })).toThrow();
     const processing = {
       submission_id: "sub_1",
+      author_persona: authorPersona,
       href: "/media-post-submissions/sub_1",
       track: "song",
       creation_revision: 1,
@@ -251,6 +337,7 @@ describe("song media R1 derived-analysis contracts", () => {
   test("uses one author-confirmed title and rejects form-heavy or trusted fields", () => {
     expect(
       decode(SongStartInputV1, {
+        persona_id: authorPersona.persona_id,
         version: "song-start-input-v1",
         title: "A song",
         audio_reservation_id: "res_1",
@@ -297,6 +384,7 @@ describe("song media R1 derived-analysis contracts", () => {
   test("exports the remaining command and reservation schemas", () => {
     expect(
       decode(ReserveSongAudioV1, {
+        persona_id: authorPersona.persona_id,
         idempotency_key: "reserve_1",
         track: "song",
         slot: "primary_audio",
@@ -326,6 +414,7 @@ describe("song media R1 derived-analysis contracts", () => {
     ).toMatchObject({ license_preset: "commercial-remix", commercial_rev_share_bps: 0 });
     expect(
       decode(FinalizeSongUploadV1, {
+        persona_id: authorPersona.persona_id,
         idempotency_key: "finalize_1",
         expected_creation_revision: 1,
         reservation_id: "res_1",
@@ -333,6 +422,7 @@ describe("song media R1 derived-analysis contracts", () => {
     ).toMatchObject({ expected_creation_revision: 1 });
     expect(
       decode(BindSongReferenceV1, {
+        persona_id: authorPersona.persona_id,
         idempotency_key: "bind_1",
         expected_creation_revision: 1,
         reference_request_ref: "ref_req_1",
@@ -341,6 +431,7 @@ describe("song media R1 derived-analysis contracts", () => {
     ).toMatchObject({ upstream_asset_id: "asset_1" });
     expect(
       decode(RetryOrCancelSongSubmissionV1, {
+        persona_id: authorPersona.persona_id,
         idempotency_key: "retry_1",
         expected_creation_revision: 1,
       }),
@@ -424,6 +515,7 @@ describe("song media R1 derived-analysis contracts", () => {
       version: "song-published-projection-v1",
       submission_id: "sub_1",
       post_id: "post_1",
+      author_persona: authorPersona,
       creation_revision: 2,
       title: "Author-confirmed title",
       audio_asset_ref: "audio_1",
@@ -696,6 +788,7 @@ describe("song media R1 derived-analysis contracts", () => {
         version: "song-published-projection-v1",
         submission_id: "sub_1",
         post_id: "post_1",
+        author_persona: authorPersona,
         creation_revision: 1,
         title: "Author override title",
         audio_asset_ref: "audio_1",
@@ -716,6 +809,7 @@ describe("song media R1 derived-analysis contracts", () => {
       version: "song-published-projection-v1",
       submission_id: "sub_2",
       post_id: "post_2",
+      author_persona: authorPersona,
       creation_revision: 2,
       title: "Instrumental",
       audio_asset_ref: "audio_2",

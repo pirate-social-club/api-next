@@ -16,6 +16,7 @@ import {
   ReplyDepthExceeded,
   UploadObjectMissing,
 } from "./errors.ts";
+import { PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
 import { TextContentSubmissionV1 } from "./text-moderation.ts";
 
 /**
@@ -701,6 +702,7 @@ const RoyaltyAllocations = Schema.Array(
 
 /** The form-light author bundle. Embedded metadata may prefill title but is not authoritative. */
 export const SongStartInputV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
   version: Schema.Literal("song-start-input-v1"),
   title: SongTitle,
   audio_reservation_id: SongAuthorString,
@@ -728,6 +730,7 @@ export const SongTermsInputV1 = Schema.Union([
 export type SongTermsInputV1 = Schema.Schema.Type<typeof SongTermsInputV1>;
 
 export const ReserveSongAudioV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
   idempotency_key: SongAuthorString,
   track: Schema.Literal("song"),
   slot: Schema.Literal("primary_audio"),
@@ -755,6 +758,7 @@ export const SongAudioReservationV1 = Schema.Struct({
 export type SongAudioReservationV1 = Schema.Schema.Type<typeof SongAudioReservationV1>;
 
 export const CreateSongSubmissionV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
   version: Schema.Literal("song-start-input-v1"),
   title: SongTitle,
   audio_reservation_id: SongAuthorString,
@@ -766,12 +770,14 @@ export type CreateSongSubmissionV1 = Schema.Schema.Type<typeof CreateSongSubmiss
 export const BindSongTermsV1 = Schema.Union([
   Schema.Struct({
     ...SongTermsCommon,
+    persona_id: PersonaIdV1,
     license_preset: Schema.Literals(["non-commercial", "commercial-use"]),
     idempotency_key: SongAuthorString,
     expected_creation_revision: PositiveRevision,
   }),
   Schema.Struct({
     ...SongTermsCommon,
+    persona_id: PersonaIdV1,
     license_preset: Schema.Literal("commercial-remix"),
     commercial_rev_share_bps: CommercialRevShareBps,
     idempotency_key: SongAuthorString,
@@ -781,6 +787,7 @@ export const BindSongTermsV1 = Schema.Union([
 export type BindSongTermsV1 = Schema.Schema.Type<typeof BindSongTermsV1>;
 
 export const FinalizeSongUploadV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
   idempotency_key: SongAuthorString,
   expected_creation_revision: PositiveRevision,
   reservation_id: SongAuthorString,
@@ -788,6 +795,7 @@ export const FinalizeSongUploadV1 = Schema.Struct({
 export type FinalizeSongUploadV1 = Schema.Schema.Type<typeof FinalizeSongUploadV1>;
 
 export const BindSongReferenceV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
   idempotency_key: SongAuthorString,
   expected_creation_revision: PositiveRevision,
   reference_request_ref: SongAuthorString,
@@ -796,6 +804,7 @@ export const BindSongReferenceV1 = Schema.Struct({
 export type BindSongReferenceV1 = Schema.Schema.Type<typeof BindSongReferenceV1>;
 
 export const RetryOrCancelSongSubmissionV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
   idempotency_key: SongAuthorString,
   expected_creation_revision: PositiveRevision,
 });
@@ -839,6 +848,7 @@ export const PostProcessingPhase = Schema.Literals([
 
 const MediaSubmissionCommon = {
   submission_id: SongAuthorString,
+  author_persona: PublicPersonaV1,
   href: SongAuthorString,
   track: Schema.Literal("song"),
   creation_revision: PositiveRevision,
@@ -1080,6 +1090,7 @@ export const SongPublishedProjectionV1 = Schema.Struct({
   version: Schema.Literal("song-published-projection-v1"),
   submission_id: SongAuthorString,
   post_id: SongAuthorString,
+  author_persona: PublicPersonaV1,
   creation_revision: PositiveRevision,
   title: SongTitle,
   audio_asset_ref: EvidenceRef,

@@ -109,8 +109,40 @@
       "reason": "2026-08-23 song-media R0 breaking amendment: this operation is text-only, removes all non-text request variants and media/song/commerce common fields including legacy commercial_rev_share_pct, and returns TextContentSubmissionV1 with HTTP 201."
     },
     {
+      "operationId": "post_communitiesCommunityIdMediaUploadReservations",
+      "reason": "2026-08-24 account/persona authorship amendment: song upload reservation requires the active persona_id selected by the authenticated account before any storage effect."
+    },
+    {
       "operationId": "post_communitiesCommunityIdMediaPostSubmissions",
-      "reason": "2026-08-23 upload-derived song analysis amendment: creation becomes a form-light title/reservation/song-type command; lyrics, rights declaration, license, allocations, remix share, commentary, language, explicitness, artwork, and trusted analysis move out of author creation input."
+      "reason": "2026-08-24 account/persona authorship amendment: form-light song creation additionally requires the active persona_id selected by the authenticated account and returns only the public author_persona projection."
+    },
+    {
+      "operationId": "post_mediaPostSubmissionsSubmissionIdTerms",
+      "reason": "2026-08-24 account/persona authorship amendment: song terms mutation requires the exact active persona_id bound to the author-side submission lineage and returns only author_persona."
+    },
+    {
+      "operationId": "post_mediaPostSubmissionsSubmissionIdFinalize",
+      "reason": "2026-08-24 account/persona authorship amendment: song finalization requires the exact active persona_id bound to the author-side submission lineage and returns only author_persona."
+    },
+    {
+      "operationId": "get_mediaPostSubmissionsSubmissionId",
+      "reason": "2026-08-24 account/persona authorship amendment: the private submission status snapshot projects author_persona and no account/user author identity."
+    },
+    {
+      "operationId": "post_mediaPostSubmissionsSubmissionIdReference",
+      "reason": "2026-08-24 account/persona authorship amendment: reference binding requires the exact active persona_id bound to the author-side submission lineage and returns only author_persona."
+    },
+    {
+      "operationId": "post_mediaPostSubmissionsSubmissionIdRetry",
+      "reason": "2026-08-24 account/persona authorship amendment: retry requires the exact active persona_id bound to the author-side submission lineage and returns only author_persona."
+    },
+    {
+      "operationId": "post_mediaPostSubmissionsSubmissionIdCancel",
+      "reason": "2026-08-24 account/persona authorship amendment: cancellation requires the exact active persona_id bound to the author-side submission lineage and returns only author_persona."
+    },
+    {
+      "operationId": "post_moderationMediaPostSubmissionsSubmissionIdActions",
+      "reason": "2026-08-24 account/persona authorship amendment: moderator authority remains account-held while the returned submission snapshot exposes only author_persona."
     },
     {
       "operationId": "post_communitiesCommunityIdFollow",
