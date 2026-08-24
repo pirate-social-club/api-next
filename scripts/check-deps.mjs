@@ -25,6 +25,7 @@ const INTERNAL = {
   "apps/jobs-worker": "@pirate/jobs-worker",
   "apps/hns-owner-verifier": "@pirate/hns-owner-verifier",
   "apps/hns-observer-driver": "@pirate/hns-observer-driver",
+  "apps/hns-platform-gateway": "@pirate/hns-platform-gateway",
 };
 
 const ALLOWED = {
@@ -56,6 +57,7 @@ const ALLOWED = {
   ],
   "@pirate/hns-owner-verifier": [],
   "@pirate/hns-observer-driver": ["@pirate/application"],
+  "@pirate/hns-platform-gateway": ["@pirate/application"],
 };
 
 const DOMAIN_EFFECT_ALLOWLIST = new Set([

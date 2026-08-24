@@ -29,6 +29,13 @@
       "name": "@pirate/hns-owner-verifier",
       "version": "0.0.0",
     },
+    "apps/hns-platform-gateway": {
+      "name": "@pirate/hns-platform-gateway",
+      "version": "0.0.0",
+      "dependencies": {
+        "@pirate/application": "0.0.0",
+      },
+    },
     "apps/http-worker": {
       "name": "@pirate/http-worker",
       "version": "0.0.0",
@@ -507,6 +514,8 @@
     "@pirate/hns-observer-driver": ["@pirate/hns-observer-driver@workspace:apps/hns-observer-driver"],
 
     "@pirate/hns-owner-verifier": ["@pirate/hns-owner-verifier@workspace:apps/hns-owner-verifier"],
+
+    "@pirate/hns-platform-gateway": ["@pirate/hns-platform-gateway@workspace:apps/hns-platform-gateway"],
 
     "@pirate/http-worker": ["@pirate/http-worker@workspace:apps/http-worker"],
 
