@@ -18,6 +18,7 @@ import {
 import {
   HnsParentChainObserverError,
   HnsStableHsdBracketError,
+  type HnsStableHsdBracketResultV1,
   type HnsStableHsdBracketV1,
   type HnsTargetObserverLifecycleSourceInput,
   makeHnsTargetObserverSnapshotLifecycle,
@@ -186,6 +187,7 @@ export async function observeHnsOwnerAuthoritativeDnsSource(
       readonly authoritative_dns_transport: HnsAuthoritativeDnsTransportPortV1;
       readonly message_ids: HnsAuthoritativeDnsMessageIdPortV1;
       readonly validator: HnsAuthoritativeDnsValidatorPortV1;
+      readonly preobserved_bracket_result?: HnsStableHsdBracketResultV1;
     }>,
 ): Promise<HnsTargetObserverExecutionResult> {
   if (input.validator.policy_id !== HNS_AUTHORITATIVE_DNS_VALIDATOR_POLICY_ID) {
@@ -205,17 +207,21 @@ export async function observeHnsOwnerAuthoritativeDnsSource(
   }
   const emptySemanticFacts = encodeHnsAuthoritativeDnsSemanticFactsV1([]);
   let bracketResult: Awaited<ReturnType<typeof observeHnsStableHsdBracket>>;
-  try {
-    bracketResult = await observeHnsStableHsdBracket({
-      request: input.request,
-      configuration: input.configuration,
-      reservation_database_time: input.reservation_database_time,
-      transport: input.hsd_transport,
-      signal: input.signal,
-    });
-  } catch (error) {
-    if (error instanceof HnsStableHsdBracketError) throw mapStableError(error);
-    throw error;
+  if (input.preobserved_bracket_result !== undefined) {
+    bracketResult = input.preobserved_bracket_result;
+  } else {
+    try {
+      bracketResult = await observeHnsStableHsdBracket({
+        request: input.request,
+        configuration: input.configuration,
+        reservation_database_time: input.reservation_database_time,
+        transport: input.hsd_transport,
+        signal: input.signal,
+      });
+    } catch (error) {
+      if (error instanceof HnsStableHsdBracketError) throw mapStableError(error);
+      throw error;
+    }
   }
   ownerAbortIfSet(input.signal, "HNS stable owner bracket completed after abort");
   if (bracketResult.kind === "unavailable") {

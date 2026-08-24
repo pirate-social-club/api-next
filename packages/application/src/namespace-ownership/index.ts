@@ -155,6 +155,8 @@ export type {
   HnsAuthorityInventoryDecodedV1,
   HnsAuthorityInventoryDnsWriteCapabilityV1,
   HnsAuthorityInventoryNameserverGlueV1,
+  HnsAuthorityInventoryResolvedV1,
+  HnsAuthorityInventoryResolverPortV1,
   HnsAuthorityInventoryV1,
 } from "./hns-authority-inventory.ts";
 export {
@@ -167,6 +169,7 @@ export {
   HnsAuthorityInventoryError,
   hnsAuthorityCapabilitySetDigest,
   hnsAuthorityCapabilitySetPreimage,
+  hnsRootIsPirateWritable,
   validateHnsAuthorityInventoryAtDatabaseTime,
 } from "./hns-authority-inventory.ts";
 export type {
@@ -226,6 +229,7 @@ export type {
   HnsControlObserverDecodedConfiguration,
   HnsControlObserverDecodedConfigurationV2,
   HnsControlObserverRuntimeCapabilities,
+  HnsControlObserverRuntimeCapabilitiesV2,
 } from "./hns-control-observer-configuration.ts";
 export {
   decodeHnsControlObserverCompatibleConfigurationBytes,
@@ -246,6 +250,7 @@ export {
   HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MIN_SECONDS,
   HnsControlObserverConfigurationError,
   resolveHnsControlObserverConfiguration,
+  resolveHnsControlObserverConfigurationV2,
 } from "./hns-control-observer-configuration.ts";
 export type {
   HnsControlObserverHsdMethod,
@@ -290,8 +295,10 @@ export type {
   HnsControlObservationUnavailableReasonV2,
   HnsControlObservationUnavailableV2,
   HnsControlObservationVerifiedV2,
+  HnsControlObserverSnapshotFinalizeInputV2,
   HnsControlObserverSnapshotLogicalPayloadV2,
   HnsControlObserverSnapshotManifestV2Input,
+  HnsControlObserverSnapshotStorePortV2,
   HnsControlObserverTranscriptManifestEntryV2,
   HnsCreationSourceIneligibleResultV2Input,
   HnsOwnerRecoverySourceIneligiblePublicResponse,
@@ -330,6 +337,7 @@ export {
   hnsOwnerRecoverySourceIneligibleResultV2Hash,
   hnsOwnerRecoverySourceIneligibleResultV2Preimage,
   mapHnsControlObservationIneligibleToTargetV3,
+  promoteHnsControlObservationResultV1ToV2,
 } from "./hns-control-observer-v2.ts";
 export type {
   HnsNamespaceStartInput,

@@ -1,6 +1,7 @@
 import { validCommunityRouteRoot } from "@pirate/domain";
 import { Sha256Hex, type Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
 import { Option, Schema } from "effect";
+import type { HnsChainAuthorityRecord } from "./hns-control-observer.ts";
 import { decodeStrictHnsJsonBytes, HnsOwnerResponseDecodeError } from "./hns-evidence.ts";
 
 export const HNS_AUTHORITY_INVENTORY_VERSION = "pirate-hns-authority-inventory-v1" as const;
@@ -195,6 +196,23 @@ export type HnsAuthorityInventoryDecodedV1 = Readonly<{
   readonly inventory_bytes: Uint8Array;
   readonly inventory: HnsAuthorityInventoryV1;
   readonly inventory_digest: Sha256HexValue;
+}>;
+
+export type HnsAuthorityInventoryResolvedV1 = Readonly<{
+  readonly authority_inventory_reference: string;
+  readonly authority_inventory_version: string;
+  readonly authority_inventory_digest: Sha256HexValue;
+  readonly inventory_bytes: Uint8Array;
+}>;
+
+export type HnsAuthorityInventoryResolverPortV1 = Readonly<{
+  /**
+   * The capability closes over registry identity, current-version selection,
+   * endpoint, authentication, environment, and response byte bound.
+   */
+  readonly resolve: (
+    options: Readonly<{ readonly deadline_ms: number; readonly signal: AbortSignal }>,
+  ) => Promise<HnsAuthorityInventoryResolvedV1 | null>;
 }>;
 
 export class HnsAuthorityInventoryError extends Error {
@@ -474,4 +492,41 @@ export function validateHnsAuthorityInventoryAtDatabaseTime(
     );
   }
   return inventory;
+}
+
+export function hnsRootIsPirateWritable(
+  input: Readonly<{
+    readonly root_label: string;
+    readonly chain_authority_records: ReadonlyArray<HnsChainAuthorityRecord>;
+    readonly inventory: HnsAuthorityInventoryV1;
+  }>,
+): boolean {
+  const chainNameservers = new Set<string>();
+  const chainGlue = new Set<string>();
+  for (const record of input.chain_authority_records) {
+    if (record[0] === "NS") {
+      chainNameservers.add(record[1]);
+      continue;
+    }
+    if (record[0] === "GLUE4" || record[0] === "GLUE6") {
+      chainGlue.add(JSON.stringify([record[1], record[0], record[2]]));
+    }
+  }
+  const authorityIntersection = input.inventory.authoritative_nameserver_glue.some(
+    (entry) =>
+      entry.active &&
+      chainNameservers.has(entry.authority_nameserver) &&
+      chainGlue.has(
+        JSON.stringify([
+          entry.authority_nameserver,
+          entry.authority_address_family,
+          entry.authority_address,
+        ]),
+      ),
+  );
+  if (authorityIntersection) return true;
+  return input.inventory.dns_write_capabilities.some(
+    (entry) =>
+      entry.active && entry.scope_kind === "exact_root" && entry.root_label === input.root_label,
+  );
 }

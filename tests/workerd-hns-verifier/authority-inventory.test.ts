@@ -3,6 +3,7 @@
 import {
   decodeHnsAuthorityInventoryBytes,
   decodeHnsControlObserverConfigurationV2Bytes,
+  hnsRootIsPirateWritable,
 } from "@pirate/application/namespace-ownership";
 import { describe, expect, it } from "vitest";
 
@@ -30,5 +31,41 @@ describe("HNS authority inventory codecs (workerd)", () => {
     expect(configuration.configuration_digest).toBe(
       "9b57c1f4630267f270f1b93dced9805d058f692d0cee879a9a4ee54b6e3e6b8b",
     );
+  });
+
+  it("derives custody from an exact active tuple or exact-root write capability", async () => {
+    const inventory = await decodeHnsAuthorityInventoryBytes(
+      new TextEncoder().encode(inventoryJson),
+    );
+    expect(
+      hnsRootIsPirateWritable({
+        root_label: "pirate",
+        chain_authority_records: [
+          ["NS", "ns1.pirate-regtest"],
+          ["GLUE4", "ns1.pirate-regtest", "192.0.2.53"],
+        ],
+        inventory: inventory.inventory,
+      }),
+    ).toBe(true);
+    expect(
+      hnsRootIsPirateWritable({
+        root_label: "pirate",
+        chain_authority_records: [
+          ["NS", "unmanaged.example"],
+          ["GLUE4", "unmanaged.example", "198.51.100.53"],
+        ],
+        inventory: inventory.inventory,
+      }),
+    ).toBe(true);
+    expect(
+      hnsRootIsPirateWritable({
+        root_label: "other-root",
+        chain_authority_records: [
+          ["NS", "ns1.pirate-regtest"],
+          ["GLUE4", "ns1.pirate-regtest", "192.0.2.54"],
+        ],
+        inventory: inventory.inventory,
+      }),
+    ).toBe(false);
   });
 });

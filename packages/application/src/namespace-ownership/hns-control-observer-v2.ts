@@ -18,6 +18,9 @@ import {
 import {
   HNS_CONTROL_OBSERVER_SNAPSHOT_REFERENCE_MAX_BYTES,
   HNS_CONTROL_OBSERVER_TRANSCRIPT_MAX_ENTRIES,
+  type HnsControlObserverReservationInput,
+  type HnsControlObserverReservationOutcome,
+  type HnsControlObserverSnapshotFinalizeOutcome,
   type HnsControlObserverTranscriptEntryV1,
   hnsControlObserverTranscriptByteLength,
   isHnsControlObserverSnapshotReference,
@@ -507,6 +510,80 @@ export async function encodeHnsControlObservationResultV2(
   ).result_bytes;
 }
 
+export function promoteHnsControlObservationResultV1ToV2(
+  result: HnsControlObservationDecodedResult["result"],
+  observerSnapshotSha256: Sha256HexValue,
+): HnsControlObservationResultV2 {
+  if (result.status === "verified") {
+    return {
+      version: HNS_CONTROL_OBSERVATION_RESULT_V2_VERSION,
+      observation_id: result.observation_id,
+      request_sha256: result.request_sha256,
+      status: result.status,
+      provider_id: result.provider_id,
+      provider_configuration_reference: result.provider_configuration_reference,
+      provider_configuration_version: result.provider_configuration_version,
+      provider_configuration_digest: result.provider_configuration_digest,
+      environment: result.environment,
+      ownership_source: result.ownership_source,
+      root_label: result.root_label,
+      txt_name: result.txt_name,
+      expected_txt_value_sha256: result.expected_txt_value_sha256,
+      control_identity_digest: result.control_identity_digest,
+      chain_authority_digest: result.chain_authority_digest,
+      root_exists: result.root_exists,
+      root_control_verified: result.root_control_verified,
+      expiry_horizon_sufficient: result.expiry_horizon_sufficient,
+      chain_network: result.chain_network,
+      chain_genesis_block_hash: result.chain_genesis_block_hash,
+      chain_anchor_height: result.chain_anchor_height,
+      chain_anchor_block_hash: result.chain_anchor_block_hash,
+      chain_anchor_median_time: result.chain_anchor_median_time,
+      expiry_height: result.expiry_height,
+      observer_snapshot_sha256: observerSnapshotSha256,
+      provider_evidence_ref: result.provider_evidence_ref,
+    };
+  }
+  if (result.status === "rejected") {
+    return {
+      version: HNS_CONTROL_OBSERVATION_RESULT_V2_VERSION,
+      observation_id: result.observation_id,
+      request_sha256: result.request_sha256,
+      status: result.status,
+      reason_code: result.reason_code,
+      provider_id: result.provider_id,
+      provider_configuration_reference: result.provider_configuration_reference,
+      provider_configuration_version: result.provider_configuration_version,
+      provider_configuration_digest: result.provider_configuration_digest,
+      environment: result.environment,
+      ownership_source: result.ownership_source,
+      root_label: result.root_label,
+      txt_name: result.txt_name,
+      expected_txt_value_sha256: result.expected_txt_value_sha256,
+      observed_txt_values_digest: result.observed_txt_values_digest,
+      chain_authority_digest: result.chain_authority_digest,
+      chain_network: result.chain_network,
+      chain_genesis_block_hash: result.chain_genesis_block_hash,
+      chain_anchor_height: result.chain_anchor_height,
+      chain_anchor_block_hash: result.chain_anchor_block_hash,
+      chain_anchor_median_time: result.chain_anchor_median_time,
+      expiry_height: result.expiry_height,
+      observer_snapshot_sha256: observerSnapshotSha256,
+      provider_evidence_ref: result.provider_evidence_ref,
+    };
+  }
+  return {
+    version: HNS_CONTROL_OBSERVATION_RESULT_V2_VERSION,
+    observation_id: result.observation_id,
+    request_sha256: result.request_sha256,
+    status: result.status,
+    reason_code: result.reason_code,
+    retry_after_seconds: result.retry_after_seconds,
+    observer_snapshot_sha256: observerSnapshotSha256,
+    diagnostic_ref: result.diagnostic_ref,
+  };
+}
+
 export async function decodeHnsControlObservationCompatibleResultBytes(
   value: unknown,
   expectedRequest: HnsControlObservationRequestV1,
@@ -704,6 +781,36 @@ export type HnsControlObserverSnapshotLogicalPayloadV2 = Readonly<{
   readonly result_reference_kind: "provider_evidence_ref" | "diagnostic_ref";
   readonly result_bytes: Uint8Array;
   readonly result_sha256: Sha256HexValue;
+}>;
+
+export type HnsControlObserverSnapshotFinalizeInputV2 = Readonly<{
+  readonly observation_id: string;
+  readonly observer_fence: number;
+  readonly request_sha256: Sha256HexValue;
+  readonly provider_configuration_digest: Sha256HexValue;
+  readonly snapshot_reference: string;
+  readonly authority_inventory_bytes: Uint8Array | null;
+  readonly authority_inventory_reference_or_null: string | null;
+  readonly authority_inventory_version_or_null: string | null;
+  readonly authority_inventory_digest_or_null: Sha256HexValue | null;
+  readonly transcript: ReadonlyArray<HnsControlObserverTranscriptEntryV1>;
+  readonly transcript_manifest_sha256: Sha256HexValue;
+  readonly semantic_facts_bytes: Uint8Array;
+  readonly semantic_facts_sha256: Sha256HexValue;
+  readonly observer_snapshot_sha256: Sha256HexValue;
+  readonly result_bytes: Uint8Array;
+  readonly result_sha256: Sha256HexValue;
+}>;
+
+export type HnsControlObserverSnapshotStorePortV2 = Readonly<{
+  readonly reserve: (
+    input: HnsControlObserverReservationInput,
+    options: Readonly<{ readonly deadline_ms: number; readonly signal: AbortSignal }>,
+  ) => Promise<HnsControlObserverReservationOutcome>;
+  readonly finalize: (
+    input: HnsControlObserverSnapshotFinalizeInputV2,
+    options: Readonly<{ readonly deadline_ms: number; readonly signal: AbortSignal }>,
+  ) => Promise<HnsControlObserverSnapshotFinalizeOutcome>;
 }>;
 
 function assertInventoryAccountingTuple(input: HnsControlObserverSnapshotLogicalPayloadV2): void {

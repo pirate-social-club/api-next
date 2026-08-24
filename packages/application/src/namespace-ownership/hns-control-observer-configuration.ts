@@ -263,6 +263,12 @@ export type HnsControlObserverRuntimeCapabilities = Readonly<{
   readonly snapshot_store_reference: string;
 }>;
 
+export type HnsControlObserverRuntimeCapabilitiesV2 = HnsControlObserverRuntimeCapabilities &
+  Readonly<{
+    readonly authority_inventory_registry_reference: string;
+    readonly authority_inventory_runtime_capability_set_digest: Sha256HexValue;
+  }>;
+
 export type HnsControlObserverConfigurationAuthority = Readonly<{
   readonly provider_id: "hns.owner.v1";
   readonly provider_configuration_reference: string;
@@ -617,6 +623,72 @@ export async function resolveHnsControlObserverConfiguration(
     throw new HnsControlObserverConfigurationError(
       "capability_mismatch",
       "HNS observer runtime capabilities do not match configuration",
+    );
+  }
+  return decoded;
+}
+
+export async function resolveHnsControlObserverConfigurationV2(
+  input: Readonly<{
+    readonly authority: HnsControlObserverConfigurationAuthority;
+    readonly capabilities: HnsControlObserverRuntimeCapabilitiesV2;
+    readonly resolver: HnsControlObserverConfigurationResolverPort;
+    readonly deadline_ms: number;
+    readonly signal: AbortSignal;
+  }>,
+): Promise<HnsControlObserverDecodedConfigurationV2> {
+  if (input.signal.aborted) throw new Error("HNS observer configuration-v2 resolution aborted");
+  const bytes = await input.resolver.resolve(
+    {
+      reference: input.authority.provider_configuration_reference,
+      version: input.authority.provider_configuration_version,
+    },
+    { deadline_ms: input.deadline_ms, signal: input.signal },
+  );
+  if (input.signal.aborted) throw new Error("HNS observer configuration-v2 resolution aborted");
+  if (bytes === null) {
+    throw new HnsControlObserverConfigurationError(
+      "not_found",
+      "HNS observer configuration-v2 was not found",
+    );
+  }
+  const decoded = await decodeHnsControlObserverConfigurationV2Bytes(bytes);
+  const configuration = decoded.configuration;
+  if (decoded.configuration_digest !== input.authority.provider_configuration_digest) {
+    throw new HnsControlObserverConfigurationError(
+      "digest_mismatch",
+      "HNS observer configuration-v2 digest does not match authority",
+    );
+  }
+  if (
+    configuration.provider_configuration_reference !==
+      input.authority.provider_configuration_reference ||
+    configuration.provider_configuration_version !==
+      input.authority.provider_configuration_version ||
+    configuration.provider_id !== input.authority.provider_id ||
+    configuration.environment !== input.authority.environment ||
+    (input.authority.ownership_source !== undefined &&
+      !configuration.ownership_sources.includes(input.authority.ownership_source))
+  ) {
+    throw new HnsControlObserverConfigurationError(
+      "identity_mismatch",
+      "HNS observer configuration-v2 identity does not match authority",
+    );
+  }
+  if (
+    input.capabilities.provider_id !== configuration.provider_id ||
+    input.capabilities.environment !== configuration.environment ||
+    input.capabilities.chain_driver_reference !== configuration.chain.driver_reference ||
+    input.capabilities.snapshot_store_reference !== configuration.snapshot_store_reference ||
+    input.capabilities.authoritative_dns_driver_reference !==
+      (configuration.authoritative_dns?.driver_reference ?? null) ||
+    configuration.authority_inventory === null ||
+    input.capabilities.authority_inventory_registry_reference !==
+      configuration.authority_inventory.registry_reference
+  ) {
+    throw new HnsControlObserverConfigurationError(
+      "capability_mismatch",
+      "HNS observer runtime capabilities do not match configuration-v2",
     );
   }
   return decoded;

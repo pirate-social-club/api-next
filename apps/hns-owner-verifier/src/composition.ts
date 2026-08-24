@@ -1,9 +1,14 @@
-import type { HnsControlObserverRuntimeCapabilities } from "@pirate/application/namespace-ownership";
+import type {
+  HnsControlObserverRuntimeCapabilities,
+  HnsControlObserverRuntimeCapabilitiesV2,
+} from "@pirate/application/namespace-ownership";
 import { makeHnsControlObserverHsdPrivateTransport } from "@pirate/platform-cf/namespace-ownership-hns-control-observer-hsd-private-transport";
 import {
+  makeControlPlaneHnsAuthorityInventoryResolver,
   makeControlPlaneHnsControlObserverConfigurationResolver,
   makeControlPlaneHnsControlObserverSnapshotReader,
   makeControlPlaneHnsControlObserverSnapshotStore,
+  makeControlPlaneHnsControlObserverSnapshotStoreV2,
 } from "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres";
 import {
   type HnsPrivateDriverBinding,
@@ -17,7 +22,7 @@ import {
 import { makeHnsAuthoritativeDnsValidatorV1 } from "./owner-authoritative-dns-policy-v1.ts";
 import type { HnsTargetObserverRuntime } from "./target-observer.ts";
 import {
-  makeHnsOwnerAuthoritativeTargetObserverRuntime,
+  makeHnsOwnerAuthoritativeTargetObserverRuntimeV2,
   makeHnsParentChainTargetObserverRuntime,
 } from "./target-observer-runtime.ts";
 
@@ -29,6 +34,8 @@ export type HnsTargetCompositionBindings = Readonly<{
   readonly HNS_AUTHORITATIVE_DNS_DRIVER_REFERENCE?: string;
   readonly HNS_SNAPSHOT_STORE_REFERENCE?: string;
   readonly HNS_OBSERVER_DEADLINE_MS?: string;
+  readonly HNS_AUTHORITY_INVENTORY_REGISTRY_REFERENCE?: string;
+  readonly HNS_AUTHORITY_INVENTORY_CAPABILITY_SET_DIGEST?: string;
 }>;
 
 type HnsTargetCompositionEnvironment = HnsTargetCompositionBindings &
@@ -95,11 +102,19 @@ export async function composeHnsTargetObserverRuntime(
     return undefined;
   }
   const authoritativeDnsDriverReference = env.HNS_AUTHORITATIVE_DNS_DRIVER_REFERENCE;
+  const authorityInventoryRegistryReference = env.HNS_AUTHORITY_INVENTORY_REGISTRY_REFERENCE;
+  const authorityInventoryCapabilitySetDigest = env.HNS_AUTHORITY_INVENTORY_CAPABILITY_SET_DIGEST;
   if (
     source === "owner_authoritative_dns_txt"
       ? authoritativeDnsDriverReference === undefined ||
-        !safeReferencePattern.test(authoritativeDnsDriverReference)
-      : authoritativeDnsDriverReference !== undefined
+        !safeReferencePattern.test(authoritativeDnsDriverReference) ||
+        authorityInventoryRegistryReference === undefined ||
+        !safeReferencePattern.test(authorityInventoryRegistryReference) ||
+        authorityInventoryCapabilitySetDigest === undefined ||
+        !digestPattern.test(authorityInventoryCapabilitySetDigest)
+      : authoritativeDnsDriverReference !== undefined ||
+        authorityInventoryRegistryReference !== undefined ||
+        authorityInventoryCapabilitySetDigest !== undefined
   ) {
     return undefined;
   }
@@ -115,9 +130,6 @@ export async function composeHnsTargetObserverRuntime(
   const controlPlane = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
   const configurationResolver =
     makeControlPlaneHnsControlObserverConfigurationResolver(controlPlane);
-  const snapshotStore = makeControlPlaneHnsControlObserverSnapshotStore(controlPlane, {
-    snapshotStoreReference: env.HNS_SNAPSHOT_STORE_REFERENCE,
-  });
   const snapshotReader = makeControlPlaneHnsControlObserverSnapshotReader(controlPlane);
   const hsdCapability = makeHnsControlObserverHsdPrivateDriverCapability({
     binding: env.HNS_OBSERVER_DRIVER,
@@ -144,6 +156,9 @@ export async function composeHnsTargetObserverRuntime(
     environment: env.HNS_PROVIDER_ENVIRONMENT,
   };
   if (source === "hns_parent_chain_txt") {
+    const snapshotStore = makeControlPlaneHnsControlObserverSnapshotStore(controlPlane, {
+      snapshotStoreReference: env.HNS_SNAPSHOT_STORE_REFERENCE,
+    });
     const runtime = await makeHnsParentChainTargetObserverRuntime(
       {
         authority: { ...authority, ownership_source: source },
@@ -156,13 +171,31 @@ export async function composeHnsTargetObserverRuntime(
     );
     return Object.freeze({ ...runtime, snapshot_reader: snapshotReader });
   }
-  if (validator === undefined || authoritativeDnsDriverReference === undefined) return undefined;
-  const runtime = await makeHnsOwnerAuthoritativeTargetObserverRuntime(
+  if (
+    validator === undefined ||
+    authoritativeDnsDriverReference === undefined ||
+    authorityInventoryRegistryReference === undefined ||
+    authorityInventoryCapabilitySetDigest === undefined
+  ) {
+    return undefined;
+  }
+  const ownerCapabilities: HnsControlObserverRuntimeCapabilitiesV2 = {
+    ...capabilities,
+    authority_inventory_registry_reference: authorityInventoryRegistryReference,
+    authority_inventory_runtime_capability_set_digest: authorityInventoryCapabilitySetDigest,
+  };
+  const runtime = await makeHnsOwnerAuthoritativeTargetObserverRuntimeV2(
     {
       authority: { ...authority, ownership_source: source },
-      capabilities,
+      capabilities: ownerCapabilities,
       configuration_resolver: configurationResolver,
-      snapshot_store: snapshotStore,
+      authority_inventory_resolver: makeControlPlaneHnsAuthorityInventoryResolver(controlPlane, {
+        registryReference: authorityInventoryRegistryReference,
+        responseMaxBytes: 65_536,
+      }),
+      snapshot_store: makeControlPlaneHnsControlObserverSnapshotStoreV2(controlPlane, {
+        snapshotStoreReference: env.HNS_SNAPSHOT_STORE_REFERENCE,
+      }),
       hsd_transport: hsdTransport,
       authoritative_dns_transport: makeHnsAuthoritativeDnsPrivateDriverTransport({
         binding: env.HNS_OBSERVER_DRIVER,

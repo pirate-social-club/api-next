@@ -58,6 +58,8 @@ describe("HNS verifier default composition (workerd)", () => {
     expect("HNS_OBSERVER_DRIVER" in verifierEnv).toBe(false);
     expect("CONTROL_PLANE" in verifierEnv).toBe(false);
     expect("HNS_PROVIDER_CONFIGURATION_DIGEST" in verifierEnv).toBe(false);
+    expect("HNS_AUTHORITY_INVENTORY_REGISTRY_REFERENCE" in verifierEnv).toBe(false);
+    expect("HNS_AUTHORITY_INVENTORY_CAPABILITY_SET_DIGEST" in verifierEnv).toBe(false);
     expect(["HNS", "LEGACY", "VERIFIER", "URL"].join("_") in verifierEnv).toBe(false);
     expect(["HNS", "LEGACY", "VERIFIER", "BEARER"].join("_") in verifierEnv).toBe(false);
     const response = await SELF.fetch("https://hns-owner.internal/internal/hns-owner/v1/start", {
