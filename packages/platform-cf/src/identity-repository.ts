@@ -5,11 +5,10 @@ import {
   IdentityRegistrationStoreFailure,
   IdentityResolutionError,
   type IdentityStore,
+  MAX_CANONICAL_ALIAS_HOPS,
 } from "@pirate/application";
 import { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import { Data, Effect, type Layer, Result, Schema } from "effect";
-
-export const MAX_CANONICAL_ALIAS_HOPS = 8;
 
 export class IdentityRepositoryError extends Data.TaggedError("IdentityRepositoryError")<{
   readonly reason: "missing" | "deleted" | "cyclic" | "invalid";
