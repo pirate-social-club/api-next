@@ -5,18 +5,20 @@ This directory packages the deployment-facing pieces for the source-closed
 terminator, certificate, and signed `pirate` zone without importing or calling
 the legacy application, API, verifier, or gateway runtime.
 
-Build the one-file Linux executable from the accepted api-next commit:
+Build the one-file Bun bundle from the accepted api-next commit:
 
 ```bash
-bun run --cwd apps/hns-platform-gateway build:executable
-sha256sum apps/hns-platform-gateway/dist/pirate-hns-platform-gateway
+bun run --cwd apps/hns-platform-gateway build:vps-bundle
+sha256sum apps/hns-platform-gateway/dist/pirate-hns-platform-gateway.mjs
 ```
 
 The shadow unit listens on `127.0.0.1:4149` and exposes health only on
 `127.0.0.1:4151`. The production unit listens on the retained Caddy upstream
 port `127.0.0.1:4049` and exposes health only on `127.0.0.1:4051`. Neither unit
-reads an environment file. The executable accepts exactly one of the two
-compiled modes and always verifies the frozen profile digest before listening.
+reads an environment file. The unit reuses the retained checksum-tracked Bun
+runtime already owned by the VPS deployment-verification role. The bundle
+accepts exactly one of the two source-closed modes and always verifies the
+frozen profile digest before listening.
 
 The TLS terminator must remove caller-supplied reserved headers and inject the
 exact request headers in
