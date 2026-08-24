@@ -126,6 +126,48 @@ describe("Infisical secret drift audit", () => {
     );
   });
 
+  test("allows only the environment-neutral R2 operator credential names in staging", () => {
+    const stagingBase = emptySnapshot("staging");
+    const staging: InfisicalSnapshot = {
+      ...stagingBase,
+      secrets: {
+        ...stagingBase.secrets,
+        "/services/api-next": [
+          "PIRATE_APP_JWT_PRIVATE_KEY",
+          "PRIVY_APP_SECRET",
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "VERY_WEB_SEALING_KEY",
+          "ZKPASSPORT_VERIFIER_SHARED_SECRET",
+          "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
+        ],
+        "/services/api-next/operator": [
+          "CONTROL_PLANE_POSTGRES_ADMIN_URL",
+          "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
+          "R2_SEAL_PROBE_ACCESS_KEY_ID",
+          "R2_SEAL_PROBE_SECRET_ACCESS_KEY",
+        ],
+      },
+    };
+    expect(auditInfisicalSnapshots([staging]).violations).toEqual([]);
+
+    const legacyName: InfisicalSnapshot = {
+      ...staging,
+      secrets: {
+        ...staging.secrets,
+        "/services/api-next/operator": [
+          ...staging.secrets["/services/api-next/operator"],
+          "R2_STAGING_ACCESS_KEY_ID",
+        ],
+      },
+    };
+    expect(auditInfisicalSnapshots([legacyName]).violations).toContainEqual({
+      environment: "staging",
+      path: "/services/api-next/operator",
+      kind: "unexpected-secret",
+      name: "R2_STAGING_ACCESS_KEY_ID",
+    });
+  });
+
   test("forces the REST query to hide values", async () => {
     let requestedUrl = "";
     const names = await listInfisicalSecretNames({

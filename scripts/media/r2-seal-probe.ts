@@ -399,23 +399,24 @@ export async function runLocalDryRun(fixtureSet?: FixtureSet): Promise<ProbeEvid
 }
 
 async function main(args: readonly string[] = Bun.argv.slice(2)): Promise<void> {
-  if (args.length === 1 && args[0] === "--execute-staging") {
-    const { runStagingProbe, STAGING_EXECUTION_ACKNOWLEDGEMENT } = await import(
-      "./r2-seal-probe-staging"
-    );
+  if (args.length > 0) {
+    const { parseProbeInvocation, runStagingProbe, STAGING_EXECUTION_ACKNOWLEDGEMENT } =
+      await import("./r2-seal-probe-staging");
+    const invocation = parseProbeInvocation(args);
+    if (invocation.mode !== "execute-staging") {
+      throw new Error("staging probe invocation is invalid");
+    }
     process.stdout.write(
       `${JSON.stringify(
-        await runStagingProbe({ acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT }),
+        await runStagingProbe({
+          acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
+          target: invocation.target,
+        }),
         null,
         2,
       )}\n`,
     );
     return;
-  }
-  if (args.length > 0) {
-    throw new Error(
-      "use no arguments for the local dry run or exactly --execute-staging for staging",
-    );
   }
   process.stdout.write(`${JSON.stringify(await runLocalDryRun(), null, 2)}\n`);
 }

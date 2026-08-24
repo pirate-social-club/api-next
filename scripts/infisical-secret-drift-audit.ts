@@ -30,6 +30,11 @@ const OPERATOR_SECRET_NAMES = [
   "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
 ] as const;
 
+const STAGING_PROVISIONABLE_OPERATOR_SECRET_NAMES = [
+  "R2_SEAL_PROBE_ACCESS_KEY_ID",
+  "R2_SEAL_PROBE_SECRET_ACCESS_KEY",
+] as const;
+
 const requiredWhenRuntimeEnabled = (
   environment: InfisicalEnvironment,
   names: readonly string[],
@@ -57,7 +62,7 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
     environment: "staging",
     path: "/services/api-next/operator",
     requiredNames: [...OPERATOR_SECRET_NAMES],
-    allowedNames: [...OPERATOR_SECRET_NAMES],
+    allowedNames: [...OPERATOR_SECRET_NAMES, ...STAGING_PROVISIONABLE_OPERATOR_SECRET_NAMES],
   },
   {
     environment: "prod",
