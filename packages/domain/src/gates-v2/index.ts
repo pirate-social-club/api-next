@@ -23,9 +23,7 @@ export type {
 export {
   CURATED_AGE_18_POLICY,
   CURATED_AGE_18_POLICY_CANONICAL_PREIMAGE,
-  evaluateAge18,
   evaluateCuratedAge,
-  evaluateCuratedAge18,
   policyCanonicalPreimage,
 } from "./evaluator.ts";
 export type {

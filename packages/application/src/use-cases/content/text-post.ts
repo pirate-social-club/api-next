@@ -266,8 +266,6 @@ export const createTextPost = Effect.fn("createTextPost")(function* (
   return yield* new TextPostPolicyStale({ attempts: MAX_POLICY_RETRIES });
 });
 
-export const createModeratedTextPost = createTextPost;
-
 export const getTextContentSubmission = Effect.fn("getTextContentSubmission")(function* (
   input: GetTextContentSubmissionInput,
   services: TextPostServices,
@@ -292,5 +290,3 @@ export const getTextContentSubmission = Effect.fn("getTextContentSubmission")(fu
   if (submission === null) return yield* new NotFound({ message: "Text submission not found" });
   return submission;
 });
-
-export const getAuthorTextContentSubmission = getTextContentSubmission;

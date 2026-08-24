@@ -453,8 +453,6 @@ export async function buildAcrCloudSignature(
   return btoa(binary);
 }
 
-export const acrCloudSignature = buildAcrCloudSignature;
-
 /**
  * Builds the provider form body without FormData. The fixed boundary and
  * field order make the bytes deterministic under fixtures.

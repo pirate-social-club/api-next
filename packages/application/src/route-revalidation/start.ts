@@ -429,8 +429,6 @@ export const startHnsRouteRevalidation = Effect.fn("startHnsRouteRevalidation")(
 });
 
 /** Short alias used by scheduler integrations. */
-export const startRouteRevalidation = startHnsRouteRevalidation;
-
 export {
   HNS_ROUTE_REVALIDATION_PROTOCOL_VERSION,
   HNS_ROUTE_REVALIDATION_PROVIDER_ID,

@@ -665,6 +665,3 @@ export function evaluateCuratedAge(input: unknown): CuratedAgeEvaluation {
     return failWithMetadata(fallbackMetadata, "invalid_evidence", ["assertion_invalid"]);
   }
 }
-
-export const evaluateCuratedAge18 = evaluateCuratedAge;
-export const evaluateAge18 = evaluateCuratedAge;

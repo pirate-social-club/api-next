@@ -277,9 +277,7 @@ const GATES_V2_EXPORTS = {
     "EvidenceUnavailableReason",
     "GatesV2EvaluationOutcome",
     "RequiredClaim",
-    "evaluateAge18",
     "evaluateCuratedAge",
-    "evaluateCuratedAge18",
     "policyCanonicalPreimage",
   ],
   "./human-membership-evaluator.ts": [
