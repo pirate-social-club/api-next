@@ -1,10 +1,16 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { expireCommunityRouteEvidence } from "@pirate/application";
+import {
+  activateOperatorManagedRoute,
+  expireCommunityRouteEvidence,
+  revokeOperatorManagedRoute,
+} from "@pirate/application";
+import type { Sha256Hex } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeControlPlaneCommunityRouteExpiryStore } from "./community-route-expiry-repository.ts";
 import { makeControlPlaneCanonicalCommunityRouteStore } from "./community-route-repository.ts";
+import { makeControlPlaneOperatorManagedRouteStore } from "./operator-managed-route-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -805,9 +811,458 @@ suite("canonical community route Postgres repository", () => {
       completedTestCount += 1;
     });
   }, 30_000);
+
+  test("activates, resolves, replays, and revokes one operator-managed first-party root", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      const communityId = "community_123e4567-e89b-42d3-a456-426614174001";
+      const registryBytes = new TextEncoder().encode(
+        '["pirate-operator-managed-root-registry-v1","operator-managed-roots-2026-08",1,[["hns","pirate","active"]]]',
+      );
+      const registryDigest =
+        "f60b4c58bdf17672aae9014e6fed2f522fc77ef0190ed80b822249b8826b1292" as Sha256Hex;
+      await admin.query("INSERT INTO users (user_id) VALUES ('operator-route-owner')");
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug, route_authority_version
+         ) VALUES ($1, 'Operator route', 'active', 'operator-route-owner',
+           clock_timestamp(), clock_timestamp(), NULL, 'optional_route_v2')`,
+        [communityId],
+      );
+      await admin.query(
+        `INSERT INTO platform_operator_route_authority_grants (
+           grant_id, operator_principal_id, authority, status,
+           granted_at, granted_by_operator_principal_id
+         ) VALUES (
+           'operator-route-grant-1', 'platform-operator-1',
+           'manage_operator_routes', 'active', clock_timestamp(), 'bootstrap-operator'
+         )`,
+      );
+      await admin.query(
+        `INSERT INTO operator_managed_root_registry_versions (
+           registry_reference, registry_version, registry_digest, registry_bytes,
+           published_at, published_by_operator_principal_id
+         ) VALUES ($1, 1, $2, $3, clock_timestamp(), 'platform-operator-1')`,
+        ["operator-managed-roots-2026-08", registryDigest, registryBytes],
+      );
+      await admin.query(
+        `INSERT INTO operator_managed_root_registry_current (
+           registry_kind, registry_reference, registry_version, registry_digest,
+           activated_at, activated_by_operator_principal_id
+         ) VALUES (
+           'pirate-operator-managed-root-registry-v1', $1, 1, $2,
+           clock_timestamp(), 'platform-operator-1'
+         )`,
+        ["operator-managed-roots-2026-08", registryDigest],
+      );
+
+      const operatorStore = makeControlPlaneOperatorManagedRouteStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const activationInput = {
+        operation_id: "operator-route-operation-1",
+        operator_principal_id: "platform-operator-1",
+        operator_authority_grant_id: "operator-route-grant-1",
+        idempotency_key: "operator-route-activation-key-1",
+        community_id: communityId,
+        canonical_root: "pirate",
+        registry_reference: "operator-managed-roots-2026-08",
+        registry_version: 1,
+        registry_digest: registryDigest,
+        operator_route_activation_id: "operator-route-activation-1",
+        route_binding_id: "operator-route-binding-1",
+        reason_code: "first-party-root",
+      } as const;
+      await expect(
+        Effect.runPromise(activateOperatorManagedRoute(activationInput, { store: operatorStore })),
+      ).resolves.toEqual({
+        outcome: "activated",
+        operator_route_activation_id: "operator-route-activation-1",
+        route_binding_id: "operator-route-binding-1",
+        activation_generation: 1,
+      });
+      await expect(
+        Effect.runPromise(activateOperatorManagedRoute(activationInput, { store: operatorStore })),
+      ).resolves.toMatchObject({ outcome: "replayed", activation_generation: 1 });
+      await expect(
+        Effect.runPromise(
+          activateOperatorManagedRoute(
+            { ...activationInput, reason_code: "changed-replay" },
+            { store: operatorStore },
+          ),
+        ),
+      ).rejects.toBeDefined();
+
+      const routeStore = makeControlPlaneCanonicalCommunityRouteStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(routeStore.resolveCanonicalRoute({ path_segment: "app.pirate" })),
+        ),
+      ).resolves.toMatchObject({
+        community_id: communityId,
+        canonical_route: { path_segment: "app.pirate", app_host: null },
+      });
+      await admin.query(
+        `INSERT INTO community_route_app_host_health (
+           route_binding_id, family, health_status, health_generation, observed_at
+         ) VALUES ('operator-route-binding-1', 'hns', 'healthy', 1, clock_timestamp())`,
+      );
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(routeStore.resolveCanonicalRoute({ path_segment: "app.pirate" })),
+        ),
+      ).resolves.toMatchObject({
+        canonical_route: { app_host: "app.pirate" },
+      });
+
+      const authority = await admin.query(
+        `SELECT binding.route_authority_kind,
+                binding.ownership_status,
+                binding.verified_evidence_ref,
+                (SELECT count(*)::integer
+                   FROM effective_active_route($1, clock_timestamp())) AS sale_authority_count,
+                (SELECT count(*)::integer
+                   FROM effective_route_authority_v2($1, clock_timestamp())) AS route_authority_count
+           FROM community_canonical_route_bindings AS binding
+          WHERE binding.route_binding_id = 'operator-route-binding-1'`,
+        [communityId],
+      );
+      expect(authority.rows).toEqual([
+        {
+          route_authority_kind: "operator_managed_route_v1",
+          ownership_status: "pending",
+          verified_evidence_ref: null,
+          sale_authority_count: 0,
+          route_authority_count: 1,
+        },
+      ]);
+
+      const revocationInput = {
+        operation_id: "operator-route-revocation-1",
+        operator_principal_id: "platform-operator-1",
+        operator_authority_grant_id: "operator-route-grant-1",
+        idempotency_key: "operator-route-revocation-key-1",
+        community_id: communityId,
+        canonical_root: "pirate",
+        operator_route_activation_id: "operator-route-activation-1",
+        route_binding_id: "operator-route-binding-1",
+        expected_activation_generation: 1,
+        reason_code: "first-party-root-retired",
+      } as const;
+      await expect(
+        Effect.runPromise(revokeOperatorManagedRoute(revocationInput, { store: operatorStore })),
+      ).resolves.toMatchObject({ outcome: "revoked", activation_generation: 2 });
+      await expect(
+        Effect.runPromise(revokeOperatorManagedRoute(revocationInput, { store: operatorStore })),
+      ).resolves.toMatchObject({ outcome: "replayed", activation_generation: 2 });
+      await expect(
+        Effect.runPromise(
+          revokeOperatorManagedRoute(
+            {
+              ...revocationInput,
+              operation_id: "operator-route-revocation-stale",
+              idempotency_key: "operator-route-revocation-key-stale",
+            },
+            { store: operatorStore },
+          ),
+        ),
+      ).rejects.toBeDefined();
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(routeStore.resolveCanonicalRoute({ path_segment: "app.pirate" })),
+        ),
+      ).resolves.toBeNull();
+
+      const retained = await admin.query(
+        `SELECT activation.status,
+                activation.operator_route_activation_generation,
+                binding.route_lifecycle_status,
+                binding.binding_generation,
+                binding.authority_generation,
+                (SELECT count(*)::integer
+                   FROM community_route_operator_override_audit) AS audit_count,
+                (SELECT count(*)::integer
+                   FROM community_route_ownership_evidence) AS evidence_count
+           FROM operator_managed_route_activations AS activation
+           JOIN community_canonical_route_bindings AS binding
+             ON binding.route_binding_id = activation.route_binding_id
+          WHERE activation.operator_route_activation_id = 'operator-route-activation-1'`,
+      );
+      expect(retained.rows).toEqual([
+        {
+          status: "revoked",
+          operator_route_activation_generation: "2",
+          route_lifecycle_status: "suspended",
+          binding_generation: "2",
+          authority_generation: "2",
+          audit_count: 2,
+          evidence_count: 0,
+        },
+      ]);
+      completedTestCount += 1;
+    });
+  }, 30_000);
+
+  test("rechecks operator privilege and prevents current registry removal of an active root", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      const registryReference = "operator-managed-roots-2026-08";
+      const activeBytes = new TextEncoder().encode(
+        '["pirate-operator-managed-root-registry-v1","operator-managed-roots-2026-08",1,[["hns","pirate","active"]]]',
+      );
+      const activeDigest = "f60b4c58bdf17672aae9014e6fed2f522fc77ef0190ed80b822249b8826b1292";
+      const noncanonicalBytes = new TextEncoder().encode(
+        '["pirate-operator-managed-root-registry-v1", "operator-managed-roots-2026-08", 3, [["hns", "pirate", "active"]]]',
+      );
+      const noncanonicalDigestBuffer = await crypto.subtle.digest("SHA-256", noncanonicalBytes);
+      const noncanonicalDigest = [...new Uint8Array(noncanonicalDigestBuffer)]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+      const emptyBytes = new TextEncoder().encode(
+        '["pirate-operator-managed-root-registry-v1","operator-managed-roots-2026-08",2,[]]',
+      );
+      const emptyDigestBuffer = await crypto.subtle.digest("SHA-256", emptyBytes);
+      const emptyDigest = [...new Uint8Array(emptyDigestBuffer)]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("");
+      const communityId = "community_123e4567-e89b-42d3-a456-426614174002";
+      await admin.query("INSERT INTO users (user_id) VALUES ('operator-route-owner-2')");
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug, route_authority_version
+         ) VALUES ($1, 'Operator route 2', 'active', 'operator-route-owner-2',
+           clock_timestamp(), clock_timestamp(), NULL, 'optional_route_v2')`,
+        [communityId],
+      );
+      await admin.query(
+        `INSERT INTO platform_operator_route_authority_grants (
+           grant_id, operator_principal_id, authority, status,
+           granted_at, granted_by_operator_principal_id
+         ) VALUES ('operator-route-grant-2', 'platform-operator-2',
+           'manage_operator_routes', 'active', clock_timestamp(), 'bootstrap-operator')`,
+      );
+      await expect(
+        admin.query(
+          `INSERT INTO operator_managed_root_registry_versions (
+             registry_reference, registry_version, registry_digest, registry_bytes,
+             published_at, published_by_operator_principal_id
+           ) VALUES ($1, 3, $2, $3, clock_timestamp(), 'platform-operator-2')`,
+          [registryReference, noncanonicalDigest, noncanonicalBytes],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await admin.query(
+        `INSERT INTO operator_managed_root_registry_versions (
+           registry_reference, registry_version, registry_digest, registry_bytes,
+           published_at, published_by_operator_principal_id
+         ) VALUES ($1, 1, $2, $3, clock_timestamp(), 'platform-operator-2'),
+                  ($1, 2, $4, $5, clock_timestamp(), 'platform-operator-2')`,
+        [registryReference, activeDigest, activeBytes, emptyDigest, emptyBytes],
+      );
+      await admin.query(
+        `INSERT INTO operator_managed_root_registry_current (
+           registry_kind, registry_reference, registry_version, registry_digest,
+           activated_at, activated_by_operator_principal_id
+         ) VALUES ('pirate-operator-managed-root-registry-v1', $1, 1, $2,
+           clock_timestamp(), 'platform-operator-2')`,
+        [registryReference, activeDigest],
+      );
+      const operatorStore = makeControlPlaneOperatorManagedRouteStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const input = {
+        operation_id: "operator-route-operation-2",
+        operator_principal_id: "platform-operator-2",
+        operator_authority_grant_id: "operator-route-grant-2",
+        idempotency_key: "operator-route-activation-key-2",
+        community_id: communityId,
+        canonical_root: "pirate",
+        registry_reference: registryReference,
+        registry_version: 1,
+        registry_digest: activeDigest as Sha256Hex,
+        operator_route_activation_id: "operator-route-activation-2",
+        route_binding_id: "operator-route-binding-2",
+        reason_code: "first-party-root",
+      } as const;
+      await expect(
+        Effect.runPromise(
+          activateOperatorManagedRoute(
+            {
+              ...input,
+              operation_id: "operator-route-operation-registry-mismatch",
+              idempotency_key: "operator-route-activation-key-registry-mismatch",
+              registry_digest: "0".repeat(64) as Sha256Hex,
+            },
+            { store: operatorStore },
+          ),
+        ),
+      ).rejects.toBeDefined();
+      await expect(
+        Effect.runPromise(activateOperatorManagedRoute(input, { store: operatorStore })),
+      ).resolves.toMatchObject({ outcome: "activated" });
+      await expect(
+        admin.query(
+          `UPDATE operator_managed_root_registry_current
+              SET registry_version = 2, registry_digest = $1,
+                  activated_at = clock_timestamp()
+            WHERE registry_kind = 'pirate-operator-managed-root-registry-v1'`,
+          [emptyDigest],
+        ),
+      ).rejects.toMatchObject({ code: "P0001" });
+
+      await admin.query(
+        `UPDATE platform_operator_route_authority_grants
+            SET status = 'revoked', revoked_at = clock_timestamp(),
+                revoked_by_operator_principal_id = 'bootstrap-operator'
+          WHERE grant_id = 'operator-route-grant-2'`,
+      );
+      await expect(
+        Effect.runPromise(
+          revokeOperatorManagedRoute(
+            {
+              operation_id: "operator-route-revocation-2",
+              operator_principal_id: "platform-operator-2",
+              operator_authority_grant_id: "operator-route-grant-2",
+              idempotency_key: "operator-route-revocation-key-2",
+              community_id: communityId,
+              canonical_root: "pirate",
+              operator_route_activation_id: "operator-route-activation-2",
+              route_binding_id: "operator-route-binding-2",
+              expected_activation_generation: 1,
+              reason_code: "privilege-recheck",
+            },
+            { store: operatorStore },
+          ),
+        ),
+      ).rejects.toBeDefined();
+      const stillActive = await admin.query(
+        `SELECT status, operator_route_activation_generation
+           FROM operator_managed_route_activations
+          WHERE operator_route_activation_id = 'operator-route-activation-2'`,
+      );
+      expect(stillActive.rows).toEqual([
+        { status: "active", operator_route_activation_generation: "1" },
+      ]);
+      completedTestCount += 1;
+    });
+  }, 30_000);
+
+  test("serializes two communities racing for one operator-managed root", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      const registryReference = "operator-managed-roots-race";
+      const registryBytes = new TextEncoder().encode(
+        '["pirate-operator-managed-root-registry-v1","operator-managed-roots-race",1,[["hns","race","active"]]]',
+      );
+      const registryDigestBuffer = await crypto.subtle.digest("SHA-256", registryBytes);
+      const registryDigest = [...new Uint8Array(registryDigestBuffer)]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join("") as Sha256Hex;
+      const firstCommunity = "community_123e4567-e89b-42d3-a456-426614174003";
+      const secondCommunity = "community_123e4567-e89b-42d3-a456-426614174004";
+      await admin.query("INSERT INTO users (user_id) VALUES ('operator-route-race-owner')");
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug, route_authority_version
+         ) VALUES
+           ($1, 'Operator route race 1', 'active', 'operator-route-race-owner',
+            clock_timestamp(), clock_timestamp(), NULL, 'optional_route_v2'),
+           ($2, 'Operator route race 2', 'active', 'operator-route-race-owner',
+            clock_timestamp(), clock_timestamp(), NULL, 'optional_route_v2')`,
+        [firstCommunity, secondCommunity],
+      );
+      await admin.query(
+        `INSERT INTO platform_operator_route_authority_grants (
+           grant_id, operator_principal_id, authority, status,
+           granted_at, granted_by_operator_principal_id
+         ) VALUES ('operator-route-race-grant', 'platform-operator-race',
+           'manage_operator_routes', 'active', clock_timestamp(), 'bootstrap-operator')`,
+      );
+      await admin.query(
+        `INSERT INTO operator_managed_root_registry_versions (
+           registry_reference, registry_version, registry_digest, registry_bytes,
+           published_at, published_by_operator_principal_id
+         ) VALUES ($1, 1, $2, $3, clock_timestamp(), 'platform-operator-race')`,
+        [registryReference, registryDigest, registryBytes],
+      );
+      await admin.query(
+        `INSERT INTO operator_managed_root_registry_current (
+           registry_kind, registry_reference, registry_version, registry_digest,
+           activated_at, activated_by_operator_principal_id
+         ) VALUES ('pirate-operator-managed-root-registry-v1', $1, 1, $2,
+           clock_timestamp(), 'platform-operator-race')`,
+        [registryReference, registryDigest],
+      );
+
+      const operatorStore = makeControlPlaneOperatorManagedRouteStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const common = {
+        operator_principal_id: "platform-operator-race",
+        operator_authority_grant_id: "operator-route-race-grant",
+        canonical_root: "race",
+        registry_reference: registryReference,
+        registry_version: 1,
+        registry_digest: registryDigest,
+        reason_code: "root-race",
+      } as const;
+      const outcomes = await Promise.allSettled([
+        Effect.runPromise(
+          activateOperatorManagedRoute(
+            {
+              ...common,
+              operation_id: "operator-route-race-operation-1",
+              idempotency_key: "operator-route-race-key-1",
+              community_id: firstCommunity,
+              operator_route_activation_id: "operator-route-race-activation-1",
+              route_binding_id: "operator-route-race-binding-1",
+            },
+            { store: operatorStore },
+          ),
+        ),
+        Effect.runPromise(
+          activateOperatorManagedRoute(
+            {
+              ...common,
+              operation_id: "operator-route-race-operation-2",
+              idempotency_key: "operator-route-race-key-2",
+              community_id: secondCommunity,
+              operator_route_activation_id: "operator-route-race-activation-2",
+              route_binding_id: "operator-route-race-binding-2",
+            },
+            { store: operatorStore },
+          ),
+        ),
+      ]);
+      expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+      expect(outcomes.filter((outcome) => outcome.status === "rejected")).toHaveLength(1);
+
+      const durable = await admin.query(
+        `SELECT
+           (SELECT count(*)::integer FROM community_canonical_route_bindings
+             WHERE family = 'hns' AND root_label = 'race') AS binding_count,
+           (SELECT count(*)::integer FROM operator_managed_route_activations
+             WHERE family = 'hns' AND canonical_root = 'race') AS activation_count,
+           (SELECT count(*)::integer FROM operator_managed_route_operations
+             WHERE family = 'hns' AND canonical_root = 'race') AS operation_count,
+           (SELECT count(*)::integer FROM community_route_operator_override_audit
+             WHERE community_id IN ($1, $2)
+               AND action_kind = 'operator_route_activated') AS audit_count`,
+        [firstCommunity, secondCommunity],
+      );
+      expect(durable.rows).toEqual([
+        { binding_count: 1, activation_count: 1, operation_count: 1, audit_count: 1 },
+      ]);
+      completedTestCount += 1;
+    });
+  }, 30_000);
 });
 
 afterAll(async () => {
-  if (connectionString === undefined || completedTestCount !== 6) return;
+  if (connectionString === undefined || completedTestCount !== 9) return;
   await Bun.write(sentinelPath, sentinelContents);
 });

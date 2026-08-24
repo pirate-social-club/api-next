@@ -132,6 +132,10 @@ export {
   makeControlPlaneNamespaceOwnershipStartStore,
 } from "./namespace-ownership-start-repository";
 export {
+  makeControlPlaneOperatorManagedRouteRepository,
+  makeControlPlaneOperatorManagedRouteStore,
+} from "./operator-managed-route-repository";
+export {
   makeControlPlanePersonaRepository,
   makeControlPlanePersonaStore,
   makeControlPlanePersonaWalletRepository,

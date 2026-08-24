@@ -424,6 +424,8 @@ export {
   hnsPrivateDriverErrorStatus,
   isCanonicalHnsPrivateDriverHsdRequest,
 } from "./hns-private-driver.ts";
+export * from "./operator-managed-root-registry.ts";
+export * from "./operator-managed-route.ts";
 export type {
   NamespaceOwnershipProviderRegistryError,
   NamespaceOwnershipProviderRegistryOptions,

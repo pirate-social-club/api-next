@@ -3,6 +3,7 @@
 import {
   decodeHnsAuthorityInventoryBytes,
   decodeHnsControlObserverConfigurationV2Bytes,
+  decodeOperatorManagedRootRegistryV1,
   hnsRootIsPirateWritable,
 } from "@pirate/application/namespace-ownership";
 import { describe, expect, it } from "vitest";
@@ -13,6 +14,19 @@ const configurationV2Json =
   '{"version":"pirate-hns-control-observer-configuration-v2","provider_id":"hns.owner.v1","provider_configuration_reference":"hns-observer-regtest-config-fixture-v2","provider_configuration_version":"hns-observer-config-v2","environment":"test","ownership_sources":["hns_parent_chain_txt","owner_authoritative_dns_txt"],"chain":{"driver_reference":"hsd-json-rpc:regtest-primary","network":"regtest","genesis_block_hash":"2222222222222222222222222222222222222222222222222222222222222222","minimum_verification_progress_millionths":999000,"maximum_tip_age_seconds":21600,"maximum_future_tip_seconds":7200,"expected_block_interval_seconds":600,"minimum_safe_remaining_blocks":144,"expiry_safety_blocks":144,"response_max_bytes":1048576},"authoritative_dns":{"driver_reference":"authoritative-dns:regtest","required_view_ids":["dns-view-a","dns-view-b"],"require_dnssec":true,"require_all_views":true,"response_max_bytes":65535},"authority_inventory":{"registry_reference":"authority-inventory:regtest","maximum_inventory_lifetime_seconds":3600,"response_max_bytes":65536},"evidence_lease_seconds":2592000,"observer_deadline_ms":12000,"observer_reservation_lease_seconds":15,"snapshot_store_reference":"postgres:hns-control-observer-v1"}';
 
 describe("HNS authority inventory codecs (workerd)", () => {
+  it("reproduces the immutable operator-managed root registry vector", async () => {
+    const registry = await decodeOperatorManagedRootRegistryV1(
+      new TextEncoder().encode(
+        '["pirate-operator-managed-root-registry-v1","operator-managed-roots-2026-08",1,[["hns","pirate","active"]]]',
+      ),
+    );
+    expect(registry.registry_bytes.byteLength).toBe(107);
+    expect(registry.registry_digest).toBe(
+      "f60b4c58bdf17672aae9014e6fed2f522fc77ef0190ed80b822249b8826b1292",
+    );
+    expect(registry.registry.entries).toEqual([["hns", "pirate", "active"]]);
+  });
+
   it("reproduces the immutable inventory and configuration-v2 digests", async () => {
     const encoder = new TextEncoder();
     const inventory = await decodeHnsAuthorityInventoryBytes(encoder.encode(inventoryJson));

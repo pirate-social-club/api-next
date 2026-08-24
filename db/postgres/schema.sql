@@ -3,6 +3,216 @@
 
 SET check_function_bodies = false;
 
+CREATE FUNCTION activate_operator_managed_route_v1(input_operation_id text, input_operator_principal_id text, input_operator_authority_grant_id text, input_idempotency_key text, input_request_hash text, input_community_id text, input_canonical_root text, input_root_label_display text, input_registry_reference text, input_registry_version bigint, input_registry_digest text, input_activation_id text, input_route_binding_id text, input_reason_code text) RETURNS TABLE(outcome text, operator_route_activation_id text, route_binding_id text, activation_generation bigint)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  replay operator_managed_route_operations%ROWTYPE;
+  authority platform_operator_route_authority_grants%ROWTYPE;
+  current_registry operator_managed_root_registry_current%ROWTYPE;
+  community_record communities%ROWTYPE;
+  committed_at TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  SELECT * INTO replay
+    FROM operator_managed_route_operations
+   WHERE operator_principal_id = input_operator_principal_id
+     AND operation_kind = 'activate'
+     AND idempotency_key = input_idempotency_key
+   FOR UPDATE;
+  IF FOUND THEN
+    IF replay.operation_id <> input_operation_id
+      OR replay.request_hash <> input_request_hash
+      OR replay.operator_authority_grant_id <> input_operator_authority_grant_id
+      OR replay.community_id <> input_community_id
+      OR replay.canonical_root <> input_canonical_root
+      OR replay.registry_reference <> input_registry_reference
+      OR replay.registry_version <> input_registry_version
+      OR replay.registry_digest <> input_registry_digest
+      OR replay.operator_route_activation_id <> input_activation_id
+      OR replay.route_binding_id <> input_route_binding_id
+      OR replay.reason_code <> input_reason_code THEN
+      RAISE EXCEPTION 'operator-managed route activation idempotency conflict';
+    END IF;
+    RETURN QUERY SELECT 'replayed'::TEXT, replay.operator_route_activation_id,
+      replay.route_binding_id, 1::BIGINT;
+    RETURN;
+  END IF;
+
+  SELECT * INTO authority
+    FROM platform_operator_route_authority_grants
+   WHERE grant_id = input_operator_authority_grant_id
+   FOR SHARE;
+  IF authority.grant_id IS NULL
+    OR authority.operator_principal_id <> input_operator_principal_id
+    OR authority.authority <> 'manage_operator_routes'
+    OR authority.status <> 'active' THEN
+    RAISE EXCEPTION 'operator-managed route requires active platform authority';
+  END IF;
+
+  SELECT * INTO current_registry
+    FROM operator_managed_root_registry_current
+   WHERE registry_kind = 'pirate-operator-managed-root-registry-v1'
+   FOR SHARE;
+  IF current_registry.registry_reference IS NULL
+    OR current_registry.registry_reference <> input_registry_reference
+    OR current_registry.registry_version <> input_registry_version
+    OR current_registry.registry_digest <> input_registry_digest
+    OR NOT operator_managed_registry_has_active_root(
+      input_registry_reference,
+      input_registry_version,
+      input_registry_digest,
+      input_canonical_root
+    ) THEN
+    RAISE EXCEPTION 'operator-managed root registry authority does not match';
+  END IF;
+
+  SELECT * INTO community_record
+    FROM communities
+   WHERE community_id = input_community_id
+   FOR UPDATE;
+  IF community_record.community_id IS NULL
+    OR community_record.status <> 'active'
+    OR community_record.route_authority_version <> 'optional_route_v2'
+    OR community_record.canonical_route_binding_id IS NOT NULL
+    OR EXISTS (
+      SELECT 1 FROM community_route_attachment_intents
+       WHERE community_id = input_community_id
+         AND status IN ('verification_required', 'commit_ready')
+    )
+    OR NOT is_community_route_root_label('hns', input_canonical_root)
+    OR NOT is_community_route_root_label_display(input_root_label_display) THEN
+    RAISE EXCEPTION 'operator-managed route activation is not available';
+  END IF;
+
+  INSERT INTO community_canonical_route_bindings (
+    route_binding_id,
+    community_id,
+    family,
+    root_label,
+    root_label_display,
+    ownership_status,
+    route_lifecycle_status,
+    binding_generation,
+    verified_evidence_ref,
+    route_authority_kind,
+    authority_reference,
+    authority_generation,
+    created_at,
+    updated_at
+  ) VALUES (
+    input_route_binding_id,
+    input_community_id,
+    'hns',
+    input_canonical_root,
+    input_root_label_display,
+    'pending',
+    'active',
+    1,
+    NULL,
+    'operator_managed_route_v1',
+    input_activation_id,
+    1,
+    committed_at,
+    committed_at
+  );
+
+  INSERT INTO operator_managed_route_activations (
+    operator_route_activation_id,
+    operator_route_activation_generation,
+    community_id,
+    route_binding_id,
+    family,
+    canonical_root,
+    operator_principal_id,
+    operator_authority_grant_id,
+    operator_managed_root_registry_reference,
+    operator_managed_root_registry_version,
+    operator_managed_root_registry_digest,
+    status,
+    activated_at
+  ) VALUES (
+    input_activation_id,
+    1,
+    input_community_id,
+    input_route_binding_id,
+    'hns',
+    input_canonical_root,
+    input_operator_principal_id,
+    input_operator_authority_grant_id,
+    input_registry_reference,
+    input_registry_version,
+    input_registry_digest,
+    'active',
+    committed_at
+  );
+
+  UPDATE communities
+     SET canonical_route_binding_id = input_route_binding_id,
+         updated_at = committed_at
+   WHERE community_id = input_community_id;
+
+  INSERT INTO community_route_operator_override_audit (
+    override_audit_id,
+    community_id,
+    operator_principal_id,
+    action_kind,
+    reason,
+    request_hash,
+    occurred_at
+  ) VALUES (
+    input_operation_id,
+    input_community_id,
+    input_operator_principal_id,
+    'operator_route_activated',
+    input_reason_code,
+    input_request_hash,
+    committed_at
+  );
+
+  INSERT INTO operator_managed_route_operations (
+    operation_id,
+    operation_kind,
+    operator_principal_id,
+    operator_authority_grant_id,
+    idempotency_key,
+    request_hash,
+    community_id,
+    family,
+    canonical_root,
+    operator_route_activation_id,
+    route_binding_id,
+    registry_reference,
+    registry_version,
+    registry_digest,
+    expected_activation_generation,
+    reason_code,
+    committed_at
+  ) VALUES (
+    input_operation_id,
+    'activate',
+    input_operator_principal_id,
+    input_operator_authority_grant_id,
+    input_idempotency_key,
+    input_request_hash,
+    input_community_id,
+    'hns',
+    input_canonical_root,
+    input_activation_id,
+    input_route_binding_id,
+    input_registry_reference,
+    input_registry_version,
+    input_registry_digest,
+    NULL,
+    input_reason_code,
+    committed_at
+  );
+
+  SET CONSTRAINTS ALL IMMEDIATE;
+  RETURN QUERY SELECT 'activated'::TEXT, input_activation_id,
+    input_route_binding_id, 1::BIGINT;
+END;
+$$;
+
 CREATE FUNCTION active_community_effect(expected_community_id text, expected_user_id text) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
@@ -69,6 +279,7 @@ CREATE FUNCTION effective_active_route(expected_community_id text, database_now 
    WHERE (expected_community_id IS NULL OR community.community_id = expected_community_id)
      AND database_now IS NOT NULL
      AND community.status = 'active'
+     AND binding.route_authority_kind = 'verified_namespace_v1'
      AND binding.route_lifecycle_status = 'active'
      AND binding.ownership_status = 'verified'
      AND binding.verified_evidence_ref IS NOT NULL
@@ -79,6 +290,59 @@ CREATE FUNCTION effective_active_route(expected_community_id text, database_now 
      AND evidence.binding_generation = binding.binding_generation
      AND evidence.expires_at IS NOT NULL
      AND evidence.expires_at > database_now
+$$;
+
+CREATE FUNCTION effective_route_authority_v2(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, path_segment text, href text, route_authority_kind text, authority_reference text, authority_generation bigint, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT verified.community_id,
+         verified.route_binding_id,
+         verified.family,
+         verified.root_label,
+         verified.root_label_display,
+         verified.path_segment,
+         verified.href,
+         'verified_namespace_v1'::TEXT,
+         NULL::TEXT,
+         NULL::BIGINT,
+         verified.verified_evidence_ref,
+         verified.binding_generation,
+         verified.evidence_expires_at
+    FROM effective_active_route(expected_community_id, database_now) AS verified
+  UNION ALL
+  SELECT community.community_id,
+         binding.route_binding_id,
+         binding.family,
+         binding.root_label,
+         binding.root_label_display,
+         binding.path_segment,
+         binding.href,
+         binding.route_authority_kind,
+         binding.authority_reference,
+         binding.authority_generation,
+         NULL::TEXT,
+         binding.binding_generation,
+         NULL::TIMESTAMPTZ
+    FROM communities AS community
+    JOIN community_canonical_route_bindings AS binding
+      ON binding.route_binding_id = community.canonical_route_binding_id
+     AND binding.community_id = community.community_id
+    JOIN operator_managed_route_activations AS activation
+      ON activation.operator_route_activation_id = binding.authority_reference
+     AND activation.operator_route_activation_generation = binding.authority_generation
+     AND activation.community_id = binding.community_id
+     AND activation.route_binding_id = binding.route_binding_id
+     AND activation.family = binding.family
+     AND activation.canonical_root = binding.root_label
+     AND activation.canonical_path_segment = binding.path_segment
+     AND activation.status = 'active'
+   WHERE (expected_community_id IS NULL OR community.community_id = expected_community_id)
+     AND database_now IS NOT NULL
+     AND community.status = 'active'
+     AND binding.route_authority_kind = 'operator_managed_route_v1'
+     AND binding.route_lifecycle_status = 'active'
+     AND binding.ownership_status <> 'verified'
+     AND binding.verified_evidence_ref IS NULL
 $$;
 
 CREATE FUNCTION gates_v2_active_binding_projection_guard() RETURNS trigger
@@ -513,28 +777,32 @@ BEGIN
     NEW.family,
     NEW.root_label,
     NEW.root_label_display,
+    NEW.route_authority_kind,
+    NEW.authority_reference,
     NEW.created_at
-  )
-    IS DISTINCT FROM
-    ROW(
-      OLD.route_binding_id,
-      OLD.community_id,
-      OLD.family,
-      OLD.root_label,
-      OLD.root_label_display,
-      OLD.created_at
-    ) THEN
+  ) IS DISTINCT FROM ROW(
+    OLD.route_binding_id,
+    OLD.community_id,
+    OLD.family,
+    OLD.root_label,
+    OLD.root_label_display,
+    OLD.route_authority_kind,
+    OLD.authority_reference,
+    OLD.created_at
+  ) THEN
     RAISE EXCEPTION 'community canonical route identity is immutable';
   END IF;
 
   authority_changed := ROW(
     NEW.ownership_status,
     NEW.route_lifecycle_status,
-    NEW.verified_evidence_ref
+    NEW.verified_evidence_ref,
+    NEW.authority_generation
   ) IS DISTINCT FROM ROW(
     OLD.ownership_status,
     OLD.route_lifecycle_status,
-    OLD.verified_evidence_ref
+    OLD.verified_evidence_ref,
+    OLD.authority_generation
   );
 
   IF authority_changed AND NEW.binding_generation <> OLD.binding_generation + 1 THEN
@@ -543,7 +811,6 @@ BEGIN
   IF NOT authority_changed AND NEW.binding_generation <> OLD.binding_generation THEN
     RAISE EXCEPTION 'community canonical route generation cannot advance without authority change';
   END IF;
-
   RETURN NEW;
 END;
 $$;
@@ -2236,6 +2503,79 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_operator_managed_root_registry_current_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'operator-managed root registry current authority cannot be deleted';
+  END IF;
+  IF NEW.registry_kind <> OLD.registry_kind
+    OR NEW.activated_at < OLD.activated_at THEN
+    RAISE EXCEPTION 'operator-managed root registry current identity is invalid';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+      FROM operator_managed_route_activations AS activation
+     WHERE activation.status = 'active'
+       AND NOT operator_managed_registry_has_active_root(
+         NEW.registry_reference,
+         NEW.registry_version,
+         NEW.registry_digest,
+         activation.canonical_root
+       )
+  ) THEN
+    RAISE EXCEPTION 'current operator-managed registry cannot remove an active route';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_operator_managed_route_activation_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'operator-managed route activations are retained';
+  END IF;
+  IF ROW(
+    NEW.operator_route_activation_id,
+    NEW.community_id,
+    NEW.route_binding_id,
+    NEW.family,
+    NEW.canonical_root,
+    NEW.operator_principal_id,
+    NEW.operator_authority_grant_id,
+    NEW.operator_managed_root_registry_reference,
+    NEW.operator_managed_root_registry_version,
+    NEW.operator_managed_root_registry_digest,
+    NEW.activated_at
+  ) IS DISTINCT FROM ROW(
+    OLD.operator_route_activation_id,
+    OLD.community_id,
+    OLD.route_binding_id,
+    OLD.family,
+    OLD.canonical_root,
+    OLD.operator_principal_id,
+    OLD.operator_authority_grant_id,
+    OLD.operator_managed_root_registry_reference,
+    OLD.operator_managed_root_registry_version,
+    OLD.operator_managed_root_registry_digest,
+    OLD.activated_at
+  ) THEN
+    RAISE EXCEPTION 'operator-managed route activation identity is immutable';
+  END IF;
+  IF OLD.status = 'revoked' THEN
+    RAISE EXCEPTION 'revoked operator-managed route activation is terminal';
+  END IF;
+  IF NEW.status <> 'revoked'
+    OR NEW.operator_route_activation_generation <> OLD.operator_route_activation_generation + 1 THEN
+    RAISE EXCEPTION 'operator-managed route revocation must advance exactly once';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_persona_wallet_assignment() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2269,6 +2609,32 @@ BEGIN
   END IF;
   RETURN NEW;
 END
+$$;
+
+CREATE FUNCTION guard_platform_operator_route_authority_grant_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF ROW(
+    NEW.grant_id,
+    NEW.operator_principal_id,
+    NEW.authority,
+    NEW.granted_at,
+    NEW.granted_by_operator_principal_id
+  ) IS DISTINCT FROM ROW(
+    OLD.grant_id,
+    OLD.operator_principal_id,
+    OLD.authority,
+    OLD.granted_at,
+    OLD.granted_by_operator_principal_id
+  ) THEN
+    RAISE EXCEPTION 'platform operator route authority identity is immutable';
+  END IF;
+  IF OLD.status = 'revoked' THEN
+    RAISE EXCEPTION 'revoked platform operator route authority is terminal';
+  END IF;
+  RETURN NEW;
+END;
 $$;
 
 CREATE FUNCTION guard_text_content_submission_response_snapshot() RETURNS trigger
@@ -2422,6 +2788,106 @@ CREATE FUNCTION is_community_route_root_label_display(root_label_display text) R
     AND position('%' IN root_label_display) = 0
     AND position('/' IN root_label_display) = 0
     AND position(E'\\' IN root_label_display) = 0;
+$$;
+
+CREATE FUNCTION is_operator_managed_root_registry_document(exact_bytes bytea, expected_reference text, expected_version bigint) RETURNS boolean
+    LANGUAGE plpgsql IMMUTABLE
+    AS $_$
+DECLARE
+  document JSONB;
+  entries JSONB;
+  canonical_entries TEXT;
+  canonical_document TEXT;
+  invalid_entries BIGINT;
+  reordered_entries BIGINT;
+BEGIN
+  IF exact_bytes IS NULL
+    OR octet_length(exact_bytes) = 0
+    OR octet_length(exact_bytes) > 65536
+    OR btrim(expected_reference) = ''
+    OR expected_reference <> btrim(expected_reference)
+    OR expected_version <= 0 THEN
+    RETURN FALSE;
+  END IF;
+
+  document := convert_from(exact_bytes, 'UTF8')::jsonb;
+  IF jsonb_typeof(document) <> 'array'
+    OR jsonb_array_length(document) <> 4
+    OR document ->> 0 <> 'pirate-operator-managed-root-registry-v1'
+    OR document ->> 1 <> expected_reference
+    OR jsonb_typeof(document -> 2) <> 'number'
+    OR document ->> 2 !~ '^[1-9][0-9]*$'
+    OR (document ->> 2)::numeric <> expected_version
+    OR jsonb_typeof(document -> 3) <> 'array'
+    OR jsonb_array_length(document -> 3) > 256 THEN
+    RETURN FALSE;
+  END IF;
+
+  entries := document -> 3;
+  SELECT COUNT(*) INTO invalid_entries
+    FROM jsonb_array_elements(entries) AS item(entry)
+   WHERE jsonb_typeof(entry) <> 'array'
+      OR jsonb_array_length(entry) <> 3
+      OR entry ->> 0 <> 'hns'
+      OR is_community_route_root_label('hns', entry ->> 1) IS NOT TRUE
+      OR entry ->> 2 <> 'active';
+  IF invalid_entries <> 0 THEN
+    RETURN FALSE;
+  END IF;
+
+  SELECT COALESCE(
+           '[' || string_agg(
+             format(
+               '[%s,%s,%s]',
+               to_jsonb(entry ->> 0)::TEXT,
+               to_jsonb(entry ->> 1)::TEXT,
+               to_jsonb(entry ->> 2)::TEXT
+             ),
+             ',' ORDER BY ordinal
+           ) || ']',
+           '[]'
+         )
+    INTO canonical_entries
+    FROM jsonb_array_elements(entries) WITH ORDINALITY AS item(entry, ordinal);
+  canonical_document := format(
+    '[%s,%s,%s,%s]',
+    to_jsonb(document ->> 0)::TEXT,
+    to_jsonb(document ->> 1)::TEXT,
+    expected_version::TEXT,
+    canonical_entries
+  );
+  IF convert_from(exact_bytes, 'UTF8') <> canonical_document THEN
+    RETURN FALSE;
+  END IF;
+
+  SELECT COUNT(*) INTO reordered_entries
+    FROM (
+      SELECT entry ->> 1 AS root_label,
+             lag(entry ->> 1) OVER (ORDER BY ordinal) AS previous_root
+        FROM jsonb_array_elements(entries) WITH ORDINALITY AS item(entry, ordinal)
+    ) AS ordered
+   WHERE previous_root IS NOT NULL
+     AND convert_to(previous_root, 'UTF8') >= convert_to(root_label, 'UTF8');
+  RETURN reordered_entries = 0;
+EXCEPTION WHEN OTHERS THEN
+  RETURN FALSE;
+END;
+$_$;
+
+CREATE FUNCTION operator_managed_registry_has_active_root(expected_reference text, expected_version bigint, expected_digest text, expected_root text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM operator_managed_root_registry_versions AS registry
+      CROSS JOIN LATERAL jsonb_array_elements(
+        convert_from(registry.registry_bytes, 'UTF8')::jsonb -> 3
+      ) AS item(entry)
+     WHERE registry.registry_reference = expected_reference
+       AND registry.registry_version = expected_version
+       AND registry.registry_digest = expected_digest
+       AND item.entry = jsonb_build_array('hns', expected_root, 'active')
+  )
 $$;
 
 CREATE FUNCTION populate_media_persona_lineage() RETURNS trigger
@@ -2715,6 +3181,22 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_operator_managed_root_registry_version_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'operator-managed root registry versions are append-only';
+END;
+$$;
+
+CREATE FUNCTION reject_operator_managed_route_operation_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'operator-managed route operations are append-only';
+END;
+$$;
+
 CREATE FUNCTION reject_text_moderation_append_only_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2771,6 +3253,157 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION revoke_operator_managed_route_v1(input_operation_id text, input_operator_principal_id text, input_operator_authority_grant_id text, input_idempotency_key text, input_request_hash text, input_community_id text, input_canonical_root text, input_activation_id text, input_route_binding_id text, input_expected_activation_generation bigint, input_reason_code text) RETURNS TABLE(outcome text, operator_route_activation_id text, route_binding_id text, activation_generation bigint)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  replay operator_managed_route_operations%ROWTYPE;
+  authority platform_operator_route_authority_grants%ROWTYPE;
+  activation operator_managed_route_activations%ROWTYPE;
+  binding community_canonical_route_bindings%ROWTYPE;
+  community_record communities%ROWTYPE;
+  committed_at TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  SELECT * INTO replay
+    FROM operator_managed_route_operations
+   WHERE operator_principal_id = input_operator_principal_id
+     AND operation_kind = 'revoke'
+     AND idempotency_key = input_idempotency_key
+   FOR UPDATE;
+  IF FOUND THEN
+    IF replay.operation_id <> input_operation_id
+      OR replay.request_hash <> input_request_hash
+      OR replay.operator_authority_grant_id <> input_operator_authority_grant_id
+      OR replay.community_id <> input_community_id
+      OR replay.canonical_root <> input_canonical_root
+      OR replay.operator_route_activation_id <> input_activation_id
+      OR replay.route_binding_id <> input_route_binding_id
+      OR replay.expected_activation_generation <> input_expected_activation_generation
+      OR replay.reason_code <> input_reason_code THEN
+      RAISE EXCEPTION 'operator-managed route revocation idempotency conflict';
+    END IF;
+    RETURN QUERY SELECT 'replayed'::TEXT, replay.operator_route_activation_id,
+      replay.route_binding_id, input_expected_activation_generation + 1;
+    RETURN;
+  END IF;
+
+  SELECT * INTO authority
+    FROM platform_operator_route_authority_grants
+   WHERE grant_id = input_operator_authority_grant_id
+   FOR SHARE;
+  IF authority.grant_id IS NULL
+    OR authority.operator_principal_id <> input_operator_principal_id
+    OR authority.authority <> 'manage_operator_routes'
+    OR authority.status <> 'active' THEN
+    RAISE EXCEPTION 'operator-managed route revocation requires active platform authority';
+  END IF;
+
+  SELECT * INTO community_record
+    FROM communities
+   WHERE community_id = input_community_id
+   FOR UPDATE;
+  SELECT * INTO activation
+    FROM operator_managed_route_activations AS stored_activation
+   WHERE stored_activation.operator_route_activation_id = input_activation_id
+   FOR UPDATE;
+  SELECT * INTO binding
+    FROM community_canonical_route_bindings AS stored_binding
+   WHERE stored_binding.route_binding_id = input_route_binding_id
+   FOR UPDATE;
+
+  IF community_record.community_id IS NULL
+    OR community_record.canonical_route_binding_id <> input_route_binding_id
+    OR activation.operator_route_activation_id IS NULL
+    OR activation.status <> 'active'
+    OR activation.operator_route_activation_generation <> input_expected_activation_generation
+    OR activation.community_id <> input_community_id
+    OR activation.route_binding_id <> input_route_binding_id
+    OR activation.canonical_root <> input_canonical_root
+    OR binding.route_binding_id IS NULL
+    OR binding.route_authority_kind <> 'operator_managed_route_v1'
+    OR binding.authority_reference <> input_activation_id
+    OR binding.authority_generation <> input_expected_activation_generation
+    OR binding.binding_generation <> input_expected_activation_generation
+    OR binding.route_lifecycle_status <> 'active' THEN
+    RAISE EXCEPTION 'operator-managed route revocation fence does not match';
+  END IF;
+
+  UPDATE operator_managed_route_activations AS stored_activation
+     SET status = 'revoked',
+         reason_code = input_reason_code,
+         revoked_at = committed_at,
+         operator_route_activation_generation = input_expected_activation_generation + 1
+   WHERE stored_activation.operator_route_activation_id = input_activation_id;
+
+  UPDATE community_canonical_route_bindings AS stored_binding
+     SET route_lifecycle_status = 'suspended',
+         ownership_status = 'revoked',
+         binding_generation = binding_generation + 1,
+         authority_generation = authority_generation + 1,
+         updated_at = committed_at
+   WHERE stored_binding.route_binding_id = input_route_binding_id;
+
+  INSERT INTO community_route_operator_override_audit (
+    override_audit_id,
+    community_id,
+    operator_principal_id,
+    action_kind,
+    reason,
+    request_hash,
+    occurred_at
+  ) VALUES (
+    input_operation_id,
+    input_community_id,
+    input_operator_principal_id,
+    'operator_route_revoked',
+    input_reason_code,
+    input_request_hash,
+    committed_at
+  );
+
+  INSERT INTO operator_managed_route_operations (
+    operation_id,
+    operation_kind,
+    operator_principal_id,
+    operator_authority_grant_id,
+    idempotency_key,
+    request_hash,
+    community_id,
+    family,
+    canonical_root,
+    operator_route_activation_id,
+    route_binding_id,
+    registry_reference,
+    registry_version,
+    registry_digest,
+    expected_activation_generation,
+    reason_code,
+    committed_at
+  ) VALUES (
+    input_operation_id,
+    'revoke',
+    input_operator_principal_id,
+    input_operator_authority_grant_id,
+    input_idempotency_key,
+    input_request_hash,
+    input_community_id,
+    'hns',
+    input_canonical_root,
+    input_activation_id,
+    input_route_binding_id,
+    NULL,
+    NULL,
+    NULL,
+    input_expected_activation_generation,
+    input_reason_code,
+    committed_at
+  );
+
+  RETURN QUERY SELECT 'revoked'::TEXT, input_activation_id,
+    input_route_binding_id, input_expected_activation_generation + 1;
+END;
+$$;
+
 CREATE FUNCTION valid_text_moderation_reason_codes(value jsonb) RETURNS boolean
     LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE
     AS $$
@@ -2805,32 +3438,27 @@ CREATE FUNCTION validate_community_canonical_route_reference() RETURNS trigger
 DECLARE
   binding_record community_canonical_route_bindings%ROWTYPE;
   evidence_record community_route_ownership_evidence%ROWTYPE;
+  activation_record operator_managed_route_activations%ROWTYPE;
   community_record communities%ROWTYPE;
   binding_id TEXT;
   guard_at TIMESTAMPTZ := clock_timestamp();
 BEGIN
   IF TG_TABLE_NAME = 'communities' THEN
-    SELECT * INTO community_record
-      FROM communities
-     WHERE community_id = NEW.community_id;
+    SELECT * INTO community_record FROM communities WHERE community_id = NEW.community_id;
     binding_id := NEW.canonical_route_binding_id;
   ELSE
     binding_id := NEW.route_binding_id;
-    SELECT * INTO community_record
-      FROM communities
-     WHERE community_id = NEW.community_id;
+    SELECT * INTO community_record FROM communities WHERE community_id = NEW.community_id;
   END IF;
 
   IF community_record.community_id IS NULL THEN
     RAISE EXCEPTION 'community canonical route owner is missing';
   END IF;
-
   IF community_record.route_authority_version = 'route_v1'
     AND community_record.status = 'active'
     AND binding_id IS NULL THEN
     RAISE EXCEPTION 'active route-v1 community requires a canonical route binding';
   END IF;
-
   IF binding_id IS NULL THEN
     RETURN NULL;
   END IF;
@@ -2838,16 +3466,17 @@ BEGIN
   SELECT * INTO binding_record
     FROM community_canonical_route_bindings
    WHERE route_binding_id = binding_id;
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'community canonical route binding is missing';
-  END IF;
-
-  IF community_record.canonical_route_binding_id IS DISTINCT FROM binding_record.route_binding_id
+  IF NOT FOUND
+    OR community_record.canonical_route_binding_id IS DISTINCT FROM binding_record.route_binding_id
     OR community_record.community_id IS DISTINCT FROM binding_record.community_id THEN
     RAISE EXCEPTION 'community canonical route reference is not reciprocal';
   END IF;
 
-  IF binding_record.route_lifecycle_status = 'active' THEN
+  IF binding_record.route_lifecycle_status <> 'active' THEN
+    RETURN NULL;
+  END IF;
+
+  IF binding_record.route_authority_kind = 'verified_namespace_v1' THEN
     SELECT * INTO evidence_record
       FROM community_route_ownership_evidence
      WHERE evidence_ref = binding_record.verified_evidence_ref;
@@ -2868,8 +3497,22 @@ BEGIN
       ) THEN
       RAISE EXCEPTION 'active community route lacks matching verified ownership evidence';
     END IF;
+    RETURN NULL;
   END IF;
 
+  SELECT * INTO activation_record
+    FROM operator_managed_route_activations
+   WHERE operator_route_activation_id = binding_record.authority_reference;
+  IF activation_record.operator_route_activation_id IS NULL
+    OR activation_record.operator_route_activation_generation <> binding_record.authority_generation
+    OR activation_record.community_id <> binding_record.community_id
+    OR activation_record.route_binding_id <> binding_record.route_binding_id
+    OR activation_record.family <> binding_record.family
+    OR activation_record.canonical_root <> binding_record.root_label
+    OR activation_record.canonical_path_segment <> binding_record.path_segment
+    OR activation_record.status <> 'active' THEN
+    RAISE EXCEPTION 'active community route lacks matching operator activation';
+  END IF;
   RETURN NULL;
 END;
 $$;
@@ -5962,7 +6605,12 @@ END)) STORED,
     verified_evidence_ref text,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
-    CONSTRAINT community_canonical_route_bindings_active_shape CHECK (((route_lifecycle_status <> 'active'::text) OR ((ownership_status = 'verified'::text) AND (verified_evidence_ref IS NOT NULL)))),
+    route_authority_kind text DEFAULT 'verified_namespace_v1'::text NOT NULL,
+    authority_reference text,
+    authority_generation bigint,
+    CONSTRAINT community_canonical_route_bindings_active_shape CHECK (((route_lifecycle_status <> 'active'::text) OR ((route_authority_kind = 'verified_namespace_v1'::text) AND (ownership_status = 'verified'::text) AND (verified_evidence_ref IS NOT NULL)) OR ((route_authority_kind = 'operator_managed_route_v1'::text) AND (ownership_status = 'pending'::text) AND (verified_evidence_ref IS NULL)))),
+    CONSTRAINT community_canonical_route_bindings_authority_kind_check CHECK ((route_authority_kind = ANY (ARRAY['verified_namespace_v1'::text, 'operator_managed_route_v1'::text]))),
+    CONSTRAINT community_canonical_route_bindings_authority_shape CHECK ((((route_authority_kind = 'verified_namespace_v1'::text) AND (authority_reference IS NULL) AND (authority_generation IS NULL)) OR ((route_authority_kind = 'operator_managed_route_v1'::text) AND (family = 'hns'::text) AND (ownership_status <> 'verified'::text) AND (verified_evidence_ref IS NULL) AND (btrim(authority_reference) <> ''::text) AND (authority_reference = btrim(authority_reference)) AND (authority_generation = binding_generation) AND (authority_generation > 0)))),
     CONSTRAINT community_canonical_route_bindings_binding_generation_check CHECK ((binding_generation > 0)),
     CONSTRAINT community_canonical_route_bindings_family_check CHECK ((family = ANY (ARRAY['hns'::text, 'spaces'::text]))),
     CONSTRAINT community_canonical_route_bindings_id_not_blank CHECK (((btrim(route_binding_id) <> ''::text) AND (route_binding_id = btrim(route_binding_id)))),
@@ -6882,7 +7530,7 @@ CREATE TABLE community_route_operator_override_audit (
     reason text NOT NULL,
     request_hash text NOT NULL,
     occurred_at timestamp with time zone NOT NULL,
-    CONSTRAINT community_route_operator_override_audit_action_kind_check CHECK ((action_kind = ANY (ARRAY['attachment_intent_created'::text, 'attachment_committed'::text]))),
+    CONSTRAINT community_route_operator_override_audit_action_kind_check CHECK ((action_kind = ANY (ARRAY['attachment_intent_created'::text, 'attachment_committed'::text, 'operator_route_activated'::text, 'operator_route_revoked'::text]))),
     CONSTRAINT community_route_operator_override_audit_identity_shape CHECK (((btrim(override_audit_id) <> ''::text) AND (override_audit_id = btrim(override_audit_id)) AND (btrim(operator_principal_id) <> ''::text) AND (operator_principal_id = btrim(operator_principal_id)) AND (btrim(reason) <> ''::text))),
     CONSTRAINT community_route_operator_override_audit_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
@@ -8250,6 +8898,79 @@ CREATE TABLE observations (
     CONSTRAINT observations_variant_shape_check CHECK ((((observation_value ->> 'kind'::text) = observation_kind) AND (((observation_kind = ANY (ARRAY['asset_inventory'::text, 'asset_balance'::text])) AND (chain_id IS NOT NULL) AND (account_caip10 IS NOT NULL) AND (asset_caip19 IS NOT NULL) AND (chain_id = (observation_value ->> 'chain_id'::text)) AND (account_caip10 = (observation_value ->> 'account_id'::text)) AND (asset_caip19 = (observation_value ->> 'asset_id'::text))) OR ((observation_kind = 'disclosed_predicate'::text) AND (chain_id IS NULL) AND (account_caip10 IS NULL) AND (asset_caip19 IS NULL)))))
 );
 
+CREATE TABLE operator_managed_root_registry_current (
+    registry_kind text NOT NULL,
+    registry_reference text NOT NULL,
+    registry_version bigint NOT NULL,
+    registry_digest text NOT NULL,
+    activated_at timestamp with time zone NOT NULL,
+    activated_by_operator_principal_id text NOT NULL,
+    CONSTRAINT operator_managed_root_registry_current_registry_kind_check CHECK ((registry_kind = 'pirate-operator-managed-root-registry-v1'::text))
+);
+
+CREATE TABLE operator_managed_root_registry_versions (
+    registry_reference text NOT NULL,
+    registry_version bigint NOT NULL,
+    registry_digest text NOT NULL,
+    registry_bytes bytea NOT NULL,
+    published_at timestamp with time zone NOT NULL,
+    published_by_operator_principal_id text NOT NULL,
+    CONSTRAINT operator_managed_root_registry_versions_exact_bytes CHECK (((encode(sha256(registry_bytes), 'hex'::text) = registry_digest) AND is_operator_managed_root_registry_document(registry_bytes, registry_reference, registry_version))),
+    CONSTRAINT operator_managed_root_registry_versions_identity_shape CHECK (((btrim(registry_reference) <> ''::text) AND (registry_reference = btrim(registry_reference)) AND (octet_length(registry_reference) <= 256) AND (btrim(published_by_operator_principal_id) <> ''::text) AND (published_by_operator_principal_id = btrim(published_by_operator_principal_id)))),
+    CONSTRAINT operator_managed_root_registry_versions_registry_digest_check CHECK ((registry_digest ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT operator_managed_root_registry_versions_registry_version_check CHECK ((registry_version > 0))
+);
+
+CREATE TABLE operator_managed_route_activations (
+    operator_route_activation_id text NOT NULL,
+    operator_route_activation_generation bigint DEFAULT 1 NOT NULL,
+    community_id text NOT NULL,
+    route_binding_id text NOT NULL,
+    family text NOT NULL,
+    canonical_root text NOT NULL,
+    canonical_path_segment text GENERATED ALWAYS AS (('app.'::text || canonical_root)) STORED,
+    operator_principal_id text NOT NULL,
+    operator_authority_grant_id text NOT NULL,
+    operator_managed_root_registry_reference text NOT NULL,
+    operator_managed_root_registry_version bigint NOT NULL,
+    operator_managed_root_registry_digest text NOT NULL,
+    status text NOT NULL,
+    reason_code text,
+    activated_at timestamp with time zone NOT NULL,
+    revoked_at timestamp with time zone,
+    CONSTRAINT operator_managed_route_activ_operator_route_activation_ge_check CHECK ((operator_route_activation_generation > 0)),
+    CONSTRAINT operator_managed_route_activations_family_check CHECK ((family = 'hns'::text)),
+    CONSTRAINT operator_managed_route_activations_identity_shape CHECK (((btrim(operator_route_activation_id) <> ''::text) AND (operator_route_activation_id = btrim(operator_route_activation_id)) AND (octet_length(operator_route_activation_id) <= 512) AND (btrim(operator_principal_id) <> ''::text) AND (operator_principal_id = btrim(operator_principal_id)) AND is_community_route_root_label(family, canonical_root))),
+    CONSTRAINT operator_managed_route_activations_status_check CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text]))),
+    CONSTRAINT operator_managed_route_activations_status_shape CHECK ((((status = 'active'::text) AND (reason_code IS NULL) AND (revoked_at IS NULL)) OR ((status = 'revoked'::text) AND (btrim(reason_code) <> ''::text) AND (reason_code = btrim(reason_code)) AND (revoked_at IS NOT NULL) AND (revoked_at >= activated_at))))
+);
+
+CREATE TABLE operator_managed_route_operations (
+    operation_id text NOT NULL,
+    operation_kind text NOT NULL,
+    operator_principal_id text NOT NULL,
+    operator_authority_grant_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    community_id text NOT NULL,
+    family text NOT NULL,
+    canonical_root text NOT NULL,
+    canonical_path_segment text GENERATED ALWAYS AS (('app.'::text || canonical_root)) STORED,
+    operator_route_activation_id text NOT NULL,
+    route_binding_id text NOT NULL,
+    registry_reference text,
+    registry_version bigint,
+    registry_digest text,
+    expected_activation_generation bigint,
+    reason_code text NOT NULL,
+    committed_at timestamp with time zone NOT NULL,
+    CONSTRAINT operator_managed_route_operations_family_check CHECK ((family = 'hns'::text)),
+    CONSTRAINT operator_managed_route_operations_identity_shape CHECK (((btrim(operation_id) <> ''::text) AND (operation_id = btrim(operation_id)) AND (btrim(operator_principal_id) <> ''::text) AND (operator_principal_id = btrim(operator_principal_id)) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 512) AND is_community_route_root_label(family, canonical_root) AND (btrim(reason_code) <> ''::text) AND (reason_code = btrim(reason_code)))),
+    CONSTRAINT operator_managed_route_operations_kind_shape CHECK ((((operation_kind = 'activate'::text) AND (registry_reference IS NOT NULL) AND (registry_version > 0) AND (registry_digest ~ '^[0-9a-f]{64}$'::text) AND (expected_activation_generation IS NULL)) OR ((operation_kind = 'revoke'::text) AND (registry_reference IS NULL) AND (registry_version IS NULL) AND (registry_digest IS NULL) AND (expected_activation_generation > 0)))),
+    CONSTRAINT operator_managed_route_operations_operation_kind_check CHECK ((operation_kind = ANY (ARRAY['activate'::text, 'revoke'::text]))),
+    CONSTRAINT operator_managed_route_operations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE persona_create_actions (
     account_id text NOT NULL,
     endpoint_template text DEFAULT '/personas'::text NOT NULL,
@@ -8325,6 +9046,21 @@ CREATE TABLE personas (
     CONSTRAINT personas_persona_id_check CHECK (((btrim(persona_id) <> ''::text) AND (persona_id = btrim(persona_id)) AND (octet_length(persona_id) <= 128))),
     CONSTRAINT personas_retirement_shape CHECK ((((status = 'retired'::text) AND (retired_at IS NOT NULL)) OR ((status <> 'retired'::text) AND (retired_at IS NULL)))),
     CONSTRAINT personas_status_check CHECK ((status = ANY (ARRAY['active'::text, 'suspended'::text, 'retired'::text])))
+);
+
+CREATE TABLE platform_operator_route_authority_grants (
+    grant_id text NOT NULL,
+    operator_principal_id text NOT NULL,
+    authority text NOT NULL,
+    status text NOT NULL,
+    granted_at timestamp with time zone NOT NULL,
+    granted_by_operator_principal_id text NOT NULL,
+    revoked_at timestamp with time zone,
+    revoked_by_operator_principal_id text,
+    CONSTRAINT platform_operator_route_authority_grants_authority_check CHECK ((authority = 'manage_operator_routes'::text)),
+    CONSTRAINT platform_operator_route_authority_grants_identity_shape CHECK (((btrim(grant_id) <> ''::text) AND (grant_id = btrim(grant_id)) AND (octet_length(grant_id) <= 512) AND (btrim(operator_principal_id) <> ''::text) AND (operator_principal_id = btrim(operator_principal_id)) AND (octet_length(operator_principal_id) <= 512) AND (btrim(granted_by_operator_principal_id) <> ''::text) AND (granted_by_operator_principal_id = btrim(granted_by_operator_principal_id)))),
+    CONSTRAINT platform_operator_route_authority_grants_status_check CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text]))),
+    CONSTRAINT platform_operator_route_authority_grants_status_shape CHECK ((((status = 'active'::text) AND (revoked_at IS NULL) AND (revoked_by_operator_principal_id IS NULL)) OR ((status = 'revoked'::text) AND (revoked_at IS NOT NULL) AND (btrim(revoked_by_operator_principal_id) <> ''::text))))
 );
 
 CREATE TABLE policy_versions (
@@ -9399,6 +10135,33 @@ ALTER TABLE ONLY observations
 ALTER TABLE ONLY observations
     ADD CONSTRAINT observations_pkey PRIMARY KEY (observation_id);
 
+ALTER TABLE ONLY operator_managed_root_registry_versions
+    ADD CONSTRAINT operator_managed_root_registr_registry_reference_registry_v_key UNIQUE (registry_reference, registry_version, registry_digest);
+
+ALTER TABLE ONLY operator_managed_root_registry_current
+    ADD CONSTRAINT operator_managed_root_registry_current_pkey PRIMARY KEY (registry_kind);
+
+ALTER TABLE ONLY operator_managed_root_registry_versions
+    ADD CONSTRAINT operator_managed_root_registry_versions_pkey PRIMARY KEY (registry_reference, registry_version);
+
+ALTER TABLE ONLY operator_managed_route_activations
+    ADD CONSTRAINT operator_managed_route_activations_community_id_key UNIQUE (community_id);
+
+ALTER TABLE ONLY operator_managed_route_activations
+    ADD CONSTRAINT operator_managed_route_activations_family_canonical_root_key UNIQUE (family, canonical_root);
+
+ALTER TABLE ONLY operator_managed_route_activations
+    ADD CONSTRAINT operator_managed_route_activations_pkey PRIMARY KEY (operator_route_activation_id);
+
+ALTER TABLE ONLY operator_managed_route_activations
+    ADD CONSTRAINT operator_managed_route_activations_route_binding_id_key UNIQUE (route_binding_id);
+
+ALTER TABLE ONLY operator_managed_route_operations
+    ADD CONSTRAINT operator_managed_route_operat_operator_principal_id_operati_key UNIQUE (operator_principal_id, operation_kind, idempotency_key);
+
+ALTER TABLE ONLY operator_managed_route_operations
+    ADD CONSTRAINT operator_managed_route_operations_pkey PRIMARY KEY (operation_id);
+
 ALTER TABLE ONLY persona_create_actions
     ADD CONSTRAINT persona_create_actions_account_id_persona_id_key UNIQUE (account_id, persona_id);
 
@@ -9425,6 +10188,9 @@ ALTER TABLE ONLY personas
 
 ALTER TABLE ONLY personas
     ADD CONSTRAINT personas_pkey PRIMARY KEY (persona_id);
+
+ALTER TABLE ONLY platform_operator_route_authority_grants
+    ADD CONSTRAINT platform_operator_route_authority_grants_pkey PRIMARY KEY (grant_id);
 
 ALTER TABLE ONLY policy_versions
     ADD CONSTRAINT policy_versions_community_id_hash_unique UNIQUE (community_id, policy_version_id, policy_hash);
@@ -9748,6 +10514,8 @@ CREATE UNIQUE INDEX persona_wallet_assignments_one_live_kind_uidx ON persona_wal
 CREATE INDEX personas_account_status_idx ON personas USING btree (account_id, status, created_at, persona_id);
 
 CREATE UNIQUE INDEX personas_one_first_per_account_uidx ON personas USING btree (account_id) WHERE is_first_persona;
+
+CREATE UNIQUE INDEX platform_operator_route_authority_grants_active_uidx ON platform_operator_route_authority_grants USING btree (operator_principal_id, authority) WHERE (status = 'active'::text);
 
 CREATE INDEX post_vote_actions_target_time_idx ON post_vote_actions USING btree (community_id, post_id, created_at, action_id);
 
@@ -10143,6 +10911,14 @@ CREATE CONSTRAINT TRIGGER namespace_ownership_start_reservation_coherence AFTER 
 
 CREATE TRIGGER observations_append_only BEFORE DELETE OR UPDATE ON observations FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
+CREATE TRIGGER operator_managed_root_registry_current_change_guard BEFORE DELETE OR UPDATE ON operator_managed_root_registry_current FOR EACH ROW EXECUTE FUNCTION guard_operator_managed_root_registry_current_change();
+
+CREATE TRIGGER operator_managed_root_registry_versions_change_guard BEFORE DELETE OR UPDATE ON operator_managed_root_registry_versions FOR EACH ROW EXECUTE FUNCTION reject_operator_managed_root_registry_version_change();
+
+CREATE TRIGGER operator_managed_route_activations_change_guard BEFORE DELETE OR UPDATE ON operator_managed_route_activations FOR EACH ROW EXECUTE FUNCTION guard_operator_managed_route_activation_change();
+
+CREATE TRIGGER operator_managed_route_operations_change_guard BEFORE DELETE OR UPDATE ON operator_managed_route_operations FOR EACH ROW EXECUTE FUNCTION reject_operator_managed_route_operation_change();
+
 CREATE TRIGGER persona_create_actions_append_only BEFORE DELETE OR UPDATE ON persona_create_actions FOR EACH ROW EXECUTE FUNCTION prevent_persona_create_action_change();
 
 CREATE TRIGGER persona_profiles_delete_guard BEFORE DELETE ON persona_profiles FOR EACH ROW EXECUTE FUNCTION prevent_persona_profile_delete();
@@ -10152,6 +10928,8 @@ CREATE TRIGGER persona_role_presentations_active_persona BEFORE INSERT OR UPDATE
 CREATE TRIGGER persona_wallet_assignments_state_guard BEFORE DELETE OR UPDATE ON persona_wallet_assignments FOR EACH ROW EXECUTE FUNCTION guard_persona_wallet_assignment();
 
 CREATE TRIGGER personas_identity_immutable BEFORE DELETE OR UPDATE ON personas FOR EACH ROW EXECUTE FUNCTION prevent_persona_identity_rewrite();
+
+CREATE TRIGGER platform_operator_route_authority_grants_change_guard BEFORE UPDATE ON platform_operator_route_authority_grants FOR EACH ROW EXECUTE FUNCTION guard_platform_operator_route_authority_grant_change();
 
 CREATE TRIGGER policy_versions_append_only BEFORE DELETE OR UPDATE ON policy_versions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -10328,6 +11106,9 @@ ALTER TABLE ONLY communities
 
 ALTER TABLE ONLY community_canonical_route_bindings
     ADD CONSTRAINT community_canonical_route_bindings_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_canonical_route_bindings
+    ADD CONSTRAINT community_canonical_route_bindings_operator_activation_fk FOREIGN KEY (authority_reference) REFERENCES operator_managed_route_activations(operator_route_activation_id) DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE ONLY community_canonical_route_bindings
     ADD CONSTRAINT community_canonical_route_bindings_verified_evidence_fk FOREIGN KEY (verified_evidence_ref) REFERENCES community_route_ownership_evidence(evidence_ref) DEFERRABLE INITIALLY DEFERRED;
@@ -10988,6 +11769,24 @@ ALTER TABLE ONLY namespace_ownership_start_reservations
 
 ALTER TABLE ONLY observations
     ADD CONSTRAINT observations_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY operator_managed_root_registry_current
+    ADD CONSTRAINT operator_managed_root_registr_registry_reference_registry__fkey FOREIGN KEY (registry_reference, registry_version, registry_digest) REFERENCES operator_managed_root_registry_versions(registry_reference, registry_version, registry_digest);
+
+ALTER TABLE ONLY operator_managed_route_activations
+    ADD CONSTRAINT operator_managed_route_activa_community_id_route_binding_i_fkey FOREIGN KEY (community_id, route_binding_id) REFERENCES community_canonical_route_bindings(community_id, route_binding_id) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY operator_managed_route_activations
+    ADD CONSTRAINT operator_managed_route_activa_operator_managed_root_regist_fkey FOREIGN KEY (operator_managed_root_registry_reference, operator_managed_root_registry_version, operator_managed_root_registry_digest) REFERENCES operator_managed_root_registry_versions(registry_reference, registry_version, registry_digest);
+
+ALTER TABLE ONLY operator_managed_route_activations
+    ADD CONSTRAINT operator_managed_route_activat_operator_authority_grant_id_fkey FOREIGN KEY (operator_authority_grant_id) REFERENCES platform_operator_route_authority_grants(grant_id);
+
+ALTER TABLE ONLY operator_managed_route_operations
+    ADD CONSTRAINT operator_managed_route_operat_operator_route_activation_id_fkey FOREIGN KEY (operator_route_activation_id) REFERENCES operator_managed_route_activations(operator_route_activation_id);
+
+ALTER TABLE ONLY operator_managed_route_operations
+    ADD CONSTRAINT operator_managed_route_operati_operator_authority_grant_id_fkey FOREIGN KEY (operator_authority_grant_id) REFERENCES platform_operator_route_authority_grants(grant_id);
 
 ALTER TABLE ONLY persona_create_actions
     ADD CONSTRAINT persona_create_actions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
