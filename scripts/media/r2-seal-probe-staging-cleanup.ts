@@ -1,10 +1,20 @@
 import type { StagingCleanupKey, StagingOperation } from "./r2-seal-probe-staging-evidence";
-import type { StagingDeleteResult, StagingHeadResult } from "./r2-seal-probe-staging-transport";
+import type {
+  StagingBodySha256Result,
+  StagingDeleteResult,
+  StagingHeadResult,
+} from "./r2-seal-probe-staging-transport";
 
 type CleanupTransport = Readonly<{
   deleteObject: (bucket: string, key: string, ifMatch?: string) => Promise<StagingDeleteResult>;
   headObject: (bucket: string, key: string) => Promise<StagingHeadResult>;
   preflightObject: (bucket: string, key: string) => Promise<StagingHeadResult>;
+  readObjectSha256?: (
+    bucket: string,
+    key: string,
+    ifMatch: string,
+    expectedSizeBytes: number,
+  ) => Promise<StagingBodySha256Result>;
 }>;
 
 export type CleanupCandidate = Readonly<{
@@ -65,6 +75,7 @@ export async function cleanupOwnedKeys(
         marker_verified: false,
         expected_etag: candidate.expectedEtag ?? null,
         etag_verified: false,
+        body_sha256_verified: false,
         candidate_verified: false,
         verification: verificationOperation,
         residual_reason: "not-found",
@@ -80,13 +91,30 @@ export async function cleanupOwnedKeys(
       verification.kind === "found" &&
       verification.etag !== undefined &&
       (candidate.expectedEtag === undefined || verification.etag === candidate.expectedEtag);
-    const candidateVerified =
+    const fixedMetadataVerified =
       verification.kind === "found" &&
       markerVerified &&
       etagVerified &&
       verification.sizeBytes === candidate.expected.sizeBytes &&
-      verification.contentType === candidate.expected.contentType &&
-      verification.sha256 === candidate.expected.sha256;
+      verification.contentType === candidate.expected.contentType;
+    let bodySha256Verified = false;
+    if (
+      fixedMetadataVerified &&
+      verification.sha256 === undefined &&
+      verification.etag !== undefined &&
+      transport.readObjectSha256 !== undefined
+    ) {
+      const body = await transport.readObjectSha256(
+        bucket,
+        key,
+        verification.etag,
+        candidate.expected.sizeBytes,
+      );
+      bodySha256Verified = body.kind === "verified" && body.sha256 === candidate.expected.sha256;
+    }
+    const candidateVerified =
+      fixedMetadataVerified &&
+      (verification.sha256 === candidate.expected.sha256 || bodySha256Verified);
     if (!candidateVerified) {
       const reason = !markerVerified
         ? "ownership-marker-mismatch"
@@ -104,6 +132,7 @@ export async function cleanupOwnedKeys(
         marker_verified: markerVerified,
         expected_etag: candidate.expectedEtag ?? null,
         etag_verified: etagVerified,
+        body_sha256_verified: bodySha256Verified,
         candidate_verified: false,
         verification: verificationOperation,
         residual_reason: reason,
@@ -123,6 +152,7 @@ export async function cleanupOwnedKeys(
       marker_verified: markerVerified,
       expected_etag: candidate.expectedEtag ?? null,
       etag_verified: etagVerified,
+      body_sha256_verified: bodySha256Verified,
       candidate_verified: true,
       verification: verificationOperation,
       residual_reason: absent

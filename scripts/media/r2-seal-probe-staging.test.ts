@@ -648,6 +648,54 @@ describe("staging R2 probe safety", () => {
     ).rejects.toThrow("exact run-owned prefix");
   });
 
+  test("cleanup conditionally hashes a tiny body when provider checksum metadata is absent", async () => {
+    const calls: string[] = [];
+    const key = "media-r2-seal-probe/run/sealed.bin";
+    const cleanup = await cleanupOwnedKeys(
+      {
+        async headObject() {
+          calls.push("head");
+          return {
+            kind: "found",
+            status: 200,
+            code: "OK",
+            etag: '"expected"',
+            sizeBytes: 1,
+            contentType: "audio/mpeg",
+            ownershipMarker: "r2-seal:test",
+          };
+        },
+        async readObjectSha256(_bucket, readKey, ifMatch, expectedSizeBytes) {
+          calls.push("body-sha256");
+          expect({ readKey, ifMatch, expectedSizeBytes }).toEqual({
+            readKey: key,
+            ifMatch: '"expected"',
+            expectedSizeBytes: 1,
+          });
+          return { kind: "verified", status: 206, code: "OK", sha256: "expected-sha256" };
+        },
+        async deleteObject() {
+          calls.push("delete");
+          return { kind: "deleted", status: 204, code: "OK" };
+        },
+        async preflightObject() {
+          calls.push("absence");
+          return { kind: "missing", status: 404, code: "NoSuchKey" };
+        },
+      },
+      "fixture-bucket",
+      "media-r2-seal-probe/run/",
+      [cleanupCandidate(key)],
+    );
+    expect(cleanup.status).toBe("complete");
+    expect(cleanup.keys[0]).toMatchObject({
+      body_sha256_verified: true,
+      candidate_verified: true,
+      absent: true,
+    });
+    expect(calls).toEqual(["head", "body-sha256", "delete", "absence"]);
+  });
+
   test("retains a residual key as partial cleanup without widening the delete set", async () => {
     const calls: string[] = [];
     const cleanup = await cleanupOwnedKeys(
