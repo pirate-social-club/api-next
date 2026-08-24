@@ -1,0 +1,88 @@
+{
+  "version": "media-acr-fixtures-v1",
+  "multipart": {
+    "fixed_boundary": "----pirate-acrcloud-v1",
+    "boundary_collision_sample_ascii": "----pirate-acrcloud-v1"
+  },
+  "signature": {
+    "access_key": "fixture-access-key",
+    "path": "/v1/identify",
+    "timestamp": "1700000000",
+    "string_to_sign": "POST\n/v1/identify\nfixture-access-key\naudio\n1\n1700000000",
+    "expected_signature": "fvc8TK9F7gaKQqkKb9/Mu0pS4Ac="
+  },
+  "responses": {
+    "retained_music_match": {
+      "status": { "code": 0 },
+      "metadata": {
+        "music": [
+          {
+            "acrid": "music-1",
+            "title": "Fixture Song",
+            "artists": [{ "name": "Fixture Artist" }],
+            "score": 97.5
+          }
+        ]
+      }
+    },
+    "retained_custom_match": {
+      "status": { "code": 0 },
+      "metadata": {
+        "custom_files": [
+          {
+            "acr_id": "custom-1",
+            "name": "catalog-file",
+            "user_defined": { "catalog": "fixture" }
+          }
+        ]
+      }
+    },
+    "removed_video_audio_match": {
+      "status": { "code": 0 },
+      "metadata": {
+        "custom_files": [
+          {
+            "acr_id": "video-audio-1",
+            "user_defined": { "content_type": "video_audio" }
+          }
+        ]
+      }
+    },
+    "no_match": { "status": { "code": 1001 } },
+    "empty_result": { "status": { "code": 0 }, "metadata": {} },
+    "inconclusive": { "status": { "code": 2004 } },
+    "duplicate_candidates": {
+      "status": { "code": 0 },
+      "metadata": {
+        "music": [{ "acrid": "same-id" }, { "acrid": "same-id" }]
+      }
+    },
+    "malformed_json": "{not-json",
+    "oversized_response": "fixture-oversized-response",
+    "provider_throttled_http": { "status": { "code": 429 } },
+    "provider_throttled_count": { "status": { "code": 3003 } },
+    "provider_throttled_qps": { "status": { "code": 3015 } },
+    "provider_service_error": { "status": { "code": 3000 } },
+    "provider_recognition_error": { "status": { "code": 3010 } },
+    "provider_wrong_access_key": { "status": { "code": 3001 } },
+    "provider_invalid_signature": { "status": { "code": 3014 } },
+    "provider_unknown": { "status": { "code": 3016 } }
+  },
+  "stream_lifecycle": {
+    "headers_then_hanging_body": {
+      "status": 200,
+      "content_type": "application/json",
+      "provider_code": 1001
+    },
+    "early_status_never_settling_cancel": {
+      "status": 429,
+      "content_type": "application/json",
+      "provider_code": 0
+    },
+    "hanging_body_never_settling_cancel": {
+      "status": 200,
+      "content_type": "application/json",
+      "provider_code": 1001
+    }
+  }
+}
