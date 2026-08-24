@@ -1,6 +1,7 @@
 import { Predicate } from "effect";
 import {
   ELEVENLABS_ALIGNMENT_ADAPTER_REVISION,
+  ELEVENLABS_ALIGNMENT_HARD_MAX_API_KEY_BYTES,
   ELEVENLABS_ALIGNMENT_HARD_MAX_AUDIO_BYTES,
   ELEVENLABS_ALIGNMENT_HARD_MAX_REQUEST_BYTES,
   ELEVENLABS_ALIGNMENT_HARD_MAX_RESPONSE_BYTES,
@@ -14,6 +15,7 @@ import {
   type ElevenLabsAlignmentInput,
   type ElevenLabsAlignmentLimits,
   type ElevenLabsAlignmentOutcome,
+  type ElevenLabsAlignmentRequestBody,
   type ElevenLabsAlignmentValidatedInput,
 } from "./elevenlabs-alignment-types.ts";
 
@@ -66,6 +68,20 @@ function safeIdentifier(value: unknown, maximum: number): value is string {
   );
 }
 
+/** API keys are opaque, visible ASCII header values and never carry whitespace. */
+export function validateApiKey(value: unknown): value is string {
+  if (!Predicate.isString(value)) return false;
+  const bytes = new TextEncoder().encode(value);
+  return (
+    bytes.byteLength > 0 &&
+    bytes.byteLength <= ELEVENLABS_ALIGNMENT_HARD_MAX_API_KEY_BYTES &&
+    Array.from(value).every((character) => {
+      const codePoint = character.codePointAt(0);
+      return codePoint !== undefined && codePoint >= 0x21 && codePoint <= 0x7e;
+    })
+  );
+}
+
 function contextFor(input: ElevenLabsAlignmentInput): ElevenLabsAlignmentContext {
   return {
     operation_id: input.operation_id,
@@ -114,6 +130,15 @@ export function validateInput(
   input: ElevenLabsAlignmentInput,
   limits: ElevenLabsAlignmentLimits,
 ): ElevenLabsAlignmentValidatedInput | ElevenLabsAlignmentOutcome {
+  if (
+    !Predicate.isObject(input) ||
+    !Predicate.isObject(input.audio) ||
+    !Predicate.isObject(input.audio.source) ||
+    !Predicate.isFunction(input.audio.source.open) ||
+    !Predicate.isObject(input.transcript)
+  ) {
+    return permanent("invalid_request");
+  }
   if (!safeIdentifier(input.request_id, 128)) return permanent("invalid_request");
   if (!safeIdentifier(input.operation_id, 128) || !safeIdentifier(input.post_id, 128)) {
     return permanent("invalid_request");
@@ -131,10 +156,14 @@ export function validateInput(
   ) {
     return permanent("invalid_request");
   }
-  if (!(input.audio.bytes instanceof Uint8Array) || input.audio.bytes.byteLength === 0) {
+  if (
+    !Predicate.isNumber(input.audio.source.byteLength) ||
+    !Number.isSafeInteger(input.audio.source.byteLength) ||
+    input.audio.source.byteLength <= 0
+  ) {
     return permanent("invalid_request");
   }
-  if (input.audio.bytes.byteLength > limits.max_audio_bytes) return permanent("invalid_request");
+  if (input.audio.source.byteLength > limits.max_audio_bytes) return permanent("invalid_request");
   if (
     !Predicate.isString(input.audio.mime_type) ||
     input.audio.mime_type.length > 128 ||
@@ -170,30 +199,40 @@ export function validateInput(
   return { input, context: contextFor(input) };
 }
 
-function multipartPart(
-  boundary: string,
-  headers: readonly string[],
-  value: Uint8Array,
-): Uint8Array {
-  const encoder = new TextEncoder();
-  const prefix = encoder.encode(`--${boundary}\r\n${headers.join("\r\n")}\r\n\r\n`);
-  const suffix = encoder.encode("\r\n");
-  const result = new Uint8Array(prefix.byteLength + value.byteLength + suffix.byteLength);
-  result.set(prefix, 0);
-  result.set(value, prefix.byteLength);
-  result.set(suffix, prefix.byteLength + value.byteLength);
-  return result;
+function prefixTable(pattern: Uint8Array): Uint32Array {
+  const table = new Uint32Array(pattern.byteLength);
+  for (let index = 1, matched = 0; index < pattern.byteLength; index += 1) {
+    while (matched > 0 && pattern[index] !== pattern[matched]) matched = table[matched - 1] ?? 0;
+    if (pattern[index] === pattern[matched]) matched += 1;
+    table[index] = matched;
+  }
+  return table;
 }
 
-function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
-  const total = parts.reduce((size, part) => size + part.byteLength, 0);
-  const result = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    result.set(part, offset);
-    offset += part.byteLength;
+async function scanAudioSource(
+  source: ElevenLabsAlignmentAudioRevision["source"],
+  boundary: Uint8Array,
+): Promise<"ok" | "collision" | "invalid"> {
+  const table = prefixTable(boundary);
+  let matched = 0;
+  let total = 0;
+  try {
+    for await (const chunk of source.open()) {
+      if (!(chunk instanceof Uint8Array)) return "invalid";
+      total += chunk.byteLength;
+      if (total > source.byteLength || total > ELEVENLABS_ALIGNMENT_HARD_MAX_AUDIO_BYTES) {
+        return "invalid";
+      }
+      for (const byte of chunk) {
+        while (matched > 0 && byte !== boundary[matched]) matched = table[matched - 1] ?? 0;
+        if (byte === boundary[matched]) matched += 1;
+        if (matched === boundary.byteLength) return "collision";
+      }
+    }
+  } catch {
+    return "invalid";
   }
-  return result;
+  return total === source.byteLength ? "ok" : "invalid";
 }
 
 function containsBytes(haystack: Uint8Array, needle: Uint8Array): boolean {
@@ -207,37 +246,80 @@ function containsBytes(haystack: Uint8Array, needle: Uint8Array): boolean {
   return false;
 }
 
-/** Encodes the exact request body used by the adapter and fake transports. */
-export function encodeElevenLabsAlignmentMultipart(
+function multipartHeader(value: string): Uint8Array {
+  return new TextEncoder().encode(value);
+}
+
+/** Builds a replayable chunked body without copying the caller's audio. */
+export async function encodeElevenLabsAlignmentMultipart(
   input: Readonly<{
     readonly audio: ElevenLabsAlignmentAudioRevision;
     readonly transcript: string;
   }>,
-): Uint8Array | null {
+): Promise<ElevenLabsAlignmentRequestBody | null> {
+  if (
+    !Predicate.isObject(input) ||
+    !Predicate.isObject(input.audio) ||
+    !Predicate.isObject(input.audio.source) ||
+    !Predicate.isFunction(input.audio.source.open) ||
+    !Predicate.isString(input.transcript)
+  ) {
+    return null;
+  }
   const encoder = new TextEncoder();
   const filename = input.audio.filename ?? "alignment-audio.bin";
   const transcriptBytes = encoder.encode(input.transcript);
   const boundaryBytes = encoder.encode(ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY);
   if (
-    containsBytes(input.audio.bytes, boundaryBytes) ||
-    containsBytes(transcriptBytes, boundaryBytes)
+    !Predicate.isNumber(input.audio.source.byteLength) ||
+    !Number.isSafeInteger(input.audio.source.byteLength) ||
+    input.audio.source.byteLength <= 0 ||
+    input.audio.source.byteLength > ELEVENLABS_ALIGNMENT_HARD_MAX_AUDIO_BYTES ||
+    new TextEncoder().encode(input.transcript).byteLength >
+      ELEVENLABS_ALIGNMENT_HARD_MAX_TRANSCRIPT_BYTES
   ) {
     return null;
   }
-  const audio = multipartPart(
-    ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY,
-    [
-      `Content-Disposition: form-data; name="file"; filename="${filename}"`,
-      `Content-Type: ${input.audio.mime_type}`,
-    ],
-    input.audio.bytes,
+  if (containsBytes(transcriptBytes, boundaryBytes)) return null;
+  if ((await scanAudioSource(input.audio.source, boundaryBytes)) !== "ok") return null;
+
+  const fileHeader = multipartHeader(
+    `--${ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: ${input.audio.mime_type}\r\n\r\n`,
   );
-  const text = multipartPart(
-    ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY,
-    ['Content-Disposition: form-data; name="text"'],
-    transcriptBytes,
+  const fileSuffix = multipartHeader("\r\n");
+  const textHeader = multipartHeader(
+    `--${ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY}\r\nContent-Disposition: form-data; name="text"\r\n\r\n`,
   );
-  const closing = encoder.encode(`--${ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY}--\r\n`);
-  const body = concatBytes([audio, text, closing]);
-  return body.byteLength <= ELEVENLABS_ALIGNMENT_HARD_MAX_REQUEST_BYTES ? body : null;
+  const closing = multipartHeader(`\r\n--${ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY}--\r\n`);
+  const byteLength =
+    fileHeader.byteLength +
+    input.audio.source.byteLength +
+    fileSuffix.byteLength +
+    textHeader.byteLength +
+    transcriptBytes.byteLength +
+    closing.byteLength;
+  if (byteLength > ELEVENLABS_ALIGNMENT_HARD_MAX_REQUEST_BYTES) return null;
+
+  return {
+    byteLength,
+    open: async function* () {
+      yield fileHeader;
+      let actualAudioBytes = 0;
+      for await (const chunk of input.audio.source.open()) {
+        if (!(chunk instanceof Uint8Array)) throw new Error("invalid_audio_chunk");
+        actualAudioBytes += chunk.byteLength;
+        if (actualAudioBytes > input.audio.source.byteLength) {
+          throw new Error("audio_length_mismatch");
+        }
+        yield chunk;
+      }
+      if (actualAudioBytes !== input.audio.source.byteLength) {
+        throw new Error("audio_length_mismatch");
+      }
+      yield fileSuffix;
+      yield textHeader;
+      yield transcriptBytes;
+      yield closing;
+    },
+  };
 }

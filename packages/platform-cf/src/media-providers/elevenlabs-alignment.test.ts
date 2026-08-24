@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   characterResponse,
-  explicitNoSpeechResponse,
   malformedResponse,
   multilingualWordsResponse,
   noSpeechResponse,
@@ -10,7 +9,9 @@ import {
 } from "../../../../tests/fixtures/media-alignment/elevenlabs/responses.ts";
 import {
   ElevenLabsAlignmentAdapter,
+  type ElevenLabsAlignmentAudioSource,
   type ElevenLabsAlignmentInput,
+  type ElevenLabsAlignmentRequestBody,
   type ElevenLabsAlignmentTransportRequest,
   type ElevenLabsAlignmentTransportResponse,
   encodeElevenLabsAlignmentMultipart,
@@ -26,6 +27,34 @@ const limits = {
   max_timing_ms: 86_400_000,
 } as const;
 
+function source(bytes: Uint8Array, chunkSize = bytes.byteLength): ElevenLabsAlignmentAudioSource {
+  return {
+    byteLength: bytes.byteLength,
+    open: async function* () {
+      for (let offset = 0; offset < bytes.byteLength; offset += chunkSize) {
+        yield bytes.subarray(offset, Math.min(offset + chunkSize, bytes.byteLength));
+      }
+    },
+  };
+}
+
+async function consumeBody(body: ElevenLabsAlignmentRequestBody): Promise<Uint8Array> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of body.open()) {
+    chunks.push(chunk);
+    total += chunk.byteLength;
+  }
+  const result = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  expect(total).toBe(body.byteLength);
+  return result;
+}
+
 function input(overrides: Partial<ElevenLabsAlignmentInput> = {}): ElevenLabsAlignmentInput {
   return {
     request_id: "alignment-request-1",
@@ -34,7 +63,7 @@ function input(overrides: Partial<ElevenLabsAlignmentInput> = {}): ElevenLabsAli
     audio: {
       audio_revision: 1,
       canonical_audio_sha256: sha,
-      bytes: new Uint8Array([1, 2, 3, 4]),
+      source: source(new Uint8Array([1, 2, 3, 4]), 2),
       mime_type: "audio/mpeg",
       filename: "song.mp3",
     },
@@ -70,11 +99,13 @@ function fakeTransport(
       ) => Promise<ElevenLabsAlignmentTransportResponse>),
 ) {
   const requests: ElevenLabsAlignmentTransportRequest[] = [];
+  const consumedBodies: Uint8Array[] = [];
   const transport = async (request: ElevenLabsAlignmentTransportRequest) => {
     requests.push(request);
+    consumedBodies.push(await consumeBody(request.body));
     return typeof next === "function" ? next(request) : next;
   };
-  return { requests, transport };
+  return { requests, consumedBodies, transport };
 }
 
 function adapter(
@@ -149,8 +180,15 @@ describe("ElevenLabs forced-alignment adapter", () => {
       ),
       await adapter(fakeTransport(response(multilingualWordsResponse)).transport).align(input()),
       await adapter(
-        fakeTransport(response({ words: [{ text: "different", start: 0, end: 1, type: "word" }] }))
-          .transport,
+        fakeTransport(
+          response({
+            ...multilingualWordsResponse,
+            characters: ["different"],
+            character_start_times_seconds: [0],
+            character_end_times_seconds: [1],
+            words: [{ text: "different", start: 0, end: 1 }],
+          }),
+        ).transport,
       ).align(input()),
       await adapter(
         fakeTransport({ status: 503, headers: {}, body: providerBody }).transport,
@@ -204,6 +242,26 @@ describe("ElevenLabs forced-alignment adapter", () => {
     expect(transport.requests).toHaveLength(0);
   });
 
+  test("fails closed for empty, oversized, or header-unsafe API keys", async () => {
+    for (const api_key of [
+      "",
+      "key with spaces",
+      "key\r\nInjected: true",
+      "ключ",
+      "x".repeat(4_097),
+    ]) {
+      const transport = fakeTransport(response(multilingualWordsResponse));
+      const result = await new ElevenLabsAlignmentAdapter({
+        enabled: true,
+        api_key,
+        transport: transport.transport,
+        limits,
+      }).align(input());
+      expect(result).toMatchObject({ outcome: "permanent", reason: "configuration" });
+      expect(transport.requests).toHaveLength(0);
+    }
+  });
+
   test("builds a deterministic bounded multipart request with the exact transcript", async () => {
     const first = fakeTransport(response(multilingualWordsResponse));
     const second = fakeTransport(response(multilingualWordsResponse));
@@ -212,12 +270,20 @@ describe("ElevenLabs forced-alignment adapter", () => {
 
     expect(first.requests).toHaveLength(1);
     expect(second.requests).toHaveLength(1);
-    expect(first.requests[0]?.body).toEqual(second.requests[0]?.body);
+    expect(first.consumedBodies[0]).toEqual(second.consumedBodies[0]);
     expect(first.requests[0]?.method).toBe("POST");
     expect(first.requests[0]?.url).toBe("https://api.elevenlabs.io/v1/forced-alignment");
     expect(first.requests[0]?.headers["xi-api-key"]).toBe("xi-secret-test-key");
     expect(first.requests[0]?.headers["content-type"]).toContain("boundary=");
-    const body = new TextDecoder().decode(first.requests[0]?.body);
+    expect(first.requests[0]?.headers["content-length"]).toBe(
+      String(first.requests[0]?.body.byteLength),
+    );
+    const firstBody = await consumeBody(first.requests[0]?.body as ElevenLabsAlignmentRequestBody);
+    const secondBody = await consumeBody(
+      second.requests[0]?.body as ElevenLabsAlignmentRequestBody,
+    );
+    expect(firstBody).toEqual(secondBody);
+    const body = new TextDecoder().decode(firstBody);
     expect(body).toContain('name="file"; filename="song.mp3"');
     expect(body).toContain('name="text"');
     expect(body).toContain("Привет 世界!");
@@ -258,7 +324,7 @@ describe("ElevenLabs forced-alignment adapter", () => {
     ).toEqual([0, 2]);
   });
 
-  test("accepts character timing arrays, including non-Latin combining characters", async () => {
+  test("validates combined character and word timings for non-Latin combining characters", async () => {
     const transport = fakeTransport(response(characterResponse));
     const result = await adapter(transport.transport).align(
       input({
@@ -272,26 +338,30 @@ describe("ElevenLabs forced-alignment adapter", () => {
         },
       }),
     );
-    expect(result).toMatchObject({ outcome: "ready", mode: "character" });
+    expect(result).toMatchObject({ outcome: "ready", mode: "word" });
     if (result.outcome !== "ready") throw new Error("expected character alignment");
-    expect(result.timings.map((timing) => timing.token_index)).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(result.timings.map((timing) => timing.token_index)).toEqual([0]);
   });
 
-  test("maps empty provider timings and explicit no-speech to the closed no-speech outcome", async () => {
-    for (const body of [noSpeechResponse, explicitNoSpeechResponse]) {
-      const transport = fakeTransport(response(body));
-      const result = await adapter(transport.transport).align(input());
-      expect(result).toMatchObject({
-        alignment: "unavailable",
-        outcome: "no_speech",
-        reason: "no_speech",
-      });
-    }
+  test("maps the documented empty combined response to the closed no-speech outcome", async () => {
+    const transport = fakeTransport(response(noSpeechResponse));
+    const result = await adapter(transport.transport).align(input());
+    expect(result).toMatchObject({
+      alignment: "unavailable",
+      outcome: "no_speech",
+      reason: "no_speech",
+    });
   });
 
   test("rejects mismatched transcript and invalid or overlapping timings", async () => {
     const mismatch = fakeTransport(
-      response({ words: [{ text: "different", start: 0, end: 1, type: "word" }] }),
+      response({
+        ...multilingualWordsResponse,
+        characters: ["different"],
+        character_start_times_seconds: [0],
+        character_end_times_seconds: [1],
+        words: [{ text: "different", start: 0, end: 1 }],
+      }),
     );
     const mismatchResult = await adapter(mismatch.transport).align(input());
     expect(mismatchResult).toMatchObject({
@@ -321,6 +391,20 @@ describe("ElevenLabs forced-alignment adapter", () => {
       if (result.outcome === "ready") throw new Error("expected malformed alignment");
       expect(["malformed_response", "invalid_timing"]).toContain(result.reason);
     }
+  });
+
+  test("rejects the retired flat character-only response shape", async () => {
+    const legacy = fakeTransport(
+      response({
+        characters: ["Привет"],
+        character_start_times_seconds: [0],
+        character_end_times_seconds: [1],
+      }),
+    );
+    await expect(adapter(legacy.transport).align(input())).resolves.toMatchObject({
+      outcome: "malformed",
+      reason: "malformed_response",
+    });
   });
 
   test("rejects wrong content type and malformed JSON without retaining provider bytes", async () => {
@@ -370,7 +454,7 @@ describe("ElevenLabs forced-alignment adapter", () => {
       audio: {
         audio_revision: 1,
         canonical_audio_sha256: sha,
-        bytes: new Uint8Array(limits.max_audio_bytes + 1),
+        source: source(new Uint8Array(limits.max_audio_bytes + 1)),
         mime_type: "audio/mpeg",
       },
     });
@@ -405,22 +489,28 @@ describe("ElevenLabs forced-alignment adapter", () => {
 
     const controller = new AbortController();
     let cancelSignal: AbortSignal | undefined;
+    let resolveStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
     const cancelTransport = fakeTransport(async (request) => {
       cancelSignal = request.signal;
+      resolveStarted?.();
       return new Promise<ElevenLabsAlignmentTransportResponse>(() => undefined);
     });
     const pending = adapter(cancelTransport.transport).align(input({ signal: controller.signal }));
+    await started;
     controller.abort();
     await expect(pending).resolves.toMatchObject({ outcome: "cancelled", reason: "cancelled" });
     expect(cancelSignal?.aborted).toBe(true);
   });
 
-  test("multipart encoding rejects a boundary collision rather than creating ambiguous bytes", () => {
-    const body = encodeElevenLabsAlignmentMultipart({
+  test("multipart encoding rejects a boundary collision rather than creating ambiguous bytes", async () => {
+    const body = await encodeElevenLabsAlignmentMultipart({
       audio: {
         audio_revision: 1,
         canonical_audio_sha256: sha,
-        bytes: new TextEncoder().encode("pirate-elevenlabs-alignment-v1-fixed-boundary"),
+        source: source(new TextEncoder().encode("pirate-elevenlabs-alignment-v1-fixed-boundary")),
         mime_type: "audio/mpeg",
       },
       transcript: "safe",

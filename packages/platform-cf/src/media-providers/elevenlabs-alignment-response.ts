@@ -45,69 +45,77 @@ function parseProviderTimings(
   limits: ElevenLabsAlignmentLimits,
 ): ElevenLabsAlignmentOutcome {
   if (!Predicate.isObject(response)) return malformed("malformed_response", context);
-  if (Object.keys(response).length === 1 && response.status === "no_speech") {
-    return noSpeech(context);
-  }
-
-  const hasWords = Object.hasOwn(response, "words");
-  const hasCharacters = Object.hasOwn(response, "characters");
-  if (hasWords === hasCharacters) return malformed("malformed_response", context);
-
-  const mode: "word" | "character" = hasWords ? "word" : "character";
-  let entries: unknown[];
-  if (hasWords) {
-    if (!hasOnlyKeys(response, ["words"]) || !Array.isArray(response.words)) {
-      return malformed("malformed_response", context);
-    }
-    entries = response.words;
-  } else if (
-    Array.isArray(response.characters) &&
-    response.characters.every((entry) => Predicate.isString(entry))
+  if (
+    !hasOnlyKeys(response, [
+      "characters",
+      "character_start_times_seconds",
+      "character_end_times_seconds",
+      "words",
+      "loss",
+    ]) ||
+    !Array.isArray(response.characters) ||
+    !Array.isArray(response.character_start_times_seconds) ||
+    !Array.isArray(response.character_end_times_seconds) ||
+    !Array.isArray(response.words) ||
+    !Predicate.isNumber(response.loss) ||
+    !Number.isFinite(response.loss) ||
+    response.loss < 0
   ) {
-    if (
-      !hasOnlyKeys(response, [
-        "characters",
-        "character_start_times_seconds",
-        "character_end_times_seconds",
-      ])
-    ) {
-      return malformed("malformed_response", context);
-    }
-    const starts = response.character_start_times_seconds;
-    const ends = response.character_end_times_seconds;
-    if (
-      !Array.isArray(starts) ||
-      !Array.isArray(ends) ||
-      response.characters.length !== starts.length ||
-      response.characters.length !== ends.length
-    ) {
-      return malformed("malformed_response", context);
-    }
-    entries = response.characters.map((text, index) => ({
-      text,
-      start: starts[index],
-      end: ends[index],
-      type: "character",
-    }));
-  } else if (Array.isArray(response.characters)) {
-    if (!hasOnlyKeys(response, ["characters"])) return malformed("malformed_response", context);
-    entries = response.characters;
-  } else {
+    return malformed("malformed_response", context);
+  }
+  const characters = response.characters;
+  const characterStarts = response.character_start_times_seconds;
+  const characterEnds = response.character_end_times_seconds;
+  const words = response.words;
+  if (
+    characters.length !== characterStarts.length ||
+    characters.length !== characterEnds.length ||
+    characters.length > limits.max_timings ||
+    words.length > limits.max_timings
+  ) {
+    return characters.length > limits.max_timings || words.length > limits.max_timings
+      ? malformed("oversized_response", context)
+      : malformed("malformed_response", context);
+  }
+  if (characters.length === 0 && words.length === 0) return noSpeech(context);
+  if (characters.length === 0 || words.length === 0) {
     return malformed("malformed_response", context);
   }
 
-  if (entries.length > limits.max_timings) return malformed("oversized_response", context);
-  if (entries.length === 0) return noSpeech(context);
+  let receivedCharacters = "";
+  let previousCharacterEndMs = 0;
+  for (let index = 0; index < characters.length; index += 1) {
+    const text = characters[index];
+    const start = characterStarts[index];
+    const end = characterEnds[index];
+    if (
+      !Predicate.isString(text) ||
+      text.length === 0 ||
+      text.length > 4_096 ||
+      !Predicate.isNumber(start) ||
+      !Number.isFinite(start) ||
+      !Predicate.isNumber(end) ||
+      !Number.isFinite(end) ||
+      start < 0 ||
+      end <= start
+    ) {
+      return malformed("invalid_timing", context);
+    }
+    const startMs = Math.round(start * 1000);
+    const endMs = Math.round(end * 1000);
+    if (end * 1000 > limits.max_timing_ms || endMs <= startMs || startMs < previousCharacterEndMs) {
+      return malformed("invalid_timing", context);
+    }
+    previousCharacterEndMs = endMs;
+    receivedCharacters += text;
+  }
 
   const timings: ElevenLabsAlignmentTiming[] = [];
-  const receivedParts: string[] = [];
-  let previousEndMs = 0;
+  let receivedWords = "";
+  let previousWordEndMs = 0;
   let totalDurationMs = 0;
-  for (const entry of entries) {
-    if (
-      !Predicate.isObject(entry) ||
-      !hasOnlyKeys(entry, ["text", "start", "end", "type", "loss", "confidence"])
-    ) {
+  for (const entry of words) {
+    if (!Predicate.isObject(entry) || !hasOnlyKeys(entry, ["text", "start", "end"])) {
       return malformed("malformed_response", context);
     }
     if (!Predicate.isString(entry.text) || entry.text.length === 0 || entry.text.length > 4_096) {
@@ -126,27 +134,18 @@ function parseProviderTimings(
     if (entry.end * 1000 > limits.max_timing_ms) return malformed("invalid_timing", context);
     const startMs = Math.round(entry.start * 1000);
     const endMs = Math.round(entry.end * 1000);
-    if (endMs <= startMs || startMs < previousEndMs) {
+    if (endMs <= startMs || startMs < previousWordEndMs) {
       return malformed("invalid_timing", context);
     }
-    const kind: "word" | "character" | "spacing" =
-      entry.type === "spacing" ? "spacing" : mode === "word" ? "word" : "character";
-    if (
-      entry.type !== undefined &&
-      entry.type !== kind &&
-      !(mode === "character" && entry.type === "word")
-    ) {
-      return malformed("malformed_response", context);
-    }
+    const kind: "word" | "spacing" = /^\s+$/u.test(entry.text) ? "spacing" : "word";
     timings.push({ token_index: timings.length, start_ms: startMs, end_ms: endMs, kind });
-    receivedParts.push(entry.text);
-    previousEndMs = endMs;
+    receivedWords += entry.text;
+    previousWordEndMs = endMs;
     totalDurationMs = endMs;
   }
 
   if (totalDurationMs > limits.max_timing_ms) return malformed("invalid_timing", context);
-  const received = receivedParts.join("");
-  if (received !== transcript) {
+  if (receivedCharacters !== transcript || receivedWords !== transcript) {
     return unavailable({
       status: "unavailable",
       alignment: "unavailable",
@@ -154,7 +153,7 @@ function parseProviderTimings(
       reason: "transcript_mismatch",
       context,
       expected_text_length: transcript.length,
-      received_text_length: received.length,
+      received_text_length: receivedWords.length,
     });
   }
   return {
@@ -162,7 +161,7 @@ function parseProviderTimings(
     alignment: "ready",
     outcome: "ready",
     context,
-    mode,
+    mode: "word",
     timings,
   };
 }

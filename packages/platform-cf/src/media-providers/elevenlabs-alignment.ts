@@ -5,12 +5,14 @@ import {
   encodeElevenLabsAlignmentMultipart,
   permanent,
   retryable,
+  validateApiKey,
   validateInput,
   validateLimits,
 } from "./elevenlabs-alignment-request.ts";
 import { parseElevenLabsAlignmentResponse } from "./elevenlabs-alignment-response.ts";
 import {
   ELEVENLABS_ALIGNMENT_ENDPOINT,
+  ELEVENLABS_ALIGNMENT_HARD_MAX_REQUEST_BYTES,
   ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY,
   type ElevenLabsAlignmentInput,
   type ElevenLabsAlignmentLimits,
@@ -29,7 +31,6 @@ export type ElevenLabsAlignmentAdapterOptions = Readonly<{
   /** Opaque secret supplied by composition; never returned or logged. */
   readonly api_key?: string;
   readonly transport?: ElevenLabsAlignmentTransport;
-  readonly endpoint?: string;
   /** Reviewed request limits, not provider/product policy guessed by this module. */
   readonly limits?: ElevenLabsAlignmentLimits;
 }>;
@@ -88,14 +89,12 @@ export class ElevenLabsAlignmentAdapter {
   private readonly enabled: boolean;
   #apiKey: string | undefined;
   private readonly transport: ElevenLabsAlignmentTransport | undefined;
-  private readonly endpoint: string;
   private readonly limits: ElevenLabsAlignmentLimits | undefined;
 
   constructor(options: ElevenLabsAlignmentAdapterOptions = {}) {
     this.enabled = options.enabled === true;
     this.#apiKey = options.api_key;
     this.transport = options.transport;
-    this.endpoint = options.endpoint ?? ELEVENLABS_ALIGNMENT_ENDPOINT;
     this.limits = options.limits;
   }
 
@@ -109,12 +108,7 @@ export class ElevenLabsAlignmentAdapter {
       };
     }
     const limits = this.limits;
-    if (
-      this.transport === undefined ||
-      typeof this.#apiKey !== "string" ||
-      this.#apiKey.length === 0 ||
-      !validateLimits(limits)
-    ) {
+    if (this.transport === undefined || !validateApiKey(this.#apiKey) || !validateLimits(limits)) {
       return permanent("configuration");
     }
     const validated = validateInput(input, limits);
@@ -122,14 +116,11 @@ export class ElevenLabsAlignmentAdapter {
     if (validated.input.transcript.transcript.trim().length === 0) {
       return noSpeech(validated.context);
     }
-    const body = encodeElevenLabsAlignmentMultipart({
+    const body = await encodeElevenLabsAlignmentMultipart({
       audio: validated.input.audio,
       transcript: validated.input.transcript.transcript,
     });
-    if (
-      body === null ||
-      body.byteLength > limits.max_audio_bytes + limits.max_transcript_bytes + 8_192
-    ) {
+    if (body === null || body.byteLength > ELEVENLABS_ALIGNMENT_HARD_MAX_REQUEST_BYTES) {
       return permanent("invalid_request", validated.context);
     }
 
@@ -149,10 +140,11 @@ export class ElevenLabsAlignmentAdapter {
 
     const request: ElevenLabsAlignmentTransportRequest = {
       method: "POST",
-      url: this.endpoint,
+      url: ELEVENLABS_ALIGNMENT_ENDPOINT,
       headers: {
         accept: "application/json",
         "content-type": `multipart/form-data; boundary=${ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY}`,
+        "content-length": String(body.byteLength),
         "xi-api-key": this.#apiKey,
       },
       body,

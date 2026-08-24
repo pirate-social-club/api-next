@@ -9,8 +9,11 @@ export const ELEVENLABS_ALIGNMENT_MULTIPART_BOUNDARY =
  * These are implementation hard caps only. They are not ElevenLabs limits,
  * product policy, or accepted deployment values. Enabled composition must
  * inject the reviewed request limits below, each of which is bounded by these
- * caps. Keeping both concepts explicit prevents a provider guess becoming a
- * product contract.
+ * caps. The request body is replayable and chunked, so the audio cap does not
+ * allocate a second audio copy; the remaining caps keep response, transcript,
+ * and framing memory bounded below a Workers isolate's memory ceiling.
+ * Keeping both concepts explicit prevents a provider guess becoming a product
+ * contract.
  */
 export const ELEVENLABS_ALIGNMENT_HARD_MAX_AUDIO_BYTES = 100_000_000;
 export const ELEVENLABS_ALIGNMENT_HARD_MAX_TRANSCRIPT_BYTES = 4_000_000;
@@ -18,6 +21,7 @@ export const ELEVENLABS_ALIGNMENT_HARD_MAX_TIMEOUT_MS = 300_000;
 export const ELEVENLABS_ALIGNMENT_HARD_MAX_RESPONSE_BYTES = 5_000_000;
 export const ELEVENLABS_ALIGNMENT_HARD_MAX_TIMINGS = 100_000;
 export const ELEVENLABS_ALIGNMENT_HARD_MAX_TIMING_MS = 86_400_000;
+export const ELEVENLABS_ALIGNMENT_HARD_MAX_API_KEY_BYTES = 4_096;
 export const ELEVENLABS_ALIGNMENT_HARD_MAX_REQUEST_BYTES =
   ELEVENLABS_ALIGNMENT_HARD_MAX_AUDIO_BYTES +
   ELEVENLABS_ALIGNMENT_HARD_MAX_TRANSCRIPT_BYTES +
@@ -32,10 +36,19 @@ export type ElevenLabsAlignmentLimits = Readonly<{
   readonly max_timing_ms: number;
 }>;
 
+/**
+ * Replay-openable audio owned by the caller. `open` must return the same bytes
+ * and declared length on each call; the adapter never copies the audio.
+ */
+export type ElevenLabsAlignmentAudioSource = Readonly<{
+  readonly byteLength: number;
+  readonly open: () => AsyncIterable<Uint8Array>;
+}>;
+
 export type ElevenLabsAlignmentAudioRevision = Readonly<{
   readonly audio_revision: number;
   readonly canonical_audio_sha256: string;
-  readonly bytes: Uint8Array;
+  readonly source: ElevenLabsAlignmentAudioSource;
   readonly mime_type: string;
   readonly filename?: string;
 }>;
@@ -63,8 +76,14 @@ export type ElevenLabsAlignmentTransportRequest = Readonly<{
   readonly method: "POST";
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
-  readonly body: Uint8Array;
+  readonly body: ElevenLabsAlignmentRequestBody;
   readonly signal: AbortSignal;
+}>;
+
+/** Replayable multipart chunks; no complete multipart buffer is retained. */
+export type ElevenLabsAlignmentRequestBody = Readonly<{
+  readonly byteLength: number;
+  readonly open: () => AsyncIterable<Uint8Array>;
 }>;
 
 export type ElevenLabsAlignmentTransportResponse = Readonly<{
