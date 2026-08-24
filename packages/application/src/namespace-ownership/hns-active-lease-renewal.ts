@@ -6,6 +6,8 @@ import {
   type NamespaceOwnershipRoute as NamespaceOwnershipRouteValue,
 } from "./adapter.ts";
 import {
+  decodeHnsControlObservationRequestBytes,
+  decodeHnsControlObservationResultBytes,
   deriveHnsEvidenceLease,
   type HnsControlObservationRequestV1,
   type HnsEvidenceLeasePolicy,
@@ -14,6 +16,10 @@ import {
   hnsControlIdentityDigest,
   mapHnsControlObservationToTargetV2,
 } from "./hns-control-observer.ts";
+import {
+  type HnsControlObserverRetainedSnapshotV1,
+  isHnsControlObserverSnapshotReference,
+} from "./hns-control-observer-store.ts";
 import {
   decodeStrictHnsJsonBytes,
   HnsOwnerResponseDecodeError,
@@ -30,6 +36,8 @@ export const HNS_ACTIVE_LEASE_RENEWAL_EVIDENCE_VERSION =
   "pirate-hns-active-lease-renewal-evidence-v1" as const;
 export const HNS_ACTIVE_LEASE_RENEWAL_RESULT_VERSION =
   "pirate-hns-active-lease-renewal-result-v1" as const;
+export const HNS_ACTIVE_LEASE_RENEWAL_RESULT_V2_VERSION =
+  "pirate-hns-active-lease-renewal-result-v2" as const;
 export const HNS_ACTIVE_LEASE_RENEWAL_PROTOCOL_VERSION = "hns-active-lease-renewal-v1" as const;
 export const HNS_ACTIVE_LEASE_RENEWAL_PROVIDER_ID = "hns.owner.v1" as const;
 export const HNS_ACTIVE_LEASE_RENEWAL_REQUEST_MAX_BYTES = 32_768 as const;
@@ -343,6 +351,35 @@ const ResultSchema = Schema.Struct({
   route_lifecycle_status_or_null: Schema.NullOr(Schema.Literals(["active", "suspended"])),
 });
 
+const ResultV2Schema = Schema.Struct({
+  active_lease_renewal_id: Identifier,
+  active_lease_renewal_attempt_id: Identifier,
+  route_binding_id: Identifier,
+  expected_binding_generation: PositiveSafeInteger,
+  idempotency_key: Identifier,
+  request_hash: Sha256Hex,
+  outcome_status: Schema.Literals([
+    "verified",
+    "root_absent",
+    "root_inactive",
+    "txt_absent",
+    "txt_value_mismatch",
+    "control_identity_changed",
+    "chain_authority_changed",
+    "expiry_horizon_insufficient",
+    "renewal_evidence_ineligible",
+    "lease_expired_before_commit",
+    "stale_cas",
+  ]),
+  evidence_ref_or_null: Schema.NullOr(EvidenceReference),
+  evidence_digest_or_null: Schema.NullOr(Sha256Hex),
+  provider_response_sha256_or_null: Schema.NullOr(Sha256Hex),
+  ownership_status_or_null: Schema.NullOr(
+    Schema.Literals(["verified", "revoked", "disputed", "expired"]),
+  ),
+  route_lifecycle_status_or_null: Schema.NullOr(Schema.Literals(["active", "suspended"])),
+});
+
 function assertResultMatrix(value: Schema.Schema.Type<typeof ResultSchema>): void {
   if (value.outcome_status === "verified") {
     if (
@@ -391,6 +428,24 @@ function assertResultMatrix(value: Schema.Schema.Type<typeof ResultSchema>): voi
   ) {
     throw new TypeError("Local renewal result must not carry evidence or lifecycle status");
   }
+}
+
+function assertResultV2Matrix(value: Schema.Schema.Type<typeof ResultV2Schema>): void {
+  if (value.outcome_status === "renewal_evidence_ineligible") {
+    if (
+      value.evidence_ref_or_null !== null ||
+      value.evidence_digest_or_null !== null ||
+      value.provider_response_sha256_or_null !== null ||
+      value.ownership_status_or_null !== null ||
+      value.route_lifecycle_status_or_null !== null
+    ) {
+      throw new TypeError("Ineligible renewal result must not carry mutation authority");
+    }
+    return;
+  }
+  assertResultMatrix(
+    decodeSchema(ResultSchema, value, "HNS active-renewal result-v2 matrix is invalid"),
+  );
 }
 
 export type HnsActiveLeaseRenewalAuthorityV1 = Schema.Schema.Type<typeof RequirementSchema>;
@@ -443,6 +498,11 @@ export type HnsActiveLeaseRenewalDecodedResponse = Readonly<{
   readonly response_bytes: Uint8Array;
   readonly response: HnsOwnerActiveLeaseRenewalResponseV1;
   readonly response_sha256: Sha256HexValue;
+}>;
+
+export type HnsActiveLeaseRenewalPriorSnapshotInput = Readonly<{
+  readonly request: HnsOwnerActiveLeaseRenewalRequestV1;
+  readonly snapshot: HnsControlObserverRetainedSnapshotV1;
 }>;
 
 export type HnsActiveLeaseRenewalResponseValidationContext = Readonly<{
@@ -755,6 +815,94 @@ function providerEvidenceCrossPin(
   }
 }
 
+export function hnsActiveLeaseRenewalPriorSnapshotReference(providerEvidenceRef: string): Readonly<{
+  readonly observer_result_sha256: Sha256HexValue;
+  readonly snapshot_reference: string;
+}> {
+  const match = /^hns-observer-v1:sha256:([0-9a-f]{64}):(.+)$/u.exec(providerEvidenceRef);
+  const observerResultSha256 = match?.[1];
+  const snapshotReference = match?.[2];
+  if (
+    observerResultSha256 === undefined ||
+    snapshotReference === undefined ||
+    !isHnsControlObserverSnapshotReference(snapshotReference)
+  ) {
+    throw new HnsActiveLeaseRenewalDecodeError(
+      "HNS renewal prior provider evidence reference is invalid",
+    );
+  }
+  return {
+    observer_result_sha256: Schema.decodeUnknownSync(Sha256Hex)(observerResultSha256),
+    snapshot_reference: snapshotReference,
+  };
+}
+
+export async function resolveHnsActiveLeaseRenewalControlIdentity(
+  input: HnsActiveLeaseRenewalPriorSnapshotInput,
+): Promise<HnsActiveLeaseRenewalResolvedControlIdentityV1> {
+  assertRequest(input.request);
+  if ((await hnsActiveLeaseRenewalRequestHash(input.request)) !== input.request.request_hash) {
+    throw new HnsActiveLeaseRenewalDecodeError("HNS renewal request hash is not self-consistent");
+  }
+  const reference = hnsActiveLeaseRenewalPriorSnapshotReference(
+    input.request.prior_provider_evidence_ref,
+  );
+  if (
+    input.snapshot.snapshot_reference !== reference.snapshot_reference ||
+    input.snapshot.result_sha256 !== reference.observer_result_sha256
+  ) {
+    throw new HnsActiveLeaseRenewalDecodeError(
+      "HNS renewal prior snapshot does not match its provider evidence reference",
+    );
+  }
+  const priorRequest = await decodeHnsControlObservationRequestBytes(input.snapshot.request_bytes);
+  const priorResult = await decodeHnsControlObservationResultBytes(
+    input.snapshot.result_bytes,
+    priorRequest.request,
+  );
+  if (
+    priorResult.result_sha256 !== input.snapshot.result_sha256 ||
+    priorResult.result.status !== "verified" ||
+    priorResult.result.provider_evidence_ref !== input.snapshot.snapshot_reference
+  ) {
+    throw new HnsActiveLeaseRenewalDecodeError(
+      "HNS renewal prior snapshot is not immutable verified evidence",
+    );
+  }
+  const request = priorRequest.request;
+  const result = priorResult.result;
+  if (
+    request.provider_id !== input.request.provider_id ||
+    request.provider_configuration_reference !== input.request.provider_configuration.reference ||
+    request.provider_configuration_version !== input.request.provider_configuration.version ||
+    request.provider_configuration_digest !== input.request.provider_configuration.digest ||
+    request.environment !== input.request.environment ||
+    request.root_label !== input.request.route.root_label ||
+    !request.expected_txt_value.startsWith("pirate-verification=") ||
+    request.expected_txt_value.length === "pirate-verification=".length
+  ) {
+    throw new HnsActiveLeaseRenewalDecodeError(
+      "HNS renewal prior snapshot does not match request configuration authority",
+    );
+  }
+  if (
+    result.control_identity_digest !== input.request.expected_control_identity_digest ||
+    result.chain_authority_digest !== input.request.expected_chain_authority_digest
+  ) {
+    throw new HnsActiveLeaseRenewalDecodeError(
+      "HNS renewal prior snapshot disagrees with expected control authority",
+    );
+  }
+  return {
+    ownership_source: request.ownership_source,
+    txt_name: request.txt_name,
+    expected_txt_value: request.expected_txt_value,
+    expected_txt_value_sha256: result.expected_txt_value_sha256,
+    control_identity_digest: result.control_identity_digest,
+    chain_authority_digest: result.chain_authority_digest,
+  };
+}
+
 function assertVerifiedObservation(
   observation: HnsOwnerTargetVerifiedObservationV2,
   request: HnsOwnerActiveLeaseRenewalRequestV1,
@@ -828,6 +976,18 @@ export async function mapHnsActiveLeaseRenewalObservation(
   assertRoute(input.request.route);
   const requirementHash = await hnsActiveLeaseRenewalRequirementHash(input.authority);
   assertRequestMatchesAuthority(input.request, input.authority, requirementHash);
+  const requestHash = await hnsActiveLeaseRenewalRequestHash(input.request);
+  if (input.request.request_hash !== requestHash) {
+    throw new TypeError("HNS active-renewal request hash is not self-consistent");
+  }
+  return mapHnsActiveLeaseRenewalObservationForRequest(input);
+}
+
+export async function mapHnsActiveLeaseRenewalObservationForRequest(
+  input: Omit<HnsActiveLeaseRenewalObservationInput, "authority">,
+): Promise<HnsOwnerActiveLeaseRenewalResponseV1> {
+  assertRequest(input.request);
+  assertRoute(input.request.route);
   const requestHash = await hnsActiveLeaseRenewalRequestHash(input.request);
   if (input.request.request_hash !== requestHash) {
     throw new TypeError("HNS active-renewal request hash is not self-consistent");
@@ -972,6 +1132,17 @@ function assertResponse(value: HnsOwnerActiveLeaseRenewalResponseV1): void {
   } else if (response.status === "rejected") {
     providerEvidenceCrossPin(response.provider_evidence_ref, response.observer_result_sha256);
   }
+}
+
+export function encodeHnsActiveLeaseRenewalResponse(
+  response: HnsOwnerActiveLeaseRenewalResponseV1,
+): Uint8Array {
+  assertResponse(response);
+  const bytes = new TextEncoder().encode(JSON.stringify(response));
+  if (bytes.byteLength > HNS_ACTIVE_LEASE_RENEWAL_RESPONSE_MAX_BYTES) {
+    throw new TypeError("HNS active-renewal response exceeds the byte bound");
+  }
+  return bytes;
 }
 
 async function assertResponseValidationContext(
@@ -1380,6 +1551,8 @@ export type HnsActiveLeaseRenewalResultHashInput = Readonly<{
   readonly route_lifecycle_status_or_null: string | null;
 }>;
 
+export type HnsActiveLeaseRenewalResultV2HashInput = Schema.Schema.Type<typeof ResultV2Schema>;
+
 export function hnsActiveLeaseRenewalResultPreimage(
   input: HnsActiveLeaseRenewalResultHashInput,
 ): string {
@@ -1410,4 +1583,36 @@ export function hnsActiveLeaseRenewalResultHash(
   input: HnsActiveLeaseRenewalResultHashInput,
 ): Promise<Sha256HexValue> {
   return sha256Utf8(hnsActiveLeaseRenewalResultPreimage(input));
+}
+
+export function hnsActiveLeaseRenewalResultV2Preimage(
+  input: HnsActiveLeaseRenewalResultV2HashInput,
+): string {
+  const decoded = decodeSchema(
+    ResultV2Schema,
+    input,
+    "HNS active-renewal result-v2 failed its strict schema",
+  );
+  assertResultV2Matrix(decoded);
+  return orderedJson([
+    HNS_ACTIVE_LEASE_RENEWAL_RESULT_V2_VERSION,
+    decoded.active_lease_renewal_id,
+    decoded.active_lease_renewal_attempt_id,
+    decoded.route_binding_id,
+    decoded.expected_binding_generation,
+    decoded.idempotency_key,
+    decoded.request_hash,
+    decoded.outcome_status,
+    decoded.evidence_ref_or_null,
+    decoded.evidence_digest_or_null,
+    decoded.provider_response_sha256_or_null,
+    decoded.ownership_status_or_null,
+    decoded.route_lifecycle_status_or_null,
+  ]);
+}
+
+export function hnsActiveLeaseRenewalResultV2Hash(
+  input: HnsActiveLeaseRenewalResultV2HashInput,
+): Promise<Sha256HexValue> {
+  return sha256Utf8(hnsActiveLeaseRenewalResultV2Preimage(input));
 }

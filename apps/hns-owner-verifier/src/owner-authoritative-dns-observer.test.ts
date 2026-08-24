@@ -140,6 +140,7 @@ async function sha256(bytes: Uint8Array): Promise<Sha256HexValue> {
 
 function secureValidator(): HnsAuthoritativeDnsValidatorPortV1 {
   return {
+    policy_id: "pirate-hns-authoritative-dns-validator-policy-v1",
     validate: async (input) => ({
       dnssec_validation: "secure",
       validated_dnskey_response_sha256: await sha256(input.dnskey_response_bytes),
@@ -287,6 +288,7 @@ describe("HNS owner-authoritative DNS observer", () => {
   test("retains typed timeout and one-byte capacity prefixes without invoking validation", async () => {
     let validatorCalls = 0;
     const validator: HnsAuthoritativeDnsValidatorPortV1 = {
+      policy_id: "pirate-hns-authoritative-dns-validator-policy-v1",
       validate: async () => {
         validatorCalls += 1;
         throw new Error("must not run");
@@ -333,6 +335,101 @@ describe("HNS owner-authoritative DNS observer", () => {
     expect(validatorCalls).toBe(0);
   });
 
+  test("rejects validator policy substitution before transport or entropy", async () => {
+    let transportCalls = 0;
+    let entropyCalls = 0;
+    const substituted = {
+      ...secureValidator(),
+      policy_id: "pirate-hns-authoritative-dns-validator-policy-v2",
+    } as unknown as HnsAuthoritativeDnsValidatorPortV1;
+    await expect(
+      observeHnsOwnerAuthoritativeDns(
+        observationInput({
+          validator: substituted,
+          message_ids: {
+            next_id: () => {
+              entropyCalls += 1;
+              return 1;
+            },
+          },
+          transport: {
+            exchange: async () => {
+              transportCalls += 1;
+              throw new Error("must not run");
+            },
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ reason: "invalid_response" });
+    expect(entropyCalls).toBe(0);
+    expect(transportCalls).toBe(0);
+  });
+
+  test("short-circuits unsupported-only chain DS before child DNS", async () => {
+    let transportCalls = 0;
+    let validatorCalls = 0;
+    const result = await observeHnsOwnerAuthoritativeDns(
+      observationInput({
+        authority_records: [
+          ["NS", "ns1.jazleeuw"],
+          ["GLUE4", "ns1.jazleeuw", "192.0.2.53"],
+          ["DS", 1, 5, 1, "ab".repeat(20)],
+        ],
+        transport: {
+          exchange: async () => {
+            transportCalls += 1;
+            throw new Error("must not run");
+          },
+        },
+        validator: {
+          policy_id: "pirate-hns-authoritative-dns-validator-policy-v1",
+          validate: async () => {
+            validatorCalls += 1;
+            throw new Error("must not run");
+          },
+        },
+      }),
+    );
+    expect(result.status).toBe("unavailable");
+    expect(result.reason_code).toBe("authoritative_dns_insecure");
+    expect(transportCalls).toBe(0);
+    expect(validatorCalls).toBe(0);
+  });
+
+  test("pins the validator function before asynchronous transport can mutate the capability", async () => {
+    let originalCalls = 0;
+    let replacementCalls = 0;
+    const originalValidate = secureValidator().validate;
+    const mutableValidator = {
+      policy_id: "pirate-hns-authoritative-dns-validator-policy-v1" as const,
+      validate: async (input: Parameters<HnsAuthoritativeDnsValidatorPortV1["validate"]>[0]) => {
+        originalCalls += 1;
+        return originalValidate(input);
+      },
+    };
+    const transport = transportForValues(
+      { "dns-view-a": request.expected_txt_value, "dns-view-b": request.expected_txt_value },
+      [],
+    );
+    const result = await observeHnsOwnerAuthoritativeDns(
+      observationInput({
+        validator: mutableValidator,
+        transport: {
+          exchange: async (input: HnsAuthoritativeDnsExchangeInputV1) => {
+            mutableValidator.validate = async () => {
+              replacementCalls += 1;
+              throw new Error("replacement validator must not run");
+            };
+            return transport.exchange(input);
+          },
+        },
+      }),
+    );
+    expect(result.status).toBe("verified");
+    expect(originalCalls).toBe(2);
+    expect(replacementCalls).toBe(0);
+  });
+
   test("rejects repeated entropy and validator hash substitution as adapter failures", async () => {
     await expect(
       observeHnsOwnerAuthoritativeDns(observationInput({ message_ids: { next_id: () => 7 } })),
@@ -342,6 +439,7 @@ describe("HNS owner-authoritative DNS observer", () => {
       observeHnsOwnerAuthoritativeDns(
         observationInput({
           validator: {
+            policy_id: "pirate-hns-authoritative-dns-validator-policy-v1",
             validate: async (
               input: Parameters<HnsAuthoritativeDnsValidatorPortV1["validate"]>[0],
             ) => ({

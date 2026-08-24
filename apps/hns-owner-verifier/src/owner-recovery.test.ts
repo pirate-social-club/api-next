@@ -29,8 +29,6 @@ const env: Env = {
   HNS_OWNERSHIP_SOURCE: "hns_parent_chain_txt",
   HNS_CHALLENGE_TTL_SECONDS: "3600",
   HNS_EVIDENCE_TTL_SECONDS: "2592000",
-  HNS_LEGACY_VERIFIER_URL: "https://verifier.pirate.sc/hns",
-  HNS_LEGACY_VERIFIER_BEARER: "legacy-must-remain-unused",
   HNS_PROVIDER_ENVIRONMENT: "staging",
   HNS_PROVIDER_CONFIGURATION_REFERENCE: "hns-owner-staging",
   HNS_PROVIDER_CONFIGURATION_VERSION: "hns-owner-config-v1",
@@ -295,8 +293,7 @@ describe("HNS owner verifier recovery target-observer seam", () => {
     expect(await response.json()).toEqual({ error: "provider_misconfigured" });
   });
 
-  test("echoes the database-authorized recovery deadline and never falls back to legacy", async () => {
-    let legacyCalls = 0;
+  test("echoes the database-authorized recovery deadline and remains target-only", async () => {
     const targetObserver = runtime(async () => {
       throw new Error("start must not observe");
     });
@@ -315,12 +312,6 @@ describe("HNS owner verifier recovery target-observer seam", () => {
         "application/json",
       ),
       env,
-      {
-        fetcher: async () => {
-          legacyCalls += 1;
-          throw new Error("legacy fetch forbidden");
-        },
-      },
     );
     expect(missing.status).toBe(502);
     const started = await startRecovery(targetObserver);
@@ -328,7 +319,6 @@ describe("HNS owner verifier recovery target-observer seam", () => {
     expect(started.providerResponse.presentation.payload.expires_at).toBe(
       providerStart.challenge_expires_at,
     );
-    expect(legacyCalls).toBe(0);
   });
 
   test("derives the exact observer request from the persisted recovery session", async () => {
@@ -344,9 +334,6 @@ describe("HNS owner verifier recovery target-observer seam", () => {
     const started = await startRecovery(targetObserver);
     const response = await handleRequest(await pollRequest(started.session), env, {
       targetObserver,
-      fetcher: async () => {
-        throw new Error("legacy fetch forbidden");
-      },
     });
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("application/octet-stream");

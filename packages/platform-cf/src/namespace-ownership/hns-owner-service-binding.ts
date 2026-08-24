@@ -155,6 +155,7 @@ function request(
   body: Uint8Array,
   accept: string,
   sessionId: string,
+  observationId: string | undefined,
   deadlineMs: number,
   operation: Operation,
   maxResponseBytes: number,
@@ -164,13 +165,17 @@ function request(
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), deadlineMs);
       try {
+        const headers: Array<[string, string]> = [
+          ["Content-Type", "application/json"],
+          ["Accept", accept],
+          ["Pirate-Namespace-Session-Id", sessionId],
+        ];
+        if (observationId !== undefined) {
+          headers.push(["Pirate-HNS-Observation-Id", observationId]);
+        }
         const response = await binding.fetch(url, {
           method: "POST",
-          headers: [
-            ["Content-Type", "application/json"],
-            ["Accept", accept],
-            ["Pirate-Namespace-Session-Id", sessionId],
-          ],
+          headers,
           body,
           redirect: "manual",
           signal: controller.signal,
@@ -237,6 +242,7 @@ export function makeHnsOwnerServiceBindingTransport(
         body,
         "application/json",
         context.namespace_session_id,
+        undefined,
         HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS,
         "start",
         START_RESPONSE_MAX_BYTES,
@@ -250,6 +256,7 @@ export function makeHnsOwnerServiceBindingTransport(
         body,
         "application/octet-stream",
         context.namespace_session_id,
+        context.observation_id,
         HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
         "complete",
         POLL_RESPONSE_MAX_BYTES,
@@ -306,6 +313,7 @@ export function makeHnsOwnerRouteRevalidationTransport(
         body,
         "application/json",
         wire.revalidation_session_id,
+        undefined,
         HNS_OWNER_ROUTE_REVALIDATION_START_DEADLINE_MS,
         "start",
         START_RESPONSE_MAX_BYTES,
@@ -327,6 +335,7 @@ export function makeHnsOwnerRouteRevalidationTransport(
         body,
         "application/octet-stream",
         session.revalidation_session_id,
+        undefined,
         HNS_OWNER_ROUTE_REVALIDATION_POLL_DEADLINE_MS,
         "complete",
         POLL_RESPONSE_MAX_BYTES,

@@ -116,7 +116,10 @@ export default defineConfig({
               });
             }
             if (url.pathname === "/internal/hns-owner/v1/poll") {
-              if (request.headers.get("accept") !== "application/octet-stream") {
+              if (
+                request.headers.get("accept") !== "application/octet-stream" ||
+                request.headers.get("pirate-hns-observation-id") !== "completion-attempt-workerd"
+              ) {
                 return new Response(null, { status: 422 });
               }
               return new Response(new Uint8Array([0, 1, 127, 255]), {

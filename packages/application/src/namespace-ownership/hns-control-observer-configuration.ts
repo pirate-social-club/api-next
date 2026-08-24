@@ -5,6 +5,8 @@ import { decodeStrictHnsJsonBytes, HnsOwnerResponseDecodeError } from "./hns-evi
 
 export const HNS_CONTROL_OBSERVER_CONFIGURATION_VERSION =
   "pirate-hns-control-observer-configuration-v1" as const;
+export const HNS_CONTROL_OBSERVER_CONFIGURATION_V2_VERSION =
+  "pirate-hns-control-observer-configuration-v2" as const;
 export const HNS_CONTROL_OBSERVER_CONFIGURATION_MAX_BYTES = 8_192 as const;
 export const HNS_CONTROL_OBSERVER_CONFIGURATION_REFERENCE_MAX_BYTES = 512 as const;
 export const HNS_CONTROL_OBSERVER_CONFIGURATION_IDENTITY_MAX_BYTES = 256 as const;
@@ -112,6 +114,16 @@ const AuthoritativeDnsSchema = Schema.Struct({
   ),
 });
 
+const AuthorityInventorySchema = Schema.Struct({
+  registry_reference: RegistryReference,
+  maximum_inventory_lifetime_seconds: integerRange(
+    1,
+    86_400,
+    "maximum authority inventory lifetime seconds",
+  ),
+  response_max_bytes: integerRange(1, 65_536, "authority inventory response byte limit"),
+});
+
 const ConfigurationSchema = Schema.Struct({
   version: Schema.Literal(HNS_CONTROL_OBSERVER_CONFIGURATION_VERSION),
   provider_id: Schema.Literal("hns.owner.v1"),
@@ -121,6 +133,30 @@ const ConfigurationSchema = Schema.Struct({
   ownership_sources: Schema.Array(OwnershipSource),
   chain: ChainSchema,
   authoritative_dns: Schema.NullOr(AuthoritativeDnsSchema),
+  evidence_lease_seconds: PositiveSafeInteger,
+  observer_deadline_ms: integerRange(
+    1,
+    HNS_CONTROL_OBSERVER_DEADLINE_MAX_MS,
+    "observer deadline milliseconds",
+  ),
+  observer_reservation_lease_seconds: integerRange(
+    HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MIN_SECONDS,
+    HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MAX_SECONDS,
+    "observer reservation lease seconds",
+  ),
+  snapshot_store_reference: RegistryReference,
+});
+
+const ConfigurationV2Schema = Schema.Struct({
+  version: Schema.Literal(HNS_CONTROL_OBSERVER_CONFIGURATION_V2_VERSION),
+  provider_id: Schema.Literal("hns.owner.v1"),
+  provider_configuration_reference: ConfigurationReference,
+  provider_configuration_version: Identity,
+  environment: Identity,
+  ownership_sources: Schema.Array(OwnershipSource),
+  chain: ChainSchema,
+  authoritative_dns: Schema.NullOr(AuthoritativeDnsSchema),
+  authority_inventory: Schema.NullOr(AuthorityInventorySchema),
   evidence_lease_seconds: PositiveSafeInteger,
   observer_deadline_ms: integerRange(
     1,
@@ -168,14 +204,45 @@ const authoritativeDnsKeys = [
   "require_all_views",
   "response_max_bytes",
 ] as const;
+const configurationV2Keys = [
+  "version",
+  "provider_id",
+  "provider_configuration_reference",
+  "provider_configuration_version",
+  "environment",
+  "ownership_sources",
+  "chain",
+  "authoritative_dns",
+  "authority_inventory",
+  "evidence_lease_seconds",
+  "observer_deadline_ms",
+  "observer_reservation_lease_seconds",
+  "snapshot_store_reference",
+] as const;
+const authorityInventoryKeys = [
+  "registry_reference",
+  "maximum_inventory_lifetime_seconds",
+  "response_max_bytes",
+] as const;
 
 export type HnsControlObserverConfigurationV1 = Schema.Schema.Type<typeof ConfigurationSchema>;
+export type HnsControlObserverConfigurationV2 = Schema.Schema.Type<typeof ConfigurationV2Schema>;
 
 export type HnsControlObserverDecodedConfiguration = Readonly<{
   readonly configuration_bytes: Uint8Array;
   readonly configuration: HnsControlObserverConfigurationV1;
   readonly configuration_digest: Sha256HexValue;
 }>;
+
+export type HnsControlObserverDecodedConfigurationV2 = Readonly<{
+  readonly configuration_bytes: Uint8Array;
+  readonly configuration: HnsControlObserverConfigurationV2;
+  readonly configuration_digest: Sha256HexValue;
+}>;
+
+export type HnsControlObserverDecodedCompatibleConfiguration =
+  | HnsControlObserverDecodedConfiguration
+  | HnsControlObserverDecodedConfigurationV2;
 
 export type HnsControlObserverConfigurationResolverPort = Readonly<{
   /** Must reject promptly and perform no later write when `signal` aborts. */
@@ -195,6 +262,12 @@ export type HnsControlObserverRuntimeCapabilities = Readonly<{
   readonly authoritative_dns_driver_reference: string | null;
   readonly snapshot_store_reference: string;
 }>;
+
+export type HnsControlObserverRuntimeCapabilitiesV2 = HnsControlObserverRuntimeCapabilities &
+  Readonly<{
+    readonly authority_inventory_registry_reference: string;
+    readonly authority_inventory_runtime_capability_set_digest: Sha256HexValue;
+  }>;
 
 export type HnsControlObserverConfigurationAuthority = Readonly<{
   readonly provider_id: "hns.owner.v1";
@@ -311,6 +384,34 @@ function assertConfigurationInvariants(configuration: HnsControlObserverConfigur
   }
 }
 
+function assertConfigurationV2Invariants(configuration: HnsControlObserverConfigurationV2): void {
+  const { authority_inventory: authorityInventory, ...shared } = configuration;
+  assertConfigurationInvariants({
+    ...shared,
+    version: HNS_CONTROL_OBSERVER_CONFIGURATION_VERSION,
+  });
+  const hasOwnerAuthoritativeSource = configuration.ownership_sources.includes(
+    "owner_authoritative_dns_txt",
+  );
+  if (hasOwnerAuthoritativeSource !== (authorityInventory !== null)) {
+    throw new HnsControlObserverConfigurationError(
+      "invalid_document",
+      "HNS observer authority inventory policy does not match its source set",
+    );
+  }
+  if (
+    authorityInventory !== null &&
+    (authorityInventory.registry_reference === configuration.chain.driver_reference ||
+      authorityInventory.registry_reference === configuration.authoritative_dns?.driver_reference ||
+      authorityInventory.registry_reference === configuration.snapshot_store_reference)
+  ) {
+    throw new HnsControlObserverConfigurationError(
+      "invalid_document",
+      "HNS observer authority inventory registry must be a distinct capability",
+    );
+  }
+}
+
 async function sha256Bytes(bytes: Uint8Array): Promise<Sha256HexValue> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   const hex = [...new Uint8Array(digest)]
@@ -371,6 +472,99 @@ export async function encodeHnsControlObserverConfiguration(
     .configuration_bytes;
 }
 
+export async function decodeHnsControlObserverConfigurationV2Bytes(
+  value: unknown,
+): Promise<HnsControlObserverDecodedConfigurationV2> {
+  if (!(value instanceof Uint8Array)) {
+    throw new HnsControlObserverConfigurationError(
+      "invalid_document",
+      "HNS observer configuration-v2 must be exact bytes",
+    );
+  }
+  const configurationBytes = new Uint8Array(value);
+  let json: unknown;
+  try {
+    json = decodeStrictHnsJsonBytes(
+      configurationBytes,
+      HNS_CONTROL_OBSERVER_CONFIGURATION_MAX_BYTES,
+    );
+  } catch (error) {
+    if (error instanceof HnsOwnerResponseDecodeError) {
+      throw new HnsControlObserverConfigurationError("invalid_document", error.message);
+    }
+    throw error;
+  }
+  assertObjectOrder(json, configurationV2Keys, "HNS observer configuration-v2");
+  const raw = json as Record<string, unknown>;
+  assertObjectOrder(raw.chain, chainKeys, "HNS observer chain configuration");
+  if (raw.authoritative_dns !== null) {
+    assertObjectOrder(
+      raw.authoritative_dns,
+      authoritativeDnsKeys,
+      "HNS observer authoritative DNS configuration",
+    );
+  }
+  if (raw.authority_inventory !== null) {
+    assertObjectOrder(
+      raw.authority_inventory,
+      authorityInventoryKeys,
+      "HNS observer authority inventory configuration",
+    );
+  }
+  const configuration = decodeSchema(
+    ConfigurationV2Schema,
+    json,
+    "HNS observer configuration-v2 failed its strict schema",
+  );
+  assertConfigurationV2Invariants(configuration);
+  return {
+    configuration_bytes: configurationBytes,
+    configuration,
+    configuration_digest: await sha256Bytes(configurationBytes),
+  };
+}
+
+export async function encodeHnsControlObserverConfigurationV2(
+  input: HnsControlObserverConfigurationV2,
+): Promise<Uint8Array> {
+  return (await decodeHnsControlObserverConfigurationV2Bytes(encoder.encode(JSON.stringify(input))))
+    .configuration_bytes;
+}
+
+export async function decodeHnsControlObserverCompatibleConfigurationBytes(
+  value: unknown,
+): Promise<HnsControlObserverDecodedCompatibleConfiguration> {
+  if (!(value instanceof Uint8Array)) {
+    throw new HnsControlObserverConfigurationError(
+      "invalid_document",
+      "HNS observer configuration must be exact bytes",
+    );
+  }
+  let json: unknown;
+  try {
+    json = decodeStrictHnsJsonBytes(value, HNS_CONTROL_OBSERVER_CONFIGURATION_MAX_BYTES);
+  } catch (error) {
+    if (error instanceof HnsOwnerResponseDecodeError) {
+      throw new HnsControlObserverConfigurationError("invalid_document", error.message);
+    }
+    throw error;
+  }
+  const version =
+    json !== null && typeof json === "object" && !Array.isArray(json)
+      ? (json as Record<string, unknown>).version
+      : undefined;
+  if (version === HNS_CONTROL_OBSERVER_CONFIGURATION_VERSION) {
+    return decodeHnsControlObserverConfigurationBytes(value);
+  }
+  if (version === HNS_CONTROL_OBSERVER_CONFIGURATION_V2_VERSION) {
+    return decodeHnsControlObserverConfigurationV2Bytes(value);
+  }
+  throw new HnsControlObserverConfigurationError(
+    "invalid_document",
+    "HNS observer configuration version is unsupported",
+  );
+}
+
 export async function resolveHnsControlObserverConfiguration(
   input: Readonly<{
     readonly authority: HnsControlObserverConfigurationAuthority;
@@ -429,6 +623,72 @@ export async function resolveHnsControlObserverConfiguration(
     throw new HnsControlObserverConfigurationError(
       "capability_mismatch",
       "HNS observer runtime capabilities do not match configuration",
+    );
+  }
+  return decoded;
+}
+
+export async function resolveHnsControlObserverConfigurationV2(
+  input: Readonly<{
+    readonly authority: HnsControlObserverConfigurationAuthority;
+    readonly capabilities: HnsControlObserverRuntimeCapabilitiesV2;
+    readonly resolver: HnsControlObserverConfigurationResolverPort;
+    readonly deadline_ms: number;
+    readonly signal: AbortSignal;
+  }>,
+): Promise<HnsControlObserverDecodedConfigurationV2> {
+  if (input.signal.aborted) throw new Error("HNS observer configuration-v2 resolution aborted");
+  const bytes = await input.resolver.resolve(
+    {
+      reference: input.authority.provider_configuration_reference,
+      version: input.authority.provider_configuration_version,
+    },
+    { deadline_ms: input.deadline_ms, signal: input.signal },
+  );
+  if (input.signal.aborted) throw new Error("HNS observer configuration-v2 resolution aborted");
+  if (bytes === null) {
+    throw new HnsControlObserverConfigurationError(
+      "not_found",
+      "HNS observer configuration-v2 was not found",
+    );
+  }
+  const decoded = await decodeHnsControlObserverConfigurationV2Bytes(bytes);
+  const configuration = decoded.configuration;
+  if (decoded.configuration_digest !== input.authority.provider_configuration_digest) {
+    throw new HnsControlObserverConfigurationError(
+      "digest_mismatch",
+      "HNS observer configuration-v2 digest does not match authority",
+    );
+  }
+  if (
+    configuration.provider_configuration_reference !==
+      input.authority.provider_configuration_reference ||
+    configuration.provider_configuration_version !==
+      input.authority.provider_configuration_version ||
+    configuration.provider_id !== input.authority.provider_id ||
+    configuration.environment !== input.authority.environment ||
+    (input.authority.ownership_source !== undefined &&
+      !configuration.ownership_sources.includes(input.authority.ownership_source))
+  ) {
+    throw new HnsControlObserverConfigurationError(
+      "identity_mismatch",
+      "HNS observer configuration-v2 identity does not match authority",
+    );
+  }
+  if (
+    input.capabilities.provider_id !== configuration.provider_id ||
+    input.capabilities.environment !== configuration.environment ||
+    input.capabilities.chain_driver_reference !== configuration.chain.driver_reference ||
+    input.capabilities.snapshot_store_reference !== configuration.snapshot_store_reference ||
+    input.capabilities.authoritative_dns_driver_reference !==
+      (configuration.authoritative_dns?.driver_reference ?? null) ||
+    configuration.authority_inventory === null ||
+    input.capabilities.authority_inventory_registry_reference !==
+      configuration.authority_inventory.registry_reference
+  ) {
+    throw new HnsControlObserverConfigurationError(
+      "capability_mismatch",
+      "HNS observer runtime capabilities do not match configuration-v2",
     );
   }
   return decoded;

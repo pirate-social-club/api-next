@@ -105,6 +105,29 @@ export type HnsControlObserverSnapshotFinalizeOutcome =
   | Readonly<{ readonly kind: "lost" }>
   | Readonly<{ readonly kind: "mismatch" }>;
 
+export type HnsControlObserverRetainedSnapshotV1 = Readonly<{
+  readonly snapshot_reference: string;
+  readonly request_bytes: Uint8Array;
+  readonly result_bytes: Uint8Array;
+  readonly result_sha256: Sha256HexValue;
+}>;
+
+export class HnsControlObserverSnapshotReadError extends Error {
+  readonly name = "HnsControlObserverSnapshotReadError";
+
+  constructor(readonly reason: "invalid_snapshot" | "unavailable") {
+    super(reason);
+  }
+}
+
+export type HnsControlObserverSnapshotReaderPort = Readonly<{
+  /** Reads one immutable retained snapshot by its exact database reference. */
+  readonly read: (
+    snapshotReference: string,
+    options: Readonly<{ readonly deadline_ms: number; readonly signal: AbortSignal }>,
+  ) => Promise<HnsControlObserverRetainedSnapshotV1 | null>;
+}>;
+
 export type HnsControlObserverSnapshotStorePort = Readonly<{
   /**
    * Uses the store's database clock. Implementations compare exact request and
@@ -164,7 +187,7 @@ export type HnsControlObserverTranscriptValidationContext = Readonly<{
   readonly authoritative_dns_driver_reference: string | null;
   readonly authoritative_dns_response_max_bytes: number | null;
   readonly required_view_ids: ReadonlyArray<string>;
-  readonly terminal_status?: "verified" | "rejected" | "unavailable";
+  readonly terminal_status?: "verified" | "rejected" | "unavailable" | "ineligible";
   readonly terminal_reason_code?: string | null;
 }>;
 
@@ -503,16 +526,21 @@ export async function validateHnsControlObserverTranscript(
     input.context.terminal_status === "rejected" &&
     (input.context.terminal_reason_code === "root_absent" ||
       input.context.terminal_reason_code === "root_inactive");
+  const ownerSourceIneligible =
+    input.context.ownership_source === "owner_authoritative_dns_txt" &&
+    input.context.terminal_status === "ineligible" &&
+    input.context.terminal_reason_code === "owner_authoritative_source_ineligible";
   if (
     input.context.ownership_source === "owner_authoritative_dns_txt" &&
     input.context.terminal_status !== undefined &&
     input.context.terminal_status !== "unavailable" &&
     !ownerChainOnlyRejection &&
+    !ownerSourceIneligible &&
     (dnsTerminalPrefix || nextDnsViewIndex !== input.context.required_view_ids.length)
   ) {
     return failTranscript("HNS observer terminal DNS result lacks every configured view pair");
   }
-  if (ownerChainOnlyRejection && dnsStarted) {
+  if ((ownerChainOnlyRejection || ownerSourceIneligible) && dnsStarted) {
     return failTranscript("HNS observer chain-only rejection contains authoritative DNS");
   }
   const ownerChainUnavailable =

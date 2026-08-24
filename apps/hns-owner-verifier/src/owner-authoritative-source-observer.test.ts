@@ -299,6 +299,7 @@ async function observe(
       },
     },
     validator: {
+      policy_id: "pirate-hns-authoritative-dns-validator-policy-v1",
       validate: async (validation) => ({
         dnssec_validation: "secure",
         validated_dnskey_response_sha256: await sha256(validation.dnskey_response_bytes),
@@ -597,6 +598,7 @@ describe("HNS owner-authoritative source observer", () => {
         },
       },
       validator: {
+        policy_id: "pirate-hns-authoritative-dns-validator-policy-v1",
         validate: async (validation) => ({
           dnssec_validation: "secure",
           validated_dnskey_response_sha256: await sha256(validation.dnskey_response_bytes),

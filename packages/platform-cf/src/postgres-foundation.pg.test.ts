@@ -236,6 +236,9 @@ const mediaSubmissionMigrationSql = await Bun.file(
 const optionalRouteV2MigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0044_optional_route_v2.sql", import.meta.url),
 ).text();
+const hnsOwnerAuthorityCustodyMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0045_hns_owner_authority_custody.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -463,6 +466,11 @@ const optionalRouteV2Migration: PostgresMigration = {
   checksum: checksumManifest.migrations["0044_optional_route_v2.sql"] ?? "",
   sql: optionalRouteV2MigrationSql,
 };
+const hnsOwnerAuthorityCustodyMigration: PostgresMigration = {
+  version: "0045_hns_owner_authority_custody.sql",
+  checksum: checksumManifest.migrations["0045_hns_owner_authority_custody.sql"] ?? "",
+  sql: hnsOwnerAuthorityCustodyMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -508,6 +516,7 @@ const migrations: readonly PostgresMigration[] = [
   hnsControlObserverPersistenceMigration,
   mediaSubmissionMigration,
   optionalRouteV2Migration,
+  hnsOwnerAuthorityCustodyMigration,
 ];
 
 function checksum(value: string): string {
@@ -747,6 +756,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(mediaSubmissionMigrationSql)).toBe(mediaSubmissionMigration.checksum);
       expect(checksum(optionalRouteV2MigrationSql)).toBe(optionalRouteV2Migration.checksum);
+      expect(checksum(hnsOwnerAuthorityCustodyMigrationSql)).toBe(
+        hnsOwnerAuthorityCustodyMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -840,6 +852,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "content_publication_outbox",
         "decision_records",
         "evidence_receipts",
+        "hns_authority_inventories",
         "hns_control_observer_configurations",
         "hns_control_observer_operations",
         "hns_control_observer_reservations",
@@ -1013,6 +1026,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "decision_records_append_only",
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",
+        "hns_authority_inventories_append_only",
         "hns_control_observer_configurations_append_only",
         "hns_control_observer_operations_append_only",
         "hns_control_observer_snapshots_append_only",

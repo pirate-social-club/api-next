@@ -32,7 +32,10 @@ const input = {
     app_host: null,
   },
 };
-const context = { namespace_session_id: "namespace-session-workerd" };
+const context = {
+  namespace_session_id: "namespace-session-workerd",
+  observation_id: "completion-attempt-workerd",
+};
 
 describe("HNS owner Worker service binding", () => {
   it("crosses the real binding and preserves start JSON and poll bytes", async () => {

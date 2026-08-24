@@ -1,12 +1,24 @@
 import { describe, expect, test } from "bun:test";
+import {
+  type HnsControlObservationRequestV1,
+  type HnsOwnerActiveLeaseRenewalRequestV1,
+  hnsActiveLeaseRenewalRequestHash,
+  hnsChainAuthorityDigest,
+  hnsControlIdentityDigest,
+  hnsControlObservationRequestHash,
+} from "@pirate/application/namespace-ownership";
 import { app, type Env, handleRequest } from "./index.ts";
+import type { HnsTargetObserverRuntime } from "./target-observer.ts";
+
+const encoder = new TextEncoder();
+const configurationDigest = "1".repeat(64);
+const genesisHash = "2".repeat(64);
+const anchorHash = "3".repeat(64);
 
 const env: Env = {
   HNS_OWNERSHIP_SOURCE: "hns_parent_chain_txt",
   HNS_CHALLENGE_TTL_SECONDS: "3600",
   HNS_EVIDENCE_TTL_SECONDS: "2592000",
-  HNS_LEGACY_VERIFIER_URL: "https://verifier.pirate.sc/hns",
-  HNS_LEGACY_VERIFIER_BEARER: "test-bearer",
   HNS_PROVIDER_ENVIRONMENT: "staging",
   HNS_PROVIDER_CONFIGURATION_REFERENCE: "hns-owner-staging",
   HNS_PROVIDER_CONFIGURATION_VERSION: "hns-owner-config-v1",
@@ -25,32 +37,9 @@ const creationStart = {
   actor_id: "user-1",
   creation_intent_id: "cc_intent-1",
   ceremony_intent_id: "cc_ceremony-1",
-  requirement_hash: "1".repeat(64),
-  generation: 1,
-  request_hash: "2".repeat(64),
-  provider_binding_hash: "3".repeat(64),
-  provider_configuration: {
-    kind: "managed",
-    reference: "hns-owner-staging",
-    version: "hns-owner-config-v1",
-  },
-  protocol_version: "hns-txt-v1",
-  environment: "staging",
-  route,
-};
-
-const revalidationStart = {
-  operation_kind: "route_revalidation",
-  route_revalidation_id: "route-revalidation-1",
-  revalidation_session_id: "revalidation-session-1",
-  community_id: "community-1",
-  route_binding_id: "route-binding-1",
-  expected_binding_generation: 1,
-  expected_verified_evidence_ref: null,
-  principal_kind: "system",
-  principal_id: "route-revalidation-scheduler",
   requirement_hash: "4".repeat(64),
-  start_request_hash: "5".repeat(64),
+  generation: 1,
+  request_hash: "5".repeat(64),
   provider_binding_hash: "6".repeat(64),
   provider_configuration: {
     kind: "managed",
@@ -62,35 +51,252 @@ const revalidationStart = {
   route,
 };
 
-function request(
-  path: string,
-  body: unknown,
-  accept: string,
-  header = "namespace-session-1",
-): Request {
+const systemRevalidationStart = {
+  operation_kind: "route_revalidation",
+  route_revalidation_id: "route-revalidation-1",
+  revalidation_session_id: "revalidation-session-1",
+  community_id: "community-1",
+  route_binding_id: "route-binding-1",
+  expected_binding_generation: 1,
+  expected_verified_evidence_ref: null,
+  principal_kind: "system",
+  principal_id: "route-revalidation-scheduler",
+  requirement_hash: "7".repeat(64),
+  start_request_hash: "8".repeat(64),
+  provider_binding_hash: "9".repeat(64),
+  provider_configuration: creationStart.provider_configuration,
+  protocol_version: "hns-txt-v1",
+  environment: "staging",
+  route,
+};
+
+function request(path: string, body: unknown, accept: string, observationId?: string): Request {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: accept,
+    "Pirate-Namespace-Session-Id": "namespace-session-1",
+  };
+  if (observationId !== undefined) headers["Pirate-HNS-Observation-Id"] = observationId;
   return new Request(`https://hns-owner.internal${path}`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: accept,
-      "Pirate-Namespace-Session-Id": header,
-    },
+    headers,
     body: JSON.stringify(body),
   });
 }
 
-async function start(): Promise<{
-  readonly body: Record<string, unknown>;
-  readonly session: Record<string, unknown>;
-}> {
-  const response = await app.fetch(
+function runtime(
+  observe: HnsTargetObserverRuntime["observer"]["observe"],
+  overrides: Partial<HnsTargetObserverRuntime["configuration"]> = {},
+  snapshotReader?: HnsTargetObserverRuntime["snapshot_reader"],
+): HnsTargetObserverRuntime {
+  return {
+    configuration: {
+      provider_id: "hns.owner.v1",
+      provider_configuration_reference: "hns-owner-staging",
+      provider_configuration_version: "hns-owner-config-v1",
+      provider_configuration_digest: configurationDigest,
+      environment: "staging",
+      ownership_source: "hns_parent_chain_txt",
+      observer_deadline_ms: 12_000,
+      lease_policy: {
+        expected_block_interval_seconds: 600,
+        minimum_safe_remaining_blocks: 144,
+        expiry_safety_blocks: 144,
+        evidence_lease_seconds: 2_592_000,
+      },
+      ...overrides,
+    },
+    observer: { observe },
+    ...(snapshotReader === undefined ? {} : { snapshot_reader: snapshotReader }),
+  };
+}
+
+function renewalHttpRequest(requestValue: HnsOwnerActiveLeaseRenewalRequestV1): Request {
+  return new Request("https://hns-owner.internal/internal/hns-owner/v1/active-lease-renewal", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/octet-stream",
+      "Pirate-HNS-Active-Lease-Renewal-Id": requestValue.active_lease_renewal_id,
+      "Pirate-HNS-Observation-Id": "observer-renewal-new",
+    },
+    body: JSON.stringify(requestValue),
+  });
+}
+
+async function renewalFixture() {
+  const priorRequest: HnsControlObservationRequestV1 = {
+    version: "pirate-hns-control-observation-request-v1",
+    observation_id: "observer-renewal-prior",
+    provider_id: "hns.owner.v1",
+    provider_configuration_reference: "hns-owner-staging",
+    provider_configuration_version: "hns-owner-config-v1",
+    provider_configuration_digest: configurationDigest,
+    environment: "staging",
+    ownership_source: "hns_parent_chain_txt",
+    root_label: "jazleeuw",
+    txt_name: "jazleeuw",
+    expected_txt_value: "pirate-verification=nvs_prior",
+  };
+  const priorResultBytes = await innerResult(priorRequest, "verified");
+  const priorResult = JSON.parse(new TextDecoder().decode(priorResultBytes)) as {
+    readonly control_identity_digest: string;
+    readonly chain_authority_digest: string;
+    readonly provider_evidence_ref: string;
+  };
+  const resultHashBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", priorResultBytes));
+  const resultHash = Array.from(resultHashBytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
+  const requestWithoutHash = {
+    version: "pirate-hns-active-lease-renewal-request-v1" as const,
+    operation_kind: "active_lease_renewal" as const,
+    active_lease_renewal_id: "hns-renewal-01",
+    active_lease_renewal_attempt_id: "hns-renewal-attempt-01",
+    community_id: "community-1",
+    route_binding_id: "route-binding-1",
+    expected_binding_generation: 1,
+    expected_verified_evidence_ref: "route-evidence-1",
+    expected_evidence_digest: "a".repeat(64),
+    expected_control_identity_digest: priorResult.control_identity_digest,
+    expected_chain_authority_digest: priorResult.chain_authority_digest,
+    prior_provider_evidence_ref: `hns-observer-v1:sha256:${resultHash}:${priorResult.provider_evidence_ref}`,
+    attempt_number: 1,
+    evidence_ref: "route-evidence-2",
+    requirement_hash: "b".repeat(64),
+    request_hash: "0".repeat(64),
+    provider_id: "hns.owner.v1" as const,
+    provider_binding_hash: "6".repeat(64),
+    provider_configuration: {
+      kind: "managed" as const,
+      reference: "hns-owner-staging",
+      version: "hns-owner-config-v1",
+      digest: configurationDigest,
+    },
+    protocol_version: "hns-active-lease-renewal-v1" as const,
+    environment: "staging",
+    route,
+  };
+  const renewalRequest = {
+    ...requestWithoutHash,
+    request_hash: await hnsActiveLeaseRenewalRequestHash(requestWithoutHash),
+  };
+  return {
+    priorRequest,
+    priorResultBytes,
+    priorResultSha256: resultHash,
+    snapshotReference: priorResult.provider_evidence_ref,
+    renewalRequest,
+  };
+}
+
+async function innerResult(
+  requestValue: HnsControlObservationRequestV1,
+  status: "verified" | "pending" | "rejected" | "unavailable",
+): Promise<Uint8Array> {
+  const requestHash = await hnsControlObservationRequestHash(requestValue);
+  const base = {
+    version: "pirate-hns-control-observation-result-v1",
+    observation_id: requestValue.observation_id,
+    request_sha256: requestHash,
+  } as const;
+  if (status === "unavailable") {
+    return encoder.encode(
+      JSON.stringify({
+        ...base,
+        status: "unavailable",
+        reason_code: "chain_transport_unavailable",
+        retry_after_seconds: 5,
+        diagnostic_ref: "hns-observer:staging:creation-unavailable",
+      }),
+    );
+  }
+  const chainAuthorityDigest = await hnsChainAuthorityDigest({
+    chain_network: "regtest",
+    chain_genesis_block_hash: genesisHash,
+    root_label: requestValue.root_label,
+    ownership_source: requestValue.ownership_source,
+    authority_records: [],
+  });
+  const expectedTxtValueSha256 = Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest("SHA-256", encoder.encode(requestValue.expected_txt_value)),
+    ),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  if (status !== "verified") {
+    return encoder.encode(
+      JSON.stringify({
+        ...base,
+        status: "rejected",
+        reason_code: status === "pending" ? "txt_absent" : "root_absent",
+        provider_id: requestValue.provider_id,
+        provider_configuration_reference: requestValue.provider_configuration_reference,
+        provider_configuration_version: requestValue.provider_configuration_version,
+        provider_configuration_digest: requestValue.provider_configuration_digest,
+        environment: requestValue.environment,
+        ownership_source: requestValue.ownership_source,
+        root_label: requestValue.root_label,
+        txt_name: requestValue.txt_name,
+        expected_txt_value_sha256: expectedTxtValueSha256,
+        observed_txt_values_digest: null,
+        chain_authority_digest: chainAuthorityDigest,
+        chain_network: "regtest",
+        chain_genesis_block_hash: genesisHash,
+        chain_anchor_height: 123_500,
+        chain_anchor_block_hash: anchorHash,
+        chain_anchor_median_time: 1_787_486_400,
+        expiry_height: status === "pending" ? 200_000 : null,
+        provider_evidence_ref: `hns-observer:regtest:creation-${status}`,
+      }),
+    );
+  }
+  const controlIdentityDigest = await hnsControlIdentityDigest({
+    ownership_source: requestValue.ownership_source,
+    txt_name: requestValue.txt_name,
+    expected_txt_value: requestValue.expected_txt_value,
+    root_label: requestValue.root_label,
+    chain_authority_digest: chainAuthorityDigest,
+  });
+  return encoder.encode(
+    JSON.stringify({
+      ...base,
+      status: "verified",
+      provider_id: requestValue.provider_id,
+      provider_configuration_reference: requestValue.provider_configuration_reference,
+      provider_configuration_version: requestValue.provider_configuration_version,
+      provider_configuration_digest: requestValue.provider_configuration_digest,
+      environment: requestValue.environment,
+      ownership_source: requestValue.ownership_source,
+      root_label: requestValue.root_label,
+      txt_name: requestValue.txt_name,
+      expected_txt_value_sha256: expectedTxtValueSha256,
+      control_identity_digest: controlIdentityDigest,
+      chain_authority_digest: chainAuthorityDigest,
+      root_exists: true,
+      root_control_verified: true,
+      expiry_horizon_sufficient: true,
+      chain_network: "regtest",
+      chain_genesis_block_hash: genesisHash,
+      chain_anchor_height: 123_500,
+      chain_anchor_block_hash: anchorHash,
+      chain_anchor_median_time: 1_787_486_400,
+      expiry_height: 200_000,
+      provider_evidence_ref: "hns-observer:regtest:creation-verified",
+    }),
+  );
+}
+
+async function start(targetObserver: HnsTargetObserverRuntime) {
+  const response = await handleRequest(
     request("/internal/hns-owner/v1/start", creationStart, "application/json"),
     env,
+    { targetObserver },
   );
   expect(response.status).toBe(200);
-  const body = (await response.json()) as Record<string, unknown>;
+  const result = (await response.json()) as Record<string, unknown>;
   return {
-    body,
+    result,
     session: {
       actor_id: creationStart.actor_id,
       creation_intent_id: creationStart.creation_intent_id,
@@ -103,526 +309,212 @@ async function start(): Promise<{
       provider_configuration: creationStart.provider_configuration,
       protocol_version: creationStart.protocol_version,
       environment: creationStart.environment,
-      route,
-      upstream_session_ref: body.upstream_session_ref,
-      expires_at: body.expires_at,
+      route: creationStart.route,
+      upstream_session_ref: result.upstream_session_ref,
+      expires_at: result.expires_at,
     },
   };
 }
 
-async function startRevalidation(): Promise<{
-  readonly body: Record<string, unknown>;
-  readonly session: Record<string, unknown>;
-}> {
-  const started = await app.fetch(
-    request(
-      "/internal/hns-owner/v1/start",
-      revalidationStart,
-      "application/json",
-      "revalidation-session-1",
-    ),
-    env,
-  );
-  expect(started.status).toBe(200);
-  const body = (await started.json()) as Record<string, unknown>;
-  return {
-    body,
-    session: {
-      authority: {
-        version: "pirate-hns-route-revalidation-authority-v1",
-        route_revalidation_id: revalidationStart.route_revalidation_id,
-        community_id: revalidationStart.community_id,
-        route_binding_id: revalidationStart.route_binding_id,
-        principal_kind: "system",
-        principal_id: revalidationStart.principal_id,
-        expected_binding_generation: revalidationStart.expected_binding_generation,
-        expected_verified_evidence_ref: null,
-        requirement_hash: revalidationStart.requirement_hash,
-        provider_id: "hns.owner.v1",
-        provider_binding_hash: revalidationStart.provider_binding_hash,
-        provider_configuration_kind: "managed",
-        provider_configuration_reference: "hns-owner-staging",
-        provider_configuration_version: "hns-owner-config-v1",
-        protocol_version: "hns-txt-v1",
-        environment: "staging",
-        family: "hns",
-        root_label: route.root_label,
-        root_label_display: route.root_label_display,
-        path_segment: route.path_segment,
-      },
-      revalidation_session_id: revalidationStart.revalidation_session_id,
-      start_request_hash: revalidationStart.start_request_hash,
-      upstream_session_ref: body.upstream_session_ref,
-      start_presentation: body.presentation,
-      status: "pending",
-      started_at: new Date(Date.now() - 1_000).toISOString(),
-      expires_at: body.expires_at,
-      terminal_at: null,
-    },
-  };
-}
-
-describe("HNS owner verifier Worker", () => {
-  test("keeps target observer runtime and transports out of the default Worker entrypoint", async () => {
-    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
-    const targetObserverSource = await Bun.file(
-      new URL("./target-observer.ts", import.meta.url),
-    ).text();
-    const localImports = (moduleSource: string): ReadonlyArray<string> =>
-      Array.from(
-        moduleSource.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*)["'](\.[^"']+)["']/gu),
-        (match) => match[1] ?? "",
-      );
-
-    expect(localImports(source)).toEqual(["./target-observer.ts"]);
-    expect(localImports(targetObserverSource)).toEqual([]);
-    expect(source).toContain("return handleRequest(request, env);");
-    expect(source).not.toContain("return handleRequest(request, env, {");
-  });
-
-  test("starts both the frozen creation and route-revalidation presentation", async () => {
+describe("HNS owner verifier target composition", () => {
+  test("fails closed without target authority and has no public legacy graph", async () => {
     const response = await app.fetch(
       request("/internal/hns-owner/v1/start", creationStart, "application/json"),
       env,
     );
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as Record<string, unknown>;
-    expect(Object.keys(body)).toEqual(["upstream_session_ref", "expires_at", "presentation"]);
-    const presentation = body.presentation as Record<string, unknown>;
-    expect(presentation.session_id).toBe(body.upstream_session_ref);
-    expect((presentation.payload as Record<string, unknown>).challenge_name).toBe("jazleeuw");
-  });
-
-  test("rejects non-canonical JSON, wrong content types, and excess members", async () => {
-    const base = request("/internal/hns-owner/v1/start", creationStart, "application/json");
-    const badJson = new Request(base, { body: `${JSON.stringify(creationStart)} ` });
-    expect((await app.fetch(badJson, env)).status).toBe(400);
-    const wrongType = new Request(base, {
-      headers: {
-        ...Object.fromEntries(base.headers),
-        "content-type": "application/json; charset=utf-8",
-      },
-    });
-    expect((await app.fetch(wrongType, env)).status).toBe(400);
-    expect(
-      (
-        await app.fetch(
-          request(
-            "/internal/hns-owner/v1/start",
-            { ...creationStart, extra: true },
-            "application/json",
-          ),
-          env,
-        )
-      ).status,
-    ).toBe(400);
-  });
-
-  test("fails closed for missing or incompatible pinned configuration", async () => {
-    const missing: Env = {
-      HNS_OWNERSHIP_SOURCE: "hns_parent_chain_txt",
-      HNS_CHALLENGE_TTL_SECONDS: "3600",
-    };
-    expect(
-      (
-        await app.fetch(
-          request("/internal/hns-owner/v1/start", creationStart, "application/json"),
-          missing,
-        )
-      ).status,
-    ).toBe(502);
-    const incompatible: Env = {
-      ...env,
-      HNS_PROVIDER_CONFIGURATION_VERSION: "hns-owner-config-other",
-    };
-    expect(
-      (
-        await app.fetch(
-          request("/internal/hns-owner/v1/start", creationStart, "application/json"),
-          incompatible,
-        )
-      ).status,
-    ).toBe(422);
-  });
-
-  test("polls the configured legacy endpoint and returns target-owned verified bytes", async () => {
-    const { body, session } = await start();
-    const legacy = {
-      verified: true,
-      observation_provider: "hns_parent_chain",
-      ownership_source: "hns_parent_chain_txt",
-      failure_reason: null,
-      observed_values: [`pirate-verification=${String(body.upstream_session_ref)}`],
-      root_exists: true,
-      root_control_verified: true,
-      expiry_root_exists: true,
-      expiry_horizon_sufficient: true,
-      expiry_blocks_remaining: 100,
-      expiry_horizon_blocks: 50,
-      expiry_anchor_height: 100,
-      expiry_anchor_block_hash: "4".repeat(64),
-      expiry_anchor_median_time: 90,
-      expiry_chain_network: "main",
-      expiry_height: 200,
-      expiry_observation_provider: "hsd_json_rpc",
-      routing_enabled: false,
-      pirate_dns_authority_verified: false,
-      control_class: "single_holder_root",
-      operation_class: "owner_managed_namespace",
-      root_label: "jazleeuw",
-      zone_name: "jazleeuw.",
-      challenge_name: "jazleeuw.",
-    };
-    let called = false;
-    const response = await handleRequest(
-      request("/internal/hns-owner/v1/poll", { session, payload: {} }, "application/octet-stream"),
-      env,
-      {
-        fetcher: async (input, init) => {
-          called = true;
-          expect(String(input)).toBe("https://verifier.pirate.sc/hns/verify-txt");
-          expect(new Headers(init?.headers).get("authorization")).toBe("Bearer test-bearer");
-          expect(JSON.parse(String(init?.body))).toEqual({
-            root_label: "jazleeuw",
-            challenge_txt_value: `pirate-verification=${String(body.upstream_session_ref)}`,
-          });
-          return new Response(JSON.stringify(legacy), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        },
-      },
-    );
-    expect(called).toBe(true);
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe("application/octet-stream");
-    const output = (await response.json()) as Record<string, unknown>;
-    expect(output).toMatchObject({
-      status: "verified",
-      upstream_session_ref: body.upstream_session_ref,
-    });
-    expect(String(output.provider_evidence_ref)).toMatch(/^legacy-ns1:sha256:[0-9a-f]{64}$/u);
-    expect(typeof output.observed_at).toBe("string");
-    expect(typeof output.expires_at).toBe("string");
-    expect(Date.parse(String(output.expires_at)) - Date.parse(String(output.observed_at))).toBe(
-      2_592_000_000,
-    );
-  });
-
-  test("maps an unverified legacy observation to pending and fails closed on source mismatch", async () => {
-    const { body, session } = await start();
-    const base = {
-      verified: false,
-      failure_reason: "challenge_not_published",
-      challenge_name: "jazleeuw.",
-    };
-    const pending = await handleRequest(
-      request("/internal/hns-owner/v1/poll", { session, payload: {} }, "application/octet-stream"),
-      env,
-      {
-        fetcher: async () =>
-          new Response(JSON.stringify(base), { headers: { "content-type": "application/json" } }),
-      },
-    );
-    expect(pending.status).toBe(200);
-    expect(await pending.json()).toEqual({ status: "pending" });
-    const mismatch = await handleRequest(
-      request("/internal/hns-owner/v1/poll", { session, payload: {} }, "application/octet-stream"),
-      env,
-      {
-        fetcher: async () =>
-          new Response(
-            JSON.stringify({
-              ...base,
-              verified: true,
-              ownership_source: "owner_authoritative_dns_txt",
-            }),
-            { headers: { "content-type": "application/json" } },
-          ),
-      },
-    );
-    expect(mismatch.status).toBe(502);
-    expect(body.upstream_session_ref).toBeTruthy();
-  });
-
-  test("maps a creation challenge mismatch from an existing TXT to pending", async () => {
-    const { session } = await start();
-    const response = await handleRequest(
-      request("/internal/hns-owner/v1/poll", { session, payload: {} }, "application/octet-stream"),
-      env,
-      {
-        fetcher: async () =>
-          new Response(
-            JSON.stringify({
-              verified: false,
-              failure_reason: "challenge_mismatch",
-              challenge_name: "jazleeuw.",
-              observed_values: ["v=spf1 include:example.invalid"],
-            }),
-            { headers: { "content-type": "application/json" } },
-          ),
-      },
-    );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: "pending" });
-  });
-
-  test("accepts owner-DNS trailing-dot challenge names and sends challenge_host", async () => {
-    const { body, session } = await start();
-    const ownerDnsEnv: Env = { ...env, HNS_OWNERSHIP_SOURCE: "owner_authoritative_dns_txt" };
-    const legacy = {
-      verified: true,
-      observation_provider: "owner_dns",
-      ownership_source: "owner_authoritative_dns_txt",
-      failure_reason: null,
-      observed_values: [`pirate-verification=${String(body.upstream_session_ref)}`],
-      root_exists: true,
-      root_control_verified: true,
-      expiry_root_exists: true,
-      expiry_horizon_sufficient: true,
-      expiry_blocks_remaining: 100,
-      expiry_horizon_blocks: 50,
-      expiry_anchor_height: 100,
-      expiry_anchor_block_hash: "8".repeat(64),
-      expiry_anchor_median_time: 90,
-      expiry_chain_network: "main",
-      expiry_height: 200,
-      expiry_observation_provider: "hsd_json_rpc",
-      routing_enabled: false,
-      pirate_dns_authority_verified: false,
-      control_class: "single_holder_root",
-      operation_class: "owner_managed_namespace",
-      root_label: "jazleeuw",
-      zone_name: "jazleeuw.",
-      challenge_name: "_pirate.jazleeuw.",
-    };
-    let sentBody: Record<string, unknown> | null = null;
-    const response = await handleRequest(
-      request("/internal/hns-owner/v1/poll", { session, payload: {} }, "application/octet-stream"),
-      ownerDnsEnv,
-      {
-        fetcher: async (_input, init) => {
-          sentBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-          return new Response(JSON.stringify(legacy), {
-            headers: { "content-type": "application/json" },
-          });
-        },
-      },
-    );
-    expect(sentBody as Record<string, unknown> | null).toEqual({
-      root_label: "jazleeuw",
-      challenge_host: "_pirate.jazleeuw",
-      challenge_txt_value: `pirate-verification=${String(body.upstream_session_ref)}`,
-    });
-    expect(response.status).toBe(200);
-    expect(((await response.json()) as Record<string, unknown>).status).toBe("verified");
-  });
-
-  test("maps legacy infrastructure-unavailable observations to retryable 503", async () => {
-    const { session } = await start();
-    const response = await handleRequest(
-      request("/internal/hns-owner/v1/poll", { session, payload: {} }, "application/octet-stream"),
-      env,
-      {
-        fetcher: async () =>
-          new Response(
-            JSON.stringify({
-              verified: false,
-              failure_reason: "root_resource_unavailable",
-              challenge_name: "jazleeuw.",
-            }),
-            { headers: { "content-type": "application/json" } },
-          ),
-      },
-    );
-    expect(response.status).toBe(503);
-  });
-
-  test("rejects an HTTP legacy URL before making an upstream request", async () => {
-    const { session } = await start();
-    let called = false;
-    const response = await handleRequest(
-      request("/internal/hns-owner/v1/poll", { session, payload: {} }, "application/octet-stream"),
-      { ...env, HNS_LEGACY_VERIFIER_URL: "http://verifier.pirate.sc/hns" },
-      {
-        fetcher: async () => {
-          called = true;
-          return new Response(null, { status: 500 });
-        },
-      },
-    );
-    expect(called).toBe(false);
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({ error: "provider_misconfigured" });
+
+    const source = await Bun.file(new URL("./index.ts", import.meta.url)).text();
+    expect(source).not.toContain(["poll", "Legacy"].join(""));
+    expect(source).not.toContain(["HNS", "LEGACY", "VERIFIER"].join("_"));
+    expect(source).not.toContain(["globalThis", "fetch"].join("."));
+    expect(source).not.toContain(["legacy", "ns1:"].join("-"));
   });
 
-  test("maps upstream throttling, failures, redirects, and oversize bodies safely", async () => {
-    const { session } = await start();
-    const cases: ReadonlyArray<{
-      readonly upstream: Response;
-      readonly status: number;
-      readonly error: string;
-    }> = [
-      { upstream: new Response(null, { status: 429 }), status: 503, error: "provider_unavailable" },
-      { upstream: new Response(null, { status: 503 }), status: 503, error: "provider_unavailable" },
-      {
-        upstream: new Response(null, {
-          status: 302,
-          headers: { location: "https://other.invalid" },
-        }),
-        status: 502,
-        error: "invalid_response",
+  test("renews from the exact retained snapshot over the bound-only endpoint", async () => {
+    const fixture = await renewalFixture();
+    const observations: HnsControlObservationRequestV1[] = [];
+    const targetObserver = runtime(
+      async (input) => {
+        observations.push(input.request);
+        return innerResult(input.request, "verified");
       },
+      {},
       {
-        upstream: new Response("{}", {
-          status: 200,
-          headers: {
-            "content-type": "application/json",
-            "content-length": "1048577",
-          },
-        }),
-        status: 502,
-        error: "invalid_response",
+        read: async (snapshotReference) => {
+          expect(snapshotReference).toBe(fixture.snapshotReference);
+          return {
+            snapshot_reference: fixture.snapshotReference,
+            request_bytes: encoder.encode(JSON.stringify(fixture.priorRequest)),
+            result_bytes: fixture.priorResultBytes,
+            result_sha256: fixture.priorResultSha256,
+          };
+        },
       },
-    ];
-    for (const testCase of cases) {
+    );
+    const response = await handleRequest(renewalHttpRequest(fixture.renewalRequest), env, {
+      targetObserver,
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/octet-stream");
+    const result = JSON.parse(await response.text()) as Record<string, unknown>;
+    expect(result.status).toBe("verified");
+    expect(observations).toHaveLength(1);
+    expect(observations[0]).toMatchObject({
+      observation_id: "observer-renewal-new",
+      ownership_source: "hns_parent_chain_txt",
+      root_label: "jazleeuw",
+      txt_name: "jazleeuw",
+      expected_txt_value: "pirate-verification=nvs_prior",
+    });
+  });
+
+  test("returns exact ineligibility bytes without an observer exchange", async () => {
+    const fixture = await renewalFixture();
+    let observerCalls = 0;
+    const targetObserver = runtime(
+      async () => {
+        observerCalls += 1;
+        throw new Error("must not observe");
+      },
+      {},
+      { read: async () => null },
+    );
+    const response = await handleRequest(renewalHttpRequest(fixture.renewalRequest), env, {
+      targetObserver,
+    });
+    expect(response.status).toBe(409);
+    expect(response.headers.get("content-type")).toBe("application/json");
+    expect(await response.text()).toBe('{"error":"renewal_evidence_ineligible"}');
+    expect(observerCalls).toBe(0);
+  });
+
+  test("starts target creation but disables historical system revalidation", async () => {
+    const targetObserver = runtime(async () => {
+      throw new Error("start must not observe");
+    });
+    const started = await start(targetObserver);
+    expect((started.result.presentation as Record<string, unknown>).session_id).toBe(
+      started.result.upstream_session_ref,
+    );
+    const disabled = await handleRequest(
+      request("/internal/hns-owner/v1/start", systemRevalidationStart, "application/json"),
+      env,
+      { targetObserver },
+    );
+    expect(disabled.status).toBe(502);
+  });
+
+  test("derives creation observation authority and returns strict target-v2 bytes", async () => {
+    let captured: HnsControlObservationRequestV1 | undefined;
+    const targetObserver = runtime(async (input, options) => {
+      captured = input.request;
+      expect(options.deadline_ms).toBe(12_000);
+      return innerResult(input.request, "verified");
+    });
+    const started = await start(targetObserver);
+    const response = await handleRequest(
+      request(
+        "/internal/hns-owner/v1/poll",
+        { session: started.session, payload: {} },
+        "application/octet-stream",
+        "completion-attempt-1",
+      ),
+      env,
+      { targetObserver },
+    );
+    expect(response.status).toBe(200);
+    const output = (await response.json()) as Record<string, unknown>;
+    expect(output.status).toBe("verified");
+    expect(output.observation_contract_version).toBe("pirate-hns-target-observation-v2");
+    expect(captured).toMatchObject({
+      observation_id: "completion-attempt-1",
+      provider_configuration_digest: configurationDigest,
+      ownership_source: "hns_parent_chain_txt",
+      root_label: "jazleeuw",
+      txt_name: "jazleeuw",
+      expected_txt_value: `pirate-verification=${started.result.upstream_session_ref}`,
+    });
+  });
+
+  test("maps target pending, stable rejection, and unavailability without fallback", async () => {
+    for (const [status, expectedHttp, expectedBodyStatus] of [
+      ["pending", 200, "pending"],
+      ["rejected", 422, undefined],
+      ["unavailable", 503, undefined],
+    ] as const) {
+      const targetObserver = runtime(async (input) => innerResult(input.request, status));
+      const started = await start(targetObserver);
       const response = await handleRequest(
         request(
           "/internal/hns-owner/v1/poll",
-          { session, payload: {} },
+          { session: started.session, payload: {} },
           "application/octet-stream",
+          `completion-attempt-${status}`,
         ),
         env,
-        { fetcher: async () => testCase.upstream },
+        { targetObserver },
       );
-      expect(response.status).toBe(testCase.status);
-      expect(await response.json()).toEqual({ error: testCase.error });
+      expect(response.status).toBe(expectedHttp);
+      if (expectedBodyStatus !== undefined) {
+        expect(((await response.json()) as Record<string, unknown>).status).toBe(
+          expectedBodyStatus,
+        );
+      }
     }
   });
 
-  test("accepts the exact route-revalidation poll wire and returns nested verified output", async () => {
-    const { body: startBody, session } = await startRevalidation();
-    const legacy = {
-      verified: true,
-      observation_provider: "hns_parent_chain",
-      ownership_source: "hns_parent_chain_txt",
-      failure_reason: null,
-      observed_values: [`pirate-verification=${String(startBody.upstream_session_ref)}`],
-      root_exists: true,
-      root_control_verified: true,
-      expiry_root_exists: true,
-      expiry_horizon_sufficient: true,
-      expiry_blocks_remaining: 100,
-      expiry_horizon_blocks: 50,
-      expiry_anchor_height: 100,
-      expiry_anchor_block_hash: "7".repeat(64),
-      expiry_anchor_median_time: 90,
-      expiry_chain_network: "main",
-      expiry_height: 200,
-      expiry_observation_provider: "hsd_json_rpc",
-      routing_enabled: false,
-      pirate_dns_authority_verified: false,
-      control_class: "single_holder_root",
-      operation_class: "owner_managed_namespace",
-      root_label: "jazleeuw",
-      zone_name: "jazleeuw.",
-      challenge_name: "jazleeuw.",
-    };
-    const response = await handleRequest(
-      request(
-        "/internal/hns-owner/v1/poll",
-        { operation_kind: "route_revalidation", session, payload: {} },
-        "application/octet-stream",
-        "revalidation-session-1",
-      ),
-      env,
-      {
-        fetcher: async () =>
-          new Response(JSON.stringify(legacy), {
-            headers: { "content-type": "application/json" },
-          }),
-      },
-    );
-    expect(response.status).toBe(200);
-    const output = (await response.json()) as Record<string, unknown>;
-    expect(Object.keys(output)).toEqual(["status", "observation"]);
-    expect(output.status).toBe("verified");
-    expect((output.observation as Record<string, unknown>).challenge_name).toBe("jazleeuw");
-
-    const rejected = await handleRequest(
-      request(
-        "/internal/hns-owner/v1/poll",
-        { operation_kind: "route_revalidation", session, payload: {} },
-        "application/octet-stream",
-        "revalidation-session-1",
-      ),
-      env,
-      {
-        fetcher: async () =>
-          new Response(
-            JSON.stringify({
-              verified: false,
-              failure_reason: "challenge_not_published",
-              root_control_verified: false,
-              challenge_name: "jazleeuw.",
-            }),
-            { headers: { "content-type": "application/json" } },
-          ),
-      },
-    );
-    expect(rejected.status).toBe(200);
-    expect(await rejected.json()).toEqual({
-      status: "rejected",
-      reason_code: "challenge_mismatch",
+  test("requires persisted observation correlation and complete runtime authority", async () => {
+    let calls = 0;
+    const targetObserver = runtime(async (input) => {
+      calls += 1;
+      return innerResult(input.request, "verified");
     });
-
-    const explicitMismatch = await handleRequest(
+    const started = await start(targetObserver);
+    const missing = await handleRequest(
       request(
         "/internal/hns-owner/v1/poll",
-        { operation_kind: "route_revalidation", session, payload: {} },
+        { session: started.session, payload: {} },
         "application/octet-stream",
-        "revalidation-session-1",
       ),
       env,
-      {
-        fetcher: async () =>
-          new Response(
-            JSON.stringify({
-              verified: false,
-              failure_reason: "challenge_mismatch",
-              root_control_verified: false,
-              challenge_name: "jazleeuw.",
-            }),
-            { headers: { "content-type": "application/json" } },
-          ),
-      },
+      { targetObserver },
     );
-    expect(await explicitMismatch.json()).toEqual({
-      status: "rejected",
-      reason_code: "challenge_mismatch",
+    expect(missing.status).toBe(400);
+
+    const drifted = runtime(targetObserver.observer.observe, {
+      provider_configuration_version: "other",
     });
+    const mismatch = await handleRequest(
+      request("/internal/hns-owner/v1/start", creationStart, "application/json"),
+      env,
+      { targetObserver: drifted },
+    );
+    expect(mismatch.status).toBe(502);
+    expect(calls).toBe(0);
   });
 
-  test("rejects a route-revalidation poll when the header does not match the session", async () => {
-    const { session } = await startRevalidation();
-    let called = false;
-    const response = await handleRequest(
-      request(
-        "/internal/hns-owner/v1/poll",
-        { operation_kind: "route_revalidation", session, payload: {} },
-        "application/octet-stream",
-        "different-revalidation-session",
-      ),
-      env,
-      {
-        fetcher: async () => {
-          called = true;
-          return new Response(null, { status: 500 });
-        },
-      },
-    );
-    expect(called).toBe(false);
-    expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "invalid_request" });
+  test("rejects non-canonical JSON and unexpected observation headers on start", async () => {
+    const targetObserver = runtime(async () => {
+      throw new Error("not reached");
+    });
+    const base = request("/internal/hns-owner/v1/start", creationStart, "application/json");
+    const nonCanonical = new Request(base, { body: `${JSON.stringify(creationStart)} ` });
+    expect((await handleRequest(nonCanonical, env, { targetObserver })).status).toBe(400);
+    expect(
+      (
+        await handleRequest(
+          request(
+            "/internal/hns-owner/v1/start",
+            creationStart,
+            "application/json",
+            "not-valid-on-start",
+          ),
+          env,
+          { targetObserver },
+        )
+      ).status,
+    ).toBe(400);
   });
 });

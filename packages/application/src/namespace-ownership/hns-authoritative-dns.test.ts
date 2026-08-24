@@ -4,6 +4,8 @@ import {
   buildHnsAuthoritativeDnsQueryV1,
   classifyHnsAuthoritativeDnsResponseV1,
   decodeHnsAuthoritativeDnsQueryV1,
+  decodeHnsAuthoritativeDnsRdataNameV1,
+  decodeHnsAuthoritativeDnsResponseV1,
   decodeHnsAuthoritativeDnsSemanticFactsV1,
   encodeHnsAuthoritativeDnsSemanticFactsV1,
   selectHnsAuthoritativeDnsAuthorityTupleV1,
@@ -167,6 +169,86 @@ describe("HNS authoritative DNS query wire", () => {
     const trailing = new Uint8Array(valid.byteLength + 1);
     trailing.set(valid);
     expect(() => decodeHnsAuthoritativeDnsQueryV1(trailing)).toThrow();
+  });
+});
+
+describe("HNS authoritative DNS decoded response seam", () => {
+  test("rejects compression in the first echoed question name", () => {
+    const request = buildHnsAuthoritativeDnsQueryV1({
+      message_id: 8,
+      query_kind: "control_txt",
+      root_label: "jazleeuw",
+    });
+    const bytes = dnsResponse({ request, flags: 0x8400 });
+    bytes[12] = 0xc0;
+    bytes[13] = 0x0c;
+    expect(() => decodeHnsAuthoritativeDnsResponseV1(bytes)).toThrow();
+  });
+
+  test("retains message-relative RDATA offsets and safely expands backward compression", () => {
+    const request = buildHnsAuthoritativeDnsQueryV1({
+      message_id: 9,
+      query_kind: "control_txt",
+      root_label: "jazleeuw",
+    });
+    const nsecRdata = new Uint8Array([0xc0, 0x14, 0, 1, 0x40]);
+    const bytes = dnsResponse({
+      request,
+      flags: 0x8400,
+      authorities: [dnsRecord(47, nsecRdata)],
+    });
+    const decoded = decodeHnsAuthoritativeDnsResponseV1(bytes);
+    const record = decoded.authorities[0];
+    expect(record?.section).toBe("authority");
+    expect(record?.section_index).toBe(0);
+    expect(record?.rdata_offset).toBeGreaterThan(12);
+    if (record === undefined) throw new Error("fixture authority record is missing");
+    const name = decodeHnsAuthoritativeDnsRdataNameV1({
+      message_bytes: decoded.message_bytes,
+      initial_offset: record.rdata_offset,
+      encoded_end_offset: record.rdata_offset + record.rdata.byteLength,
+      known_name_offsets: decoded.known_name_offsets,
+    });
+    expect(name.name).toBe("jazleeuw");
+    expect(hex(name.canonical_wire)).toBe("086a617a6c6565757700");
+    expect(name.next_offset).toBe(record.rdata_offset + 2);
+
+    const nonNamePointer = new Uint8Array(decoded.message_bytes);
+    nonNamePointer[record.rdata_offset] = 0xc0;
+    nonNamePointer[record.rdata_offset + 1] = 0;
+    expect(() =>
+      decodeHnsAuthoritativeDnsRdataNameV1({
+        message_bytes: nonNamePointer,
+        initial_offset: record.rdata_offset,
+        encoded_end_offset: record.rdata_offset + record.rdata.byteLength,
+        known_name_offsets: decoded.known_name_offsets,
+      }),
+    ).toThrow();
+  });
+
+  test("allows a later owner to reuse a proven name boundary from earlier RDATA", () => {
+    const request = buildHnsAuthoritativeDnsQueryV1({
+      message_id: 10,
+      query_kind: "control_txt",
+      root_label: "jazleeuw",
+    });
+    const targetName = new Uint8Array([
+      6, 0x74, 0x61, 0x72, 0x67, 0x65, 0x74, 8, 0x6a, 0x61, 0x7a, 0x6c, 0x65, 0x65, 0x75, 0x77, 0,
+    ]);
+    const questionLength = request.byteLength - 12 - 11;
+    const firstRdataOffset = 12 + questionLength + 2 + 10;
+    const ownerPointer = new Uint8Array([0xc0 | (firstRdataOffset >>> 8), firstRdataOffset & 0xff]);
+    const decoded = decodeHnsAuthoritativeDnsResponseV1(
+      dnsResponse({
+        request,
+        flags: 0x8400,
+        authorities: [
+          dnsRecord(47, concatBytes([targetName, new Uint8Array([0, 1, 0x40])])),
+          dnsRecord(1, new Uint8Array([192, 0, 2, 1]), ownerPointer),
+        ],
+      }),
+    );
+    expect(decoded.authorities[1]?.owner).toBe("target.jazleeuw");
   });
 });
 
@@ -407,6 +489,30 @@ describe("HNS authoritative DNS response grammar", () => {
       expect(
         classifyHnsAuthoritativeDnsResponseV1({
           request_bytes: controlRequest,
+          response_bytes: response,
+        }),
+      ).toEqual({ kind: "inconclusive" });
+    }
+
+    const misplacedDnskey = dnsResponse({
+      request: dnskeyRequest,
+      flags: 0x8400,
+      answers: [dnsRecord(48, new Uint8Array([1, 3, 13, 1])), rrsig(48)],
+      authorities: [dnsRecord(48, new Uint8Array([1, 3, 13, 2]))],
+    });
+    const misplacedOpt = dnsResponse({
+      request: dnskeyRequest,
+      flags: 0x8400,
+      answers: [
+        dnsRecord(48, new Uint8Array([1, 3, 13, 1])),
+        rrsig(48),
+        dnsRecord(41, new Uint8Array()),
+      ],
+    });
+    for (const response of [misplacedDnskey, misplacedOpt]) {
+      expect(
+        classifyHnsAuthoritativeDnsResponseV1({
+          request_bytes: dnskeyRequest,
           response_bytes: response,
         }),
       ).toEqual({ kind: "inconclusive" });

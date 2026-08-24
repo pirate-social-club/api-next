@@ -5,6 +5,7 @@ import {
   deriveHnsEvidenceLease,
   hnsChainAuthorityDigest,
   hnsChainAuthorityPreimage,
+  hnsChainAuthorityRecords,
   hnsControlIdentityDigest,
   hnsObservedTxtValuesDigest,
   mapHnsControlObservationToTargetV2,
@@ -233,6 +234,12 @@ describe("HNS target control observer kernel", () => {
     await expect(hnsChainAuthorityDigest(ownerAuthority)).resolves.toBe(
       "4c0edac62ed6d0c31eb92f873273846187b0c97ab2608e469cba4f8791619d72",
     );
+    expect(
+      hnsChainAuthorityRecords("owner_authoritative_dns_txt", [
+        ...ownerAuthority.authority_records,
+        ownerAuthority.authority_records[2],
+      ]).filter((record) => record[0] === "DS"),
+    ).toHaveLength(2);
     await expect(
       hnsControlIdentityDigest({
         ownership_source: "hns_parent_chain_txt",

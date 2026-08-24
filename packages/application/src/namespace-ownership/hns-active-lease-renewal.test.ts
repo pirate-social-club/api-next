@@ -17,7 +17,10 @@ import {
   hnsActiveLeaseRenewalRequirementPreimage,
   hnsActiveLeaseRenewalResultHash,
   hnsActiveLeaseRenewalResultPreimage,
+  hnsActiveLeaseRenewalResultV2Hash,
+  hnsActiveLeaseRenewalResultV2Preimage,
   mapHnsActiveLeaseRenewalObservation,
+  resolveHnsActiveLeaseRenewalControlIdentity,
 } from "./hns-active-lease-renewal.ts";
 import {
   hnsControlIdentityDigest,
@@ -542,4 +545,74 @@ test("enforces the closed renewal result status matrix", async () => {
     }),
   ).toThrow();
   expect(() => hnsActiveLeaseRenewalResultPreimage(verified)).not.toThrow();
+
+  const verifiedV2 = {
+    ...verified,
+    evidence_digest_or_null: "1f8462580b2ef5ca1268c1b078af689a8df2f5fdd5a46b9b9f0df97a67a01218",
+    provider_response_sha256_or_null:
+      "c0ad6369e1a74c0363363b25a26f82dccf63d0226f2a20254ed1bb17762a42de",
+    ownership_status_or_null: "verified" as const,
+    route_lifecycle_status_or_null: "active" as const,
+  };
+  expect(await hnsActiveLeaseRenewalResultV2Hash(verifiedV2)).toBe(
+    "4048060d8bb561799520c49d044771b6bf9c5f8fce6ea28096aeca8c0e57570c",
+  );
+  const ineligible = {
+    ...base,
+    outcome_status: "renewal_evidence_ineligible" as const,
+    evidence_ref_or_null: null,
+    evidence_digest_or_null: null,
+    provider_response_sha256_or_null: null,
+    ownership_status_or_null: null,
+    route_lifecycle_status_or_null: null,
+  };
+  expect(hnsActiveLeaseRenewalResultV2Preimage(ineligible)).toBe(
+    '["pirate-hns-active-lease-renewal-result-v2","hns_renewal_01","hns_renewal_attempt_01","route-binding-1",12,"renewal-01","99a42636962fa1b8d8c18a9f278036bf710384fb66a74ec81a2a0eacd9b8acc1","renewal_evidence_ineligible",null,null,null,null,null]',
+  );
+  expect(await hnsActiveLeaseRenewalResultV2Hash(ineligible)).toBe(
+    "7b161fd190f6b16d946671be09616f4003f1c31e7ea6331478f9a5bdaf9bdffa",
+  );
+  expect(() =>
+    hnsActiveLeaseRenewalResultV2Preimage({
+      ...ineligible,
+      ownership_status_or_null: "disputed",
+    }),
+  ).toThrow();
+});
+
+test("recovers exact prior control identity only from its hash-pinned snapshot", async () => {
+  const current = await request();
+  const priorProviderEvidenceRef =
+    "hns-observer-v1:sha256:64c057d67f3e452018e384b3fbd89dbc6d64590946e4a4f2ff6106733bb7e622:hns-observer:regtest:renewal-01";
+  const withoutHash = {
+    ...current,
+    prior_provider_evidence_ref: priorProviderEvidenceRef,
+    request_hash: "0".repeat(64),
+  };
+  const renewalRequest = {
+    ...withoutHash,
+    request_hash: await hnsActiveLeaseRenewalRequestHash(withoutHash),
+  };
+  await expect(
+    resolveHnsActiveLeaseRenewalControlIdentity({
+      request: renewalRequest,
+      snapshot: {
+        snapshot_reference: "hns-observer:regtest:renewal-01",
+        request_bytes: new TextEncoder().encode(JSON.stringify(observerRequest)),
+        result_bytes: observerResultBytes,
+        result_sha256: "64c057d67f3e452018e384b3fbd89dbc6d64590946e4a4f2ff6106733bb7e622",
+      },
+    }),
+  ).resolves.toEqual(resolvedIdentity);
+  await expect(
+    resolveHnsActiveLeaseRenewalControlIdentity({
+      request: renewalRequest,
+      snapshot: {
+        snapshot_reference: "hns-observer:regtest:other",
+        request_bytes: new TextEncoder().encode(JSON.stringify(observerRequest)),
+        result_bytes: observerResultBytes,
+        result_sha256: "64c057d67f3e452018e384b3fbd89dbc6d64590946e4a4f2ff6106733bb7e622",
+      },
+    }),
+  ).rejects.toThrow("does not match its provider evidence reference");
 });

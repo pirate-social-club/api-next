@@ -3745,6 +3745,7 @@ BEGIN
   actual_logical_bytes :=
     octet_length(NEW.request_bytes)
     + octet_length(NEW.configuration_bytes)
+    + COALESCE(octet_length(NEW.authority_inventory_bytes), 0)
     + octet_length(NEW.semantic_facts_bytes)
     + octet_length(NEW.result_bytes)
     + actual_transcript_bytes
@@ -3774,6 +3775,11 @@ CREATE FUNCTION validate_hns_control_observer_snapshot_insert() RETURNS trigger
 DECLARE
   operation_record hns_control_observer_operations%ROWTYPE;
   reservation_record hns_control_observer_reservations%ROWTYPE;
+  configuration_version TEXT;
+  request_source TEXT;
+  result_document JSONB;
+  result_version TEXT;
+  inventory_member_count INTEGER;
 BEGIN
   SELECT * INTO operation_record
     FROM hns_control_observer_operations
@@ -3795,6 +3801,47 @@ BEGIN
     OR reservation_record.reservation_database_time <> NEW.reservation_database_time
     OR reservation_record.lease_expires_at <> NEW.lease_expires_at THEN
     RAISE EXCEPTION 'HNS observer snapshot authority mismatch';
+  END IF;
+
+  configuration_version := convert_from(NEW.configuration_bytes, 'UTF8')::JSONB ->> 'version';
+  request_source := convert_from(NEW.request_bytes, 'UTF8')::JSONB ->> 'ownership_source';
+  result_document := convert_from(NEW.result_bytes, 'UTF8')::JSONB;
+  result_version := result_document ->> 'version';
+  inventory_member_count :=
+      (NEW.authority_inventory_bytes IS NOT NULL)::INTEGER
+    + (NEW.authority_inventory_reference IS NOT NULL)::INTEGER
+    + (NEW.authority_inventory_version IS NOT NULL)::INTEGER
+    + (NEW.authority_inventory_digest IS NOT NULL)::INTEGER;
+
+  IF configuration_version = 'pirate-hns-control-observer-configuration-v1' THEN
+    IF result_version <> 'pirate-hns-control-observation-result-v1'
+      OR inventory_member_count <> 0
+      OR NEW.semantic_facts_sha256 IS NOT NULL
+      OR NEW.transcript_manifest_sha256 IS NOT NULL
+      OR NEW.observer_snapshot_sha256 IS NOT NULL THEN
+      RAISE EXCEPTION 'HNS observer v1 snapshot contains successor authority';
+    END IF;
+  ELSIF configuration_version = 'pirate-hns-control-observer-configuration-v2' THEN
+    IF result_version <> 'pirate-hns-control-observation-result-v2'
+      OR inventory_member_count NOT IN (0, 4)
+      OR NEW.semantic_facts_sha256 IS NULL
+      OR NEW.transcript_manifest_sha256 IS NULL
+      OR NEW.observer_snapshot_sha256 IS NULL
+      OR result_document ->> 'observer_snapshot_sha256' <> NEW.observer_snapshot_sha256 THEN
+      RAISE EXCEPTION 'HNS observer v2 snapshot authority is incomplete';
+    END IF;
+    IF request_source = 'owner_authoritative_dns_txt'
+      AND NEW.result_status IN ('verified', 'rejected', 'ineligible')
+      AND inventory_member_count <> 4 THEN
+      RAISE EXCEPTION 'HNS observer owner-authoritative terminal lacks inventory';
+    END IF;
+    IF NEW.result_status = 'ineligible'
+      AND (result_document ->> 'reason_code' <> 'owner_authoritative_source_ineligible'
+        OR inventory_member_count <> 4) THEN
+      RAISE EXCEPTION 'HNS observer source-ineligible snapshot is invalid';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'HNS observer snapshot configuration version is unsupported';
   END IF;
   RETURN NEW;
 END;
@@ -6884,6 +6931,23 @@ CREATE TABLE evidence_receipts (
     CONSTRAINT evidence_receipts_subject_binding_shape_check CHECK ((((subject_key_id IS NULL) AND (subject_binding_event_id IS NULL) AND (subject_binding_epoch IS NULL)) OR ((subject_key_id IS NOT NULL) AND (subject_binding_event_id IS NOT NULL) AND (subject_binding_epoch IS NOT NULL))))
 );
 
+CREATE TABLE hns_authority_inventories (
+    registry_reference text NOT NULL,
+    authority_inventory_reference text NOT NULL,
+    authority_inventory_version text NOT NULL,
+    authority_inventory_digest text NOT NULL,
+    environment text NOT NULL,
+    runtime_capability_set_digest text NOT NULL,
+    inventory_bytes bytea NOT NULL,
+    published_at timestamp with time zone NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_authority_inventories_bytes_check CHECK (((octet_length(inventory_bytes) >= 1) AND (octet_length(inventory_bytes) <= 65536))),
+    CONSTRAINT hns_authority_inventories_digest_check CHECK (((authority_inventory_digest ~ '^[0-9a-f]{64}$'::text) AND (runtime_capability_set_digest ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(inventory_bytes), 'hex'::text) = authority_inventory_digest))),
+    CONSTRAINT hns_authority_inventories_identity_check CHECK (((registry_reference ~ '^[a-z][a-z0-9-]{0,63}:[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'::text) AND (authority_inventory_reference ~ '^[a-z][a-z0-9-]{0,63}:[a-z0-9]([a-z0-9._-]*[a-z0-9])?$'::text) AND (btrim(authority_inventory_version) <> ''::text) AND (authority_inventory_version = btrim(authority_inventory_version)) AND (octet_length(authority_inventory_version) <= 256) AND (authority_inventory_version !~ '[[:cntrl:]]'::text) AND (btrim(environment) <> ''::text) AND (environment = btrim(environment)) AND (octet_length(environment) <= 256) AND (environment !~ '[[:cntrl:]]'::text))),
+    CONSTRAINT hns_authority_inventories_time_check CHECK ((expires_at > published_at))
+);
+
 CREATE TABLE hns_control_observer_configurations (
     provider_configuration_reference text NOT NULL,
     provider_configuration_version text NOT NULL,
@@ -6924,7 +6988,7 @@ CREATE TABLE hns_control_observer_reservations (
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
     CONSTRAINT hns_control_observer_reservations_lease_check CHECK (((reservation_lease_seconds >= 4) AND (reservation_lease_seconds <= 60) AND ((observer_fence >= 1) AND (observer_fence <= '9007199254740991'::bigint)) AND (lease_expires_at = (reservation_database_time + ((reservation_lease_seconds)::double precision * '00:00:01'::interval))) AND (updated_at >= created_at))),
-    CONSTRAINT hns_control_observer_reservations_state_check CHECK ((((state = 'reserved'::text) AND (terminal_snapshot_reference IS NULL) AND (terminal_status IS NULL) AND (terminal_at IS NULL)) OR ((state = 'terminal'::text) AND (terminal_snapshot_reference IS NOT NULL) AND (terminal_status = ANY (ARRAY['verified'::text, 'rejected'::text, 'unavailable'::text])) AND (terminal_at IS NOT NULL) AND (terminal_at = updated_at) AND (terminal_at >= reservation_database_time) AND (terminal_at < lease_expires_at))))
+    CONSTRAINT hns_control_observer_reservations_state_check CHECK ((((state = 'reserved'::text) AND (terminal_snapshot_reference IS NULL) AND (terminal_status IS NULL) AND (terminal_at IS NULL)) OR ((state = 'terminal'::text) AND (terminal_snapshot_reference IS NOT NULL) AND (terminal_status = ANY (ARRAY['verified'::text, 'rejected'::text, 'unavailable'::text, 'ineligible'::text])) AND (terminal_at IS NOT NULL) AND (terminal_at = updated_at) AND (terminal_at >= reservation_database_time) AND (terminal_at < lease_expires_at))))
 );
 
 CREATE TABLE hns_control_observer_snapshot_transcript_entries (
@@ -6966,9 +7030,16 @@ CREATE TABLE hns_control_observer_snapshots (
     accounting_envelope_bytes bytea NOT NULL,
     logical_snapshot_byte_length bigint NOT NULL,
     retained_at timestamp with time zone NOT NULL,
-    CONSTRAINT hns_control_observer_snapshots_bytes_check CHECK (((octet_length(request_bytes) >= 1) AND (octet_length(request_bytes) <= 32768) AND ((octet_length(configuration_bytes) >= 1) AND (octet_length(configuration_bytes) <= 8192)) AND ((octet_length(semantic_facts_bytes) >= 1) AND (octet_length(semantic_facts_bytes) <= 10485760)) AND ((octet_length(result_bytes) >= 1) AND (octet_length(result_bytes) <= 1048576)) AND (octet_length(accounting_envelope_bytes) > 0) AND ((transcript_entry_count >= 0) AND (transcript_entry_count <= 16)) AND ((transcript_byte_length >= 0) AND (transcript_byte_length <= 7929848)) AND ((logical_snapshot_byte_length >= 1) AND (logical_snapshot_byte_length <= 10485760)))),
-    CONSTRAINT hns_control_observer_snapshots_hash_check CHECK (((request_sha256 ~ '^[0-9a-f]{64}$'::text) AND (provider_configuration_digest ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(configuration_bytes), 'hex'::text) = provider_configuration_digest) AND (result_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(result_bytes), 'hex'::text) = result_sha256))),
-    CONSTRAINT hns_control_observer_snapshots_reference_check CHECK (((result_reference = snapshot_reference) AND (octet_length(result_reference) <= 424) AND (result_reference ~ '^[a-z][a-z0-9-]{0,31}(:[a-z0-9][a-z0-9._-]{0,127}){1,3}$'::text) AND (((result_status = ANY (ARRAY['verified'::text, 'rejected'::text])) AND (result_reference_kind = 'provider_evidence_ref'::text)) OR ((result_status = 'unavailable'::text) AND (result_reference_kind = 'diagnostic_ref'::text))))),
+    authority_inventory_bytes bytea,
+    authority_inventory_reference text,
+    authority_inventory_version text,
+    authority_inventory_digest text,
+    semantic_facts_sha256 text,
+    transcript_manifest_sha256 text,
+    observer_snapshot_sha256 text,
+    CONSTRAINT hns_control_observer_snapshots_bytes_check CHECK (((octet_length(request_bytes) >= 1) AND (octet_length(request_bytes) <= 32768) AND ((octet_length(configuration_bytes) >= 1) AND (octet_length(configuration_bytes) <= 8192)) AND ((authority_inventory_bytes IS NULL) OR ((octet_length(authority_inventory_bytes) >= 1) AND (octet_length(authority_inventory_bytes) <= 65536))) AND ((octet_length(semantic_facts_bytes) >= 1) AND (octet_length(semantic_facts_bytes) <= 10485760)) AND ((octet_length(result_bytes) >= 1) AND (octet_length(result_bytes) <= 1048576)) AND (octet_length(accounting_envelope_bytes) > 0) AND ((transcript_entry_count >= 0) AND (transcript_entry_count <= 16)) AND ((transcript_byte_length >= 0) AND (transcript_byte_length <= 7929848)) AND ((logical_snapshot_byte_length >= 1) AND (logical_snapshot_byte_length <= 10485760)))),
+    CONSTRAINT hns_control_observer_snapshots_hash_check CHECK (((request_sha256 ~ '^[0-9a-f]{64}$'::text) AND (provider_configuration_digest ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(configuration_bytes), 'hex'::text) = provider_configuration_digest) AND (result_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(result_bytes), 'hex'::text) = result_sha256) AND ((authority_inventory_digest IS NULL) OR ((authority_inventory_digest ~ '^[0-9a-f]{64}$'::text) AND (authority_inventory_bytes IS NOT NULL) AND (encode(sha256(authority_inventory_bytes), 'hex'::text) = authority_inventory_digest))) AND ((semantic_facts_sha256 IS NULL) OR ((semantic_facts_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(semantic_facts_bytes), 'hex'::text) = semantic_facts_sha256))) AND ((transcript_manifest_sha256 IS NULL) OR (transcript_manifest_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((observer_snapshot_sha256 IS NULL) OR (observer_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)))),
+    CONSTRAINT hns_control_observer_snapshots_reference_check CHECK (((result_reference = snapshot_reference) AND (octet_length(result_reference) <= 424) AND (result_reference ~ '^[a-z][a-z0-9-]{0,31}(:[a-z0-9][a-z0-9._-]{0,127}){1,3}$'::text) AND (((result_status = ANY (ARRAY['verified'::text, 'rejected'::text])) AND (result_reference_kind = 'provider_evidence_ref'::text)) OR ((result_status = ANY (ARRAY['unavailable'::text, 'ineligible'::text])) AND (result_reference_kind = 'diagnostic_ref'::text))))),
     CONSTRAINT hns_control_observer_snapshots_time_check CHECK (((retained_at >= reservation_database_time) AND (retained_at < lease_expires_at)))
 );
 
@@ -8694,6 +8765,12 @@ ALTER TABLE ONLY evidence_receipts
 ALTER TABLE ONLY evidence_receipts
     ADD CONSTRAINT evidence_receipts_pkey PRIMARY KEY (evidence_receipt_id);
 
+ALTER TABLE ONLY hns_authority_inventories
+    ADD CONSTRAINT hns_authority_inventories_identity_unique UNIQUE (authority_inventory_reference, authority_inventory_version, authority_inventory_digest);
+
+ALTER TABLE ONLY hns_authority_inventories
+    ADD CONSTRAINT hns_authority_inventories_pk PRIMARY KEY (registry_reference, authority_inventory_version);
+
 ALTER TABLE ONLY hns_control_observer_configurations
     ADD CONSTRAINT hns_control_observer_configurations_digest_unique UNIQUE (provider_configuration_reference, provider_configuration_version, provider_configuration_digest);
 
@@ -9198,6 +9275,8 @@ CREATE INDEX evidence_receipts_session_observed_idx ON evidence_receipts USING b
 
 CREATE INDEX evidence_receipts_user_observed_idx ON evidence_receipts USING btree (user_id, observed_at DESC, evidence_receipt_id);
 
+CREATE INDEX hns_authority_inventories_current_idx ON hns_authority_inventories USING btree (registry_reference, published_at DESC, expires_at);
+
 CREATE INDEX hns_control_observer_reservations_live_lease_idx ON hns_control_observer_reservations USING btree (lease_expires_at, observation_id) WHERE (state = 'reserved'::text);
 
 CREATE UNIQUE INDEX home_feed_projection_post_unique ON home_feed_projection USING btree (community_id, post_id);
@@ -9457,6 +9536,8 @@ CREATE TRIGGER decision_records_append_only BEFORE DELETE OR UPDATE ON decision_
 CREATE TRIGGER evidence_receipts_append_only BEFORE DELETE OR UPDATE ON evidence_receipts FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER evidence_receipts_validate_metadata BEFORE INSERT OR UPDATE ON evidence_receipts FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_evidence_receipt();
+
+CREATE TRIGGER hns_authority_inventories_append_only BEFORE DELETE OR UPDATE ON hns_authority_inventories FOR EACH ROW EXECUTE FUNCTION reject_hns_control_observer_append_only_change();
 
 CREATE TRIGGER hns_control_observer_configurations_append_only BEFORE DELETE OR UPDATE ON hns_control_observer_configurations FOR EACH ROW EXECUTE FUNCTION reject_hns_control_observer_append_only_change();
 

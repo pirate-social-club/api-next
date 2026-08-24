@@ -92,11 +92,16 @@ const PositiveSafeInteger = Schema.Int.check(
     Number.isSafeInteger(value) && value > 0 ? undefined : "Expected a positive safe integer",
   ),
 );
+const NonNegativeSafeInteger = Schema.Int.check(
+  Schema.makeFilter((value) =>
+    Number.isSafeInteger(value) && value >= 0 ? undefined : "Expected a non-negative safe integer",
+  ),
+);
 
 export type HnsOwnerRoute = Schema.Schema.Type<typeof NamespaceOwnershipRoute>;
 
 /** The strict semantic body returned by the target-owned HNS verifier. */
-const HnsOwnerVerifiedObservation = Schema.Struct({
+const HnsOwnerVerifiedObservationV1 = Schema.Struct({
   status: Schema.Literal("verified"),
   provider_evidence_ref: EvidenceReference,
   upstream_session_ref: UpstreamSessionReference,
@@ -114,10 +119,48 @@ const HnsOwnerVerifiedObservation = Schema.Struct({
   observed_at: CanonicalIsoInstant,
   expires_at: CanonicalIsoInstant,
 });
+const HnsOwnerTargetVerifiedObservationV2 = Schema.Struct({
+  status: Schema.Literal("verified"),
+  observation_contract_version: Schema.Literal("pirate-hns-target-observation-v2"),
+  provider_evidence_ref: EvidenceReference,
+  upstream_session_ref: UpstreamSessionReference,
+  ownership_source: OwnershipSource,
+  challenge_name: ChallengeName,
+  challenge_value: ChallengeValue,
+  expected_txt_value_sha256: Sha256Hex,
+  control_identity_digest: Sha256Hex,
+  chain_authority_digest: Sha256Hex,
+  observer_result_sha256: Sha256Hex,
+  root_exists: Schema.Literal(true),
+  root_control_verified: Schema.Literal(true),
+  expiry_horizon_sufficient: Schema.Literal(true),
+  chain_network: ChainNetwork,
+  chain_anchor_height: NonNegativeSafeInteger,
+  chain_anchor_block_hash: Sha256Hex,
+  chain_anchor_median_time: NonNegativeSafeInteger,
+  expiry_height: NonNegativeSafeInteger,
+  observed_at: CanonicalIsoInstant,
+  expires_at: CanonicalIsoInstant,
+});
+const HnsOwnerVerifiedObservation = Schema.Union([
+  HnsOwnerVerifiedObservationV1,
+  HnsOwnerTargetVerifiedObservationV2,
+]);
 export type HnsOwnerVerifiedObservation = Schema.Schema.Type<typeof HnsOwnerVerifiedObservation>;
 
 const HnsOwnerPendingObservation = Schema.Struct({ status: Schema.Literal("pending") });
-const HnsOwnerResponse = Schema.Union([HnsOwnerPendingObservation, HnsOwnerVerifiedObservation]);
+const HnsOwnerTargetPendingObservationV2 = Schema.Struct({
+  status: Schema.Literal("pending"),
+  observation_contract_version: Schema.Literal("pirate-hns-target-observation-v2"),
+  reason_code: Schema.Literals(["txt_absent", "txt_value_mismatch"]),
+  observer_result_sha256: Sha256Hex,
+  provider_evidence_ref: EvidenceReference,
+});
+const HnsOwnerResponse = Schema.Union([
+  HnsOwnerPendingObservation,
+  HnsOwnerVerifiedObservation,
+  HnsOwnerTargetPendingObservationV2,
+]);
 export type HnsOwnerResponse = Schema.Schema.Type<typeof HnsOwnerResponse>;
 
 const HnsEvidenceConfiguration = Schema.Struct({
@@ -343,10 +386,64 @@ export function decodeHnsOwnerResponseBytes(value: unknown): HnsOwnerRawResponse
   }
 
   const json = decodeStrictHnsJsonBytes(value, HNS_OWNER_MAX_RESPONSE_BYTES);
+  if (
+    typeof json === "object" &&
+    json !== null &&
+    !Array.isArray(json) &&
+    "observation_contract_version" in json
+  ) {
+    const record = json as Record<string, unknown>;
+    const expected =
+      record.status === "verified"
+        ? [
+            "status",
+            "observation_contract_version",
+            "provider_evidence_ref",
+            "upstream_session_ref",
+            "ownership_source",
+            "challenge_name",
+            "challenge_value",
+            "expected_txt_value_sha256",
+            "control_identity_digest",
+            "chain_authority_digest",
+            "observer_result_sha256",
+            "root_exists",
+            "root_control_verified",
+            "expiry_horizon_sufficient",
+            "chain_network",
+            "chain_anchor_height",
+            "chain_anchor_block_hash",
+            "chain_anchor_median_time",
+            "expiry_height",
+            "observed_at",
+            "expires_at",
+          ]
+        : [
+            "status",
+            "observation_contract_version",
+            "reason_code",
+            "observer_result_sha256",
+            "provider_evidence_ref",
+          ];
+    const actual = Object.keys(record);
+    if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+      throw new HnsOwnerResponseDecodeError("HNS target response has reordered members");
+    }
+  }
 
   const response = Schema.decodeUnknownOption(HnsOwnerResponse, exactParseOptions)(json);
   if (Option.isNone(response)) {
     throw new HnsOwnerResponseDecodeError("HNS provider response failed its strict schema");
+  }
+  if (
+    "observation_contract_version" in response.value &&
+    !response.value.provider_evidence_ref.startsWith(
+      `hns-observer-v1:sha256:${response.value.observer_result_sha256}:`,
+    )
+  ) {
+    throw new HnsOwnerResponseDecodeError(
+      "HNS target response provider evidence does not cross-pin its observer result",
+    );
   }
   return { response_bytes: new Uint8Array(value), response: response.value };
 }
@@ -583,6 +680,25 @@ export async function buildHnsOwnershipEvidence(
     observation.challenge_value !== hnsOwnerChallengeValue(decodedInput.upstream_session_ref)
   ) {
     throw new TypeError("HNS challenge name is not bound to the requested root");
+  }
+  if ("observation_contract_version" in observation) {
+    const expectedTxtHash = await sha256Utf8(observation.challenge_value);
+    const expectedControlIdentity = await sha256Utf8(
+      JSON.stringify([
+        "pirate-hns-control-identity-v1",
+        observation.ownership_source,
+        observation.challenge_name,
+        observation.challenge_value,
+        decodedInput.route.root_label,
+        observation.chain_authority_digest,
+      ]),
+    );
+    if (
+      observation.expected_txt_value_sha256 !== expectedTxtHash ||
+      observation.control_identity_digest !== expectedControlIdentity
+    ) {
+      throw new TypeError("HNS target response control authority is inconsistent");
+    }
   }
   const expectedRequestHash = await hnsNamespaceStartHash({
     actor_id: decodedInput.actor_id,

@@ -3,16 +3,27 @@ import {
   buildHnsAuthoritativeDnsQueryV1,
   decodeHnsControlObservationRequestBytes,
   decodeHnsControlObservationResultBytes,
+  decodeHnsControlObservationResultV2Bytes,
   decodeHnsControlObserverConfigurationBytes,
   encodeHnsAuthoritativeDnsSemanticFactsV1,
+  encodeHnsAuthorityInventory,
   encodeHnsControlObservationRequest,
+  encodeHnsControlObservationResultV2,
   encodeHnsControlObserverConfiguration,
+  encodeHnsControlObserverConfigurationV2,
   HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES,
+  type HnsAuthorityInventoryV1,
   type HnsControlObserverConfigurationV1,
+  type HnsControlObserverConfigurationV2,
   type HnsControlObserverReservationInput,
   type HnsControlObserverReservationOutcome,
   type HnsControlObserverSnapshotFinalizeInput,
+  type HnsControlObserverSnapshotFinalizeInputV2,
+  hnsAuthorityCapabilitySetDigest,
   hnsChainAuthorityDigest,
+  hnsControlObserverSnapshotDigestV2,
+  hnsControlObserverTranscriptManifestDigestV2,
+  hnsControlObserverTranscriptManifestV2,
   hnsObservedTxtValuesDigest,
 } from "@pirate/application";
 import type { Sha256Hex as Sha256HexValue } from "@pirate/domain/verification";
@@ -20,8 +31,11 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import {
+  makeControlPlaneHnsAuthorityInventoryResolver,
   makeControlPlaneHnsControlObserverConfigurationResolver,
+  makeControlPlaneHnsControlObserverSnapshotReader,
   makeControlPlaneHnsControlObserverSnapshotStore,
+  makeControlPlaneHnsControlObserverSnapshotStoreV2,
 } from "./namespace-ownership/hns-control-observer-postgres.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
@@ -39,7 +53,7 @@ if (required && connectionString === undefined) {
 
 const suite = connectionString === undefined ? describe.skip : describe;
 const encoder = new TextEncoder();
-const testCount = 14;
+const testCount = 18;
 let completedTestCount = 0;
 let admin: Client | undefined;
 let schema = "";
@@ -83,6 +97,28 @@ const dnsConfigurationValue = {
     response_max_bytes: 65_535,
   },
 } as const satisfies HnsControlObserverConfigurationV1;
+
+const authorityInventoryRegistryReference = "authority-inventory:pg-regtest";
+
+const custodyConfigurationValue = {
+  version: "pirate-hns-control-observer-configuration-v2",
+  provider_id: dnsConfigurationValue.provider_id,
+  provider_configuration_reference: "hns-observer-pg-custody-regtest",
+  provider_configuration_version: "hns-observer-config-v2",
+  environment: dnsConfigurationValue.environment,
+  ownership_sources: dnsConfigurationValue.ownership_sources,
+  chain: dnsConfigurationValue.chain,
+  authoritative_dns: dnsConfigurationValue.authoritative_dns,
+  authority_inventory: {
+    registry_reference: authorityInventoryRegistryReference,
+    maximum_inventory_lifetime_seconds: 3_600,
+    response_max_bytes: 65_536,
+  },
+  evidence_lease_seconds: dnsConfigurationValue.evidence_lease_seconds,
+  observer_deadline_ms: dnsConfigurationValue.observer_deadline_ms,
+  observer_reservation_lease_seconds: dnsConfigurationValue.observer_reservation_lease_seconds,
+  snapshot_store_reference: dnsConfigurationValue.snapshot_store_reference,
+} as const satisfies HnsControlObserverConfigurationV2;
 
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
@@ -209,6 +245,103 @@ async function seedConfiguration(
   return { configurationBytes, configurationDigest: decoded.configuration_digest };
 }
 
+async function seedCustodyConfiguration() {
+  if (admin === undefined) throw new Error("Postgres test schema is unavailable");
+  const configurationBytes =
+    await encodeHnsControlObserverConfigurationV2(custodyConfigurationValue);
+  const configurationDigest = await rawSha256(configurationBytes);
+  await admin.query({
+    text: `INSERT INTO hns_control_observer_configurations (
+             provider_configuration_reference,
+             provider_configuration_version,
+             provider_configuration_digest,
+             configuration_bytes
+           ) VALUES ($1, $2, $3, $4)`,
+    values: [
+      custodyConfigurationValue.provider_configuration_reference,
+      custodyConfigurationValue.provider_configuration_version,
+      configurationDigest,
+      configurationBytes,
+    ],
+  });
+  return { configurationBytes, configurationDigest };
+}
+
+async function authorityInventoryFixture(
+  version: string,
+  options: Readonly<{ readonly nameserver?: string; readonly active?: boolean }> = {},
+) {
+  const nameserver = options.nameserver ?? "ns1.pgobserver";
+  const authoritativeNameserverGlue = [
+    {
+      authority_nameserver: nameserver,
+      authority_address_family: "GLUE4" as const,
+      authority_address: "192.0.2.53",
+      active: options.active ?? true,
+    },
+  ];
+  const runtimeCapabilitySetDigest = await hnsAuthorityCapabilitySetDigest({
+    environment: "test",
+    authoritative_nameserver_glue: authoritativeNameserverGlue,
+    dns_write_capabilities: [],
+  });
+  const now = Date.now();
+  const publishedAt = new Date(now - 60_000).toISOString();
+  const expiresAt = new Date(now + 300_000).toISOString();
+  const inventory: HnsAuthorityInventoryV1 = {
+    version: "pirate-hns-authority-inventory-v1",
+    authority_inventory_reference: `authority-inventory:pg-${version}`,
+    authority_inventory_version: version,
+    environment: "test",
+    completeness: "complete",
+    runtime_capability_set_digest: runtimeCapabilitySetDigest,
+    published_at: publishedAt,
+    expires_at: expiresAt,
+    authoritative_nameserver_glue: authoritativeNameserverGlue,
+    dns_write_capabilities: [],
+  };
+  const inventoryBytes = await encodeHnsAuthorityInventory(inventory);
+  const inventoryDigest = await rawSha256(inventoryBytes);
+  return {
+    expiresAt,
+    inventory,
+    inventoryBytes,
+    inventoryDigest,
+    publishedAt,
+    runtimeCapabilitySetDigest,
+  };
+}
+
+async function seedAuthorityInventory(
+  value: Awaited<ReturnType<typeof authorityInventoryFixture>>,
+): Promise<void> {
+  if (admin === undefined) throw new Error("Postgres test schema is unavailable");
+  await admin.query({
+    text: `INSERT INTO hns_authority_inventories (
+             registry_reference,
+             authority_inventory_reference,
+             authority_inventory_version,
+             authority_inventory_digest,
+             environment,
+             runtime_capability_set_digest,
+             inventory_bytes,
+             published_at,
+             expires_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    values: [
+      authorityInventoryRegistryReference,
+      value.inventory.authority_inventory_reference,
+      value.inventory.authority_inventory_version,
+      value.inventoryDigest,
+      value.inventory.environment,
+      value.runtimeCapabilitySetDigest,
+      value.inventoryBytes,
+      value.publishedAt,
+      value.expiresAt,
+    ],
+  });
+}
+
 async function reservationInput(
   observationId: string,
   expectedTxtValue = "pirate-verification=pg-observer-01",
@@ -238,6 +371,32 @@ async function reservationInput(
     provider_configuration_digest: configurationDigest,
     reservation_lease_seconds: configuration.observer_reservation_lease_seconds,
   };
+}
+
+async function custodyReservationInput(observationId: string) {
+  const { configurationBytes, configurationDigest } = await seedCustodyConfiguration();
+  const requestBytes = await encodeHnsControlObservationRequest({
+    version: "pirate-hns-control-observation-request-v1",
+    observation_id: observationId,
+    provider_id: "hns.owner.v1",
+    provider_configuration_reference: custodyConfigurationValue.provider_configuration_reference,
+    provider_configuration_version: custodyConfigurationValue.provider_configuration_version,
+    provider_configuration_digest: configurationDigest,
+    environment: "test",
+    ownership_source: "owner_authoritative_dns_txt",
+    root_label: "pgobserver",
+    txt_name: "_pirate.pgobserver",
+    expected_txt_value: "pirate-verification=pg-custody-01",
+  });
+  const request = await decodeHnsControlObservationRequestBytes(requestBytes);
+  return {
+    observation_id: observationId,
+    request_bytes: requestBytes,
+    request_sha256: request.request_sha256,
+    configuration_bytes: configurationBytes,
+    provider_configuration_digest: configurationDigest,
+    reservation_lease_seconds: custodyConfigurationValue.observer_reservation_lease_seconds,
+  } satisfies HnsControlObserverReservationInput;
 }
 
 function acquired(
@@ -346,6 +505,96 @@ async function ownerChainOnlyFinalizeInput(
   };
 }
 
+async function custodyIneligibleFinalizeInput(
+  reservation: HnsControlObserverReservationInput,
+  authority: Extract<HnsControlObserverReservationOutcome, { readonly kind: "acquired" }>,
+  inventory: Awaited<ReturnType<typeof authorityInventoryFixture>>,
+): Promise<HnsControlObserverSnapshotFinalizeInputV2> {
+  const request = await decodeHnsControlObservationRequestBytes(reservation.request_bytes);
+  const transcript = [await hsdResponseTranscriptEntry("owner_authoritative_dns_txt")];
+  const semanticFactsBytes = encodeHnsAuthoritativeDnsSemanticFactsV1([]);
+  const transcriptManifestSha256 = await hnsControlObserverTranscriptManifestDigestV2(
+    hnsControlObserverTranscriptManifestV2(transcript),
+  );
+  const semanticFactsSha256 = await rawSha256(semanticFactsBytes);
+  const observerSnapshotSha256 = await hnsControlObserverSnapshotDigestV2({
+    observation_id: reservation.observation_id,
+    request_sha256: reservation.request_sha256,
+    provider_configuration_digest: reservation.provider_configuration_digest,
+    authority_inventory_reference_or_null: inventory.inventory.authority_inventory_reference,
+    authority_inventory_version_or_null: inventory.inventory.authority_inventory_version,
+    authority_inventory_digest_or_null: inventory.inventoryDigest,
+    reservation_database_time: authority.reservation_database_time,
+    snapshot_reference: authority.snapshot_reference,
+    transcript_manifest_sha256: transcriptManifestSha256,
+    semantic_facts_sha256: semanticFactsSha256,
+  });
+  const resultBytes = await encodeHnsControlObservationResultV2(
+    {
+      version: "pirate-hns-control-observation-result-v2",
+      observation_id: reservation.observation_id,
+      request_sha256: reservation.request_sha256,
+      status: "ineligible",
+      reason_code: "owner_authoritative_source_ineligible",
+      provider_id: request.request.provider_id,
+      provider_configuration_reference: request.request.provider_configuration_reference,
+      provider_configuration_version: request.request.provider_configuration_version,
+      provider_configuration_digest: request.request.provider_configuration_digest,
+      environment: request.request.environment,
+      ownership_source: "owner_authoritative_dns_txt",
+      root_label: request.request.root_label,
+      txt_name: request.request.txt_name,
+      expected_txt_value_sha256: await rawSha256(
+        encoder.encode(request.request.expected_txt_value),
+      ),
+      chain_authority_digest: await hnsChainAuthorityDigest({
+        chain_network: custodyConfigurationValue.chain.network,
+        chain_genesis_block_hash: custodyConfigurationValue.chain.genesis_block_hash,
+        root_label: request.request.root_label,
+        ownership_source: "owner_authoritative_dns_txt",
+        authority_records: [
+          ["NS", "ns1.pgobserver"],
+          ["GLUE4", "ns1.pgobserver", "192.0.2.53"],
+        ],
+      }),
+      chain_network: custodyConfigurationValue.chain.network,
+      chain_genesis_block_hash: custodyConfigurationValue.chain.genesis_block_hash,
+      chain_anchor_height: 10,
+      chain_anchor_block_hash: "8".repeat(64),
+      chain_anchor_median_time: Math.floor(Date.parse(authority.reservation_database_time) / 1_000),
+      expiry_height: 1_000,
+      authority_inventory_reference: inventory.inventory.authority_inventory_reference,
+      authority_inventory_version: inventory.inventory.authority_inventory_version,
+      authority_inventory_digest: inventory.inventoryDigest,
+      observer_snapshot_sha256: observerSnapshotSha256,
+      diagnostic_ref: authority.snapshot_reference,
+    },
+    request.request,
+  );
+  const decodedResult = await decodeHnsControlObservationResultV2Bytes(
+    resultBytes,
+    request.request,
+  );
+  return {
+    observation_id: reservation.observation_id,
+    observer_fence: authority.observer_fence,
+    request_sha256: reservation.request_sha256,
+    provider_configuration_digest: reservation.provider_configuration_digest,
+    snapshot_reference: authority.snapshot_reference,
+    authority_inventory_bytes: inventory.inventoryBytes,
+    authority_inventory_reference_or_null: inventory.inventory.authority_inventory_reference,
+    authority_inventory_version_or_null: inventory.inventory.authority_inventory_version,
+    authority_inventory_digest_or_null: inventory.inventoryDigest,
+    transcript,
+    transcript_manifest_sha256: transcriptManifestSha256,
+    semantic_facts_bytes: semanticFactsBytes,
+    semantic_facts_sha256: semanticFactsSha256,
+    observer_snapshot_sha256: observerSnapshotSha256,
+    result_bytes: resultBytes,
+    result_sha256: decodedResult.result_sha256,
+  };
+}
+
 async function expireReservation(observationId: string): Promise<void> {
   if (admin === undefined) throw new Error("Postgres test schema is unavailable");
   await admin.query(
@@ -405,7 +654,8 @@ suite("Postgres 17 HNS control observer persistence", () => {
       hns_control_observer_snapshots,
       hns_control_observer_reservations,
       hns_control_observer_operations,
-      hns_control_observer_configurations
+      hns_control_observer_configurations,
+      hns_authority_inventories
       CASCADE`);
   });
 
@@ -439,6 +689,110 @@ suite("Postgres 17 HNS control observer persistence", () => {
     await expect(admin.query("DELETE FROM hns_control_observer_configurations")).rejects.toThrow(
       "append-only",
     );
+    completedTestCount += 1;
+  });
+
+  test("resolves one current immutable authority inventory as exact bytes", async () => {
+    if (admin === undefined) throw new Error("Postgres test schema is unavailable");
+    const inventory = await authorityInventoryFixture("inventory-v1");
+    await seedAuthorityInventory(inventory);
+    const resolver = makeControlPlaneHnsAuthorityInventoryResolver(runtime(), {
+      registryReference: authorityInventoryRegistryReference,
+      responseMaxBytes: 65_536,
+    });
+    const first = await resolver.resolve(runOptions());
+    expect(first).toEqual({
+      authority_inventory_reference: inventory.inventory.authority_inventory_reference,
+      authority_inventory_version: inventory.inventory.authority_inventory_version,
+      authority_inventory_digest: inventory.inventoryDigest,
+      inventory_bytes: inventory.inventoryBytes,
+    });
+    first?.inventory_bytes.fill(0);
+    await expect(resolver.resolve(runOptions())).resolves.toMatchObject({
+      authority_inventory_digest: inventory.inventoryDigest,
+      inventory_bytes: inventory.inventoryBytes,
+    });
+    await expect(
+      admin.query("UPDATE hns_authority_inventories SET inventory_bytes = inventory_bytes"),
+    ).rejects.toThrow("append-only");
+    await expect(admin.query("DELETE FROM hns_authority_inventories")).rejects.toThrow(
+      "append-only",
+    );
+    completedTestCount += 1;
+  });
+
+  test("fails closed when two authority inventories are current", async () => {
+    const first = await authorityInventoryFixture("inventory-v1", {
+      nameserver: "ns1.pgobserver",
+    });
+    const second = await authorityInventoryFixture("inventory-v2", {
+      nameserver: "ns2.pgobserver",
+    });
+    await seedAuthorityInventory(first);
+    await seedAuthorityInventory(second);
+    const resolver = makeControlPlaneHnsAuthorityInventoryResolver(runtime(), {
+      registryReference: authorityInventoryRegistryReference,
+      responseMaxBytes: 65_536,
+    });
+    await expect(resolver.resolve(runOptions())).rejects.toThrow("ambiguous current authority");
+    completedTestCount += 1;
+  });
+
+  test("retains one v2 custody terminal and rejects cross-version or changed authority", async () => {
+    if (admin === undefined) throw new Error("Postgres test schema is unavailable");
+    const inventory = await authorityInventoryFixture("inventory-v1");
+    await seedAuthorityInventory(inventory);
+    const input = await custodyReservationInput("observer-pg-custody-ineligible-01");
+    const store = makeControlPlaneHnsControlObserverSnapshotStoreV2(runtime());
+    const authority = acquired(await store.reserve(input, runOptions()));
+    const terminal = await custodyIneligibleFinalizeInput(input, authority, inventory);
+
+    const v1Store = makeControlPlaneHnsControlObserverSnapshotStore(runtime());
+    await expect(
+      v1Store.finalize(await finalizeInput(input, authority), runOptions()),
+    ).rejects.toThrow("strict decoding");
+    await expect(
+      store.finalize(
+        {
+          ...terminal,
+          authority_inventory_digest_or_null: "9".repeat(64) as Sha256HexValue,
+        },
+        runOptions(),
+      ),
+    ).rejects.toThrow("inventory digest");
+
+    const outcomes = await Promise.all([
+      store.finalize(terminal, runOptions()),
+      store.finalize(terminal, runOptions()),
+    ]);
+    expect(outcomes.map((outcome) => outcome.kind).sort()).toEqual(["replay", "retained"]);
+    const retained = await admin.query<{
+      authority_inventory_digest: string;
+      observer_snapshot_sha256: string;
+      result_status: string;
+      transcript_manifest_sha256: string;
+    }>({
+      text: `SELECT authority_inventory_digest,
+                    observer_snapshot_sha256,
+                    result_status,
+                    transcript_manifest_sha256
+               FROM hns_control_observer_snapshots
+              WHERE observation_id = $1`,
+      values: [input.observation_id],
+    });
+    expect(retained.rows).toEqual([
+      {
+        authority_inventory_digest: inventory.inventoryDigest,
+        observer_snapshot_sha256: terminal.observer_snapshot_sha256,
+        result_status: "ineligible",
+        transcript_manifest_sha256: terminal.transcript_manifest_sha256,
+      },
+    ]);
+    await expect(store.reserve(input, runOptions())).resolves.toMatchObject({
+      kind: "replay",
+      result_sha256: terminal.result_sha256,
+      result_bytes: terminal.result_bytes,
+    });
     completedTestCount += 1;
   });
 
@@ -487,6 +841,38 @@ suite("Postgres 17 HNS control observer persistence", () => {
     ).rejects.toThrow("authority does not match");
     expect(await rowCount("hns_control_observer_operations")).toBe(1);
     expect(await rowCount("hns_control_observer_reservations")).toBe(1);
+    completedTestCount += 1;
+  });
+
+  test("reads one owned immutable snapshot for active-renewal recovery", async () => {
+    const input = await reservationInput("observer-pg-read-01");
+    const store = makeControlPlaneHnsControlObserverSnapshotStore(runtime());
+    const authority = acquired(await store.reserve(input, runOptions()));
+    const terminal = await finalizeInput(input, authority);
+    await expect(store.finalize(terminal, runOptions())).resolves.toMatchObject({
+      kind: "retained",
+      snapshot_reference: authority.snapshot_reference,
+    });
+    const reader = makeControlPlaneHnsControlObserverSnapshotReader(runtime());
+    const first = await reader.read(authority.snapshot_reference, runOptions());
+    expect(first).toEqual({
+      snapshot_reference: authority.snapshot_reference,
+      request_bytes: input.request_bytes,
+      result_bytes: terminal.result_bytes,
+      result_sha256: terminal.result_sha256,
+    });
+    first?.request_bytes.fill(0);
+    first?.result_bytes.fill(0);
+    await expect(reader.read(authority.snapshot_reference, runOptions())).resolves.toEqual({
+      snapshot_reference: authority.snapshot_reference,
+      request_bytes: input.request_bytes,
+      result_bytes: terminal.result_bytes,
+      result_sha256: terminal.result_sha256,
+    });
+    await expect(reader.read("hns-observer:postgres:missing", runOptions())).resolves.toBeNull();
+    await expect(reader.read("invalid", runOptions())).rejects.toMatchObject({
+      reason: "invalid_snapshot",
+    });
     completedTestCount += 1;
   });
 

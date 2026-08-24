@@ -921,6 +921,7 @@ describe("stable HSD root bracket", () => {
       ["NS", "ns1.jazleeuw"],
       ["GLUE4", "ns1.jazleeuw", "192.0.2.53"],
       ["DS", 12_345, 13, 2, "aabb"],
+      ["DS", 12_345, 13, 2, "aabb"],
     ]);
     expect(observed.bracket.chain_authority_digest).toBe(
       await hnsChainAuthorityDigest({

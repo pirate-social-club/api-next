@@ -25,6 +25,7 @@ const dependencyRoots = [
   "apps/http-worker",
   "apps/jobs-worker",
   "apps/hns-owner-verifier",
+  "apps/hns-observer-driver",
 ] as const;
 
 afterEach(async () => {

@@ -66,6 +66,8 @@ export type HnsOwnerAdapterOptions = Readonly<{
     readonly complete_ms: number;
   }>;
   readonly now?: () => number;
+  /** Target-owned composition accepts only the control-observer v2 response. */
+  readonly require_target_observation_v2?: boolean;
 }>;
 
 const HnsStartPresentation = Schema.Struct({
@@ -284,7 +286,15 @@ export function makeHnsOwnerAdapter(
               } catch {
                 return Effect.fail(invalid("complete"));
               }
-              if (decoded.response.status === "pending") return Effect.succeed(decoded.response);
+              if (
+                options.require_target_observation_v2 === true &&
+                !("observation_contract_version" in decoded.response)
+              ) {
+                return Effect.fail(invalid("complete"));
+              }
+              if (decoded.response.status === "pending") {
+                return Effect.succeed({ status: "pending" as const });
+              }
               const result = decoded.response;
               if (
                 result.upstream_session_ref !== input.session.upstream_session_ref ||

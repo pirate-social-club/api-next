@@ -675,10 +675,16 @@ export function hnsChainAuthorityRecords(
     return [];
   }
   const canonical = records.map(canonicalAuthorityRecord);
-  const unique = new Map<string, HnsChainAuthorityRecord>();
-  for (const record of canonical) unique.set(JSON.stringify(record), record);
+  const seenNonDs = new Set<string>();
+  const retained = canonical.filter((record) => {
+    if (record[0] === "DS") return true;
+    const key = JSON.stringify(record);
+    if (seenNonDs.has(key)) return false;
+    seenNonDs.add(key);
+    return true;
+  });
   const order = { NS: 0, GLUE4: 1, GLUE6: 2, DS: 3 } as const;
-  return [...unique.values()].sort((left, right) => {
+  return retained.sort((left, right) => {
     const byType = order[left[0]] - order[right[0]];
     return byType === 0 ? compareUtf8(JSON.stringify(left), JSON.stringify(right)) : byType;
   });

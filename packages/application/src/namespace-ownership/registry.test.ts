@@ -47,6 +47,10 @@ const startInput = {
   route,
 };
 const startContext = { namespace_session_id: "namespace-session-1" } as const;
+const completeContext = {
+  namespace_session_id: "namespace-session-1",
+  observation_id: "completion-attempt-1",
+} as const;
 const session = {
   ...startInput,
   provider_id: "test.hns-owner",
@@ -239,7 +243,7 @@ describe("namespace ownership provider registry", () => {
             session,
             submission: { channel: "client_result", payload: {} },
           },
-          startContext,
+          completeContext,
         ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderUnboundRejected);
@@ -250,7 +254,7 @@ describe("namespace ownership provider registry", () => {
             session,
             submission: { channel: "poll_result", payload: "x".repeat(1_048_577) },
           },
-          startContext,
+          completeContext,
         ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderUnboundRejected);
@@ -290,7 +294,7 @@ describe("namespace ownership provider registry", () => {
             session,
             submission: { channel: "poll_result", payload: {} },
           },
-          startContext,
+          completeContext,
         ),
       ),
     ).resolves.toEqual(verified);
@@ -316,7 +320,7 @@ describe("namespace ownership provider registry", () => {
             session,
             submission: { channel: "poll_result", payload: {} },
           },
-          startContext,
+          completeContext,
         ),
       ),
     ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
@@ -344,7 +348,7 @@ describe("namespace ownership provider registry", () => {
               session,
               submission: { channel: "poll_result", payload: {} },
             },
-            startContext,
+            completeContext,
           ),
         ),
       ).rejects.toBeInstanceOf(NamespaceOwnershipProviderInvalidResponse);
@@ -364,7 +368,7 @@ describe("namespace ownership provider registry", () => {
             session,
             submission: { channel: "poll_result", payload: {} },
           },
-          startContext,
+          completeContext,
         ),
       ),
     ).resolves.toEqual(noExpiryResult);

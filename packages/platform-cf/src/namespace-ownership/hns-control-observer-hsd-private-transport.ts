@@ -17,6 +17,7 @@ export type HnsControlObserverHsdPrivateRequest = Readonly<{
   readonly method: "POST";
   readonly headers: ReadonlyArray<readonly [string, string]>;
   readonly body: Uint8Array;
+  readonly response_max_bytes: number;
   readonly redirect: "manual";
   readonly signal: AbortSignal;
 }>;
@@ -206,6 +207,7 @@ export function makeHnsControlObserverHsdPrivateTransport(input: {
               ["Accept", "application/json"],
             ],
             body: new Uint8Array(request.request_bytes),
+            response_max_bytes: request.response_max_bytes,
             redirect: "manual",
             signal: request.signal,
           },

@@ -42,7 +42,7 @@ function body(bytes: Uint8Array): ArrayBuffer {
 }
 
 describe("HNS verifier default composition (workerd)", () => {
-  it("fails closed without a target observer, legacy credentials, or HNS binding", async () => {
+  it("fails closed without complete target configuration or private bindings", async () => {
     const providerStart = await buildHnsOwnerRecoveryProviderStart({
       route_recovery_id: "route-recovery-workerd-disabled-1",
       session_id: "recovery-session-workerd-disabled-1",
@@ -55,8 +55,13 @@ describe("HNS verifier default composition (workerd)", () => {
     expect(verifierEnv.HNS_OWNERSHIP_SOURCE).toBe("hns_parent_chain_txt");
     expect(verifierEnv.HNS_PROVIDER_CONFIGURATION_REFERENCE).toBe("hns-owner-staging");
     expect("HNS_OWNER_VERIFIER" in verifierEnv).toBe(false);
-    expect("HNS_LEGACY_VERIFIER_URL" in verifierEnv).toBe(false);
-    expect("HNS_LEGACY_VERIFIER_BEARER" in verifierEnv).toBe(false);
+    expect("HNS_OBSERVER_DRIVER" in verifierEnv).toBe(false);
+    expect("CONTROL_PLANE" in verifierEnv).toBe(false);
+    expect("HNS_PROVIDER_CONFIGURATION_DIGEST" in verifierEnv).toBe(false);
+    expect("HNS_AUTHORITY_INVENTORY_REGISTRY_REFERENCE" in verifierEnv).toBe(false);
+    expect("HNS_AUTHORITY_INVENTORY_CAPABILITY_SET_DIGEST" in verifierEnv).toBe(false);
+    expect(["HNS", "LEGACY", "VERIFIER", "URL"].join("_") in verifierEnv).toBe(false);
+    expect(["HNS", "LEGACY", "VERIFIER", "BEARER"].join("_") in verifierEnv).toBe(false);
     const response = await SELF.fetch("https://hns-owner.internal/internal/hns-owner/v1/start", {
       method: "POST",
       headers: {

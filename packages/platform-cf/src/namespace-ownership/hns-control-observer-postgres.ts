@@ -3,26 +3,42 @@ import {
   type ControlPlaneError,
   classifyHnsAuthoritativeDnsResponseV1,
   decodeHnsAuthoritativeDnsSemanticFactsV1,
+  decodeHnsAuthorityInventoryBytes,
   decodeHnsControlObservationRequestBytes,
   decodeHnsControlObservationResultBytes,
+  decodeHnsControlObservationResultV2Bytes,
+  decodeHnsControlObserverCompatibleConfigurationBytes,
   decodeHnsControlObserverConfigurationBytes,
+  decodeHnsControlObserverConfigurationV2Bytes,
   HNS_CONTROL_OBSERVER_CONFIGURATION_MAX_BYTES,
   HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MAX_SECONDS,
   HNS_CONTROL_OBSERVER_RESERVATION_LEASE_MIN_SECONDS,
   HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES,
   type HnsAuthoritativeDnsSemanticViewV1,
+  type HnsAuthorityInventoryResolverPortV1,
   type HnsControlObservationResultV1,
+  type HnsControlObservationResultV2,
   type HnsControlObserverConfigurationResolverPort,
   type HnsControlObserverReservationInput,
   type HnsControlObserverReservationOutcome,
+  type HnsControlObserverRetainedSnapshotV1,
   type HnsControlObserverSnapshotFinalizeInput,
+  type HnsControlObserverSnapshotFinalizeInputV2,
   type HnsControlObserverSnapshotFinalizeOutcome,
   type HnsControlObserverSnapshotLogicalPayload,
+  HnsControlObserverSnapshotReadError,
+  type HnsControlObserverSnapshotReaderPort,
   type HnsControlObserverSnapshotStorePort,
+  type HnsControlObserverSnapshotStorePortV2,
   type HnsControlObserverTranscriptEntryV1,
   hnsControlObserverSnapshotAccountingEnvelopeBytes,
+  hnsControlObserverSnapshotAccountingEnvelopeV2Bytes,
+  hnsControlObserverSnapshotDigestV2,
   hnsControlObserverSnapshotLogicalByteLength,
+  hnsControlObserverSnapshotLogicalByteLengthV2,
   hnsControlObserverTranscriptByteLength,
+  hnsControlObserverTranscriptManifestDigestV2,
+  hnsControlObserverTranscriptManifestV2,
   hnsObservedTxtValuesDigest,
   isHnsControlObserverSnapshotReference,
   validateHnsControlObserverTranscript,
@@ -107,7 +123,7 @@ function safeIdentity(value: string, maximumBytes: number): boolean {
 
 function ownerDnsSemanticFactsMatchTerminalResult(
   views: ReadonlyArray<HnsAuthoritativeDnsSemanticViewV1>,
-  result: HnsControlObservationResultV1,
+  result: HnsControlObservationResultV1 | HnsControlObservationResultV2,
   dnsTranscriptEntryCount: number,
 ): boolean {
   if (result.status === "unavailable") {
@@ -181,7 +197,7 @@ function ownerDnsSemanticFactsMatchTerminalResult(
 async function ownerDnsSemanticFactsMatchWire(
   views: ReadonlyArray<HnsAuthoritativeDnsSemanticViewV1>,
   dnsEntries: ReadonlyArray<HnsControlObserverTranscriptEntryV1>,
-  result: HnsControlObservationResultV1,
+  result: HnsControlObservationResultV1 | HnsControlObservationResultV2,
 ): Promise<boolean> {
   let viewIndex = 0;
   for (let index = 0; index + 1 < dnsEntries.length; index += 2) {
@@ -352,7 +368,9 @@ async function validateReservationInput(
     throw invalidInput("HNS observer reservation input is invalid");
   }
   const request = await decodeHnsControlObservationRequestBytes(input.request_bytes);
-  const configuration = await decodeHnsControlObserverConfigurationBytes(input.configuration_bytes);
+  const configuration = await decodeHnsControlObserverCompatibleConfigurationBytes(
+    input.configuration_bytes,
+  );
   if (
     request.request.observation_id !== input.observation_id ||
     request.request_sha256 !== input.request_sha256 ||
@@ -535,10 +553,280 @@ async function validateFinalizeInput(
   }
   return {
     ...logicalPayload,
+    authority_inventory_bytes: null,
+    authority_inventory_reference_or_null: null,
+    authority_inventory_version_or_null: null,
+    authority_inventory_digest_or_null: null,
+    semantic_facts_sha256: null,
+    transcript_manifest_sha256: null,
+    observer_snapshot_sha256: null,
     transcript_byte_length: hnsControlObserverTranscriptByteLength(transcript),
     accounting_envelope_bytes: accountingEnvelopeBytes,
     logical_snapshot_byte_length: logicalSnapshotByteLength,
   } as const;
+}
+
+async function sha256ExactBytes(bytes: Uint8Array): Promise<Sha256HexValue> {
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  ) as Sha256HexValue;
+}
+
+async function validateFinalizeInputV2(
+  input: HnsControlObserverSnapshotFinalizeInputV2,
+  operation: Row,
+) {
+  const requestBytes = copyBytes(operation.request_bytes);
+  const configurationBytes = copyBytes(operation.configuration_bytes);
+  const reservationDatabaseTime = stringValue(operation, "reservation_database_time");
+  const leaseExpiresAt = stringValue(operation, "lease_expires_at");
+  if (
+    requestBytes === null ||
+    configurationBytes === null ||
+    reservationDatabaseTime === null ||
+    leaseExpiresAt === null
+  ) {
+    throw invalidRow("HNS observer v2 operation snapshot authority is invalid");
+  }
+  const request = await decodeHnsControlObservationRequestBytes(requestBytes);
+  const configuration = await decodeHnsControlObserverConfigurationV2Bytes(configurationBytes);
+  const result = await decodeHnsControlObservationResultV2Bytes(
+    input.result_bytes,
+    request.request,
+  );
+  const hasInventoryBytes = input.authority_inventory_bytes !== null;
+  const hasInventoryReference = input.authority_inventory_reference_or_null !== null;
+  const hasInventoryVersion = input.authority_inventory_version_or_null !== null;
+  const hasInventoryDigest = input.authority_inventory_digest_or_null !== null;
+  if (
+    !(
+      hasInventoryBytes === hasInventoryReference &&
+      hasInventoryReference === hasInventoryVersion &&
+      hasInventoryVersion === hasInventoryDigest
+    )
+  ) {
+    throw invalidInput("HNS observer v2 inventory authority is a partial nullable tuple");
+  }
+  if (
+    request.request_sha256 !== input.request_sha256 ||
+    request.request.ownership_source !== "owner_authoritative_dns_txt" ||
+    configuration.configuration_digest !== input.provider_configuration_digest ||
+    request.request.provider_configuration_digest !== configuration.configuration_digest ||
+    configuration.configuration.provider_configuration_reference !==
+      request.request.provider_configuration_reference ||
+    configuration.configuration.provider_configuration_version !==
+      request.request.provider_configuration_version ||
+    configuration.configuration.provider_id !== request.request.provider_id ||
+    configuration.configuration.environment !== request.request.environment ||
+    !configuration.configuration.ownership_sources.includes(request.request.ownership_source) ||
+    stringValue(operation, "provider_configuration_reference") !==
+      configuration.configuration.provider_configuration_reference ||
+    stringValue(operation, "provider_configuration_version") !==
+      configuration.configuration.provider_configuration_version ||
+    result.result_sha256 !== input.result_sha256 ||
+    result.result.observation_id !== input.observation_id ||
+    result.result.observer_snapshot_sha256 !== input.observer_snapshot_sha256 ||
+    (result.result.status === "unavailable" || result.result.status === "ineligible"
+      ? result.result.diagnostic_ref !== input.snapshot_reference
+      : result.result.provider_evidence_ref !== input.snapshot_reference)
+  ) {
+    throw invalidInput("HNS observer v2 finalization bytes do not match retained authority");
+  }
+  if (
+    input.authority_inventory_bytes !== null &&
+    (await sha256ExactBytes(input.authority_inventory_bytes)) !==
+      input.authority_inventory_digest_or_null
+  ) {
+    throw invalidInput("HNS observer v2 inventory digest does not match exact bytes");
+  }
+  if (
+    result.result.status === "ineligible" &&
+    (input.authority_inventory_reference_or_null !== result.result.authority_inventory_reference ||
+      input.authority_inventory_version_or_null !== result.result.authority_inventory_version ||
+      input.authority_inventory_digest_or_null !== result.result.authority_inventory_digest)
+  ) {
+    throw invalidInput("HNS observer v2 source-ineligible inventory identity differs");
+  }
+  if (
+    result.result.status !== "unavailable" ||
+    result.result.reason_code !== "authority_inventory_unavailable"
+  ) {
+    if (input.authority_inventory_bytes === null) {
+      throw invalidInput("HNS observer v2 semantic terminal lacks its inventory");
+    }
+    const decodedInventory = await decodeHnsAuthorityInventoryBytes(
+      input.authority_inventory_bytes,
+    );
+    if (
+      decodedInventory.inventory.authority_inventory_reference !==
+        input.authority_inventory_reference_or_null ||
+      decodedInventory.inventory.authority_inventory_version !==
+        input.authority_inventory_version_or_null ||
+      decodedInventory.inventory.environment !== configuration.configuration.environment ||
+      decodedInventory.inventory_digest !== input.authority_inventory_digest_or_null
+    ) {
+      throw invalidInput("HNS observer v2 inventory document identity differs");
+    }
+  }
+  const transcript = await validateHnsControlObserverTranscript({
+    transcript: input.transcript,
+    context: {
+      ownership_source: request.request.ownership_source,
+      root_label: request.request.root_label,
+      hsd_driver_reference: configuration.configuration.chain.driver_reference,
+      hsd_response_max_bytes: configuration.configuration.chain.response_max_bytes,
+      authoritative_dns_driver_reference:
+        configuration.configuration.authoritative_dns?.driver_reference ?? null,
+      authoritative_dns_response_max_bytes:
+        configuration.configuration.authoritative_dns?.response_max_bytes ?? null,
+      required_view_ids: configuration.configuration.authoritative_dns?.required_view_ids ?? [],
+      terminal_status: result.result.status,
+      terminal_reason_code: result.result.status === "verified" ? null : result.result.reason_code,
+    },
+  });
+  const transcriptManifestSha256 = await hnsControlObserverTranscriptManifestDigestV2(
+    hnsControlObserverTranscriptManifestV2(transcript),
+  );
+  const semanticFactsBytes = new Uint8Array(input.semantic_facts_bytes);
+  const semanticFactsSha256 = await sha256ExactBytes(semanticFactsBytes);
+  if (
+    transcriptManifestSha256 !== input.transcript_manifest_sha256 ||
+    semanticFactsSha256 !== input.semantic_facts_sha256
+  ) {
+    throw invalidInput("HNS observer v2 retained manifest digest differs");
+  }
+  const observerSnapshotSha256 = await hnsControlObserverSnapshotDigestV2({
+    observation_id: input.observation_id,
+    request_sha256: input.request_sha256,
+    provider_configuration_digest: input.provider_configuration_digest,
+    authority_inventory_reference_or_null: input.authority_inventory_reference_or_null,
+    authority_inventory_version_or_null: input.authority_inventory_version_or_null,
+    authority_inventory_digest_or_null: input.authority_inventory_digest_or_null,
+    reservation_database_time: reservationDatabaseTime,
+    snapshot_reference: input.snapshot_reference,
+    transcript_manifest_sha256: transcriptManifestSha256,
+    semantic_facts_sha256: semanticFactsSha256,
+  });
+  if (observerSnapshotSha256 !== input.observer_snapshot_sha256) {
+    throw invalidInput("HNS observer v2 snapshot manifest digest differs");
+  }
+  const dns = configuration.configuration.authoritative_dns;
+  if (dns === null) {
+    throw invalidInput("HNS observer v2 owner-DNS finalization lacks configured authority");
+  }
+  let semanticFacts: ReturnType<typeof decodeHnsAuthoritativeDnsSemanticFactsV1>;
+  try {
+    semanticFacts = decodeHnsAuthoritativeDnsSemanticFactsV1(semanticFactsBytes);
+  } catch {
+    throw invalidInput("HNS observer v2 owner-DNS semantic facts are invalid");
+  }
+  const dnsEntries = transcript.filter(
+    (entry) =>
+      entry.ownership_source === "owner_authoritative_dns_txt" &&
+      entry.driver_reference === dns.driver_reference,
+  );
+  if (result.result.status === "ineligible") {
+    if (semanticFacts.views.length !== 0 || dnsEntries.length !== 0) {
+      throw invalidInput("HNS observer source-ineligible terminal contains DNS facts");
+    }
+  } else if (
+    result.result.status === "unavailable" &&
+    result.result.reason_code === "authority_inventory_unavailable"
+  ) {
+    if (semanticFacts.views.length !== 0 || transcript.length !== 0) {
+      throw invalidInput("HNS observer inventory-unavailable terminal contains provider facts");
+    }
+  } else {
+    const terminalChainAuthorityDigest =
+      result.result.status === "unavailable" ? null : result.result.chain_authority_digest;
+    const semanticFactsMatchWire = await ownerDnsSemanticFactsMatchWire(
+      semanticFacts.views,
+      dnsEntries,
+      result.result,
+    );
+    const chainOnlyRejection =
+      result.result.status === "rejected" &&
+      (result.result.reason_code === "root_absent" ||
+        result.result.reason_code === "root_inactive");
+    if (
+      !semanticFactsMatchWire ||
+      (result.result.status !== "unavailable" &&
+        !chainOnlyRejection &&
+        semanticFacts.views.length !== dns.required_view_ids.length) ||
+      (chainOnlyRejection && (semanticFacts.views.length !== 0 || dnsEntries.length !== 0)) ||
+      (terminalChainAuthorityDigest !== null &&
+        semanticFacts.views.some(
+          (view) => view.chain_authority_digest !== terminalChainAuthorityDigest,
+        )) ||
+      !ownerDnsSemanticFactsMatchTerminalResult(
+        semanticFacts.views,
+        result.result,
+        dnsEntries.length,
+      )
+    ) {
+      throw invalidInput("HNS observer v2 semantic facts do not match the transcript");
+    }
+  }
+  const logicalPayload = {
+    observation_id: input.observation_id,
+    observer_fence: input.observer_fence,
+    reservation_database_time: reservationDatabaseTime,
+    lease_expires_at: leaseExpiresAt,
+    request_bytes: requestBytes,
+    request_sha256: input.request_sha256,
+    configuration_bytes: configurationBytes,
+    provider_configuration_digest: input.provider_configuration_digest,
+    authority_inventory_bytes:
+      input.authority_inventory_bytes === null
+        ? null
+        : new Uint8Array(input.authority_inventory_bytes),
+    authority_inventory_reference_or_null: input.authority_inventory_reference_or_null,
+    authority_inventory_version_or_null: input.authority_inventory_version_or_null,
+    authority_inventory_digest_or_null: input.authority_inventory_digest_or_null,
+    snapshot_reference: input.snapshot_reference,
+    transcript,
+    transcript_manifest_sha256: transcriptManifestSha256,
+    semantic_facts_bytes: new Uint8Array(semanticFacts.semantic_facts_bytes),
+    semantic_facts_sha256: semanticFactsSha256,
+    observer_snapshot_sha256: observerSnapshotSha256,
+    result_status: result.result.status,
+    result_reference_kind:
+      result.result.status === "verified" || result.result.status === "rejected"
+        ? ("provider_evidence_ref" as const)
+        : ("diagnostic_ref" as const),
+    result_bytes: new Uint8Array(result.result_bytes),
+    result_sha256: result.result_sha256,
+  } as const;
+  const accountingEnvelopeBytes =
+    hnsControlObserverSnapshotAccountingEnvelopeV2Bytes(logicalPayload);
+  const logicalSnapshotByteLength = hnsControlObserverSnapshotLogicalByteLengthV2(logicalPayload);
+  if (
+    logicalPayload.semantic_facts_bytes.byteLength === 0 ||
+    !Number.isSafeInteger(logicalSnapshotByteLength) ||
+    logicalSnapshotByteLength > HNS_CONTROL_OBSERVER_SNAPSHOT_MAX_BYTES
+  ) {
+    throw invalidInput("HNS observer v2 finalization exceeds the retained snapshot bound");
+  }
+  return {
+    ...logicalPayload,
+    transcript_byte_length: hnsControlObserverTranscriptByteLength(transcript),
+    accounting_envelope_bytes: accountingEnvelopeBytes,
+    logical_snapshot_byte_length: logicalSnapshotByteLength,
+  } as const;
+}
+
+type ValidatedFinalizeInput =
+  | Awaited<ReturnType<typeof validateFinalizeInput>>
+  | Awaited<ReturnType<typeof validateFinalizeInputV2>>;
+
+async function validateFinalizeInputCompatible(
+  input: HnsControlObserverSnapshotFinalizeInput | HnsControlObserverSnapshotFinalizeInputV2,
+  operation: Row,
+): Promise<ValidatedFinalizeInput> {
+  return "observer_snapshot_sha256" in input
+    ? validateFinalizeInputV2(input, operation)
+    : validateFinalizeInput(input, operation);
 }
 
 export function makeControlPlaneHnsControlObserverRepository(
@@ -575,6 +863,47 @@ export function makeControlPlaneHnsControlObserverRepository(
         return yield* Effect.fail(invalidRow("HNS observer configuration row is invalid"));
       }
       return bytes;
+    });
+
+  const read = (snapshotReference: string) =>
+    Effect.gen(function* () {
+      if (!isHnsControlObserverSnapshotReference(snapshotReference)) {
+        return yield* Effect.fail(invalidInput("HNS observer snapshot reference is invalid"));
+      }
+      const db = yield* ControlPlaneDb;
+      const selected = yield* db.execute<Row>({
+        label: "hns-control-observer.snapshot.read",
+        text: `SELECT snapshot_reference, request_bytes, result_bytes, result_sha256
+                 FROM hns_control_observer_snapshots
+                WHERE snapshot_reference = $1`,
+        values: [snapshotReference],
+        readonly: true,
+      });
+      const row = oneRow(selected);
+      if (row === null) return null;
+      if (row === undefined) {
+        return yield* Effect.fail(invalidRow("HNS observer snapshot reference is ambiguous"));
+      }
+      const requestBytes = copyBytes(row.request_bytes);
+      const resultBytes = copyBytes(row.result_bytes);
+      const resultSha256 = stringValue(row, "result_sha256");
+      if (
+        stringValue(row, "snapshot_reference") !== snapshotReference ||
+        requestBytes === null ||
+        requestBytes.byteLength === 0 ||
+        resultBytes === null ||
+        resultBytes.byteLength === 0 ||
+        resultSha256 === null ||
+        !/^[0-9a-f]{64}$/u.test(resultSha256)
+      ) {
+        return yield* Effect.fail(invalidRow("HNS observer retained snapshot row is invalid"));
+      }
+      return {
+        snapshot_reference: snapshotReference,
+        request_bytes: requestBytes,
+        result_bytes: resultBytes,
+        result_sha256: resultSha256 as Sha256HexValue,
+      } satisfies HnsControlObserverRetainedSnapshotV1;
     });
 
   const reserve = (rawInput: HnsControlObserverReservationInput) =>
@@ -784,7 +1113,9 @@ export function makeControlPlaneHnsControlObserverRepository(
       );
     });
 
-  const finalize = (rawInput: HnsControlObserverSnapshotFinalizeInput) =>
+  const finalize = (
+    rawInput: HnsControlObserverSnapshotFinalizeInput | HnsControlObserverSnapshotFinalizeInputV2,
+  ) =>
     Effect.gen(function* () {
       if (
         !safeIdentity(rawInput.observation_id, 256) ||
@@ -837,7 +1168,7 @@ export function makeControlPlaneHnsControlObserverRepository(
       }
 
       const input = yield* Effect.tryPromise({
-        try: () => validateFinalizeInput(rawInput, authority),
+        try: () => validateFinalizeInputCompatible(rawInput, authority),
         catch: (error) =>
           error instanceof HnsControlObserverPostgresError
             ? error
@@ -902,9 +1233,16 @@ export function makeControlPlaneHnsControlObserverRepository(
                        request_sha256,
                        configuration_bytes,
                        provider_configuration_digest,
+                       authority_inventory_bytes,
+                       authority_inventory_reference,
+                       authority_inventory_version,
+                       authority_inventory_digest,
                        reservation_database_time,
                        lease_expires_at,
                        semantic_facts_bytes,
+                       semantic_facts_sha256,
+                       transcript_manifest_sha256,
+                       observer_snapshot_sha256,
                        result_status,
                        result_reference_kind,
                        result_reference,
@@ -923,18 +1261,25 @@ export function makeControlPlaneHnsControlObserverRepository(
                             operation.request_sha256,
                             operation.configuration_bytes,
                             operation.provider_configuration_digest,
-                            reservation.reservation_database_time,
-                            reservation.lease_expires_at,
                             $5,
                             $6,
                             $7,
-                            operation.snapshot_reference,
                             $8,
+                            reservation.reservation_database_time,
+                            reservation.lease_expires_at,
                             $9,
                             $10,
                             $11,
                             $12,
                             $13,
+                            $14,
+                            operation.snapshot_reference,
+                            $15,
+                            $16,
+                            $17,
+                            $18,
+                            $19,
+                            $20,
                             date_trunc('milliseconds', clock_timestamp())
                        FROM hns_control_observer_operations AS operation
                        JOIN hns_control_observer_reservations AS reservation
@@ -944,14 +1289,21 @@ export function makeControlPlaneHnsControlObserverRepository(
                         AND operation.provider_configuration_digest = $3
                         AND operation.snapshot_reference = $4
                         AND reservation.state = 'reserved'
-                        AND reservation.observer_fence = $14
+                        AND reservation.observer_fence = $21
                         AND reservation.lease_expires_at > clock_timestamp()`,
               values: [
                 input.observation_id,
                 input.request_sha256,
                 input.provider_configuration_digest,
                 input.snapshot_reference,
+                input.authority_inventory_bytes,
+                input.authority_inventory_reference_or_null,
+                input.authority_inventory_version_or_null,
+                input.authority_inventory_digest_or_null,
                 input.semantic_facts_bytes,
+                input.semantic_facts_sha256,
+                input.transcript_manifest_sha256,
+                input.observer_snapshot_sha256,
                 input.result_status,
                 input.result_reference_kind,
                 input.result_bytes,
@@ -1052,7 +1404,7 @@ export function makeControlPlaneHnsControlObserverRepository(
       return yield* Effect.fail(attempted.failure);
     });
 
-  return { resolve, reserve, finalize } as const;
+  return { resolve, read, reserve, finalize } as const;
 }
 
 function runPort<A, E>(
@@ -1079,6 +1431,79 @@ export function makeControlPlaneHnsControlObserverConfigurationResolver(
   const repository = makeControlPlaneHnsControlObserverRepository();
   return {
     resolve: (identity, options) => runPort(repository.resolve(identity), runtime, options),
+  };
+}
+
+export function makeControlPlaneHnsAuthorityInventoryResolver(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  options: Readonly<{
+    readonly registryReference: string;
+    readonly responseMaxBytes: number;
+  }>,
+): HnsAuthorityInventoryResolverPortV1 {
+  if (
+    !safeIdentity(options.registryReference, 256) ||
+    !Number.isSafeInteger(options.responseMaxBytes) ||
+    options.responseMaxBytes < 1 ||
+    options.responseMaxBytes > 65_536
+  ) {
+    throw invalidInput("HNS authority inventory registry options are invalid");
+  }
+  return {
+    resolve: (runOptions) =>
+      runPort(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const selected = yield* db.execute<Row>({
+            label: "hns-authority-inventory.current.resolve",
+            text: `WITH db_clock AS (
+                     SELECT date_trunc('milliseconds', clock_timestamp()) AS database_now
+                   )
+                   SELECT authority_inventory_reference,
+                          authority_inventory_version,
+                          authority_inventory_digest,
+                          inventory_bytes
+                     FROM hns_authority_inventories, db_clock
+                    WHERE registry_reference = $1
+                      AND published_at <= db_clock.database_now
+                      AND expires_at > db_clock.database_now
+                    ORDER BY published_at DESC, authority_inventory_version
+                    LIMIT 2`,
+            values: [options.registryReference],
+            readonly: true,
+          });
+          if (selected.rowCount === 0 && selected.rows.length === 0) return null;
+          if (selected.rowCount !== 1 || selected.rows.length !== 1) {
+            return yield* Effect.fail(
+              invalidRow("HNS authority inventory registry has ambiguous current authority"),
+            );
+          }
+          const row = selected.rows[0] ?? {};
+          const reference = stringValue(row, "authority_inventory_reference");
+          const version = stringValue(row, "authority_inventory_version");
+          const digest = stringValue(row, "authority_inventory_digest");
+          const bytes = copyBytes(row.inventory_bytes);
+          if (
+            reference === null ||
+            version === null ||
+            digest === null ||
+            !/^[0-9a-f]{64}$/u.test(digest) ||
+            bytes === null ||
+            bytes.byteLength < 1 ||
+            bytes.byteLength > options.responseMaxBytes
+          ) {
+            return yield* Effect.fail(invalidRow("HNS authority inventory row is invalid"));
+          }
+          return {
+            authority_inventory_reference: reference,
+            authority_inventory_version: version,
+            authority_inventory_digest: digest as Sha256HexValue,
+            inventory_bytes: bytes,
+          } as const;
+        }),
+        runtime,
+        runOptions,
+      ),
   };
 }
 
@@ -1114,5 +1539,72 @@ export function makeControlPlaneHnsControlObserverSnapshotStore(
         runtime,
         runOptions,
       ) as Promise<HnsControlObserverSnapshotFinalizeOutcome>,
+  };
+}
+
+export function makeControlPlaneHnsControlObserverSnapshotStoreV2(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+  options: Readonly<{ readonly snapshotStoreReference?: string }> = {},
+): HnsControlObserverSnapshotStorePortV2 {
+  const repository = makeControlPlaneHnsControlObserverRepository(options);
+  return {
+    reserve: (input, runOptions) =>
+      runPort(
+        repository.reserve({
+          ...input,
+          request_bytes: new Uint8Array(input.request_bytes),
+          configuration_bytes: new Uint8Array(input.configuration_bytes),
+        }),
+        runtime,
+        runOptions,
+      ) as Promise<HnsControlObserverReservationOutcome>,
+    finalize: (input, runOptions) =>
+      runPort(
+        repository.finalize({
+          ...input,
+          authority_inventory_bytes:
+            input.authority_inventory_bytes === null
+              ? null
+              : new Uint8Array(input.authority_inventory_bytes),
+          transcript: input.transcript.map((entry) => ({
+            ...entry,
+            request_bytes: new Uint8Array(entry.request_bytes),
+            response_bytes:
+              entry.response_bytes === null ? null : new Uint8Array(entry.response_bytes),
+          })),
+          semantic_facts_bytes: new Uint8Array(input.semantic_facts_bytes),
+          result_bytes: new Uint8Array(input.result_bytes),
+        }),
+        runtime,
+        runOptions,
+      ) as Promise<HnsControlObserverSnapshotFinalizeOutcome>,
+  };
+}
+
+export function makeControlPlaneHnsControlObserverSnapshotReader(
+  runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
+): HnsControlObserverSnapshotReaderPort {
+  const repository = makeControlPlaneHnsControlObserverRepository();
+  return {
+    read: (snapshotReference, runOptions) =>
+      runPort(repository.read(snapshotReference), runtime, runOptions)
+        .then((snapshot) =>
+          snapshot === null
+            ? null
+            : {
+                ...snapshot,
+                request_bytes: new Uint8Array(snapshot.request_bytes),
+                result_bytes: new Uint8Array(snapshot.result_bytes),
+              },
+        )
+        .catch((error: unknown) =>
+          Promise.reject(
+            new HnsControlObserverSnapshotReadError(
+              error instanceof HnsControlObserverPostgresError && error.reason !== "storage"
+                ? "invalid_snapshot"
+                : "unavailable",
+            ),
+          ),
+        ),
   };
 }
