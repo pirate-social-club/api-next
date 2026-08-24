@@ -180,17 +180,17 @@ const TranscriptSegment = Schema.Struct({
   end_ms: NonNegativeInteger.check(
     Schema.isBetween({ minimum: 0, maximum: MEDIA_TRANSCRIPT_MAX_DURATION_MS }),
   ),
-  text: Schema.String.check(Schema.isMaxLength(MEDIA_TRANSCRIPT_SEGMENT_MAX_LENGTH)),
+  text: Schema.NonEmptyString.check(Schema.isMaxLength(MEDIA_TRANSCRIPT_SEGMENT_MAX_LENGTH)),
 }).check(
   Schema.makeFilter(({ start_ms, end_ms }) =>
-    end_ms >= start_ms ? undefined : "Transcript segment end must not precede start",
+    end_ms > start_ms ? undefined : "Transcript segments must have positive duration",
   ),
 );
 
 export { TranscriptSegment };
 export type MediaTranscriptSegment = Schema.Schema.Type<typeof TranscriptSegment>;
 
-const TranscriptSegments = Schema.Array(TranscriptSegment).check(
+const TranscriptSegments = Schema.NonEmptyArray(TranscriptSegment).check(
   Schema.isMaxLength(MEDIA_TRANSCRIPT_SEGMENT_MAX_COUNT),
   Schema.makeFilter((segments) =>
     segments.reduce((length, segment) => length + segment.text.length, 0) <=
@@ -232,7 +232,8 @@ export type MediaTranscriptIdentity = Schema.Schema.Type<typeof MediaTranscriptI
 export const MediaTranscriptArtifact = Schema.Struct({
   version: Schema.Literal("media-transcript-artifact-v1"),
   ...MediaTranscriptIdentityFields,
-  transcript: Schema.String.check(
+  audio_artifact_ref: BoundedArtifactReference,
+  transcript: Schema.NonEmptyString.check(
     Schema.isMaxLength(MEDIA_TRANSCRIPT_MAX_LENGTH),
     Schema.makeFilter((value) =>
       utf8ByteLength(value) <= MEDIA_TRANSCRIPT_MAX_LENGTH * 4
@@ -481,7 +482,12 @@ export const isMediaClassifierResultBoundToTranscript = (
     identity.canonical_audio_sha256 === transcript.canonical_audio_sha256 &&
     identity.transcript_artifact_ref === transcript.transcript_artifact_ref &&
     identity.transcript_sha256 === transcript.transcript_sha256;
-  if (!identityMatches || result.status !== "classified") return identityMatches;
+  const evidenceIndexesInBounds = result.evidence.every(
+    ({ segment_index }) => segment_index < transcript.segments.length,
+  );
+  if (!identityMatches || !evidenceIndexesInBounds || result.status !== "classified") {
+    return identityMatches && evidenceIndexesInBounds;
+  }
 
   const evidenceKinds = new Set(result.evidence.map(({ kind }) => kind));
   const evidenceCoversClaimedFields =
@@ -494,8 +500,7 @@ export const isMediaClassifierResultBoundToTranscript = (
     result.secondary_language_bcp47 !== result.primary_language_bcp47 &&
     (result.secondary_language_bcp47 === null) ===
       (result.confidence.secondary_language === null) &&
-    evidenceCoversClaimedFields &&
-    result.evidence.every(({ segment_index }) => segment_index < transcript.segments.length)
+    evidenceCoversClaimedFields
   );
 };
 
@@ -508,9 +513,11 @@ export const isMediaAsrResultBoundToInput = (
   result.audio.audio_revision === input.audio.audio_revision &&
   result.audio.analysis_revision === input.audio.analysis_revision &&
   result.audio.canonical_audio_sha256 === input.audio.canonical_audio_sha256 &&
+  result.audio.audio_artifact_ref === input.audio.audio_artifact_ref &&
   result.attempt.attempt_id === input.attempt.attempt_id &&
   (result.status === "no_speech" ||
     (result.transcript.operation_id === input.audio.operation_id &&
       result.transcript.audio_revision === input.audio.audio_revision &&
       result.transcript.analysis_revision === input.audio.analysis_revision &&
-      result.transcript.canonical_audio_sha256 === input.audio.canonical_audio_sha256));
+      result.transcript.canonical_audio_sha256 === input.audio.canonical_audio_sha256 &&
+      result.transcript.audio_artifact_ref === input.audio.audio_artifact_ref));

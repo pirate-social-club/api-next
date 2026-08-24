@@ -22,6 +22,7 @@ export const hostileTranscript = {
   audio_revision: 1,
   analysis_revision: 2,
   canonical_audio_sha256: "a".repeat(64),
+  audio_artifact_ref: audio.audio_artifact_ref,
   transcript_artifact_ref: "r2://private/transcripts/operation-1/revision-2",
   transcript_sha256: "b".repeat(64),
   transcript:

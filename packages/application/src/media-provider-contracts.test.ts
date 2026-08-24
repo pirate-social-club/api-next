@@ -82,10 +82,53 @@ describe("provider-neutral media analysis contracts", () => {
         }),
       ),
     ).toBe(false);
+    expect(
+      isMediaAsrResultBoundToInput(
+        decodeMediaAsrInput(asrInput),
+        decodeMediaAsrResult({
+          ...asrTranscriptResult,
+          audio: { ...audio, audio_artifact_ref: "r2://private/audio/operation-1/revision-2" },
+          transcript: {
+            ...hostileTranscript,
+            audio_artifact_ref: "r2://private/audio/operation-1/revision-2",
+          },
+        }),
+      ),
+    ).toBe(false);
     expect(() =>
       decodeMediaAsrResult({
         ...asrNoSpeechResult,
         detected_languages: [{ language_bcp47: "en", confidence: 0.5 }],
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeMediaAsrResult({
+        ...asrTranscriptResult,
+        transcript: { ...hostileTranscript, transcript: "" },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeMediaAsrResult({
+        ...asrTranscriptResult,
+        transcript: { ...hostileTranscript, segments: [] },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeMediaAsrResult({
+        ...asrTranscriptResult,
+        transcript: {
+          ...hostileTranscript,
+          segments: [{ start_ms: 0, end_ms: 0, text: "empty duration" }],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeMediaAsrResult({
+        ...asrTranscriptResult,
+        transcript: {
+          ...hostileTranscript,
+          segments: [{ start_ms: 0, end_ms: 1_000, text: "" }],
+        },
       }),
     ).toThrow();
   });
@@ -245,6 +288,22 @@ describe("provider-neutral media analysis contracts", () => {
             ...evidence,
             segment_index: 9_999,
           })),
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isMediaClassifierResultBoundToTranscript(
+        decodeMediaExplicitnessClassifierInput(classifierInput),
+        decodeMediaExplicitnessClassifierResult({
+          version: "media-explicitness-classifier-result-v1",
+          status: "exhausted",
+          evidence: [{ kind: "explicitness", segment_index: 9_999, confidence: 0.5 }],
+          transcript_identity: classifierResult.transcript_identity,
+          attempt_id: classifierResult.attempt_id,
+          policy_revision: "lyrics-policy-1",
+          prompt_revision: "classifier-prompt-1",
+          classifier_revision: "classifier-contract-1",
+          adapter_revision: "adapter-revision-1",
         }),
       ),
     ).toBe(false);
