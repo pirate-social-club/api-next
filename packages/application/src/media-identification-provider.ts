@@ -61,6 +61,7 @@ export type MediaIdentificationInvalidReason =
   | "invalid_sample"
   | "invalid_filename"
   | "invalid_content_type"
+  | "invalid_signal"
   | "invalid_adapter_revision"
   | "invalid_limits"
   | "invalid_provider_endpoint"

@@ -59,7 +59,13 @@
     },
     "malformed_json": "{not-json",
     "oversized_response": "fixture-oversized-response",
-    "provider_throttled": { "status": { "code": 429 } },
+    "provider_throttled_http": { "status": { "code": 429 } },
+    "provider_throttled_count": { "status": { "code": 3003 } },
+    "provider_throttled_qps": { "status": { "code": 3015 } },
+    "provider_service_error": { "status": { "code": 3000 } },
+    "provider_recognition_error": { "status": { "code": 3010 } },
+    "provider_wrong_access_key": { "status": { "code": 3001 } },
+    "provider_invalid_signature": { "status": { "code": 3014 } },
     "provider_unknown": { "status": { "code": 3016 } }
   }
 }

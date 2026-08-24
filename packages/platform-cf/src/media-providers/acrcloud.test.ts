@@ -15,6 +15,20 @@ import {
   makeAcrCloudAdapter,
 } from "./acrcloud.ts";
 
+const hostileFixtures = (await Bun.file(
+  new URL("../../../../tests/fixtures/media-acr/hostile-fixtures.json", import.meta.url),
+).json()) as {
+  readonly multipart: Readonly<{
+    readonly fixed_boundary: string;
+    readonly boundary_collision_sample_ascii: string;
+  }>;
+  readonly signature: Readonly<{
+    readonly string_to_sign: string;
+    readonly expected_signature: string;
+  }>;
+  readonly responses: Readonly<Record<string, unknown>>;
+};
+
 const acceptedLimits: AcrCloudAcceptedLimits = {
   maxSampleBytes: 1024,
   maxRequestBytes: 2048,
@@ -36,11 +50,20 @@ const input = {
   },
 };
 
+function streamBody(bytes: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    start(controller) {
+      controller.enqueue(bytes);
+      controller.close();
+    },
+  });
+}
+
 function jsonResponse(value: unknown, status = 200, contentType = "application/json") {
   return {
     status,
     headers: { "content-type": contentType },
-    body: new TextEncoder().encode(JSON.stringify(value)),
+    body: streamBody(new TextEncoder().encode(JSON.stringify(value))),
   };
 }
 
@@ -54,7 +77,7 @@ function adapter(
   }> = {},
 ) {
   return makeAcrCloudAdapter({
-    host: options.host ?? "acrcloud.fixture",
+    host: options.host ?? "identify-eu-west-1.acrcloud.com",
     credentials: { accessKey: "fixture-access-key", accessSecret: "fixture-secret" },
     clock: { nowSeconds: () => 1_700_000_000 },
     adapterRevision: "acrcloud-adapter-v1",
@@ -95,20 +118,21 @@ async function resultOf(
 describe("ACRCloud signing and multipart", () => {
   test("signs the exact six-line fixture string", async () => {
     await expect(
-      buildAcrCloudSignature(
-        "fixture-secret",
-        "POST\n/v1/identify\nfixture-access-key\naudio\n1\n1700000000",
-      ),
-    ).resolves.toBe("fvc8TK9F7gaKQqkKb9/Mu0pS4Ac=");
+      buildAcrCloudSignature("fixture-secret", hostileFixtures.signature.string_to_sign),
+    ).resolves.toBe(hostileFixtures.signature.expected_signature);
   });
 
   test("never places the injected secret in multipart bytes", async () => {
     let body: Uint8Array | undefined;
     let requestId: string | undefined;
+    let redirect: string | undefined;
+    let url: string | undefined;
     const provider = adapter(null, {
       request: (request) => {
         body = request.body;
         requestId = request.requestId;
+        redirect = request.redirect;
+        url = request.url;
         return Effect.succeed(jsonResponse({ status: { code: 1001 } }));
       },
     });
@@ -116,6 +140,8 @@ describe("ACRCloud signing and multipart", () => {
     expectContext(result);
     expect(new TextDecoder().decode(body ?? new Uint8Array())).not.toContain("fixture-secret");
     expect(requestId).toBe("attempt-1");
+    expect(redirect).toBe("error");
+    expect(url).toBe("https://identify-eu-west-1.acrcloud.com/v1/identify");
   });
 
   test("encodes fixed-order fields and exact sample byte count", () => {
@@ -141,11 +167,15 @@ describe("ACRCloud signing and multipart", () => {
     expect(text).toContain('name="access_key"');
     expect(text).toContain('name="sample_bytes"\r\n\r\n4\r\n');
     expect(text).toContain('name="sample"; filename="sample.wav"');
-    expect(first.contentType).toBe(`multipart/form-data; boundary=${ACRCLOUD_MULTIPART_BOUNDARY}`);
+    expect(first.contentType).toBe(
+      `multipart/form-data; boundary=${hostileFixtures.multipart.fixed_boundary}`,
+    );
   });
 
   test("rejects a fixed-boundary collision in sample and fields", () => {
-    const sample = new TextEncoder().encode(ACRCLOUD_MULTIPART_BOUNDARY);
+    const sample = new TextEncoder().encode(
+      hostileFixtures.multipart.boundary_collision_sample_ascii,
+    );
     expect(() =>
       encodeAcrCloudMultipart({
         accessKey: "fixture-access-key",
@@ -158,7 +188,7 @@ describe("ACRCloud signing and multipart", () => {
     ).toThrow(AcrCloudMultipartBoundaryCollision);
     expect(() =>
       encodeAcrCloudMultipart({
-        accessKey: ACRCLOUD_MULTIPART_BOUNDARY,
+        accessKey: hostileFixtures.multipart.fixed_boundary,
         timestamp: "1700000000",
         signature: "signature",
         filename: "sample.wav",
@@ -199,6 +229,10 @@ describe("ACRCloud closed outcomes", () => {
       },
     });
     expectContext(result);
+    if (result.outcome === "retained_reference_match") {
+      expect(Object.isFrozen(result.evidence)).toBe(true);
+      expect(Object.isFrozen(result.evidence.artists)).toBe(true);
+    }
   });
 
   test("retains eligible custom matches and removes video-audio matches", async () => {
@@ -250,7 +284,7 @@ describe("ACRCloud closed outcomes", () => {
     const malformed = await resultOf({
       status: 200,
       headers: { "content-type": "application/json" },
-      body: new TextEncoder().encode("{not-json"),
+      body: streamBody(new TextEncoder().encode("{not-json")),
     });
     expect(malformed).toMatchObject({
       outcome: "malformed_or_unsupported_response",
@@ -282,13 +316,53 @@ describe("ACRCloud closed outcomes", () => {
     const oversized = await resultOf({
       status: 200,
       headers: { "content-type": "application/json" },
-      body: new Uint8Array(acceptedLimits.maxResponseBytes + 1),
+      body: streamBody(new Uint8Array(acceptedLimits.maxResponseBytes + 1)),
     });
     expect(oversized).toMatchObject({
       outcome: "malformed_or_unsupported_response",
       reason: "response_too_large",
     });
     expectContext(oversized);
+  });
+
+  test("enforces the response ceiling while consuming the injected stream", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array(acceptedLimits.maxResponseBytes + 1));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const result = await resultOf({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body,
+    });
+    expect(result).toMatchObject({
+      outcome: "malformed_or_unsupported_response",
+      reason: "response_too_large",
+    });
+    expectContext(result);
+    expect(cancelled).toBe(true);
+  });
+
+  test("maps every documented provider status code through the closed outcome union", async () => {
+    const cases = [
+      ["provider_throttled_count", "retryable_failure", "throttled"],
+      ["provider_throttled_qps", "retryable_failure", "throttled"],
+      ["provider_service_error", "retryable_failure", "provider"],
+      ["provider_recognition_error", "retryable_failure", "provider"],
+      ["provider_wrong_access_key", "permanent_provider_rejection", "unauthorized"],
+      ["provider_invalid_signature", "permanent_provider_rejection", "unauthorized"],
+      ["provider_unknown", "retryable_failure", "provider"],
+    ] as const;
+    for (const [fixtureName, outcome, reason] of cases) {
+      const result = await resultOf(jsonResponse(hostileFixtures.responses[fixtureName]));
+      expect(result).toMatchObject({ outcome, reason });
+      expectContext(result);
+    }
   });
 });
 
@@ -406,7 +480,7 @@ describe("ACRCloud pre-transport validation", () => {
   test("requires injected limits and bounds them by internal memory caps", async () => {
     let calls = 0;
     const base = {
-      host: "acrcloud.fixture",
+      host: "identify-eu-west-1.acrcloud.com",
       credentials: { accessKey: "fixture-access-key", accessSecret: "fixture-secret" },
       clock: { nowSeconds: () => 1_700_000_000 },
       adapterRevision: "acrcloud-adapter-v1",
@@ -475,12 +549,14 @@ describe("ACRCloud pre-transport validation", () => {
   test("rejects hostile host forms without transport", async () => {
     let calls = 0;
     for (const host of [
-      "https://user@acrcloud.fixture",
-      "https://acrcloud.fixture:443",
-      "https://acrcloud.fixture/v1/other",
-      "https://acrcloud.fixture/?query=1",
-      "https://acrcloud.fixture/#fragment",
-      "http://acrcloud.fixture",
+      "https://user@identify-eu-west-1.acrcloud.com",
+      "https://identify-eu-west-1.acrcloud.com:443",
+      "https://identify-eu-west-1.acrcloud.com/v1/other",
+      "https://identify-eu-west-1.acrcloud.com/",
+      "identify-eu-west-1.acrcloud.com/",
+      "https://identify-eu-west-1.acrcloud.com/?query=1",
+      "https://identify-eu-west-1.acrcloud.com/#fragment",
+      "http://identify-eu-west-1.acrcloud.com",
     ]) {
       const provider = adapter(null, {
         host,
@@ -524,5 +600,51 @@ describe("ACRCloud pre-transport validation", () => {
     });
     expectContext(result);
     expect(calls).toBe(0);
+  });
+
+  test("snapshots validated configuration and request metadata before async work", async () => {
+    let release!: (response: ReturnType<typeof jsonResponse>) => void;
+    let captured: { readonly url: string; readonly body: Uint8Array } | undefined;
+    const gate = new Promise<ReturnType<typeof jsonResponse>>((resolve) => {
+      release = resolve;
+    });
+    const credentials = { accessKey: "fixture-access-key", accessSecret: "fixture-secret" };
+    const mutableInput = {
+      ...input,
+      sample: { ...input.sample, bytes: new Uint8Array(input.sample.bytes) },
+    };
+    const options = {
+      host: "identify-eu-west-1.acrcloud.com",
+      credentials,
+      clock: { nowSeconds: () => 1_700_000_000 },
+      adapterRevision: "acrcloud-adapter-v1",
+      limits: { ...acceptedLimits },
+      transport: {
+        request: (request: Parameters<NonNullable<AcrCloudTransport["request"]>>[0]) => {
+          captured = { url: request.url, body: request.body };
+          return gate;
+        },
+      },
+    };
+    const provider = makeAcrCloudAdapter(options);
+    const pending = provider.identify(mutableInput);
+
+    mutableInput.operationId = "mutated-operation";
+    mutableInput.requestId = "mutated-request";
+    mutableInput.sample.filename = "mutated.wav";
+    mutableInput.sample.bytes[0] = 9;
+    credentials.accessKey = "mutated-access-key";
+    options.host = "identify-us-west-2.acrcloud.com";
+    options.adapterRevision = "mutated-revision";
+    options.limits.maxRequestBytes = 1;
+
+    const running = Effect.runPromise(pending);
+    release(jsonResponse({ status: { code: 1001 } }));
+    const result = await running;
+    expectContext(result);
+    expect(captured?.url).toBe("https://identify-eu-west-1.acrcloud.com/v1/identify");
+    expect(new TextDecoder().decode(captured?.body ?? new Uint8Array())).toContain(
+      "fixture-access-key",
+    );
   });
 });
