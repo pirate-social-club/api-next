@@ -25,10 +25,8 @@ import {
 } from "./r2-seal-probe-staging-transport";
 
 export const STAGING_ENV_NAMES = {
-  accountId: "R2_STAGING_ACCOUNT_ID",
-  accessKeyId: "R2_STAGING_ACCESS_KEY_ID",
-  secretAccessKey: "R2_STAGING_SECRET_ACCESS_KEY",
-  bucket: "R2_STAGING_BUCKET",
+  accessKeyId: "R2_SEAL_PROBE_ACCESS_KEY_ID",
+  secretAccessKey: "R2_SEAL_PROBE_SECRET_ACCESS_KEY",
 } as const;
 
 export const STAGING_EXECUTION_ACKNOWLEDGEMENT = "execute-staging" as const;
@@ -40,15 +38,23 @@ export type StagingConfig = Readonly<{
   bucket: string;
 }>;
 
+export type StagingTarget = Readonly<{
+  accountId: string;
+  bucket: string;
+}>;
+
 export type StagingRunOptions = Readonly<{
   acknowledgement?: string;
   env?: Readonly<Record<string, string | undefined>>;
+  target?: StagingTarget;
   fetch?: StagingTransportOptions["fetch"];
   now?: () => Date;
   runId?: string;
 }>;
 
-export type ProbeMode = "dry-run" | "execute-staging";
+export type ProbeInvocation =
+  | Readonly<{ mode: "dry-run" }>
+  | Readonly<{ mode: "execute-staging"; target: StagingTarget }>;
 
 const CONTENT_TYPE = "audio/mpeg";
 const CONTENT = new TextEncoder().encode("r2-seal-staging-proof-v1\n");
@@ -75,12 +81,12 @@ function requiredEnv(env: Readonly<Record<string, string | undefined>>, name: st
 
 export function readStagingConfig(
   env: Readonly<Record<string, string | undefined>> = process.env,
+  target?: StagingTarget,
 ): StagingConfig {
-  const accountId = requiredEnv(env, STAGING_ENV_NAMES.accountId);
+  if (target === undefined) throw new Error("staging probe target is missing");
+  const { accountId, bucket } = target;
   if (!/^[a-f0-9]{32}$/i.test(accountId)) {
-    throw new Error(
-      `required staging environment variable ${STAGING_ENV_NAMES.accountId} is invalid`,
-    );
+    throw new Error("staging probe account id is invalid");
   }
   const accessKeyId = requiredEnv(env, STAGING_ENV_NAMES.accessKeyId);
   if (!/^[A-Za-z0-9._-]{8,128}$/.test(accessKeyId)) {
@@ -94,18 +100,27 @@ export function readStagingConfig(
       `required staging environment variable ${STAGING_ENV_NAMES.secretAccessKey} is invalid`,
     );
   }
-  const bucket = requiredEnv(env, STAGING_ENV_NAMES.bucket);
   if (!/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) {
-    throw new Error(`required staging environment variable ${STAGING_ENV_NAMES.bucket} is invalid`);
+    throw new Error("staging probe bucket is invalid");
   }
   return { accountId, accessKeyId, secretAccessKey, bucket };
 }
 
-export function parseProbeMode(args: readonly string[]): ProbeMode {
-  if (args.length === 0) return "dry-run";
-  if (args.length === 1 && args[0] === "--execute-staging") return "execute-staging";
+export function parseProbeInvocation(args: readonly string[]): ProbeInvocation {
+  if (args.length === 0) return { mode: "dry-run" };
+  if (
+    args.length === 5 &&
+    args[0] === "--execute-staging" &&
+    args[1] === "--account-id" &&
+    args[3] === "--bucket"
+  ) {
+    return {
+      mode: "execute-staging",
+      target: { accountId: args[2] ?? "", bucket: args[4] ?? "" },
+    };
+  }
   throw new Error(
-    "use no arguments for the local dry run or exactly --execute-staging for staging",
+    "use no arguments for the local dry run or exactly --execute-staging --account-id <id> --bucket <bucket>",
   );
 }
 
@@ -289,7 +304,7 @@ function defaultScenario(sourceKey: string, destinationKey: string, expectedSha2
 
 export async function runStagingProbe(options: StagingRunOptions = {}): Promise<StagingEvidence> {
   const acknowledgedExecuteFlag = requireStagingAcknowledgement(options.acknowledgement);
-  const config = readStagingConfig(options.env ?? process.env);
+  const config = readStagingConfig(options.env ?? process.env, options.target);
   const runId = options.runId ?? newRunId();
   if (!/^[A-Za-z0-9-]{8,128}$/.test(runId)) throw new Error("staging run id is invalid");
   const prefix = `media-r2-seal-probe/${runId}/`;

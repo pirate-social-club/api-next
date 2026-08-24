@@ -91,19 +91,27 @@ The same entrypoint has an explicit, mutating acknowledgement for a future
 disposable staging run:
 
 ```text
-R2_STAGING_ACCOUNT_ID=... \
-R2_STAGING_ACCESS_KEY_ID=... \
-R2_STAGING_SECRET_ACCESS_KEY=... \
-R2_STAGING_BUCKET=... \
-bun scripts/media/r2-seal-probe.ts --execute-staging
+infisical run --env=staging --path=/services/api-next/operator -- \
+  bun scripts/media/r2-seal-probe.ts --execute-staging \
+  --account-id <canonical-account-id> \
+  --bucket <disposable-bucket-name>
 ```
 
-The values above are placeholders and must never be put in shell history,
-source, evidence, or logs. The runner validates the four required environment
-variables without echoing any value. With no arguments the entrypoint always
-uses the local fake transport; the staging flag is the only path that reads
-credentials or calls `fetch`. The staging output is projected through the
-closed [staging schema](./staging-schema.json).
+Infisical injects only `R2_SEAL_PROBE_ACCESS_KEY_ID` and
+`R2_SEAL_PROBE_SECRET_ACCESS_KEY`. Their initial `PENDING` values are deliberate
+unusable provisioning sentinels; both must be replaced in staging Infisical
+before execution. Each sentinel is rejected before a provider transport is
+constructed, even if the other credential has already been replaced. Never
+put a real credential in shell history, source, evidence, logs, or a local
+environment file.
+
+The account identifier and bucket name are public execution-target
+configuration, not secrets. The runner accepts them only as the explicit
+arguments above and validates them without echoing credential values. With no
+arguments the entrypoint always uses the local fake transport; the acknowledged
+staging invocation is the only path that reads credentials or calls `fetch`.
+The staging output is projected through the closed
+[staging schema](./staging-schema.json).
 
 The staging path generates one run-specific prefix and two exact keys. It
 checks both keys before writing and uses `If-None-Match: *` for the source

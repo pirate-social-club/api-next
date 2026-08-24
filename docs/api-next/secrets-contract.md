@@ -186,6 +186,8 @@ classification below drove the migration. Both roots are now empty.
 | --- |
 | `CONTROL_PLANE_POSTGRES_ADMIN_URL` |
 | `CONTROL_PLANE_POSTGRES_RUNTIME_URL` |
+| `R2_SEAL_PROBE_ACCESS_KEY_ID` (staging provisionable) |
+| `R2_SEAL_PROBE_SECRET_ACCESS_KEY` (staging provisionable) |
 
 Neither name is referenced by api-next Worker source. The Worker reaches
 Postgres through the `CONTROL_PLANE` Hyperdrive binding, so database URLs stay
@@ -246,7 +248,32 @@ configuration must be reintroduced deliberately.
 /services/api-next/operator
   CONTROL_PLANE_POSTGRES_ADMIN_URL
   CONTROL_PLANE_POSTGRES_RUNTIME_URL
+  R2_SEAL_PROBE_ACCESS_KEY_ID
+  R2_SEAL_PROBE_SECRET_ACCESS_KEY
 ```
+
+### R2 seal-probe provisioning boundary — 2026-08-24
+
+The R2 staging proof is an operator script, not a Worker. Its credential pair
+lives only in Infisical environment `staging` at
+`/services/api-next/operator`; it is never synchronized to Cloudflare Worker
+secrets. The environment selects staging, so the credential names remain
+environment-neutral. The previous runner-local `R2_STAGING_*` vocabulary is
+not an accepted Infisical contract.
+
+The two names are allowed but not completeness-required by the name-only
+audit. Initial provisioning uses the workspace's explicit unusable sentinel
+`PENDING` for both values. Each sentinel independently fails the probe's shape
+validation before a provider transport is constructed, including when an
+operator replaces only one of the two values. This is a reviewed provisioning
+handoff, not evidence that the credential pair is usable.
+
+`R2_SEAL_PROBE_ACCESS_KEY_ID` and `R2_SEAL_PROBE_SECRET_ACCESS_KEY` are genuine
+confidential inputs consumed by the probe, so they satisfy the secret
+classification and zero-orphan rules. The canonical account identifier and
+disposable bucket name are public execution-target configuration and stay out
+of Infisical. The probe receives them as explicit command arguments. No local
+environment file is part of this procedure.
 
 ## Known drift
 

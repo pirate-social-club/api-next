@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { FakeR2Transport, loadHostileFixtures, probeScenario } from "./r2-seal-probe";
 import {
-  parseProbeMode,
+  parseProbeInvocation,
   readStagingConfig,
   runStagingProbe,
   STAGING_EXECUTION_ACKNOWLEDGEMENT,
@@ -49,25 +49,52 @@ function base64ToHex(value: string): string {
 }
 
 const STAGING_ENV = {
-  R2_STAGING_ACCOUNT_ID: ACCOUNT_ID,
-  R2_STAGING_ACCESS_KEY_ID: ACCESS_KEY_ID,
-  R2_STAGING_SECRET_ACCESS_KEY: SECRET_ACCESS_KEY,
-  R2_STAGING_BUCKET: "fixture-bucket",
+  R2_SEAL_PROBE_ACCESS_KEY_ID: ACCESS_KEY_ID,
+  R2_SEAL_PROBE_SECRET_ACCESS_KEY: SECRET_ACCESS_KEY,
 } as const;
+const STAGING_TARGET = { accountId: ACCOUNT_ID, bucket: "fixture-bucket" } as const;
 
 describe("staging R2 probe safety", () => {
   test("requires the explicit staging acknowledgement and validates credentials without echoing them", () => {
-    expect(parseProbeMode([])).toBe("dry-run");
-    expect(parseProbeMode(["--execute-staging"])).toBe("execute-staging");
-    expect(() => parseProbeMode(["--execute-staging", SECRET_ACCESS_KEY])).toThrow();
+    expect(parseProbeInvocation([])).toEqual({ mode: "dry-run" });
+    expect(
+      parseProbeInvocation([
+        "--execute-staging",
+        "--account-id",
+        ACCOUNT_ID,
+        "--bucket",
+        "fixture-bucket",
+      ]),
+    ).toEqual({ mode: "execute-staging", target: STAGING_TARGET });
+    expect(() => parseProbeInvocation(["--execute-staging", SECRET_ACCESS_KEY])).toThrow();
     expect(() =>
-      readStagingConfig({
-        R2_STAGING_ACCOUNT_ID: ACCOUNT_ID,
-        R2_STAGING_ACCESS_KEY_ID: ACCESS_KEY_ID,
-        R2_STAGING_SECRET_ACCESS_KEY: "short",
-        R2_STAGING_BUCKET: "fixture-bucket",
-      }),
-    ).toThrow("R2_STAGING_SECRET_ACCESS_KEY");
+      readStagingConfig(
+        {
+          R2_SEAL_PROBE_ACCESS_KEY_ID: ACCESS_KEY_ID,
+          R2_SEAL_PROBE_SECRET_ACCESS_KEY: "short",
+        },
+        STAGING_TARGET,
+      ),
+    ).toThrow("R2_SEAL_PROBE_SECRET_ACCESS_KEY");
+
+    expect(() =>
+      readStagingConfig(
+        {
+          R2_SEAL_PROBE_ACCESS_KEY_ID: "PENDING",
+          R2_SEAL_PROBE_SECRET_ACCESS_KEY: SECRET_ACCESS_KEY,
+        },
+        STAGING_TARGET,
+      ),
+    ).toThrow("R2_SEAL_PROBE_ACCESS_KEY_ID");
+    expect(() =>
+      readStagingConfig(
+        {
+          R2_SEAL_PROBE_ACCESS_KEY_ID: ACCESS_KEY_ID,
+          R2_SEAL_PROBE_SECRET_ACCESS_KEY: "PENDING",
+        },
+        STAGING_TARGET,
+      ),
+    ).toThrow("R2_SEAL_PROBE_SECRET_ACCESS_KEY");
   });
 
   test("rejects a direct probe import before touching environment or fetch", async () => {
@@ -282,11 +309,10 @@ describe("staging R2 probe safety", () => {
     };
     const evidence = await runStagingProbe({
       env: {
-        R2_STAGING_ACCOUNT_ID: ACCOUNT_ID,
-        R2_STAGING_ACCESS_KEY_ID: ACCESS_KEY_ID,
-        R2_STAGING_SECRET_ACCESS_KEY: SECRET_ACCESS_KEY,
-        R2_STAGING_BUCKET: "fixture-bucket",
+        R2_SEAL_PROBE_ACCESS_KEY_ID: ACCESS_KEY_ID,
+        R2_SEAL_PROBE_SECRET_ACCESS_KEY: SECRET_ACCESS_KEY,
       },
+      target: STAGING_TARGET,
       fetch: fakeFetch,
       acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
       runId: "20260823-160000-test",
@@ -310,6 +336,7 @@ describe("staging R2 probe safety", () => {
     const methods: string[] = [];
     const evidence = await runStagingProbe({
       env: STAGING_ENV,
+      target: STAGING_TARGET,
       acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
       runId,
       fetch: async (_url, init) => {
@@ -369,6 +396,7 @@ describe("staging R2 probe safety", () => {
     };
     const evidence = await runStagingProbe({
       env: STAGING_ENV,
+      target: STAGING_TARGET,
       acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
       runId: "20260823-160003-copy-loss",
       fetch: async (_url, init) => {
@@ -426,6 +454,7 @@ describe("staging R2 probe safety", () => {
       let requestNumber = 0;
       const evidence = await runStagingProbe({
         env: STAGING_ENV,
+        target: STAGING_TARGET,
         acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
         runId,
         fetch: async (_url, init) => {
@@ -483,6 +512,7 @@ describe("staging R2 probe safety", () => {
       };
       const evidence = await runStagingProbe({
         env: STAGING_ENV,
+        target: STAGING_TARGET,
         acknowledgement: STAGING_EXECUTION_ACKNOWLEDGEMENT,
         runId,
         fetch: async (_url, init) => {
@@ -755,13 +785,12 @@ describe("staging R2 probe safety", () => {
 
   test("redacts staging evidence to identities and outcomes only", async () => {
     const env = {
-      R2_STAGING_ACCOUNT_ID: ACCOUNT_ID,
-      R2_STAGING_ACCESS_KEY_ID: ACCESS_KEY_ID,
-      R2_STAGING_SECRET_ACCESS_KEY: SECRET_ACCESS_KEY,
-      R2_STAGING_BUCKET: "fixture-bucket",
+      R2_SEAL_PROBE_ACCESS_KEY_ID: ACCESS_KEY_ID,
+      R2_SEAL_PROBE_SECRET_ACCESS_KEY: SECRET_ACCESS_KEY,
     };
     const base = await runStagingProbe({
       env,
+      target: STAGING_TARGET,
       fetch: async (_url, init) => {
         if (init.method === "HEAD")
           return response(404, {}, "<Error><Code>NoSuchKey</Code></Error>");
