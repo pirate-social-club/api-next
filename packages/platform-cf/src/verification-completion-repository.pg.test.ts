@@ -917,7 +917,6 @@ suite("Postgres 17 verification completion repository", () => {
               idempotency_key: "create-community-1",
               draft: {
                 name: "Jazleeuw",
-                route_request: { family: "hns", root_label: "jazleeuw" },
                 description: "Verified people",
                 policy: {
                   version: 1,
@@ -1120,7 +1119,6 @@ suite("Postgres 17 verification completion repository", () => {
               draft: {
                 ...created.draft,
                 name: "Second community",
-                route_request: { family: "hns", root_label: "second-community" },
               },
             },
           }),
@@ -1180,7 +1178,6 @@ suite("Postgres 17 verification completion repository", () => {
               draft: {
                 ...created.draft,
                 name: "Approved community",
-                route_request: { family: "hns", root_label: "approved-community" },
               },
             },
           }),
@@ -1266,7 +1263,6 @@ suite("Postgres 17 verification completion repository", () => {
                 draft: {
                   ...created.draft,
                   name: `Race community ${index}`,
-                  route_request: { family: "hns", root_label: `race-community-${index}` },
                 },
               },
             }),
@@ -1344,7 +1340,6 @@ suite("Postgres 17 verification completion repository", () => {
               draft: {
                 ...created.draft,
                 name: "Rollback community",
-                route_request: { family: "hns", root_label: "rollback-community" },
               },
             },
           }),
@@ -1417,7 +1412,6 @@ suite("Postgres 17 verification completion repository", () => {
               idempotency_key: "create-community-lock-order",
               draft: {
                 name: "Lock order",
-                route_request: { family: "hns", root_label: "lock-order" },
                 description: null,
                 policy: {
                   version: 1,

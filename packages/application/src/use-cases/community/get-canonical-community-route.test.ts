@@ -31,6 +31,28 @@ const service = (response: unknown, calls: string[]) => ({
 });
 
 describe("getCanonicalCommunityRoute", () => {
+  test("resolves an active community by permanent id without namespace authority", async () => {
+    const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
+    const calls: string[] = [];
+    await expect(
+      Effect.runPromise(
+        getCanonicalCommunityRoute(
+          { path_segment: communityId },
+          service(
+            {
+              authority_version: "optional_route_v2",
+              community_id: communityId,
+              href: `/c/${communityId}`,
+              canonical_route: null,
+            },
+            calls,
+          ),
+        ),
+      ),
+    ).resolves.toMatchObject({ community_id: communityId, canonical_route: null });
+    expect(calls).toEqual([communityId]);
+  });
+
   test("resolves exact ACE HNS and Spaces paths without normalization", async () => {
     const hnsCalls: string[] = [];
     await expect(

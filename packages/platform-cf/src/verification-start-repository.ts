@@ -417,7 +417,8 @@ function lockCreationAuthority(
     return (
       (!requireRevision || Number(row.revision) === creation.expected_revision) &&
       row.status === "verification_required" &&
-      row.creation_contract_version === "route_v1" &&
+      (row.creation_contract_version === "route_v1" ||
+        row.creation_contract_version === "optional_route_v2") &&
       row.intent_active === true &&
       row.requirement_status === "pending" &&
       row.requirement_hash === HUMAN_MEMBERSHIP_VERIFICATION_REQUIREMENT_HASH &&

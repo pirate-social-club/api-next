@@ -4,6 +4,7 @@ import {
   communityNamespaceRequirementHash,
   communityNamespaceRequirementPreimage,
   deriveCommunityRoute,
+  parseCommunityPathSegment,
   parseCommunityRoutePathSegment,
   validCommunityRouteRoot,
 } from "./canonical-route.ts";
@@ -148,6 +149,28 @@ describe("canonical community routes", () => {
       "community_opaque_id",
     ]) {
       expect(parseCommunityRoutePathSegment(candidate), candidate).toEqual({
+        kind: "rejected",
+        reason: "invalid_path_segment",
+      });
+    }
+  });
+
+  test("reserves generated community identifiers as a disjoint public path family", () => {
+    const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
+    expect(parseCommunityPathSegment(communityId)).toEqual({
+      kind: "accepted",
+      value: { kind: "community_id", community_id: communityId, href: `/c/${communityId}` },
+    });
+    expect(parseCommunityPathSegment("app.jazleeuw")).toMatchObject({
+      kind: "accepted",
+      value: { kind: "namespace_route", route: { family: "hns" } },
+    });
+    for (const invalid of [
+      "community_opaque_id",
+      "community_123e4567-e89b-12d3-a456-426614174000",
+      "community_123e4567-e89b-42d3-7456-426614174000",
+    ]) {
+      expect(parseCommunityPathSegment(invalid)).toEqual({
         kind: "rejected",
         reason: "invalid_path_segment",
       });

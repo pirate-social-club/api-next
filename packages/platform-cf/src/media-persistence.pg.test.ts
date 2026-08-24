@@ -136,11 +136,11 @@ async function withSchema<A>(
   const connection = scopedConnection(connectionString, schema);
   try {
     const migrations = await loadPostgresMigrations();
-    const media = migrations.filter(({ version }) => version === "0043_song_media_submission.sql");
-    expect(media).toHaveLength(1);
-    const foundation = migrations.filter(
-      ({ version }) => version !== "0043_song_media_submission.sql",
+    const mediaMigrationIndex = migrations.findIndex(
+      ({ version }) => version === "0043_song_media_submission.sql",
     );
+    expect(mediaMigrationIndex).toBeGreaterThanOrEqual(0);
+    const foundation = migrations.slice(0, mediaMigrationIndex);
     await runPostgresMigrations({ connectionString: connection, migrations: foundation });
     await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     if (populated) {

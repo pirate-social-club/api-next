@@ -207,7 +207,8 @@ function prelockCommunityCreationCompletion(
   return Effect.gen(function* () {
     const candidateResult = yield* transaction.execute<Row>({
       label: "verification.completion.prelock-creation-candidate",
-      text: `SELECT intent.intent_id, attempt.ceremony_intent_id
+      text: `SELECT intent.intent_id, intent.creation_contract_version,
+                    attempt.ceremony_intent_id
                FROM proof_sessions AS session
                JOIN community_creation_ceremony_attempts AS attempt
                  ON attempt.ceremony_intent_id = session.creation_ceremony_intent_id
@@ -216,7 +217,7 @@ function prelockCommunityCreationCompletion(
                JOIN community_creation_intents AS intent
                  ON intent.intent_id = attempt.intent_id
                 AND intent.actor_id = attempt.actor_id
-                AND intent.creation_contract_version = 'route_v1'
+                AND intent.creation_contract_version IN ('route_v1', 'optional_route_v2')
               WHERE session.proof_session_id = $1
                 AND session.actor_id = $2`,
       values: [input.proofSessionId, input.actorId],
@@ -226,7 +227,12 @@ function prelockCommunityCreationCompletion(
     if (candidate === null) return;
     const intentId = stringField(candidate, "intent_id");
     const ceremonyIntentId = stringField(candidate, "ceremony_intent_id");
-    if (intentId === null || ceremonyIntentId === null) {
+    const contractVersion = stringField(candidate, "creation_contract_version");
+    if (
+      intentId === null ||
+      ceremonyIntentId === null ||
+      (contractVersion !== "route_v1" && contractVersion !== "optional_route_v2")
+    ) {
       return yield* Effect.fail(storageFailure());
     }
 
@@ -267,11 +273,14 @@ function prelockCommunityCreationCompletion(
       values: [intentId, input.actorId],
       readonly: false,
     });
-    if (
-      requirementsResult.rows.length !== 2 ||
-      requirementsResult.rows[0]?.requirement_kind !== "human_identity" ||
-      requirementsResult.rows[1]?.requirement_kind !== "namespace_ownership"
-    ) {
+    const requirementsMatch =
+      contractVersion === "optional_route_v2"
+        ? requirementsResult.rows.length === 1 &&
+          requirementsResult.rows[0]?.requirement_kind === "human_identity"
+        : requirementsResult.rows.length === 2 &&
+          requirementsResult.rows[0]?.requirement_kind === "human_identity" &&
+          requirementsResult.rows[1]?.requirement_kind === "namespace_ownership";
+    if (!requirementsMatch) {
       return yield* Effect.fail(storageFailure());
     }
     const attemptResult = yield* transaction.execute<Row>({

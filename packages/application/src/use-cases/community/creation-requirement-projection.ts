@@ -1,7 +1,9 @@
 import {
   type CommunityCreationRequirementsV1,
+  type CommunityCreationRequirementsV2,
   type CreationRequirementProgressV1,
   decodeCommunityCreationRequirementsV1,
+  decodeCommunityCreationRequirementsV2,
   decodeCreationRequirementProgressV1,
 } from "@pirate/contracts";
 import {
@@ -48,4 +50,14 @@ export function publicCommunityCreationRequirements(
     human_identity: publicCreationRequirementProgress(states.human_identity),
     namespace_ownership: publicCreationRequirementProgress(states.namespace_ownership),
   });
+}
+
+export function publicOptionalRouteCommunityCreationRequirements(
+  humanIdentity: CreationRequirementProgress,
+): CommunityCreationRequirementsV2 {
+  const projected = publicCreationRequirementProgress(humanIdentity);
+  if (projected.requirement !== "human_identity") {
+    throw new Error("Optional-route creation requires human identity progress");
+  }
+  return decodeCommunityCreationRequirementsV2({ human_identity: projected });
 }

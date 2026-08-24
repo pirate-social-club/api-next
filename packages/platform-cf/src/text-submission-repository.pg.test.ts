@@ -671,6 +671,153 @@ suite("Postgres 17 terminal text submission repository", () => {
     });
   }, 30_000);
 
+  test("publishes posts, comments, and approved held comments without a namespace binding", async () => {
+    await withSchema(async (admin, connection) => {
+      const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           canonical_route_binding_id, route_authority_version, route_slug,
+           created_at, updated_at
+         ) VALUES ($1, 'Namespaceless text', 'active', $2,
+           NULL, 'optional_route_v2', NULL, clock_timestamp(), clock_timestamp())`,
+        [communityId, actor.userId],
+      );
+      await admin.query(
+        `INSERT INTO community_memberships (
+           community_id, membership_id, user_id, status, joined_at, created_at, updated_at
+         ) VALUES ($1, 'text-membership-namespaceless', $2, 'member',
+           clock_timestamp(), clock_timestamp(), clock_timestamp())`,
+        [communityId, actor.userId],
+      );
+
+      const postText = "namespaceless post";
+      const postInput = { ...input, body: postText };
+      const postCanonical = canonicalTextModerationInput(postInput);
+      if (postCanonical.kind === "rejected") throw new Error(postCanonical.reason);
+      const postRequestHash = await Effect.runPromise(
+        canonicalBodyHash({
+          community_id: communityId,
+          body: { ...body, idempotency_key: "namespaceless-text-post", body: postText },
+        }),
+      );
+      const postResult = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId,
+          actor,
+          body: { ...body, idempotency_key: "namespaceless-text-post", body: postText },
+          moderationInput: postInput,
+          idempotencyKey: "namespaceless-text-post",
+          requestHash: postRequestHash,
+          operationId: "operation_namespaceless_text_post",
+          evaluation: { ...evaluation, input_sha256: postCanonical.sha256 },
+        }),
+      );
+      expect(postResult).toMatchObject({
+        kind: "created",
+        snapshot: { status: "published", published_resource: { kind: "post" } },
+      });
+
+      await admin.query(
+        `INSERT INTO posts (
+           community_id, post_id, author_user_id, post_type, status, visibility,
+           body, created_at, updated_at
+         ) VALUES ($1, 'namespaceless-comment-target', $2, 'text', 'published',
+           'public', 'target', clock_timestamp(), clock_timestamp())`,
+        [communityId, actor.userId],
+      );
+      const commentText = "namespaceless comment";
+      const namespacelessCommentInput = { ...commentInput, body: commentText };
+      const commentCanonical = canonicalTextModerationInput(namespacelessCommentInput);
+      if (commentCanonical.kind === "rejected") throw new Error(commentCanonical.reason);
+      const commentRequestHash = await Effect.runPromise(
+        canonicalBodyHash({
+          endpoint: "comment",
+          community_id: communityId,
+          post_id: "namespaceless-comment-target",
+          body: { idempotency_key: "namespaceless-comment", body: commentText },
+        }),
+      );
+      const commentResult = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId,
+          actor,
+          body: { idempotency_key: "namespaceless-comment", body: commentText },
+          moderationInput: namespacelessCommentInput,
+          idempotencyKey: "namespaceless-comment",
+          requestHash: commentRequestHash,
+          operationId: "operation_namespaceless_comment",
+          evaluation: { ...commentEvaluation, input_sha256: commentCanonical.sha256 },
+          target: {
+            surface: "comment",
+            communityId,
+            postId: "namespaceless-comment-target",
+          },
+        }),
+      );
+      expect(commentResult).toMatchObject({
+        kind: "created",
+        snapshot: { status: "published", published_resource: { kind: "comment" } },
+      });
+
+      const heldText = "namespaceless held comment";
+      const heldInput = { ...commentInput, body: heldText };
+      const heldCanonical = canonicalTextModerationInput(heldInput);
+      if (heldCanonical.kind === "rejected") throw new Error(heldCanonical.reason);
+      const heldRequestHash = await Effect.runPromise(
+        canonicalBodyHash({
+          endpoint: "comment",
+          community_id: communityId,
+          post_id: "namespaceless-comment-target",
+          body: { idempotency_key: "namespaceless-held", body: heldText },
+        }),
+      );
+      const heldResult = await runStore(connection, (store) =>
+        store.commitTerminal({
+          communityId,
+          actor,
+          body: { idempotency_key: "namespaceless-held", body: heldText },
+          moderationInput: heldInput,
+          idempotencyKey: "namespaceless-held",
+          requestHash: heldRequestHash,
+          operationId: "operation_namespaceless_held",
+          evaluation: {
+            ...commentEvaluation,
+            decision: "manual_review",
+            reason_codes: ["provider_unavailable"],
+            input_sha256: heldCanonical.sha256,
+          },
+          target: {
+            surface: "comment",
+            communityId,
+            postId: "namespaceless-comment-target",
+          },
+        }),
+      );
+      if (heldResult.kind !== "created" || heldResult.snapshot.review_ref === null) {
+        throw new Error("expected held namespaceless comment");
+      }
+      const actionHash = await Effect.runPromise(
+        canonicalBodyHash({
+          endpoint: "POST /moderation/cases/:caseRef/actions",
+          case_ref: heldResult.snapshot.review_ref,
+          body: { idempotency_key: "namespaceless-approve", action: "approve" },
+        }),
+      );
+      await expect(
+        runStore(connection, (store) =>
+          store.moderateCaseAction({
+            caseRef: heldResult.snapshot.review_ref as string,
+            actor: { ...actor, scopes: ["moderator"] },
+            idempotencyKey: "namespaceless-approve",
+            action: "approve",
+            requestHash: actionHash,
+          }),
+        ),
+      ).resolves.toMatchObject({ action: "approve", targetStatus: "published" });
+    });
+  }, 30_000);
+
   test("comments same-key race commits one submission and replays winner bytes", async () => {
     await withSchema(async (admin, connection) => {
       await insertCommentPost(admin);

@@ -74,19 +74,23 @@
   "cleanBreakOperations": [
     {
       "operationId": "post_communityCreationIntents",
-      "reason": "Spec 012 clean break replaces the unshipped Pirate-local slug with canonical HNS/Spaces route requests and two independently projected verification requirements."
+      "reason": "2026-08-23 optional-route v2 clean break: creation has no route request, projects exactly one human requirement, and delegates later namespace attachment to the sibling route aggregate."
     },
     {
       "operationId": "get_communityCreationIntentsIntentId",
-      "reason": "Spec 012 clean break replaces the unshipped slug intent projection with the canonical route and two-requirement creation contract."
+      "reason": "2026-08-23 optional-route v2 clean break: creation replay projects exactly one human requirement and preserves the permanent generated community_... identity independently of namespace attachment."
     },
     {
       "operationId": "patch_communityCreationIntentsIntentId",
-      "reason": "Spec 012 clean break replaces slug mutation with route-request rebinding and independently fenced namespace evidence."
+      "reason": "2026-08-23 optional-route v2 clean break: draft mutation has no route-rebinding surface and leaves later namespace attachment to the sibling route aggregate."
     },
     {
       "operationId": "post_communityCreationIntentsIntentIdCommit",
-      "reason": "Spec 012 clean break requires both ceremonies and returns the verified canonical route instead of a Pirate-local slug resource."
+      "reason": "2026-08-23 optional-route v2 clean break: commit requires the human ceremony only and returns the permanent generated-id href with a nullable canonical-route projection."
+    },
+    {
+      "operationId": "get_cPathSegment",
+      "reason": "2026-08-23 optional-route v2 clean break: /c/community_... permanently resolves an active community without namespace authority, while canonical_route is nullable until an active namespace binding exists."
     },
     {
       "operationId": "post_postsPostIdVote",

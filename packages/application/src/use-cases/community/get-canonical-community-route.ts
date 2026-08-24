@@ -1,11 +1,11 @@
 import {
   BadRequest,
-  decodeCanonicalCommunityRouteResolutionV1,
+  decodeCommunityPathResolution,
   type GetCanonicalCommunityRoute,
   InternalError,
   NotFound,
 } from "@pirate/contracts";
-import { parseCommunityRoutePathSegment } from "@pirate/domain";
+import { parseCommunityPathSegment } from "@pirate/domain";
 import { Effect, type Schema } from "effect";
 import {
   CanonicalCommunityRouteRepositoryError,
@@ -39,7 +39,7 @@ export const getCanonicalCommunityRoute = Effect.fn("getCanonicalCommunityRoute"
     return yield* new BadRequest({ message: "Invalid canonical community route" });
   }
 
-  const parsed = parseCommunityRoutePathSegment(input.path_segment);
+  const parsed = parseCommunityPathSegment(input.path_segment);
   if (parsed.kind === "rejected") {
     return yield* new BadRequest({ message: "Invalid canonical community route" });
   }
@@ -57,18 +57,32 @@ export const getCanonicalCommunityRoute = Effect.fn("getCanonicalCommunityRoute"
 
   let document: GetCanonicalCommunityRouteDocument;
   try {
-    document = decodeCanonicalCommunityRouteResolutionV1(resolved);
+    document = decodeCommunityPathResolution(resolved);
   } catch {
     return yield* new InternalError({ message: "Canonical community route lookup failed" });
   }
 
+  if (parsed.value.kind === "community_id") {
+    if (
+      !("authority_version" in document) ||
+      document.authority_version !== "optional_route_v2" ||
+      document.community_id !== parsed.value.community_id ||
+      document.href !== parsed.value.href
+    ) {
+      return yield* new InternalError({ message: "Canonical community route lookup failed" });
+    }
+    return document;
+  }
+  if ("authority_version" in document) {
+    return yield* new InternalError({ message: "Canonical community route lookup failed" });
+  }
   const route = document.canonical_route;
   if (
-    route.family !== parsed.value.family ||
-    route.root_label !== parsed.value.root_label ||
-    route.root_label_display !== parsed.value.root_label_display ||
-    route.path_segment !== parsed.value.path_segment ||
-    route.href !== parsed.value.href ||
+    route.family !== parsed.value.route.family ||
+    route.root_label !== parsed.value.route.root_label ||
+    route.root_label_display !== parsed.value.route.root_label_display ||
+    route.path_segment !== parsed.value.route.path_segment ||
+    route.href !== parsed.value.route.href ||
     (route.family === "spaces" && route.app_host !== null) ||
     (route.family === "hns" && route.app_host !== null && route.app_host !== route.path_segment)
   ) {

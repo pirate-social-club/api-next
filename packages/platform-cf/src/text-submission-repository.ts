@@ -269,16 +269,17 @@ const authority = (
       stringValue(membership.rows[0] as Row, "status") !== "member"
     )
       return yield* Effect.fail(failure("commit", "membership-required"));
-    const route = yield* transaction.execute<Row>({
-      label: "text-post.commit.effective-route",
-      text: `WITH db_clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
-             SELECT route.community_id
-               FROM db_clock
-               CROSS JOIN LATERAL effective_active_route($1, db_clock.now) AS route`,
-      values: [communityId],
+    const activeEffect = yield* transaction.execute<Row>({
+      label: "text-post.commit.active-community-effect",
+      text: "SELECT active_community_effect($1, $2) AS allowed",
+      values: [communityId, actorUserId],
       readonly: true,
     });
-    if (route.rows.length !== 1) return yield* Effect.fail(failure("commit", "not-found"));
+    if (
+      activeEffect.rows.length !== 1 ||
+      booleanValue(activeEffect.rows[0] as Row, "allowed") !== true
+    )
+      return yield* Effect.fail(failure("commit", "membership-required"));
     const policy = yield* transaction.execute<Row>({
       label: "text-post.commit.current-policy",
       text: `SELECT pointer.policy_revision_id, revision.policy_hash
@@ -470,16 +471,17 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
         stringValue(membership.rows[0] as Row, "status") !== "member"
       )
         return yield* Effect.fail(failure("authority", "membership-required"));
-      const route = yield* db.execute<Row>({
-        label: "text-post.preflight.effective-route",
-        text: `WITH db_clock AS MATERIALIZED (SELECT clock_timestamp() AS now)
-               SELECT route.community_id
-                 FROM db_clock
-                 CROSS JOIN LATERAL effective_active_route($1, db_clock.now) AS route`,
-        values: [input.communityId],
+      const activeEffect = yield* db.execute<Row>({
+        label: "text-post.preflight.active-community-effect",
+        text: "SELECT active_community_effect($1, $2) AS allowed",
+        values: [input.communityId, input.actor.userId],
         readonly: true,
       });
-      if (route.rows.length !== 1) return yield* Effect.fail(failure("authority", "not-found"));
+      if (
+        activeEffect.rows.length !== 1 ||
+        booleanValue(activeEffect.rows[0] as Row, "allowed") !== true
+      )
+        return yield* Effect.fail(failure("authority", "membership-required"));
     });
 
   const replay: RepositoryService["replay"] = (input) =>
@@ -1303,6 +1305,19 @@ export function makeControlPlaneTextPostRepository(): RepositoryService {
                       parentCommentId: targetParentCommentId,
                     };
             if (target === null) return yield* Effect.fail(failure("action", "invalid-row"));
+            const activeEffect = yield* transaction.execute<Row>({
+              label: "moderation-action.approve.active-community-effect",
+              text: "SELECT active_community_effect($1, $2) AS allowed",
+              values: [communityId, input.actor.userId],
+              readonly: true,
+            });
+            if (
+              activeEffect.rows.length !== 1 ||
+              booleanValue(activeEffect.rows[0] as Row, "allowed") !== true
+            )
+              return yield* Effect.fail(
+                failureWithSubmission("action", "membership-required", submissionId),
+              );
             const targetState = yield* lockCommentTarget(transaction, target);
             const body = stringValue(row, "held_body");
             if (body === null || body.trim() === "")

@@ -1,8 +1,21 @@
 import type { CommunityCreationStore } from "@pirate/application";
 import type { ProviderSessionStart } from "@pirate/application/verification";
-import { communityCreationProviderBindingHash } from "@pirate/domain";
+import type { CommunityCreationIntentV1 } from "@pirate/contracts";
+import {
+  COMMUNITY_CREATION_CEREMONY_RESERVATION_VERSION,
+  communityCreationCeremonyReservationHash,
+  communityCreationProviderBindingHash,
+  communityNamespaceRequirementHash,
+  compileCommunityGatePolicy,
+  deriveCommunityRoute,
+  VERY_WEB_CONFIGURATION_REFERENCE,
+  VERY_WEB_CONFIGURATION_VERSION,
+  VERY_WEB_PROTOCOL_VERSION,
+  VERY_WEB_PROVIDER_ID,
+} from "@pirate/domain";
 import type { EvidenceBundle, ProofSession } from "@pirate/domain/verification";
 import { Effect } from "effect";
+import { Client } from "pg";
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository.ts";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "./namespace-ownership-completion-repository.ts";
 import { makeControlPlaneNamespaceOwnershipStartStore } from "./namespace-ownership-start-repository.ts";
@@ -148,6 +161,203 @@ function veryEvidenceBundle(
   };
 }
 
+async function seedRouteV1CreationIntent(
+  connection: string,
+  creationStore: CommunityCreationStore["Service"],
+  input: Readonly<{
+    readonly actor: CommunityCreationTestActor;
+    readonly prefix: string;
+    readonly rootLabel: string;
+    readonly displayName?: string;
+  }>,
+): Promise<CommunityCreationIntentV1> {
+  const intentId = `${input.prefix}-1`;
+  const ceremonyIntentId = `${input.prefix}-ceremony-1`;
+  const requestHash = "9".repeat(64);
+  const draft = {
+    name: input.displayName ?? input.prefix,
+    description: null,
+    route_request: { family: "hns" as const, root_label: input.rootLabel },
+    policy: humanPolicy,
+  };
+  const compilation = compileCommunityGatePolicy(humanPolicy);
+  const route = deriveCommunityRoute(draft.route_request);
+  const namespaceRequirement = communityNamespaceRequirementHash(draft.route_request);
+  if (
+    compilation.kind !== "supported" ||
+    route.kind !== "accepted" ||
+    namespaceRequirement.kind !== "accepted"
+  ) {
+    throw new Error("expected a supported route-v1 test fixture");
+  }
+  const humanBinding = {
+    requirement: "human_identity" as const,
+    family: null,
+    provider_id: VERY_WEB_PROVIDER_ID,
+    provider_configuration: {
+      kind: "dynamic" as const,
+      reference: VERY_WEB_CONFIGURATION_REFERENCE,
+      version: VERY_WEB_CONFIGURATION_VERSION,
+    },
+    protocol_version: VERY_WEB_PROTOCOL_VERSION,
+  };
+  const namespaceBinding = {
+    requirement: "namespace_ownership" as const,
+    family: "hns" as const,
+    provider_id: "hns.owner.v1",
+    provider_configuration: {
+      kind: "managed" as const,
+      reference: "hns-owner-test",
+      version: "1",
+    },
+    protocol_version: "hns-txt-v1",
+  };
+  const humanBindingHash = communityCreationProviderBindingHash(humanBinding);
+  const namespaceBindingHash = communityCreationProviderBindingHash(namespaceBinding);
+  const reservation = {
+    actor_id: input.actor.userId,
+    creation_intent_id: intentId,
+    ceremony_intent_id: ceremonyIntentId,
+    requirement: "human_identity" as const,
+    generation: 1,
+    requirement_hash: compilation.verification_requirement_hash,
+    provider_id: humanBinding.provider_id,
+    provider_binding_hash: humanBindingHash,
+    route: null,
+  };
+  const reservationRequest = {
+    ...reservation,
+    version: COMMUNITY_CREATION_CEREMONY_RESERVATION_VERSION,
+  };
+  const client = new Client({ connectionString: connection });
+  await client.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO community_creation_intents (
+         intent_id, actor_id, create_idempotency_key, create_request_hash,
+         revision, status, draft, canonical_policy_revision,
+         canonical_policy_hash, verification_requirement_hash,
+         verification_provider_id, provider_configuration_kind,
+         provider_configuration_ref, provider_configuration_version,
+         expires_at, creation_contract_version
+       ) VALUES (
+         $1, $2, $3, $4, 1, 'verification_required', $5::jsonb, 1,
+         $6, $7, $8, $9, $10, $11,
+         clock_timestamp() + interval '1 day', 'route_v1'
+       )`,
+      [
+        intentId,
+        input.actor.userId,
+        `${input.prefix}-create`,
+        requestHash,
+        JSON.stringify(draft),
+        compilation.canonical_policy_hash,
+        compilation.verification_requirement_hash,
+        humanBinding.provider_id,
+        humanBinding.provider_configuration.kind,
+        humanBinding.provider_configuration.reference,
+        humanBinding.provider_configuration.version,
+      ],
+    );
+    await client.query(
+      `INSERT INTO community_creation_requirement_states (
+         intent_id, actor_id, requirement_kind, status,
+         requirement_hash, provider_id, provider_binding_hash,
+         provider_configuration_kind, provider_configuration_ref,
+         provider_configuration_version, route_family, route_root_label,
+         route_root_label_display, route_path_segment, generation,
+         current_ceremony_intent_id
+       ) VALUES
+       ($1, $2, 'human_identity', 'unmet', $3, $4, $5, $6, $7, $8,
+        NULL, NULL, NULL, NULL, 0, NULL),
+       ($1, $2, 'namespace_ownership', 'unmet', $9, $10, $11, $12, $13, $14,
+        $15, $16, $17, $18, 0, NULL)`,
+      [
+        intentId,
+        input.actor.userId,
+        compilation.verification_requirement_hash,
+        humanBinding.provider_id,
+        humanBindingHash,
+        humanBinding.provider_configuration.kind,
+        humanBinding.provider_configuration.reference,
+        humanBinding.provider_configuration.version,
+        namespaceRequirement.value,
+        namespaceBinding.provider_id,
+        namespaceBindingHash,
+        namespaceBinding.provider_configuration.kind,
+        namespaceBinding.provider_configuration.reference,
+        namespaceBinding.provider_configuration.version,
+        route.value.family,
+        route.value.root_label,
+        route.value.root_label_display,
+        route.value.path_segment,
+      ],
+    );
+    await client.query(
+      `INSERT INTO community_creation_ceremony_attempts (
+         ceremony_intent_id, actor_id, intent_id, requirement_kind,
+         generation, requirement_hash, provider_id, provider_binding_hash,
+         provider_configuration_kind, provider_configuration_ref,
+         provider_configuration_version, route_family, route_root_label,
+         route_root_label_display, route_path_segment,
+         reservation_request_hash, reservation_request, expires_at
+       ) SELECT $1, $2, $3, 'human_identity', 1, $4, $5, $6, $7, $8, $9,
+                NULL, NULL, NULL, NULL, $10, $11::jsonb, intent.expires_at
+           FROM community_creation_intents AS intent
+          WHERE intent.intent_id = $3 AND intent.actor_id = $2`,
+      [
+        ceremonyIntentId,
+        input.actor.userId,
+        intentId,
+        compilation.verification_requirement_hash,
+        humanBinding.provider_id,
+        humanBindingHash,
+        humanBinding.provider_configuration.kind,
+        humanBinding.provider_configuration.reference,
+        humanBinding.provider_configuration.version,
+        communityCreationCeremonyReservationHash(reservation),
+        JSON.stringify(reservationRequest),
+      ],
+    );
+    await client.query(
+      `UPDATE community_creation_requirement_states
+          SET status = 'pending', generation = 1,
+              current_ceremony_intent_id = $1, updated_at = clock_timestamp()
+        WHERE intent_id = $2 AND actor_id = $3
+          AND requirement_kind = 'human_identity'
+          AND status = 'unmet' AND generation = 0`,
+      [ceremonyIntentId, intentId, input.actor.userId],
+    );
+    await client.query("COMMIT");
+
+    const document = await Effect.runPromise(creationStore.get({ actor: input.actor, intentId }));
+    if (document === null || "creation_contract_version" in document) {
+      throw new Error("expected a route-v1 creation intent");
+    }
+    await client.query(
+      `INSERT INTO community_creation_intent_revisions (
+         intent_id, revision, actor_id, operation_kind, idempotency_key,
+         request_hash, status, state_snapshot
+       ) VALUES ($1, 1, $2, 'create', $3, $4, $5, $6::jsonb)`,
+      [
+        intentId,
+        input.actor.userId,
+        `${input.prefix}-create`,
+        requestHash,
+        document.status,
+        JSON.stringify(document),
+      ],
+    );
+    return document;
+  } catch (cause) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw cause;
+  } finally {
+    await client.end();
+  }
+}
+
 export async function prepareCommitReadyCommunity(
   input: Readonly<{
     readonly connection: string;
@@ -162,22 +372,12 @@ export async function prepareCommitReadyCommunity(
 ) {
   const { connection, actor, prefix, rootLabel } = input;
   const creationStore = makeCommunityCreationStoreForTest(connection, 86_400, prefix);
-  const created = await Effect.runPromise(
-    creationStore.create({
-      actor,
-      requestHash: "9".repeat(64),
-      body: {
-        idempotency_key: `${prefix}-create`,
-        draft: {
-          name: input.displayName ?? prefix,
-          description: null,
-          route_request: { family: "hns", root_label: rootLabel },
-          policy: humanPolicy,
-        },
-      },
-    }),
-  );
-  const document = created.document;
+  const document = await seedRouteV1CreationIntent(connection, creationStore, {
+    actor,
+    prefix,
+    rootLabel,
+    ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+  });
   if (document.next_action.kind !== "start_verification") {
     throw new Error("expected the human creation ceremony");
   }
@@ -286,6 +486,9 @@ export async function prepareCommitReadyCommunity(
   );
   if (namespacePending?.next_action.kind !== "start_verification") {
     throw new Error("expected the namespace ownership ceremony");
+  }
+  if ("creation_contract_version" in namespacePending) {
+    throw new Error("expected a historical route-v1 creation intent");
   }
   const namespaceBindingHash = communityCreationProviderBindingHash({
     requirement: "namespace_ownership",

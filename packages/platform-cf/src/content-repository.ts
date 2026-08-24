@@ -325,14 +325,7 @@ const resolveCommentIn = (
       : null;
   });
 
-/**
- * The route predicate is deliberately kept in the platform repository.  The
- * application only supplies the canonical community id; it must not recreate
- * route authority from an application clock or a partial set of route rows.
- *
- * The community row is locked before membership and content rows, matching
- * the route-revalidation lock order (community -> binding).
- */
+/** The community row is locked before membership and content rows. */
 const lockActiveCommunityIn = (
   transaction: Transaction,
   communityId: string,
@@ -400,28 +393,22 @@ const requireActiveMembershipIn = (
     }
   });
 
-const requireEffectiveActiveRouteIn = (
+const requireActiveCommunityEffectIn = (
   transaction: Transaction,
   communityId: string,
+  userId: string,
   operation: ContentRepositoryOperation,
 ) =>
   Effect.gen(function* () {
     const result = yield* transaction.execute<Row>({
-      label: "content.communities.require-effective-route",
-      text: `WITH db_clock AS MATERIALIZED (
-               SELECT clock_timestamp() AS now
-             )
-             SELECT route.community_id
-             FROM db_clock
-             CROSS JOIN LATERAL effective_active_route($1, db_clock.now) AS route`,
-      values: [communityId],
+      label: "content.communities.require-active-community-effect",
+      text: "SELECT active_community_effect($1, $2) AS allowed",
+      values: [communityId, userId],
       readonly: true,
     });
-    if (result.rows.length > 1) return yield* invalid(operation);
-    if (result.rows.length === 0) return yield* notFound(operation);
-    if (stringValue(result.rows[0] as Row, "community_id") !== communityId) {
-      return yield* invalid(operation);
-    }
+    if (result.rows.length !== 1) return yield* invalid(operation);
+    if (booleanValue(result.rows[0] as Row, "allowed") !== true)
+      return yield* new ContentRepositoryError({ operation, reason: "membership-required" });
   });
 
 const loadPostStateIn = (transaction: Transaction, communityId: string, postId: string) =>
@@ -497,7 +484,7 @@ const requireVoteAuthorityIn = (
     if (post.communityId !== communityId || post.postId !== postId || post.status !== "published") {
       return yield* notFound(operation);
     }
-    yield* requireEffectiveActiveRouteIn(transaction, communityId, operation);
+    yield* requireActiveCommunityEffectIn(transaction, communityId, actorUserId, operation);
   });
 
 type ActorVote = Readonly<{
@@ -828,7 +815,12 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             actor.userId,
             body.idempotency_key,
           );
-          yield* requireEffectiveActiveRouteIn(transaction, communityId, "create-post");
+          yield* requireActiveCommunityEffectIn(
+            transaction,
+            communityId,
+            actor.userId,
+            "create-post",
+          );
           const found = yield* oneRow(existing.rows, "create-post");
           if (found !== null) {
             const persistedHash = stringValue(found, "idempotency_body_hash");

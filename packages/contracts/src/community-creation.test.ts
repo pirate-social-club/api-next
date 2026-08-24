@@ -22,8 +22,11 @@ const policy = {
 const draft = {
   name: "Jazleeuw",
   description: null,
-  route_request: { family: "hns" as const, root_label: "jazleeuw" },
   policy,
+};
+const routeV1Draft = {
+  ...draft,
+  route_request: { family: "hns" as const, root_label: "jazleeuw" },
 };
 const requirements = {
   human_identity: {
@@ -48,7 +51,7 @@ const requirements = {
 const base = {
   intent_id: "intent-1",
   revision: 1,
-  draft,
+  draft: routeV1Draft,
   canonical_policy_revision: 1,
   canonical_policy_hash: "a".repeat(64),
   requirements,
@@ -86,7 +89,7 @@ describe("community creation contracts", () => {
         idempotency_key: "create-key-1",
         draft,
       }),
-    ).toMatchObject({ draft: { route_request: { family: "hns", root_label: "jazleeuw" } } });
+    ).toMatchObject({ draft: { name: "Jazleeuw", description: null } });
     expect(
       Schema.decodeUnknownSync(UpdateCommunityCreationIntent.request.body)({
         idempotency_key: "update-key-1",
@@ -102,28 +105,14 @@ describe("community creation contracts", () => {
     ).toEqual({ idempotency_key: "commit-key-1", expected_revision: 2 });
   });
 
-  test("accepts HNS and Spaces route requests and rejects client-derived route fields", () => {
+  test("requires route-free V2 creation and rejects namespace-derived fields", () => {
     const decode = Schema.decodeUnknownSync(CreateCommunityCreationIntent.request.body, {
       onExcessProperty: "error",
     });
+    expect(decode({ idempotency_key: "create-route-free", draft })).toBeDefined();
     for (const route_request of [
       { family: "hns", root_label: "jazleeuw" },
       { family: "spaces", root_label: "music" },
-      { family: "hns", root_label: "münchen" },
-      { family: "spaces", root_label: "🔥" },
-    ]) {
-      expect(
-        decode({
-          idempotency_key: `create-${route_request.family}-${route_request.root_label}`,
-          draft: { ...draft, route_request },
-        }),
-      ).toBeDefined();
-    }
-    for (const route_request of [
-      { family: "hns", root_label: "app.jazleeuw" },
-      { family: "spaces", root_label: "@music" },
-      { family: "hns", root_label: "jazleeuw." },
-      { family: "hns", root_label: "percent%2Eescape" },
     ]) {
       expect(() =>
         decode({
@@ -145,6 +134,66 @@ describe("community creation contracts", () => {
             root_label: "jazleeuw",
             href: "/c/app.evil",
           },
+        },
+      }),
+    ).toThrow();
+  });
+
+  test("pins V2 to one human requirement and an immutable generated-id result", () => {
+    const humanOnly = { human_identity: requirements.human_identity };
+    const v2Base = {
+      creation_contract_version: "optional_route_v2",
+      intent_id: "intent-v2",
+      revision: 1,
+      draft,
+      canonical_policy_revision: 1,
+      canonical_policy_hash: "a".repeat(64),
+      requirements: humanOnly,
+      expires_at: "2026-08-20T13:00:00.000Z",
+      committed_resource: null,
+    };
+    const decoded = Schema.decodeUnknownSync(CommunityCreationIntent)({
+      ...v2Base,
+      status: "verification_required",
+      next_action: {
+        kind: "start_verification",
+        requirement: "human_identity",
+        provider_id: "very.oauth",
+        creation_intent_id: "intent-v2",
+        ceremony_intent_id: "human-ceremony-1",
+        generation: 1,
+      },
+    });
+    expect(decoded.requirements).toEqual(humanOnly);
+
+    const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
+    expect(
+      Schema.decodeUnknownSync(CommunityCreationIntent)({
+        ...v2Base,
+        revision: 2,
+        status: "committed",
+        next_action: { kind: "none", reason: "committed" },
+        committed_resource: {
+          authority_version: "optional_route_v2",
+          community_id: communityId,
+          href: `/c/${communityId}`,
+          canonical_route: null,
+        },
+      }).committed_resource,
+    ).toMatchObject({ community_id: communityId, canonical_route: null });
+
+    expect(() =>
+      Schema.decodeUnknownSync(CommunityCreationIntent, { onExcessProperty: "error" })({
+        ...v2Base,
+        requirements,
+        status: "verification_required",
+        next_action: {
+          kind: "start_verification",
+          requirement: "human_identity",
+          provider_id: "very.oauth",
+          creation_intent_id: "intent-v2",
+          ceremony_intent_id: "human-ceremony-1",
+          generation: 1,
         },
       }),
     ).toThrow();

@@ -96,7 +96,7 @@ function storeFor(
     intent_ttl_seconds: ttlSeconds,
     next_intent_id: () => `${idPrefix}-${++sequence}`,
     next_ceremony_intent_id: () => `${idPrefix}-ceremony-${sequence}`,
-    next_community_id: () => `${idPrefix}-community`,
+    next_community_id: () => `community_${crypto.randomUUID()}`,
     next_route_binding_id: () => `${idPrefix}-route`,
     next_subject_claim_id: () => `${idPrefix}-subject-claim`,
     namespace_provider_bindings: [
@@ -193,7 +193,209 @@ function veryEvidenceBundle(session: ProofSession): EvidenceBundle {
 const actor = { userId: "creator-1", kind: "user" as const };
 
 suite("Postgres 17 community creation repository", () => {
-  test("activates one canonical route after exact Very and namespace ceremonies", async () => {
+  test("commits V2 after one human ceremony with a permanent namespaceless resource", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      await admin.query({
+        text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
+        values: [actor.userId],
+      });
+      const creationStore = storeFor(connection, 86_400, "optional-v2");
+      const created = await Effect.runPromise(
+        creationStore.create({
+          actor,
+          requestHash: "9".repeat(64),
+          body: {
+            idempotency_key: "optional-v2-create",
+            draft: { name: "Optional route", description: null, policy: humanPolicy },
+          },
+        }),
+      );
+      const document = created.document;
+      expect(document).toMatchObject({
+        creation_contract_version: "optional_route_v2",
+        revision: 1,
+        status: "verification_required",
+        requirements: { human_identity: { status: "pending" } },
+      });
+      expect(Object.keys(document.requirements)).toEqual(["human_identity"]);
+      if (document.next_action.kind !== "start_verification") {
+        throw new Error("expected the human creation ceremony");
+      }
+
+      const providerInput = {
+        actor_id: actor.userId,
+        intent_id: document.next_action.ceremony_intent_id,
+        request_hash: "8".repeat(64),
+        method: "palm_web",
+        scope: {
+          kind: "named" as const,
+          scope_semantics: "issuer_rp_scope" as const,
+          issuer: "https://verify.very.org",
+          rp_scope: "pirate-social",
+        },
+        request_mode: "dynamic" as const,
+        provider_configuration: {
+          kind: "dynamic" as const,
+          reference: "very-web",
+          version: "1",
+        },
+        requested_requirements: [
+          { claim_id: "credential.subject_unique" as const },
+          { claim_id: "human.personhood" as const },
+        ],
+        requested_claim_ids: ["credential.subject_unique" as const, "human.personhood" as const],
+        subject_binding_intent: "establish" as const,
+        protocol_version: "very-web-v1",
+        environment: "test",
+      } as const;
+      const startStore = makeControlPlaneVerificationSessionStartStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const reservation = await Effect.runPromise(
+        Effect.scoped(
+          startStore.reserve({
+            start: providerInput,
+            ttl_ms: 60_000,
+            creation: {
+              creation_intent_id: document.intent_id,
+              requirement: "human_identity",
+              generation: document.next_action.generation,
+              expected_revision: document.revision,
+              idempotency_key: "optional-v2-launch",
+              provider_id: "very.web",
+            },
+          }),
+        ),
+      );
+      if (reservation.kind !== "acquired") throw new Error("expected a start reservation");
+      const providerStart: ProviderSessionStart = {
+        session: {
+          id: "optional-v2-proof",
+          ...providerInput,
+          provider_id: "very.web",
+          upstream_session_ref: "very-upstream-optional-v2",
+          status: "pending",
+          started_at: "2026-08-21T00:00:00.000Z",
+          expires_at: "2099-08-21T00:00:00.000Z",
+        },
+        presentation: {
+          kind: "redirect",
+          session_id: "optional-v2-proof",
+          url: "https://very.example/verify/optional-v2",
+        },
+      };
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(startStore.finalize(reservation.reservation, providerStart)),
+        ),
+      ).resolves.toMatchObject({ kind: "created" });
+
+      const completionStore = makeControlPlaneVerificationCompletionStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      const completionReservation = await Effect.runPromise(
+        Effect.scoped(
+          completionStore.reserveAttempt({
+            proof_session_id: providerStart.session.id,
+            idempotency_key: "optional-v2-complete",
+            lease_ms: 60_000,
+            max_consumed_attempts: 3,
+          }),
+        ),
+      );
+      if (completionReservation.kind !== "acquired") {
+        throw new Error("expected a completion reservation");
+      }
+      const completion = await Effect.runPromise(
+        Effect.scoped(
+          completionStore.commit({
+            actor_id: actor.userId,
+            idempotency_key: "optional-v2-complete",
+            attempt: completionReservation.reservation,
+            expected_session: providerStart.session,
+            result_hash: "6".repeat(64),
+            bundle: veryEvidenceBundle(providerStart.session),
+          }),
+        ),
+      );
+      expect(completion).toMatchObject({ kind: "committed" });
+
+      const ready = await Effect.runPromise(
+        creationStore.get({ actor, intentId: document.intent_id }),
+      );
+      expect(ready).toMatchObject({
+        creation_contract_version: "optional_route_v2",
+        revision: 2,
+        status: "commit_ready",
+        next_action: { kind: "commit" },
+      });
+      if (ready === null) throw new Error("expected a commit-ready intent");
+      const commitInput = {
+        actor,
+        intentId: document.intent_id,
+        requestHash: "1".repeat(64),
+        body: { idempotency_key: "optional-v2-commit", expected_revision: ready.revision },
+      } as const;
+      const committed = await Effect.runPromise(creationStore.commit(commitInput));
+      const resource = committed.document.committed_resource;
+      expect(committed).toMatchObject({
+        outcome: "fresh_created",
+        document: {
+          creation_contract_version: "optional_route_v2",
+          revision: 3,
+          status: "committed",
+          committed_resource: {
+            authority_version: "optional_route_v2",
+            canonical_route: null,
+          },
+        },
+      });
+      if (resource === null || !("authority_version" in resource)) {
+        throw new Error("expected an optional-route resource");
+      }
+      expect(resource.community_id).toMatch(
+        /^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+      );
+      expect(resource.href).toBe(`/c/${resource.community_id}`);
+      await expect(Effect.runPromise(creationStore.commit(commitInput))).resolves.toEqual({
+        document: committed.document,
+        outcome: "replayed",
+      });
+
+      const stored = await admin.query(
+        `SELECT community.canonical_route_binding_id,
+                community.route_authority_version,
+                (SELECT COUNT(*)::integer FROM community_creation_requirement_states
+                  WHERE intent_id = $1 AND requirement_kind = 'human_identity') AS human_rows,
+                (SELECT COUNT(*)::integer FROM community_creation_requirement_states
+                  WHERE intent_id = $1 AND requirement_kind = 'namespace_ownership') AS namespace_rows,
+                (SELECT COUNT(*)::integer FROM community_memberships
+                  WHERE community_id = community.community_id
+                    AND user_id = $2 AND status = 'member') AS memberships,
+                (SELECT COUNT(*)::integer FROM community_route_authority_grants
+                  WHERE community_id = community.community_id
+                    AND principal_user_id = $2 AND authority = 'manage_routes'
+                    AND status = 'active') AS route_grants
+           FROM communities AS community
+          WHERE community.community_id = $3`,
+        [document.intent_id, actor.userId, resource.community_id],
+      );
+      expect(stored.rows).toEqual([
+        {
+          canonical_route_binding_id: null,
+          route_authority_version: "optional_route_v2",
+          human_rows: 1,
+          namespace_rows: 0,
+          memberships: 1,
+          route_grants: 1,
+        },
+      ]);
+    });
+    completedTestCount += 1;
+  }, 30_000);
+
+  test.skip("retains the pre-cutover route-v1 end-to-end fixture for historical replay", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
       await admin.query({
@@ -210,7 +412,6 @@ suite("Postgres 17 community creation repository", () => {
             draft: {
               name: "Bound start",
               description: null,
-              route_request: { family: "hns", root_label: "bound-start" },
               policy: humanPolicy,
             },
           },
@@ -372,6 +573,9 @@ suite("Postgres 17 community creation repository", () => {
         next_action: { requirement: "namespace_ownership" },
       });
 
+      if (!("namespace_ownership" in namespacePending.requirements)) {
+        throw new Error("expected a historical route-v1 creation intent");
+      }
       const namespaceBindingHash = communityCreationProviderBindingHash({
         requirement: "namespace_ownership",
         family: "hns",
@@ -797,7 +1001,6 @@ suite("Postgres 17 community creation repository", () => {
         draft: {
           name: "Jazleeuw",
           description: "First draft",
-          route_request: { family: "hns" as const, root_label: "jazleeuw" },
           policy: humanPolicy,
         },
       };
@@ -910,7 +1113,6 @@ suite("Postgres 17 community creation repository", () => {
             draft: {
               name: "Unsupported",
               description: null,
-              route_request: { family: "hns", root_label: "unsupported" },
               policy: {
                 version: 1,
                 accessPaths: [
@@ -941,9 +1143,8 @@ suite("Postgres 17 community creation repository", () => {
           body: {
             idempotency_key: "spaces-unsupported-1",
             draft: {
-              name: "Spaces deferred",
+              name: "Second optional route",
               description: null,
-              route_request: { family: "spaces", root_label: "music" },
               policy: humanPolicy,
             },
           },
@@ -952,9 +1153,9 @@ suite("Postgres 17 community creation repository", () => {
       expect(spacesResult).toMatchObject({
         outcome: "fresh",
         document: {
-          status: "gate_unsupported",
-          next_action: { kind: "blocked", reason: "gate_unsupported" },
-          draft: { route_request: { family: "spaces", root_label: "music" } },
+          creation_contract_version: "optional_route_v2",
+          status: "verification_required",
+          next_action: { kind: "start_verification", requirement: "human_identity" },
         },
       });
 
@@ -968,7 +1169,6 @@ suite("Postgres 17 community creation repository", () => {
             draft: {
               name: "Expiring",
               description: null,
-              route_request: { family: "hns", root_label: "expiring" },
               policy: humanPolicy,
             },
           },
@@ -1012,7 +1212,6 @@ suite("Postgres 17 community creation repository", () => {
         draft: {
           name: "Race",
           description: null,
-          route_request: { family: "hns" as const, root_label: "race" },
           policy: humanPolicy,
         },
       };

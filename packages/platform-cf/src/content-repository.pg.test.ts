@@ -792,7 +792,79 @@ suite("Postgres 17 content repository", () => {
     completedTestCount += 1;
   });
 
-  test("requires an effective active route before creating a post", async () => {
+  test("posts and votes in an optional-route community with no binding", async () => {
+    await withSchema(async (connection, admin) => {
+      await apply(connection);
+      const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
+      await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor.userId]);
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug, canonical_route_binding_id,
+           route_authority_version
+         ) VALUES ($1, 'Namespaceless', 'active', $2,
+           clock_timestamp(), clock_timestamp(), NULL, NULL, 'optional_route_v2')`,
+        [communityId, actor.userId],
+      );
+      await admin.query(
+        `INSERT INTO community_memberships (
+           community_id, membership_id, user_id, status, joined_at, created_at, updated_at
+         ) VALUES ($1, 'membership_namespaceless', $2, 'member',
+           clock_timestamp(), clock_timestamp(), clock_timestamp())`,
+        [communityId, actor.userId],
+      );
+      await admin.query(
+        `INSERT INTO posts (
+           community_id, post_id, author_user_id, post_type, status, visibility,
+           body, created_at, updated_at
+         ) VALUES ($1, 'post_namespaceless', $2, 'text', 'published', 'public',
+           'parent', clock_timestamp(), clock_timestamp())`,
+        [communityId, actor.userId],
+      );
+      const store = await storeFor(connection);
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            store.createPost({
+              communityId,
+              actor,
+              body: postBody("namespaceless-post"),
+              idempotencyBodyHash: "2".repeat(64),
+            }),
+          ),
+        ),
+      ).resolves.toMatchObject({ status: "processing" });
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            store.castPostVote({
+              communityId,
+              postId: "post_namespaceless",
+              actor,
+              body: { idempotency_key: "namespaceless-vote", value: 1 },
+              requestHash,
+            }),
+          ),
+        ),
+      ).resolves.toEqual({ post_id: "post_namespaceless", value: 1 });
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            store.clearPostVote({
+              communityId,
+              postId: "post_namespaceless",
+              actor,
+              body: { idempotency_key: "namespaceless-clear" },
+              requestHash: "b".repeat(64),
+            }),
+          ),
+        ),
+      ).resolves.toEqual({ post_id: "post_namespaceless", value: 0 });
+    });
+    completedTestCount += 1;
+  });
+
+  test("creates a post independently of namespace route lifecycle", async () => {
     for (const routeState of ["active", "suspended", "expired"] as const) {
       await withSchema(async (connection, admin) => {
         await apply(connection);
@@ -806,31 +878,19 @@ suite("Postgres 17 content repository", () => {
           body: postBody(key),
           idempotencyBodyHash: "1".repeat(64),
         });
-        if (routeState === "active") {
-          await expect(Effect.runPromise(Effect.scoped(operation))).resolves.toMatchObject({
-            status: "processing",
-          });
-          const created = await admin.query<{ count: string }>(
-            "SELECT COUNT(*) AS count FROM posts WHERE community_id = 'community_1'",
-          );
-          expect(created.rows[0]?.count).toBe("2");
-        } else {
-          const result = await Effect.runPromiseExit(Effect.scoped(operation));
-          expect(failureOf(result)).toMatchObject({ reason: "not-found" });
-          const unchanged = await admin.query<{ count: string; keyed: string }>(
-            `SELECT COUNT(*)::text AS count,
-                    COUNT(*) FILTER (WHERE idempotency_key = $1)::text AS keyed
-               FROM posts WHERE community_id = 'community_1'`,
-            [key],
-          );
-          expect(unchanged.rows[0]).toEqual({ count: "1", keyed: "0" });
-        }
+        await expect(Effect.runPromise(Effect.scoped(operation))).resolves.toMatchObject({
+          status: "processing",
+        });
+        const created = await admin.query<{ count: string }>(
+          "SELECT COUNT(*) AS count FROM posts WHERE community_id = 'community_1'",
+        );
+        expect(created.rows[0]?.count).toBe("2");
       });
     }
     completedTestCount += 1;
   }, 20_000);
 
-  test("requires an effective active route before casting a vote", async () => {
+  test("casts a vote independently of namespace route lifecycle", async () => {
     for (const routeState of ["active", "suspended", "expired"] as const) {
       await withSchema(async (connection, admin) => {
         await apply(connection);
@@ -844,29 +904,20 @@ suite("Postgres 17 content repository", () => {
           body: { idempotency_key: `route-${routeState}`, value: 1 },
           requestHash,
         });
-        if (routeState === "active") {
-          await expect(Effect.runPromise(Effect.scoped(operation))).resolves.toMatchObject({
-            post_id: "post_parent",
-            value: 1,
-          });
-          const created = await admin.query<{ count: string }>(
-            "SELECT COUNT(*) AS count FROM post_votes WHERE community_id = 'community_1'",
-          );
-          expect(created.rows[0]?.count).toBe("1");
-        } else {
-          const result = await Effect.runPromiseExit(Effect.scoped(operation));
-          expect(failureOf(result)).toMatchObject({ reason: "not-found" });
-          const unchanged = await admin.query<{ count: string }>(
-            "SELECT COUNT(*) AS count FROM post_votes WHERE community_id = 'community_1'",
-          );
-          expect(unchanged.rows[0]?.count).toBe("0");
-        }
+        await expect(Effect.runPromise(Effect.scoped(operation))).resolves.toMatchObject({
+          post_id: "post_parent",
+          value: 1,
+        });
+        const created = await admin.query<{ count: string }>(
+          "SELECT COUNT(*) AS count FROM post_votes WHERE community_id = 'community_1'",
+        );
+        expect(created.rows[0]?.count).toBe("1");
       });
     }
     completedTestCount += 1;
   }, 20_000);
 
-  test("requires an effective active route before clearing a vote", async () => {
+  test("clears a vote independently of namespace route lifecycle", async () => {
     for (const routeState of ["active", "suspended", "expired"] as const) {
       await withSchema(async (connection, admin) => {
         await apply(connection);
@@ -886,30 +937,21 @@ suite("Postgres 17 content repository", () => {
           body: { idempotency_key: `clear-${routeState}` },
           requestHash,
         });
-        if (routeState === "active") {
-          await expect(Effect.runPromise(Effect.scoped(operation))).resolves.toMatchObject({
-            post_id: "post_parent",
-            value: 0,
-          });
-          const cleared = await admin.query<{ count: string }>(
-            "SELECT COUNT(*) AS count FROM post_votes WHERE community_id = 'community_1'",
-          );
-          expect(cleared.rows[0]?.count).toBe("0");
-        } else {
-          const result = await Effect.runPromiseExit(Effect.scoped(operation));
-          expect(failureOf(result)).toMatchObject({ reason: "not-found" });
-          const unchanged = await admin.query<{ count: string }>(
-            "SELECT COUNT(*) AS count FROM post_votes WHERE community_id = 'community_1'",
-          );
-          expect(unchanged.rows[0]?.count).toBe("1");
-        }
+        await expect(Effect.runPromise(Effect.scoped(operation))).resolves.toMatchObject({
+          post_id: "post_parent",
+          value: 0,
+        });
+        const cleared = await admin.query<{ count: string }>(
+          "SELECT COUNT(*) AS count FROM post_votes WHERE community_id = 'community_1'",
+        );
+        expect(cleared.rows[0]?.count).toBe("0");
       });
     }
     completedTestCount += 1;
   }, 20_000);
 
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 10) {
+    if (connectionString !== undefined && completedTestCount === 11) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });
