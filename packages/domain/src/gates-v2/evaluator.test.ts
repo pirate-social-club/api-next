@@ -8,9 +8,7 @@ import {
   CURATED_AGE_18_POLICY,
   CURATED_AGE_18_POLICY_CANONICAL_PREIMAGE,
   type CuratedAgePolicy,
-  evaluateAge18,
   evaluateCuratedAge,
-  evaluateCuratedAge18,
   policyCanonicalPreimage,
 } from "./index.ts";
 import { sha256Hex } from "./sha256.ts";
@@ -171,19 +169,6 @@ describe("policy-driven curated-age evaluator", () => {
         trace: ["policy_invalid"],
       });
     }
-  });
-
-  test("keeps generic aliases byte-equivalent", () => {
-    const input = {
-      policy: CURATED_AGE_18_POLICY,
-      evidence: {
-        kind: "available" as const,
-        bundle: SELF_STAGING_18_PLUS_DEVELOPMENT_EVIDENCE,
-      },
-      now,
-    };
-    expect(evaluateAge18(input)).toEqual(evaluateCuratedAge(input));
-    expect(evaluateCuratedAge18(input)).toEqual(evaluateCuratedAge(input));
   });
 
   test("uses indeterminate only for explicit source unavailability", () => {

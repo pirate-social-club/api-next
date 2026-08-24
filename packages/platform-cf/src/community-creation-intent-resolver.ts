@@ -6,9 +6,9 @@ import {
 } from "@pirate/application";
 import {
   type VerificationIntentResolver,
+  VerificationProviderPlanInput,
   VerificationStartStorageFailed,
-} from "@pirate/application/use-cases/verification-start";
-import { VerificationProviderPlanInput } from "@pirate/application/verification";
+} from "@pirate/application/verification";
 import {
   communityCreationCeremonyReservationHash,
   communityCreationProviderBindingHash,

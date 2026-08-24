@@ -1,4 +1,4 @@
-import type { VerificationIntentResolver } from "@pirate/application/use-cases/verification-start";
+import type { VerificationIntentResolver } from "@pirate/application/verification";
 import {
   type ProofProviderManifest,
   VerificationRequirements,

@@ -3,6 +3,16 @@ import { relative, resolve } from "node:path";
 
 const root = resolve("apps/http-worker/src");
 const violations = [];
+const canonicalApplicationImports = new Set([
+  "@pirate/application/money/community-purchase-funding",
+  "@pirate/application/money/community-purchase-funding-admission",
+  "@pirate/application/money/community-purchase-funding-observation",
+  "@pirate/application/money/community-purchase-funding-producer",
+  "@pirate/application/money/community-purchase-funding-query",
+  "@pirate/application/namespace-ownership",
+  "@pirate/application/route-revalidation",
+  "@pirate/application/verification",
+]);
 
 async function files(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -21,7 +31,10 @@ for (const file of await files(root)) {
   for (const match of imports) {
     const specifier = match[1];
     if (specifier === "@pirate/application" || specifier.startsWith("@pirate/application/")) {
-      if (!specifier.startsWith("@pirate/application/use-cases/")) {
+      if (
+        !specifier.startsWith("@pirate/application/use-cases/") &&
+        !canonicalApplicationImports.has(specifier)
+      ) {
         violations.push(`${relative(".", file)} imports ${specifier}`);
       }
     }

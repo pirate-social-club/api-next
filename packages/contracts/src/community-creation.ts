@@ -88,9 +88,6 @@ export const CommunityCreationDraftV2 = Schema.Struct({
 });
 export type CommunityCreationDraftV2 = Schema.Schema.Type<typeof CommunityCreationDraftV2>;
 
-export const CommunityCreationDraft = CommunityCreationDraftV2;
-export type CommunityCreationDraft = CommunityCreationDraftV2;
-
 export const CommunityCreationStatus = Schema.Literals([
   "draft",
   "verification_required",

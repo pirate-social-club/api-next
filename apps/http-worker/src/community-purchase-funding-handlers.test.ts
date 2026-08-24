@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { CommunityPurchaseFundingProducerStore } from "@pirate/application/use-cases/community-purchase-funding-producer";
-import { CommunityPurchaseFundingProducerStorageFailed } from "@pirate/application/use-cases/community-purchase-funding-producer";
+import type { CommunityPurchaseFundingProducerStore } from "@pirate/application/money/community-purchase-funding-producer";
+import { CommunityPurchaseFundingProducerStorageFailed } from "@pirate/application/money/community-purchase-funding-producer";
 import { communityPurchaseAtomicAmount } from "@pirate/domain";
 import { Effect } from "effect";
 import {

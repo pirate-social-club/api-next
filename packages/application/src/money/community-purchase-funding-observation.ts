@@ -139,6 +139,3 @@ export function makeCommunityPurchaseFundingObservationUseCase(
 
   return { observe };
 }
-
-/** Short alias for callers wiring the shared request/reconciler use case. */
-export const makeObserveCommunityPurchaseFunding = makeCommunityPurchaseFundingObservationUseCase;

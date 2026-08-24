@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { startVerification } from "@pirate/application/use-cases/verification-start";
+import { startVerification } from "@pirate/application/verification";
 import { Effect } from "effect";
 import {
   makeStaticVerificationIntentResolver,

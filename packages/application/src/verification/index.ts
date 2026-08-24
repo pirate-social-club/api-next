@@ -22,7 +22,11 @@ export {
   VerificationProviderUnboundRejected,
   VerificationSubmission,
 } from "./adapter.ts";
-export type { VerificationCallbackFailure, VerificationCallbackServices } from "./callback.ts";
+export type {
+  VerificationCallbackFailure,
+  VerificationCallbackResult,
+  VerificationCallbackServices,
+} from "./callback.ts";
 export {
   HandleVerificationCallbackInput,
   handleVerificationCallback,

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type {
+  StartVerificationInput,
   StoredVerificationCompletion,
   VerificationCompletionStore,
-} from "@pirate/application/use-cases/verification-completion";
-import type { StartVerificationInput } from "@pirate/application/use-cases/verification-start";
+} from "@pirate/application/verification";
 import { NotFound } from "@pirate/contracts";
 import type { ProofSession } from "@pirate/domain/verification";
 import {

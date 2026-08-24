@@ -23,7 +23,7 @@ import {
   AcrCloudMultipartBoundaryCollision,
   AcrCloudResponseReadAborted,
   AcrCloudTransportFailure,
-  acrCloudSignature,
+  buildAcrCloudSignature,
   clockSeconds,
   encodeAcrCloudMultipart,
   endpointForAcrCloud,
@@ -166,7 +166,7 @@ export function makeAcrCloudAdapter(
           timestamp,
         ].join("\n");
         const signature = yield* Effect.tryPromise({
-          try: () => acrCloudSignature(config.credentials.accessSecret, stringToSign),
+          try: () => buildAcrCloudSignature(config.credentials.accessSecret, stringToSign),
           catch: () => new AcrCloudTransportFailure({ reason: "network" }),
         });
         let multipart: AcrCloudMultipart;
@@ -250,8 +250,6 @@ export function makeAcrCloudAdapter(
     },
   };
 }
-
-export const makeAcrCloudIdentificationProvider = makeAcrCloudAdapter;
 
 export {
   ACRCLOUD_DATA_TYPE,

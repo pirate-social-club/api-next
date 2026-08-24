@@ -1,16 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   hnsCompletionRequestHash,
-  type NamespaceOwnershipCompletionServices,
-  NamespaceOwnershipProviderUnavailable,
-  type NamespaceOwnershipStoredCompletion,
-} from "@pirate/application/use-cases/namespace-ownership-completion";
-import {
   hnsNamespaceStartHash,
+  type NamespaceOwnershipCompletionServices,
   type NamespaceOwnershipProviderAdapter,
+  NamespaceOwnershipProviderUnavailable,
   type NamespaceOwnershipStartAuthority,
   type NamespaceOwnershipStartServices,
-} from "@pirate/application/use-cases/namespace-ownership-start";
+  type NamespaceOwnershipStoredCompletion,
+} from "@pirate/application/namespace-ownership";
 import { AuthError, NotFound, RetryableConflict } from "@pirate/contracts";
 import { Effect } from "effect";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";

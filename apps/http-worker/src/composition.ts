@@ -1,7 +1,5 @@
-import {
-  makeCommunityPurchaseFundingInterpreter,
-  makeCommunityPurchaseFundingObservationUseCase,
-} from "@pirate/application/use-cases/community-purchase-funding-observation";
+import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
+import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
 import {
   type TextModeration,
   TextModerationProviderError,
@@ -15,7 +13,7 @@ import {
   authorizeSession,
 } from "@pirate/application/use-cases/session-authentication";
 import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-exchange";
-import type { VerificationIntentResolver } from "@pirate/application/use-cases/verification-start";
+import type { VerificationIntentResolver } from "@pirate/application/verification";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
 import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
 import { makeControlPlaneCommunityJoinIntentResolver } from "@pirate/platform-cf/community-join-intent-resolver";

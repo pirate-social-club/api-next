@@ -15,7 +15,7 @@ import {
   hnsOwnerRecoveryPublicStartHash,
   hnsOwnerRecoveryRequirementHash,
   hnsOwnerRecoveryResultHash,
-} from "@pirate/application/use-cases/hns-owner-recovery";
+} from "@pirate/application/route-revalidation";
 import {
   AuthError,
   BadRequest,

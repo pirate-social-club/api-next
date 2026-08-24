@@ -1049,5 +1049,3 @@ export const completeHnsRouteRevalidation = Effect.fn("completeHnsRouteRevalidat
   });
   return yield* settleFinalize(stored, outcome, "verified", resultHash);
 });
-
-export const completeRouteRevalidation = completeHnsRouteRevalidation;

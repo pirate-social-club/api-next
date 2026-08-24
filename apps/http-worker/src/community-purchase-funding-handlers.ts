@@ -1,16 +1,16 @@
 import {
   admitCommunityPurchaseFunding,
   type CommunityPurchaseFundingAdmissionStore,
-} from "@pirate/application/use-cases/community-purchase-funding-admission";
-import type { CommunityPurchaseFundingObservationUseCase } from "@pirate/application/use-cases/community-purchase-funding-observation";
+} from "@pirate/application/money/community-purchase-funding-admission";
+import type { CommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
 import {
   type CommunityPurchaseFundingProducerStore,
   produceCommunityPurchaseFundingQuote,
-} from "@pirate/application/use-cases/community-purchase-funding-producer";
+} from "@pirate/application/money/community-purchase-funding-producer";
 import {
   type CommunityPurchaseFundingQueryStore,
   getCommunityPurchaseFundingForActor,
-} from "@pirate/application/use-cases/community-purchase-funding-query";
+} from "@pirate/application/money/community-purchase-funding-query";
 import {
   AuthError,
   BadRequest,

@@ -479,8 +479,3 @@ export function hnsRouteRevalidationResultHash(
 ): Promise<string> {
   return sha256RouteRevalidationUtf8(hnsRouteRevalidationResultPreimage(input));
 }
-
-// Descriptive aliases keep the eight authorities easy to discover at call sites.
-export const hnsRouteRevalidationRequestHash = hnsRouteRevalidationStartHash;
-export const hnsRouteRevalidationEvidenceDigest = hnsRouteRevalidationEvidenceHash;
-export const hnsRouteRevalidationTerminalResultHash = hnsRouteRevalidationResultHash;
