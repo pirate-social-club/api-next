@@ -1,11 +1,16 @@
 import { describe, expect, test } from "bun:test";
-import { Cause, Effect, Exit, Result } from "effect";
+import { Cause, Effect, Exit, Fiber, Result } from "effect";
 import { classifierInput } from "../../../../tests/fixtures/media-analysis/contracts/fixtures.ts";
 import {
+  authorityChoiceResponse,
+  conflictingProviderResponse,
   hostileModelDocuments,
   identityMismatchResponse,
+  missingMetadataResponse,
   multipleChoicesResponse,
+  providerPolicy,
   statusFixtures,
+  unknownRootFieldResponse,
   validProviderResponse,
 } from "../../../../tests/fixtures/media-analysis/openrouter/fixtures.ts";
 import {
@@ -39,6 +44,19 @@ function response(value: unknown, status = 200, headers: Record<string, string> 
   } satisfies OpenRouterTransportResponse;
 }
 
+function modelResponse(document: unknown) {
+  return {
+    ...validProviderResponse,
+    choices: [
+      {
+        index: 0,
+        finish_reason: "stop",
+        message: { role: "assistant", content: JSON.stringify(document) },
+      },
+    ],
+  };
+}
+
 function configured(
   transport: (
     request: OpenRouterTransportRequest,
@@ -53,8 +71,7 @@ function configured(
     policy_revision: "policy-revision-1",
     classifier_revision: "classifier-revision-1",
     adapter_revision: "adapter-revision-1",
-    retention_policy: "owner-ratification-required",
-    routing_policy: "owner-ratification-required",
+    provider_policy: providerPolicy,
     limits,
     transport,
     ...overrides,
@@ -88,7 +105,12 @@ describe("OpenRouter classifier scaffold", () => {
   test("builds the fixed closed request and keeps transcript as inert data", () => {
     const request = buildOpenRouterClassifierRequest(
       classifierInput,
-      { api_key: "fixture-secret-key", model: "fixture/model", limits },
+      {
+        api_key: "fixture-secret-key",
+        model: "fixture/model",
+        provider_policy: providerPolicy,
+        limits,
+      },
       new AbortController().signal,
     );
     expect(request).not.toBeNull();
@@ -100,6 +122,9 @@ describe("OpenRouter classifier scaffold", () => {
     const jsonSchema = responseFormat.json_schema as Record<string, unknown>;
     expect(body.tools).toBeUndefined();
     expect(body.plugins).toBeUndefined();
+    expect(body.tool_choice).toBe("none");
+    expect(body.provider).toEqual(providerPolicy);
+    expect(request?.headers["x-openrouter-metadata"]).toBe("enabled");
     expect(jsonSchema.strict).toBe(true);
     expect((jsonSchema.schema as Record<string, unknown>).additionalProperties).toBe(false);
     const messages = body.messages as Array<Record<string, unknown>>;
@@ -127,9 +152,19 @@ describe("OpenRouter classifier scaffold", () => {
       expect(result.prompt_revision).toBe("prompt-revision-1");
       expect(result.policy_revision).toBe("policy-revision-1");
       expect(result.adapter_revision).toBe("adapter-revision-1");
+      expect(result.transcript_identity.transcript_sha256).toBe(
+        classifierInput.transcript.transcript_sha256,
+      );
     }
     expect(requests).toHaveLength(1);
     expect(JSON.stringify(result)).not.toContain("fixture-secret-key");
+    expect(
+      await failureTag(
+        configured(() => response(unknownRootFieldResponse)).classify(classifierInput, {
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).toBe("malformed_response");
   });
 
   test("maps hostile structured/prose output and multiple choices closed", async () => {
@@ -141,11 +176,9 @@ describe("OpenRouter classifier scaffold", () => {
       hostileModelDocuments.refusal,
     ]) {
       const tag = await failureTag(
-        configured(() =>
-          response({
-            choices: [{ message: { role: "assistant", content: JSON.stringify(document) } }],
-          }),
-        ).classify(classifierInput, { signal: new AbortController().signal }),
+        configured(() => response(modelResponse(document))).classify(classifierInput, {
+          signal: new AbortController().signal,
+        }),
       );
       expect(["malformed_response", "unparseable_result"]).toContain(tag);
     }
@@ -156,20 +189,18 @@ describe("OpenRouter classifier scaffold", () => {
     );
     expect(multiple).toBe("ambiguous_result");
     const invalidLanguage = await failureTag(
-      configured(() =>
-        response({
-          choices: [
-            {
-              message: {
-                role: "assistant",
-                content: JSON.stringify(hostileModelDocuments.invalid_language),
-              },
-            },
-          ],
-        }),
-      ).classify(classifierInput, { signal: new AbortController().signal }),
+      configured(() => response(modelResponse(hostileModelDocuments.invalid_language))).classify(
+        classifierInput,
+        { signal: new AbortController().signal },
+      ),
     );
     expect(invalidLanguage).toBe("out_of_policy");
+    const outOfBounds = await failureTag(
+      configured(() =>
+        response(modelResponse(hostileModelDocuments.out_of_bounds_evidence)),
+      ).classify(classifierInput, { signal: new AbortController().signal }),
+    );
+    expect(outOfBounds).toBe("out_of_policy");
   });
 
   test("maps provider statuses without returning secrets or upstream bodies", async () => {
@@ -185,6 +216,35 @@ describe("OpenRouter classifier scaffold", () => {
       ).classify(classifierInput, { signal: new AbortController().signal }),
     );
     expect(throttled).toBe("rate_limited");
+    for (const status of [
+      statusFixtures.bad_request,
+      statusFixtures.not_found,
+      statusFixtures.too_large,
+      statusFixtures.invalid_request,
+    ]) {
+      expect(
+        await failureTag(
+          configured(() => response("ignored", status)).classify(classifierInput, {
+            signal: new AbortController().signal,
+          }),
+        ),
+      ).toBe("permanent_rejection");
+    }
+    for (const status of [
+      statusFixtures.timeout,
+      statusFixtures.internal,
+      statusFixtures.bad_gateway,
+      statusFixtures.unavailable,
+      statusFixtures.gateway_timeout,
+    ]) {
+      expect(
+        await failureTag(
+          configured(() => response("ignored", status)).classify(classifierInput, {
+            signal: new AbortController().signal,
+          }),
+        ),
+      ).toBe("provider_unavailable");
+    }
   });
 
   test("requires identity match and records it only in the private sink", async () => {
@@ -194,9 +254,108 @@ describe("OpenRouter classifier scaffold", () => {
         evidence_sink: (value: unknown) => evidence.push(value),
       }).classify(classifierInput, { signal: new AbortController().signal }),
     );
-    expect(tag).toBe("permanent_rejection");
+    expect(tag).toBe("ambiguous_result");
     expect(evidence).toHaveLength(1);
-    expect(JSON.stringify(evidence[0])).toContain("fixture/model");
+    expect(evidence[0]).toMatchObject({
+      requested_model: "fixture/model",
+      served_model: "different/model",
+      completion_id: "completion-fixture",
+      provider_status: 200,
+    });
+    expect(JSON.stringify(evidence[0])).not.toContain("fixture-secret-key");
+    expect(
+      await failureTag(
+        configured(() => response(missingMetadataResponse)).classify(classifierInput, {
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).toBe("ambiguous_result");
+    expect(
+      await failureTag(
+        configured(() => response(conflictingProviderResponse)).classify(classifierInput, {
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).toBe("ambiguous_result");
+    expect(
+      await failureTag(
+        configured(() => response(authorityChoiceResponse)).classify(classifierInput, {
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).toBe("malformed_response");
+  });
+
+  test("rejects missing provider policy without transport and snapshots config/input", async () => {
+    let calls = 0;
+    const mutablePolicy = { ...providerPolicy, order: ["FixtureProvider"] };
+    const adapter = configured(
+      (request) => {
+        calls += 1;
+        const body = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown>;
+        expect(body.provider).toEqual(providerPolicy);
+        return response(validProviderResponse);
+      },
+      { provider_policy: mutablePolicy },
+    );
+    mutablePolicy.order[0] = "MutatedProvider";
+    const mutableInput = structuredClone(classifierInput);
+    const pending = adapter.classify(mutableInput, { signal: new AbortController().signal });
+    (mutableInput.transcript as unknown as { transcript: string }).transcript =
+      "mutated after classify";
+    const result = await Effect.runPromise(pending);
+    expect(result.status).toBe("classified");
+    expect(calls).toBe(1);
+    const missing = makeOpenRouterClassifierAdapter({
+      enabled: true,
+      api_key: "fixture-secret-key",
+      model: "fixture/model",
+      prompt_revision: "prompt-revision-1",
+      policy_revision: "policy-revision-1",
+      classifier_revision: "classifier-revision-1",
+      adapter_revision: "adapter-revision-1",
+      transport: () => {
+        calls += 1;
+        return response(validProviderResponse);
+      },
+    } as never);
+    expect(
+      await failureTag(missing.classify(classifierInput, { signal: new AbortController().signal })),
+    ).toBe("permanent_rejection");
+    expect(calls).toBe(1);
+  });
+
+  test("rejects oversized, wrong-content-type, and invalid UTF-8 responses", async () => {
+    expect(
+      await failureTag(
+        configured(() => response("x".repeat(10_001))).classify(classifierInput, {
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).toBe("malformed_response");
+    expect(
+      await failureTag(
+        configured(() => ({
+          status: 200,
+          headers: { "content-type": "text/plain" },
+          body: bodyOf(validProviderResponse),
+        })).classify(classifierInput, { signal: new AbortController().signal }),
+      ),
+    ).toBe("malformed_response");
+    expect(
+      await failureTag(
+        configured(() => ({
+          status: 200,
+          headers: { "content-type": "application/json" },
+          body: {
+            open: async function* () {
+              yield new Uint8Array([0xff, 0xfe]);
+            },
+            cancel: () => undefined,
+          },
+        })).classify(classifierInput, { signal: new AbortController().signal }),
+      ),
+    ).toBe("malformed_response");
   });
 
   test("honors caller cancellation, deadline, and late body disposal", async () => {
@@ -215,6 +374,29 @@ describe("OpenRouter classifier scaffold", () => {
     expect(
       await failureTag(timeout.classify(classifierInput, { signal: new AbortController().signal })),
     ).toBe("timeout");
+
+    let readerCancelled = false;
+    const bodyReadNeverSettles = configured(() => ({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: {
+        getReader: () => ({
+          read: () => new Promise<never>(() => undefined),
+          cancel: () => {
+            readerCancelled = true;
+          },
+          releaseLock: () => undefined,
+        }),
+      },
+    }));
+    expect(
+      await failureTag(
+        bodyReadNeverSettles.classify(classifierInput, {
+          signal: new AbortController().signal,
+        }),
+      ),
+    ).toBe("timeout");
+    expect(readerCancelled).toBe(true);
 
     let cancelled = false;
     const late = configured(
@@ -235,5 +417,17 @@ describe("OpenRouter classifier scaffold", () => {
     ).toBe("timeout");
     await new Promise((resolve) => setTimeout(resolve, 120));
     expect(cancelled).toBe(true);
+  });
+
+  test("aborts the transport when the Effect fiber is interrupted", async () => {
+    let transportSignal: AbortSignal | undefined;
+    const effect = configured((request) => {
+      transportSignal = request.signal;
+      return new Promise<never>(() => undefined);
+    }).classify(classifierInput, { signal: new AbortController().signal });
+    const fiber = Effect.runFork(effect);
+    await Effect.runPromise(Effect.sleep(10));
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    expect(transportSignal?.aborted).toBe(true);
   });
 });

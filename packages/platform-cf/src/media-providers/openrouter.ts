@@ -86,10 +86,26 @@ export type OpenRouterTransport = (
   request: OpenRouterTransportRequest,
 ) => OpenRouterTransportResult;
 
+type OpenRouterReader =
+  NonNullable<OpenRouterResponseBody["getReader"]> extends () => infer R ? R : never;
+const activeReaders = new WeakMap<object, OpenRouterReader>();
+
+/** No provider/routing posture is chosen by this scaffold. Composition must inject every field. */
+export type OpenRouterProviderPolicy = Readonly<{
+  readonly require_parameters: boolean;
+  readonly data_collection: "allow" | "deny";
+  readonly zdr: boolean;
+  readonly allow_fallbacks: boolean;
+  readonly sort: "price" | "throughput" | "latency";
+  readonly order: readonly string[];
+  readonly only: readonly string[];
+  readonly ignore: readonly string[];
+}>;
+
 export type OpenRouterAttemptEvidence = Readonly<{
   readonly version: "openrouter-classifier-evidence-v1";
   readonly provider: "openrouter";
-  readonly model: string;
+  readonly requested_model: string;
   readonly endpoint: typeof OPENROUTER_CLASSIFIER_ENDPOINT;
   readonly attempt_id: string;
   readonly adapter_revision: string;
@@ -97,6 +113,9 @@ export type OpenRouterAttemptEvidence = Readonly<{
   readonly policy_revision: string;
   readonly classifier_revision: string;
   readonly outcome: "classified" | MediaProviderFailureTag;
+  readonly served_model?: string;
+  readonly selected_provider?: string;
+  readonly completion_id?: string;
   readonly provider_status?: number;
 }>;
 
@@ -119,10 +138,8 @@ export type EnabledOpenRouterOptions = Readonly<{
   readonly policy_revision: string;
   readonly classifier_revision: string;
   readonly adapter_revision: string;
-  /** Explicit, owner-supplied unratified retention posture; no default exists. */
-  readonly retention_policy: string;
-  /** Explicit, owner-supplied unratified routing posture; no default exists. */
-  readonly routing_policy: string;
+  /** Explicit, owner-supplied provider/routing posture; no default exists. */
+  readonly provider_policy: OpenRouterProviderPolicy;
   readonly transport: OpenRouterTransport;
   readonly evidence_sink?: OpenRouterEvidenceSink;
   readonly limits?: OpenRouterClassifierLimits;
@@ -138,8 +155,7 @@ type Configuration = Readonly<{
   readonly policy_revision?: string;
   readonly classifier_revision?: string;
   readonly adapter_revision?: string;
-  readonly retention_policy?: string;
-  readonly routing_policy?: string;
+  readonly provider_policy?: OpenRouterProviderPolicy;
   readonly transport?: OpenRouterTransport;
   readonly evidence_sink?: OpenRouterEvidenceSink;
   readonly limits: OpenRouterClassifierLimits;
@@ -167,22 +183,123 @@ const ModelOutput = Schema.Struct({
 
 type ModelOutputValue = Schema.Schema.Type<typeof ModelOutput>;
 
+const BoundedProviderText = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256));
+const ProviderInteger = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 10_000_000_000 }));
+const ProviderPolicySchema = Schema.Struct({
+  require_parameters: Schema.Boolean,
+  data_collection: Schema.Literals(["allow", "deny"]),
+  zdr: Schema.Boolean,
+  allow_fallbacks: Schema.Boolean,
+  sort: Schema.Literals(["price", "throughput", "latency"]),
+  order: Schema.Array(BoundedProviderText).check(Schema.isMaxLength(32)),
+  only: Schema.Array(BoundedProviderText).check(Schema.isMaxLength(32)),
+  ignore: Schema.Array(BoundedProviderText).check(Schema.isMaxLength(32)),
+});
+
+type ProviderPolicyValue = Schema.Schema.Type<typeof ProviderPolicySchema>;
+
+const ProviderEndpoint = Schema.Struct({
+  provider: BoundedProviderText,
+  model: BoundedProviderText,
+  selected: Schema.Boolean,
+});
+
+const ProviderAttempt = Schema.Struct({
+  provider: BoundedProviderText,
+  model: BoundedProviderText,
+  status: ProviderInteger,
+});
+
+const OpenRouterMetadata = Schema.Struct({
+  requested: BoundedProviderText,
+  strategy: Schema.optional(BoundedProviderText),
+  region: Schema.optional(Schema.NullOr(BoundedProviderText)),
+  summary: Schema.optional(BoundedProviderText),
+  attempt: Schema.optional(ProviderInteger),
+  is_byok: Schema.optional(Schema.Boolean),
+  endpoints: Schema.Struct({
+    total: ProviderInteger,
+    available: Schema.Array(ProviderEndpoint).check(Schema.isMaxLength(64)),
+  }),
+  attempts: Schema.optional(Schema.Array(ProviderAttempt).check(Schema.isMaxLength(64))),
+  pipeline: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        type: BoundedProviderText,
+        name: BoundedProviderText,
+        data: Schema.Unknown,
+      }),
+    ).check(Schema.isMaxLength(64)),
+  ),
+});
+
 const AssistantMessage = Schema.Struct({
   role: Schema.Literal("assistant"),
   content: Schema.String,
 });
 
 const Choice = Schema.Struct({
-  index: Schema.optional(Schema.Int),
+  index: Schema.Literal(0),
   message: AssistantMessage,
-  finish_reason: Schema.optional(Schema.String),
+  finish_reason: Schema.Literal("stop"),
 });
 
 const ProviderEnvelope = Schema.Struct({
-  id: Schema.optional(Schema.String),
-  object: Schema.optional(Schema.String),
-  created: Schema.optional(Schema.Int),
-  model: Schema.optional(Schema.String),
+  id: BoundedProviderText,
+  object: Schema.Literal("chat.completion"),
+  created: ProviderInteger,
+  model: BoundedProviderText,
+  system_fingerprint: Schema.optional(Schema.NullOr(BoundedProviderText)),
+  service_tier: Schema.optional(
+    Schema.NullOr(Schema.Literals(["default", "flex", "priority", "scale", "auto"])),
+  ),
+  usage: Schema.optional(
+    Schema.Struct({
+      prompt_tokens: Schema.optional(ProviderInteger),
+      completion_tokens: Schema.optional(ProviderInteger),
+      total_tokens: Schema.optional(ProviderInteger),
+      cost: Schema.optional(
+        Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })),
+      ),
+      is_byok: Schema.optional(Schema.Boolean),
+      prompt_tokens_details: Schema.optional(
+        Schema.Struct({
+          cached_tokens: Schema.optional(ProviderInteger),
+          audio_tokens: Schema.optional(ProviderInteger),
+        }),
+      ),
+      completion_tokens_details: Schema.optional(
+        Schema.Struct({ reasoning_tokens: Schema.optional(ProviderInteger) }),
+      ),
+      cost_details: Schema.optional(
+        Schema.Struct({
+          upstream_inference_completions_cost: Schema.optional(
+            Schema.NullOr(
+              Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })),
+            ),
+          ),
+          upstream_inference_cost: Schema.optional(
+            Schema.NullOr(
+              Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })),
+            ),
+          ),
+          upstream_inference_prompt_cost: Schema.optional(
+            Schema.NullOr(
+              Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 1_000_000 })),
+            ),
+          ),
+        }),
+      ),
+      server_tool_use_details: Schema.optional(
+        Schema.Struct({
+          tool_calls_executed: ProviderInteger,
+          tool_calls_requested: ProviderInteger,
+        }),
+      ),
+    }),
+  ),
+  /** Requested through the metadata header; absent metadata is ambiguous, not trusted. */
+  openrouter_metadata: Schema.optional(OpenRouterMetadata),
   choices: Schema.Array(Choice).check(
     Schema.makeFilter((choices) =>
       choices.length === 1 ? undefined : "The classifier response must contain exactly one choice",
@@ -191,6 +308,12 @@ const ProviderEnvelope = Schema.Struct({
 });
 
 type ProviderEnvelopeValue = Schema.Schema.Type<typeof ProviderEnvelope>;
+
+type OpenRouterResponseIdentity = Readonly<{
+  readonly served_model: string;
+  readonly selected_provider: string;
+  readonly completion_id: string;
+}>;
 
 class OpenRouterFailure extends Error {
   readonly failure: MediaProviderFailure;
@@ -297,8 +420,17 @@ function validLimits(
 
 function snapshotConfiguration(options: OpenRouterClassifierOptions | undefined): Configuration {
   if (options?.enabled !== true) {
-    return { enabled: false, limits: OPENROUTER_DEFAULT_LIMITS };
+    return Object.freeze({
+      enabled: false,
+      limits: Object.freeze({ ...OPENROUTER_DEFAULT_LIMITS }),
+    });
   }
+  const providerPolicy = Option.getOrUndefined(
+    Schema.decodeUnknownOption(ProviderPolicySchema, { onExcessProperty: "error" })(
+      options.provider_policy,
+    ),
+  );
+  const limits = Object.freeze({ ...(options.limits ?? OPENROUTER_DEFAULT_LIMITS) });
   return Object.freeze({
     enabled: true,
     api_key: options.api_key,
@@ -307,10 +439,18 @@ function snapshotConfiguration(options: OpenRouterClassifierOptions | undefined)
     policy_revision: options.policy_revision,
     classifier_revision: options.classifier_revision,
     adapter_revision: options.adapter_revision,
-    retention_policy: options.retention_policy,
-    routing_policy: options.routing_policy,
+    ...(providerPolicy === undefined
+      ? {}
+      : {
+          provider_policy: Object.freeze({
+            ...providerPolicy,
+            order: Object.freeze([...providerPolicy.order]),
+            only: Object.freeze([...providerPolicy.only]),
+            ignore: Object.freeze([...providerPolicy.ignore]),
+          }),
+        }),
     transport: options.transport,
-    limits: options.limits ?? OPENROUTER_DEFAULT_LIMITS,
+    limits,
     ...(options.evidence_sink === undefined ? {} : { evidence_sink: options.evidence_sink }),
   });
 }
@@ -324,8 +464,7 @@ function configurationIsValid(configuration: Configuration): boolean {
     validBoundedText(configuration.policy_revision, 128) &&
     validBoundedText(configuration.classifier_revision, 128) &&
     validBoundedText(configuration.adapter_revision, 128) &&
-    validBoundedText(configuration.retention_policy, 256) &&
-    validBoundedText(configuration.routing_policy, 256) &&
+    configuration.provider_policy !== undefined &&
     Predicate.isFunction(configuration.transport) &&
     (configuration.evidence_sink === undefined ||
       Predicate.isFunction(configuration.evidence_sink)) &&
@@ -394,6 +533,7 @@ function schemaForModel(): Record<string, unknown> {
 function requestBody(
   input: MediaExplicitnessClassifierInput,
   model: string,
+  providerPolicy: ProviderPolicyValue,
 ): Record<string, unknown> {
   // The transcript is serialized as a labelled evidence object. It is never
   // appended to the system prompt or treated as a second instruction.
@@ -425,6 +565,17 @@ function requestBody(
     ],
     temperature: 0,
     stream: false,
+    tool_choice: "none",
+    provider: {
+      require_parameters: providerPolicy.require_parameters,
+      data_collection: providerPolicy.data_collection,
+      zdr: providerPolicy.zdr,
+      allow_fallbacks: providerPolicy.allow_fallbacks,
+      sort: providerPolicy.sort,
+      order: [...providerPolicy.order],
+      only: [...providerPolicy.only],
+      ignore: [...providerPolicy.ignore],
+    },
     response_format: {
       type: "json_schema",
       json_schema: {
@@ -438,13 +589,23 @@ function requestBody(
 
 export function buildOpenRouterClassifierRequest(
   input: MediaExplicitnessClassifierInput,
-  configuration: Pick<EnabledOpenRouterOptions, "api_key" | "model"> & {
+  configuration: Pick<EnabledOpenRouterOptions, "api_key" | "model" | "provider_policy"> & {
     readonly limits?: OpenRouterClassifierLimits;
   },
   signal: AbortSignal,
 ): OpenRouterTransportRequest | null {
-  if (!validApiKey(configuration.api_key)) return null;
-  const bodyValue = requestBody(input, configuration.model);
+  if (
+    !validApiKey(configuration.api_key) ||
+    !validBoundedText(configuration.model, OPENROUTER_MAX_MODEL_BYTES) ||
+    Option.isNone(
+      Schema.decodeUnknownOption(ProviderPolicySchema, { onExcessProperty: "error" })(
+        configuration.provider_policy,
+      ),
+    )
+  ) {
+    return null;
+  }
+  const bodyValue = requestBody(input, configuration.model, configuration.provider_policy);
   let body: Uint8Array;
   try {
     body = new TextEncoder().encode(JSON.stringify(bodyValue));
@@ -461,6 +622,7 @@ export function buildOpenRouterClassifierRequest(
       authorization: `Bearer ${configuration.api_key}`,
       "content-type": "application/json",
       "content-length": String(body.byteLength),
+      "x-openrouter-metadata": "enabled",
     },
     body,
     signal,
@@ -488,6 +650,14 @@ function isJsonContentType(value: string | null): boolean {
 
 function disposeBody(body: OpenRouterResponseBody, reason: string): void {
   try {
+    const activeReader = activeReaders.get(body);
+    if (activeReader !== undefined) {
+      activeReaders.delete(body);
+      if (activeReader.cancel !== undefined)
+        void Promise.resolve(activeReader.cancel(reason)).catch(() => undefined);
+      activeReader.releaseLock?.();
+      if (activeReader.cancel !== undefined) return;
+    }
     if (body.cancel !== undefined) {
       void Promise.resolve(body.cancel(reason)).catch(() => undefined);
       return;
@@ -514,11 +684,12 @@ async function readBoundedBody(
     if (!(value instanceof Uint8Array)) throw new OpenRouterBodyReadFailure();
     total += value.byteLength;
     if (total > maximumBytes) throw new OpenRouterBodyTooLarge();
-    chunks.push(value);
+    chunks.push(new Uint8Array(value));
   };
 
   if (body.getReader !== undefined) {
     const reader = body.getReader();
+    activeReaders.set(body, reader);
     try {
       while (true) {
         if (signal.aborted) throw new OpenRouterBodyReadFailure();
@@ -531,6 +702,7 @@ async function readBoundedBody(
         void Promise.resolve(reader.cancel("aborted_or_failed")).catch(() => undefined);
       throw error;
     } finally {
+      activeReaders.delete(body);
       reader.releaseLock?.();
     }
   } else if (body.open !== undefined) {
@@ -608,6 +780,14 @@ function providerEnvelope(
   if (Predicate.isObject(value) && Array.isArray(value.choices)) {
     if (value.choices.length > 1) return { failure: "ambiguous_result" };
     if (value.choices.length === 0) return { failure: "malformed_response" };
+    const firstChoice = value.choices[0];
+    if (
+      Predicate.isObject(firstChoice) &&
+      Predicate.isObject(firstChoice.message) &&
+      (!("id" in value) || !("model" in value))
+    ) {
+      return { failure: "ambiguous_result" };
+    }
   }
   const decoded = Schema.decodeUnknownOption(ProviderEnvelope, { onExcessProperty: "error" })(
     value,
@@ -616,6 +796,23 @@ function providerEnvelope(
   const envelope = decoded.value;
   if (envelope.choices.length !== 1) return { failure: "ambiguous_result" };
   return { envelope };
+}
+
+function responseIdentity(
+  envelope: ProviderEnvelopeValue,
+  requestedModel: string,
+): OpenRouterResponseIdentity | null {
+  const metadata = envelope.openrouter_metadata;
+  if (metadata === undefined || metadata.requested !== requestedModel) return null;
+  const selected = metadata.endpoints.available.filter((endpoint) => endpoint.selected);
+  if (selected.length !== 1) return null;
+  const selectedEndpoint = selected[0];
+  if (selectedEndpoint === undefined || selectedEndpoint.model !== envelope.model) return null;
+  return {
+    served_model: envelope.model,
+    selected_provider: selectedEndpoint.provider,
+    completion_id: envelope.id,
+  };
 }
 
 function parseJson(bytes: Uint8Array): unknown | null {
@@ -656,6 +853,7 @@ function recordEvidence(
   configuration: Configuration,
   attempt_id: string,
   outcome: "classified" | MediaProviderFailureTag,
+  identity?: Partial<OpenRouterResponseIdentity>,
   provider_status?: number,
 ): void {
   const sink = configuration.evidence_sink;
@@ -672,7 +870,7 @@ function recordEvidence(
   const evidence: OpenRouterAttemptEvidence = {
     version: "openrouter-classifier-evidence-v1",
     provider: "openrouter",
-    model: configuration.model,
+    requested_model: configuration.model,
     endpoint: OPENROUTER_CLASSIFIER_ENDPOINT,
     attempt_id,
     adapter_revision: configuration.adapter_revision,
@@ -680,6 +878,11 @@ function recordEvidence(
     policy_revision: configuration.policy_revision,
     classifier_revision: configuration.classifier_revision,
     outcome,
+    ...(identity?.served_model === undefined ? {} : { served_model: identity.served_model }),
+    ...(identity?.selected_provider === undefined
+      ? {}
+      : { selected_provider: identity.selected_provider }),
+    ...(identity?.completion_id === undefined ? {} : { completion_id: identity.completion_id }),
     ...(provider_status === undefined ? {} : { provider_status }),
   };
   try {
@@ -691,23 +894,35 @@ function recordEvidence(
   }
 }
 
+function snapshotInput(value: unknown): MediaExplicitnessClassifierInput | null {
+  try {
+    const decoded = decodeMediaExplicitnessClassifierInput(value);
+    return Object.freeze({
+      ...decoded,
+      attempt: Object.freeze({ ...decoded.attempt }),
+      transcript: Object.freeze({
+        ...decoded.transcript,
+        segments: Object.freeze(
+          decoded.transcript.segments.map((segment) => Object.freeze({ ...segment })),
+        ),
+      }),
+    }) as MediaExplicitnessClassifierInput;
+  } catch {
+    return null;
+  }
+}
+
 async function invoke(
   configuration: Configuration,
-  rawInput: MediaExplicitnessClassifierInput,
+  input: MediaExplicitnessClassifierInput,
   externalSignal: AbortSignal,
+  interruptionSignal: AbortSignal,
 ): Promise<MediaExplicitnessClassifierResult> {
-  const attempt_id = safeAttemptId(rawInput);
+  const attempt_id = safeAttemptId(input);
   if (!configurationIsValid(configuration))
     throw new OpenRouterFailure(failure(attempt_id, "permanent_rejection"));
-
-  let input: MediaExplicitnessClassifierInput;
-  try {
-    input = decodeMediaExplicitnessClassifierInput(rawInput);
-  } catch {
-    throw new OpenRouterFailure(failure(attempt_id, "permanent_rejection"));
-  }
   const inputAttemptId = input.attempt.attempt_id;
-  if (externalSignal.aborted) {
+  if (externalSignal.aborted || interruptionSignal.aborted) {
     const cancelled = failure(inputAttemptId, "cancelled");
     throw new OpenRouterFailure(cancelled);
   }
@@ -718,7 +933,12 @@ async function invoke(
     abortReason = "cancelled";
     controller.abort();
   };
+  const abortFromInterruption = () => {
+    abortReason = "cancelled";
+    controller.abort();
+  };
   externalSignal.addEventListener("abort", abortFromCaller, { once: true });
+  interruptionSignal.addEventListener("abort", abortFromInterruption, { once: true });
   const timer = setTimeout(() => {
     abortReason = "timeout";
     controller.abort();
@@ -734,12 +954,15 @@ async function invoke(
 
   let operationFinished = false;
   let responseClaimed = false;
+  let responseStatus: number | undefined;
+  let responseIdentityEvidence: Partial<OpenRouterResponseIdentity> | undefined;
   try {
     const request = buildOpenRouterClassifierRequest(
       input,
       {
         api_key: configuration.api_key as string,
         model: configuration.model as string,
+        provider_policy: configuration.provider_policy as OpenRouterProviderPolicy,
         limits: configuration.limits,
       },
       controller.signal,
@@ -781,6 +1004,7 @@ async function invoke(
       throw new OpenRouterFailure(selected);
     }
 
+    responseStatus = response.status;
     if (response.status < 200 || response.status >= 300) {
       disposeBody(response.body, "status_mapped_without_body_read");
       const selected = failureForStatus(inputAttemptId, response.status, response.headers);
@@ -810,6 +1034,9 @@ async function invoke(
       bytes = await Promise.race([bodyPromise, abortPromise]);
     } catch (error) {
       disposeBody(response.body, "body_read_failed");
+      if (abortReason !== undefined) {
+        throw new OpenRouterFailure(failure(inputAttemptId, abortReason));
+      }
       if (error instanceof OpenRouterAbort) {
         const selected = failure(inputAttemptId, error.reason);
         throw new OpenRouterFailure(selected);
@@ -818,6 +1045,10 @@ async function invoke(
         throw new OpenRouterFailure(failure(inputAttemptId, "malformed_response"));
       }
       throw new OpenRouterFailure(failure(inputAttemptId, "provider_unavailable"));
+    }
+    if (abortReason !== undefined) {
+      disposeBody(response.body, "late_body_fulfillment");
+      throw new OpenRouterFailure(failure(inputAttemptId, abortReason));
     }
 
     const document = parseJson(bytes);
@@ -828,10 +1059,23 @@ async function invoke(
       throw new OpenRouterFailure(failure(inputAttemptId, envelopeResult.failure));
     }
     const envelope = envelopeResult.envelope;
-    if (envelope.model !== undefined && envelope.model !== configuration.model) {
-      const selected = failure(inputAttemptId, "permanent_rejection");
-      throw new OpenRouterFailure(selected);
+    responseIdentityEvidence = {
+      served_model: envelope.model,
+      completion_id: envelope.id,
+      ...(() => {
+        const selected = envelope.openrouter_metadata?.endpoints.available.filter(
+          (endpoint) => endpoint.selected,
+        );
+        return selected !== undefined && selected.length === 1 && selected[0] !== undefined
+          ? { selected_provider: selected[0].provider }
+          : {};
+      })(),
+    };
+    const identity = responseIdentity(envelope, configuration.model as string);
+    if (identity === null) {
+      throw new OpenRouterFailure(failure(inputAttemptId, "ambiguous_result"));
     }
+    responseIdentityEvidence = identity;
     const message = envelope.choices[0]?.message;
     if (message === undefined)
       throw new OpenRouterFailure(failure(inputAttemptId, "malformed_response"));
@@ -847,25 +1091,44 @@ async function invoke(
     }
     const result = makeClassifiedResult(input, modelDecoded.value, configuration);
     if (typeof result === "string") throw new OpenRouterFailure(failure(inputAttemptId, result));
-    recordEvidence(configuration, inputAttemptId, "classified", response.status);
+    recordEvidence(configuration, inputAttemptId, "classified", identity, response.status);
     return result;
   } catch (error) {
     if (error instanceof OpenRouterFailure) {
-      recordEvidence(configuration, inputAttemptId, error.failure._tag);
+      recordEvidence(
+        configuration,
+        inputAttemptId,
+        error.failure._tag,
+        responseIdentityEvidence,
+        responseStatus,
+      );
       throw error;
     }
     if (error instanceof OpenRouterAbort) {
       const selected = failure(inputAttemptId, error.reason);
-      recordEvidence(configuration, inputAttemptId, selected._tag);
+      recordEvidence(
+        configuration,
+        inputAttemptId,
+        selected._tag,
+        responseIdentityEvidence,
+        responseStatus,
+      );
       throw new OpenRouterFailure(selected);
     }
     const selected = failure(inputAttemptId, abortReason ?? "provider_unavailable");
-    recordEvidence(configuration, inputAttemptId, selected._tag);
+    recordEvidence(
+      configuration,
+      inputAttemptId,
+      selected._tag,
+      responseIdentityEvidence,
+      responseStatus,
+    );
     throw new OpenRouterFailure(selected);
   } finally {
     operationFinished = true;
     clearTimeout(timer);
     externalSignal.removeEventListener("abort", abortFromCaller);
+    interruptionSignal.removeEventListener("abort", abortFromInterruption);
     controller.abort();
     // Keep this assignment observable for audits and avoid a dead-code seam.
     void responseClaimed;
@@ -878,14 +1141,20 @@ export function makeOpenRouterClassifierAdapter(
 ): MediaExplicitnessClassifierAdapter {
   const configuration = snapshotConfiguration(options);
   return {
-    classify: (input, callOptions) =>
-      Effect.tryPromise({
-        try: () => invoke(configuration, input, callOptions.signal),
+    classify: (input, callOptions) => {
+      const snapshot = snapshotInput(input);
+      if (snapshot === null) {
+        return Effect.fail(failure(safeAttemptId(input), "permanent_rejection"));
+      }
+      return Effect.tryPromise({
+        try: (interruptionSignal) =>
+          invoke(configuration, snapshot, callOptions.signal, interruptionSignal),
         catch: (error): MediaProviderFailure =>
           error instanceof OpenRouterFailure
             ? error.failure
-            : failure(safeAttemptId(input), "provider_unavailable"),
-      }),
+            : failure(snapshot.attempt.attempt_id, "provider_unavailable"),
+      });
+    },
   };
 }
 
