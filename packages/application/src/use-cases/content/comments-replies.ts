@@ -6,6 +6,7 @@ import {
   InternalError,
   MembershipRequired,
   NotFound,
+  PersonaIdV1,
   ReplyDepthExceeded,
 } from "@pirate/contracts";
 import {
@@ -25,6 +26,7 @@ import {
   type TextPostRepositoryFailure,
   type TextPostSubmissionDocument,
 } from "../../ports.ts";
+import { PersonaUnavailable, requireActiveOwnedPersona } from "../personas.ts";
 import { canonicalBodyHash, validateHumanDirectActor, validateIdentifier } from "./common.ts";
 import type { TextPostServices } from "./text-post.ts";
 
@@ -32,6 +34,7 @@ const exactParseOptions = { onExcessProperty: "error" } as const;
 const MAX_POLICY_RETRIES = 3;
 const CommentReplyBody = Schema.Struct({
   idempotency_key: Schema.String,
+  persona_id: PersonaIdV1,
   body: Schema.String,
 });
 
@@ -164,7 +167,12 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
 > {
   const store = services.textPostStore;
   const moderation = services.textModeration;
-  if (store?.resolveCommentTarget === undefined || moderation === undefined)
+  const personaStore = services.personaStore;
+  if (
+    store?.resolveCommentTarget === undefined ||
+    moderation === undefined ||
+    personaStore === undefined
+  )
     return yield* new CommentsRepliesRuntimeUnavailable();
   yield* validateIdentifier(input.targetId, "Invalid comment target identifier");
   yield* validateHumanDirectActor(input.actor);
@@ -173,6 +181,14 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
     return yield* new BadRequest({ message: "An idempotency key is required" });
   if (body.body.trim() === "")
     return yield* new BadRequest({ message: "Comment body must not be empty" });
+  yield* requireActiveOwnedPersona(
+    { accountId: input.actor.userId, personaId: body.persona_id },
+    personaStore,
+  ).pipe(
+    Effect.mapError((error) =>
+      error instanceof PersonaUnavailable ? new NotFound({ message: "Persona not found" }) : error,
+    ),
+  );
 
   const target = yield* store
     .resolveCommentTarget({
@@ -212,6 +228,7 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
       .replay({
         communityId: target.communityId,
         actor: input.actor,
+        personaId: body.persona_id,
         idempotencyKey: body.idempotency_key,
         requestHash,
         surface: input.surface,
@@ -239,6 +256,7 @@ export const createCommentReply = Effect.fn("createCommentReply")(function* (
       .commitTerminal({
         communityId: target.communityId,
         actor: input.actor,
+        personaId: body.persona_id,
         body,
         moderationInput: normalized.input,
         idempotencyKey: body.idempotency_key,

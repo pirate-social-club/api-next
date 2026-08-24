@@ -34,6 +34,8 @@ async function sentinelSet(): Promise<{
     "gates-v2-community",
     "feed",
     "content",
+    "text-submission",
+    "persona",
     "public-profile",
     "public-community-threads",
     "verification",
@@ -88,6 +90,31 @@ describe("Postgres suite sentinel verification", () => {
     const sentinel = sentinels.find(({ name }) => name === "optional-route-v2");
     await rm(sentinel?.path ?? "", { force: true });
     await expect(verifyPostgresTestSentinels(sentinels)).rejects.toThrow("optional-route-v2");
+  });
+
+  test("fails when persona persistence is skipped or omitted", async () => {
+    const { sentinels } = await sentinelSet();
+    const sentinel = sentinels.find(({ name }) => name === "persona");
+    await rm(sentinel?.path ?? "", { force: true });
+    await expect(verifyPostgresTestSentinels(sentinels)).rejects.toThrow("persona");
+  });
+
+  test("keeps persona and text-submission persistence fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    for (const suite of ["persona-repository", "text-submission-repository"]) {
+      expect(workflow).toContain(`packages/platform-cf/src/${suite}.pg.test.ts`);
+    }
+    for (const marker of ["persona", "text-submission"]) {
+      expect(
+        workflow.match(
+          new RegExp(`/tmp/api-next-control-plane-postgres-${marker}-suite-complete`, "gu"),
+        ),
+      ).toHaveLength(2);
+    }
   });
 
   test("keeps the gates-v2 suite and completion marker wired into Postgres CI", async () => {

@@ -99,6 +99,20 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-content-suite-complete\n",
   },
   {
+    name: "postgres text submission repository",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_TEXT_SUBMISSION_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-text-submission-suite-complete",
+    contents: "api-next-control-plane-postgres-text-submission-suite-complete\n",
+  },
+  {
+    name: "postgres persona repository",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_PERSONA_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-persona-suite-complete",
+    contents: "api-next-control-plane-postgres-persona-suite-complete\n",
+  },
+  {
     name: "postgres public profile",
     path:
       process.env.CONTROL_PLANE_POSTGRES_PUBLIC_PROFILE_TEST_SENTINEL ??

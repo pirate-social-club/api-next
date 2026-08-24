@@ -38,6 +38,16 @@ const optionalRouteRow = (overrides: Row = {}): Row => {
     community_id: communityId,
     authority_version: "optional_route_v2",
     resource_href: `/c/${communityId}`,
+    persona_role_presentation: {
+      role: "owner",
+      persona: {
+        persona_id: "persona_creator",
+        object: "persona",
+        display_name: "Community Creator",
+        avatar_ref: null,
+        primary_public_handle: null,
+      },
+    },
     family: null,
     root_label: null,
     root_label_display: null,

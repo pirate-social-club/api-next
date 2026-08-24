@@ -12,6 +12,7 @@ export * from "./karaoke.ts";
 export * from "./money.ts";
 export * from "./namespace-ownership.ts";
 export * from "./openapi-diff.ts";
+export * from "./personas.ts";
 export * from "./provider-presentation.ts";
 export * from "./registry.ts";
 export * from "./text-moderation.ts";

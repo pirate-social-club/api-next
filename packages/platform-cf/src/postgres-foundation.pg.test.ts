@@ -239,6 +239,12 @@ const optionalRouteV2MigrationSql = await Bun.file(
 const hnsOwnerAuthorityCustodyMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0045_hns_owner_authority_custody.sql", import.meta.url),
 ).text();
+const accountPersonaWalletPrivacyMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0046_account_persona_wallet_privacy.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -471,6 +477,11 @@ const hnsOwnerAuthorityCustodyMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0045_hns_owner_authority_custody.sql"] ?? "",
   sql: hnsOwnerAuthorityCustodyMigrationSql,
 };
+const accountPersonaWalletPrivacyMigration: PostgresMigration = {
+  version: "0046_account_persona_wallet_privacy.sql",
+  checksum: checksumManifest.migrations["0046_account_persona_wallet_privacy.sql"] ?? "",
+  sql: accountPersonaWalletPrivacyMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -517,6 +528,7 @@ const migrations: readonly PostgresMigration[] = [
   mediaSubmissionMigration,
   optionalRouteV2Migration,
   hnsOwnerAuthorityCustodyMigration,
+  accountPersonaWalletPrivacyMigration,
 ];
 
 function checksum(value: string): string {
@@ -759,6 +771,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(hnsOwnerAuthorityCustodyMigrationSql)).toBe(
         hnsOwnerAuthorityCustodyMigration.checksum,
       );
+      expect(checksum(accountPersonaWalletPrivacyMigrationSql)).toBe(
+        accountPersonaWalletPrivacyMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -885,6 +900,11 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "namespace_ownership_sessions",
         "namespace_ownership_start_reservations",
         "observations",
+        "persona_create_actions",
+        "persona_profiles",
+        "persona_role_presentations",
+        "persona_wallet_assignments",
+        "personas",
         "policy_versions",
         "post_vote_actions",
         "post_votes",
@@ -1044,6 +1064,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_transcript_artifacts_append_only",
         "namespace_ownership_evidence_snapshot_append_only",
         "observations_append_only",
+        "persona_create_actions_append_only",
         "policy_versions_append_only",
         "proof_session_completion_events_append_only",
         "proof_session_presentations_append_only",
@@ -1970,8 +1991,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       });
       await admin.query({
         text: `INSERT INTO posts (
-          community_id, post_id, author_user_id, body, created_at, updated_at
-        ) VALUES ('community-a', 'post-existing', 'user-a', 'existing', $1, $1)`,
+          community_id, post_id, author_user_id, author_persona_id,
+          body, created_at, updated_at
+        ) VALUES (
+          'community-a', 'post-existing', 'user-a',
+          (SELECT persona_id FROM personas WHERE account_id='user-a' AND is_first_persona),
+          'existing', $1, $1
+        )`,
         values: [now],
       });
       await admin.query("BEGIN");
@@ -1986,8 +2012,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         });
         await admin.query({
           text: `INSERT INTO posts (
-            community_id, post_id, author_user_id, body, created_at, updated_at
-          ) VALUES ('community-a', 'post-existing', 'user-a', 'duplicate', $1, $1)`,
+            community_id, post_id, author_user_id, author_persona_id,
+            body, created_at, updated_at
+          ) VALUES (
+            'community-a', 'post-existing', 'user-a',
+            (SELECT persona_id FROM personas WHERE account_id='user-a' AND is_first_persona),
+            'duplicate', $1, $1
+          )`,
           values: [now],
         });
         throw new Error("expected protected action write to fail");
@@ -2235,12 +2266,20 @@ suite("Postgres 17 product and gates v2 foundation", () => {
     await withSchema(async (admin, scopedConnectionString) => {
       await applyMigrations(scopedConnectionString, migrations);
       const now = new Date();
+      await admin.query("INSERT INTO users (user_id) VALUES ('user-a'), ('user-b')");
       await admin.query({
         text: "INSERT INTO communities (community_id, display_name, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $4), ($5, $6, $7, $4, $4)",
         values: ["community-a", "A", "user-a", now, "community-b", "B", "user-b"],
       });
       await admin.query({
-        text: "INSERT INTO posts (community_id, post_id, author_user_id, body, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $5)",
+        text: `INSERT INTO posts (
+          community_id, post_id, author_user_id, author_persona_id,
+          body, created_at, updated_at
+        ) VALUES (
+          $1, $2, $3,
+          (SELECT persona_id FROM personas WHERE account_id=$3 AND is_first_persona),
+          $4, $5, $5
+        )`,
         values: ["community-a", "post-a", "user-a", "post", now],
       });
 
@@ -2262,12 +2301,22 @@ suite("Postgres 17 product and gates v2 foundation", () => {
     await withSchema(async (admin, scopedConnectionString) => {
       await applyMigrations(scopedConnectionString, migrations);
       const now = new Date();
+      await admin.query("INSERT INTO users (user_id) VALUES ('user-a'), ('user-b')");
       await admin.query({
         text: "INSERT INTO communities (community_id, display_name, created_by_user_id, created_at, updated_at) VALUES ($1, $2, $3, $4, $4), ($5, $6, $7, $4, $4)",
         values: ["community-a", "A", "user-a", now, "community-b", "B", "user-b"],
       });
       await admin.query({
-        text: "INSERT INTO posts (community_id, post_id, author_user_id, body, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $5), ($6, $7, $8, $9, $5, $5)",
+        text: `INSERT INTO posts (
+          community_id, post_id, author_user_id, author_persona_id,
+          body, created_at, updated_at
+        ) VALUES
+          ($1, $2, $3,
+           (SELECT persona_id FROM personas WHERE account_id=$3 AND is_first_persona),
+           $4, $5, $5),
+          ($6, $7, $8,
+           (SELECT persona_id FROM personas WHERE account_id=$8 AND is_first_persona),
+           $9, $5, $5)`,
         values: [
           "community-a",
           "post-a",
@@ -2469,6 +2518,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       });
       expect(checksum(persistedPolicy.policy_preimage)).toBe(persistedPolicy.policy_hash);
 
+      await admin.query("INSERT INTO users (user_id) VALUES ('text-author'), ('other-author')");
       await admin.query(
         `INSERT INTO communities (
            community_id, display_name, created_by_user_id, created_at, updated_at
@@ -2477,10 +2527,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO posts (
-           community_id, post_id, author_user_id, post_type, status, visibility,
+           community_id, post_id, author_user_id, author_persona_id,
+           post_type, status, visibility,
            title, body, created_at, updated_at
          ) VALUES (
-           'text-community', 'text-post-1', 'text-author', 'text', 'published', 'public',
+           'text-community', 'text-post-1', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text', 'published', 'public',
            'Title', 'Body', now(), now()
          )`,
       );
@@ -2496,13 +2549,16 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       await admin.query(
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, author_persona_id,
+           surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash,
            input_sha256, internal_reason_codes, evidence_ref, published_post_id,
            response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-1', 'text-operation-1', 'text-author', 'text_post', 'text-key-1',
+           'text-community', 'text-submission-1', 'text-operation-1', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text_post', 'text-key-1',
            repeat('a', 64), 'published', 'allow', NULL, 'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
            repeat('b', 64), '[]'::jsonb, 'text-evidence-1', 'text-post-1',
@@ -2526,13 +2582,16 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, author_persona_id,
+           surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash,
            input_sha256, internal_reason_codes, review_ref,
            response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-2', 'text-operation-2', 'text-author', 'text_post', 'text-key-2',
+           'text-community', 'text-submission-2', 'text-operation-2', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text_post', 'text-key-2',
            repeat('c', 64), 'manual_review', 'manual_review', 'moderation_unavailable',
            'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
@@ -2556,10 +2615,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO posts (
-           community_id, post_id, author_user_id, post_type, status, visibility,
+           community_id, post_id, author_user_id, author_persona_id,
+           post_type, status, visibility,
            title, body, created_at, updated_at
          ) VALUES (
-           'text-community', 'text-post-2', 'text-author', 'text', 'published', 'public',
+           'text-community', 'text-post-2', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text', 'published', 'public',
            'Held', 'Body', now(), now()
          )`,
       );
@@ -2606,12 +2668,15 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, author_persona_id,
+           surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes, review_ref
            , response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-missing-review', 'text-operation-3', 'text-author', 'text_post',
+           'text-community', 'text-submission-missing-review', 'text-operation-3', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text_post',
            'text-key-missing-review', repeat('3', 64), 'manual_review', 'manual_review',
            'review_required', 'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
@@ -2632,12 +2697,15 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         admin,
         "23514",
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, author_persona_id,
+           surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes
            , response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-unknown-reason', 'text-operation-4', 'text-author', 'text_post',
+           'text-community', 'text-submission-unknown-reason', 'text-operation-4', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text_post',
            'text-key-unknown-reason', repeat('5', 64), 'blocked', 'blocked',
            'policy_violation', 'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
@@ -2649,12 +2717,15 @@ suite("Postgres 17 product and gates v2 foundation", () => {
 
       await admin.query(
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, author_persona_id,
+           surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes
            , response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-blocked', 'text-operation-5', 'text-author', 'text_post',
+           'text-community', 'text-submission-blocked', 'text-operation-5', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text_post',
            'text-key-blocked', repeat('7', 64), 'blocked', 'blocked',
            'policy_violation', 'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
@@ -2676,10 +2747,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
 
       await admin.query(
         `INSERT INTO posts (
-           community_id, post_id, author_user_id, post_type, status, visibility,
+           community_id, post_id, author_user_id, author_persona_id,
+           post_type, status, visibility,
            body, created_at, updated_at
          ) VALUES (
-           'text-community', 'image-processing', 'other-author', 'image', 'processing',
+           'text-community', 'image-processing', 'other-author',
+           (SELECT persona_id FROM personas WHERE account_id='other-author' AND is_first_persona),
+           'image', 'processing',
            'public', 'not a published text post', now(), now()
          )`,
       );
@@ -2687,12 +2761,15 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         admin,
         "P0001",
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, author_persona_id,
+           surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
            published_post_id, response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-bad-post', 'text-operation-6', 'text-author', 'text_post',
+           'text-community', 'text-submission-bad-post', 'text-operation-6', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text_post',
            'text-key-bad-post', repeat('a', 64), 'published', 'allow', NULL,
            'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
@@ -2704,10 +2781,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
 
       await admin.query(
         `INSERT INTO posts (
-           community_id, post_id, author_user_id, post_type, status, visibility,
+           community_id, post_id, author_user_id, author_persona_id,
+           post_type, status, visibility,
            title, body, created_at, updated_at
          ) VALUES (
-           'text-community', 'text-post-without-feed', 'text-author', 'text', 'published',
+           'text-community', 'text-post-without-feed', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text', 'published',
            'public', 'Missing projection', 'Body', now(), now()
          )`,
       );
@@ -2715,12 +2795,15 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         admin,
         "P0001",
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, author_persona_id,
+           surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
            published_post_id, response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-no-feed', 'text-operation-7', 'text-author', 'text_post',
+           'text-community', 'text-submission-no-feed', 'text-operation-7', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text_post',
            'text-key-no-feed', repeat('0', 64), 'published', 'allow', NULL,
            'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',
@@ -2734,12 +2817,15 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         admin,
         "23514",
         `INSERT INTO text_content_submissions (
-           community_id, submission_id, operation_id, actor_user_id, surface, idempotency_key,
+           community_id, submission_id, operation_id, actor_user_id, author_persona_id,
+           surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
            response_snapshot_bytes, response_snapshot_sha256
          ) VALUES (
-           'text-community', 'text-submission-invalid', 'text-operation-8', 'text-author', 'text_post',
+           'text-community', 'text-submission-invalid', 'text-operation-8', 'text-author',
+           (SELECT persona_id FROM personas WHERE account_id='text-author' AND is_first_persona),
+           'text_post',
            'text-key-invalid', repeat('1', 64), 'blocked', 'blocked', NULL,
            'text-moderation-policy-v1',
            'b0a8fd06312d7f9a99d7100633bc03fafc44b16aae5340899d290f54cb64df9d',

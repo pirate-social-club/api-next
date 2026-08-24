@@ -1,3 +1,4 @@
+import { PersonaWalletProofRejected, type PersonaWalletProofVerifier } from "@pirate/application";
 import {
   SessionProofRejected,
   type SessionProofVerifier,
@@ -272,6 +273,55 @@ function collectLinkedEthereumWallets(document: unknown): readonly string[] {
   return [...wallets];
 }
 
+type PrivyEmbeddedEvmWallet = Readonly<{
+  privyWalletId: string | null;
+  hdWalletIndex: number;
+  address: string;
+}>;
+
+/** Persona assignments accept only provider-owned embedded EVM wallets. */
+function collectPrivyEmbeddedEvmWallets(document: unknown): readonly PrivyEmbeddedEvmWallet[] {
+  const accounts = object(document).linked_accounts;
+  if (!Array.isArray(accounts)) throw new Error("invalid provider user document");
+  const wallets: PrivyEmbeddedEvmWallet[] = [];
+  for (const account of accounts) {
+    if (account === null || typeof account !== "object" || Array.isArray(account)) continue;
+    const record = account as JsonObject;
+    if (
+      record.type !== PRIVY_LINKED_WALLET_TYPE ||
+      record.chain_type !== PRIVY_ETHEREUM_CHAIN_TYPE ||
+      record.wallet_client !== "privy" ||
+      record.wallet_client_type !== "privy" ||
+      record.connector_type !== "embedded" ||
+      record.imported !== false
+    ) {
+      continue;
+    }
+    const address = canonicalWalletAddress(record.address);
+    const walletIndex = record.wallet_index;
+    const walletId = record.id;
+    if (
+      address === null ||
+      typeof walletIndex !== "number" ||
+      !Number.isSafeInteger(walletIndex) ||
+      walletIndex < 0 ||
+      (walletId !== null &&
+        (typeof walletId !== "string" ||
+          walletId.length === 0 ||
+          walletId.length > 128 ||
+          walletId.trim() !== walletId))
+    ) {
+      throw new Error("invalid provider embedded wallet");
+    }
+    wallets.push({
+      privyWalletId: walletId as string | null,
+      hdWalletIndex: walletIndex,
+      address,
+    });
+  }
+  return wallets;
+}
+
 function claimTime(claims: JsonObject, name: string): number | undefined {
   const value = claims[name];
   if (value === undefined) return undefined;
@@ -310,7 +360,7 @@ function directPrivySubject(claims: JsonObject): string {
  */
 export function makeJwksSessionProofVerifier(
   options: SessionProofAdapterOptions,
-): SessionProofVerifier {
+): SessionProofVerifier & PersonaWalletProofVerifier {
   const fetcher = options.fetcher ?? fetch;
   const nowMs = options.nowMs ?? Date.now;
   const fetchTimeoutMs = positiveBound(options.fetchTimeoutMs, SESSION_PROOF_FETCH_TIMEOUT_MS);
@@ -356,13 +406,11 @@ export function makeJwksSessionProofVerifier(
   };
 
   /**
-   * Reads the account's provider-attested linked wallets over the Privy
-   * server API. Fail-open by contract: an outage, rejection, or malformed
-   * document yields a walletless session, never an authentication failure.
+   * Reads the bounded provider user document. Session exchange treats an
+   * unavailable document as walletless; persona-wallet attestation fails
+   * closed. Neither caller receives provider response detail.
    */
-  const lookupLinkedEthereumWallets = async (
-    sourceUserId: string,
-  ): Promise<readonly string[] | undefined> => {
+  const lookupPrivyUser = async (sourceUserId: string): Promise<unknown | undefined> => {
     if (privyApi === undefined) return undefined;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), fetchTimeoutMs);
@@ -382,12 +430,21 @@ export function makeJwksSessionProofVerifier(
       if (!response.ok) return undefined;
       const body = await response.text();
       if (body.length > SESSION_PROOF_MAX_USER_BYTES) return undefined;
-      return collectLinkedEthereumWallets(JSON.parse(body));
+      const document = object(JSON.parse(body));
+      if (document.id !== sourceUserId) return undefined;
+      return document;
     } catch {
       return undefined;
     } finally {
       clearTimeout(timeout);
     }
+  };
+
+  const lookupLinkedEthereumWallets = async (
+    sourceUserId: string,
+  ): Promise<readonly string[] | undefined> => {
+    const document = await lookupPrivyUser(sourceUserId);
+    return document === undefined ? undefined : collectLinkedEthereumWallets(document);
   };
 
   const verifyProviderToken = async (
@@ -477,6 +534,17 @@ export function makeJwksSessionProofVerifier(
       },
     });
 
+  const runPersonaWalletProof = <A>(
+    operation: () => Promise<A>,
+  ): Effect.Effect<A, PersonaWalletProofRejected> =>
+    Effect.tryPromise({
+      try: operation,
+      catch: (error) =>
+        error instanceof PersonaWalletProofRejected
+          ? error
+          : new PersonaWalletProofRejected({ reason: "invalid" }),
+    });
+
   return {
     verifyPrivy: ({ accessToken, identityToken, walletAddress }) =>
       run(async () => {
@@ -525,6 +593,36 @@ export function makeJwksSessionProofVerifier(
           classification: "user",
           ...(resolvedWallet === null ? {} : { walletAddress: resolvedWallet }),
         };
+      }),
+    verifyPrivyEmbeddedEvmWallet: ({ accessToken, identityToken, hdWalletIndex }) =>
+      runPersonaWalletProof(async () => {
+        if (!Number.isSafeInteger(hdWalletIndex) || hdWalletIndex < 0) {
+          throw new PersonaWalletProofRejected({ reason: "invalid" });
+        }
+        const access = await verifyProviderToken(accessToken, providers.privy);
+        if (identityToken !== null) {
+          const identity = await verifyProviderToken(identityToken, providers.privy);
+          if (identity.sourceUserId !== access.sourceUserId) {
+            throw new PersonaWalletProofRejected({ reason: "invalid" });
+          }
+        }
+        const document = await lookupPrivyUser(access.sourceUserId);
+        if (document === undefined) {
+          throw new PersonaWalletProofRejected({ reason: "unavailable" });
+        }
+        let wallets: readonly PrivyEmbeddedEvmWallet[];
+        try {
+          wallets = collectPrivyEmbeddedEvmWallets(document).filter(
+            (wallet) => wallet.hdWalletIndex === hdWalletIndex,
+          );
+        } catch {
+          throw new PersonaWalletProofRejected({ reason: "unavailable" });
+        }
+        if (wallets.length !== 1) {
+          throw new PersonaWalletProofRejected({ reason: "unavailable" });
+        }
+        const wallet = wallets[0] as PrivyEmbeddedEvmWallet;
+        return { sourceUserId: access.sourceUserId, ...wallet };
       }),
   };
 }

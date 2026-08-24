@@ -221,6 +221,7 @@ describe("real HTTP worker transport", () => {
       body: JSON.stringify({
         post_type: "text",
         idempotency_key: "workerd-publish-mode",
+        persona_id: "persona_workerd_test",
         body: "hello",
         publish_mode: "async",
       }),
@@ -248,7 +249,12 @@ describe("real HTTP worker transport", () => {
     const created = await SELF.fetch("https://worker.test/communities/community_1/posts", {
       method: "POST",
       headers,
-      body: JSON.stringify({ post_type: "text", idempotency_key: "workerd-text", body: "hello" }),
+      body: JSON.stringify({
+        post_type: "text",
+        idempotency_key: "workerd-text",
+        persona_id: "persona_workerd_test",
+        body: "hello",
+      }),
     });
     expect(created.status).toBe(201);
     expect(await created.json()).toMatchObject({
@@ -287,7 +293,11 @@ describe("real HTTP worker transport", () => {
     const nonmember = await SELF.fetch("https://worker.test/posts/post_nonmember/comments", {
       method: "POST",
       headers,
-      body: JSON.stringify({ idempotency_key: "workerd-comment-nonmember", body: "hello" }),
+      body: JSON.stringify({
+        idempotency_key: "workerd-comment-nonmember",
+        persona_id: "persona_workerd_test",
+        body: "hello",
+      }),
     });
     expect(nonmember.status).toBe(403);
     expect(await nonmember.json()).toMatchObject({
@@ -299,7 +309,11 @@ describe("real HTTP worker transport", () => {
       {
         method: "POST",
         headers,
-        body: JSON.stringify({ idempotency_key: "workerd-comment-ineffective", body: "hello" }),
+        body: JSON.stringify({
+          idempotency_key: "workerd-comment-ineffective",
+          persona_id: "persona_workerd_test",
+          body: "hello",
+        }),
       },
     );
     expect(ineffectiveRoute.status).toBe(404);
@@ -308,7 +322,11 @@ describe("real HTTP worker transport", () => {
     const conflict = await SELF.fetch("https://worker.test/posts/post_conflict/comments", {
       method: "POST",
       headers,
-      body: JSON.stringify({ idempotency_key: "workerd-comment-conflict", body: "hello" }),
+      body: JSON.stringify({
+        idempotency_key: "workerd-comment-conflict",
+        persona_id: "persona_workerd_test",
+        body: "hello",
+      }),
     });
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toMatchObject({
@@ -411,6 +429,7 @@ describe("real HTTP worker transport", () => {
         body: JSON.stringify({
           post_type: "text",
           idempotency_key: "workerd-route-authority-missing",
+          persona_id: "persona_workerd_test",
           body: "must not publish without an effective route",
         }),
       },

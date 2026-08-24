@@ -18,6 +18,35 @@ CREATE FUNCTION active_community_effect(expected_community_id text, expected_use
   )
 $$;
 
+CREATE FUNCTION active_owned_persona(expected_account_id text, expected_persona_id text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM personas
+     WHERE account_id = expected_account_id
+       AND persona_id = expected_persona_id
+       AND status = 'active'
+  )
+$$;
+
+CREATE FUNCTION default_public_handle_persona() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.owner_persona_id IS NULL THEN
+    SELECT persona.persona_id
+      INTO NEW.owner_persona_id
+      FROM personas AS persona
+     WHERE persona.account_id = NEW.owner_user_id
+       AND persona.is_first_persona;
+  END IF;
+  IF NEW.owner_persona_id IS NULL THEN
+    RAISE EXCEPTION 'public handle requires an owned persona';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION effective_active_route(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, path_segment text, href text, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
     LANGUAGE sql STABLE
     AS $$
@@ -2207,6 +2236,41 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_persona_wallet_assignment() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'persona wallet assignment cannot be deleted';
+  END IF;
+  IF NEW.assignment_id IS DISTINCT FROM OLD.assignment_id
+     OR NEW.persona_id IS DISTINCT FROM OLD.persona_id
+     OR NEW.account_id IS DISTINCT FROM OLD.account_id
+     OR NEW.chain_account_kind IS DISTINCT FROM OLD.chain_account_kind
+     OR NEW.hd_wallet_index IS DISTINCT FROM OLD.hd_wallet_index
+     OR NEW.reservation_idempotency_key IS DISTINCT FROM OLD.reservation_idempotency_key
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'persona wallet assignment identity is immutable';
+  END IF;
+  IF OLD.status = 'tombstoned' AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'tombstoned persona wallet assignment is immutable';
+  END IF;
+  IF OLD.status = 'active' AND NEW.status NOT IN ('active', 'tombstoned') THEN
+    RAISE EXCEPTION 'active persona wallet assignment cannot be reopened';
+  END IF;
+  IF OLD.status = 'pending' AND NEW.status NOT IN ('pending', 'active', 'tombstoned') THEN
+    RAISE EXCEPTION 'invalid persona wallet assignment transition';
+  END IF;
+  IF OLD.status <> 'pending'
+     AND (NEW.privy_wallet_id IS DISTINCT FROM OLD.privy_wallet_id
+       OR NEW.address IS DISTINCT FROM OLD.address
+       OR NEW.assigned_at IS DISTINCT FROM OLD.assigned_at) THEN
+    RAISE EXCEPTION 'assigned persona wallet authority is immutable';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_text_content_submission_response_snapshot() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2360,6 +2424,33 @@ CREATE FUNCTION is_community_route_root_label_display(root_label_display text) R
     AND position(E'\\' IN root_label_display) = 0;
 $$;
 
+CREATE FUNCTION populate_media_persona_lineage() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_TABLE_NAME = 'media_submission_command_replays' THEN
+    IF NEW.submission_author_persona_id IS NULL THEN
+      SELECT submission.author_persona_id INTO NEW.submission_author_persona_id
+        FROM media_post_submissions AS submission
+       WHERE submission.community_id = NEW.community_id
+         AND submission.actor_user_id = NEW.submission_actor_user_id
+         AND submission.submission_id = NEW.submission_id
+         AND submission.operation_id = NEW.operation_id;
+    END IF;
+  ELSE
+    IF NEW.author_persona_id IS NULL THEN
+      SELECT submission.author_persona_id INTO NEW.author_persona_id
+        FROM media_post_submissions AS submission
+       WHERE submission.community_id = NEW.community_id
+         AND submission.actor_user_id = NEW.actor_user_id
+         AND submission.submission_id = NEW.submission_id
+         AND submission.operation_id = NEW.operation_id;
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION prepare_hns_control_observer_operation_insert() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2385,6 +2476,114 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION prevent_persona_create_action_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'persona create action is append-only';
+END
+$$;
+
+CREATE FUNCTION prevent_persona_identity_rewrite() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'persona identity cannot be deleted';
+  END IF;
+  IF NEW.persona_id IS DISTINCT FROM OLD.persona_id
+     OR NEW.account_id IS DISTINCT FROM OLD.account_id
+     OR NEW.is_first_persona IS DISTINCT FROM OLD.is_first_persona THEN
+    RAISE EXCEPTION 'persona identity is immutable';
+  END IF;
+  IF OLD.status = 'retired' AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'retired persona is immutable';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION prevent_persona_profile_delete() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'persona profile cannot be deleted';
+END
+$$;
+
+CREATE FUNCTION provision_first_persona_for_new_account() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $_$
+DECLARE
+  first_persona_id TEXT := 'persona_' || replace(gen_random_uuid()::text, '-', '');
+  primary_wallet JSONB;
+BEGIN
+  INSERT INTO personas (
+    persona_id, account_id, status, is_first_persona, created_at, retired_at
+  ) VALUES (
+    first_persona_id,
+    NEW.user_id,
+    CASE WHEN NEW.status = 'active' THEN 'active' ELSE 'retired' END,
+    true,
+    NEW.created_at,
+    CASE WHEN NEW.status = 'active' THEN NULL ELSE clock_timestamp() END
+  );
+
+  INSERT INTO persona_profiles (
+    persona_id, revision, display_name, avatar_ref, cover_ref, bio,
+    preferred_locale, created_at, updated_at
+  ) VALUES (
+    first_persona_id,
+    1,
+    NEW.account #>> '{profile,display_name}',
+    NEW.account #>> '{profile,avatar_ref}',
+    NEW.account #>> '{profile,cover_ref}',
+    NEW.account #>> '{profile,bio}',
+    NEW.account #>> '{profile,preferred_locale}',
+    NEW.created_at,
+    NEW.created_at
+  );
+
+  SELECT attachment
+    INTO primary_wallet
+    FROM jsonb_array_elements(
+      CASE
+        WHEN jsonb_typeof(NEW.account -> 'wallet_attachments') = 'array'
+          THEN NEW.account -> 'wallet_attachments'
+        ELSE '[]'::jsonb
+      END
+    ) AS attachment
+   WHERE attachment ->> 'is_primary' = '1'
+     AND lower(attachment ->> 'wallet_address_display') ~ '^0x[0-9a-f]{40}$'
+   ORDER BY attachment ->> 'wallet_attachment_id'
+   LIMIT 1;
+
+  IF primary_wallet IS NOT NULL THEN
+    INSERT INTO persona_wallet_assignments (
+      assignment_id, persona_id, account_id, chain_account_kind,
+      privy_wallet_id, hd_wallet_index, address, status,
+      reservation_idempotency_key, assigned_at, tombstoned_at,
+      created_at, updated_at
+    ) VALUES (
+      'persona_wallet_' || replace(gen_random_uuid()::text, '-', ''),
+      first_persona_id,
+      NEW.user_id,
+      'evm',
+      NULL,
+      0,
+      lower(primary_wallet ->> 'wallet_address_display'),
+      CASE WHEN NEW.status = 'active' THEN 'active' ELSE 'tombstoned' END,
+      'first-persona-wallet-onboarding',
+      NEW.created_at,
+      CASE WHEN NEW.status = 'active' THEN NULL ELSE clock_timestamp() END,
+      NEW.created_at,
+      NEW.created_at
+    );
+  END IF;
+  RETURN NEW;
+END
+$_$;
+
 CREATE FUNCTION public_handle_index_validate_redirects() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2394,10 +2593,10 @@ BEGIN
       FROM public_handle_index AS target
      WHERE target.handle_id = NEW.redirect_target_handle_id
        AND target.status = 'active'
-       AND target.owner_user_id = NEW.owner_user_id
+       AND target.owner_persona_id = NEW.owner_persona_id
        AND target.handle_id <> NEW.handle_id
   ) THEN
-    RAISE EXCEPTION 'public handle redirect target is not an active handle owned by the same user'
+    RAISE EXCEPTION 'public handle redirect target is not an active handle owned by the same persona'
       USING ERRCODE = '23514', CONSTRAINT = 'public_handle_index_redirect_integrity';
   END IF;
 
@@ -2411,7 +2610,7 @@ BEGIN
            FROM public_handle_index AS target
           WHERE target.handle_id = source.redirect_target_handle_id
             AND target.status = 'active'
-            AND target.owner_user_id = source.owner_user_id
+            AND target.owner_persona_id = source.owner_persona_id
             AND target.handle_id <> source.handle_id
        )
   ) THEN
@@ -2421,6 +2620,29 @@ BEGIN
 
   RETURN NEW;
 END;
+$$;
+
+CREATE FUNCTION public_persona_projection(expected_persona_id text) RETURNS jsonb
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT jsonb_build_object(
+    'persona_id', persona.persona_id,
+    'object', 'persona',
+    'display_name', profile.display_name,
+    'avatar_ref', profile.avatar_ref,
+    'primary_public_handle', handle.label_display
+  )
+    FROM personas AS persona
+    JOIN persona_profiles AS profile ON profile.persona_id = persona.persona_id
+    LEFT JOIN LATERAL (
+      SELECT candidate.label_display
+        FROM public_handle_index AS candidate
+       WHERE candidate.owner_persona_id = persona.persona_id
+         AND candidate.status = 'active'
+       ORDER BY candidate.updated_at DESC, candidate.handle_id
+       LIMIT 1
+    ) AS handle ON true
+   WHERE persona.persona_id = expected_persona_id
 $$;
 
 CREATE FUNCTION reject_community_commerce_immutable_change() RETURNS trigger
@@ -2499,6 +2721,54 @@ CREATE FUNCTION reject_text_moderation_append_only_change() RETURNS trigger
 BEGIN
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
 END;
+$$;
+
+CREATE FUNCTION require_active_author_persona() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  expected_account_id TEXT;
+  expected_persona_id TEXT;
+BEGIN
+  IF TG_TABLE_NAME IN ('posts', 'comments') THEN
+    expected_account_id := NEW.author_user_id;
+    expected_persona_id := NEW.author_persona_id;
+  ELSIF TG_TABLE_NAME = 'media_upload_reservations' THEN
+    expected_account_id := NEW.actor_user_id;
+    expected_persona_id := NEW.actor_persona_id;
+  ELSE
+    expected_account_id := NEW.actor_user_id;
+    expected_persona_id := NEW.author_persona_id;
+  END IF;
+  IF expected_account_id IS NOT NULL
+     AND NOT active_owned_persona(expected_account_id, expected_persona_id) THEN
+    RAISE EXCEPTION 'active owned persona required';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION require_active_replay_persona() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NEW.actor_persona_id IS NOT NULL
+     AND NOT active_owned_persona(NEW.actor_user_id, NEW.actor_persona_id) THEN
+    RAISE EXCEPTION 'active owned persona required';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION require_active_role_persona() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF NOT active_owned_persona(NEW.account_id, NEW.persona_id) THEN
+    RAISE EXCEPTION 'active owned persona required';
+  END IF;
+  RETURN NEW;
+END
 $$;
 
 CREATE FUNCTION valid_text_moderation_reason_codes(value jsonb) RETURNS boolean
@@ -5600,6 +5870,8 @@ CREATE TABLE comment_publication_projection (
     status text NOT NULL,
     projected_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (author_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT comment_publication_projection_depth_check CHECK (((depth >= 0) AND (depth <= 8))),
     CONSTRAINT comment_publication_projection_status_check CHECK ((status = ANY (ARRAY['published'::text, 'hidden'::text, 'removed'::text])))
 );
@@ -5634,6 +5906,8 @@ CREATE TABLE comments (
     idempotency_body_hash text,
     depth integer DEFAULT 0 NOT NULL,
     reply_count integer DEFAULT 0 NOT NULL,
+    author_persona_id text,
+    CONSTRAINT comments_author_persona_shape CHECK ((((author_user_id IS NULL) AND (author_persona_id IS NULL)) OR ((author_user_id IS NOT NULL) AND (author_persona_id IS NOT NULL)))),
     CONSTRAINT comments_depth_check CHECK ((depth >= 0)),
     CONSTRAINT comments_not_self_parent CHECK (((parent_comment_id IS NULL) OR (parent_comment_id <> comment_id))),
     CONSTRAINT comments_reply_count_nonnegative CHECK ((reply_count >= 0)),
@@ -5919,7 +6193,7 @@ CREATE TABLE community_creation_intents (
     CONSTRAINT community_creation_intents_draft_check CHECK ((jsonb_typeof(draft) = 'object'::text)),
     CONSTRAINT community_creation_intents_identifiers_not_blank CHECK (((btrim(intent_id) <> ''::text) AND (intent_id = btrim(intent_id)) AND (btrim(actor_id) <> ''::text) AND (actor_id = btrim(actor_id)) AND (btrim(create_idempotency_key) <> ''::text) AND (create_idempotency_key = btrim(create_idempotency_key)) AND (btrim(verification_provider_id) <> ''::text) AND (verification_provider_id = btrim(verification_provider_id)) AND (btrim(provider_configuration_ref) <> ''::text) AND (provider_configuration_ref = btrim(provider_configuration_ref)) AND (btrim(provider_configuration_version) <> ''::text) AND (provider_configuration_version = btrim(provider_configuration_version)))),
     CONSTRAINT community_creation_intents_optional_route_v2_committed_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR (status <> 'committed'::text) OR ((committed_community_id ~ '^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text) AND (committed_resource_href = ('/c/'::text || committed_community_id))))),
-    CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR ((jsonb_typeof(draft) = 'object'::text) AND (draft ? 'name'::text) AND (draft ? 'description'::text) AND (draft ? 'policy'::text) AND ((((draft - 'name'::text) - 'description'::text) - 'policy'::text) = '{}'::jsonb) AND (jsonb_typeof((draft -> 'name'::text)) = 'string'::text) AND (btrim((draft ->> 'name'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'description'::text)) = ANY (ARRAY['string'::text, 'null'::text])) AND (jsonb_typeof((draft -> 'policy'::text)) = 'object'::text) AND (NOT (draft ? 'slug'::text)) AND (NOT (draft ? 'route_request'::text))))),
+    CONSTRAINT community_creation_intents_optional_route_v2_draft_shape CHECK (((creation_contract_version <> 'optional_route_v2'::text) OR ((jsonb_typeof(draft) = 'object'::text) AND (draft ? 'persona_id'::text) AND (draft ? 'name'::text) AND (draft ? 'description'::text) AND (draft ? 'policy'::text) AND (((((draft - 'persona_id'::text) - 'name'::text) - 'description'::text) - 'policy'::text) = '{}'::jsonb) AND (jsonb_typeof((draft -> 'persona_id'::text)) = 'string'::text) AND (btrim((draft ->> 'persona_id'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'name'::text)) = 'string'::text) AND (btrim((draft ->> 'name'::text)) <> ''::text) AND (jsonb_typeof((draft -> 'description'::text)) = ANY (ARRAY['string'::text, 'null'::text])) AND (jsonb_typeof((draft -> 'policy'::text)) = 'object'::text) AND (NOT (draft ? 'slug'::text)) AND (NOT (draft ? 'route_request'::text))))),
     CONSTRAINT community_creation_intents_provider_configuration_kind_check CHECK ((provider_configuration_kind = ANY (ARRAY['managed'::text, 'dynamic'::text]))),
     CONSTRAINT community_creation_intents_revision_check CHECK ((revision > 0)),
     CONSTRAINT community_creation_intents_route_v1_committed_href CHECK (((creation_contract_version <> 'route_v1'::text) OR (status <> 'committed'::text) OR (committed_resource_href ~~ '/c/%'::text))),
@@ -7086,6 +7360,8 @@ CREATE TABLE media_alignment_projections (
     current_artifact_revision bigint,
     failure_code text,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_alignment_artifact_pointer_shape CHECK ((((current_artifact_ref IS NULL) AND (current_artifact_revision IS NULL)) OR ((current_artifact_ref IS NOT NULL) AND (current_artifact_revision > 0)))),
     CONSTRAINT media_alignment_outcome_shape CHECK ((((status = 'unavailable'::text) AND (failure_code IS NOT NULL) AND (current_artifact_ref IS NULL) AND (current_artifact_revision IS NULL)) OR ((status = ANY (ARRAY['pending'::text, 'ready'::text])) AND (failure_code IS NULL)))),
     CONSTRAINT media_alignment_projections_alignment_revision_check CHECK ((alignment_revision >= 0)),
@@ -7142,6 +7418,8 @@ CREATE TABLE media_analysis_evidence (
     bound_reference_upstream_share_bps integer,
     analysis_snapshot jsonb NOT NULL,
     accepted_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_analysis_cover_shape CHECK ((((cover_status = 'ready'::text) AND (cover_artifact_ref IS NOT NULL) AND (cover_artifact_sha256 IS NOT NULL) AND (cover_media_type = ANY (ARRAY['image/jpeg'::text, 'image/png'::text, 'image/webp'::text])) AND (cover_width IS NOT NULL) AND (cover_height IS NOT NULL) AND (cover_width > 0) AND (cover_height > 0) AND (btrim(cover_normalization_revision) <> ''::text) AND (btrim(cover_safety_policy_revision) <> ''::text) AND (NOT (cover_facts ? 'reasonCode'::text))) OR ((cover_status = 'absent'::text) AND ((cover_facts ->> 'reasonCode'::text) IS NOT NULL) AND ((cover_facts ->> 'reasonCode'::text) = 'not_embedded'::text) AND (cover_artifact_ref IS NULL) AND (cover_artifact_sha256 IS NULL) AND (cover_media_type IS NULL) AND (cover_width IS NULL) AND (cover_height IS NULL) AND (cover_normalization_revision IS NULL) AND (cover_safety_policy_revision IS NULL)) OR ((cover_status = 'rejected'::text) AND ((cover_facts ->> 'reasonCode'::text) IS NOT NULL) AND ((cover_facts ->> 'reasonCode'::text) = ANY (ARRAY['invalid'::text, 'unsafe'::text, 'limits_exceeded'::text])) AND (cover_artifact_ref IS NULL) AND (cover_artifact_sha256 IS NULL) AND (cover_media_type IS NULL) AND (cover_width IS NULL) AND (cover_height IS NULL) AND (cover_normalization_revision IS NULL) AND (cover_safety_policy_revision IS NULL)))),
     CONSTRAINT media_analysis_evidence_acr_adapter_revision_check CHECK ((btrim(acr_adapter_revision) <> ''::text)),
     CONSTRAINT media_analysis_evidence_acr_decision_check CHECK ((acr_decision = ANY (ARRAY['allow'::text, 'requires_reference'::text, 'inconclusive'::text, 'skipped'::text]))),
@@ -7183,6 +7461,8 @@ CREATE TABLE media_audio_revisions (
     content_type text NOT NULL,
     size_bytes bigint NOT NULL,
     finalized_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_audio_revisions_audio_revision_check CHECK ((audio_revision > 0)),
     CONSTRAINT media_audio_revisions_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_audio_revisions_content_type_check CHECK ((content_type ~ '^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$'::text)),
@@ -7203,6 +7483,8 @@ CREATE TABLE media_immutable_objects (
     content_type text NOT NULL,
     canonical_sha256 text NOT NULL,
     sealed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_immutable_objects_canonical_sha256_check CHECK ((canonical_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_immutable_objects_content_type_check CHECK ((content_type ~ '^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$'::text)),
     CONSTRAINT media_immutable_objects_destination_ref_check CHECK ((btrim(destination_ref) <> ''::text)),
@@ -7227,6 +7509,8 @@ CREATE TABLE media_moderation_actions (
     evidence_ref text NOT NULL,
     decision_snapshot jsonb,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_moderation_action_shape CHECK ((((action_kind IS NOT NULL) AND (action_kind = 'approve'::text) AND (approval_kind IS NOT NULL) AND (decision_revision IS NOT NULL) AND (decision_snapshot IS NOT NULL) AND (jsonb_typeof(decision_snapshot) = 'object'::text) AND (((approval_kind = 'acr_override'::text) AND (reason_code IS NOT NULL) AND (reason_code = ANY (ARRAY['acr_inconclusive'::text, 'acr_exhausted'::text, 'acr_skipped'::text]))) OR ((approval_kind = 'standard'::text) AND (reason_code IS NULL)))) OR ((action_kind IS NOT NULL) AND (action_kind = 'block'::text) AND (approval_kind IS NULL) AND (reason_code IS NOT NULL) AND (reason_code = 'policy_violation'::text) AND (decision_revision IS NULL) AND (decision_snapshot IS NOT NULL) AND (decision_snapshot = '{"reasonCode": "policy_violation"}'::jsonb)))),
     CONSTRAINT media_moderation_actions_action_id_check CHECK ((btrim(action_id) <> ''::text)),
     CONSTRAINT media_moderation_actions_action_kind_check CHECK ((action_kind = ANY (ARRAY['approve'::text, 'block'::text]))),
@@ -7251,6 +7535,8 @@ CREATE TABLE media_moderation_projections (
     moderator_actor_id text,
     action_evidence_ref text,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_moderation_projection_exhaustion_shape CHECK ((((review_exhaustion_code IS NULL) AND (review_exhaustion_attempt_id IS NULL)) OR ((review_exhaustion_code = 'acr_exhausted'::text) AND (review_exhaustion_attempt_id IS NOT NULL) AND (status = 'open'::text) AND (held_revision IS NOT NULL)))),
     CONSTRAINT media_moderation_projections_action_kind_check CHECK (((action_kind IS NULL) OR (action_kind = ANY (ARRAY['approve'::text, 'block'::text])))),
     CONSTRAINT media_moderation_projections_review_exhaustion_code_check CHECK (((review_exhaustion_code IS NULL) OR (review_exhaustion_code = 'acr_exhausted'::text))),
@@ -7312,6 +7598,8 @@ CREATE TABLE media_post_submissions (
     response_snapshot_sha256 text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_post_submissions_abandonment_reason_check CHECK (((abandonment_reason IS NULL) OR (abandonment_reason = ANY (ARRAY['author_cancelled'::text, 'reservation_expired'::text, 'action_deadline_elapsed'::text, 'upload_expectation_mismatch'::text, 'upload_source_changed_before_finalize'::text])))),
     CONSTRAINT media_post_submissions_action_kind_check CHECK (((action_kind IS NULL) OR (action_kind = 'reference_required'::text))),
     CONSTRAINT media_post_submissions_analysis_revision_check CHECK ((analysis_revision >= 0)),
@@ -7374,6 +7662,8 @@ CREATE TABLE media_processing_attempts (
     result jsonb,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_processing_attempt_state_shape CHECK ((((state = 'pending'::text) AND (claim_owner IS NULL) AND (claim_fence = 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (evidence_ref IS NULL) AND (result IS NULL)) OR ((state = 'running'::text) AND (claim_owner IS NOT NULL) AND (claim_fence > 0) AND (lease_expires_at IS NOT NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (evidence_ref IS NULL) AND (result IS NULL)) OR ((state = 'retry_wait'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (retryable = true) AND (next_eligible_at IS NOT NULL) AND (failure_code IS NOT NULL) AND (evidence_ref IS NULL) AND (result IS NULL)) OR ((state = 'succeeded'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable IS NULL) AND (failure_code IS NULL) AND (evidence_ref IS NOT NULL) AND (result IS NOT NULL)) OR ((state = 'exhausted'::text) AND (claim_owner IS NULL) AND (claim_fence > 0) AND (lease_expires_at IS NULL) AND (next_eligible_at IS NULL) AND (retryable = false) AND (failure_code IS NOT NULL) AND (result IS NULL)))),
     CONSTRAINT media_processing_attempts_adapter_revision_check CHECK ((btrim(adapter_revision) <> ''::text)),
     CONSTRAINT media_processing_attempts_analysis_revision_check CHECK ((analysis_revision > 0)),
@@ -7406,6 +7696,8 @@ CREATE TABLE media_publication_decisions (
     evidence_ref text NOT NULL,
     decision_snapshot jsonb NOT NULL,
     decided_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_publication_decisions_analysis_revision_check CHECK ((analysis_revision > 0)),
     CONSTRAINT media_publication_decisions_audio_revision_check CHECK ((audio_revision > 0)),
     CONSTRAINT media_publication_decisions_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
@@ -7440,6 +7732,8 @@ CREATE TABLE media_publication_projections (
     data_registration text DEFAULT 'pending'::text NOT NULL,
     locked_delivery text DEFAULT 'not_required'::text NOT NULL,
     projected_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_publication_projections_alignment_check CHECK ((alignment = ANY (ARRAY['pending'::text, 'ready'::text, 'unavailable'::text]))),
     CONSTRAINT media_publication_projections_analysis_badges_check CHECK ((analysis_badges = ANY (ARRAY['[]'::jsonb, '["reference_bound"]'::jsonb]))),
     CONSTRAINT media_publication_projections_audio_asset_ref_check CHECK ((btrim(audio_asset_ref) <> ''::text)),
@@ -7465,6 +7759,8 @@ CREATE TABLE media_reference_evidence (
     inherited_license_preset text,
     inherited_commercial_rev_share_bps integer,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_reference_evidence_asset_id_check CHECK ((btrim(asset_id) <> ''::text)),
     CONSTRAINT media_reference_evidence_evidence_analysis_revision_check CHECK ((evidence_analysis_revision > 0)),
     CONSTRAINT media_reference_evidence_evidence_audio_revision_check CHECK ((evidence_audio_revision > 0)),
@@ -7487,8 +7783,12 @@ CREATE TABLE media_submission_command_replays (
     response_snapshot_bytes bytea NOT NULL,
     response_snapshot_sha256 text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    actor_persona_id text,
+    submission_author_persona_id text NOT NULL,
     CONSTRAINT media_submission_command_replays_endpoint_template_check CHECK ((btrim(endpoint_template) <> ''::text)),
     CONSTRAINT media_submission_command_replays_idempotency_key_check CHECK ((btrim(idempotency_key) <> ''::text)),
+    CONSTRAINT media_submission_command_replays_persona_match CHECK (((actor_persona_id IS NULL) OR (actor_persona_id = submission_author_persona_id))),
     CONSTRAINT media_submission_command_replays_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT media_submission_command_replays_response_hash CHECK (((octet_length(response_snapshot_bytes) > 0) AND (encode(sha256(response_snapshot_bytes), 'hex'::text) = response_snapshot_sha256))),
     CONSTRAINT media_submission_command_replays_response_snapshot_sha256_check CHECK ((response_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text))
@@ -7509,6 +7809,8 @@ CREATE TABLE media_submission_events (
     workflow_revision bigint NOT NULL,
     evidence jsonb DEFAULT '{}'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_submission_events_analysis_revision_check CHECK ((analysis_revision >= 0)),
     CONSTRAINT media_submission_events_audio_revision_check CHECK ((audio_revision >= 0)),
     CONSTRAINT media_submission_events_creation_revision_check CHECK ((creation_revision > 0)),
@@ -7544,6 +7846,8 @@ CREATE TABLE media_submission_outbox (
     failure_code text,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_submission_outbox_analysis_revision_check CHECK ((analysis_revision >= 0)),
     CONSTRAINT media_submission_outbox_audio_revision_check CHECK ((audio_revision > 0)),
     CONSTRAINT media_submission_outbox_check CHECK ((workflow_instance_id = ((('media-'::text || operation_id) || '-r'::text) || (workflow_revision)::text))),
@@ -7572,6 +7876,8 @@ CREATE TABLE media_submission_terms (
     access_mode text NOT NULL,
     terms_snapshot jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_submission_terms_access_mode_check CHECK ((access_mode = 'public'::text)),
     CONSTRAINT media_submission_terms_commercial_remix_share_bps_check CHECK (((commercial_remix_share_bps >= 0) AND (commercial_remix_share_bps <= 10000))),
     CONSTRAINT media_submission_terms_creation_revision_check CHECK ((creation_revision > 1)),
@@ -7595,6 +7901,8 @@ CREATE TABLE media_timed_lyrics_artifacts (
     artifact_sha256 text NOT NULL,
     artifact jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_timed_lyrics_artifacts_analysis_revision_check CHECK ((analysis_revision > 0)),
     CONSTRAINT media_timed_lyrics_artifacts_artifact_check CHECK ((jsonb_typeof(artifact) = 'object'::text)),
     CONSTRAINT media_timed_lyrics_artifacts_artifact_ref_check CHECK ((btrim(artifact_ref) <> ''::text)),
@@ -7617,6 +7925,8 @@ CREATE TABLE media_transcript_artifacts (
     transcript_text text NOT NULL,
     segments jsonb DEFAULT '[]'::jsonb NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT media_transcript_artifacts_analysis_revision_check CHECK ((analysis_revision > 0)),
     CONSTRAINT media_transcript_artifacts_audio_revision_check CHECK ((audio_revision > 0)),
     CONSTRAINT media_transcript_artifacts_canonical_audio_sha256_check CHECK ((canonical_audio_sha256 ~ '^[0-9a-f]{64}$'::text)),
@@ -7652,6 +7962,8 @@ CREATE TABLE media_upload_reservations (
     response_snapshot_sha256 text NOT NULL,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    actor_persona_id text NOT NULL,
     CONSTRAINT media_upload_reservations_claim_fence_check CHECK ((claim_fence >= 0)),
     CONSTRAINT media_upload_reservations_claim_shape CHECK ((((state = 'issued'::text) AND (claim_fence = 0)) OR ((state = 'expired'::text) AND (((submission_id IS NULL) AND (claim_fence = 0)) OR ((submission_id IS NOT NULL) AND (claim_fence > 0)))) OR ((state = ANY (ARRAY['claimed'::text, 'sealed'::text, 'rejected'::text])) AND (claim_fence > 0)))),
     CONSTRAINT media_upload_reservations_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/media-upload-reservations'::text)),
@@ -7938,6 +8250,83 @@ CREATE TABLE observations (
     CONSTRAINT observations_variant_shape_check CHECK ((((observation_value ->> 'kind'::text) = observation_kind) AND (((observation_kind = ANY (ARRAY['asset_inventory'::text, 'asset_balance'::text])) AND (chain_id IS NOT NULL) AND (account_caip10 IS NOT NULL) AND (asset_caip19 IS NOT NULL) AND (chain_id = (observation_value ->> 'chain_id'::text)) AND (account_caip10 = (observation_value ->> 'account_id'::text)) AND (asset_caip19 = (observation_value ->> 'asset_id'::text))) OR ((observation_kind = 'disclosed_predicate'::text) AND (chain_id IS NULL) AND (account_caip10 IS NULL) AND (asset_caip19 IS NULL)))))
 );
 
+CREATE TABLE persona_create_actions (
+    account_id text NOT NULL,
+    endpoint_template text DEFAULT '/personas'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    persona_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_create_actions_endpoint_template_check CHECK ((endpoint_template = '/personas'::text)),
+    CONSTRAINT persona_create_actions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT persona_create_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE persona_profiles (
+    persona_id text NOT NULL,
+    revision bigint DEFAULT 1 NOT NULL,
+    display_name text,
+    avatar_ref text,
+    cover_ref text,
+    bio text,
+    preferred_locale text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_profiles_avatar_ref_check CHECK (((avatar_ref IS NULL) OR (char_length(avatar_ref) <= 2048))),
+    CONSTRAINT persona_profiles_bio_check CHECK (((bio IS NULL) OR (char_length(bio) <= 2000))),
+    CONSTRAINT persona_profiles_cover_ref_check CHECK (((cover_ref IS NULL) OR (char_length(cover_ref) <= 2048))),
+    CONSTRAINT persona_profiles_display_name_check CHECK (((display_name IS NULL) OR (char_length(display_name) <= 80))),
+    CONSTRAINT persona_profiles_preferred_locale_check CHECK (((preferred_locale IS NULL) OR (char_length(preferred_locale) <= 64))),
+    CONSTRAINT persona_profiles_revision_check CHECK ((revision > 0)),
+    CONSTRAINT persona_profiles_time_order CHECK ((updated_at >= created_at))
+);
+
+CREATE TABLE persona_role_presentations (
+    community_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_role_presentations_time_order CHECK ((updated_at >= created_at))
+);
+
+CREATE TABLE persona_wallet_assignments (
+    assignment_id text NOT NULL,
+    persona_id text NOT NULL,
+    account_id text NOT NULL,
+    chain_account_kind text NOT NULL,
+    privy_wallet_id text,
+    hd_wallet_index bigint NOT NULL,
+    address text,
+    status text NOT NULL,
+    reservation_idempotency_key text NOT NULL,
+    assigned_at timestamp with time zone,
+    tombstoned_at timestamp with time zone,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_wallet_assignments_address_check CHECK (((address IS NULL) OR (address ~ '^0x[0-9a-f]{40}$'::text))),
+    CONSTRAINT persona_wallet_assignments_assignment_id_check CHECK (((btrim(assignment_id) <> ''::text) AND (assignment_id = btrim(assignment_id)) AND (octet_length(assignment_id) <= 128))),
+    CONSTRAINT persona_wallet_assignments_chain_account_kind_check CHECK ((chain_account_kind = 'evm'::text)),
+    CONSTRAINT persona_wallet_assignments_hd_wallet_index_check CHECK (((hd_wallet_index >= 0) AND (hd_wallet_index <= '9007199254740991'::bigint))),
+    CONSTRAINT persona_wallet_assignments_privy_wallet_id_check CHECK (((privy_wallet_id IS NULL) OR ((btrim(privy_wallet_id) <> ''::text) AND (privy_wallet_id = btrim(privy_wallet_id)) AND (octet_length(privy_wallet_id) <= 256)))),
+    CONSTRAINT persona_wallet_assignments_reservation_idempotency_key_check CHECK (((btrim(reservation_idempotency_key) <> ''::text) AND (reservation_idempotency_key = btrim(reservation_idempotency_key)) AND (octet_length(reservation_idempotency_key) <= 128))),
+    CONSTRAINT persona_wallet_assignments_state_shape CHECK ((((status = 'pending'::text) AND (address IS NULL) AND (assigned_at IS NULL) AND (tombstoned_at IS NULL)) OR ((status = 'active'::text) AND (address IS NOT NULL) AND (assigned_at IS NOT NULL) AND (tombstoned_at IS NULL)) OR ((status = 'tombstoned'::text) AND (tombstoned_at IS NOT NULL)))),
+    CONSTRAINT persona_wallet_assignments_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'active'::text, 'tombstoned'::text]))),
+    CONSTRAINT persona_wallet_assignments_time_order CHECK (((updated_at >= created_at) AND ((assigned_at IS NULL) OR (assigned_at >= created_at)) AND ((tombstoned_at IS NULL) OR (tombstoned_at >= created_at))))
+);
+
+CREATE TABLE personas (
+    persona_id text NOT NULL,
+    account_id text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    is_first_persona boolean DEFAULT false NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    retired_at timestamp with time zone,
+    CONSTRAINT personas_persona_id_check CHECK (((btrim(persona_id) <> ''::text) AND (persona_id = btrim(persona_id)) AND (octet_length(persona_id) <= 128))),
+    CONSTRAINT personas_retirement_shape CHECK ((((status = 'retired'::text) AND (retired_at IS NOT NULL)) OR ((status <> 'retired'::text) AND (retired_at IS NULL)))),
+    CONSTRAINT personas_status_check CHECK ((status = ANY (ARRAY['active'::text, 'suspended'::text, 'retired'::text])))
+);
+
 CREATE TABLE policy_versions (
     policy_version_id text NOT NULL,
     community_id text NOT NULL,
@@ -8006,6 +8395,8 @@ CREATE TABLE posts (
     comment_count integer DEFAULT 0 NOT NULL,
     upvote_count integer DEFAULT 0 NOT NULL,
     downvote_count integer DEFAULT 0 NOT NULL,
+    author_persona_id text,
+    CONSTRAINT posts_author_persona_shape CHECK ((((author_user_id IS NULL) AND (author_persona_id IS NULL)) OR ((author_user_id IS NOT NULL) AND (author_persona_id IS NOT NULL)))),
     CONSTRAINT posts_comment_count_nonnegative CHECK ((comment_count >= 0)),
     CONSTRAINT posts_downvote_count_nonnegative CHECK ((downvote_count >= 0)),
     CONSTRAINT posts_post_type_check CHECK ((post_type = ANY (ARRAY['text'::text, 'image'::text, 'video'::text, 'link'::text, 'song'::text, 'crosspost'::text, 'file'::text]))),
@@ -8094,6 +8485,7 @@ CREATE TABLE public_handle_index (
     redirect_target_handle_id text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    owner_persona_id text NOT NULL,
     CONSTRAINT public_handle_index_display_not_blank CHECK ((btrim(label_display) <> ''::text)),
     CONSTRAINT public_handle_index_label_format_check CHECK (((label_normalized ~ '^[a-z0-9]+(-[a-z0-9]+)*$'::text) AND (label_display = (label_normalized || '.pirate'::text)))),
     CONSTRAINT public_handle_index_label_not_blank CHECK ((btrim(label_normalized) <> ''::text)),
@@ -8205,6 +8597,8 @@ CREATE TABLE text_content_submissions (
     response_snapshot_sha256 text NOT NULL,
     target_post_id text,
     target_parent_comment_id text,
+    actor_account_id text GENERATED ALWAYS AS (actor_user_id) STORED NOT NULL,
+    author_persona_id text NOT NULL,
     CONSTRAINT text_content_submissions_identifiers_not_blank CHECK (((btrim(submission_id) <> ''::text) AND (submission_id = btrim(submission_id)) AND (btrim(actor_user_id) <> ''::text) AND (actor_user_id = btrim(actor_user_id)) AND (btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND ((review_ref IS NULL) OR ((btrim(review_ref) <> ''::text) AND (review_ref = btrim(review_ref)))))),
     CONSTRAINT text_content_submissions_input_sha256_check CHECK ((input_sha256 ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT text_content_submissions_moderation_decision_check CHECK ((moderation_decision = ANY (ARRAY['allow'::text, 'manual_review'::text, 'blocked'::text]))),
@@ -8871,10 +9265,13 @@ ALTER TABLE ONLY media_post_submissions
     ADD CONSTRAINT media_post_submissions_identity_unique UNIQUE (community_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_post_submissions
-    ADD CONSTRAINT media_post_submissions_pkey PRIMARY KEY (submission_id);
+    ADD CONSTRAINT media_post_submissions_persona_lineage_unique UNIQUE (community_id, actor_user_id, author_persona_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_post_submissions
-    ADD CONSTRAINT media_post_submissions_replay_unique UNIQUE (community_id, actor_user_id, endpoint_template, idempotency_key);
+    ADD CONSTRAINT media_post_submissions_persona_replay_unique UNIQUE (actor_account_id, author_persona_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_pkey PRIMARY KEY (submission_id);
 
 ALTER TABLE ONLY media_processing_attempts
     ADD CONSTRAINT media_processing_attempts_pkey PRIMARY KEY (attempt_id);
@@ -8899,9 +9296,6 @@ ALTER TABLE ONLY media_publication_projections
 
 ALTER TABLE ONLY media_reference_evidence
     ADD CONSTRAINT media_reference_evidence_pkey PRIMARY KEY (community_id, actor_user_id, submission_id, operation_id, asset_id, evidence_audio_revision, evidence_analysis_revision, evidence_audio_sha256);
-
-ALTER TABLE ONLY media_submission_command_replays
-    ADD CONSTRAINT media_submission_command_replays_pkey PRIMARY KEY (community_id, actor_user_id, endpoint_template, idempotency_key);
 
 ALTER TABLE ONLY media_submission_events
     ADD CONSTRAINT media_submission_events_event_id_key UNIQUE (event_id);
@@ -8940,10 +9334,13 @@ ALTER TABLE ONLY media_upload_reservations
     ADD CONSTRAINT media_upload_reservations_identity_unique UNIQUE (community_id, actor_user_id, reservation_id);
 
 ALTER TABLE ONLY media_upload_reservations
-    ADD CONSTRAINT media_upload_reservations_pkey PRIMARY KEY (reservation_id);
+    ADD CONSTRAINT media_upload_reservations_persona_identity_unique UNIQUE (community_id, actor_user_id, actor_persona_id, reservation_id);
 
 ALTER TABLE ONLY media_upload_reservations
-    ADD CONSTRAINT media_upload_reservations_replay_unique UNIQUE (community_id, actor_user_id, endpoint_template, idempotency_key);
+    ADD CONSTRAINT media_upload_reservations_persona_replay_unique UNIQUE (actor_account_id, actor_persona_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY media_upload_reservations
+    ADD CONSTRAINT media_upload_reservations_pkey PRIMARY KEY (reservation_id);
 
 ALTER TABLE ONLY moderation_actions
     ADD CONSTRAINT moderation_actions_pkey PRIMARY KEY (community_id, action_id);
@@ -9001,6 +9398,33 @@ ALTER TABLE ONLY observations
 
 ALTER TABLE ONLY observations
     ADD CONSTRAINT observations_pkey PRIMARY KEY (observation_id);
+
+ALTER TABLE ONLY persona_create_actions
+    ADD CONSTRAINT persona_create_actions_account_id_persona_id_key UNIQUE (account_id, persona_id);
+
+ALTER TABLE ONLY persona_create_actions
+    ADD CONSTRAINT persona_create_actions_pkey PRIMARY KEY (account_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY persona_profiles
+    ADD CONSTRAINT persona_profiles_pkey PRIMARY KEY (persona_id);
+
+ALTER TABLE ONLY persona_role_presentations
+    ADD CONSTRAINT persona_role_presentations_pkey PRIMARY KEY (community_id, account_id);
+
+ALTER TABLE ONLY persona_wallet_assignments
+    ADD CONSTRAINT persona_wallet_assignments_index_ledger_unique UNIQUE (account_id, chain_account_kind, hd_wallet_index);
+
+ALTER TABLE ONLY persona_wallet_assignments
+    ADD CONSTRAINT persona_wallet_assignments_pkey PRIMARY KEY (assignment_id);
+
+ALTER TABLE ONLY persona_wallet_assignments
+    ADD CONSTRAINT persona_wallet_assignments_reservation_replay_unique UNIQUE (account_id, persona_id, chain_account_kind, reservation_idempotency_key);
+
+ALTER TABLE ONLY personas
+    ADD CONSTRAINT personas_account_identity_unique UNIQUE (account_id, persona_id);
+
+ALTER TABLE ONLY personas
+    ADD CONSTRAINT personas_pkey PRIMARY KEY (persona_id);
 
 ALTER TABLE ONLY policy_versions
     ADD CONSTRAINT policy_versions_community_id_hash_unique UNIQUE (community_id, policy_version_id, policy_hash);
@@ -9177,7 +9601,7 @@ CREATE INDEX comment_publication_projection_thread_idx ON comment_publication_pr
 
 CREATE INDEX comment_reports_open_target_idx ON comment_reports USING btree (community_id, comment_id, created_at, report_id) WHERE (status = 'open'::text);
 
-CREATE UNIQUE INDEX comments_author_endpoint_idempotency_unique ON comments USING btree (author_user_id, (
+CREATE UNIQUE INDEX comments_author_persona_endpoint_idempotency_uidx ON comments USING btree (author_user_id, author_persona_id, (
 CASE
     WHEN (parent_comment_id IS NULL) THEN 'comment'::text
     ELSE 'reply'::text
@@ -9186,6 +9610,8 @@ END), idempotency_key) WHERE ((author_user_id IS NOT NULL) AND (idempotency_key 
 CREATE UNIQUE INDEX comments_comment_id_global_unique ON comments USING btree (comment_id);
 
 CREATE INDEX comments_parent_created_idx ON comments USING btree (community_id, parent_comment_id, created_at, comment_id);
+
+CREATE INDEX comments_persona_created_idx ON comments USING btree (community_id, author_persona_id, created_at DESC, comment_id);
 
 CREATE INDEX comments_post_created_idx ON comments USING btree (community_id, post_id, created_at, comment_id);
 
@@ -9289,6 +9715,10 @@ CREATE INDEX media_post_submissions_author_idx ON media_post_submissions USING b
 
 CREATE INDEX media_processing_attempts_claim_idx ON media_processing_attempts USING btree (state, next_eligible_at, lease_expires_at, attempt_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'retry_wait'::text]));
 
+CREATE UNIQUE INDEX media_submission_command_replays_account_replay_uidx ON media_submission_command_replays USING btree (actor_account_id, endpoint_template, idempotency_key) WHERE (actor_persona_id IS NULL);
+
+CREATE UNIQUE INDEX media_submission_command_replays_persona_replay_uidx ON media_submission_command_replays USING btree (actor_account_id, actor_persona_id, endpoint_template, idempotency_key) WHERE (actor_persona_id IS NOT NULL);
+
 CREATE INDEX media_submission_outbox_claim_idx ON media_submission_outbox USING btree (state, next_eligible_at, lease_expires_at, created_at, outbox_event_id) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text, 'failed'::text]));
 
 CREATE INDEX media_transcript_lineage_idx ON media_transcript_artifacts USING btree (submission_id, audio_revision, analysis_revision, canonical_audio_sha256);
@@ -9311,13 +9741,23 @@ CREATE INDEX observations_snapshot_response_idx ON observations USING btree (res
 
 CREATE INDEX observations_user_kind_observed_idx ON observations USING btree (user_id, observation_kind, observed_at DESC, observation_id);
 
+CREATE UNIQUE INDEX persona_wallet_assignments_address_uidx ON persona_wallet_assignments USING btree (address) WHERE (address IS NOT NULL);
+
+CREATE UNIQUE INDEX persona_wallet_assignments_one_live_kind_uidx ON persona_wallet_assignments USING btree (persona_id, chain_account_kind) WHERE (status = ANY (ARRAY['pending'::text, 'active'::text]));
+
+CREATE INDEX personas_account_status_idx ON personas USING btree (account_id, status, created_at, persona_id);
+
+CREATE UNIQUE INDEX personas_one_first_per_account_uidx ON personas USING btree (account_id) WHERE is_first_persona;
+
 CREATE INDEX post_vote_actions_target_time_idx ON post_vote_actions USING btree (community_id, post_id, created_at, action_id);
 
 CREATE INDEX post_votes_post_idx ON post_votes USING btree (community_id, post_id, updated_at DESC, post_vote_id);
 
 CREATE INDEX posts_author_created_idx ON posts USING btree (community_id, author_user_id, created_at DESC, post_id);
 
-CREATE UNIQUE INDEX posts_author_idempotency_unique ON posts USING btree (community_id, author_user_id, idempotency_key) WHERE ((author_user_id IS NOT NULL) AND (idempotency_key <> ''::text));
+CREATE UNIQUE INDEX posts_author_persona_idempotency_uidx ON posts USING btree (author_user_id, author_persona_id, idempotency_key) WHERE ((author_user_id IS NOT NULL) AND (idempotency_key <> ''::text));
+
+CREATE INDEX posts_persona_created_idx ON posts USING btree (community_id, author_persona_id, created_at DESC, post_id);
 
 CREATE UNIQUE INDEX posts_post_id_global_unique ON posts USING btree (post_id);
 
@@ -9329,9 +9769,9 @@ CREATE UNIQUE INDEX proof_sessions_provider_ref_uidx ON proof_sessions USING btr
 
 CREATE UNIQUE INDEX public_handle_index_label_normalized_uidx ON public_handle_index USING btree (label_normalized);
 
-CREATE UNIQUE INDEX public_handle_index_one_active_owner_uidx ON public_handle_index USING btree (owner_user_id) WHERE (status = 'active'::text);
-
 CREATE INDEX public_handle_index_owner_status_idx ON public_handle_index USING btree (owner_user_id, status, updated_at DESC);
+
+CREATE INDEX public_handle_index_persona_status_idx ON public_handle_index USING btree (owner_persona_id, status, updated_at DESC);
 
 CREATE INDEX public_handle_index_redirect_target_idx ON public_handle_index USING btree (redirect_target_handle_id) WHERE (status = 'redirect'::text);
 
@@ -9345,11 +9785,9 @@ CREATE INDEX subject_keys_scope_created_idx ON subject_keys USING btree (issuer,
 
 CREATE INDEX text_content_submissions_actor_created_idx ON text_content_submissions USING btree (actor_user_id, created_at DESC, submission_id);
 
-CREATE UNIQUE INDEX text_content_submissions_comment_reply_actor_key_unique ON text_content_submissions USING btree (actor_user_id, surface, idempotency_key) WHERE (surface = ANY (ARRAY['comment'::text, 'reply'::text]));
+CREATE UNIQUE INDEX text_content_submissions_persona_replay_uidx ON text_content_submissions USING btree (actor_account_id, author_persona_id, surface, idempotency_key);
 
 CREATE INDEX text_content_submissions_review_idx ON text_content_submissions USING btree (community_id, status, created_at, submission_id) WHERE (status = 'manual_review'::text);
-
-CREATE UNIQUE INDEX text_content_submissions_text_post_actor_key_unique ON text_content_submissions USING btree (actor_user_id, idempotency_key) WHERE (surface = 'text_post'::text);
 
 CREATE INDEX text_moderation_cases_open_idx ON text_moderation_cases USING btree (community_id, created_at, case_id) WHERE (status = 'open'::text);
 
@@ -9374,6 +9812,8 @@ CREATE TRIGGER assertion_revalidation_events_append_only BEFORE DELETE OR UPDATE
 CREATE TRIGGER assertions_append_only BEFORE DELETE OR UPDATE ON assertions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER assertions_validate_binding BEFORE INSERT OR UPDATE ON assertions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_assertion_binding();
+
+CREATE TRIGGER comments_active_persona BEFORE INSERT ON comments FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
 CREATE CONSTRAINT TRIGGER communities_canonical_route_binding_guard AFTER INSERT OR UPDATE OF status, canonical_route_binding_id, route_authority_version ON communities DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_community_canonical_route_reference();
 
@@ -9593,6 +10033,40 @@ CREATE TRIGGER media_outbox_payload_guard BEFORE INSERT ON media_submission_outb
 
 CREATE TRIGGER media_outbox_update_guard BEFORE UPDATE ON media_submission_outbox FOR EACH ROW EXECUTE FUNCTION guard_media_outbox_update();
 
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_alignment_projections FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_analysis_evidence FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_audio_revisions FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_immutable_objects FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_moderation_actions FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_moderation_projections FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_processing_attempts FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_publication_decisions FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_reference_evidence FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_submission_command_replays FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_submission_events FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_submission_outbox FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_submission_terms FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_timed_lyrics_artifacts FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_persona_lineage_fill BEFORE INSERT ON media_transcript_artifacts FOR EACH ROW EXECUTE FUNCTION populate_media_persona_lineage();
+
+CREATE TRIGGER media_post_submissions_active_persona BEFORE INSERT ON media_post_submissions FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
+
 CREATE TRIGGER media_processing_attempt_update_guard BEFORE UPDATE ON media_processing_attempts FOR EACH ROW EXECUTE FUNCTION guard_media_processing_attempt_update();
 
 CREATE TRIGGER media_publication_decisions_append_only BEFORE DELETE OR UPDATE ON media_publication_decisions FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
@@ -9608,6 +10082,8 @@ CREATE TRIGGER media_reference_evidence_append_only BEFORE DELETE OR UPDATE ON m
 CREATE CONSTRAINT TRIGGER media_reservation_claim_pair AFTER INSERT OR UPDATE ON media_upload_reservations DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_media_reservation_claim_pair();
 
 CREATE TRIGGER media_reservation_update_guard BEFORE UPDATE ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION guard_media_reservation_update();
+
+CREATE TRIGGER media_submission_command_replays_active_persona BEFORE INSERT ON media_submission_command_replays FOR EACH ROW EXECUTE FUNCTION require_active_replay_persona();
 
 CREATE TRIGGER media_submission_command_replays_append_only BEFORE DELETE OR UPDATE ON media_submission_command_replays FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
@@ -9634,6 +10110,8 @@ CREATE TRIGGER media_timed_lyrics_artifacts_append_only BEFORE DELETE OR UPDATE 
 CREATE TRIGGER media_transcript_artifact_shape_guard BEFORE INSERT ON media_transcript_artifacts FOR EACH ROW EXECUTE FUNCTION validate_media_transcript_artifact();
 
 CREATE TRIGGER media_transcript_artifacts_append_only BEFORE DELETE OR UPDATE ON media_transcript_artifacts FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
+
+CREATE TRIGGER media_upload_reservations_active_persona BEFORE INSERT ON media_upload_reservations FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
 CREATE CONSTRAINT TRIGGER namespace_ownership_attempt_session_coherence AFTER INSERT OR UPDATE ON namespace_ownership_completion_attempts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_namespace_ownership_attempt_session_coherence();
 
@@ -9665,7 +10143,19 @@ CREATE CONSTRAINT TRIGGER namespace_ownership_start_reservation_coherence AFTER 
 
 CREATE TRIGGER observations_append_only BEFORE DELETE OR UPDATE ON observations FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
+CREATE TRIGGER persona_create_actions_append_only BEFORE DELETE OR UPDATE ON persona_create_actions FOR EACH ROW EXECUTE FUNCTION prevent_persona_create_action_change();
+
+CREATE TRIGGER persona_profiles_delete_guard BEFORE DELETE ON persona_profiles FOR EACH ROW EXECUTE FUNCTION prevent_persona_profile_delete();
+
+CREATE TRIGGER persona_role_presentations_active_persona BEFORE INSERT OR UPDATE OF account_id, persona_id ON persona_role_presentations FOR EACH ROW EXECUTE FUNCTION require_active_role_persona();
+
+CREATE TRIGGER persona_wallet_assignments_state_guard BEFORE DELETE OR UPDATE ON persona_wallet_assignments FOR EACH ROW EXECUTE FUNCTION guard_persona_wallet_assignment();
+
+CREATE TRIGGER personas_identity_immutable BEFORE DELETE OR UPDATE ON personas FOR EACH ROW EXECUTE FUNCTION prevent_persona_identity_rewrite();
+
 CREATE TRIGGER policy_versions_append_only BEFORE DELETE OR UPDATE ON policy_versions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
+
+CREATE TRIGGER posts_active_persona BEFORE INSERT ON posts FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
 
 CREATE TRIGGER proof_session_completion_events_append_only BEFORE DELETE OR UPDATE ON proof_session_completion_events FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -9677,7 +10167,9 @@ CREATE TRIGGER proof_sessions_lifecycle BEFORE INSERT OR DELETE OR UPDATE ON pro
 
 CREATE CONSTRAINT TRIGGER proof_sessions_terminal_completion_event AFTER INSERT OR UPDATE ON proof_sessions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION gates_v2_require_terminal_completion_event();
 
-CREATE CONSTRAINT TRIGGER public_handle_index_redirect_integrity AFTER INSERT OR UPDATE OF status, owner_user_id, redirect_target_handle_id ON public_handle_index DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public_handle_index_validate_redirects();
+CREATE TRIGGER public_handle_index_default_persona BEFORE INSERT OR UPDATE OF owner_user_id, owner_persona_id ON public_handle_index FOR EACH ROW EXECUTE FUNCTION default_public_handle_persona();
+
+CREATE CONSTRAINT TRIGGER public_handle_index_redirect_integrity AFTER INSERT OR UPDATE OF status, owner_user_id, owner_persona_id, redirect_target_handle_id ON public_handle_index DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public_handle_index_validate_redirects();
 
 CREATE TRIGGER reward_subject_consumptions_append_only BEFORE DELETE OR UPDATE ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -9711,6 +10203,8 @@ CREATE TRIGGER text_content_submission_response_snapshot_guard BEFORE UPDATE ON 
 
 CREATE TRIGGER text_content_submission_update_guard BEFORE UPDATE ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION guard_text_content_submission_update();
 
+CREATE TRIGGER text_content_submissions_active_persona BEFORE INSERT ON text_content_submissions FOR EACH ROW EXECUTE FUNCTION require_active_author_persona();
+
 CREATE TRIGGER text_moderation_case_delete_guard BEFORE DELETE ON text_moderation_cases FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
 CREATE TRIGGER text_moderation_case_insert_guard BEFORE INSERT ON text_moderation_cases FOR EACH ROW EXECUTE FUNCTION validate_text_review_child_insert();
@@ -9724,6 +10218,8 @@ CREATE TRIGGER text_moderation_evidence_append_only BEFORE DELETE OR UPDATE ON t
 CREATE TRIGGER text_moderation_policy_revisions_append_only BEFORE DELETE OR UPDATE ON text_moderation_policy_revisions FOR EACH ROW EXECUTE FUNCTION reject_text_moderation_append_only_change();
 
 CREATE TRIGGER used_action_grants_append_only BEFORE DELETE OR UPDATE ON used_action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
+
+CREATE TRIGGER users_provision_first_persona AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION provision_first_persona_for_new_account();
 
 ALTER TABLE ONLY action_challenges
     ADD CONSTRAINT action_challenges_intent_fk FOREIGN KEY (action_intent_id) REFERENCES action_intents(action_intent_id);
@@ -9798,6 +10294,9 @@ ALTER TABLE ONLY comment_moderation_cases
     ADD CONSTRAINT comment_moderation_cases_text_case_fk FOREIGN KEY (community_id, text_case_id) REFERENCES text_moderation_cases(community_id, case_id);
 
 ALTER TABLE ONLY comment_publication_projection
+    ADD CONSTRAINT comment_publication_projection_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY comment_publication_projection
     ADD CONSTRAINT comment_publication_projection_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);
 
 ALTER TABLE ONLY comment_publication_projection
@@ -9811,6 +10310,9 @@ ALTER TABLE ONLY comment_reports
 
 ALTER TABLE ONLY comment_reports
     ADD CONSTRAINT comment_reports_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);
+
+ALTER TABLE ONLY comments
+    ADD CONSTRAINT comments_author_persona_fk FOREIGN KEY (author_user_id, author_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY comments
     ADD CONSTRAINT comments_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
@@ -10218,6 +10720,9 @@ ALTER TABLE ONLY identity_credentials
     ADD CONSTRAINT identity_credentials_canonical_user_id_fkey FOREIGN KEY (canonical_user_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY media_alignment_projections
+    ADD CONSTRAINT media_alignment_projections_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY media_alignment_projections
     ADD CONSTRAINT media_alignment_projections_community_id_actor_user_id_pos_fkey FOREIGN KEY (community_id, actor_user_id, post_id) REFERENCES media_publication_projections(community_id, actor_user_id, post_id);
 
 ALTER TABLE ONLY media_alignment_projections
@@ -10229,11 +10734,20 @@ ALTER TABLE ONLY media_alignment_projections
 ALTER TABLE ONLY media_alignment_projections
     ADD CONSTRAINT media_alignment_projections_current_artifact_ref_fkey FOREIGN KEY (current_artifact_ref) REFERENCES media_timed_lyrics_artifacts(artifact_ref);
 
+ALTER TABLE ONLY media_alignment_projections
+    ADD CONSTRAINT media_alignment_projections_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_analysis_evidence
+    ADD CONSTRAINT media_analysis_evidence_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
 ALTER TABLE ONLY media_analysis_evidence
     ADD CONSTRAINT media_analysis_evidence_community_id_actor_user_id_submis_fkey1 FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id, bound_reference_asset_id, bound_reference_audio_revision, bound_reference_analysis_revision, bound_reference_audio_sha256) REFERENCES media_reference_evidence(community_id, actor_user_id, submission_id, operation_id, asset_id, evidence_audio_revision, evidence_analysis_revision, evidence_audio_sha256);
 
 ALTER TABLE ONLY media_analysis_evidence
     ADD CONSTRAINT media_analysis_evidence_community_id_actor_user_id_submiss_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_analysis_evidence
+    ADD CONSTRAINT media_analysis_evidence_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_analysis_evidence
     ADD CONSTRAINT media_analysis_evidence_submission_id_audio_revision_canon_fkey FOREIGN KEY (submission_id, audio_revision, canonical_audio_sha256, finalized_audio_ref) REFERENCES media_audio_revisions(submission_id, audio_revision, canonical_sha256, immutable_ref);
@@ -10242,16 +10756,31 @@ ALTER TABLE ONLY media_analysis_evidence
     ADD CONSTRAINT media_analysis_transcript_fk FOREIGN KEY (transcript_artifact_ref, community_id, actor_user_id, submission_id, operation_id, audio_revision, analysis_revision, canonical_audio_sha256, transcript_sha256) REFERENCES media_transcript_artifacts(transcript_artifact_ref, community_id, actor_user_id, submission_id, operation_id, audio_revision, analysis_revision, canonical_audio_sha256, transcript_sha256);
 
 ALTER TABLE ONLY media_audio_revisions
+    ADD CONSTRAINT media_audio_revisions_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY media_audio_revisions
     ADD CONSTRAINT media_audio_revisions_community_id_actor_user_id_submissio_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_audio_revisions
     ADD CONSTRAINT media_audio_revisions_community_id_immutable_ref_canonical_fkey FOREIGN KEY (community_id, immutable_ref, canonical_sha256, content_type, size_bytes) REFERENCES media_immutable_objects(community_id, immutable_ref, canonical_sha256, content_type, size_bytes);
+
+ALTER TABLE ONLY media_audio_revisions
+    ADD CONSTRAINT media_audio_revisions_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_community_id_actor_user_id_reserva_fkey FOREIGN KEY (community_id, actor_user_id, reservation_id, submission_id, operation_id) REFERENCES media_upload_reservations(community_id, actor_user_id, reservation_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_immutable_objects
     ADD CONSTRAINT media_immutable_objects_community_id_actor_user_id_submiss_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_immutable_objects
+    ADD CONSTRAINT media_immutable_objects_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_moderation_actions
+    ADD CONSTRAINT media_moderation_actions_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY media_moderation_actions
     ADD CONSTRAINT media_moderation_actions_authority_actor_user_id_fkey FOREIGN KEY (authority_actor_user_id) REFERENCES users(user_id);
@@ -10260,16 +10789,31 @@ ALTER TABLE ONLY media_moderation_actions
     ADD CONSTRAINT media_moderation_actions_community_id_actor_user_id_submis_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_moderation_actions
+    ADD CONSTRAINT media_moderation_actions_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_moderation_actions
     ADD CONSTRAINT media_moderation_actions_submission_id_decision_revision_fkey FOREIGN KEY (submission_id, decision_revision) REFERENCES media_publication_decisions(submission_id, decision_revision);
 
 ALTER TABLE ONLY media_moderation_projections
+    ADD CONSTRAINT media_moderation_projections_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY media_moderation_projections
     ADD CONSTRAINT media_moderation_projections_community_id_actor_user_id_su_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_moderation_projections
+    ADD CONSTRAINT media_moderation_projections_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_post_submissions
     ADD CONSTRAINT media_post_submissions_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY media_post_submissions
     ADD CONSTRAINT media_post_submissions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY media_post_submissions
+    ADD CONSTRAINT media_post_submissions_persona_reservation_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, audio_reservation_id) REFERENCES media_upload_reservations(community_id, actor_user_id, actor_persona_id, reservation_id);
 
 ALTER TABLE ONLY media_post_submissions
     ADD CONSTRAINT media_post_submissions_post_fk FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id) DEFERRABLE INITIALLY DEFERRED;
@@ -10278,13 +10822,25 @@ ALTER TABLE ONLY media_post_submissions
     ADD CONSTRAINT media_post_submissions_reservation_fk FOREIGN KEY (community_id, actor_user_id, audio_reservation_id) REFERENCES media_upload_reservations(community_id, actor_user_id, reservation_id);
 
 ALTER TABLE ONLY media_processing_attempts
+    ADD CONSTRAINT media_processing_attempts_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY media_processing_attempts
     ADD CONSTRAINT media_processing_attempts_community_id_actor_user_id_submi_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_processing_attempts
+    ADD CONSTRAINT media_processing_attempts_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_processing_attempts
     ADD CONSTRAINT media_processing_attempts_submission_id_audio_revision_fkey FOREIGN KEY (submission_id, audio_revision) REFERENCES media_audio_revisions(submission_id, audio_revision);
 
 ALTER TABLE ONLY media_publication_decisions
+    ADD CONSTRAINT media_publication_decisions_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY media_publication_decisions
     ADD CONSTRAINT media_publication_decisions_community_id_actor_user_id_sub_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_publication_decisions
+    ADD CONSTRAINT media_publication_decisions_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_publication_decisions
     ADD CONSTRAINT media_publication_decisions_submission_id_audio_revision_a_fkey FOREIGN KEY (submission_id, audio_revision, analysis_revision, canonical_audio_sha256) REFERENCES media_analysis_evidence(submission_id, audio_revision, analysis_revision, canonical_audio_sha256);
@@ -10293,25 +10849,64 @@ ALTER TABLE ONLY media_publication_decisions
     ADD CONSTRAINT media_publication_decisions_submission_id_creation_revisio_fkey FOREIGN KEY (submission_id, creation_revision) REFERENCES media_submission_terms(submission_id, creation_revision);
 
 ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projections_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY media_publication_projections
     ADD CONSTRAINT media_publication_projections_community_id_actor_user_id_s_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_publication_projections
     ADD CONSTRAINT media_publication_projections_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
 
+ALTER TABLE ONLY media_publication_projections
+    ADD CONSTRAINT media_publication_projections_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_reference_evidence
+    ADD CONSTRAINT media_reference_evidence_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
 ALTER TABLE ONLY media_reference_evidence
     ADD CONSTRAINT media_reference_evidence_community_id_actor_user_id_submis_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_reference_evidence
+    ADD CONSTRAINT media_reference_evidence_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_submission_command_replays
+    ADD CONSTRAINT media_submission_command_replays_actor_persona_fk FOREIGN KEY (actor_account_id, actor_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY media_submission_command_replays
+    ADD CONSTRAINT media_submission_command_replays_persona_submission_fk FOREIGN KEY (community_id, submission_actor_user_id, submission_author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_submission_command_replays
     ADD CONSTRAINT media_submission_command_replays_submission_fk FOREIGN KEY (community_id, submission_actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_submission_events
+    ADD CONSTRAINT media_submission_events_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY media_submission_events
     ADD CONSTRAINT media_submission_events_community_id_actor_user_id_submiss_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_submission_events
+    ADD CONSTRAINT media_submission_events_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_submission_outbox
+    ADD CONSTRAINT media_submission_outbox_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY media_submission_outbox
     ADD CONSTRAINT media_submission_outbox_community_id_actor_user_id_submiss_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
 
+ALTER TABLE ONLY media_submission_outbox
+    ADD CONSTRAINT media_submission_outbox_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_submission_terms
+    ADD CONSTRAINT media_submission_terms_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
 ALTER TABLE ONLY media_submission_terms
     ADD CONSTRAINT media_submission_terms_community_id_actor_user_id_submissi_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_submission_terms
+    ADD CONSTRAINT media_submission_terms_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_timed_lyrics_artifacts
+    ADD CONSTRAINT media_timed_lyrics_artifacts_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY media_timed_lyrics_artifacts
     ADD CONSTRAINT media_timed_lyrics_artifacts_community_id_actor_user_id_po_fkey FOREIGN KEY (community_id, actor_user_id, post_id) REFERENCES media_publication_projections(community_id, actor_user_id, post_id);
@@ -10319,11 +10914,23 @@ ALTER TABLE ONLY media_timed_lyrics_artifacts
 ALTER TABLE ONLY media_timed_lyrics_artifacts
     ADD CONSTRAINT media_timed_lyrics_artifacts_community_id_actor_user_id_su_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
 
+ALTER TABLE ONLY media_timed_lyrics_artifacts
+    ADD CONSTRAINT media_timed_lyrics_artifacts_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_transcript_artifacts
+    ADD CONSTRAINT media_transcript_artifacts_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
+
 ALTER TABLE ONLY media_transcript_artifacts
     ADD CONSTRAINT media_transcript_artifacts_community_id_actor_user_id_subm_fkey FOREIGN KEY (community_id, actor_user_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, submission_id, operation_id);
 
 ALTER TABLE ONLY media_transcript_artifacts
+    ADD CONSTRAINT media_transcript_artifacts_persona_submission_fk FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id) REFERENCES media_post_submissions(community_id, actor_user_id, author_persona_id, submission_id, operation_id);
+
+ALTER TABLE ONLY media_transcript_artifacts
     ADD CONSTRAINT media_transcript_artifacts_submission_id_audio_revision_ca_fkey FOREIGN KEY (submission_id, audio_revision, canonical_audio_sha256) REFERENCES media_audio_revisions(submission_id, audio_revision, canonical_sha256);
+
+ALTER TABLE ONLY media_upload_reservations
+    ADD CONSTRAINT media_upload_reservations_actor_persona_fk FOREIGN KEY (actor_account_id, actor_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY media_upload_reservations
     ADD CONSTRAINT media_upload_reservations_actor_user_id_fkey FOREIGN KEY (actor_user_id) REFERENCES users(user_id);
@@ -10382,6 +10989,30 @@ ALTER TABLE ONLY namespace_ownership_start_reservations
 ALTER TABLE ONLY observations
     ADD CONSTRAINT observations_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id);
 
+ALTER TABLE ONLY persona_create_actions
+    ADD CONSTRAINT persona_create_actions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY persona_create_actions
+    ADD CONSTRAINT persona_create_actions_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY persona_profiles
+    ADD CONSTRAINT persona_profiles_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
+
+ALTER TABLE ONLY persona_role_presentations
+    ADD CONSTRAINT persona_role_presentations_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY persona_role_presentations
+    ADD CONSTRAINT persona_role_presentations_community_id_account_id_fkey FOREIGN KEY (community_id, account_id) REFERENCES community_memberships(community_id, user_id);
+
+ALTER TABLE ONLY persona_role_presentations
+    ADD CONSTRAINT persona_role_presentations_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY persona_wallet_assignments
+    ADD CONSTRAINT persona_wallet_assignments_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY personas
+    ADD CONSTRAINT personas_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
 ALTER TABLE ONLY policy_versions
     ADD CONSTRAINT policy_versions_author_fk FOREIGN KEY (created_by_user_id) REFERENCES users(user_id);
 
@@ -10399,6 +11030,9 @@ ALTER TABLE ONLY post_votes
 
 ALTER TABLE ONLY post_votes
     ADD CONSTRAINT post_votes_post_fk FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY posts
+    ADD CONSTRAINT posts_author_persona_fk FOREIGN KEY (author_user_id, author_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY posts
     ADD CONSTRAINT posts_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
@@ -10420,6 +11054,9 @@ ALTER TABLE ONLY proof_sessions
 
 ALTER TABLE ONLY public_handle_index
     ADD CONSTRAINT public_handle_index_owner_fk FOREIGN KEY (owner_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY public_handle_index
+    ADD CONSTRAINT public_handle_index_owner_persona_fk FOREIGN KEY (owner_user_id, owner_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY public_handle_index
     ADD CONSTRAINT public_handle_index_redirect_fk FOREIGN KEY (redirect_target_handle_id) REFERENCES public_handle_index(handle_id) DEFERRABLE INITIALLY DEFERRED;
@@ -10447,6 +11084,9 @@ ALTER TABLE ONLY subject_key_binding_events
 
 ALTER TABLE ONLY text_content_held_revisions
     ADD CONSTRAINT text_content_held_revisions_submission_fk FOREIGN KEY (community_id, submission_id) REFERENCES text_content_submissions(community_id, submission_id);
+
+ALTER TABLE ONLY text_content_submissions
+    ADD CONSTRAINT text_content_submissions_author_persona_fk FOREIGN KEY (actor_account_id, author_persona_id) REFERENCES personas(account_id, persona_id);
 
 ALTER TABLE ONLY text_content_submissions
     ADD CONSTRAINT text_content_submissions_comment_fk FOREIGN KEY (community_id, published_comment_id) REFERENCES comments(community_id, comment_id);

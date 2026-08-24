@@ -17,6 +17,8 @@ type ContentStore = ProductHandlerServices["contentStore"];
 type FeedStore = ProductHandlerServices["feedStore"];
 type TextStore = NonNullable<ProductHandlerServices["textPostStore"]>;
 type Moderation = NonNullable<ProductHandlerServices["textModeration"]>;
+type PersonaStore = NonNullable<ProductHandlerServices["personaStore"]>;
+const personaId = "persona-a";
 
 const feed = { items: [], top_communities: [], next_cursor: null };
 const textSubmission = {
@@ -86,6 +88,7 @@ function stores(
   readonly contentStore: ContentStore;
   readonly textPostStore: TextStore;
   readonly textModeration: Moderation;
+  readonly personaStore: PersonaStore;
   readonly feedStore: FeedStore;
 } {
   return {
@@ -124,6 +127,28 @@ function stores(
       evaluate: () => Effect.succeed(textEvaluation),
       ...overrides.textModeration,
     } as Moderation,
+    personaStore: {
+      findOwned: () =>
+        Effect.succeed({
+          persona_id: personaId,
+          object: "persona" as const,
+          status: "active" as const,
+          profile: {
+            persona_id: personaId,
+            object: "persona_profile" as const,
+            revision: 1,
+            display_name: null,
+            avatar_ref: null,
+            cover_ref: null,
+            bio: null,
+            preferred_locale: null,
+            primary_public_handle: null,
+          },
+          wallet_set: { evm: null },
+          created_at: "2026-08-21T12:00:00.000Z",
+          retired_at: null,
+        }),
+    },
     feedStore: {
       listHome: () => Effect.succeed(feed),
       ...overrides.feed,
@@ -381,6 +406,7 @@ describe("HTTP product handlers", () => {
     const principal = { kind: "user" as const, subject: "user-a" };
     const postBody = {
       post_type: "text" as const,
+      persona_id: personaId,
       idempotency_key: "post-key",
       body: "hello",
       authorship_mode: "human_direct" as const,
@@ -497,7 +523,12 @@ describe("HTTP product handlers", () => {
   });
 
   test("preserves repository replay results at the content handler seam", async () => {
-    const body = { post_type: "text" as const, idempotency_key: "replay-key", body: "hello" };
+    const body = {
+      post_type: "text" as const,
+      persona_id: personaId,
+      idempotency_key: "replay-key",
+      body: "hello",
+    };
     let replayCalls = 0;
     const replayHandlers = makeProductHandlers(
       stores({

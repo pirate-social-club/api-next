@@ -916,6 +916,7 @@ suite("Postgres 17 verification completion repository", () => {
             body: {
               idempotency_key: "create-community-1",
               draft: {
+                persona_id: "persona-user-a",
                 name: "Jazleeuw",
                 description: "Verified people",
                 policy: {
@@ -1118,6 +1119,7 @@ suite("Postgres 17 verification completion repository", () => {
               idempotency_key: "create-community-2",
               draft: {
                 ...created.draft,
+                persona_id: "persona-user-a",
                 name: "Second community",
               },
             },
@@ -1177,6 +1179,7 @@ suite("Postgres 17 verification completion repository", () => {
               idempotency_key: "create-community-3",
               draft: {
                 ...created.draft,
+                persona_id: "persona-user-a",
                 name: "Approved community",
               },
             },
@@ -1262,6 +1265,7 @@ suite("Postgres 17 verification completion repository", () => {
                 idempotency_key: `create-community-race-${index}`,
                 draft: {
                   ...created.draft,
+                  persona_id: "persona-user-a",
                   name: `Race community ${index}`,
                 },
               },
@@ -1339,6 +1343,7 @@ suite("Postgres 17 verification completion repository", () => {
               idempotency_key: "create-community-rollback",
               draft: {
                 ...created.draft,
+                persona_id: "persona-user-a",
                 name: "Rollback community",
               },
             },
@@ -1411,6 +1416,7 @@ suite("Postgres 17 verification completion repository", () => {
             body: {
               idempotency_key: "create-community-lock-order",
               draft: {
+                persona_id: "persona-user-a",
                 name: "Lock order",
                 description: null,
                 policy: {

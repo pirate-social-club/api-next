@@ -244,13 +244,18 @@ export type PublicProfileDocument = Schema.Schema.Type<typeof GetPublicProfileBy
 export type PublicProfileCommunity = PublicProfileDocument["created_communities"][number];
 
 export type PublicProfileLookup = Readonly<{
-  readonly account: unknown;
-  readonly canonicalUserId: string;
+  readonly personaId: string;
+  readonly displayName: string | null;
+  readonly avatarRef: string | null;
+  readonly coverRef: string | null;
+  readonly bio: string | null;
+  readonly preferredLocale: string | null;
+  readonly createdAt: string;
   readonly handleId: string;
+  readonly resolvedHandleLabelDisplay: string;
   readonly handleLabelNormalized: string;
   readonly handleLabelDisplay: string;
   readonly handleStatus: "active" | "redirect";
-  readonly createdCommunities: readonly PublicProfileCommunity[];
 }>;
 
 export type PublicProfileRepositoryReason = "invalid-account" | "invalid-alias";
@@ -337,7 +342,11 @@ export type TextPostModerationEvaluation = ContractTextModerationEvaluationV1;
 export type TextSubmissionSurface = ContractTextModerationInputV1["surface"];
 export type TextSubmissionBody =
   | CreatePostBody
-  | Readonly<{ readonly idempotency_key: string; readonly body: string }>;
+  | Readonly<{
+      readonly idempotency_key: string;
+      readonly persona_id: string;
+      readonly body: string;
+    }>;
 
 export type TextSubmissionTarget =
   | Readonly<{ readonly surface: "text_post"; readonly communityId: string }>
@@ -441,6 +450,7 @@ export interface TextPostStoreService {
   readonly replay: (input: {
     readonly communityId: string;
     readonly actor: M2Actor;
+    readonly personaId: string;
     readonly idempotencyKey: string;
     readonly requestHash: string;
     readonly surface?: TextSubmissionSurface;
@@ -454,6 +464,7 @@ export interface TextPostStoreService {
   readonly commitTerminal: (input: {
     readonly communityId: string;
     readonly actor: M2Actor;
+    readonly personaId: string;
     readonly body: TextSubmissionBody;
     readonly moderationInput: TextPostModerationInput;
     readonly idempotencyKey: string;

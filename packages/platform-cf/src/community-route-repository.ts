@@ -20,6 +20,7 @@ type CanonicalCommunityRouteRow = Readonly<{
   readonly community_id: unknown;
   readonly authority_version?: unknown;
   readonly resource_href?: unknown;
+  readonly persona_role_presentation?: unknown;
   readonly family: unknown;
   readonly root_label: unknown;
   readonly root_label_display: unknown;
@@ -75,6 +76,10 @@ const resolveCommunityIdStatement = (communityId: string) =>
          SELECT community.community_id,
                 community.route_authority_version AS authority_version,
                 '/c/' || community.community_id AS resource_href,
+                jsonb_build_object(
+                  'role', 'owner',
+                  'persona', public_persona_projection(presentation.persona_id)
+                ) AS persona_role_presentation,
                 route.family,
                 route.root_label,
                 route.root_label_display,
@@ -90,6 +95,9 @@ const resolveCommunityIdStatement = (communityId: string) =>
              ON community.community_id = $1
             AND community.status = 'active'
             AND community.route_authority_version = 'optional_route_v2'
+           JOIN persona_role_presentations AS presentation
+             ON presentation.community_id = community.community_id
+            AND presentation.account_id = community.created_by_user_id
            LEFT JOIN LATERAL effective_active_route(community.community_id, db_clock.now) AS route
              ON TRUE
            LEFT JOIN community_route_app_host_health AS health
@@ -197,6 +205,7 @@ export function makeControlPlaneCanonicalCommunityRouteRepository(): CanonicalCo
               community_id: row.community_id,
               href: row.resource_href,
               canonical_route: canonicalRoute,
+              persona_role_presentation: row.persona_role_presentation,
             });
           } catch {
             return yield* Effect.fail(invalidRow());

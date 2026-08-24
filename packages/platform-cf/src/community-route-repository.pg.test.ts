@@ -381,6 +381,22 @@ suite("canonical community route Postgres repository", () => {
            clock_timestamp(), clock_timestamp(), NULL, NULL, 'optional_route_v2')`,
         [communityId],
       );
+      const persona = await admin.query<{ persona_id: string }>(
+        "SELECT persona_id FROM personas WHERE account_id = 'route-actor' AND is_first_persona",
+      );
+      const personaId = persona.rows[0]?.persona_id;
+      if (personaId === undefined) throw new Error("missing route actor persona");
+      await admin.query(
+        `INSERT INTO community_memberships (
+           community_id, membership_id, user_id, status, joined_at, created_at, updated_at
+         ) VALUES ($1, 'route-membership', 'route-actor', 'member', now(), now(), now())`,
+        [communityId],
+      );
+      await admin.query(
+        `INSERT INTO persona_role_presentations (community_id, account_id, persona_id)
+         VALUES ($1, 'route-actor', $2)`,
+        [communityId, personaId],
+      );
       const store = makeControlPlaneCanonicalCommunityRouteStore(
         makeDirectPostgresControlPlaneLayer(connection),
       );
@@ -393,6 +409,16 @@ suite("canonical community route Postgres repository", () => {
         community_id: communityId,
         href: `/c/${communityId}`,
         canonical_route: null,
+        persona_role_presentation: {
+          role: "owner",
+          persona: {
+            persona_id: personaId,
+            object: "persona",
+            display_name: null,
+            avatar_ref: null,
+            primary_public_handle: null,
+          },
+        },
       });
       await admin.query("UPDATE communities SET status = 'archived' WHERE community_id = $1", [
         communityId,

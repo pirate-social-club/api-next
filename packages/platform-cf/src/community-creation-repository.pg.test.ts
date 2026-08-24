@@ -65,6 +65,16 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
   }
 }
 
+async function firstPersonaId(admin: Client, accountId: string): Promise<string> {
+  const result = await admin.query<{ persona_id: string }>(
+    "SELECT persona_id FROM personas WHERE account_id = $1 AND is_first_persona",
+    [accountId],
+  );
+  const personaId = result.rows[0]?.persona_id;
+  if (personaId === undefined) throw new Error(`missing first persona for ${accountId}`);
+  return personaId;
+}
+
 async function waitForBlockedStatements(
   admin: Client,
   queryFragment: string,
@@ -200,6 +210,7 @@ suite("Postgres 17 community creation repository", () => {
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
       });
+      const personaId = await firstPersonaId(admin, actor.userId);
       const creationStore = storeFor(connection, 86_400, "optional-v2");
       const created = await Effect.runPromise(
         creationStore.create({
@@ -207,7 +218,12 @@ suite("Postgres 17 community creation repository", () => {
           requestHash: "9".repeat(64),
           body: {
             idempotency_key: "optional-v2-create",
-            draft: { name: "Optional route", description: null, policy: humanPolicy },
+            draft: {
+              persona_id: personaId,
+              name: "Optional route",
+              description: null,
+              policy: humanPolicy,
+            },
           },
         }),
       );
@@ -402,6 +418,7 @@ suite("Postgres 17 community creation repository", () => {
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
       });
+      const personaId = await firstPersonaId(admin, actor.userId);
       const creationStore = storeFor(connection, 86_400, "bound-start");
       const created = await Effect.runPromise(
         creationStore.create({
@@ -410,6 +427,7 @@ suite("Postgres 17 community creation repository", () => {
           body: {
             idempotency_key: "bound-start-create",
             draft: {
+              persona_id: personaId,
               name: "Bound start",
               description: null,
               policy: humanPolicy,
@@ -995,10 +1013,12 @@ suite("Postgres 17 community creation repository", () => {
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
       });
+      const personaId = await firstPersonaId(admin, actor.userId);
       const store = storeFor(connection);
       const createBody = {
         idempotency_key: "create-1",
         draft: {
+          persona_id: personaId,
           name: "Jazleeuw",
           description: "First draft",
           policy: humanPolicy,
@@ -1103,6 +1123,7 @@ suite("Postgres 17 community creation repository", () => {
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
       });
+      const personaId = await firstPersonaId(admin, actor.userId);
       const unsupportedStore = storeFor(connection, 86_400, "unsupported-intent");
       const unsupportedResult = await Effect.runPromise(
         unsupportedStore.create({
@@ -1111,6 +1132,7 @@ suite("Postgres 17 community creation repository", () => {
           body: {
             idempotency_key: "unsupported-1",
             draft: {
+              persona_id: personaId,
               name: "Unsupported",
               description: null,
               policy: {
@@ -1143,6 +1165,7 @@ suite("Postgres 17 community creation repository", () => {
           body: {
             idempotency_key: "spaces-unsupported-1",
             draft: {
+              persona_id: personaId,
               name: "Second optional route",
               description: null,
               policy: humanPolicy,
@@ -1167,6 +1190,7 @@ suite("Postgres 17 community creation repository", () => {
           body: {
             idempotency_key: "expiring-1",
             draft: {
+              persona_id: personaId,
               name: "Expiring",
               description: null,
               policy: humanPolicy,
@@ -1205,11 +1229,13 @@ suite("Postgres 17 community creation repository", () => {
         text: "INSERT INTO users (user_id, status, account) VALUES ($1, 'active', '{}'::jsonb)",
         values: [actor.userId],
       });
+      const personaId = await firstPersonaId(admin, actor.userId);
       const firstStore = storeFor(connection, 86_400, "race-first");
       const secondStore = storeFor(connection, 86_400, "race-second");
       const body = {
         idempotency_key: "race-create",
         draft: {
+          persona_id: personaId,
           name: "Race",
           description: null,
           policy: humanPolicy,

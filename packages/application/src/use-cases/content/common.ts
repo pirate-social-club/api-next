@@ -17,12 +17,14 @@ import {
   type TextModeration,
   type TextPostStore,
 } from "../../ports.ts";
+import type { PersonaStoreService } from "../personas.ts";
 
 export interface ContentUseCaseServices {
   readonly contentStore: ContentStore["Service"];
   /** The target-owned text runtime; no legacy content fallback is allowed. */
   readonly textPostStore?: TextPostStore["Service"];
   readonly textModeration?: TextModeration["Service"];
+  readonly personaStore?: Pick<PersonaStoreService, "findOwned">;
 }
 
 /** Decode at the application boundary so unsupported request shapes fail closed. */

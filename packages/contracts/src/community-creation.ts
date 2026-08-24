@@ -8,6 +8,7 @@ import {
 import { CommunityCanonicalRouteV1, CommunityRouteRequestV1 } from "./community-routes.ts";
 import { endpoint } from "./endpoint.ts";
 import { AuthError, BadRequest, Conflict, InternalError, NotFound } from "./errors.ts";
+import { PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
 
 const PositiveInteger = Schema.Int.check(
   Schema.makeFilter((value) => (value > 0 ? undefined : "Expected a positive integer")),
@@ -80,6 +81,7 @@ export const CommunityCreationDraftV1 = Schema.Struct({
 export type CommunityCreationDraftV1 = Schema.Schema.Type<typeof CommunityCreationDraftV1>;
 
 export const CommunityCreationDraftV2 = Schema.Struct({
+  persona_id: PersonaIdV1,
   name: Schema.NonEmptyString,
   description: Schema.NullOr(Schema.String),
   policy: CompiledGatePolicy,
@@ -197,11 +199,20 @@ export const OptionalRouteCommunityIdV2 = Schema.String.check(
 );
 export type OptionalRouteCommunityIdV2 = Schema.Schema.Type<typeof OptionalRouteCommunityIdV2>;
 
+export const CommunityPersonaRolePresentationV1 = Schema.Struct({
+  role: Schema.Literal("owner"),
+  persona: PublicPersonaV1,
+});
+export type CommunityPersonaRolePresentationV1 = Schema.Schema.Type<
+  typeof CommunityPersonaRolePresentationV1
+>;
+
 export const CommittedCommunityResourceV2 = Schema.Struct({
   authority_version: Schema.Literal("optional_route_v2"),
   community_id: OptionalRouteCommunityIdV2,
   href: Schema.NonEmptyString,
   canonical_route: Schema.Null,
+  persona_role_presentation: CommunityPersonaRolePresentationV1,
 }).check(
   Schema.makeFilter((resource) =>
     resource.href === `/c/${resource.community_id}`
@@ -216,6 +227,7 @@ export const CurrentCommunityResourceV2 = Schema.Struct({
   community_id: OptionalRouteCommunityIdV2,
   href: Schema.NonEmptyString,
   canonical_route: Schema.NullOr(CommunityCanonicalRouteV1),
+  persona_role_presentation: CommunityPersonaRolePresentationV1,
 }).check(
   Schema.makeFilter((resource) =>
     resource.href === `/c/${resource.community_id}`
@@ -307,11 +319,17 @@ export const CommunityCreationIntentV2 = Schema.Struct({
   requirements: CommunityCreationRequirementsV2,
   next_action: CommunityCreationNextActionV2,
   expires_at: CanonicalIsoInstant,
+  persona_role_presentation: CommunityPersonaRolePresentationV1,
   committed_resource: Schema.NullOr(CommittedCommunityResourceV2),
 }).check(
   Schema.makeFilter((intent) => {
+    if (intent.persona_role_presentation.persona.persona_id !== intent.draft.persona_id) {
+      return "Persona role presentation must match the selected draft persona";
+    }
     if (intent.status === "committed") {
       return intent.committed_resource !== null &&
+        intent.committed_resource.persona_role_presentation.persona.persona_id ===
+          intent.draft.persona_id &&
         intent.next_action.kind === "none" &&
         intent.next_action.reason === "committed"
         ? undefined

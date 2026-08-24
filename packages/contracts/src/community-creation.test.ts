@@ -20,9 +20,20 @@ const policy = {
   ] as const,
 };
 const draft = {
+  persona_id: "persona_community_owner",
   name: "Jazleeuw",
   description: null,
   policy,
+};
+const personaRolePresentation = {
+  role: "owner" as const,
+  persona: {
+    persona_id: draft.persona_id,
+    object: "persona" as const,
+    display_name: "Community Captain",
+    avatar_ref: null,
+    primary_public_handle: null,
+  },
 };
 const routeV1Draft = {
   ...draft,
@@ -150,6 +161,7 @@ describe("community creation contracts", () => {
       canonical_policy_hash: "a".repeat(64),
       requirements: humanOnly,
       expires_at: "2026-08-20T13:00:00.000Z",
+      persona_role_presentation: personaRolePresentation,
       committed_resource: null,
     };
     const decoded = Schema.decodeUnknownSync(CommunityCreationIntent)({
@@ -178,9 +190,33 @@ describe("community creation contracts", () => {
           community_id: communityId,
           href: `/c/${communityId}`,
           canonical_route: null,
+          persona_role_presentation: personaRolePresentation,
         },
       }).committed_resource,
-    ).toMatchObject({ community_id: communityId, canonical_route: null });
+    ).toMatchObject({
+      community_id: communityId,
+      canonical_route: null,
+      persona_role_presentation: personaRolePresentation,
+    });
+
+    expect(() =>
+      Schema.decodeUnknownSync(CommunityCreationIntent, { onExcessProperty: "error" })({
+        ...v2Base,
+        persona_role_presentation: {
+          ...personaRolePresentation,
+          persona: { ...personaRolePresentation.persona, persona_id: "persona_sibling" },
+        },
+        status: "verification_required",
+        next_action: {
+          kind: "start_verification",
+          requirement: "human_identity",
+          provider_id: "very.oauth",
+          creation_intent_id: "intent-v2",
+          ceremony_intent_id: "human-ceremony-1",
+          generation: 1,
+        },
+      }),
+    ).toThrow();
 
     expect(() =>
       Schema.decodeUnknownSync(CommunityCreationIntent, { onExcessProperty: "error" })({

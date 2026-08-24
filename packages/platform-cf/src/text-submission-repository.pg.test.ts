@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type {
   CreatePostBody,
@@ -17,6 +17,7 @@ import { canonicalTextModerationInput } from "@pirate/domain";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations";
+import { makeControlPlanePersonaStore } from "./persona-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 import { makeControlPlaneTextSubmissionStore } from "./text-submission-repository";
 
@@ -25,6 +26,20 @@ const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
 if (required && connectionString === undefined)
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 const suite = connectionString === undefined ? describe.skip : describe;
+const sentinelPath =
+  process.env.CONTROL_PLANE_POSTGRES_TEXT_SUBMISSION_TEST_SENTINEL ??
+  "/tmp/api-next-control-plane-postgres-text-submission-suite-complete";
+const sentinelContents = "api-next-control-plane-postgres-text-submission-suite-complete\n";
+const testCount = 9;
+let completedTestCount = 0;
+
+afterEach(() => {
+  completedTestCount += 1;
+});
+
+afterAll(async () => {
+  if (completedTestCount === testCount) await Bun.write(sentinelPath, sentinelContents);
+});
 type RuntimeStore = TextPostStore["Service"] & {
   readonly reportComment: NonNullable<TextPostStore["Service"]["reportComment"]>;
   readonly moderateCaseAction: NonNullable<TextPostStore["Service"]["moderateCaseAction"]>;
@@ -32,8 +47,11 @@ type RuntimeStore = TextPostStore["Service"] & {
 
 const actor: M2Actor = { userId: "usr_text_order5", kind: "user" };
 const otherActor: M2Actor = { userId: "usr_text_order5_other", kind: "user" };
+const actorPersonaId = "persona_text_order5";
+const otherActorPersonaId = "persona_text_order5_other";
 const body = {
   post_type: "text",
+  persona_id: actorPersonaId,
   idempotency_key: "text-order5-race",
   body: "terminal text",
 } as CreatePostBody;
@@ -60,7 +78,11 @@ const evaluation: TextPostModerationEvaluation = {
   evidence_ref: null,
 };
 
-const commentBody = { idempotency_key: "comment-order6-race", body: "terminal comment" };
+const commentBody = {
+  idempotency_key: "comment-order6-race",
+  persona_id: actorPersonaId,
+  body: "terminal comment",
+};
 const commentInput = {
   version: "text-moderation-input-v1" as const,
   surface: "comment" as const,
@@ -82,7 +104,11 @@ const commentEvaluation: TextPostModerationEvaluation = {
   input_sha256: commentInputSha,
   evidence_ref: null,
 };
-const replyBody = { idempotency_key: "reply-order6-depth", body: "terminal reply" };
+const replyBody = {
+  idempotency_key: "reply-order6-depth",
+  persona_id: actorPersonaId,
+  body: "terminal reply",
+};
 const replyInput = { ...commentInput, surface: "reply" as const, body: replyBody.body };
 const replyCanonical = canonicalTextModerationInput(replyInput);
 if (replyCanonical.kind === "rejected") throw new Error(replyCanonical.reason);
@@ -105,7 +131,7 @@ async function commentRequestHash(
       community_id: "text-community",
       post_id: postId,
       ...(parentCommentId === undefined ? {} : { parent_comment_id: parentCommentId }),
-      body: { idempotency_key: idempotencyKey, body: text },
+      body: { idempotency_key: idempotencyKey, persona_id: actorPersonaId, body: text },
     }),
   );
 }
@@ -147,6 +173,14 @@ async function seed(admin: Client, schema: string): Promise<void> {
   const expiresAt = new Date(Date.now() + 60 * 60 * 1_000);
   await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor.userId]);
   await admin.query("INSERT INTO users (user_id) VALUES ($1)", [otherActor.userId]);
+  await admin.query(
+    "INSERT INTO personas (persona_id,account_id,status,is_first_persona) VALUES ($1,$2,'active',FALSE),($3,$4,'active',FALSE)",
+    [actorPersonaId, actor.userId, otherActorPersonaId, otherActor.userId],
+  );
+  await admin.query("INSERT INTO persona_profiles (persona_id,revision) VALUES ($1,1),($2,1)", [
+    actorPersonaId,
+    otherActorPersonaId,
+  ]);
   await admin.query(
     `INSERT INTO community_creation_intents (
        intent_id, actor_id, create_idempotency_key, create_request_hash, revision, status,
@@ -343,11 +377,11 @@ function sha256(bytes: Uint8Array): string {
 async function insertCommentPost(admin: Client, postId = "text-order6-post"): Promise<void> {
   await admin.query(
     `INSERT INTO posts (
-       community_id, post_id, author_user_id, post_type, status, visibility,
+       community_id, post_id, author_user_id, author_persona_id, post_type, status, visibility,
        title, body, created_at, updated_at
-     ) VALUES ('text-community', $1, $2, 'text', 'published', 'public',
+     ) VALUES ('text-community', $1, $2, $3, 'text', 'published', 'public',
        NULL, 'comment target', now(), now())`,
-    [postId, actor.userId],
+    [postId, actor.userId, actorPersonaId],
   );
 }
 
@@ -359,27 +393,31 @@ async function insertParentComment(
 ): Promise<void> {
   await admin.query(
     `INSERT INTO comments (
-       community_id, comment_id, post_id, parent_comment_id, author_user_id,
+       community_id, comment_id, post_id, parent_comment_id, author_user_id, author_persona_id,
        status, body, created_at, updated_at, idempotency_key, idempotency_body_hash,
        depth, reply_count
-     ) VALUES ('text-community', $1, $2, NULL, $3, 'published', 'parent', now(), now(),
-       $4, $5, $6, 0)`,
-    [commentId, postId, actor.userId, `${commentId}-key`, "a".repeat(64), depth],
+     ) VALUES ('text-community', $1, $2, NULL, $3, $4, 'published', 'parent', now(), now(),
+       $5, $6, $7, 0)`,
+    [commentId, postId, actor.userId, actorPersonaId, `${commentId}-key`, "a".repeat(64), depth],
   );
 }
 
 suite("Postgres 17 terminal text submission repository", () => {
   test("commits one terminal row and makes concurrent same-key submissions replay the winner", async () => {
     await withSchema(async (admin, connection) => {
+      const requestHash = await Effect.runPromise(
+        canonicalBodyHash({ community_id: "text-community", body }),
+      );
       const commit = (operationId: string) =>
         runStore(connection, (store) =>
           store.commitTerminal({
             communityId: "text-community",
             actor,
+            personaId: actorPersonaId,
             body,
             moderationInput: input,
             idempotencyKey: body.idempotency_key,
-            requestHash: "ff6d5e5ea74c493047530e42fa4150abc1f03ce8011c9cc295a070059820be0c",
+            requestHash,
             operationId,
             evaluation,
           }),
@@ -414,6 +452,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.replay({
           communityId: "other-community",
           actor,
+          personaId: actorPersonaId,
           idempotencyKey: body.idempotency_key,
           requestHash: "e".repeat(64),
         }),
@@ -445,9 +484,9 @@ suite("Postgres 17 terminal text submission repository", () => {
         ...body,
         idempotency_key: "text-order5-post-replay",
       } as CreatePostBody;
-      const textPostStore = makeControlPlaneTextSubmissionStore(
-        makeDirectPostgresControlPlaneLayer(connection),
-      );
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const textPostStore = makeControlPlaneTextSubmissionStore(runtime);
+      const personaStore = makeControlPlanePersonaStore(runtime);
       let moderationCalls = 0;
       const textModeration = {
         evaluate: () => {
@@ -458,7 +497,7 @@ suite("Postgres 17 terminal text submission repository", () => {
       const first = await Effect.runPromise(
         createTextPost(
           { communityId: "text-community", actor, body: postBody },
-          { textPostStore, textModeration },
+          { textPostStore, textModeration, personaStore },
         ),
       );
       const stored = await admin.query<{
@@ -483,7 +522,7 @@ suite("Postgres 17 terminal text submission repository", () => {
       const second = await Effect.runPromise(
         createTextPost(
           { communityId: "text-community", actor, body: postBody },
-          { textPostStore, textModeration },
+          { textPostStore, textModeration, personaStore },
         ),
       );
       expect(Array.from(snapshotBytes(second))).toEqual(Array.from(firstBytes));
@@ -495,7 +534,7 @@ suite("Postgres 17 terminal text submission repository", () => {
             actor,
             body: { ...postBody, body: "different terminal text" } as CreatePostBody,
           },
-          { textPostStore, textModeration },
+          { textPostStore, textModeration, personaStore },
         ),
       );
       if (Exit.isSuccess(conflictResult))
@@ -526,14 +565,15 @@ suite("Postgres 17 terminal text submission repository", () => {
         ...body,
         idempotency_key: "text-order5-get-semantics",
       } as CreatePostBody;
-      const textPostStore = makeControlPlaneTextSubmissionStore(
-        makeDirectPostgresControlPlaneLayer(connection),
-      );
+      const runtime = makeDirectPostgresControlPlaneLayer(connection);
+      const textPostStore = makeControlPlaneTextSubmissionStore(runtime);
+      const personaStore = makeControlPlanePersonaStore(runtime);
       const first = await Effect.runPromise(
         createTextPost(
           { communityId: "text-community", actor, body: postBody },
           {
             textPostStore,
+            personaStore,
             textModeration: {
               evaluate: () =>
                 Effect.fail(new TextModerationProviderError({ reason: "unavailable" })),
@@ -576,11 +616,11 @@ suite("Postgres 17 terminal text submission repository", () => {
       await admin.query("BEGIN");
       await admin.query(
         `INSERT INTO posts (
-           community_id, post_id, author_user_id, post_type, status, visibility,
+           community_id, post_id, author_user_id, author_persona_id, post_type, status, visibility,
            title, body, created_at, updated_at
-         ) VALUES ('text-community', 'text-order5-approved', $1, 'text', 'published', 'public',
+         ) VALUES ('text-community', 'text-order5-approved', $1, $2, 'text', 'published', 'public',
            NULL, 'terminal text', now(), now())`,
-        [actor.userId],
+        [actor.userId, actorPersonaId],
       );
       await admin.query(
         `UPDATE text_moderation_cases
@@ -623,6 +663,7 @@ suite("Postgres 17 terminal text submission repository", () => {
           { communityId: "text-community", actor, body: postBody },
           {
             textPostStore,
+            personaStore,
             textModeration: {
               evaluate: () => {
                 replayModerationCalls += 1;
@@ -640,14 +681,19 @@ suite("Postgres 17 terminal text submission repository", () => {
 
   test("commits provider unavailability as manual review without publishing", async () => {
     await withSchema(async (admin, connection) => {
+      const unavailableBody = { ...body, idempotency_key: "text-order5-unavailable" };
+      const unavailableHash = await Effect.runPromise(
+        canonicalBodyHash({ community_id: "text-community", body: unavailableBody }),
+      );
       const result = await runStore(connection, (store) =>
         store.commitTerminal({
           communityId: "text-community",
           actor,
-          body: { ...body, idempotency_key: "text-order5-unavailable" },
+          personaId: actorPersonaId,
+          body: unavailableBody,
           moderationInput: input,
           idempotencyKey: "text-order5-unavailable",
-          requestHash: "f3a571a76ca9f7e44c6639318537fd821637d13c75c876cf21e964a6c7b78afd",
+          requestHash: unavailableHash,
           operationId: "operation_text_unavailable",
           evaluation: {
             ...evaluation,
@@ -705,6 +751,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.commitTerminal({
           communityId,
           actor,
+          personaId: actorPersonaId,
           body: { ...body, idempotency_key: "namespaceless-text-post", body: postText },
           moderationInput: postInput,
           idempotencyKey: "namespaceless-text-post",
@@ -720,11 +767,11 @@ suite("Postgres 17 terminal text submission repository", () => {
 
       await admin.query(
         `INSERT INTO posts (
-           community_id, post_id, author_user_id, post_type, status, visibility,
+           community_id, post_id, author_user_id, author_persona_id, post_type, status, visibility,
            body, created_at, updated_at
-         ) VALUES ($1, 'namespaceless-comment-target', $2, 'text', 'published',
+         ) VALUES ($1, 'namespaceless-comment-target', $2, $3, 'text', 'published',
            'public', 'target', clock_timestamp(), clock_timestamp())`,
-        [communityId, actor.userId],
+        [communityId, actor.userId, actorPersonaId],
       );
       const commentText = "namespaceless comment";
       const namespacelessCommentInput = { ...commentInput, body: commentText };
@@ -735,14 +782,23 @@ suite("Postgres 17 terminal text submission repository", () => {
           endpoint: "comment",
           community_id: communityId,
           post_id: "namespaceless-comment-target",
-          body: { idempotency_key: "namespaceless-comment", body: commentText },
+          body: {
+            idempotency_key: "namespaceless-comment",
+            persona_id: actorPersonaId,
+            body: commentText,
+          },
         }),
       );
       const commentResult = await runStore(connection, (store) =>
         store.commitTerminal({
           communityId,
           actor,
-          body: { idempotency_key: "namespaceless-comment", body: commentText },
+          personaId: actorPersonaId,
+          body: {
+            idempotency_key: "namespaceless-comment",
+            persona_id: actorPersonaId,
+            body: commentText,
+          },
           moderationInput: namespacelessCommentInput,
           idempotencyKey: "namespaceless-comment",
           requestHash: commentRequestHash,
@@ -769,14 +825,23 @@ suite("Postgres 17 terminal text submission repository", () => {
           endpoint: "comment",
           community_id: communityId,
           post_id: "namespaceless-comment-target",
-          body: { idempotency_key: "namespaceless-held", body: heldText },
+          body: {
+            idempotency_key: "namespaceless-held",
+            persona_id: actorPersonaId,
+            body: heldText,
+          },
         }),
       );
       const heldResult = await runStore(connection, (store) =>
         store.commitTerminal({
           communityId,
           actor,
-          body: { idempotency_key: "namespaceless-held", body: heldText },
+          personaId: actorPersonaId,
+          body: {
+            idempotency_key: "namespaceless-held",
+            persona_id: actorPersonaId,
+            body: heldText,
+          },
           moderationInput: heldInput,
           idempotencyKey: "namespaceless-held",
           requestHash: heldRequestHash,
@@ -827,6 +892,7 @@ suite("Postgres 17 terminal text submission repository", () => {
           store.commitTerminal({
             communityId: "text-community",
             actor,
+            personaId: actorPersonaId,
             body: commentBody,
             moderationInput: commentInput,
             idempotencyKey: commentBody.idempotency_key,
@@ -880,6 +946,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.replay({
           communityId: "other-community",
           actor,
+          personaId: actorPersonaId,
           idempotencyKey: commentBody.idempotency_key,
           requestHash: "e".repeat(64),
           surface: "comment",
@@ -892,7 +959,11 @@ suite("Postgres 17 terminal text submission repository", () => {
   test("blocked comments create no comment, counter, projection, or outbox effect", async () => {
     await withSchema(async (admin, connection) => {
       await insertCommentPost(admin);
-      const blockedBody = { idempotency_key: "comment-order6-blocked", body: "blocked comment" };
+      const blockedBody = {
+        idempotency_key: "comment-order6-blocked",
+        persona_id: actorPersonaId,
+        body: "blocked comment",
+      };
       const blockedInput = { ...commentInput, body: blockedBody.body };
       const canonical = canonicalTextModerationInput(blockedInput);
       if (canonical.kind === "rejected") throw new Error(canonical.reason);
@@ -901,6 +972,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.commitTerminal({
           communityId: "text-community",
           actor,
+          personaId: actorPersonaId,
           body: blockedBody,
           moderationInput: blockedInput,
           idempotencyKey: blockedBody.idempotency_key,
@@ -950,6 +1022,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.commitTerminal({
           communityId: "text-community",
           actor,
+          personaId: actorPersonaId,
           body: replyBody,
           moderationInput: replyInput,
           idempotencyKey: replyBody.idempotency_key,
@@ -987,6 +1060,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.commitTerminal({
           communityId: "text-community",
           actor,
+          personaId: actorPersonaId,
           body: { ...replyBody, idempotency_key: "reply-order6-closed" },
           moderationInput: replyInput,
           idempotencyKey: "reply-order6-closed",
@@ -1024,6 +1098,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.commitTerminal({
           communityId: "text-community",
           actor,
+          personaId: actorPersonaId,
           body: replyBody,
           moderationInput: replyInput,
           idempotencyKey: replyBody.idempotency_key,
@@ -1058,6 +1133,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.commitTerminal({
           communityId: "text-community",
           actor,
+          personaId: actorPersonaId,
           body: { ...replyBody, idempotency_key: "reply-order6-max-allowed" },
           moderationInput: replyInput,
           idempotencyKey: "reply-order6-max-allowed",
@@ -1091,6 +1167,7 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.commitTerminal({
           communityId: "text-community",
           actor,
+          personaId: actorPersonaId,
           body: { ...commentBody, idempotency_key: "comment-order6-report" },
           moderationInput: commentInput,
           idempotencyKey: "comment-order6-report",
@@ -1172,7 +1249,8 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.commitTerminal({
           communityId: "text-community",
           actor,
-          body: { idempotency_key: heldKey, body: "held comment" },
+          personaId: actorPersonaId,
+          body: { idempotency_key: heldKey, persona_id: actorPersonaId, body: "held comment" },
           moderationInput: heldInput,
           idempotencyKey: heldKey,
           requestHash: heldHash,
@@ -1288,7 +1366,8 @@ suite("Postgres 17 terminal text submission repository", () => {
         store.commitTerminal({
           communityId: "text-community",
           actor,
-          body: { idempotency_key: heldKey, body: "held comment" },
+          personaId: actorPersonaId,
+          body: { idempotency_key: heldKey, persona_id: actorPersonaId, body: "held comment" },
           moderationInput: heldInput,
           idempotencyKey: heldKey,
           requestHash: heldHash,

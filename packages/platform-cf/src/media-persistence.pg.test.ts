@@ -25,7 +25,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 17;
+const testCount = 18;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -39,6 +39,13 @@ const sha256 = (value: Uint8Array): string => createHash("sha256").update(value)
 const responseSha256 = sha256(responseBytes),
   audioSha256 = sha256(audioBytes),
   requestHash = "a".repeat(64);
+const personaIdsByConnection = new Map<string, ReadonlyMap<string, string>>();
+
+function personaFor(connection: string, accountId = actor): string {
+  const personaId = personaIdsByConnection.get(connection)?.get(accountId);
+  if (personaId === undefined) throw new Error(`missing test persona for ${accountId}`);
+  return personaId;
+}
 const terms: SongTerms = {
   licensePreset: "non-commercial",
   commercialRemixShareBps: 0,
@@ -166,8 +173,18 @@ async function withSchema<A>(
     expect(before.rows[0]?.media_table).toBeNull();
     if (populated) expect(before.rows[0]?.hns_operations).toBe("1");
     await runPostgresMigrations({ connectionString: connection, migrations });
+    if (populated) {
+      const personas = await admin.query<{ account_id: string; persona_id: string }>(
+        "SELECT account_id,persona_id FROM personas WHERE is_first_persona",
+      );
+      personaIdsByConnection.set(
+        connection,
+        new Map(personas.rows.map(({ account_id, persona_id }) => [account_id, persona_id])),
+      );
+    }
     return await use(admin, connection);
   } finally {
+    personaIdsByConnection.delete(connection);
     await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
     await admin.end();
   }
@@ -189,10 +206,11 @@ function run<A>(
     ),
   );
 }
-const command = (endpointTemplate: string, idempotencyKey: string) => ({
+const command = (connection: string, endpointTemplate: string, idempotencyKey: string) => ({
   communityId: community,
   submissionId: submission,
   actorUserId: actor,
+  personaId: personaFor(connection),
   endpointTemplate,
   idempotencyKey,
   requestHash,
@@ -214,6 +232,7 @@ async function createThroughDecision(
       store.reserve({
         communityId: community,
         actorUserId: actor,
+        personaId: personaFor(connection),
         idempotencyKey: "reserve-key",
         requestHash,
         expectedContentType: "audio/mpeg",
@@ -232,6 +251,7 @@ async function createThroughDecision(
       store.createSubmission({
         communityId: community,
         actorUserId: actor,
+        personaId: personaFor(connection),
         idempotencyKey: "create-key",
         requestHash,
         title: "Fixture song",
@@ -247,7 +267,7 @@ async function createThroughDecision(
   expect(
     await run(connection, (store) =>
       store.bindTerms({
-        ...command("/media-post-submissions/:submissionId/terms", "terms-key"),
+        ...command(connection, "/media-post-submissions/:submissionId/terms", "terms-key"),
         expectedCreationRevision: 1,
         terms,
       }),
@@ -256,7 +276,7 @@ async function createThroughDecision(
   expect(
     await run(connection, (store) =>
       store.finalizeSealed({
-        ...command("/media-post-submissions/:submissionId/finalize", "finalize-key"),
+        ...command(connection, "/media-post-submissions/:submissionId/finalize", "finalize-key"),
         expectedCreationRevision: 2,
         expectedAudioRevision: 0,
         reservationId: reservation,
@@ -288,7 +308,7 @@ async function createThroughDecision(
   expect(
     await run(connection, (store) =>
       store.acceptAnalysis({
-        ...command("/media-post-submissions/:submissionId/analysis", "analysis-key"),
+        ...command(connection, "/media-post-submissions/:submissionId/analysis", "analysis-key"),
         expectedAudioRevision: 1,
         expectedCanonicalAudioSha256: audioSha256,
         analysis: selectedAnalysis,
@@ -300,7 +320,7 @@ async function createThroughDecision(
   expect(
     await run(connection, (store) =>
       store.recordDecision({
-        ...command("/media-post-submissions/:submissionId/decision", "decision-key"),
+        ...command(connection, "/media-post-submissions/:submissionId/decision", "decision-key"),
         expectedCreationRevision: 2,
         expectedAudioRevision: 1,
         expectedAnalysisRevision: 1,
@@ -357,6 +377,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           communityId: community,
           submissionId: submission,
           actorUserId: actor,
+          personaId: personaFor(connection),
         }),
       );
       expect(decoded).toMatchObject({
@@ -372,7 +393,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.publish({
-            ...command("/media-post-submissions/:submissionId/publish", "publish-key"),
+            ...command(connection, "/media-post-submissions/:submissionId/publish", "publish-key"),
             expectedCreationRevision: 2,
             expectedAudioRevision: 1,
             expectedAnalysisRevision: 1,
@@ -399,6 +420,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             communityId: community,
             submissionId: submission,
             actorUserId: actor,
+            personaId: personaFor(connection),
             postId,
             audioRevision: 1,
             analysisRevision: 1,
@@ -420,6 +442,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             communityId: community,
             submissionId: submission,
             actorUserId: actor,
+            personaId: personaFor(connection),
             postId,
             audioRevision: 1,
             analysisRevision: 1,
@@ -442,6 +465,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             communityId: community,
             submissionId: submission,
             actorUserId: actor,
+            personaId: personaFor(connection),
             postId,
             audioRevision: 1,
             analysisRevision: 1,
@@ -488,6 +512,108 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     }, false);
     completedTestCount += 1;
   }, 40_000);
+  test("scopes media reservation and submission replay by persona", async () => {
+    await withSchema(async (admin, connection) => {
+      const firstPersona = (
+        await admin.query<{ persona_id: string }>(
+          "SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona",
+          [actor],
+        )
+      ).rows[0]?.persona_id;
+      if (firstPersona === undefined) throw new Error("missing first test persona");
+      const secondPersona = "media_pg_second_persona";
+      await admin.query(
+        "INSERT INTO personas (persona_id,account_id,status,is_first_persona) VALUES ($1,$2,'active',FALSE)",
+        [secondPersona, actor],
+      );
+      const reserve = (personaId: string, reservationId: string) =>
+        run(connection, (store) =>
+          store.reserve({
+            communityId: community,
+            actorUserId: actor,
+            personaId,
+            idempotencyKey: "same-persona-replay-key",
+            requestHash,
+            expectedContentType: "audio/mpeg",
+            expectedSizeBytes: audioBytes.byteLength,
+            expectedSha256: audioSha256,
+            uploadUrl: "https://upload.test/persona",
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            responseBytes,
+            responseSha256,
+            reservationId,
+          }),
+        );
+      expect(await reserve(firstPersona, "persona-reservation-first")).toMatchObject({
+        kind: "created",
+      });
+      expect(await reserve(secondPersona, "persona-reservation-second")).toMatchObject({
+        kind: "created",
+      });
+      await run(connection, (store) =>
+        store.createSubmission({
+          communityId: community,
+          actorUserId: actor,
+          personaId: firstPersona,
+          idempotencyKey: "same-persona-submission-key",
+          requestHash,
+          title: "First persona song",
+          songType: "original",
+          reservationId: "persona-reservation-first",
+          submissionId: "persona-submission-first",
+          operationId: "persona-operation-first",
+          responseBytes,
+          responseSha256,
+        }),
+      );
+      await run(connection, (store) =>
+        store.createSubmission({
+          communityId: community,
+          actorUserId: actor,
+          personaId: secondPersona,
+          idempotencyKey: "same-persona-submission-key",
+          requestHash,
+          title: "Second persona song",
+          songType: "original",
+          reservationId: "persona-reservation-second",
+          submissionId: "persona-submission-second",
+          operationId: "persona-operation-second",
+          responseBytes,
+          responseSha256,
+        }),
+      );
+      const rows = await admin.query<{
+        submission_id: string;
+        author_persona_id: string;
+        persona_id: string | null;
+      }>(
+        "SELECT submission_id,author_persona_id,start_input->>'persona_id' AS persona_id FROM media_post_submissions WHERE submission_id IN ('persona-submission-first','persona-submission-second') ORDER BY submission_id",
+      );
+      expect(rows.rows).toEqual([
+        {
+          submission_id: "persona-submission-first",
+          author_persona_id: firstPersona,
+          persona_id: firstPersona,
+        },
+        {
+          submission_id: "persona-submission-second",
+          author_persona_id: secondPersona,
+          persona_id: secondPersona,
+        },
+      ]);
+      const reservations = await admin.query<{
+        reservation_id: string;
+        actor_persona_id: string;
+      }>(
+        "SELECT reservation_id,actor_persona_id FROM media_upload_reservations WHERE idempotency_key='same-persona-replay-key' ORDER BY reservation_id",
+      );
+      expect(reservations.rows).toEqual([
+        { reservation_id: "persona-reservation-first", actor_persona_id: firstPersona },
+        { reservation_id: "persona-reservation-second", actor_persona_id: secondPersona },
+      ]);
+    });
+    completedTestCount += 1;
+  }, 40_000);
   test("reclaims an expired outbox lease and rejects the stale fence", async () => {
     await withSchema(async (_admin, connection) => {
       await createThroughDecision(connection);
@@ -498,6 +624,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             communityId: community,
             submissionId: submission,
             actorUserId: actor,
+            personaId: personaFor(connection),
             operationId: operation,
             audioRevision: 1,
             analysisRevision: 1,
@@ -517,6 +644,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             communityId: community,
             submissionId: submission,
             actorUserId: actor,
+            personaId: personaFor(connection),
             operationId: operation,
             audioRevision: 1,
             analysisRevision: 1,
@@ -601,7 +729,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.moderate({
-            ...command("/media-post-submissions/:submissionId/moderate", "moderate-key"),
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/moderate",
+              "moderate-key",
+            ),
             expectedCreationRevision: 2,
             action: "approve",
             actor: { userId: moderator, kind: "admin", scopes: ["moderation"] },
@@ -622,6 +754,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           communityId: community,
           submissionId: submission,
           actorUserId: actor,
+          personaId: personaFor(connection),
         }),
       );
       expect(state).toMatchObject({ status: "processing", phase: "publish", decisionRevision: 2 });
@@ -641,7 +774,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.moderate({
-            ...command(endpointTemplate, idempotencyKey),
+            ...command(connection, endpointTemplate, idempotencyKey),
             expectedCreationRevision: 2,
             action: "block",
             actor: { userId: moderator, kind: "admin", scopes: ["moderation"] },
@@ -675,6 +808,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             communityId: community,
             submissionId: submission,
             actorUserId: actor,
+            personaId: personaFor(connection),
           }),
         ),
       ).toMatchObject({
@@ -694,6 +828,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           store.replay({
             communityId: community,
             actorUserId: moderator,
+            personaId: null,
             endpointTemplate,
             idempotencyKey,
             requestHash,
@@ -705,6 +840,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           store.replay({
             communityId: community,
             actorUserId: "media_pg_other_moderator",
+            personaId: null,
             endpointTemplate,
             idempotencyKey,
             requestHash,
@@ -720,7 +856,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       for (const retryCount of [0, 1, 2] as const) {
         const failureResult = await run(connection, (store) =>
           store.recordMediaFailure({
-            ...command("/media-post-submissions/:submissionId/failure", `failure-${retryCount}`),
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/failure",
+              `failure-${retryCount}`,
+            ),
             expectedCreationRevision: retryCount + 2,
             failure: {
               code: "probe_failed",
@@ -734,7 +874,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         expect(
           await run(connection, (store) =>
             store.retry({
-              ...command("/media-post-submissions/:submissionId/retry", `retry-${retryCount}`),
+              ...command(
+                connection,
+                "/media-post-submissions/:submissionId/retry",
+                `retry-${retryCount}`,
+              ),
               expectedCreationRevision: retryCount + 2,
             }),
           ),
@@ -743,7 +887,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.recordMediaFailure({
-            ...command("/media-post-submissions/:submissionId/failure", "failure-fourth"),
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/failure",
+              "failure-fourth",
+            ),
             expectedCreationRevision: 5,
             failure: {
               code: "probe_failed",
@@ -757,7 +905,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       await expect(
         run(connection, (store) =>
           store.retry({
-            ...command("/media-post-submissions/:submissionId/retry", "retry-fourth"),
+            ...command(connection, "/media-post-submissions/:submissionId/retry", "retry-fourth"),
             expectedCreationRevision: 5,
           }),
         ),
@@ -789,6 +937,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           store.reserve({
             communityId: community,
             actorUserId: actor,
+            personaId: personaFor(connection),
             idempotencyKey: "cancel-reserve",
             requestHash,
             expectedContentType: "audio/mpeg",
@@ -807,6 +956,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           store.createSubmission({
             communityId: community,
             actorUserId: actor,
+            personaId: personaFor(connection),
             idempotencyKey: "cancel-create",
             requestHash,
             title: "Fixture song",
@@ -822,7 +972,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.authorCancel({
-            ...command("/media-post-submissions/:submissionId/cancel", "cancel-key"),
+            ...command(connection, "/media-post-submissions/:submissionId/cancel", "cancel-key"),
             expectedCreationRevision: 1,
           }),
         ),
@@ -850,6 +1000,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           store.reserve({
             communityId: community,
             actorUserId: actor,
+            personaId: personaFor(connection),
             idempotencyKey: "expire-reserve",
             requestHash,
             expectedContentType: "audio/mpeg",
@@ -868,6 +1019,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           store.createSubmission({
             communityId: community,
             actorUserId: actor,
+            personaId: personaFor(connection),
             idempotencyKey: "expire-create",
             requestHash,
             title: "Fixture song",
@@ -895,7 +1047,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.reservationExpire({
-            ...command("/media-post-submissions/:submissionId/expire", "expire-key"),
+            ...command(connection, "/media-post-submissions/:submissionId/expire", "expire-key"),
             expectedCreationRevision: 1,
           }),
         ),
@@ -927,7 +1079,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.requireReference({
-            ...command("/media-post-submissions/:submissionId/reference", "reference-required"),
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/reference",
+              "reference-required",
+            ),
             expectedCreationRevision: 2,
             expectedAudioRevision: 1,
             expectedAnalysisRevision: 1,
@@ -939,7 +1095,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.bindReference({
-            ...command("/media-post-submissions/:submissionId/reference", "reference-bound"),
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/reference",
+              "reference-bound",
+            ),
             expectedCreationRevision: 2,
             reference: {
               assetId: "upstream-asset",
@@ -958,6 +1118,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             communityId: community,
             submissionId: submission,
             actorUserId: actor,
+            personaId: personaFor(connection),
           }),
         ),
       ).toMatchObject({
@@ -988,6 +1149,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           store.reserve({
             communityId: community,
             actorUserId: actor,
+            personaId: personaFor(connection),
             idempotencyKey: "mismatch-reserve",
             requestHash,
             expectedContentType: "audio/mpeg",
@@ -1006,6 +1168,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           store.createSubmission({
             communityId: community,
             actorUserId: actor,
+            personaId: personaFor(connection),
             idempotencyKey: "mismatch-create",
             requestHash,
             title: "Fixture song",
@@ -1021,7 +1184,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.uploadExpectationMismatch({
-            ...command("/media-post-submissions/:submissionId/upload-mismatch", "mismatch-key"),
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/upload-mismatch",
+              "mismatch-key",
+            ),
             expectedCreationRevision: 1,
             evidenceRef: "upload-mismatch-evidence",
           }),
@@ -1257,8 +1424,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         });
       await admin.query("BEGIN");
       await admin.query(
-        "INSERT INTO media_upload_reservations (reservation_id,community_id,actor_user_id,idempotency_key,request_hash,expected_content_type,expected_size_bytes,upload_url,expires_at,state,submission_id,operation_id,claim_fence,response_snapshot_bytes,response_snapshot_sha256) VALUES ('orphan-claimed-reservation',$1,$2,'orphan-claimed-key',$3,'audio/wav',1,'https://upload.example/orphan',clock_timestamp()+interval '1 hour','claimed','orphan-submission','orphan-operation',1,$4,$5)",
-        [community, actor, requestHash, responseBytes, responseSha256],
+        "INSERT INTO media_upload_reservations (reservation_id,community_id,actor_user_id,actor_persona_id,idempotency_key,request_hash,expected_content_type,expected_size_bytes,upload_url,expires_at,state,submission_id,operation_id,claim_fence,response_snapshot_bytes,response_snapshot_sha256) VALUES ('orphan-claimed-reservation',$1,$2,$3,'orphan-claimed-key',$4,'audio/wav',1,'https://upload.example/orphan',clock_timestamp()+interval '1 hour','claimed','orphan-submission','orphan-operation',1,$5,$6)",
+        [community, actor, personaFor(connection), requestHash, responseBytes, responseSha256],
       );
       await expect(admin.query("COMMIT")).rejects.toThrow();
       await admin.query("ROLLBACK");
@@ -1589,6 +1756,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             communityId: community,
             submissionId: submission,
             actorUserId: actor,
+            personaId: personaFor(connection),
             operationId: operation,
             audioRevision: 1,
             analysisRevision: 1,
@@ -1626,7 +1794,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.requireReview({
-            ...command("/media-post-submissions/:submissionId/review", "acr-exhaustion-key"),
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/review",
+              "acr-exhaustion-key",
+            ),
             expectedCreationRevision: 2,
             review: {
               reviewRef: "review-acr-exhausted-case",
@@ -1647,7 +1819,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         await run(connection, (store) =>
           store.moderate({
-            ...command("/media-post-submissions/:submissionId/moderate", "acr-moderate-key"),
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/moderate",
+              "acr-moderate-key",
+            ),
             expectedCreationRevision: 2,
             action: "approve",
             actor: { userId: moderator, kind: "admin", scopes: ["moderation"] },

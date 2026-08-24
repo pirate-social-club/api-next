@@ -10,7 +10,34 @@ import {
 import { createCommentReply } from "./comments-replies.ts";
 
 const actor = { userId: "usr_comments_order6", kind: "user" as const };
-const body = { idempotency_key: "comment-key-1", body: "hello from a comment" };
+const personaId = "persona-comments-author";
+const body = {
+  persona_id: personaId,
+  idempotency_key: "comment-key-1",
+  body: "hello from a comment",
+};
+const personaStore = {
+  findOwned: () =>
+    Effect.succeed({
+      persona_id: personaId,
+      object: "persona" as const,
+      status: "active" as const,
+      profile: {
+        persona_id: personaId,
+        object: "persona_profile" as const,
+        revision: 1,
+        display_name: null,
+        avatar_ref: null,
+        cover_ref: null,
+        bio: null,
+        preferred_locale: null,
+        primary_public_handle: null,
+      },
+      wallet_set: { evm: null },
+      created_at: "2026-08-22T12:00:00.000Z",
+      retired_at: null,
+    }),
+};
 const target = {
   kind: "ready" as const,
   communityId: "community-comments",
@@ -79,6 +106,7 @@ describe("comments and replies application", () => {
       createCommentReply(
         { surface: "comment", targetId: "post-comments", actor, body },
         {
+          personaStore,
           textPostStore: commentStore({
             replay: () => Effect.succeed({ kind: "conflict", submissionId: "submission-winner" }),
           }),
@@ -100,6 +128,7 @@ describe("comments and replies application", () => {
       createCommentReply(
         { surface: "comment", targetId: "post-comments", actor, body },
         {
+          personaStore,
           textPostStore: commentStore({
             replay: () => Effect.succeed({ kind: "replay", snapshot: published }),
           }),
@@ -122,6 +151,7 @@ describe("comments and replies application", () => {
       createCommentReply(
         { surface: "reply", targetId: "parent-too-deep", actor, body },
         {
+          personaStore,
           textPostStore: commentStore({
             resolveCommentTarget: () => Effect.succeed({ kind: "depth-exceeded", depth: 9 }),
           }),
@@ -158,6 +188,7 @@ describe("comments and replies application", () => {
       createCommentReply(
         { surface: "comment", targetId: "post-comments", actor, body },
         {
+          personaStore,
           textPostStore: commentStore({
             commitTerminal: ({ evaluation: value }) => {
               committed = value;
@@ -191,6 +222,7 @@ describe("comments and replies application", () => {
       createCommentReply(
         { surface: "comment", targetId: "post-comments", actor, body },
         {
+          personaStore,
           textPostStore: commentStore({
             commitTerminal: ({ evaluation: value }) => {
               committed = value;
@@ -223,6 +255,7 @@ describe("comments and replies application", () => {
       createCommentReply(
         { surface: "comment", targetId: "post-comments", actor, body },
         {
+          personaStore,
           textPostStore: commentStore({
             checkAuthority: () =>
               Effect.fail(

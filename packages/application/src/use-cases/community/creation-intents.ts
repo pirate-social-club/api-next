@@ -14,9 +14,15 @@ import {
   type CommunityCreationStore,
   type M2Actor,
 } from "../../ports.ts";
+import {
+  type PersonaStoreService,
+  PersonaUnavailable,
+  requireActiveOwnedPersona,
+} from "../personas.ts";
 
 export interface CommunityCreationServices {
   readonly communityCreationStore: CommunityCreationStore["Service"];
+  readonly personaStore: Pick<PersonaStoreService, "findOwned">;
 }
 
 export type CreateCommunityCreationIntentInput = Readonly<{
@@ -98,12 +104,24 @@ const mapFailure = (failure: CommunityCreationRepositoryFailure) => {
   }
 };
 
+const requireSelectedPersona = (
+  accountId: string,
+  personaId: string,
+  services: CommunityCreationServices,
+) =>
+  requireActiveOwnedPersona({ accountId, personaId }, services.personaStore).pipe(
+    Effect.mapError((error) =>
+      error instanceof PersonaUnavailable ? new NotFound({ message: "Persona not found" }) : error,
+    ),
+  );
+
 export const createCommunityCreationIntent = Effect.fn("createCommunityCreationIntent")(function* (
   input: CreateCommunityCreationIntentInput,
   services: CommunityCreationServices,
 ) {
   yield* validateActor(input.actor);
   const body = yield* decodeBody(CreateCommunityCreationIntent.request.body, input.body);
+  yield* requireSelectedPersona(input.actor.userId, body.draft.persona_id, services);
   const hash = yield* requestHash(body);
   return yield* services.communityCreationStore
     .create({ actor: input.actor, body, requestHash: hash })
@@ -136,6 +154,7 @@ export const updateCommunityCreationIntent = Effect.fn("updateCommunityCreationI
     return yield* new NotFound({ message: "Community creation intent not found" });
   }
   const body = yield* decodeBody(UpdateCommunityCreationIntent.request.body, input.body);
+  yield* requireSelectedPersona(input.actor.userId, body.draft.persona_id, services);
   const hash = yield* requestHash(body);
   return yield* services.communityCreationStore
     .update({ intentId: input.intentId, actor: input.actor, body, requestHash: hash })
@@ -151,6 +170,15 @@ export const commitCommunityCreationIntent = Effect.fn("commitCommunityCreationI
     return yield* new NotFound({ message: "Community creation intent not found" });
   }
   const body = yield* decodeBody(CommitCommunityCreationIntent.request.body, input.body);
+  const current = yield* services.communityCreationStore
+    .get({ actor: input.actor, intentId: input.intentId })
+    .pipe(Effect.mapError(mapFailure));
+  if (current === null) {
+    return yield* new NotFound({ message: "Community creation intent not found" });
+  }
+  if ("creation_contract_version" in current) {
+    yield* requireSelectedPersona(input.actor.userId, current.draft.persona_id, services);
+  }
   const hash = yield* requestHash(body);
   return yield* services.communityCreationStore
     .commit({ intentId: input.intentId, actor: input.actor, body, requestHash: hash })

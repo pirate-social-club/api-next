@@ -4,6 +4,8 @@ import {
   createTextPost,
   type IdentityStore,
   type M2Actor,
+  type PersonaRecord,
+  type PersonaStoreService,
   type TextModeration,
   TextModerationProviderError,
   TextPostRepositoryError,
@@ -191,6 +193,36 @@ const textSubmission = {
   updated_at: "2026-08-21T12:00:00.000Z",
 };
 
+const workerdPersonaId = "persona_workerd_test";
+const workerdPersona: PersonaRecord = {
+  persona_id: workerdPersonaId,
+  object: "persona",
+  status: "active",
+  profile: {
+    persona_id: workerdPersonaId,
+    object: "persona_profile",
+    revision: 1,
+    display_name: "Workerd Captain",
+    avatar_ref: null,
+    cover_ref: null,
+    bio: null,
+    preferred_locale: "en",
+    primary_public_handle: null,
+  },
+  wallet_set: { evm: null },
+  created_at: "2026-08-16T12:00:00.000Z",
+  retired_at: null,
+};
+const personaStore: PersonaStoreService = {
+  listByAccount: (accountId) =>
+    Effect.succeed(accountId === account.user.user_id ? [workerdPersona] : []),
+  findOwned: ({ accountId, personaId }) =>
+    Effect.succeed(
+      accountId === account.user.user_id && personaId === workerdPersonaId ? workerdPersona : null,
+    ),
+  create: () => Effect.die("unused Workerd persona fixture operation"),
+};
+
 const routeAuthorityFixtureId = "community-very-staging-fixture-acceptance-v1";
 const missingRouteTextPostStore: TextPostStore["Service"] = {
   replay: () => Effect.succeed({ kind: "none" as const }),
@@ -220,6 +252,7 @@ function createPostThroughContract(request: DecodedRequest) {
       {
         textPostStore: missingRouteTextPostStore,
         textModeration: unavailableTextModeration,
+        personaStore,
       },
     ),
   );
@@ -705,6 +738,7 @@ const app = createHttpWorker({
             textModeration: {
               evaluate: () => Effect.die("comment route fixture must fail before moderation"),
             },
+            personaStore,
           },
         ),
       ),

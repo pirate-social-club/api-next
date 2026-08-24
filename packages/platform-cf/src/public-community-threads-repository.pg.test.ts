@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { PublicCommunityThreadsRepositoryError } from "@pirate/application";
 import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
+import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
-import { applyPostgresMigrations, type PostgresMigration } from "./postgres-migrations.ts";
+import { applyPostgresMigrations } from "./postgres-migrations.ts";
 import { makeControlPlanePublicCommunityThreadsRepository } from "./public-community-threads-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -20,26 +20,7 @@ const sentinelContents =
   "api-next-control-plane-postgres-public-community-threads-suite-complete\n";
 let completedTestCount = 0;
 
-const migrations: readonly PostgresMigration[] = await (async () => {
-  const versions = [
-    "0001_v1_product_slice.sql",
-    "0002_identity.sql",
-    "0003_m2_community_content.sql",
-    "0004_post_comment_lock.sql",
-    "0005_m2_behavior_invariants.sql",
-    "0006_public_profile_handle_index.sql",
-    "0007_public_profile_handle_invariants.sql",
-    "0008_community_route_slug.sql",
-  ] as const;
-  return Promise.all(
-    versions.map(async (version) => {
-      const sql = await Bun.file(
-        new URL(`../../../db/postgres/migrations/${version}`, import.meta.url),
-      ).text();
-      return { version, sql, checksum: createHash("sha256").update(sql).digest("hex") };
-    }),
-  );
-})();
+const migrations = await loadPostgresMigrations();
 
 const schemaIdentifier = (): string =>
   `api_next_public_threads_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -110,19 +91,33 @@ suite("Postgres 17 public community threads repository", () => {
         const created = new Date(base.getTime() - index * 1_000);
         await admin.query(
           `INSERT INTO posts
-            (community_id, post_id, author_user_id, post_type, status, visibility, body, created_at, updated_at)
-           VALUES ('collision', $1, 'usr_author', 'text', 'published', 'public', $1, $2, $2)`,
+            (community_id, post_id, author_user_id, author_persona_id,
+             post_type, status, visibility, body, created_at, updated_at)
+           VALUES (
+             'collision', $1, 'usr_author',
+             (SELECT persona_id FROM personas WHERE account_id='usr_author' AND is_first_persona),
+             'text', 'published', 'public', $1, $2, $2
+           )`,
           [`post_${index.toString().padStart(2, "0")}`, created],
         );
       }
       await admin.query(
         `INSERT INTO posts
-          (community_id, post_id, author_user_id, post_type, status, visibility, body, created_at, updated_at)
+          (community_id, post_id, author_user_id, author_persona_id,
+           post_type, status, visibility, body, created_at, updated_at)
          VALUES
-          ('collision', 'post_image', 'usr_author', 'image', 'published', 'public', 'image', $1, $1),
-          ('collision', 'post_members', 'usr_author', 'text', 'published', 'members_only', 'members', $1, $1),
-          ('collision', 'post_processing', 'usr_author', 'text', 'processing', 'public', 'processing', $1, $1),
-          ('community-other', 'post_other', 'usr_other', 'text', 'published', 'public', 'other', $1, $1)`,
+          ('collision', 'post_image', 'usr_author',
+           (SELECT persona_id FROM personas WHERE account_id='usr_author' AND is_first_persona),
+           'image', 'published', 'public', 'image', $1, $1),
+          ('collision', 'post_members', 'usr_author',
+           (SELECT persona_id FROM personas WHERE account_id='usr_author' AND is_first_persona),
+           'text', 'published', 'members_only', 'members', $1, $1),
+          ('collision', 'post_processing', 'usr_author',
+           (SELECT persona_id FROM personas WHERE account_id='usr_author' AND is_first_persona),
+           'text', 'processing', 'public', 'processing', $1, $1),
+          ('community-other', 'post_other', 'usr_other',
+           (SELECT persona_id FROM personas WHERE account_id='usr_other' AND is_first_persona),
+           'text', 'published', 'public', 'other', $1, $1)`,
         [base],
       );
 
@@ -221,15 +216,25 @@ suite("Postgres 17 public community threads repository", () => {
         const created = new Date(now.getTime() - index * 1_000);
         await admin.query(
           `INSERT INTO posts
-            (community_id, post_id, author_user_id, post_type, status, visibility, body, created_at, updated_at)
-           VALUES ('community-a', $1, 'usr_a', 'text', 'published', 'public', $1, $2, $2)`,
+            (community_id, post_id, author_user_id, author_persona_id,
+             post_type, status, visibility, body, created_at, updated_at)
+           VALUES (
+             'community-a', $1, 'usr_a',
+             (SELECT persona_id FROM personas WHERE account_id='usr_a' AND is_first_persona),
+             'text', 'published', 'public', $1, $2, $2
+           )`,
           [`post_a_${index}`, created],
         );
       }
       await admin.query(
         `INSERT INTO posts
-          (community_id, post_id, author_user_id, post_type, status, visibility, body, created_at, updated_at)
-         VALUES ('community-b', 'post_b', 'usr_b', 'text', 'published', 'public', 'b', $1, $1)`,
+          (community_id, post_id, author_user_id, author_persona_id,
+           post_type, status, visibility, body, created_at, updated_at)
+         VALUES (
+           'community-b', 'post_b', 'usr_b',
+           (SELECT persona_id FROM personas WHERE account_id='usr_b' AND is_first_persona),
+           'text', 'published', 'public', 'b', $1, $1
+         )`,
         [now],
       );
       const repository = makeControlPlanePublicCommunityThreadsRepository({
@@ -285,23 +290,27 @@ suite("Postgres 17 public community threads repository", () => {
       await admin.query(
         `INSERT INTO communities
           (community_id, route_slug, display_name, created_by_user_id, created_at, updated_at)
-         VALUES ('community-malformed-author', 'malformed-author', 'Malformed author', 'usr_author', $1, $1),
-                ('community-malformed-body', 'malformed-body', 'Malformed body', 'usr_author', $1, $1),
+         VALUES ('community-malformed-body', 'malformed-body', 'Malformed body', 'usr_author', $1, $1),
                 ('community-malformed-title', 'malformed-title', 'Malformed title', 'usr_author', $1, $1)`,
         [now],
       );
       await admin.query(
         `INSERT INTO posts
-          (community_id, post_id, author_user_id, post_type, status, visibility, body, title, created_at, updated_at)
-         VALUES ('community-malformed-author', 'post-malformed-author', $1, 'text', 'published', 'public', 'body', NULL, $2, $2),
-                ('community-malformed-body', 'post-malformed-body', 'usr_author', 'text', 'published', 'public', $3, NULL, $2, $2),
-                ('community-malformed-title', 'post-malformed-title', 'usr_author', 'text', 'published', 'public', 'body', $4, $2, $2)`,
-        [" usr_author ", now, " body ", " title "],
+          (community_id, post_id, author_user_id, author_persona_id,
+           post_type, status, visibility, body, title, created_at, updated_at)
+         VALUES
+          ('community-malformed-body', 'post-malformed-body', 'usr_author',
+           (SELECT persona_id FROM personas WHERE account_id='usr_author' AND is_first_persona),
+           'text', 'published', 'public', $2, NULL, $1, $1),
+          ('community-malformed-title', 'post-malformed-title', 'usr_author',
+           (SELECT persona_id FROM personas WHERE account_id='usr_author' AND is_first_persona),
+           'text', 'published', 'public', 'body', $3, $1, $1)`,
+        [now, " body ", " title "],
       );
       const repository = makeControlPlanePublicCommunityThreadsRepository({
         now: () => now.getTime(),
       });
-      for (const slug of ["malformed-author", "malformed-body", "malformed-title"]) {
+      for (const slug of ["malformed-body", "malformed-title"]) {
         const result = await Effect.runPromiseExit(
           Effect.scoped(
             repository

@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { Effect } from "effect";
 import { Client } from "pg";
+import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeControlPlaneFeedStore } from "./feed-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
-import { applyPostgresMigrations, type PostgresMigration } from "./postgres-migrations.ts";
+import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -18,22 +18,7 @@ const sentinelPath =
 const sentinelContents = "api-next-control-plane-postgres-feed-suite-complete\n";
 let completedTestCount = 0;
 
-const migrationFiles = [
-  "0001_v1_product_slice.sql",
-  "0002_identity.sql",
-  "0003_m2_community_content.sql",
-  "0004_post_comment_lock.sql",
-  "0005_m2_behavior_invariants.sql",
-  "0006_public_profile_handle_index.sql",
-] as const;
-const migrations: readonly PostgresMigration[] = await Promise.all(
-  migrationFiles.map(async (version) => {
-    const sql = await Bun.file(
-      new URL(`../../../db/postgres/migrations/${version}`, import.meta.url),
-    ).text();
-    return { version, sql, checksum: createHash("sha256").update(sql).digest("hex") };
-  }),
-);
+const migrations = await loadPostgresMigrations();
 
 const schemaIdentifier = (): string => `api_next_feed_${crypto.randomUUID().replaceAll("-", "")}`;
 const quoteIdentifier = (value: string): string => `"${value.replaceAll('"', '""')}"`;
@@ -106,8 +91,13 @@ async function insertProjectedPost(
   const created = input.created ?? new Date("2026-08-17T10:00:00.000Z");
   await admin.query(
     `INSERT INTO posts
-      (community_id, post_id, author_user_id, post_type, status, visibility, body, created_at, updated_at)
-     VALUES ($1, $2, 'usr_member', 'text', $3, $4, $2, $5, $5)`,
+      (community_id, post_id, author_user_id, author_persona_id,
+       post_type, status, visibility, body, created_at, updated_at)
+     VALUES (
+       $1, $2, 'usr_member',
+       (SELECT persona_id FROM personas WHERE account_id='usr_member' AND is_first_persona),
+       'text', $3, $4, $2, $5, $5
+     )`,
     [community, input.id, status, visibility, created],
   );
   await admin.query(

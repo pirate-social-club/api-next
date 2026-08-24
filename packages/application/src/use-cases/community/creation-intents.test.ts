@@ -16,6 +16,7 @@ import {
 
 const actor = { userId: "user-alice", kind: "user" as const };
 const draft = {
+  persona_id: "persona-community-owner",
   name: "Jazleeuw",
   description: "A community",
   policy: {
@@ -27,6 +28,35 @@ const draft = {
         requirements: [{ requirement: "human-verification" as const }],
       },
     ] as const,
+  },
+};
+const persona = {
+  persona_id: draft.persona_id,
+  object: "persona" as const,
+  status: "active" as const,
+  profile: {
+    persona_id: draft.persona_id,
+    object: "persona_profile" as const,
+    revision: 1,
+    display_name: "Community Captain",
+    avatar_ref: null,
+    cover_ref: null,
+    bio: null,
+    preferred_locale: null,
+    primary_public_handle: null,
+  },
+  wallet_set: { evm: null },
+  created_at: "2026-08-20T12:00:00.000Z",
+  retired_at: null,
+};
+const personaRolePresentation = {
+  role: "owner" as const,
+  persona: {
+    persona_id: persona.persona_id,
+    object: "persona" as const,
+    display_name: persona.profile.display_name,
+    avatar_ref: persona.profile.avatar_ref,
+    primary_public_handle: persona.profile.primary_public_handle,
   },
 };
 
@@ -60,6 +90,7 @@ const document = {
     generation: 1,
   },
   expires_at: "2026-08-20T15:00:00.000Z",
+  persona_role_presentation: personaRolePresentation,
   committed_resource: null,
 };
 
@@ -67,6 +98,12 @@ function services(
   overrides: Partial<CommunityCreationStore["Service"]> = {},
 ): CommunityCreationServices {
   return {
+    personaStore: {
+      findOwned: ({ accountId, personaId }) =>
+        Effect.succeed(
+          accountId === actor.userId && personaId === persona.persona_id ? persona : null,
+        ),
+    },
     communityCreationStore: {
       create: () => Effect.succeed({ document, outcome: "fresh" }),
       get: () => Effect.succeed(document),
@@ -83,6 +120,7 @@ function services(
               community_id: "community_123e4567-e89b-42d3-a456-426614174000",
               href: "/c/community_123e4567-e89b-42d3-a456-426614174000",
               canonical_route: null,
+              persona_role_presentation: personaRolePresentation,
             },
           },
           outcome: "fresh_created" as const,
@@ -175,6 +213,32 @@ describe("community creation intent application use cases", () => {
         ),
       ),
     ).rejects.toBeInstanceOf(BadRequest);
+  });
+
+  test("rejects missing, foreign, and inactive personas before creation storage", async () => {
+    let createCalls = 0;
+    const base = services({
+      create: () => {
+        createCalls += 1;
+        return Effect.succeed({ document, outcome: "fresh" });
+      },
+    });
+    for (const personaStore of [
+      { findOwned: () => Effect.succeed(null) },
+      {
+        findOwned: () => Effect.succeed({ ...persona, status: "suspended" as const }),
+      },
+    ]) {
+      await expect(
+        Effect.runPromise(
+          createCommunityCreationIntent(
+            { actor, body: { draft, idempotency_key: "rejected-persona" } },
+            { ...base, personaStore },
+          ),
+        ),
+      ).rejects.toBeInstanceOf(NotFound);
+    }
+    expect(createCalls).toBe(0);
   });
 
   test("passes expected revisions and maps stale writers to conflict", async () => {

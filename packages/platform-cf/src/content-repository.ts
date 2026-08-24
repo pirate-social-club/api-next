@@ -18,6 +18,7 @@ import {
   type VoteDocument,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import { publicPersonaFromSql } from "./public-persona-projection";
 
 export interface ContentRepository {
   readonly resolvePost: (input: {
@@ -174,6 +175,7 @@ const postFromRow = (row: Row): PostDocument | null => {
   const id = stringValue(row, "post_id");
   const community = stringValue(row, "community_id");
   const author = stringValue(row, "author_user_id");
+  const authorPersona = publicPersonaFromSql(row.author_persona);
   const postType = stringValue(row, "post_type");
   const status = stringValue(row, "status");
   const visibility = stringValue(row, "visibility");
@@ -191,7 +193,8 @@ const postFromRow = (row: Row): PostDocument | null => {
     !allowedVisibility(visibility) ||
     created === null ||
     booleanValue(row, "comments_locked") === null ||
-    (author !== null && !validId(author))
+    (author !== null && !validId(author)) ||
+    authorPersona === undefined
   ) {
     return null;
   }
@@ -199,7 +202,7 @@ const postFromRow = (row: Row): PostDocument | null => {
     id,
     object: "post",
     community,
-    author_user: author,
+    author_persona: authorPersona,
     author_public_handle: null,
     authorship_mode: "human_direct",
     agent: null,
@@ -744,18 +747,20 @@ const insertVoteActionIn = (
 
 const loadPostByIdempotency = (
   transaction: Transaction,
-  communityId: string,
   userId: string,
+  personaId: string,
   key: string,
 ) =>
   transaction.execute<Row>({
     label: "content.posts.find-idempotency",
-    text: `SELECT community_id, post_id, author_user_id, post_type, status, visibility, title, body,
+    text: `SELECT community_id, post_id, author_user_id,
+                  public_persona_projection(author_persona_id) AS author_persona,
+                  post_type, status, visibility, title, body,
                   idempotency_key, idempotency_body_hash, comments_locked, created_at
            FROM posts
-           WHERE community_id = $1 AND author_user_id = $2 AND idempotency_key = $3
+           WHERE author_user_id=$1 AND author_persona_id=$2 AND idempotency_key=$3
            FOR UPDATE`,
-    values: [communityId, userId, key],
+    values: [userId, personaId, key],
     readonly: false,
   });
 
@@ -800,6 +805,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
         actor.kind === "agent" ||
         !validId(communityId) ||
         !validId(actor.userId) ||
+        !validId(body.persona_id) ||
         !directTextBody(body) ||
         !validIdempotencyHash(idempotencyBodyHash)
       ) {
@@ -808,11 +814,20 @@ export function makeControlPlaneContentRepository(): ContentRepository {
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((transaction) =>
         Effect.gen(function* () {
+          const persona = yield* transaction.execute({
+            label: "content.posts.persona-authority",
+            text: `SELECT 1 FROM personas
+                    WHERE account_id=$1 AND persona_id=$2 AND status='active'
+                    FOR SHARE`,
+            values: [actor.userId, body.persona_id],
+            readonly: false,
+          });
+          if (persona.rows.length !== 1) return yield* notFound("create-post");
           yield* requireActiveMembershipIn(transaction, communityId, actor.userId, "create-post");
           const existing = yield* loadPostByIdempotency(
             transaction,
-            communityId,
             actor.userId,
+            body.persona_id,
             body.idempotency_key,
           );
           yield* requireActiveCommunityEffectIn(
@@ -838,16 +853,20 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           const inserted = yield* transaction.execute<Row>({
             label: "content.posts.insert",
             text: `INSERT INTO posts
-              (community_id, post_id, author_user_id, post_type, status, visibility, title, body,
-               created_at, updated_at, idempotency_key, idempotency_body_hash)
-             VALUES ($1, $2, $3, 'text', 'processing', $4, $5, $6, $7, $7, $8, $9)
+              (community_id, post_id, author_user_id, author_persona_id,
+               post_type, status, visibility, title, body, created_at, updated_at,
+               idempotency_key, idempotency_body_hash)
+             VALUES ($1,$2,$3,$4,'text','processing',$5,$6,$7,$8,$8,$9,$10)
              ON CONFLICT DO NOTHING
-            RETURNING community_id, post_id, author_user_id, post_type, status, visibility, title, body,
-                       idempotency_key, idempotency_body_hash, comments_locked, created_at`,
+            RETURNING community_id,post_id,author_user_id,
+                      public_persona_projection(author_persona_id) AS author_persona,
+                      post_type,status,visibility,title,body,idempotency_key,
+                      idempotency_body_hash,comments_locked,created_at`,
             values: [
               communityId,
               postId,
               actor.userId,
+              body.persona_id,
               body.visibility ?? "public",
               body.title ?? null,
               body.body ?? null,
@@ -871,8 +890,8 @@ export function makeControlPlaneContentRepository(): ContentRepository {
 
           const concurrent = yield* loadPostByIdempotency(
             transaction,
-            communityId,
             actor.userId,
+            body.persona_id,
             body.idempotency_key,
           );
           const concurrentRow = yield* oneRow(concurrent.rows, "create-post");
@@ -899,7 +918,9 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           if (location === null || location.communityId !== communityId) return null;
           const result = yield* transaction.execute<Row>({
             label: "content.posts.get",
-            text: `SELECT community_id, post_id, author_user_id, post_type, status, visibility, title, body,
+            text: `SELECT community_id,post_id,author_user_id,
+                          public_persona_projection(author_persona_id) AS author_persona,
+                          post_type,status,visibility,title,body,
                           comments_locked, created_at
                    FROM posts WHERE community_id = $1 AND post_id = $2`,
             values: [communityId, postId],
@@ -914,7 +935,8 @@ export function makeControlPlaneContentRepository(): ContentRepository {
           }
           if (["hidden", "removed", "deleted"].includes(post.status)) return null;
           if (post.status !== "published" && post.status !== "processing") return null;
-          if (post.status === "processing" && post.author_user !== viewerUserId) return null;
+          const authorAccountId = stringValue(row, "author_user_id");
+          if (post.status === "processing" && authorAccountId !== viewerUserId) return null;
           if (post.visibility === "members_only") {
             const membership = yield* transaction.execute<Row>({
               label: "content.community-memberships.read-access",
@@ -1012,7 +1034,7 @@ export function makeControlPlaneContentRepository(): ContentRepository {
             like_count: 0,
             comment_count: commentCount,
             viewer_vote: vote,
-            viewer_is_author: post.author_user === viewerUserId,
+            viewer_is_author: authorAccountId === viewerUserId,
             viewer_reaction_kinds: [],
             resolved_locale: locale ?? "en",
             translation_state: "same_language",

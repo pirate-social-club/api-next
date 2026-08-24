@@ -977,8 +977,14 @@ describe("contracts-generated HTTP worker", () => {
     });
     const headers = { authorization: "Bearer test", "content-type": "application/json" };
     const requests = [
-      ["/posts/post_1/comments", { idempotency_key: "comment-key", body: "comment" }],
-      ["/comments/comment_1/replies", { idempotency_key: "reply-key", body: "reply" }],
+      [
+        "/posts/post_1/comments",
+        { persona_id: "persona_1", idempotency_key: "comment-key", body: "comment" },
+      ],
+      [
+        "/comments/comment_1/replies",
+        { persona_id: "persona_1", idempotency_key: "reply-key", body: "reply" },
+      ],
       ["/comments/comment_1/reports", { idempotency_key: "report-key", reason_code: "spam" }],
       ["/moderation/cases/case_1/actions", { idempotency_key: "action-key", action: "approve" }],
     ] as const;
@@ -1009,12 +1015,21 @@ describe("contracts-generated HTTP worker", () => {
     const postResponse = await app.request("http://worker.test/communities/community_1/posts", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ post_type: "text", idempotency_key: "post-key", body: "hello" }),
+      body: JSON.stringify({
+        post_type: "text",
+        persona_id: "persona_1",
+        idempotency_key: "post-key",
+        body: "hello",
+      }),
     });
     const replyResponse = await app.request("http://worker.test/comments/comment_1/replies", {
       method: "POST",
       headers: auth,
-      body: JSON.stringify({ body: "reply", idempotency_key: "reply-key" }),
+      body: JSON.stringify({
+        persona_id: "persona_1",
+        body: "reply",
+        idempotency_key: "reply-key",
+      }),
     });
     const voteResponse = await app.request("http://worker.test/posts/post_1/vote", {
       method: "POST",
@@ -1059,7 +1074,12 @@ describe("contracts-generated HTTP worker", () => {
         authorization: "Bearer test",
         "content-type": "application/json",
       },
-      body: JSON.stringify({ post_type: "text", idempotency_key: "same-key", body: "hello" }),
+      body: JSON.stringify({
+        post_type: "text",
+        persona_id: "persona_1",
+        idempotency_key: "same-key",
+        body: "hello",
+      }),
     });
 
     expect(response.status).toBe(409);

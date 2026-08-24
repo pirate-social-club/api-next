@@ -9,6 +9,7 @@ import {
   type HomeFeedQuery,
 } from "@pirate/application";
 import { Effect, type Layer } from "effect";
+import { publicPersonaFromSql } from "./public-persona-projection";
 
 const PAGE_SIZE = 20;
 const DEFAULT_LOCALE = "en";
@@ -223,7 +224,9 @@ const feedItemFromRow = (
     return null;
   }
 
-  const author = optionalString(row, "author_user_id");
+  const authorPersona = publicPersonaFromSql(row.author_persona);
+  const authorAccountId = optionalString(row, "actor_account_id");
+  if (authorPersona === undefined) return null;
   const community = {
     id: communityId,
     object: "home_feed_community_summary" as const,
@@ -238,7 +241,7 @@ const feedItemFromRow = (
         id: postId,
         object: "post",
         community: communityId,
-        author_user: author,
+        author_persona: authorPersona,
         author_public_handle: null,
         authorship_mode: "human_direct",
         agent: null,
@@ -263,7 +266,7 @@ const feedItemFromRow = (
       like_count: 0,
       comment_count: commentCount,
       viewer_vote: viewerVote,
-      viewer_is_author: viewerUserId !== undefined && author === viewerUserId,
+      viewer_is_author: viewerUserId !== undefined && authorAccountId === viewerUserId,
       viewer_reaction_kinds: [],
       resolved_locale: locale,
       translation_state: "same_language",
@@ -297,7 +300,8 @@ const homeFeedStatement = (input: {
                   h.projected_at,
                   p.community_id,
                   p.post_id,
-                  p.author_user_id,
+                  p.author_user_id AS actor_account_id,
+                  public_persona_projection(p.author_persona_id) AS author_persona,
                   p.post_type,
                   p.visibility,
                   p.title,
