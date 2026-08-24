@@ -43,6 +43,19 @@ const canonicalJson = (value: unknown): string => {
       .join(", ")}}`;
   return JSON.stringify(value);
 };
+const trustedAnalysisSnapshot = (analysis: TrustedSongAnalysis): unknown => ({
+  ...analysis,
+  boundReference:
+    analysis.boundReference === null
+      ? null
+      : {
+          assetId: analysis.boundReference.assetId,
+          evidenceAudioRevision: analysis.boundReference.evidenceAudioRevision,
+          evidenceAnalysisRevision: analysis.boundReference.evidenceAnalysisRevision,
+          evidenceAudioSha256: analysis.boundReference.evidenceAudioSha256,
+          upstreamCommercialRevShareBps: analysis.boundReference.upstreamCommercialRevShareBps,
+        },
+});
 export const RESERVATION_ENDPOINT = "/communities/:communityId/media-upload-reservations";
 export const SUBMISSION_ENDPOINT = "/communities/:communityId/media-post-submissions";
 
@@ -611,13 +624,51 @@ function decodeState(
             ? { inheritedCommercialRevShareBps: null }
             : { inheritedCommercialRevShareBps: integer(row.bound_reference_inherited_share_bps) }),
         };
-  const projectedAnalysis =
-    analysis === null
+  const storedAnalysis = analysis as TrustedSongAnalysis | null;
+  const storedBoundReference = storedAnalysis?.boundReference ?? null;
+  const boundReferenceCore =
+    boundReference === null
       ? null
-      : ({
-          ...analysis,
-          boundReference: (analysis as TrustedSongAnalysis).boundReference ?? boundReference,
-        } as TrustedSongAnalysis);
+      : {
+          assetId: boundReference.assetId,
+          evidenceAudioRevision: boundReference.evidenceAudioRevision,
+          evidenceAnalysisRevision: boundReference.evidenceAnalysisRevision,
+          evidenceAudioSha256: boundReference.evidenceAudioSha256,
+          upstreamCommercialRevShareBps: boundReference.upstreamCommercialRevShareBps,
+        };
+  if (
+    storedAnalysis !== null &&
+    canonicalJson(storedBoundReference) !== canonicalJson(boundReferenceCore)
+  )
+    throw fail(
+      operation,
+      "invalid-row",
+      validId(row.submission_id) ? { submissionId: row.submission_id } : {},
+    );
+  const projectedAnalysis =
+    storedAnalysis === null
+      ? null
+      : storedBoundReference === null
+        ? storedAnalysis
+        : boundReference === null
+          ? (() => {
+              throw fail(operation, "invalid-row");
+            })()
+          : ({
+              ...storedAnalysis,
+              boundReference: {
+                ...storedBoundReference,
+                evidenceRef: boundReference.evidenceRef,
+                ...(boundReference.inheritedLicensePreset === undefined
+                  ? {}
+                  : { inheritedLicensePreset: boundReference.inheritedLicensePreset }),
+                ...(boundReference.inheritedCommercialRevShareBps === undefined
+                  ? {}
+                  : {
+                      inheritedCommercialRevShareBps: boundReference.inheritedCommercialRevShareBps,
+                    }),
+              },
+            } satisfies TrustedSongAnalysis);
   const action =
     row.action_kind === null
       ? null
@@ -684,23 +735,55 @@ function decodeState(
     review,
     moderatorApproval:
       row.moderator_action_id === null
-        ? null
+        ? row.moderator_actor_id !== null ||
+          row.moderator_evidence_ref !== null ||
+          row.moderator_approval_kind !== null ||
+          row.moderator_reason_code !== null
+          ? (() => {
+              throw fail(operation, "invalid-row");
+            })()
+          : null
         : row.moderator_reason_code === "policy_violation"
-          ? ({
-              actionId: row.moderator_action_id as string,
-              moderatorActorId: row.moderator_actor_id as string,
-              evidenceRef: row.moderator_evidence_ref as string,
-              reasonCode: "policy_violation",
-              heldRevision: integer(row.held_revision) ?? creationRevision,
-            } satisfies ModeratorBlockEvidence)
-          : {
-              actionId: row.moderator_action_id as string,
-              moderatorActorId: row.moderator_actor_id as string,
-              evidenceRef: row.moderator_evidence_ref as string,
-              approvalKind: row.moderator_approval_kind as "standard" | "acr_override",
-              reasonCode: row.moderator_reason_code as ModeratorApprovalEvidence["reasonCode"],
-              heldRevision: integer(row.held_revision) ?? creationRevision,
-            },
+          ? row.moderator_approval_kind !== null ||
+            !validId(row.moderator_actor_id) ||
+            !validId(row.moderator_evidence_ref)
+            ? (() => {
+                throw fail(operation, "invalid-row");
+              })()
+            : ({
+                actionId: row.moderator_action_id as string,
+                moderatorActorId: row.moderator_actor_id as string,
+                evidenceRef: row.moderator_evidence_ref as string,
+                reasonCode: "policy_violation",
+                heldRevision: integer(row.held_revision) ?? creationRevision,
+              } satisfies ModeratorBlockEvidence)
+          : row.moderator_approval_kind !== "standard" &&
+              row.moderator_approval_kind !== "acr_override"
+            ? (() => {
+                throw fail(operation, "invalid-row");
+              })()
+            : !validId(row.moderator_action_id) ||
+                !validId(row.moderator_actor_id) ||
+                !validId(row.moderator_evidence_ref)
+              ? (() => {
+                  throw fail(operation, "invalid-row");
+                })()
+              : row.moderator_reason_code !== null &&
+                  !["acr_inconclusive", "acr_exhausted", "acr_skipped"].includes(
+                    String(row.moderator_reason_code),
+                  )
+                ? (() => {
+                    throw fail(operation, "invalid-row");
+                  })()
+                : {
+                    actionId: row.moderator_action_id as string,
+                    moderatorActorId: row.moderator_actor_id as string,
+                    evidenceRef: row.moderator_evidence_ref as string,
+                    approvalKind: row.moderator_approval_kind as "standard" | "acr_override",
+                    reasonCode:
+                      row.moderator_reason_code as ModeratorApprovalEvidence["reasonCode"],
+                    heldRevision: integer(row.held_revision) ?? creationRevision,
+                  },
     failure,
     abandonment:
       row.abandonment_reason === null
@@ -1191,7 +1274,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           const sequence = integer(updated.rows[0]?.event_sequence);
           if (sequence === null) return yield* Effect.fail(fail("terms", "invalid-row"));
           if (current.status === "action_required" || current.status === "manual_review") {
-            yield* tx.execute({
+            const projection = yield* tx.execute({
               label: "media-moderation.supersede",
               text: "UPDATE media_moderation_projections SET status='closed',decision_revision=NULL,review_ref=NULL,held_revision=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,action_kind=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,action_evidence_ref=NULL,updated_at=clock_timestamp() WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4",
               values: [
@@ -1202,6 +1285,10 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               ],
               readonly: false,
             });
+            if (projection.rowCount !== 1)
+              return yield* Effect.fail(
+                fail("terms", "constraint", { submissionId: current.submissionId }),
+              );
           }
           yield* insertEvent(tx, next, sequence, "song_terms_bound", {});
           yield* insertReplay(tx, input, current.operationId);
@@ -1470,7 +1557,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               bound?.evidenceAnalysisRevision ?? null,
               bound?.evidenceAudioSha256 ?? null,
               bound?.upstreamCommercialRevShareBps ?? null,
-              json(input.analysis),
+              json(trustedAnalysisSnapshot(input.analysis)),
             ],
             readonly: false,
           });
@@ -1607,7 +1694,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           const sequence = integer(updated.rows[0]?.event_sequence);
           if (sequence === null) return yield* Effect.fail(fail("decision", "invalid-row"));
           if (input.decision.outcome === "manual_review") {
-            yield* tx.execute({
+            const projection = yield* tx.execute({
               label: "media-moderation.open-decision",
               text: "UPDATE media_moderation_projections SET status='open',decision_revision=$1,review_ref=$2,held_revision=$3,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,action_kind=NULL,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND operation_id=$7",
               values: [
@@ -1621,6 +1708,10 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               ],
               readonly: false,
             });
+            if (projection.rowCount !== 1)
+              return yield* Effect.fail(
+                fail("decision", "constraint", { submissionId: current.submissionId }),
+              );
           }
           yield* insertEvent(
             tx,
@@ -1731,7 +1822,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               );
           }
           if (operation === "review") {
-            yield* tx.execute({
+            const projection = yield* tx.execute({
               label: "media-moderation.open",
               text: "UPDATE media_moderation_projections SET status='open',decision_revision=NULL,review_ref=$1,held_revision=$2,review_exhaustion_code=$3,review_exhaustion_attempt_id=$4,action_kind=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,action_evidence_ref=NULL,updated_at=clock_timestamp() WHERE community_id=$5 AND actor_user_id=$6 AND submission_id=$7 AND operation_id=$8",
               values: [
@@ -1746,6 +1837,10 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               ],
               readonly: false,
             });
+            if (projection.rowCount !== 1)
+              return yield* Effect.fail(
+                fail(operation, "constraint", { submissionId: current.submissionId }),
+              );
           }
           yield* insertEvent(tx, next, sequence, projection.event, {});
           yield* insertReplay(tx, input, current.operationId);
@@ -2007,7 +2102,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             );
           const sequence = integer(updated.rows[0]?.event_sequence);
           if (sequence === null) return yield* Effect.fail(fail("moderation", "invalid-row"));
-          yield* tx.execute({
+          const moderationProjection = yield* tx.execute({
             label: "media-moderation.projection",
             text: "UPDATE media_moderation_projections SET status=$1,decision_revision=$2,review_ref=$3,held_revision=$4,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,action_kind=$5,moderator_action_id=$6,moderator_actor_id=$7,action_evidence_ref=$8,updated_at=clock_timestamp() WHERE community_id=$9 AND actor_user_id=$10 AND submission_id=$11 AND operation_id=$12",
             values: [
@@ -2026,6 +2121,10 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             ],
             readonly: false,
           });
+          if (moderationProjection.rowCount !== 1)
+            return yield* Effect.fail(
+              fail("moderation", "constraint", { submissionId: current.submissionId }),
+            );
           yield* insertEvent(
             tx,
             next,
@@ -2462,6 +2561,8 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
 
   const recordProcessingAttempt: MediaSubmissionStore["recordProcessingAttempt"] = (input) =>
     Effect.gen(function* () {
+      const providerIdempotencyKey =
+        input.providerIdempotencyKey ?? `media-attempt-${input.attemptId}`;
       if (
         ![
           input.attemptId,
@@ -2477,6 +2578,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         !validRevision(input.inputRevision, 1) ||
         !validId(input.policyRevision) ||
         !validId(input.adapterRevision) ||
+        !validId(providerIdempotencyKey) ||
         !validRevision(input.attemptNumber ?? 1, 1) ||
         (input.attemptNumber ?? 1) > 3
       )
@@ -2496,7 +2598,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           input.stage,
           input.attemptNumber ?? 1,
           input.inputHash,
-          input.providerIdempotencyKey ?? `media-attempt-${input.attemptId}`,
+          providerIdempotencyKey,
           input.inputKind,
           input.inputRevision,
           input.policyRevision,
@@ -2524,6 +2626,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         row.stage !== input.stage ||
         integer(row.attempt_number) !== (input.attemptNumber ?? 1) ||
         row.input_hash !== input.inputHash ||
+        row.provider_idempotency_key !== providerIdempotencyKey ||
         row.input_kind !== input.inputKind ||
         integer(row.input_revision) !== input.inputRevision ||
         row.policy_revision !== input.policyRevision ||

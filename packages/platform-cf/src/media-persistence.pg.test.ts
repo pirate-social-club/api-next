@@ -467,6 +467,26 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           }),
         ),
       ).toBeUndefined();
+      await expect(
+        run(connection, (store) =>
+          store.recordProcessingAttempt({
+            attemptId: "media_pg_attempt",
+            communityId: community,
+            submissionId: submission,
+            actorUserId: actor,
+            operationId: operation,
+            audioRevision: 1,
+            analysisRevision: 1,
+            stage: "probe",
+            inputKind: "audio",
+            inputRevision: 1,
+            policyRevision: "probe-policy-1",
+            adapterRevision: "probe-adapter-1",
+            inputHash: "c".repeat(64),
+            providerIdempotencyKey: "changed-provider-key",
+          }),
+        ),
+      ).rejects.toThrow();
       expect(
         await run(connection, (store) =>
           store.claimProcessingAttempt({
@@ -992,6 +1012,13 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       const admin = new Client({ connectionString: connection });
       await admin.connect();
       await createThroughDecision(connection, decision, analysis, true);
+      await admin.query("BEGIN");
+      await admin.query(
+        "INSERT INTO media_upload_reservations (reservation_id,community_id,actor_user_id,idempotency_key,request_hash,expected_content_type,expected_size_bytes,upload_url,expires_at,state,submission_id,operation_id,claim_fence,response_snapshot_bytes,response_snapshot_sha256) VALUES ('orphan-claimed-reservation',$1,$2,'orphan-claimed-key',$3,'audio/wav',1,'https://upload.example/orphan',clock_timestamp()+interval '1 hour','claimed','orphan-submission','orphan-operation',1,$4,$5)",
+        [community, actor, requestHash, responseBytes, responseSha256],
+      );
+      await expect(admin.query("COMMIT")).rejects.toThrow();
+      await admin.query("ROLLBACK");
       await admin.query("BEGIN");
       await admin.query(
         "INSERT INTO media_submission_terms (submission_id,community_id,actor_user_id,operation_id,creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,access_mode,terms_snapshot) VALUES ($1,$2,$3,$4,3,'non-commercial',0,$5::jsonb,'public',$6::jsonb)",
