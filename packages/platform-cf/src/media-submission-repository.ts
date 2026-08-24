@@ -141,6 +141,7 @@ export type Committed = { readonly kind: "committed"; readonly submissionId: str
 export type ReservationInput = Readonly<{
   communityId: string;
   actorUserId: string;
+  personaId: string;
   idempotencyKey: string;
   requestHash: string;
   expectedContentType: string;
@@ -156,6 +157,7 @@ export type ReservationInput = Readonly<{
 export type SubmissionInput = Readonly<{
   communityId: string;
   actorUserId: string;
+  personaId: string;
   idempotencyKey: string;
   requestHash: string;
   title: string;
@@ -170,6 +172,7 @@ export type CommandInput = Readonly<{
   communityId: string;
   submissionId: string;
   actorUserId: string;
+  personaId: string;
   endpointTemplate: string;
   idempotencyKey: string;
   requestHash: string;
@@ -251,7 +254,7 @@ export type ReferenceInput = CommandInput &
   Readonly<{ expectedCreationRevision: number; reference: BoundReference }>;
 export type ReviewInput = CommandInput &
   Readonly<{ expectedCreationRevision: number; review: ReviewCase }>;
-export type ModeratorInput = Omit<CommandInput, "actorUserId"> &
+export type ModeratorInput = Omit<CommandInput, "actorUserId" | "personaId"> &
   Readonly<{
     expectedCreationRevision: number;
     action: "approve" | "block";
@@ -278,6 +281,7 @@ export type AlignmentInput = Readonly<{
   communityId: string;
   submissionId: string;
   actorUserId: string;
+  personaId: string;
   postId: string;
   audioRevision: number;
   analysisRevision: number;
@@ -315,6 +319,7 @@ export type ProcessingAttemptInput = Readonly<{
   communityId: string;
   submissionId: string;
   actorUserId: string;
+  personaId: string;
   operationId: string;
   audioRevision: number;
   analysisRevision: number;
@@ -511,8 +516,31 @@ const lock = (tx: ControlPlaneTransaction, key: string) =>
     values: [key],
     readonly: false,
   });
+const resolvePersonaId = (
+  tx: ControlPlaneTransaction,
+  accountId: string,
+  requestedPersonaId: string | undefined,
+  operation: MediaSubmissionRepositoryOperation,
+) =>
+  Effect.gen(function* () {
+    const result = yield* tx.execute<Row>({
+      label: `media-${operation}.persona`,
+      text: "SELECT persona_id FROM personas WHERE account_id=$1 AND status='active' AND ($2::text IS NULL OR persona_id=$2) ORDER BY is_first_persona DESC,created_at,persona_id LIMIT 1",
+      values: [accountId, requestedPersonaId ?? null],
+      readonly: true,
+    });
+    const personaId = result.rows[0]?.persona_id;
+    if (!validId(personaId)) return yield* Effect.fail(fail(operation, "invalid-input"));
+    return personaId;
+  });
 const replayKey = (input: CommandReplayInput): string =>
-  json([input.communityId, input.actorUserId, input.endpointTemplate, input.idempotencyKey]);
+  json([
+    input.communityId,
+    input.actorUserId,
+    input.personaId ?? null,
+    input.endpointTemplate,
+    input.idempotencyKey,
+  ]);
 
 function replayFromRow(
   row: Row,
@@ -566,6 +594,7 @@ function decodeState(
   const analysis = row.analysis_snapshot === null ? null : object(row.analysis_snapshot);
   const decision = row.decision_snapshot === null ? null : object(row.decision_snapshot);
   const audioSize = row.audio_size_bytes === null ? null : integer(row.audio_size_bytes);
+  const personaId = validId(row.author_persona_id) ? row.author_persona_id : null;
   if (
     ![
       row.submission_id,
@@ -717,6 +746,7 @@ function decodeState(
     operationId: row.operation_id as string,
     communityId: row.community_id as string,
     actorId: row.actor_user_id as string,
+    ...(personaId === null ? {} : { personaId }),
     title: row.title as string,
     songType: row.song_type as SongType,
     reservationId: row.audio_reservation_id as string,
@@ -862,8 +892,14 @@ const replayInTx = (
     yield* lock(tx, replayKey(input));
     const result = yield* tx.execute<Row>({
       label: `media-submission.${operation}.replay`,
-      text: "SELECT submission_id, operation_id, request_hash, response_snapshot_bytes, response_snapshot_sha256 FROM media_submission_command_replays WHERE community_id = $1 AND actor_user_id = $2 AND endpoint_template = $3 AND idempotency_key = $4 FOR UPDATE",
-      values: [input.communityId, input.actorUserId, input.endpointTemplate, input.idempotencyKey],
+      text: "SELECT submission_id, operation_id, request_hash, response_snapshot_bytes, response_snapshot_sha256, actor_persona_id FROM media_submission_command_replays WHERE community_id = $1 AND actor_user_id = $2 AND endpoint_template = $3 AND idempotency_key = $4 AND (actor_persona_id = COALESCE($5, (SELECT persona_id FROM personas WHERE account_id = $2 AND is_first_persona LIMIT 1)) OR ($5 IS NULL AND actor_persona_id IS NULL)) FOR UPDATE",
+      values: [
+        input.communityId,
+        input.actorUserId,
+        input.endpointTemplate,
+        input.idempotencyKey,
+        input.personaId ?? null,
+      ],
       readonly: false,
     });
     if (result.rows.length === 0) return null;
@@ -882,10 +918,11 @@ const insertReplay = (
 ) =>
   tx.execute({
     label: "media-submission.replay.insert",
-    text: "INSERT INTO media_submission_command_replays (community_id,actor_user_id,submission_actor_user_id,endpoint_template,idempotency_key,request_hash,submission_id,operation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,(SELECT submission_id FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$3 AND operation_id=$8)),$8,$9,$10)",
+    text: "INSERT INTO media_submission_command_replays (community_id,actor_user_id,actor_persona_id,submission_actor_user_id,endpoint_template,idempotency_key,request_hash,submission_id,operation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8,(SELECT submission_id FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$4 AND operation_id=$9)),$9,$10,$11)",
     values: [
       input.communityId,
       input.actorUserId,
+      input.personaId ?? null,
       submissionActorUserId,
       input.endpointTemplate,
       input.idempotencyKey,
@@ -905,11 +942,12 @@ const insertEvent = (
 ) =>
   tx.execute({
     label: `media-submission.event.${eventKind}`,
-    text: "INSERT INTO media_submission_events (submission_id,community_id,actor_user_id,operation_id,event_sequence,event_id,event_kind,creation_revision,audio_revision,analysis_revision,decision_revision,workflow_revision,evidence) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)",
+    text: "INSERT INTO media_submission_events (submission_id,community_id,actor_user_id,author_persona_id,operation_id,event_sequence,event_id,event_kind,creation_revision,audio_revision,analysis_revision,decision_revision,workflow_revision,evidence) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)",
     values: [
       state.submissionId,
       state.communityId,
       state.actorId,
+      state.personaId ?? null,
       state.operationId,
       sequence,
       `media-event-${crypto.randomUUID()}`,
@@ -937,12 +975,13 @@ const insertOutbox = (
 ) =>
   tx.execute({
     label: `media-submission.outbox.${eventType}`,
-    text: "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)",
+    text: "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,author_persona_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)",
     values: [
       outbox.outboxEventId,
       state.submissionId,
       state.communityId,
       state.actorId,
+      state.personaId ?? null,
       state.operationId,
       state.creationRevision,
       state.audioRevision,
@@ -959,6 +998,7 @@ const validCommand = (input: CommandInput): boolean =>
   validId(input.communityId) &&
   validId(input.submissionId) &&
   validId(input.actorUserId) &&
+  (input.personaId === undefined || validId(input.personaId)) &&
   validId(input.endpointTemplate) &&
   validId(input.idempotencyKey) &&
   validHash(input.requestHash) &&
@@ -971,18 +1011,20 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         ![input.communityId, input.actorUserId, input.endpointTemplate, input.idempotencyKey].every(
           validId,
         ) ||
+        (input.personaId !== undefined && !validId(input.personaId)) ||
         !validHash(input.requestHash)
       )
         return yield* Effect.fail(fail("replay", "invalid-input"));
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute<Row>({
         label: "media-submission.replay",
-        text: "SELECT submission_id,operation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256 FROM media_submission_command_replays WHERE community_id=$1 AND actor_user_id=$2 AND endpoint_template=$3 AND idempotency_key=$4",
+        text: "SELECT submission_id,operation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256 FROM media_submission_command_replays WHERE community_id=$1 AND actor_user_id=$2 AND endpoint_template=$3 AND idempotency_key=$4 AND (actor_persona_id = COALESCE($5, (SELECT persona_id FROM personas WHERE account_id=$2 AND is_first_persona LIMIT 1)) OR ($5 IS NULL AND actor_persona_id IS NULL))",
         values: [
           input.communityId,
           input.actorUserId,
           input.endpointTemplate,
           input.idempotencyKey,
+          input.personaId ?? null,
         ],
         readonly: true,
       });
@@ -1005,6 +1047,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           input.expectedContentType,
           input.uploadUrl,
         ].every(validId) ||
+        (input.personaId !== undefined && !validId(input.personaId)) ||
         !validHash(input.requestHash) ||
         !validRevision(input.expectedSizeBytes, 1) ||
         (input.expectedSha256 !== undefined && !validHash(input.expectedSha256)) ||
@@ -1018,6 +1061,12 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
+          const personaId = yield* resolvePersonaId(
+            tx,
+            input.actorUserId,
+            input.personaId,
+            "reserve",
+          );
           yield* lock(
             tx,
             json([
@@ -1029,12 +1078,13 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           );
           const prior = yield* tx.execute<Row>({
             label: "media-reservation.replay",
-            text: "SELECT reservation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256 FROM media_upload_reservations WHERE community_id=$1 AND actor_user_id=$2 AND endpoint_template=$3 AND idempotency_key=$4 FOR UPDATE",
+            text: "SELECT reservation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256,actor_persona_id FROM media_upload_reservations WHERE community_id=$1 AND actor_user_id=$2 AND endpoint_template=$3 AND idempotency_key=$4 AND actor_persona_id = COALESCE($5, (SELECT persona_id FROM personas WHERE account_id=$2 AND is_first_persona LIMIT 1)) FOR UPDATE",
             values: [
               input.communityId,
               input.actorUserId,
               RESERVATION_ENDPOINT,
               input.idempotencyKey,
+              personaId,
             ],
             readonly: false,
           });
@@ -1051,11 +1101,12 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             return yield* Effect.fail(fail("reserve", "membership-required"));
           const inserted = yield* tx.execute({
             label: "media-reservation.insert",
-            text: "INSERT INTO media_upload_reservations (reservation_id,community_id,actor_user_id,idempotency_key,request_hash,expected_content_type,expected_size_bytes,expected_sha256,upload_url,upload_headers,expires_at,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::timestamptz,$12,$13)",
+            text: "INSERT INTO media_upload_reservations (reservation_id,community_id,actor_user_id,actor_persona_id,idempotency_key,request_hash,expected_content_type,expected_size_bytes,expected_sha256,upload_url,upload_headers,expires_at,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::timestamptz,$13,$14)",
             values: [
               reservationId,
               input.communityId,
               input.actorUserId,
+              personaId,
               input.idempotencyKey,
               input.requestHash,
               input.expectedContentType,
@@ -1090,6 +1141,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           input.title,
           input.reservationId,
         ].every(validId) ||
+        (input.personaId !== undefined && !validId(input.personaId)) ||
         !validHash(input.requestHash) ||
         input.title.length > 200 ||
         !["original", "remix"].includes(input.songType) ||
@@ -1103,33 +1155,44 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       return yield* db.withTransaction((tx) =>
         Effect.gen(function* () {
+          const personaId = yield* resolvePersonaId(
+            tx,
+            input.actorUserId,
+            input.personaId,
+            "create",
+          );
           const replayInput = {
             communityId: input.communityId,
             actorUserId: input.actorUserId,
+            personaId,
             endpointTemplate: SUBMISSION_ENDPOINT,
             idempotencyKey: input.idempotencyKey,
             requestHash: input.requestHash,
           };
           const prior = yield* replayInTx(tx, replayInput, "create");
           if (prior !== null) return prior;
-          const next = yield* reduce("create", null, {
-            event: "submission_reserved",
-            actorId: input.actorUserId,
-            expectedCreationRevision: 0,
-            submissionId,
-            operationId,
-            communityId: input.communityId,
-            title: input.title,
-            songType: input.songType,
-            reservationId: input.reservationId,
-          });
+          const next = {
+            ...(yield* reduce("create", null, {
+              event: "submission_reserved",
+              actorId: input.actorUserId,
+              expectedCreationRevision: 0,
+              submissionId,
+              operationId,
+              communityId: input.communityId,
+              title: input.title,
+              songType: input.songType,
+              reservationId: input.reservationId,
+            })),
+            personaId,
+          } satisfies MediaSubmissionState;
           const inserted = yield* tx.execute({
             label: "media-submission.create",
-            text: "INSERT INTO media_post_submissions (submission_id,community_id,actor_user_id,operation_id,idempotency_key,request_hash,title,song_type,phase,start_input,audio_reservation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'reserve',$9::jsonb,$10,$11,$12)",
+            text: "INSERT INTO media_post_submissions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,idempotency_key,request_hash,title,song_type,phase,start_input,audio_reservation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'reserve',$10::jsonb,$11,$12,$13)",
             values: [
               submissionId,
               input.communityId,
               input.actorUserId,
+              personaId,
               operationId,
               input.idempotencyKey,
               input.requestHash,
@@ -1140,6 +1203,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 title: input.title,
                 audio_reservation_id: input.reservationId,
                 song_type: input.songType,
+                persona_id: personaId,
               }),
               input.reservationId,
               ...snapshot(input),
@@ -1170,8 +1234,14 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             );
           yield* tx.execute({
             label: "media-moderation.create",
-            text: "INSERT INTO media_moderation_projections (submission_id,community_id,actor_user_id,operation_id,status) VALUES ($1,$2,$3,$4,'none')",
-            values: [submissionId, input.communityId, input.actorUserId, operationId],
+            text: "INSERT INTO media_moderation_projections (submission_id,community_id,actor_user_id,operation_id,status,author_persona_id) VALUES ($1,$2,$3,$4,'none',$5)",
+            values: [
+              submissionId,
+              input.communityId,
+              input.actorUserId,
+              operationId,
+              next.personaId ?? null,
+            ],
             readonly: false,
           });
           const issued = yield* reduce("create", next, {
@@ -1249,7 +1319,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           });
           yield* tx.execute({
             label: "media-terms.insert",
-            text: "INSERT INTO media_submission_terms (submission_id,community_id,actor_user_id,operation_id,creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,access_mode,terms_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10::jsonb)",
+            text: "INSERT INTO media_submission_terms (submission_id,community_id,actor_user_id,operation_id,creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,access_mode,terms_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10::jsonb,$11)",
             values: [
               current.submissionId,
               current.communityId,
@@ -1261,6 +1331,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               json(input.terms.royaltyAllocations),
               input.terms.accessMode,
               json(input.terms),
+              current.personaId ?? null,
             ],
             readonly: false,
           });
@@ -1351,7 +1422,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           });
           yield* tx.execute({
             label: "media-object.insert",
-            text: "INSERT INTO media_immutable_objects (immutable_ref,community_id,actor_user_id,reservation_id,submission_id,operation_id,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+            text: "INSERT INTO media_immutable_objects (immutable_ref,community_id,actor_user_id,reservation_id,submission_id,operation_id,destination_ref,etag,object_version,size_bytes,content_type,canonical_sha256,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
             values: [
               input.immutableObject.immutableRef,
               current.communityId,
@@ -1365,12 +1436,13 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               input.immutableObject.sizeBytes,
               input.immutableObject.contentType,
               input.immutableObject.canonicalSha256,
+              current.personaId ?? null,
             ],
             readonly: false,
           });
           yield* tx.execute({
             label: "media-audio.insert",
-            text: "INSERT INTO media_audio_revisions (submission_id,community_id,actor_user_id,operation_id,audio_revision,immutable_ref,canonical_sha256,content_type,size_bytes) VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8)",
+            text: "INSERT INTO media_audio_revisions (submission_id,community_id,actor_user_id,operation_id,audio_revision,immutable_ref,canonical_sha256,content_type,size_bytes,author_persona_id) VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,$9)",
             values: [
               current.submissionId,
               current.communityId,
@@ -1380,6 +1452,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               audio.canonicalSha256,
               audio.contentType,
               audio.sizeBytes,
+              current.personaId ?? null,
             ],
             readonly: false,
           });
@@ -1484,7 +1557,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           if (bound !== null) {
             yield* tx.execute({
               label: "media-reference.evidence",
-              text: "INSERT INTO media_reference_evidence (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256,evidence_ref,upstream_commercial_rev_share_bps,inherited_license_preset,inherited_commercial_rev_share_bps) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256) DO NOTHING",
+              text: "INSERT INTO media_reference_evidence (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256,evidence_ref,upstream_commercial_rev_share_bps,inherited_license_preset,inherited_commercial_rev_share_bps,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (community_id,actor_user_id,submission_id,operation_id,asset_id,evidence_audio_revision,evidence_analysis_revision,evidence_audio_sha256) DO NOTHING",
               values: [
                 current.communityId,
                 current.actorId,
@@ -1498,6 +1571,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 bound.upstreamCommercialRevShareBps,
                 bound.inheritedLicensePreset ?? null,
                 bound.inheritedCommercialRevShareBps ?? null,
+                current.personaId ?? null,
               ],
               readonly: false,
             });
@@ -1505,7 +1579,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           if (speech.status === "ready") {
             yield* tx.execute({
               label: "media-transcript.insert",
-              text: "INSERT INTO media_transcript_artifacts (transcript_artifact_ref,community_id,actor_user_id,submission_id,operation_id,audio_revision,analysis_revision,canonical_audio_sha256,transcript_sha256,transcript_text,segments) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)",
+              text: "INSERT INTO media_transcript_artifacts (transcript_artifact_ref,community_id,actor_user_id,submission_id,operation_id,audio_revision,analysis_revision,canonical_audio_sha256,transcript_sha256,transcript_text,segments,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)",
               values: [
                 speech.transcriptArtifactRef,
                 current.communityId,
@@ -1518,13 +1592,14 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 speech.transcriptSha256,
                 input.transcriptArtifact?.transcript ?? null,
                 json(input.transcriptArtifact?.segments ?? []),
+                current.personaId ?? null,
               ],
               readonly: false,
             });
           }
           yield* tx.execute({
             label: "media-analysis.insert",
-            text: "INSERT INTO media_analysis_evidence (submission_id,community_id,actor_user_id,operation_id,analysis_version,audio_revision,analysis_revision,canonical_audio_sha256,finalized_audio_ref,probe_evidence_ref,embedded_metadata_evidence_ref,embedded_metadata_adapter_revision,embedded_title,embedded_title_provenance,cover_status,cover_artifact_ref,cover_artifact_sha256,cover_media_type,cover_width,cover_height,cover_normalization_revision,cover_safety_policy_revision,cover_facts,speech_status,transcript_artifact_ref,transcript_sha256,explicitness,primary_language_bcp47,secondary_language_bcp47,speech_evidence_ref,speech_policy_revision,speech_adapter_revision,acr_decision,acr_evidence_ref,acr_policy_revision,acr_adapter_revision,media_safety,lyrics_safety,bound_reference_asset_id,bound_reference_audio_revision,bound_reference_analysis_revision,bound_reference_audio_sha256,bound_reference_upstream_share_bps,analysis_snapshot) VALUES ($1,$2,$3,$4,'song-trusted-analysis-v1',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43::jsonb)",
+            text: "INSERT INTO media_analysis_evidence (submission_id,community_id,actor_user_id,operation_id,analysis_version,audio_revision,analysis_revision,canonical_audio_sha256,finalized_audio_ref,probe_evidence_ref,embedded_metadata_evidence_ref,embedded_metadata_adapter_revision,embedded_title,embedded_title_provenance,cover_status,cover_artifact_ref,cover_artifact_sha256,cover_media_type,cover_width,cover_height,cover_normalization_revision,cover_safety_policy_revision,cover_facts,speech_status,transcript_artifact_ref,transcript_sha256,explicitness,primary_language_bcp47,secondary_language_bcp47,speech_evidence_ref,speech_policy_revision,speech_adapter_revision,acr_decision,acr_evidence_ref,acr_policy_revision,acr_adapter_revision,media_safety,lyrics_safety,bound_reference_asset_id,bound_reference_audio_revision,bound_reference_analysis_revision,bound_reference_audio_sha256,bound_reference_upstream_share_bps,analysis_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,'song-trusted-analysis-v1',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43::jsonb,$44)",
             values: [
               current.submissionId,
               current.communityId,
@@ -1569,6 +1644,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               bound?.evidenceAudioSha256 ?? null,
               bound?.upstreamCommercialRevShareBps ?? null,
               json(trustedAnalysisSnapshot(input.analysis)),
+              current.personaId ?? null,
             ],
             readonly: false,
           });
@@ -1655,7 +1731,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           const next = yield* reduce("decision", current, decisionCommand);
           yield* tx.execute({
             label: "media-decision.insert",
-            text: "INSERT INTO media_publication_decisions (submission_id,community_id,actor_user_id,operation_id,decision_revision,creation_revision,audio_revision,analysis_revision,canonical_audio_sha256,outcome,policy_revision,evidence_ref,decision_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)",
+            text: "INSERT INTO media_publication_decisions (submission_id,community_id,actor_user_id,operation_id,decision_revision,creation_revision,audio_revision,analysis_revision,canonical_audio_sha256,outcome,policy_revision,evidence_ref,decision_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)",
             values: [
               current.submissionId,
               current.communityId,
@@ -1670,6 +1746,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               input.decision.policyRevision,
               input.decision.evidenceRef,
               json(input.decision),
+              current.personaId ?? null,
             ],
             readonly: false,
           });
@@ -2054,7 +2131,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             const approvedDecision = input.decision as PublicationDecision;
             yield* tx.execute({
               label: "media-moderation.decision",
-              text: "INSERT INTO media_publication_decisions (submission_id,community_id,actor_user_id,operation_id,decision_revision,creation_revision,audio_revision,analysis_revision,canonical_audio_sha256,outcome,policy_revision,evidence_ref,decision_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'allow',$10,$11,$12::jsonb)",
+              text: "INSERT INTO media_publication_decisions (submission_id,community_id,actor_user_id,operation_id,decision_revision,creation_revision,audio_revision,analysis_revision,canonical_audio_sha256,outcome,policy_revision,evidence_ref,decision_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'allow',$10,$11,$12::jsonb,$13)",
               values: [
                 current.submissionId,
                 current.communityId,
@@ -2068,13 +2145,14 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 approvedDecision.policyRevision,
                 approvedDecision.evidenceRef,
                 json(approvedDecision),
+                current.personaId ?? null,
               ],
               readonly: false,
             });
           }
           yield* tx.execute({
             label: "media-moderation.action",
-            text: "INSERT INTO media_moderation_actions (action_id,community_id,actor_user_id,submission_id,operation_id,authority_actor_user_id,action_kind,approval_kind,reason_code,held_revision,decision_revision,evidence_ref,decision_snapshot) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)",
+            text: "INSERT INTO media_moderation_actions (action_id,community_id,actor_user_id,submission_id,operation_id,authority_actor_user_id,action_kind,approval_kind,reason_code,held_revision,decision_revision,evidence_ref,decision_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)",
             values: [
               moderatorActionId,
               current.communityId,
@@ -2091,6 +2169,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               input.action === "approve"
                 ? json(input.decision)
                 : json({ reasonCode: "policy_violation" }),
+              current.personaId ?? null,
             ],
             readonly: false,
           });
@@ -2390,7 +2469,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           if (existing.rows.length === 0) {
             yield* tx.execute({
               label: "media-publish.post.insert",
-              text: "INSERT INTO posts (community_id,post_id,author_user_id,post_type,status,visibility,title,created_at,updated_at,idempotency_key,idempotency_body_hash) VALUES ($1,$2,$3,'song','published','public',$4,clock_timestamp(),clock_timestamp(),$5,$6)",
+              text: "INSERT INTO posts (community_id,post_id,author_user_id,post_type,status,visibility,title,created_at,updated_at,idempotency_key,idempotency_body_hash,author_persona_id) VALUES ($1,$2,$3,'song','published','public',$4,clock_timestamp(),clock_timestamp(),$5,$6,$7)",
               values: [
                 current.communityId,
                 ownedPostId,
@@ -2398,6 +2477,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 current.title,
                 input.idempotencyKey,
                 input.requestHash,
+                current.personaId ?? null,
               ],
               readonly: false,
             });
@@ -2439,7 +2519,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           const cover = current.analysis.embeddedMetadata.cover;
           yield* tx.execute({
             label: "media-publish.projection",
-            text: "INSERT INTO media_publication_projections (submission_id,community_id,actor_user_id,operation_id,post_id,creation_revision,audio_revision,analysis_revision,decision_revision,canonical_audio_sha256,title,audio_asset_ref,cover_artifact_ref,language_status,primary_language_bcp47,secondary_language_bcp47,lyrics_explicitness,analysis_badges) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb)",
+            text: "INSERT INTO media_publication_projections (submission_id,community_id,actor_user_id,operation_id,post_id,creation_revision,audio_revision,analysis_revision,decision_revision,canonical_audio_sha256,title,audio_asset_ref,cover_artifact_ref,language_status,primary_language_bcp47,secondary_language_bcp47,lyrics_explicitness,analysis_badges,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19)",
             values: [
               current.submissionId,
               current.communityId,
@@ -2459,12 +2539,13 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               speech.status === "ready" ? speech.secondaryLanguageBcp47 : null,
               speech.explicitness,
               json(current.boundReference === null ? [] : ["reference_bound"]),
+              current.personaId ?? null,
             ],
             readonly: false,
           });
           yield* tx.execute({
             label: "media-alignment.pending",
-            text: "INSERT INTO media_alignment_projections (submission_id,community_id,actor_user_id,operation_id,post_id,audio_revision,analysis_revision,canonical_audio_sha256,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending')",
+            text: "INSERT INTO media_alignment_projections (submission_id,community_id,actor_user_id,operation_id,post_id,audio_revision,analysis_revision,canonical_audio_sha256,status,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9)",
             values: [
               current.submissionId,
               current.communityId,
@@ -2474,6 +2555,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               current.audioRevision,
               current.analysisRevision,
               current.audio.canonicalSha256,
+              current.personaId ?? null,
             ],
             readonly: false,
           });
@@ -2494,6 +2576,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     Effect.gen(function* () {
       if (
         ![input.communityId, input.submissionId, input.actorUserId, input.postId].every(validId) ||
+        (input.personaId !== undefined && !validId(input.personaId)) ||
         !validRevision(input.audioRevision, 1) ||
         !validRevision(input.analysisRevision, 1) ||
         !validHash(input.canonicalAudioSha256) ||
@@ -2525,7 +2608,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               );
             const insertedArtifact = yield* tx.execute({
               label: "media-alignment.artifact",
-              text: "INSERT INTO media_timed_lyrics_artifacts (artifact_ref,community_id,actor_user_id,submission_id,operation_id,post_id,audio_revision,analysis_revision,artifact_revision,canonical_audio_sha256,artifact_sha256,artifact) SELECT $1,p.community_id,p.actor_user_id,p.submission_id,p.operation_id,p.post_id,p.audio_revision,p.analysis_revision,$2,p.canonical_audio_sha256,$3,$4::jsonb FROM media_publication_projections p WHERE p.community_id=$5 AND p.actor_user_id=$6 AND p.submission_id=$7 AND p.post_id=$8 AND p.audio_revision=$9 AND p.analysis_revision=$10 AND p.canonical_audio_sha256=$11",
+              text: "INSERT INTO media_timed_lyrics_artifacts (artifact_ref,community_id,actor_user_id,submission_id,operation_id,post_id,audio_revision,analysis_revision,artifact_revision,canonical_audio_sha256,artifact_sha256,artifact,author_persona_id) SELECT $1,p.community_id,p.actor_user_id,p.submission_id,p.operation_id,p.post_id,p.audio_revision,p.analysis_revision,$2,p.canonical_audio_sha256,$3,$4::jsonb,p.author_persona_id FROM media_publication_projections p WHERE p.community_id=$5 AND p.actor_user_id=$6 AND p.submission_id=$7 AND p.post_id=$8 AND p.audio_revision=$9 AND p.analysis_revision=$10 AND p.canonical_audio_sha256=$11",
               values: [
                 input.artifact.artifactRef,
                 artifactRevision,
@@ -2604,6 +2687,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           input.operationId,
           input.inputHash,
         ].every(validId) ||
+        (input.personaId !== undefined && !validId(input.personaId)) ||
         !validHash(input.inputHash) ||
         !validRevision(input.audioRevision, 1) ||
         !validRevision(input.analysisRevision, 1) ||
@@ -2618,7 +2702,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute({
         label: "media-attempt.insert",
-        text: "INSERT INTO media_processing_attempts (attempt_id,submission_id,community_id,actor_user_id,operation_id,audio_revision,analysis_revision,stage,attempt_number,input_hash,provider_idempotency_key,input_kind,input_revision,policy_revision,adapter_revision,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT (attempt_id) DO NOTHING",
+        text: "INSERT INTO media_processing_attempts (attempt_id,submission_id,community_id,actor_user_id,operation_id,audio_revision,analysis_revision,stage,attempt_number,input_hash,provider_idempotency_key,input_kind,input_revision,policy_revision,adapter_revision,state,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) ON CONFLICT (attempt_id) DO NOTHING",
         values: [
           input.attemptId,
           input.submissionId,
@@ -2636,6 +2720,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           input.policyRevision,
           input.adapterRevision,
           "pending",
+          input.personaId ?? null,
         ],
         readonly: false,
       });

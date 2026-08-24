@@ -185,6 +185,8 @@ export type MediaSubmissionState = Readonly<{
   operationId: string;
   communityId: string;
   actorId: string;
+  /** Public author persona; account identity remains server-side actorId. */
+  personaId: string;
   title: string;
   songType: SongType;
   reservationId: string;

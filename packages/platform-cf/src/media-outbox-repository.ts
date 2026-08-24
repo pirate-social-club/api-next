@@ -93,6 +93,7 @@ export type MediaOutboxRecord = Readonly<{
   submissionId: string;
   communityId: string;
   actorUserId: string;
+  personaId?: string;
   operationId: string;
   creationRevision: number;
   audioRevision: number;
@@ -112,6 +113,7 @@ export type MediaOutboxEnqueueInput = Readonly<{
   submissionId: string;
   communityId: string;
   actorUserId: string;
+  personaId?: string;
   operationId: string;
   creationRevision: number;
   audioRevision: number;
@@ -240,6 +242,7 @@ function decodeRecord(
     submissionId: row.submission_id as string,
     communityId: row.community_id as string,
     actorUserId: row.actor_user_id as string,
+    ...(validId(row.author_persona_id) ? { personaId: row.author_persona_id as string } : {}),
     operationId: row.operation_id as string,
     creationRevision,
     audioRevision,
@@ -276,6 +279,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
           input.workflowInstanceId,
           input.effectIdentity,
         ].every(validId) ||
+        (input.personaId !== undefined && !validId(input.personaId)) ||
         ![
           input.creationRevision,
           input.audioRevision,
@@ -311,6 +315,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
               current.submissionId !== input.submissionId ||
               current.communityId !== input.communityId ||
               current.actorUserId !== input.actorUserId ||
+              (input.personaId !== undefined && current.personaId !== input.personaId) ||
               current.operationId !== input.operationId ||
               current.workflowRevision !== input.workflowRevision ||
               current.eventType !== input.eventType ||
@@ -321,7 +326,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
           }
           const result = yield* tx.execute({
             label: "media-outbox.enqueue",
-            text: "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)",
+            text: "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)",
             values: [
               input.outboxEventId,
               input.submissionId,
@@ -336,6 +341,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
               input.eventType,
               input.effectIdentity,
               JSON.stringify(input.payload),
+              input.personaId ?? null,
             ],
             readonly: false,
           });

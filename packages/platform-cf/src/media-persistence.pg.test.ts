@@ -25,7 +25,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 17;
+const testCount = 18;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -486,6 +486,108 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ?.count,
       ).toBe("0");
     }, false);
+    completedTestCount += 1;
+  }, 40_000);
+  test("scopes media reservation and submission replay by persona", async () => {
+    await withSchema(async (admin, connection) => {
+      const firstPersona = (
+        await admin.query<{ persona_id: string }>(
+          "SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona",
+          [actor],
+        )
+      ).rows[0]?.persona_id;
+      expect(firstPersona).toBeTruthy();
+      const secondPersona = "media_pg_second_persona";
+      await admin.query(
+        "INSERT INTO personas (persona_id,account_id,status,is_first_persona) VALUES ($1,$2,'active',FALSE)",
+        [secondPersona, actor],
+      );
+      const reserve = (personaId: string, reservationId: string) =>
+        run(connection, (store) =>
+          store.reserve({
+            communityId: community,
+            actorUserId: actor,
+            personaId,
+            idempotencyKey: "same-persona-replay-key",
+            requestHash,
+            expectedContentType: "audio/mpeg",
+            expectedSizeBytes: audioBytes.byteLength,
+            expectedSha256: audioSha256,
+            uploadUrl: "https://upload.test/persona",
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            responseBytes,
+            responseSha256,
+            reservationId,
+          }),
+        );
+      expect(await reserve(firstPersona as string, "persona-reservation-first")).toMatchObject({
+        kind: "created",
+      });
+      expect(await reserve(secondPersona, "persona-reservation-second")).toMatchObject({
+        kind: "created",
+      });
+      await run(connection, (store) =>
+        store.createSubmission({
+          communityId: community,
+          actorUserId: actor,
+          personaId: firstPersona as string,
+          idempotencyKey: "same-persona-submission-key",
+          requestHash,
+          title: "First persona song",
+          songType: "original",
+          reservationId: "persona-reservation-first",
+          submissionId: "persona-submission-first",
+          operationId: "persona-operation-first",
+          responseBytes,
+          responseSha256,
+        }),
+      );
+      await run(connection, (store) =>
+        store.createSubmission({
+          communityId: community,
+          actorUserId: actor,
+          personaId: secondPersona,
+          idempotencyKey: "same-persona-submission-key",
+          requestHash,
+          title: "Second persona song",
+          songType: "original",
+          reservationId: "persona-reservation-second",
+          submissionId: "persona-submission-second",
+          operationId: "persona-operation-second",
+          responseBytes,
+          responseSha256,
+        }),
+      );
+      const rows = await admin.query<{
+        submission_id: string;
+        author_persona_id: string;
+        persona_id: string | null;
+      }>(
+        "SELECT submission_id,author_persona_id,start_input->>'persona_id' AS persona_id FROM media_post_submissions WHERE submission_id IN ('persona-submission-first','persona-submission-second') ORDER BY submission_id",
+      );
+      expect(rows.rows).toEqual([
+        {
+          submission_id: "persona-submission-first",
+          author_persona_id: firstPersona,
+          persona_id: firstPersona,
+        },
+        {
+          submission_id: "persona-submission-second",
+          author_persona_id: secondPersona,
+          persona_id: secondPersona,
+        },
+      ]);
+      const reservations = await admin.query<{
+        reservation_id: string;
+        actor_persona_id: string;
+      }>(
+        "SELECT reservation_id,actor_persona_id FROM media_upload_reservations WHERE idempotency_key='same-persona-replay-key' ORDER BY reservation_id",
+      );
+      expect(reservations.rows).toEqual([
+        { reservation_id: "persona-reservation-first", actor_persona_id: firstPersona },
+        { reservation_id: "persona-reservation-second", actor_persona_id: secondPersona },
+      ]);
+    });
     completedTestCount += 1;
   }, 40_000);
   test("reclaims an expired outbox lease and rejects the stale fence", async () => {
