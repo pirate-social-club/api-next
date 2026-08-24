@@ -75,10 +75,12 @@ export function makeHnsStaticPlatformGatewayService(input: {
       try {
         let upstream: Response;
         try {
+          const upstreamHeaders = new Headers(admitted.upstream_headers);
+          upstreamHeaders.set("accept-encoding", "identity");
           upstream = await input.upstream_fetch(
             new Request(`${HNS_PLATFORM_CANONICAL_ORIGIN}${admitted.target}`, {
               method: admitted.method,
-              headers: admitted.upstream_headers,
+              headers: upstreamHeaders,
               redirect: "manual",
               signal: controller.signal,
             }),

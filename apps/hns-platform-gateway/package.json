@@ -7,6 +7,9 @@
     ".": "./src/index.ts",
     "./server": "./src/server.ts"
   },
+  "scripts": {
+    "build:vps-bundle": "bun build --target=bun --outfile dist/pirate-hns-platform-gateway.mjs src/main.ts"
+  },
   "dependencies": {
     "@pirate/application": "0.0.0"
   }

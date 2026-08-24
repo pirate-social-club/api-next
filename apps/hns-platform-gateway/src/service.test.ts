@@ -92,6 +92,7 @@ describe("HNS static platform application gateway", () => {
       ["CF-Access-Client-Secret", "browser"],
       ["X-Pirate-Hns-Forwarder-Key-Id", "browser"],
       ["X-Forwarded-Host", "evil.invalid"],
+      ["Accept-Encoding", "br"],
       ["Accept-Language", "en"],
     ];
     const response = await service.handle(
@@ -106,6 +107,7 @@ describe("HNS static platform application gateway", () => {
     expect(calls[0]?.url).toBe("https://pirate.sc/c/community?q=%2Bvalue");
     expect(calls[0]?.method).toBe("HEAD");
     expect(calls[0]?.redirect).toBe("manual");
+    expect(calls[0]?.headers.get("accept-encoding")).toBe("identity");
     expect(calls[0]?.headers.get("accept-language")).toBe("en");
     for (const name of [
       "cookie",

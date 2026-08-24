@@ -1,0 +1,32 @@
+{
+  "pre_proxy_handlers": [
+    {
+      "handler": "headers",
+      "request": {
+        "delete": [
+          "X-Pirate-Gateway-*"
+        ]
+      }
+    },
+    {
+      "handler": "headers",
+      "request": {
+        "delete": [
+          "X-Pirate-Hns-Forwarder-*"
+        ]
+      }
+    }
+  ],
+  "reverse_proxy_headers": {
+    "request": {
+      "set": {
+        "X-Pirate-Gateway-External-Scheme": [
+          "https"
+        ],
+        "X-Pirate-Gateway-Tls-Sni": [
+          "{http.request.tls.server_name}"
+        ]
+      }
+    }
+  }
+}
