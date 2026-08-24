@@ -121,7 +121,7 @@ function amzDate(now: Date): { short: string; full: string } {
   const iso = now.toISOString();
   return {
     short: iso.slice(0, 10).replaceAll("-", ""),
-    full: `${iso.slice(0, 10).replaceAll("-", "")}${iso.slice(11, 19).replaceAll(":", "")}Z`,
+    full: `${iso.slice(0, 10).replaceAll("-", "")}T${iso.slice(11, 19).replaceAll(":", "")}Z`,
   };
 }
 

@@ -137,8 +137,9 @@ describe("staging R2 probe safety", () => {
     expect(request.headers["x-amz-content-sha256"]).toBe(
       "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     );
+    expect(request.headers["x-amz-date"]).toBe("20200101T000000Z");
     expect(request.headers.authorization).toBe(
-      "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20200101/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=511da240ef74c6f6b25a7567043466a59cee70457633281e0b2b87b19c92b058",
+      "AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20200101/auto/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=8754ed9a3a960f0509c4fc7abf153507cf24ebae4201da012c5ad505ff887486",
     );
     expect(request.headers.authorization).not.toContain(SECRET_ACCESS_KEY);
   });
