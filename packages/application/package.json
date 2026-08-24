@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./hns-forwarder-v3": "./src/hns-forwarder-v3.ts",
+    "./hns-host-persistence": "./src/hns-host-persistence.ts",
     "./hns-host-serving": "./src/hns-host-serving.ts",
     "./namespace-ownership": "./src/namespace-ownership/index.ts",
     "./namespace-ownership-start": "./src/namespace-ownership/start.ts",

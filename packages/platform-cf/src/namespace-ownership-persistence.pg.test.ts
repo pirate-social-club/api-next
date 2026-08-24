@@ -1843,11 +1843,13 @@ suite("Postgres namespace ownership persistence foundation", () => {
       const store = makeControlPlaneNamespaceOwnershipStartStore(
         makeDirectPostgresControlPlaneLayer(scoped),
       );
-      const firstInput = repositoryStartInput("race", { ttl_ms: 20 });
+      // The lease must outlive two request-scoped connection handshakes; the
+      // expiry assertion below still crosses the database clock deliberately.
+      const firstInput = repositoryStartInput("race", { ttl_ms: 250 });
       const secondInput = repositoryStartInput("race", {
         reservation_id: "start_reservation_race_second",
         namespace_session_id: "start_session_race_second",
-        ttl_ms: 20,
+        ttl_ms: 250,
       });
       const outcomes = await Promise.all([
         Effect.runPromise(Effect.scoped(store.reserve(firstInput))),
@@ -1856,7 +1858,7 @@ suite("Postgres namespace ownership persistence foundation", () => {
       expect(outcomes.map(({ kind }) => kind).sort()).toEqual(["acquired", "in_flight"]);
       const acquired = outcomes.find((outcome) => outcome.kind === "acquired");
       if (acquired?.kind !== "acquired") throw new Error("expected one acquired reservation");
-      await client.query("SELECT pg_sleep(0.05)");
+      await client.query("SELECT pg_sleep(0.35)");
       const replayInput = {
         actor_id: firstInput.start.actor_id,
         creation_intent_id: firstInput.start.creation_intent_id,

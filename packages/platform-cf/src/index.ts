@@ -85,6 +85,11 @@ export {
   makeControlPlaneFeedStore,
 } from "./feed-repository";
 export {
+  type HnsFirstPartyHostPersistenceRepositoryV1,
+  makeControlPlaneHnsCommunityAppHostAuthoritySource,
+  makeControlPlaneHnsFirstPartyHostPersistenceRepository,
+} from "./hns-host-persistence-repository";
+export {
   type CanonicalIdentity,
   type IdentityRepository,
   IdentityRepositoryError,

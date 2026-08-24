@@ -154,6 +154,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-hns-observer-suite-complete",
     contents: "api-next-control-plane-postgres-hns-observer-suite-complete\n",
   },
+  {
+    name: "postgres HNS first-party host persistence",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_HNS_HOST_PERSISTENCE_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-hns-host-persistence-suite-complete",
+    contents: "api-next-control-plane-postgres-hns-host-persistence-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

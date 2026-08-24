@@ -248,6 +248,12 @@ const accountPersonaWalletPrivacyMigrationSql = await Bun.file(
 const hnsOperatorManagedRoutesMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0047_hns_operator_managed_routes.sql", import.meta.url),
 ).text();
+const hnsFirstPartyHostPersistenceMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0048_hns_first_party_host_persistence.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -490,6 +496,11 @@ const hnsOperatorManagedRoutesMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0047_hns_operator_managed_routes.sql"] ?? "",
   sql: hnsOperatorManagedRoutesMigrationSql,
 };
+const hnsFirstPartyHostPersistenceMigration: PostgresMigration = {
+  version: "0048_hns_first_party_host_persistence.sql",
+  checksum: checksumManifest.migrations["0048_hns_first_party_host_persistence.sql"] ?? "",
+  sql: hnsFirstPartyHostPersistenceMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -538,6 +549,7 @@ const migrations: readonly PostgresMigration[] = [
   hnsOwnerAuthorityCustodyMigration,
   accountPersonaWalletPrivacyMigration,
   hnsOperatorManagedRoutesMigration,
+  hnsFirstPartyHostPersistenceMigration,
 ];
 
 function checksum(value: string): string {
@@ -786,6 +798,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(hnsOperatorManagedRoutesMigrationSql)).toBe(
         hnsOperatorManagedRoutesMigration.checksum,
       );
+      expect(checksum(hnsFirstPartyHostPersistenceMigrationSql)).toBe(
+        hnsFirstPartyHostPersistenceMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -880,11 +895,20 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "decision_records",
         "evidence_receipts",
         "hns_authority_inventories",
+        "hns_community_app_host_activation_current",
+        "hns_community_app_host_activation_revisions",
+        "hns_community_app_host_operations",
         "hns_control_observer_configurations",
         "hns_control_observer_operations",
         "hns_control_observer_reservations",
         "hns_control_observer_snapshot_transcript_entries",
         "hns_control_observer_snapshots",
+        "hns_dns_zone_activation_current",
+        "hns_dns_zone_activation_operations",
+        "hns_dns_zone_activation_revisions",
+        "hns_dns_zone_health_observations",
+        "hns_dns_zone_health_operations",
+        "hns_dns_zone_lifecycle_operations",
         "home_feed_projection",
         "identity_credentials",
         "media_alignment_projections",
@@ -1064,10 +1088,16 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",
         "hns_authority_inventories_append_only",
+        "hns_community_app_host_activation_revisions_append_only",
+        "hns_community_app_host_operations_append_only",
         "hns_control_observer_configurations_append_only",
         "hns_control_observer_operations_append_only",
         "hns_control_observer_snapshots_append_only",
         "hns_control_observer_transcript_entries_append_only",
+        "hns_dns_zone_activation_revisions_append_only",
+        "hns_dns_zone_health_observations_append_only",
+        "hns_dns_zone_health_operations_append_only",
+        "hns_dns_zone_lifecycle_operations_append_only",
         "media_analysis_evidence_append_only",
         "media_audio_revisions_append_only",
         "media_immutable_objects_append_only",

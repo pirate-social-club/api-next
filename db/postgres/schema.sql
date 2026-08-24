@@ -3,6 +3,80 @@
 
 SET check_function_bodies = false;
 
+CREATE FUNCTION activate_hns_community_app_host_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_app_host_activation_id text, input_community_id text, input_canonical_root text, input_route_binding_id text, input_route_authority_kind text, input_route_authority_reference text, input_route_authority_generation bigint, input_dns_zone_activation_id text, input_dns_zone_activation_generation bigint, input_gateway_deployment_reference text) RETURNS TABLE(outcome text, app_host_activation_id text, app_host_activation_generation bigint, status text)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  replay hns_community_app_host_operations%ROWTYPE;
+  route RECORD;
+  dns_revision hns_dns_zone_activation_revisions%ROWTYPE;
+  dns_current hns_dns_zone_activation_current%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  resolved_reference TEXT;
+  resolved_generation BIGINT;
+BEGIN
+  SELECT * INTO replay FROM hns_community_app_host_operations AS operation
+   WHERE operation.idempotency_key = input_idempotency_key;
+  IF FOUND THEN
+    IF replay.operation_kind <> 'activate' OR replay.operation_id <> input_operation_id
+      OR replay.request_hash <> input_request_hash
+      OR replay.app_host_activation_id <> input_app_host_activation_id THEN
+      RAISE EXCEPTION 'HNS app-host activation idempotency conflict';
+    END IF;
+    RETURN QUERY SELECT 'replayed'::TEXT, replay.app_host_activation_id,
+      replay.result_activation_generation, replay.target_status;
+    RETURN;
+  END IF;
+  SELECT * INTO route FROM effective_route_authority_v2(input_community_id, database_now)
+   WHERE route_binding_id = input_route_binding_id;
+  resolved_reference := CASE WHEN route.route_authority_kind = 'verified_namespace_v1'
+    THEN route.verified_evidence_ref ELSE route.authority_reference END;
+  resolved_generation := CASE WHEN route.route_authority_kind = 'verified_namespace_v1'
+    THEN route.binding_generation ELSE route.authority_generation END;
+  IF route.community_id IS NULL OR route.family <> 'hns' OR route.root_label <> input_canonical_root
+    OR route.route_authority_kind <> input_route_authority_kind
+    OR resolved_reference <> input_route_authority_reference
+    OR resolved_generation <> input_route_authority_generation THEN
+    RAISE EXCEPTION 'HNS app-host route authority does not match';
+  END IF;
+  SELECT * INTO dns_current FROM hns_dns_zone_activation_current AS current_authority
+   WHERE current_authority.dns_zone_activation_id = input_dns_zone_activation_id
+     AND current_authority.canonical_root = input_canonical_root FOR SHARE;
+  SELECT * INTO dns_revision FROM hns_dns_zone_activation_revisions AS revision
+   WHERE revision.dns_zone_activation_id = input_dns_zone_activation_id
+     AND revision.dns_zone_activation_generation = input_dns_zone_activation_generation;
+  IF dns_current.dns_zone_activation_id IS NULL
+    OR dns_current.current_generation <> input_dns_zone_activation_generation
+    OR dns_revision.status <> 'active'
+    OR dns_revision.gateway_deployment_reference <> input_gateway_deployment_reference THEN
+    RAISE EXCEPTION 'HNS app-host DNS authority does not match';
+  END IF;
+  INSERT INTO hns_community_app_host_activation_revisions (
+    app_host_activation_id, app_host_activation_generation, normalized_host,
+    canonical_root, community_id, route_binding_id, route_authority_kind,
+    route_authority_reference, route_authority_generation, dns_zone_activation_id,
+    dns_zone_activation_generation, gateway_deployment_reference, status, activated_at
+  ) VALUES (
+    input_app_host_activation_id, 1, 'app.' || input_canonical_root,
+    input_canonical_root, input_community_id, input_route_binding_id,
+    input_route_authority_kind, input_route_authority_reference,
+    input_route_authority_generation, input_dns_zone_activation_id,
+    input_dns_zone_activation_generation, input_gateway_deployment_reference,
+    'active', database_now
+  );
+  INSERT INTO hns_community_app_host_activation_current VALUES (
+    input_app_host_activation_id, 'app.' || input_canonical_root,
+    input_community_id, 1, database_now
+  );
+  INSERT INTO hns_community_app_host_operations VALUES (
+    input_operation_id, 'activate', input_idempotency_key, input_request_hash,
+    input_app_host_activation_id, 0, 'active', 1, database_now
+  );
+  SET CONSTRAINTS ALL IMMEDIATE;
+  RETURN QUERY SELECT 'activated'::TEXT, input_app_host_activation_id, 1::BIGINT, 'active'::TEXT;
+END;
+$$;
+
 CREATE FUNCTION activate_operator_managed_route_v1(input_operation_id text, input_operator_principal_id text, input_operator_authority_grant_id text, input_idempotency_key text, input_request_hash text, input_community_id text, input_canonical_root text, input_root_label_display text, input_registry_reference text, input_registry_version bigint, input_registry_digest text, input_activation_id text, input_route_binding_id text, input_reason_code text) RETURNS TABLE(outcome text, operator_route_activation_id text, route_binding_id text, activation_generation bigint)
     LANGUAGE plpgsql
     AS $$
@@ -239,6 +313,183 @@ CREATE FUNCTION active_owned_persona(expected_account_id text, expected_persona_
   )
 $$;
 
+CREATE FUNCTION change_hns_community_app_host_status_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_app_host_activation_id text, input_expected_activation_generation bigint, input_target_status text, input_reason_code text) RETURNS TABLE(outcome text, app_host_activation_id text, app_host_activation_generation bigint, status text)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  replay hns_community_app_host_operations%ROWTYPE;
+  current_record hns_community_app_host_activation_current%ROWTYPE;
+  prior hns_community_app_host_activation_revisions%ROWTYPE;
+  route RECORD;
+  dns_current hns_dns_zone_activation_current%ROWTYPE;
+  dns_revision hns_dns_zone_activation_revisions%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  new_generation BIGINT := input_expected_activation_generation + 1;
+  next_route_kind TEXT;
+  next_route_reference TEXT;
+  next_route_generation BIGINT;
+BEGIN
+  SELECT * INTO replay FROM hns_community_app_host_operations AS operation
+   WHERE operation.idempotency_key = input_idempotency_key;
+  IF FOUND THEN
+    IF replay.operation_kind <> 'transition' OR replay.operation_id <> input_operation_id
+      OR replay.request_hash <> input_request_hash
+      OR replay.app_host_activation_id <> input_app_host_activation_id
+      OR replay.expected_activation_generation <> input_expected_activation_generation
+      OR replay.target_status <> input_target_status THEN
+      RAISE EXCEPTION 'HNS app-host transition idempotency conflict';
+    END IF;
+    RETURN QUERY SELECT 'replayed'::TEXT, replay.app_host_activation_id,
+      replay.result_activation_generation, replay.target_status;
+    RETURN;
+  END IF;
+  SELECT * INTO current_record FROM hns_community_app_host_activation_current AS current_authority
+   WHERE current_authority.app_host_activation_id = input_app_host_activation_id FOR UPDATE;
+  IF NOT FOUND OR current_record.current_generation <> input_expected_activation_generation THEN
+    RAISE EXCEPTION 'HNS app-host generation fence does not match';
+  END IF;
+  SELECT * INTO prior FROM hns_community_app_host_activation_revisions AS revision
+   WHERE revision.app_host_activation_id = input_app_host_activation_id
+     AND revision.app_host_activation_generation = input_expected_activation_generation;
+  IF prior.status = 'revoked'
+    OR NOT ((prior.status = 'active' AND input_target_status IN ('suspended', 'revoked'))
+      OR (prior.status = 'suspended' AND input_target_status IN ('active', 'revoked'))) THEN
+    RAISE EXCEPTION 'HNS app-host transition is not allowed';
+  END IF;
+  next_route_kind := prior.route_authority_kind;
+  next_route_reference := prior.route_authority_reference;
+  next_route_generation := prior.route_authority_generation;
+  IF input_target_status = 'active' THEN
+    SELECT * INTO route FROM effective_route_authority_v2(prior.community_id, database_now)
+     WHERE route_binding_id = prior.route_binding_id;
+    next_route_kind := route.route_authority_kind;
+    next_route_reference := CASE WHEN route.route_authority_kind = 'verified_namespace_v1'
+      THEN route.verified_evidence_ref ELSE route.authority_reference END;
+    next_route_generation := CASE WHEN route.route_authority_kind = 'verified_namespace_v1'
+      THEN route.binding_generation ELSE route.authority_generation END;
+    SELECT * INTO dns_current FROM hns_dns_zone_activation_current AS current_authority
+     WHERE current_authority.canonical_root = prior.canonical_root FOR SHARE;
+    SELECT * INTO dns_revision FROM hns_dns_zone_activation_revisions AS revision
+     WHERE revision.dns_zone_activation_id = dns_current.dns_zone_activation_id
+       AND revision.dns_zone_activation_generation = dns_current.current_generation;
+    IF route.community_id IS NULL OR dns_current.dns_zone_activation_id IS NULL
+      OR dns_revision.status <> 'active' THEN
+      RAISE EXCEPTION 'HNS app-host restoration authority is unavailable';
+    END IF;
+  ELSE
+    dns_current.dns_zone_activation_id := prior.dns_zone_activation_id;
+    dns_current.current_generation := prior.dns_zone_activation_generation;
+    dns_revision.gateway_deployment_reference := prior.gateway_deployment_reference;
+  END IF;
+  INSERT INTO hns_community_app_host_activation_revisions (
+    app_host_activation_id, app_host_activation_generation, normalized_host,
+    canonical_root, community_id, route_binding_id, route_authority_kind,
+    route_authority_reference, route_authority_generation, dns_zone_activation_id,
+    dns_zone_activation_generation, gateway_deployment_reference, status,
+    reason_code, activated_at, suspended_at, revoked_at
+  ) VALUES (
+    prior.app_host_activation_id, new_generation, prior.normalized_host,
+    prior.canonical_root, prior.community_id, prior.route_binding_id,
+    next_route_kind, next_route_reference, next_route_generation,
+    dns_current.dns_zone_activation_id, dns_current.current_generation,
+    dns_revision.gateway_deployment_reference, input_target_status,
+    CASE WHEN input_target_status = 'active' THEN NULL ELSE input_reason_code END,
+    prior.activated_at,
+    CASE WHEN input_target_status = 'suspended' THEN database_now ELSE NULL END,
+    CASE WHEN input_target_status = 'revoked' THEN database_now ELSE NULL END
+  );
+  UPDATE hns_community_app_host_activation_current AS current_authority
+     SET current_generation = new_generation, updated_at = database_now
+   WHERE current_authority.app_host_activation_id = input_app_host_activation_id;
+  INSERT INTO hns_community_app_host_operations VALUES (
+    input_operation_id, 'transition', input_idempotency_key, input_request_hash,
+    input_app_host_activation_id, input_expected_activation_generation,
+    input_target_status, new_generation, database_now
+  );
+  SET CONSTRAINTS ALL IMMEDIATE;
+  RETURN QUERY SELECT 'changed'::TEXT, input_app_host_activation_id,
+    new_generation, input_target_status;
+END;
+$$;
+
+CREATE FUNCTION change_hns_dns_zone_activation_status_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_dns_zone_activation_id text, input_expected_activation_generation bigint, input_target_status text, input_reason_code text) RETURNS TABLE(outcome text, activation_id text, activation_generation bigint, status text)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  replay hns_dns_zone_lifecycle_operations%ROWTYPE;
+  current_record hns_dns_zone_activation_current%ROWTYPE;
+  prior hns_dns_zone_activation_revisions%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  new_generation BIGINT := input_expected_activation_generation + 1;
+BEGIN
+  SELECT * INTO replay FROM hns_dns_zone_lifecycle_operations AS operation
+   WHERE operation.idempotency_key = input_idempotency_key;
+  IF FOUND THEN
+    IF replay.operation_id <> input_operation_id OR replay.request_hash <> input_request_hash
+      OR replay.dns_zone_activation_id <> input_dns_zone_activation_id
+      OR replay.expected_activation_generation <> input_expected_activation_generation
+      OR replay.target_status <> input_target_status OR replay.reason_code <> input_reason_code THEN
+      RAISE EXCEPTION 'HNS DNS lifecycle idempotency conflict';
+    END IF;
+    RETURN QUERY SELECT 'replayed'::TEXT, replay.dns_zone_activation_id,
+      replay.result_activation_generation, replay.target_status;
+    RETURN;
+  END IF;
+
+  SELECT * INTO current_record FROM hns_dns_zone_activation_current AS current_authority
+   WHERE current_authority.dns_zone_activation_id = input_dns_zone_activation_id FOR UPDATE;
+  IF NOT FOUND OR current_record.current_generation <> input_expected_activation_generation THEN
+    RAISE EXCEPTION 'HNS DNS lifecycle generation fence does not match';
+  END IF;
+  SELECT * INTO prior FROM hns_dns_zone_activation_revisions AS revision
+   WHERE revision.dns_zone_activation_id = input_dns_zone_activation_id
+     AND revision.dns_zone_activation_generation = input_expected_activation_generation;
+  IF prior.status = 'revoked'
+    OR NOT ((prior.status = 'active' AND input_target_status IN ('suspended', 'revoked'))
+      OR (prior.status = 'suspended' AND input_target_status IN ('active', 'revoked'))) THEN
+    RAISE EXCEPTION 'HNS DNS lifecycle transition is not allowed';
+  END IF;
+
+  INSERT INTO hns_dns_zone_activation_revisions (
+    dns_zone_activation_id, dns_zone_activation_generation,
+    activation_document_bytes, activation_document_digest, canonical_root,
+    dns_authority_kind, dns_authority_reference, dns_authority_generation,
+    pirate_dns_authority_inventory_reference, pirate_dns_authority_inventory_version,
+    pirate_dns_authority_inventory_digest, zone_revision, zone_bytes, zone_bytes_digest,
+    dnssec_keyset_reference, dnssec_keyset_version, gateway_deployment_reference,
+    gateway_certificate_spki_sha256, stable_chain_delegation_snapshot_reference,
+    stable_chain_delegation_snapshot_digest, status, reason_code, activated_at,
+    suspended_at, revoked_at
+  ) SELECT
+    prior.dns_zone_activation_id, new_generation,
+    prior.activation_document_bytes, prior.activation_document_digest, prior.canonical_root,
+    prior.dns_authority_kind, prior.dns_authority_reference, prior.dns_authority_generation,
+    prior.pirate_dns_authority_inventory_reference,
+    prior.pirate_dns_authority_inventory_version,
+    prior.pirate_dns_authority_inventory_digest, prior.zone_revision, prior.zone_bytes,
+    prior.zone_bytes_digest, prior.dnssec_keyset_reference, prior.dnssec_keyset_version,
+    prior.gateway_deployment_reference, prior.gateway_certificate_spki_sha256,
+    prior.stable_chain_delegation_snapshot_reference,
+    prior.stable_chain_delegation_snapshot_digest, input_target_status,
+    CASE WHEN input_target_status = 'active' THEN NULL ELSE input_reason_code END,
+    prior.activated_at,
+    CASE WHEN input_target_status = 'suspended' THEN database_now ELSE NULL END,
+    CASE WHEN input_target_status = 'revoked' THEN database_now ELSE NULL END;
+
+  UPDATE hns_dns_zone_activation_current AS current_authority
+     SET current_generation = new_generation, updated_at = database_now
+   WHERE current_authority.dns_zone_activation_id = input_dns_zone_activation_id;
+  INSERT INTO hns_dns_zone_lifecycle_operations VALUES (
+    input_operation_id, input_idempotency_key, input_request_hash,
+    input_dns_zone_activation_id, input_expected_activation_generation,
+    input_target_status, input_reason_code, new_generation, database_now
+  );
+  SET CONSTRAINTS ALL IMMEDIATE;
+  RETURN QUERY SELECT 'changed'::TEXT, input_dns_zone_activation_id,
+    new_generation, input_target_status;
+END;
+$$;
+
 CREATE FUNCTION default_public_handle_persona() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -343,6 +594,161 @@ CREATE FUNCTION effective_route_authority_v2(expected_community_id text, databas
      AND binding.route_lifecycle_status = 'active'
      AND binding.ownership_status <> 'verified'
      AND binding.verified_evidence_ref IS NULL
+$$;
+
+CREATE FUNCTION finalize_hns_dns_zone_activation_v1(input_operation_id text, input_fence_token bigint, input_activation_document_bytes bytea, input_dns_zone_activation_id text, input_canonical_root text, input_dns_authority_kind text, input_dns_authority_reference text, input_dns_authority_generation bigint, input_inventory_reference text, input_inventory_version text, input_inventory_digest text, input_zone_revision bigint, input_zone_bytes bytea, input_zone_bytes_digest text, input_dnssec_keyset_reference text, input_dnssec_keyset_version text, input_gateway_deployment_reference text, input_gateway_certificate_spki_sha256 text, input_delegation_snapshot_reference text, input_delegation_snapshot_digest text) RETURNS TABLE(outcome text, dns_zone_activation_id text, activation_generation bigint)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  operation hns_dns_zone_activation_operations%ROWTYPE;
+  current_record hns_dns_zone_activation_current%ROWTYPE;
+  prior_revision hns_dns_zone_activation_revisions%ROWTYPE;
+  result_revision hns_dns_zone_activation_revisions%ROWTYPE;
+  inventory hns_authority_inventories%ROWTYPE;
+  activation_document JSONB;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  new_generation BIGINT;
+BEGIN
+  activation_document := convert_from(input_activation_document_bytes, 'UTF8')::JSONB;
+  IF activation_document IS DISTINCT FROM jsonb_build_object(
+    'version', 'pirate-hns-dns-zone-activation-document-v1',
+    'dns_zone_activation_id', input_dns_zone_activation_id,
+    'canonical_root', input_canonical_root,
+    'dns_authority', jsonb_build_array(
+      input_dns_authority_kind,
+      input_dns_authority_reference,
+      input_dns_authority_generation
+    ),
+    'pirate_dns_authority_inventory', jsonb_build_array(
+      input_inventory_reference,
+      input_inventory_version,
+      input_inventory_digest
+    ),
+    'zone', jsonb_build_array(input_zone_revision, input_zone_bytes_digest),
+    'dnssec_keyset', jsonb_build_array(
+      input_dnssec_keyset_reference,
+      input_dnssec_keyset_version
+    ),
+    'gateway', jsonb_build_array(
+      input_gateway_deployment_reference,
+      input_gateway_certificate_spki_sha256
+    ),
+    'stable_chain_delegation_snapshot', jsonb_build_array(
+      input_delegation_snapshot_reference,
+      input_delegation_snapshot_digest
+    )
+  ) THEN
+    RAISE EXCEPTION 'HNS DNS activation document does not match its authority fields';
+  END IF;
+
+  SELECT * INTO operation
+    FROM hns_dns_zone_activation_operations AS stored_operation
+   WHERE stored_operation.operation_id = input_operation_id
+   FOR UPDATE;
+  IF NOT FOUND OR operation.dns_zone_activation_id <> input_dns_zone_activation_id
+    OR operation.activation_document_digest <> encode(sha256(input_activation_document_bytes), 'hex') THEN
+    RAISE EXCEPTION 'HNS DNS activation finalizer authority mismatch';
+  END IF;
+
+  IF operation.state = 'finalized' THEN
+    SELECT * INTO result_revision
+      FROM hns_dns_zone_activation_revisions AS revision
+     WHERE revision.dns_zone_activation_id = operation.dns_zone_activation_id
+       AND revision.dns_zone_activation_generation = operation.result_activation_generation;
+    IF NOT FOUND
+      OR result_revision.activation_document_bytes IS DISTINCT FROM input_activation_document_bytes
+      OR result_revision.canonical_root <> input_canonical_root
+      OR result_revision.dns_authority_reference <> input_dns_authority_reference
+      OR result_revision.zone_bytes IS DISTINCT FROM input_zone_bytes
+      OR result_revision.gateway_deployment_reference <> input_gateway_deployment_reference
+      OR result_revision.stable_chain_delegation_snapshot_digest <> input_delegation_snapshot_digest THEN
+      RAISE EXCEPTION 'HNS DNS activation replay does not match retained authority';
+    END IF;
+    RETURN QUERY SELECT 'replayed'::TEXT, operation.dns_zone_activation_id,
+      operation.result_activation_generation;
+    RETURN;
+  END IF;
+
+  IF operation.state <> 'reserved'
+    OR operation.fence_token <> input_fence_token
+    OR operation.lease_expires_at <= database_now THEN
+    RAISE EXCEPTION 'HNS DNS activation finalizer lost its lease or fence';
+  END IF;
+
+  SELECT * INTO inventory
+    FROM hns_authority_inventories AS retained_inventory
+   WHERE retained_inventory.authority_inventory_reference = input_inventory_reference
+     AND retained_inventory.authority_inventory_version = input_inventory_version
+     AND retained_inventory.authority_inventory_digest = input_inventory_digest
+   FOR SHARE;
+  IF NOT FOUND OR inventory.published_at > database_now OR inventory.expires_at <= database_now THEN
+    RAISE EXCEPTION 'HNS DNS activation inventory is unavailable';
+  END IF;
+
+  SELECT * INTO current_record
+    FROM hns_dns_zone_activation_current AS current_authority
+   WHERE current_authority.dns_zone_activation_id = input_dns_zone_activation_id
+      OR current_authority.canonical_root = input_canonical_root
+   FOR UPDATE;
+  IF operation.expected_activation_generation = 0 THEN
+    IF FOUND THEN
+      RAISE EXCEPTION 'HNS DNS activation root already has authority';
+    END IF;
+  ELSE
+    IF NOT FOUND
+      OR current_record.dns_zone_activation_id <> input_dns_zone_activation_id
+      OR current_record.canonical_root <> input_canonical_root
+      OR current_record.current_generation <> operation.expected_activation_generation THEN
+      RAISE EXCEPTION 'HNS DNS activation generation fence does not match';
+    END IF;
+    SELECT * INTO prior_revision
+      FROM hns_dns_zone_activation_revisions AS revision
+     WHERE revision.dns_zone_activation_id = current_record.dns_zone_activation_id
+       AND revision.dns_zone_activation_generation = current_record.current_generation;
+    IF prior_revision.status = 'revoked' OR input_zone_revision <= prior_revision.zone_revision THEN
+      RAISE EXCEPTION 'HNS DNS activation rotation is not monotonic';
+    END IF;
+  END IF;
+
+  new_generation := operation.expected_activation_generation + 1;
+  INSERT INTO hns_dns_zone_activation_revisions (
+    dns_zone_activation_id, dns_zone_activation_generation,
+    activation_document_bytes, activation_document_digest, canonical_root,
+    dns_authority_kind, dns_authority_reference, dns_authority_generation,
+    pirate_dns_authority_inventory_reference, pirate_dns_authority_inventory_version,
+    pirate_dns_authority_inventory_digest, zone_revision, zone_bytes, zone_bytes_digest,
+    dnssec_keyset_reference, dnssec_keyset_version, gateway_deployment_reference,
+    gateway_certificate_spki_sha256, stable_chain_delegation_snapshot_reference,
+    stable_chain_delegation_snapshot_digest, status, activated_at
+  ) VALUES (
+    input_dns_zone_activation_id, new_generation,
+    input_activation_document_bytes, operation.activation_document_digest, input_canonical_root,
+    input_dns_authority_kind, input_dns_authority_reference, input_dns_authority_generation,
+    input_inventory_reference, input_inventory_version, input_inventory_digest,
+    input_zone_revision, input_zone_bytes, input_zone_bytes_digest,
+    input_dnssec_keyset_reference, input_dnssec_keyset_version,
+    input_gateway_deployment_reference, input_gateway_certificate_spki_sha256,
+    input_delegation_snapshot_reference, input_delegation_snapshot_digest,
+    'active', database_now
+  );
+
+  IF operation.expected_activation_generation = 0 THEN
+    INSERT INTO hns_dns_zone_activation_current (
+      dns_zone_activation_id, canonical_root, current_generation, updated_at
+    ) VALUES (input_dns_zone_activation_id, input_canonical_root, new_generation, database_now);
+  ELSE
+    UPDATE hns_dns_zone_activation_current AS current_authority
+       SET current_generation = new_generation, updated_at = database_now
+     WHERE current_authority.dns_zone_activation_id = input_dns_zone_activation_id;
+  END IF;
+
+  UPDATE hns_dns_zone_activation_operations AS stored_operation
+     SET state = 'finalized', result_activation_generation = new_generation,
+         finalized_at = database_now, updated_at = database_now
+   WHERE stored_operation.operation_id = input_operation_id;
+  SET CONSTRAINTS ALL IMMEDIATE;
+  RETURN QUERY SELECT 'activated'::TEXT, input_dns_zone_activation_id, new_generation;
+END;
 $$;
 
 CREATE FUNCTION gates_v2_active_binding_projection_guard() RETURNS trigger
@@ -1765,6 +2171,24 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_hns_community_app_host_current_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'HNS app-host current authority cannot be deleted';
+  END IF;
+  IF NEW.app_host_activation_id <> OLD.app_host_activation_id
+    OR NEW.normalized_host <> OLD.normalized_host
+    OR NEW.community_id <> OLD.community_id
+    OR NEW.current_generation <> OLD.current_generation + 1
+    OR NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'HNS app-host generation change is invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION guard_hns_control_observer_reservation_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -1815,6 +2239,61 @@ BEGIN
   END IF;
 
   RAISE EXCEPTION 'HNS observer reservation transition is not allowed';
+END;
+$$;
+
+CREATE FUNCTION guard_hns_dns_zone_activation_current_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'HNS DNS activation current authority cannot be deleted';
+  END IF;
+  IF NEW.dns_zone_activation_id <> OLD.dns_zone_activation_id
+    OR NEW.canonical_root <> OLD.canonical_root
+    OR NEW.current_generation <> OLD.current_generation + 1
+    OR NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'HNS DNS activation generation change is invalid';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_hns_dns_zone_activation_operation_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'HNS DNS activation operations are retained';
+  END IF;
+  IF ROW(NEW.operation_id, NEW.idempotency_key, NEW.activation_document_digest,
+         NEW.dns_zone_activation_id, NEW.expected_activation_generation,
+         NEW.lease_seconds, NEW.created_at)
+    IS DISTINCT FROM
+     ROW(OLD.operation_id, OLD.idempotency_key, OLD.activation_document_digest,
+         OLD.dns_zone_activation_id, OLD.expected_activation_generation,
+         OLD.lease_seconds, OLD.created_at) THEN
+    RAISE EXCEPTION 'HNS DNS activation operation identity is immutable';
+  END IF;
+  IF OLD.state = 'reserved' AND NEW.state = 'reserved' THEN
+    IF OLD.lease_expires_at > clock_timestamp()
+      OR NEW.fence_token <> OLD.fence_token + 1
+      OR NEW.lease_expires_at <= OLD.lease_expires_at
+      OR NEW.updated_at <= OLD.updated_at THEN
+      RAISE EXCEPTION 'HNS DNS activation reacquisition is not fenced';
+    END IF;
+    RETURN NEW;
+  END IF;
+  IF OLD.state = 'reserved' AND NEW.state = 'finalized' THEN
+    IF NEW.fence_token <> OLD.fence_token
+      OR OLD.lease_expires_at <= clock_timestamp()
+      OR NEW.updated_at > clock_timestamp()
+      OR NEW.finalized_at <> NEW.updated_at THEN
+      RAISE EXCEPTION 'HNS DNS activation finalizer lost its lease or fence';
+    END IF;
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'HNS DNS activation operation transition is not allowed';
 END;
 $$;
 
@@ -2790,6 +3269,16 @@ CREATE FUNCTION is_community_route_root_label_display(root_label_display text) R
     AND position(E'\\' IN root_label_display) = 0;
 $$;
 
+CREATE FUNCTION is_hns_host_persistence_identity(input_value text, maximum_bytes integer) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $$
+  SELECT input_value IS NOT NULL
+    AND btrim(input_value) <> ''
+    AND input_value = btrim(input_value)
+    AND octet_length(input_value) <= maximum_bytes
+    AND input_value !~ '[[:cntrl:]]'
+$$;
+
 CREATE FUNCTION is_operator_managed_root_registry_document(exact_bytes bytea, expected_reference text, expected_version bigint) RETURNS boolean
     LANGUAGE plpgsql IMMUTABLE
     AS $_$
@@ -3111,6 +3600,64 @@ CREATE FUNCTION public_persona_projection(expected_persona_id text) RETURNS json
    WHERE persona.persona_id = expected_persona_id
 $$;
 
+CREATE FUNCTION record_hns_dns_zone_health_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_dns_zone_activation_id text, input_activation_generation bigint, input_expected_health_generation bigint, input_delegation_snapshot_reference text, input_delegation_snapshot_digest text, input_observed_zone_bytes_digest text, input_observed_dnssec_keyset_reference text, input_observed_dnssec_keyset_version text, input_observed_gateway_deployment_reference text, input_observed_gateway_certificate_spki_sha256 text, input_delegation_matches boolean, input_ds_authenticates_zone boolean, input_retained_zone_digest_matches boolean, input_gateway_healthy boolean, input_valid_for_seconds integer) RETURNS TABLE(outcome text, dns_zone_activation_id text, activation_generation bigint, health_generation bigint)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  replay hns_dns_zone_health_operations%ROWTYPE;
+  current_record hns_dns_zone_activation_current%ROWTYPE;
+  latest_generation BIGINT;
+  database_now TIMESTAMPTZ := clock_timestamp();
+  new_generation BIGINT := input_expected_health_generation + 1;
+BEGIN
+  SELECT * INTO replay FROM hns_dns_zone_health_operations AS operation
+   WHERE operation.idempotency_key = input_idempotency_key;
+  IF FOUND THEN
+    IF replay.operation_id <> input_operation_id OR replay.request_hash <> input_request_hash
+      OR replay.dns_zone_activation_id <> input_dns_zone_activation_id
+      OR replay.activation_generation <> input_activation_generation
+      OR replay.expected_health_generation <> input_expected_health_generation THEN
+      RAISE EXCEPTION 'HNS DNS health idempotency conflict';
+    END IF;
+    RETURN QUERY SELECT 'replayed'::TEXT, replay.dns_zone_activation_id,
+      replay.activation_generation, replay.result_health_generation;
+    RETURN;
+  END IF;
+  IF input_valid_for_seconds < 1 OR input_valid_for_seconds > 86400 THEN
+    RAISE EXCEPTION 'HNS DNS health lifetime is invalid';
+  END IF;
+  SELECT * INTO current_record FROM hns_dns_zone_activation_current AS current_authority
+   WHERE current_authority.dns_zone_activation_id = input_dns_zone_activation_id FOR SHARE;
+  IF NOT FOUND OR current_record.current_generation <> input_activation_generation THEN
+    RAISE EXCEPTION 'HNS DNS health activation generation is stale';
+  END IF;
+  SELECT COALESCE(max(observation.health_generation), 0) INTO latest_generation
+    FROM hns_dns_zone_health_observations AS observation
+   WHERE observation.dns_zone_activation_id = input_dns_zone_activation_id
+     AND observation.activation_generation = input_activation_generation;
+  IF latest_generation <> input_expected_health_generation THEN
+    RAISE EXCEPTION 'HNS DNS health generation fence does not match';
+  END IF;
+  INSERT INTO hns_dns_zone_health_observations VALUES (
+    input_dns_zone_activation_id, input_activation_generation, new_generation,
+    input_delegation_snapshot_reference, input_delegation_snapshot_digest,
+    input_observed_zone_bytes_digest, input_observed_dnssec_keyset_reference,
+    input_observed_dnssec_keyset_version, input_observed_gateway_deployment_reference,
+    input_observed_gateway_certificate_spki_sha256, input_delegation_matches,
+    input_ds_authenticates_zone, input_retained_zone_digest_matches,
+    input_gateway_healthy, database_now,
+    database_now + input_valid_for_seconds * INTERVAL '1 second'
+  );
+  INSERT INTO hns_dns_zone_health_operations VALUES (
+    input_operation_id, input_idempotency_key, input_request_hash,
+    input_dns_zone_activation_id, input_activation_generation,
+    input_expected_health_generation, new_generation, database_now
+  );
+  RETURN QUERY SELECT 'recorded'::TEXT, input_dns_zone_activation_id,
+    input_activation_generation, new_generation;
+END;
+$$;
+
 CREATE FUNCTION reject_community_commerce_immutable_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -3164,6 +3711,14 @@ CREATE FUNCTION reject_hns_control_observer_append_only_change() RETURNS trigger
     AS $$
 BEGIN
   RAISE EXCEPTION 'HNS control observer evidence is append-only';
+END;
+$$;
+
+CREATE FUNCTION reject_hns_host_persistence_append_only_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'HNS host persistence evidence is append-only';
 END;
 $$;
 
@@ -3251,6 +3806,142 @@ BEGIN
   END IF;
   RETURN NEW;
 END
+$$;
+
+CREATE FUNCTION reserve_hns_dns_zone_activation_v1(input_operation_id text, input_idempotency_key text, input_activation_document_digest text, input_dns_zone_activation_id text, input_expected_activation_generation bigint, input_lease_seconds integer) RETURNS TABLE(outcome text, operation_id text, dns_zone_activation_id text, fence_token bigint, lease_expires_at timestamp with time zone, activation_generation bigint)
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  existing hns_dns_zone_activation_operations%ROWTYPE;
+  database_now TIMESTAMPTZ := clock_timestamp();
+BEGIN
+  SELECT * INTO existing
+    FROM hns_dns_zone_activation_operations AS operation
+   WHERE operation.idempotency_key = input_idempotency_key
+   FOR UPDATE;
+  IF FOUND THEN
+    IF existing.operation_id <> input_operation_id
+      OR existing.activation_document_digest <> input_activation_document_digest
+      OR existing.dns_zone_activation_id <> input_dns_zone_activation_id
+      OR existing.expected_activation_generation <> input_expected_activation_generation
+      OR existing.lease_seconds <> input_lease_seconds THEN
+      RAISE EXCEPTION 'HNS DNS activation idempotency conflict';
+    END IF;
+    IF existing.state = 'finalized' THEN
+      RETURN QUERY SELECT 'replayed'::TEXT, existing.operation_id,
+        existing.dns_zone_activation_id, existing.fence_token,
+        existing.lease_expires_at, existing.result_activation_generation;
+      RETURN;
+    END IF;
+    IF existing.lease_expires_at <= database_now THEN
+      UPDATE hns_dns_zone_activation_operations AS operation
+         SET fence_token = operation.fence_token + 1,
+             lease_expires_at = database_now + input_lease_seconds * INTERVAL '1 second',
+             updated_at = database_now
+       WHERE operation.operation_id = existing.operation_id
+       RETURNING * INTO existing;
+    END IF;
+    RETURN QUERY SELECT 'reserved'::TEXT, existing.operation_id,
+      existing.dns_zone_activation_id, existing.fence_token,
+      existing.lease_expires_at, NULL::BIGINT;
+    RETURN;
+  END IF;
+
+  INSERT INTO hns_dns_zone_activation_operations (
+    operation_id, idempotency_key, activation_document_digest,
+    dns_zone_activation_id, expected_activation_generation, state, fence_token,
+    lease_seconds, lease_expires_at, created_at, updated_at
+  ) VALUES (
+    input_operation_id, input_idempotency_key, input_activation_document_digest,
+    input_dns_zone_activation_id, input_expected_activation_generation, 'reserved', 1,
+    input_lease_seconds, database_now + input_lease_seconds * INTERVAL '1 second',
+    database_now, database_now
+  ) RETURNING * INTO existing;
+  RETURN QUERY SELECT 'reserved'::TEXT, existing.operation_id,
+    existing.dns_zone_activation_id, existing.fence_token,
+    existing.lease_expires_at, NULL::BIGINT;
+END;
+$$;
+
+CREATE FUNCTION resolve_hns_community_app_host_authority_v1(input_normalized_host text, database_now timestamp with time zone) RETURNS TABLE(normalized_host text, canonical_root text, community_id text, app_host_activation_id text, app_host_activation_generation bigint, app_host_activation_status text, activation_dns_zone_id text, activation_dns_zone_generation bigint, activation_gateway_deployment_reference text, route_binding_id text, route_binding_current boolean, route_authority_kind text, route_authority_reference text, route_authority_generation bigint, route_authority_effective boolean, dns_zone_activation_id text, dns_zone_activation_generation bigint, dns_zone_status text, stable_chain_delegation_matches boolean, dnssec_ds_authenticates_zone boolean, retained_zone_digest_matches boolean, gateway_deployment_reference text, gateway_certificate_spki_sha256 text, gateway_health text)
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT app.normalized_host,
+         app.canonical_root,
+         app.community_id,
+         app.app_host_activation_id,
+         app.app_host_activation_generation,
+         app.status,
+         app.dns_zone_activation_id,
+         app.dns_zone_activation_generation,
+         app.gateway_deployment_reference,
+         app.route_binding_id,
+         COALESCE(route.route_binding_id = app.route_binding_id
+           AND route.route_authority_kind = app.route_authority_kind
+           AND (CASE WHEN route.route_authority_kind = 'verified_namespace_v1'
+             THEN route.verified_evidence_ref ELSE route.authority_reference END)
+               = app.route_authority_reference
+           AND (CASE WHEN route.route_authority_kind = 'verified_namespace_v1'
+             THEN route.binding_generation ELSE route.authority_generation END)
+               = app.route_authority_generation, FALSE),
+         app.route_authority_kind,
+         app.route_authority_reference,
+         app.route_authority_generation,
+         route.route_binding_id IS NOT NULL,
+         dns.dns_zone_activation_id,
+         dns.dns_zone_activation_generation,
+         dns.status,
+         COALESCE(health.valid_until > database_now
+           AND inventory.published_at <= database_now
+           AND inventory.expires_at > database_now
+           AND health.delegation_matches
+           AND health.stable_chain_delegation_snapshot_reference
+               = dns.stable_chain_delegation_snapshot_reference
+           AND health.stable_chain_delegation_snapshot_digest
+               = dns.stable_chain_delegation_snapshot_digest, FALSE),
+         COALESCE(health.valid_until > database_now
+           AND health.ds_authenticates_zone
+           AND health.observed_dnssec_keyset_reference = dns.dnssec_keyset_reference
+           AND health.observed_dnssec_keyset_version = dns.dnssec_keyset_version, FALSE),
+         COALESCE(health.valid_until > database_now
+           AND health.retained_zone_digest_matches
+           AND health.observed_zone_bytes_digest = dns.zone_bytes_digest, FALSE),
+         dns.gateway_deployment_reference,
+         dns.gateway_certificate_spki_sha256,
+         CASE WHEN health.valid_until > database_now
+           AND health.gateway_healthy
+           AND health.observed_gateway_deployment_reference = dns.gateway_deployment_reference
+           AND health.observed_gateway_certificate_spki_sha256
+               = dns.gateway_certificate_spki_sha256
+           THEN 'healthy'::TEXT ELSE 'unavailable'::TEXT END
+    FROM hns_community_app_host_activation_current AS current_app
+    JOIN hns_community_app_host_activation_revisions AS app
+      ON app.app_host_activation_id = current_app.app_host_activation_id
+     AND app.app_host_activation_generation = current_app.current_generation
+    JOIN hns_dns_zone_activation_current AS current_dns
+      ON current_dns.dns_zone_activation_id = app.dns_zone_activation_id
+    JOIN hns_dns_zone_activation_revisions AS dns
+      ON dns.dns_zone_activation_id = current_dns.dns_zone_activation_id
+     AND dns.dns_zone_activation_generation = current_dns.current_generation
+    JOIN hns_authority_inventories AS inventory
+      ON inventory.authority_inventory_reference
+          = dns.pirate_dns_authority_inventory_reference
+     AND inventory.authority_inventory_version
+          = dns.pirate_dns_authority_inventory_version
+     AND inventory.authority_inventory_digest
+          = dns.pirate_dns_authority_inventory_digest
+    LEFT JOIN LATERAL effective_route_authority_v2(app.community_id, database_now) AS route
+      ON route.route_binding_id = app.route_binding_id
+    LEFT JOIN LATERAL (
+      SELECT observation.*
+        FROM hns_dns_zone_health_observations AS observation
+       WHERE observation.dns_zone_activation_id = dns.dns_zone_activation_id
+         AND observation.activation_generation = dns.dns_zone_activation_generation
+       ORDER BY observation.health_generation DESC
+       LIMIT 1
+    ) AS health ON TRUE
+   WHERE database_now IS NOT NULL
+     AND input_normalized_host = current_app.normalized_host
 $$;
 
 CREATE FUNCTION revoke_operator_managed_route_v1(input_operation_id text, input_operator_principal_id text, input_operator_authority_grant_id text, input_idempotency_key text, input_request_hash text, input_community_id text, input_canonical_root text, input_activation_id text, input_route_binding_id text, input_expected_activation_generation bigint, input_reason_code text) RETURNS TABLE(outcome text, operator_route_activation_id text, route_binding_id text, activation_generation bigint)
@@ -7870,6 +8561,51 @@ CREATE TABLE hns_authority_inventories (
     CONSTRAINT hns_authority_inventories_time_check CHECK ((expires_at > published_at))
 );
 
+CREATE TABLE hns_community_app_host_activation_current (
+    app_host_activation_id text NOT NULL,
+    normalized_host text NOT NULL,
+    community_id text NOT NULL,
+    current_generation bigint NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT hns_community_app_host_activation_current_identity_check CHECK ((is_hns_host_persistence_identity(app_host_activation_id, 256) AND ((current_generation >= 1) AND (current_generation <= '9007199254740991'::bigint))))
+);
+
+CREATE TABLE hns_community_app_host_activation_revisions (
+    app_host_activation_id text NOT NULL,
+    app_host_activation_generation bigint NOT NULL,
+    normalized_host text NOT NULL,
+    canonical_root text NOT NULL,
+    community_id text NOT NULL,
+    route_binding_id text NOT NULL,
+    route_authority_kind text NOT NULL,
+    route_authority_reference text NOT NULL,
+    route_authority_generation bigint NOT NULL,
+    dns_zone_activation_id text NOT NULL,
+    dns_zone_activation_generation bigint NOT NULL,
+    gateway_deployment_reference text NOT NULL,
+    status text NOT NULL,
+    reason_code text,
+    activated_at timestamp with time zone NOT NULL,
+    suspended_at timestamp with time zone,
+    revoked_at timestamp with time zone,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_community_app_host_activation_revisions_identity_check CHECK ((is_hns_host_persistence_identity(app_host_activation_id, 256) AND ((app_host_activation_generation >= 1) AND (app_host_activation_generation <= '9007199254740991'::bigint)) AND (normalized_host = ('app.'::text || canonical_root)) AND is_community_route_root_label('hns'::text, canonical_root) AND is_hns_host_persistence_identity(route_binding_id, 256) AND (route_authority_kind = ANY (ARRAY['verified_namespace_v1'::text, 'operator_managed_route_v1'::text])) AND is_hns_host_persistence_identity(route_authority_reference, 512) AND ((route_authority_generation >= 1) AND (route_authority_generation <= '9007199254740991'::bigint)) AND is_hns_host_persistence_identity(gateway_deployment_reference, 256))),
+    CONSTRAINT hns_community_app_host_activation_revisions_status_check CHECK (((status = ANY (ARRAY['active'::text, 'suspended'::text, 'revoked'::text])) AND (((status = 'active'::text) AND (reason_code IS NULL) AND (suspended_at IS NULL) AND (revoked_at IS NULL)) OR ((status = 'suspended'::text) AND is_hns_host_persistence_identity(reason_code, 256) AND (suspended_at IS NOT NULL) AND (revoked_at IS NULL)) OR ((status = 'revoked'::text) AND is_hns_host_persistence_identity(reason_code, 256) AND (revoked_at IS NOT NULL)))))
+);
+
+CREATE TABLE hns_community_app_host_operations (
+    operation_id text NOT NULL,
+    operation_kind text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    app_host_activation_id text NOT NULL,
+    expected_activation_generation bigint NOT NULL,
+    target_status text NOT NULL,
+    result_activation_generation bigint NOT NULL,
+    committed_at timestamp with time zone NOT NULL,
+    CONSTRAINT hns_community_app_host_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND (operation_kind = ANY (ARRAY['activate'::text, 'transition'::text])) AND is_hns_host_persistence_identity(idempotency_key, 512) AND (request_hash ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(app_host_activation_id, 256) AND ((expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740990'::bigint)) AND (target_status = ANY (ARRAY['active'::text, 'suspended'::text, 'revoked'::text])) AND (result_activation_generation = (expected_activation_generation + 1)) AND (((operation_kind = 'activate'::text) AND (expected_activation_generation = 0) AND (target_status = 'active'::text)) OR (operation_kind = 'transition'::text))))
+);
+
 CREATE TABLE hns_control_observer_configurations (
     provider_configuration_reference text NOT NULL,
     provider_configuration_version text NOT NULL,
@@ -7963,6 +8699,112 @@ CREATE TABLE hns_control_observer_snapshots (
     CONSTRAINT hns_control_observer_snapshots_hash_check CHECK (((request_sha256 ~ '^[0-9a-f]{64}$'::text) AND (provider_configuration_digest ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(configuration_bytes), 'hex'::text) = provider_configuration_digest) AND (result_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(result_bytes), 'hex'::text) = result_sha256) AND ((authority_inventory_digest IS NULL) OR ((authority_inventory_digest ~ '^[0-9a-f]{64}$'::text) AND (authority_inventory_bytes IS NOT NULL) AND (encode(sha256(authority_inventory_bytes), 'hex'::text) = authority_inventory_digest))) AND ((semantic_facts_sha256 IS NULL) OR ((semantic_facts_sha256 ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(semantic_facts_bytes), 'hex'::text) = semantic_facts_sha256))) AND ((transcript_manifest_sha256 IS NULL) OR (transcript_manifest_sha256 ~ '^[0-9a-f]{64}$'::text)) AND ((observer_snapshot_sha256 IS NULL) OR (observer_snapshot_sha256 ~ '^[0-9a-f]{64}$'::text)))),
     CONSTRAINT hns_control_observer_snapshots_reference_check CHECK (((result_reference = snapshot_reference) AND (octet_length(result_reference) <= 424) AND (result_reference ~ '^[a-z][a-z0-9-]{0,31}(:[a-z0-9][a-z0-9._-]{0,127}){1,3}$'::text) AND (((result_status = ANY (ARRAY['verified'::text, 'rejected'::text])) AND (result_reference_kind = 'provider_evidence_ref'::text)) OR ((result_status = ANY (ARRAY['unavailable'::text, 'ineligible'::text])) AND (result_reference_kind = 'diagnostic_ref'::text))))),
     CONSTRAINT hns_control_observer_snapshots_time_check CHECK (((retained_at >= reservation_database_time) AND (retained_at < lease_expires_at)))
+);
+
+CREATE TABLE hns_dns_zone_activation_current (
+    dns_zone_activation_id text NOT NULL,
+    canonical_root text NOT NULL,
+    current_generation bigint NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT hns_dns_zone_activation_current_identity_check CHECK ((is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND is_community_route_root_label('hns'::text, canonical_root) AND ((current_generation >= 1) AND (current_generation <= '9007199254740991'::bigint))))
+);
+
+CREATE TABLE hns_dns_zone_activation_operations (
+    operation_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    activation_document_digest text NOT NULL,
+    dns_zone_activation_id text NOT NULL,
+    expected_activation_generation bigint NOT NULL,
+    state text NOT NULL,
+    fence_token bigint NOT NULL,
+    lease_seconds integer NOT NULL,
+    lease_expires_at timestamp with time zone NOT NULL,
+    result_activation_generation bigint,
+    created_at timestamp with time zone NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    finalized_at timestamp with time zone,
+    CONSTRAINT hns_dns_zone_activation_operations_fence_check CHECK (((expected_activation_generation BETWEEN 0 AND '9007199254740991'::bigint) AND ((fence_token >= 1) AND (fence_token <= '9007199254740991'::bigint)) AND ((lease_seconds >= 4) AND (lease_seconds <= 60)) AND (lease_expires_at > created_at) AND (updated_at >= created_at))),
+    CONSTRAINT hns_dns_zone_activation_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND is_hns_host_persistence_identity(idempotency_key, 512) AND is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND (activation_document_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_dns_zone_activation_operations_state_check CHECK ((((state = 'reserved'::text) AND (result_activation_generation IS NULL) AND (finalized_at IS NULL)) OR ((state = 'finalized'::text) AND (result_activation_generation = (expected_activation_generation + 1)) AND (finalized_at IS NOT NULL) AND (finalized_at = updated_at))))
+);
+
+CREATE TABLE hns_dns_zone_activation_revisions (
+    dns_zone_activation_id text NOT NULL,
+    dns_zone_activation_generation bigint NOT NULL,
+    activation_document_bytes bytea NOT NULL,
+    activation_document_digest text NOT NULL,
+    canonical_root text NOT NULL,
+    dns_authority_kind text NOT NULL,
+    dns_authority_reference text NOT NULL,
+    dns_authority_generation bigint NOT NULL,
+    pirate_dns_authority_inventory_reference text NOT NULL,
+    pirate_dns_authority_inventory_version text NOT NULL,
+    pirate_dns_authority_inventory_digest text NOT NULL,
+    zone_revision bigint NOT NULL,
+    zone_bytes bytea NOT NULL,
+    zone_bytes_digest text NOT NULL,
+    dnssec_keyset_reference text NOT NULL,
+    dnssec_keyset_version text NOT NULL,
+    gateway_deployment_reference text NOT NULL,
+    gateway_certificate_spki_sha256 text NOT NULL,
+    stable_chain_delegation_snapshot_reference text NOT NULL,
+    stable_chain_delegation_snapshot_digest text NOT NULL,
+    status text NOT NULL,
+    reason_code text,
+    activated_at timestamp with time zone NOT NULL,
+    suspended_at timestamp with time zone,
+    revoked_at timestamp with time zone,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT hns_dns_zone_activation_revisions_bytes_check CHECK (((octet_length(activation_document_bytes) BETWEEN 1 AND 65536) AND ((octet_length(zone_bytes) >= 1) AND (octet_length(zone_bytes) <= 1048576)))),
+    CONSTRAINT hns_dns_zone_activation_revisions_digest_check CHECK (((activation_document_digest ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(activation_document_bytes), 'hex'::text) = activation_document_digest) AND (pirate_dns_authority_inventory_digest ~ '^[0-9a-f]{64}$'::text) AND (zone_bytes_digest ~ '^[0-9a-f]{64}$'::text) AND (encode(sha256(zone_bytes), 'hex'::text) = zone_bytes_digest) AND (gateway_certificate_spki_sha256 ~ '^[0-9a-f]{64}$'::text) AND (stable_chain_delegation_snapshot_digest ~ '^[0-9a-f]{64}$'::text))),
+    CONSTRAINT hns_dns_zone_activation_revisions_generation_check CHECK (((dns_zone_activation_generation BETWEEN 1 AND '9007199254740991'::bigint) AND ((zone_revision >= 1) AND (zone_revision <= '9007199254740991'::bigint)))),
+    CONSTRAINT hns_dns_zone_activation_revisions_identity_check CHECK ((is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND is_community_route_root_label('hns'::text, canonical_root) AND (dns_authority_kind = 'pirate_managed_dns_v1'::text) AND is_hns_host_persistence_identity(dns_authority_reference, 256) AND ((dns_authority_generation >= 1) AND (dns_authority_generation <= '9007199254740991'::bigint)) AND is_hns_host_persistence_identity(pirate_dns_authority_inventory_reference, 256) AND is_hns_host_persistence_identity(pirate_dns_authority_inventory_version, 256) AND is_hns_host_persistence_identity(dnssec_keyset_reference, 256) AND is_hns_host_persistence_identity(dnssec_keyset_version, 256) AND is_hns_host_persistence_identity(gateway_deployment_reference, 256) AND is_hns_host_persistence_identity(stable_chain_delegation_snapshot_reference, 424))),
+    CONSTRAINT hns_dns_zone_activation_revisions_status_check CHECK (((status = ANY (ARRAY['active'::text, 'suspended'::text, 'revoked'::text])) AND (((status = 'active'::text) AND (reason_code IS NULL) AND (suspended_at IS NULL) AND (revoked_at IS NULL)) OR ((status = 'suspended'::text) AND is_hns_host_persistence_identity(reason_code, 256) AND (suspended_at IS NOT NULL) AND (revoked_at IS NULL)) OR ((status = 'revoked'::text) AND is_hns_host_persistence_identity(reason_code, 256) AND (revoked_at IS NOT NULL))) AND ((suspended_at IS NULL) OR (suspended_at >= activated_at)) AND ((revoked_at IS NULL) OR (revoked_at >= activated_at))))
+);
+
+CREATE TABLE hns_dns_zone_health_observations (
+    dns_zone_activation_id text NOT NULL,
+    activation_generation bigint NOT NULL,
+    health_generation bigint NOT NULL,
+    stable_chain_delegation_snapshot_reference text NOT NULL,
+    stable_chain_delegation_snapshot_digest text NOT NULL,
+    observed_zone_bytes_digest text NOT NULL,
+    observed_dnssec_keyset_reference text NOT NULL,
+    observed_dnssec_keyset_version text NOT NULL,
+    observed_gateway_deployment_reference text NOT NULL,
+    observed_gateway_certificate_spki_sha256 text NOT NULL,
+    delegation_matches boolean NOT NULL,
+    ds_authenticates_zone boolean NOT NULL,
+    retained_zone_digest_matches boolean NOT NULL,
+    gateway_healthy boolean NOT NULL,
+    checked_at timestamp with time zone NOT NULL,
+    valid_until timestamp with time zone NOT NULL,
+    CONSTRAINT hns_dns_zone_health_observations_identity_check CHECK (((health_generation BETWEEN 1 AND '9007199254740991'::bigint) AND is_hns_host_persistence_identity(stable_chain_delegation_snapshot_reference, 424) AND (stable_chain_delegation_snapshot_digest ~ '^[0-9a-f]{64}$'::text) AND (observed_zone_bytes_digest ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(observed_dnssec_keyset_reference, 256) AND is_hns_host_persistence_identity(observed_dnssec_keyset_version, 256) AND is_hns_host_persistence_identity(observed_gateway_deployment_reference, 256) AND (observed_gateway_certificate_spki_sha256 ~ '^[0-9a-f]{64}$'::text) AND (valid_until > checked_at)))
+);
+
+CREATE TABLE hns_dns_zone_health_operations (
+    operation_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    dns_zone_activation_id text NOT NULL,
+    activation_generation bigint NOT NULL,
+    expected_health_generation bigint NOT NULL,
+    result_health_generation bigint NOT NULL,
+    committed_at timestamp with time zone NOT NULL,
+    CONSTRAINT hns_dns_zone_health_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND is_hns_host_persistence_identity(idempotency_key, 512) AND (request_hash ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND ((activation_generation >= 1) AND (activation_generation <= '9007199254740991'::bigint)) AND ((expected_health_generation >= 0) AND (expected_health_generation <= '9007199254740990'::bigint)) AND (result_health_generation = (expected_health_generation + 1))))
+);
+
+CREATE TABLE hns_dns_zone_lifecycle_operations (
+    operation_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    dns_zone_activation_id text NOT NULL,
+    expected_activation_generation bigint NOT NULL,
+    target_status text NOT NULL,
+    reason_code text NOT NULL,
+    result_activation_generation bigint NOT NULL,
+    committed_at timestamp with time zone NOT NULL,
+    CONSTRAINT hns_dns_zone_lifecycle_operations_identity_check CHECK ((is_hns_host_persistence_identity(operation_id, 256) AND is_hns_host_persistence_identity(idempotency_key, 512) AND (request_hash ~ '^[0-9a-f]{64}$'::text) AND is_hns_host_persistence_identity(dns_zone_activation_id, 256) AND ((expected_activation_generation >= 1) AND (expected_activation_generation <= '9007199254740990'::bigint)) AND (target_status = ANY (ARRAY['active'::text, 'suspended'::text, 'revoked'::text])) AND is_hns_host_persistence_identity(reason_code, 256) AND (result_activation_generation = (expected_activation_generation + 1))))
 );
 
 CREATE TABLE home_feed_projection (
@@ -9901,6 +10743,24 @@ ALTER TABLE ONLY hns_authority_inventories
 ALTER TABLE ONLY hns_authority_inventories
     ADD CONSTRAINT hns_authority_inventories_pk PRIMARY KEY (registry_reference, authority_inventory_version);
 
+ALTER TABLE ONLY hns_community_app_host_activation_current
+    ADD CONSTRAINT hns_community_app_host_activation_current_community_id_key UNIQUE (community_id);
+
+ALTER TABLE ONLY hns_community_app_host_activation_current
+    ADD CONSTRAINT hns_community_app_host_activation_current_normalized_host_key UNIQUE (normalized_host);
+
+ALTER TABLE ONLY hns_community_app_host_activation_current
+    ADD CONSTRAINT hns_community_app_host_activation_current_pkey PRIMARY KEY (app_host_activation_id);
+
+ALTER TABLE ONLY hns_community_app_host_activation_revisions
+    ADD CONSTRAINT hns_community_app_host_activation_revisions_pk PRIMARY KEY (app_host_activation_id, app_host_activation_generation);
+
+ALTER TABLE ONLY hns_community_app_host_operations
+    ADD CONSTRAINT hns_community_app_host_operations_idempotency_key_key UNIQUE (idempotency_key);
+
+ALTER TABLE ONLY hns_community_app_host_operations
+    ADD CONSTRAINT hns_community_app_host_operations_pkey PRIMARY KEY (operation_id);
+
 ALTER TABLE ONLY hns_control_observer_configurations
     ADD CONSTRAINT hns_control_observer_configurations_digest_unique UNIQUE (provider_configuration_reference, provider_configuration_version, provider_configuration_digest);
 
@@ -9930,6 +10790,36 @@ ALTER TABLE ONLY hns_control_observer_snapshots
 
 ALTER TABLE ONLY hns_control_observer_snapshots
     ADD CONSTRAINT hns_control_observer_snapshots_pkey PRIMARY KEY (snapshot_reference);
+
+ALTER TABLE ONLY hns_dns_zone_activation_current
+    ADD CONSTRAINT hns_dns_zone_activation_current_canonical_root_key UNIQUE (canonical_root);
+
+ALTER TABLE ONLY hns_dns_zone_activation_current
+    ADD CONSTRAINT hns_dns_zone_activation_current_pkey PRIMARY KEY (dns_zone_activation_id);
+
+ALTER TABLE ONLY hns_dns_zone_activation_operations
+    ADD CONSTRAINT hns_dns_zone_activation_operations_idempotency_key_key UNIQUE (idempotency_key);
+
+ALTER TABLE ONLY hns_dns_zone_activation_operations
+    ADD CONSTRAINT hns_dns_zone_activation_operations_pkey PRIMARY KEY (operation_id);
+
+ALTER TABLE ONLY hns_dns_zone_activation_revisions
+    ADD CONSTRAINT hns_dns_zone_activation_revisions_pk PRIMARY KEY (dns_zone_activation_id, dns_zone_activation_generation);
+
+ALTER TABLE ONLY hns_dns_zone_health_observations
+    ADD CONSTRAINT hns_dns_zone_health_observations_pk PRIMARY KEY (dns_zone_activation_id, activation_generation, health_generation);
+
+ALTER TABLE ONLY hns_dns_zone_health_operations
+    ADD CONSTRAINT hns_dns_zone_health_operations_idempotency_key_key UNIQUE (idempotency_key);
+
+ALTER TABLE ONLY hns_dns_zone_health_operations
+    ADD CONSTRAINT hns_dns_zone_health_operations_pkey PRIMARY KEY (operation_id);
+
+ALTER TABLE ONLY hns_dns_zone_lifecycle_operations
+    ADD CONSTRAINT hns_dns_zone_lifecycle_operations_idempotency_key_key UNIQUE (idempotency_key);
+
+ALTER TABLE ONLY hns_dns_zone_lifecycle_operations
+    ADD CONSTRAINT hns_dns_zone_lifecycle_operations_pkey PRIMARY KEY (operation_id);
 
 ALTER TABLE ONLY home_feed_projection
     ADD CONSTRAINT home_feed_projection_pkey PRIMARY KEY (community_id, feed_item_id);
@@ -10471,6 +11361,8 @@ CREATE INDEX hns_authority_inventories_current_idx ON hns_authority_inventories 
 
 CREATE INDEX hns_control_observer_reservations_live_lease_idx ON hns_control_observer_reservations USING btree (lease_expires_at, observation_id) WHERE (state = 'reserved'::text);
 
+CREATE INDEX hns_dns_zone_activation_operations_live_idx ON hns_dns_zone_activation_operations USING btree (lease_expires_at, operation_id) WHERE (state = 'reserved'::text);
+
 CREATE UNIQUE INDEX home_feed_projection_post_unique ON home_feed_projection USING btree (community_id, post_id);
 
 CREATE INDEX home_feed_rank_idx ON home_feed_projection USING btree (community_id, rank_score DESC, feed_item_id);
@@ -10747,6 +11639,12 @@ CREATE TRIGGER evidence_receipts_validate_metadata BEFORE INSERT OR UPDATE ON ev
 
 CREATE TRIGGER hns_authority_inventories_append_only BEFORE DELETE OR UPDATE ON hns_authority_inventories FOR EACH ROW EXECUTE FUNCTION reject_hns_control_observer_append_only_change();
 
+CREATE TRIGGER hns_community_app_host_activation_revisions_append_only BEFORE DELETE OR UPDATE ON hns_community_app_host_activation_revisions FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
+
+CREATE TRIGGER hns_community_app_host_current_change_guard BEFORE DELETE OR UPDATE ON hns_community_app_host_activation_current FOR EACH ROW EXECUTE FUNCTION guard_hns_community_app_host_current_change();
+
+CREATE TRIGGER hns_community_app_host_operations_append_only BEFORE DELETE OR UPDATE ON hns_community_app_host_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
+
 CREATE TRIGGER hns_control_observer_configurations_append_only BEFORE DELETE OR UPDATE ON hns_control_observer_configurations FOR EACH ROW EXECUTE FUNCTION reject_hns_control_observer_append_only_change();
 
 CREATE TRIGGER hns_control_observer_operation_prepare BEFORE INSERT ON hns_control_observer_operations FOR EACH ROW EXECUTE FUNCTION prepare_hns_control_observer_operation_insert();
@@ -10764,6 +11662,18 @@ CREATE TRIGGER hns_control_observer_snapshots_append_only BEFORE DELETE OR UPDAT
 CREATE TRIGGER hns_control_observer_transcript_entries_append_only BEFORE DELETE OR UPDATE ON hns_control_observer_snapshot_transcript_entries FOR EACH ROW EXECUTE FUNCTION reject_hns_control_observer_append_only_change();
 
 CREATE TRIGGER hns_control_observer_transcript_entry_insert_guard BEFORE INSERT ON hns_control_observer_snapshot_transcript_entries FOR EACH ROW EXECUTE FUNCTION validate_hns_control_observer_transcript_entry_insert();
+
+CREATE TRIGGER hns_dns_zone_activation_current_change_guard BEFORE DELETE OR UPDATE ON hns_dns_zone_activation_current FOR EACH ROW EXECUTE FUNCTION guard_hns_dns_zone_activation_current_change();
+
+CREATE TRIGGER hns_dns_zone_activation_operations_change_guard BEFORE DELETE OR UPDATE ON hns_dns_zone_activation_operations FOR EACH ROW EXECUTE FUNCTION guard_hns_dns_zone_activation_operation_change();
+
+CREATE TRIGGER hns_dns_zone_activation_revisions_append_only BEFORE DELETE OR UPDATE ON hns_dns_zone_activation_revisions FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
+
+CREATE TRIGGER hns_dns_zone_health_observations_append_only BEFORE DELETE OR UPDATE ON hns_dns_zone_health_observations FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
+
+CREATE TRIGGER hns_dns_zone_health_operations_append_only BEFORE DELETE OR UPDATE ON hns_dns_zone_health_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
+
+CREATE TRIGGER hns_dns_zone_lifecycle_operations_append_only BEFORE DELETE OR UPDATE ON hns_dns_zone_lifecycle_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
 
 CREATE TRIGGER identity_credentials_enforce_lifecycle BEFORE INSERT OR DELETE OR UPDATE ON identity_credentials FOR EACH ROW EXECUTE FUNCTION identity_credentials_enforce_lifecycle();
 
@@ -11479,6 +12389,18 @@ ALTER TABLE ONLY evidence_receipts
 ALTER TABLE ONLY evidence_receipts
     ADD CONSTRAINT evidence_receipts_user_fk FOREIGN KEY (user_id) REFERENCES users(user_id);
 
+ALTER TABLE ONLY hns_community_app_host_activation_current
+    ADD CONSTRAINT hns_community_app_host_activation_current_revision_fk FOREIGN KEY (app_host_activation_id, current_generation) REFERENCES hns_community_app_host_activation_revisions(app_host_activation_id, app_host_activation_generation) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY hns_community_app_host_activation_revisions
+    ADD CONSTRAINT hns_community_app_host_activation_revisions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY hns_community_app_host_activation_revisions
+    ADD CONSTRAINT hns_community_app_host_activation_revisions_dns_fk FOREIGN KEY (dns_zone_activation_id, dns_zone_activation_generation) REFERENCES hns_dns_zone_activation_revisions(dns_zone_activation_id, dns_zone_activation_generation);
+
+ALTER TABLE ONLY hns_community_app_host_activation_revisions
+    ADD CONSTRAINT hns_community_app_host_activation_revisions_route_fk FOREIGN KEY (community_id, route_binding_id) REFERENCES community_canonical_route_bindings(community_id, route_binding_id);
+
 ALTER TABLE ONLY hns_control_observer_operations
     ADD CONSTRAINT hns_control_observer_operations_configuration_fk FOREIGN KEY (provider_configuration_reference, provider_configuration_version, provider_configuration_digest) REFERENCES hns_control_observer_configurations(provider_configuration_reference, provider_configuration_version, provider_configuration_digest);
 
@@ -11493,6 +12415,15 @@ ALTER TABLE ONLY hns_control_observer_snapshots
 
 ALTER TABLE ONLY hns_control_observer_snapshots
     ADD CONSTRAINT hns_control_observer_snapshots_reservation_fk FOREIGN KEY (observation_id, observer_fence) REFERENCES hns_control_observer_reservations(observation_id, observer_fence);
+
+ALTER TABLE ONLY hns_dns_zone_activation_current
+    ADD CONSTRAINT hns_dns_zone_activation_current_revision_fk FOREIGN KEY (dns_zone_activation_id, current_generation) REFERENCES hns_dns_zone_activation_revisions(dns_zone_activation_id, dns_zone_activation_generation) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY hns_dns_zone_activation_revisions
+    ADD CONSTRAINT hns_dns_zone_activation_revisions_inventory_fk FOREIGN KEY (pirate_dns_authority_inventory_reference, pirate_dns_authority_inventory_version, pirate_dns_authority_inventory_digest) REFERENCES hns_authority_inventories(authority_inventory_reference, authority_inventory_version, authority_inventory_digest);
+
+ALTER TABLE ONLY hns_dns_zone_health_observations
+    ADD CONSTRAINT hns_dns_zone_health_observations_revision_fk FOREIGN KEY (dns_zone_activation_id, activation_generation) REFERENCES hns_dns_zone_activation_revisions(dns_zone_activation_id, dns_zone_activation_generation);
 
 ALTER TABLE ONLY home_feed_projection
     ADD CONSTRAINT home_feed_post_fk FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);

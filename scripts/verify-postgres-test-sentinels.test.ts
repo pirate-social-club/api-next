@@ -42,6 +42,7 @@ async function sentinelSet(): Promise<{
     "verification-start",
     "community-purchase-funding",
     "hns-observer",
+    "hns-host-persistence",
   ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),
@@ -162,6 +163,22 @@ describe("Postgres suite sentinel verification", () => {
     );
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-hns-observer-suite-complete/gu),
+    ).toHaveLength(2);
+  });
+
+  test("keeps HNS host persistence fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain(
+      "packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts",
+    );
+    expect(
+      workflow.match(
+        /\/tmp\/api-next-control-plane-postgres-hns-host-persistence-suite-complete/gu,
+      ),
     ).toHaveLength(2);
   });
 
