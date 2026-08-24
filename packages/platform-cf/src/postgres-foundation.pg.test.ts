@@ -231,10 +231,7 @@ const hnsControlObserverPersistenceMigrationSql = await Bun.file(
   ),
 ).text();
 const mediaSubmissionMigrationSql = await Bun.file(
-  new URL(
-    "../../../db/postgres/migrations/0043_song_media_submission.sql",
-    import.meta.url,
-  ),
+  new URL("../../../db/postgres/migrations/0043_song_media_submission.sql", import.meta.url),
 ).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
