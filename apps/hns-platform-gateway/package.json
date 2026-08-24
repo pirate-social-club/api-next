@@ -1,0 +1,13 @@
+{
+  "name": "@pirate/hns-platform-gateway",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts"
+  },
+  "dependencies": {
+    "@pirate/application": "0.0.0"
+  }
+}

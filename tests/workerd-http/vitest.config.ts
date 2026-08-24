@@ -6,6 +6,10 @@ const alias = {
     "../../packages/application/src/hns-forwarder-v3.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/hns-static-platform-app-gateway": new URL(
+    "../../packages/application/src/hns-static-platform-app-gateway.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/hns-host-serving": new URL(
     "../../packages/application/src/hns-host-serving.ts",
     import.meta.url,
