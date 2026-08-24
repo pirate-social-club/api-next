@@ -103,7 +103,7 @@ describe("canonical community route Postgres repository", () => {
       values: [communityId],
     });
     expect(calls[0]?.text).toContain("community.status = 'active'");
-    expect(calls[0]?.text).toContain("LEFT JOIN LATERAL effective_active_route");
+    expect(calls[0]?.text).toContain("LEFT JOIN LATERAL effective_route_authority_v2");
   });
 
   test("resolves HNS IDN and Spaces emoji paths with one exact read", async () => {
@@ -126,7 +126,7 @@ describe("canonical community route Postgres repository", () => {
         values: [path_segment],
         readonly: true,
       });
-      expect(calls[0]?.text).toContain("effective_active_route(NULL, db_clock.now)");
+      expect(calls[0]?.text).toContain("effective_route_authority_v2(NULL, db_clock.now)");
       expect(calls[0]?.text).not.toContain("evidence.expires_at");
     }
   });

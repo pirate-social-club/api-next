@@ -57,7 +57,7 @@ const resolveCanonicalRouteStatement = (pathSegment: string) =>
                   ELSE NULL
                 END AS app_host
            FROM db_clock
-           CROSS JOIN LATERAL effective_active_route(NULL, db_clock.now) AS route
+           CROSS JOIN LATERAL effective_route_authority_v2(NULL, db_clock.now) AS route
            LEFT JOIN community_route_app_host_health AS health
              ON health.route_binding_id = route.route_binding_id
             AND health.family = 'hns'
@@ -98,7 +98,7 @@ const resolveCommunityIdStatement = (communityId: string) =>
            JOIN persona_role_presentations AS presentation
              ON presentation.community_id = community.community_id
             AND presentation.account_id = community.created_by_user_id
-           LEFT JOIN LATERAL effective_active_route(community.community_id, db_clock.now) AS route
+           LEFT JOIN LATERAL effective_route_authority_v2(community.community_id, db_clock.now) AS route
              ON TRUE
            LEFT JOIN community_route_app_host_health AS health
              ON health.route_binding_id = route.route_binding_id

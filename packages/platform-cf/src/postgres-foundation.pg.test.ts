@@ -245,6 +245,9 @@ const accountPersonaWalletPrivacyMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const hnsOperatorManagedRoutesMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0047_hns_operator_managed_routes.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -482,6 +485,11 @@ const accountPersonaWalletPrivacyMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0046_account_persona_wallet_privacy.sql"] ?? "",
   sql: accountPersonaWalletPrivacyMigrationSql,
 };
+const hnsOperatorManagedRoutesMigration: PostgresMigration = {
+  version: "0047_hns_operator_managed_routes.sql",
+  checksum: checksumManifest.migrations["0047_hns_operator_managed_routes.sql"] ?? "",
+  sql: hnsOperatorManagedRoutesMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -529,6 +537,7 @@ const migrations: readonly PostgresMigration[] = [
   optionalRouteV2Migration,
   hnsOwnerAuthorityCustodyMigration,
   accountPersonaWalletPrivacyMigration,
+  hnsOperatorManagedRoutesMigration,
 ];
 
 function checksum(value: string): string {
@@ -774,6 +783,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(accountPersonaWalletPrivacyMigrationSql)).toBe(
         accountPersonaWalletPrivacyMigration.checksum,
       );
+      expect(checksum(hnsOperatorManagedRoutesMigrationSql)).toBe(
+        hnsOperatorManagedRoutesMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -900,11 +912,16 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "namespace_ownership_sessions",
         "namespace_ownership_start_reservations",
         "observations",
+        "operator_managed_root_registry_current",
+        "operator_managed_root_registry_versions",
+        "operator_managed_route_activations",
+        "operator_managed_route_operations",
         "persona_create_actions",
         "persona_profiles",
         "persona_role_presentations",
         "persona_wallet_assignments",
         "personas",
+        "platform_operator_route_authority_grants",
         "policy_versions",
         "post_vote_actions",
         "post_votes",
