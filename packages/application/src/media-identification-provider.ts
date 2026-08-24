@@ -1,4 +1,4 @@
-import { Context, type Effect } from "effect";
+import { Context, Data, type Effect } from "effect";
 
 /**
  * The immutable media identity that a provider attempt is fenced to.  The
@@ -36,6 +36,46 @@ export type MediaIdentificationMatchEvidence = Readonly<{
   readonly score: number | null;
 }>;
 
+/**
+ * Private correlation fence for one immutable audio attempt.  This context is
+ * intentionally carried on every normalized outcome so evidence cannot be
+ * detached from the revisions and request that produced it.
+ */
+export type MediaIdentificationAttemptContext = Readonly<{
+  readonly version: "media-identification-attempt-context-v1";
+  readonly operationId: string;
+  readonly audioRevision: number;
+  readonly analysisRevision: number;
+  readonly canonicalAudioSha256: string;
+  readonly requestId: string;
+  readonly adapterRevision: string;
+}>;
+
+export type MediaIdentificationInvalidReason =
+  | "invalid_request_version"
+  | "invalid_operation_id"
+  | "invalid_request_id"
+  | "invalid_audio_revision"
+  | "invalid_analysis_revision"
+  | "invalid_audio_hash"
+  | "invalid_sample"
+  | "invalid_filename"
+  | "invalid_content_type"
+  | "invalid_adapter_revision"
+  | "invalid_limits"
+  | "invalid_provider_endpoint"
+  | "invalid_credentials"
+  | "invalid_transport"
+  | "invalid_clock"
+  | "multipart_boundary_collision";
+
+/** Input and composition failures are rejected before provider crypto/IO. */
+export class MediaIdentificationRequestInvalid extends Data.TaggedError(
+  "MediaIdentificationRequestInvalid",
+)<{
+  readonly reason: MediaIdentificationInvalidReason;
+}> {}
+
 export type MediaIdentificationRetryableReason =
   | "transport"
   | "provider"
@@ -61,7 +101,7 @@ export type MediaIdentificationMalformedReason =
  * retained match is identification evidence only: it never means ownership,
  * licensing, authorship, or publication permission.
  */
-export type MediaIdentificationOutcome =
+export type MediaIdentificationOutcomeKind =
   | Readonly<{
       readonly outcome: "retained_reference_match";
       readonly evidence: MediaIdentificationMatchEvidence;
@@ -85,10 +125,15 @@ export type MediaIdentificationOutcome =
       readonly reason: MediaIdentificationMalformedReason;
     }>;
 
+export type MediaIdentificationOutcome = Readonly<{
+  readonly context: MediaIdentificationAttemptContext;
+}> &
+  MediaIdentificationOutcomeKind;
+
 export interface MediaIdentificationProviderService {
   readonly identify: (
     input: MediaIdentificationRequest,
-  ) => Effect.Effect<MediaIdentificationOutcome>;
+  ) => Effect.Effect<MediaIdentificationOutcome, MediaIdentificationRequestInvalid>;
 }
 
 /**
@@ -103,4 +148,5 @@ export class MediaIdentificationProvider extends Context.Service<
 export const identifyMedia = (
   provider: MediaIdentificationProviderService,
   input: MediaIdentificationRequest,
-): Effect.Effect<MediaIdentificationOutcome> => provider.identify(input);
+): Effect.Effect<MediaIdentificationOutcome, MediaIdentificationRequestInvalid> =>
+  provider.identify(input);

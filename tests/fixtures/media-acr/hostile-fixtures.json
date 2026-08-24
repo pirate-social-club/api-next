@@ -1,5 +1,9 @@
 {
   "version": "media-acr-fixtures-v1",
+  "multipart": {
+    "fixed_boundary": "----pirate-acrcloud-v1",
+    "boundary_collision_sample_ascii": "----pirate-acrcloud-v1"
+  },
   "signature": {
     "access_key": "fixture-access-key",
     "path": "/v1/identify",
