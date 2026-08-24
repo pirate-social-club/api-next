@@ -1,18 +1,14 @@
 import {
-  handleVerificationCallback,
-  stripVerificationCallbackCredentialHeaders,
-  type VerificationCallbackResult,
-  type VerificationCallbackServices,
-} from "@pirate/application/use-cases/verification-callback";
-import {
   completeVerification,
-  type VerificationCompletionServices,
-} from "@pirate/application/use-cases/verification-completion";
-import {
+  handleVerificationCallback,
   type StartVerificationInput,
   type StartVerificationServices,
   startVerification,
-} from "@pirate/application/use-cases/verification-start";
+  stripVerificationCallbackCredentialHeaders,
+  type VerificationCallbackResult,
+  type VerificationCallbackServices,
+  type VerificationCompletionServices,
+} from "@pirate/application/verification";
 import {
   AuthError,
   BadRequest,

@@ -11,18 +11,16 @@ import {
   TextPostRepositoryError,
   type TextPostStore,
 } from "@pirate/application";
-import { getCurrentUser } from "@pirate/application/use-cases/current-user";
-import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import {
   hnsCompletionRequestHash,
-  type NamespaceOwnershipCompletionServices,
-  type NamespaceOwnershipStoredCompletion,
-} from "@pirate/application/use-cases/namespace-ownership-completion";
-import {
   hnsNamespaceStartHash,
+  type NamespaceOwnershipCompletionServices,
   type NamespaceOwnershipStartAuthority,
   type NamespaceOwnershipStartServices,
-} from "@pirate/application/use-cases/namespace-ownership-start";
+  type NamespaceOwnershipStoredCompletion,
+} from "@pirate/application/namespace-ownership";
+import { getCurrentUser } from "@pirate/application/use-cases/current-user";
+import type { IdentityAccountDocument } from "@pirate/application/use-cases/identity-account";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
 import {
   authenticateSession,

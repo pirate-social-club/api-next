@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ControlPlaneResult, ControlPlaneStatement } from "@pirate/application";
-import { VerificationStartStorageFailed } from "@pirate/application/use-cases/verification-start";
+import { VerificationStartStorageFailed } from "@pirate/application/verification";
 import { communityJoinActionPayloadHash, communityJoinIntentBindingHash } from "@pirate/domain";
 import { Effect } from "effect";
 import { makeCommunityJoinIntentResolver } from "./community-join-intent-resolver.ts";

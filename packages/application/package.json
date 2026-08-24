@@ -18,12 +18,11 @@
     "./route-revalidation/hashes": "./src/route-revalidation/hashes.ts",
     "./route-revalidation/start": "./src/route-revalidation/start.ts",
     "./route-revalidation/completion": "./src/route-revalidation/completion.ts",
+    "./money/community-purchase-funding": "./src/money/community-purchase-funding.ts",
     "./money/community-purchase-funding-admission": "./src/money/community-purchase-funding-admission.ts",
+    "./money/community-purchase-funding-observation": "./src/money/community-purchase-funding-observation.ts",
     "./money/community-purchase-funding-producer": "./src/money/community-purchase-funding-producer.ts",
-    "./use-cases/community-purchase-funding-admission": "./src/use-cases/community-purchase-funding-admission.ts",
-    "./use-cases/community-purchase-funding-producer": "./src/use-cases/community-purchase-funding-producer.ts",
-    "./use-cases/community-purchase-funding-observation": "./src/use-cases/community-purchase-funding-observation.ts",
-    "./use-cases/community-purchase-funding-query": "./src/use-cases/community-purchase-funding-query.ts",
+    "./money/community-purchase-funding-query": "./src/money/community-purchase-funding-query.ts",
     "./verification": "./src/verification/index.ts",
     "./use-cases/community/creation-intents": "./src/use-cases/community/creation-intents.ts",
     "./use-cases/community/follow-community": "./src/use-cases/community/follow-community.ts",
@@ -46,12 +45,6 @@
     "./use-cases/public-profile": "./src/use-cases/public-profile.ts",
     "./use-cases/session-authentication": "./src/use-cases/session-authentication.ts",
     "./use-cases/session-exchange": "./src/use-cases/session-exchange.ts",
-    "./use-cases/identity-registration-handler": "./src/use-cases/identity-registration-handler.ts",
-    "./use-cases/verification-callback": "./src/use-cases/verification-callback.ts",
-    "./use-cases/verification-completion": "./src/use-cases/verification-completion.ts",
-    "./use-cases/verification-start": "./src/use-cases/verification-start.ts",
-    "./use-cases/namespace-ownership-start": "./src/use-cases/namespace-ownership-start.ts",
-    "./use-cases/namespace-ownership-completion": "./src/use-cases/namespace-ownership-completion.ts",
-    "./use-cases/hns-owner-recovery": "./src/use-cases/hns-owner-recovery.ts"
+    "./use-cases/identity-registration-handler": "./src/use-cases/identity-registration-handler.ts"
   }
 }

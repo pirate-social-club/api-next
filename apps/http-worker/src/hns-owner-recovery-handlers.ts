@@ -3,7 +3,7 @@ import {
   type HnsOwnerRecoveryStartServices,
   pollHnsOwnerRecovery,
   startHnsOwnerRecovery,
-} from "@pirate/application/use-cases/hns-owner-recovery";
+} from "@pirate/application/route-revalidation";
 import {
   AuthError,
   BadRequest,

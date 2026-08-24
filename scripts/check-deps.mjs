@@ -177,6 +177,7 @@ const VERIFICATION_EXPORTS = {
       "stripVerificationCallbackCredentialHeaders",
       "VerificationCallbackFailure",
       "VerificationCallbackRejected",
+      "VerificationCallbackResult",
       "VerificationCallbackServices",
       "handleVerificationCallback",
     ],

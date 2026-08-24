@@ -1,11 +1,9 @@
 import {
   completeNamespaceOwnership,
   type NamespaceOwnershipCompletionServices,
-} from "@pirate/application/use-cases/namespace-ownership-completion";
-import {
   type NamespaceOwnershipStartServices,
   startNamespaceOwnership,
-} from "@pirate/application/use-cases/namespace-ownership-start";
+} from "@pirate/application/namespace-ownership";
 import {
   AuthError,
   BadRequest,

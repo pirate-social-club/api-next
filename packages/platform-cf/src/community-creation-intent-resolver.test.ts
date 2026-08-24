@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ControlPlaneResult, ControlPlaneStatement } from "@pirate/application";
-import { VerificationStartStorageFailed } from "@pirate/application/use-cases/verification-start";
+import { VerificationStartStorageFailed } from "@pirate/application/verification";
 import {
   communityCreationCeremonyReservationHash,
   communityCreationProviderBindingHash,

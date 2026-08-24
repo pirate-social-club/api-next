@@ -10,6 +10,10 @@ const alias = {
     "../../packages/application/src/hns-host-serving.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/namespace-ownership": new URL(
+    "../../packages/application/src/namespace-ownership/index.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/route-revalidation": new URL(
     "../../packages/application/src/route-revalidation/index.ts",
     import.meta.url,
@@ -42,28 +46,8 @@ const alias = {
     "../../packages/application/src/use-cases/session-exchange.ts",
     import.meta.url,
   ).pathname,
-  "@pirate/application/use-cases/verification-callback": new URL(
-    "../../packages/application/src/use-cases/verification-callback.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/verification-completion": new URL(
-    "../../packages/application/src/use-cases/verification-completion.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/verification-start": new URL(
-    "../../packages/application/src/use-cases/verification-start.ts",
-    import.meta.url,
-  ).pathname,
   "@pirate/application/use-cases/identity-registration-handler": new URL(
     "../../packages/application/src/use-cases/identity-registration-handler.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/namespace-ownership-start": new URL(
-    "../../packages/application/src/use-cases/namespace-ownership-start.ts",
-    import.meta.url,
-  ).pathname,
-  "@pirate/application/use-cases/namespace-ownership-completion": new URL(
-    "../../packages/application/src/use-cases/namespace-ownership-completion.ts",
     import.meta.url,
   ).pathname,
   "@pirate/application": new URL("../../packages/application/src/index.ts", import.meta.url)
