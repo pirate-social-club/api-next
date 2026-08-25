@@ -10,7 +10,7 @@ static unreachability as a product-deletion signal.
 
 At branch base the report showed 1 unused file, 113 unused exports, 114 unused
 exported types, and 8 duplicate-export groups. The hygiene lane reduced that to
-0 unused files, 83 unused exports, 114 unused exported types, and 0 duplicate
+0 unused files, 64 unused exports, 81 unused exported types, and 0 duplicate
 groups. The remaining findings are intentional package and future-lane surface,
 described below.
 
@@ -28,12 +28,14 @@ the media processor and upload lanes will consume. Their lane tasks are
 `planned` or `blocked` in the workspace register, so the exports have no caller
 today by design, not by accident.
 
-The verification provider modules carry the same shape. `self-pass`,
-`self-enterprise`, `very-oauth`, `very-web`, and `zkpassport` each export clock,
-identifier, digest, and configuration constants alongside their provider
-factories. Those constants are the provider manifest surface consumed through
-`verification-provider-registry` and its dynamic loading, which Knip cannot see
-through.
+The verification provider modules were reclassified during the hygiene lane.
+Their clock, identifier, digest, and presentation constants are internal
+implementation exports used only within their defining modules, not consumed
+through the provider registry. The registry uses static imports and reads only
+the provider factories, transports, and a few manifest types. Where a provider
+constant or type had no concrete external consumer it was de-exported or
+removed; what remains in the Knip report is the provider factories and manifest
+surface the registry and tests actually import.
 
 The domain feed constants are completed Lane B ports. Video scoring and
 selection are recorded complete in spec 002 and remain staged domain core even
@@ -59,5 +61,5 @@ only exemption is the compile-only fixture, which the dependency gate requires.
 
 ## Baseline numbers
 
-Unused exports: 83. Unused exported types: 114. Unused files: 0. Duplicate
+Unused exports: 64. Unused exported types: 81. Unused files: 0. Duplicate
 exports: 0.
