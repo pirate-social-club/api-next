@@ -1,7 +1,7 @@
 import {
   HNS_PLATFORM_CANONICAL_ORIGIN,
   HNS_STATIC_PLATFORM_APP_GATEWAY_SHA256,
-  verifyHnsStaticPlatformAppGatewayProfileV1,
+  verifyHnsStaticPlatformAppGatewayProfileV2,
 } from "@pirate/application/hns-static-platform-app-gateway";
 import { makeHnsStaticPlatformGatewayComposition } from "./composition.ts";
 import { startHnsStaticPlatformGatewayServer } from "./server.ts";
@@ -61,7 +61,7 @@ async function originReady(): Promise<boolean> {
 
 export async function runHnsStaticPlatformGateway(arguments_: readonly string[]): Promise<void> {
   const mode = parseHnsStaticPlatformGatewayMode(arguments_);
-  await verifyHnsStaticPlatformAppGatewayProfileV1();
+  await verifyHnsStaticPlatformAppGatewayProfileV2();
   const composition = makeHnsStaticPlatformGatewayComposition(true, {
     upstream_fetch: (request) => fetch(request),
   });

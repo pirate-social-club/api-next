@@ -45,7 +45,10 @@ export function makeHnsStaticPlatformGatewayService(input: {
     handle: async (request) => {
       const admitted = admitHnsStaticPlatformGatewayRequest(request);
       if ("status" in admitted) {
-        return redacted(admitted.status, admitted.status === 405 ? "GET, HEAD" : undefined);
+        return redacted(
+          admitted.status,
+          admitted.status === 405 ? "GET, HEAD, POST, PATCH" : undefined,
+        );
       }
       if (admitted.host === HNS_PLATFORM_ROOT) {
         return new Response(null, {
@@ -70,17 +73,21 @@ export function makeHnsStaticPlatformGatewayService(input: {
         if (terminal !== null) return;
         terminal = "deadline";
         controller.abort();
-      }, HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[10]);
+      }, HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[14]);
 
       try {
         let upstream: Response;
         try {
           const upstreamHeaders = new Headers(admitted.upstream_headers);
           upstreamHeaders.set("accept-encoding", "identity");
+          const upstreamBody = admitted.body_bytes.slice().buffer as ArrayBuffer;
           upstream = await input.upstream_fetch(
             new Request(`${HNS_PLATFORM_CANONICAL_ORIGIN}${admitted.target}`, {
               method: admitted.method,
               headers: upstreamHeaders,
+              ...(admitted.method === "POST" || admitted.method === "PATCH"
+                ? { body: upstreamBody }
+                : {}),
               redirect: "manual",
               signal: controller.signal,
             }),

@@ -157,6 +157,9 @@ describe("config system (000 §9)", () => {
       },
     ]);
     expect(production?.vars?.PIRATE_API_PUBLIC_ORIGIN).toBe("https://api-next.pirate.sc");
+    expect(production?.vars?.CORS_ORIGIN).toBe(
+      "https://app.pirate,https://pirate.app,https://pirate.sc",
+    );
     expect(production?.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
   });
 });

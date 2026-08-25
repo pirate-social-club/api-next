@@ -39,9 +39,15 @@ validation, and retain the previous JSON bytes and SHA-256 for immediate
 rollback. Never edit the live JSON in place.
 
 The shadow rehearsal sends the two exact gateway headers directly to port
-4149. It proves the apex redirect, path-preserving app response, `GET`/`HEAD`,
-credential stripping, reserved-host failure, health, restart, and source
-closure without touching Caddy. Only after those probes pass may the production
-unit replace the legacy process on 4049 and the validated Caddy candidate be
-loaded. DNS, DNSSEC, TLSA, certificate, HSD, PowerDNS, and backup state remain
-unchanged throughout this cutover.
+4149. It proves the apex redirect, path-preserving app response, bounded
+`GET`/`HEAD`/`POST`/`PATCH`, exact Origin and CSRF preservation, host-only
+session and CSRF cookies, reserved-host failure, health, restart, and source
+closure without touching Caddy. It must also prove that unsafe apex requests,
+foreign or duplicate Origin, unknown or weakened cookies, Authorization, and
+oversized bodies fail before application work.
+
+Only after those probes pass may the production v2 unit atomically replace the
+retained v1 read-only unit on 4049. Retain the v1 bundle, unit bytes, and
+checksums as the immediate rollback. The validated Caddy topology, DNS,
+DNSSEC, TLSA, certificate, HSD, PowerDNS, and backup state remain unchanged
+throughout this cutover.

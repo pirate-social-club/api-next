@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isIP } from "node:net";
+import { HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE } from "@pirate/application/hns-static-platform-app-gateway";
 import type { HnsStaticPlatformGatewayComposition } from "./composition.ts";
 import { makeHnsStaticPlatformGatewayHealthService } from "./health.ts";
 import {
@@ -33,12 +34,77 @@ function rawHeaderFields(request: IncomingMessage): readonly (readonly [string, 
 
 async function writeResponse(response: ServerResponse, webResponse: Response): Promise<void> {
   response.statusCode = webResponse.status;
-  for (const [name, value] of webResponse.headers) response.setHeader(name, value);
+  for (const [name, value] of webResponse.headers) {
+    if (name.toLowerCase() !== "set-cookie") response.setHeader(name, value);
+  }
+  const setCookies = (
+    webResponse.headers as Headers & { getSetCookie?: () => string[] }
+  ).getSetCookie?.();
+  if (setCookies !== undefined && setCookies.length > 0)
+    response.setHeader("set-cookie", setCookies);
   if (webResponse.body === null) {
     response.end();
     return;
   }
   response.end(new Uint8Array(await webResponse.arrayBuffer()));
+}
+
+function readBoundedRequestBody(
+  request: IncomingMessage,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let settled = false;
+    const cleanup = () => {
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("error", onError);
+      signal.removeEventListener("abort", onAbort);
+    };
+    const finish = (body: Uint8Array) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(body);
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk: Buffer) => {
+      total += chunk.byteLength;
+      if (total > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[11]) {
+        request.pause();
+        finish(new Uint8Array(HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[11] + 1));
+        return;
+      }
+      chunks.push(new Uint8Array(chunk));
+    };
+    const onEnd = () => {
+      const body = new Uint8Array(total);
+      let offset = 0;
+      for (const chunk of chunks) {
+        body.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      finish(body);
+    };
+    const onError = () => fail(new Error("Request body is invalid"));
+    const onAbort = () => fail(new HnsStaticPlatformGatewayCallerAbort());
+
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("error", onError);
+  });
 }
 
 function gatewayHandler(service: HnsStaticPlatformGatewayService) {
@@ -49,11 +115,12 @@ function gatewayHandler(service: HnsStaticPlatformGatewayService) {
     };
     response.once("close", clientClosed);
     try {
+      const bodyBytes = await readBoundedRequestBody(request, abort.signal);
       const result = await service.handle({
         method: request.method ?? "",
         target: request.url ?? "",
         header_fields: rawHeaderFields(request),
-        body_bytes: new Uint8Array(),
+        body_bytes: bodyBytes,
         signal: abort.signal,
       });
       if (!response.destroyed) await writeResponse(response, result);

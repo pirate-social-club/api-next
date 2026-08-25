@@ -205,6 +205,28 @@ describe("contracts-generated HTTP worker", () => {
     expect(response.headers.get("set-cookie")).not.toContain("access_token");
   });
 
+  it("accepts app.pirate as the exact interactive production browser origin", async () => {
+    const app = createHttpWorker({
+      config: { corsOrigin: "https://app.pirate,https://pirate.app,https://pirate.sc" },
+      sessionExchange: sessionServices,
+    });
+    const request = (origin: string) =>
+      app.request("https://worker.test/auth/session/exchange", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin },
+        body: JSON.stringify({
+          proof: { type: "privy_access_token", privy_access_token: "privy-proof" },
+        }),
+      });
+
+    const accepted = await request("https://app.pirate");
+    expect(accepted.status).toBe(200);
+    expect(accepted.headers.get("access-control-allow-origin")).toBe("https://app.pirate");
+    expect(accepted.headers.get("set-cookie")).toContain("__Host-pirate_session=");
+    expect((await request("http://app.pirate")).status).toBe(401);
+    expect((await request("https://name.pirate")).status).toBe(401);
+  });
+
   it("installs registration only with trusted edge metadata and sets a host-only session", async () => {
     const app = createHttpWorker({
       config: { corsOrigin: "https://solid.test" },
