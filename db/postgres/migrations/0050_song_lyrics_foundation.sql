@@ -1,6 +1,19 @@
 -- Revisioned author-reviewed lyrics foundation. ASR transcripts remain immutable
 -- evidence; accepted lyrics are a distinct, audio-bound author decision.
 
+-- Pre-0050 ready speech and timed-lyrics rows have no author-accepted lyrics
+-- identity. Refuse that lossy upgrade before changing any catalog object; an
+-- operator must first reconcile those rows through a separately reviewed data
+-- migration. Other populated 0048 states upgrade in place below.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM media_analysis_evidence WHERE speech_status = 'ready')
+     OR EXISTS (SELECT 1 FROM media_timed_lyrics_artifacts) THEN
+    RAISE EXCEPTION '0050 requires reconciliation of pre-foundation ready speech or timed lyrics rows';
+  END IF;
+END;
+$$;
+
 ALTER TABLE media_post_submissions
   ADD COLUMN lyrics_revision BIGINT NOT NULL DEFAULT 0 CHECK (lyrics_revision >= 0),
   ADD COLUMN current_lyrics_revision BIGINT,
@@ -206,7 +219,7 @@ BEGIN
               AND transcript.canonical_audio_sha256=NEW.canonical_audio_sha256
           )
         ))
-       OR (NEW.speech_status IN ('no_speech','unavailable')
+       OR (NEW.speech_status = 'no_speech'
            AND submission_record.current_lyrics_revision IS NOT NULL)
        OR (NEW.material_disagreement AND NEW.lyrics_safety <> 'review_required') THEN
       RAISE EXCEPTION 'analysis lyrics lineage is not exact';
@@ -249,6 +262,25 @@ CREATE TRIGGER media_publication_lyrics_lineage_guard BEFORE INSERT ON media_pub
   FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
 CREATE TRIGGER media_alignment_lyrics_lineage_guard BEFORE INSERT ON media_alignment_projections
   FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
+
+-- The accepted mapping publishes explicit lyrics with a truthful label. Patch
+-- the pinned 0043 transition function without copying its entire predecessor
+-- definition into this forward migration.
+DO $migration$
+DECLARE definition TEXT; patched TEXT;
+BEGIN
+  SELECT pg_get_functiondef('guard_media_submission_update()'::regprocedure) INTO definition;
+  patched := replace(
+    definition,
+    'analysis_record.explicitness NOT IN (''not_explicit'', ''no_lyrics'')',
+    'analysis_record.explicitness NOT IN (''not_explicit'', ''explicit'', ''no_lyrics'')'
+  );
+  IF patched IS NOT DISTINCT FROM definition THEN
+    RAISE EXCEPTION '0049 could not patch the explicit publication predicate';
+  END IF;
+  EXECUTE patched;
+END;
+$migration$;
 
 -- Existing transition guards do not know the two new submission mutations.
 -- Keep them for every old transition and route only the new shapes to exact guards.
@@ -316,11 +348,23 @@ CREATE CONSTRAINT TRIGGER media_publication_lyrics_pair AFTER UPDATE ON media_po
   ) EXECUTE FUNCTION validate_media_publication_lyrics_pair();
 
 CREATE FUNCTION guard_media_lyrics_or_workflow_update() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE community_active BOOLEAN; membership_active BOOLEAN;
 BEGIN
   IF NEW.current_lyrics_revision IS DISTINCT FROM OLD.current_lyrics_revision THEN
-    IF NEW.lyrics_revision IS DISTINCT FROM OLD.lyrics_revision + 1
+    SELECT status = 'active' INTO community_active FROM communities
+      WHERE community_id=NEW.community_id FOR SHARE;
+    SELECT status = 'member' INTO membership_active FROM community_memberships
+      WHERE community_id=NEW.community_id AND user_id=NEW.actor_user_id FOR SHARE;
+    IF community_active IS DISTINCT FROM TRUE OR membership_active IS DISTINCT FROM TRUE
+       OR OLD.audio_revision = 0
+       OR NOT (
+         (OLD.status = 'processing' AND OLD.phase IN ('analysis','decision'))
+         OR (OLD.status IN ('action_required','manual_review') AND OLD.phase IS NULL)
+       )
+       OR NEW.lyrics_revision IS DISTINCT FROM OLD.lyrics_revision + 1
        OR NEW.current_lyrics_revision IS DISTINCT FROM NEW.lyrics_revision
        OR NEW.creation_revision IS DISTINCT FROM OLD.creation_revision + 1
+       OR NEW.current_terms_revision IS DISTINCT FROM NEW.creation_revision
        OR NEW.analysis_revision IS DISTINCT FROM OLD.analysis_revision
        OR NEW.current_analysis_revision IS NOT NULL
        OR NEW.decision_revision IS DISTINCT FROM 0
@@ -330,7 +374,7 @@ BEGIN
        OR NEW.event_sequence IS DISTINCT FROM OLD.event_sequence + 1
        OR NEW.updated_at <= OLD.updated_at
        OR (to_jsonb(NEW) - ARRAY[
-         'lyrics_revision','current_lyrics_revision','creation_revision','current_analysis_revision',
+         'lyrics_revision','current_lyrics_revision','creation_revision','current_terms_revision','current_analysis_revision',
          'decision_revision','current_decision_revision','status','phase','event_sequence','updated_at',
          'action_kind','action_reference_request_ref','action_expires_at','review_ref',
          'review_reason_code','review_exhaustion_code','review_exhaustion_attempt_id','held_revision',
@@ -338,7 +382,7 @@ BEGIN
          'moderator_reason_code','failure_code','failure_retry_count','retryable','last_safe_phase',
          'actor_account_id'
        ]) IS DISTINCT FROM (to_jsonb(OLD) - ARRAY[
-         'lyrics_revision','current_lyrics_revision','creation_revision','current_analysis_revision',
+         'lyrics_revision','current_lyrics_revision','creation_revision','current_terms_revision','current_analysis_revision',
          'decision_revision','current_decision_revision','status','phase','event_sequence','updated_at',
          'action_kind','action_reference_request_ref','action_expires_at','review_ref',
          'review_reason_code','review_exhaustion_code','review_exhaustion_attempt_id','held_revision',
@@ -403,6 +447,24 @@ BEGIN
       AND lyrics.creation_revision=NEW.creation_revision
       AND lyrics.audio_revision=NEW.audio_revision
   ) THEN RAISE EXCEPTION 'lyrics transition lacks its immutable revision'; END IF;
+  IF expected_event = 'song_lyrics_bound' AND NOT EXISTS (
+    SELECT 1 FROM media_submission_terms terms
+    WHERE terms.community_id=NEW.community_id AND terms.actor_user_id=NEW.actor_user_id
+      AND terms.submission_id=NEW.submission_id AND terms.operation_id=NEW.operation_id
+      AND terms.creation_revision=NEW.creation_revision
+  ) THEN RAISE EXCEPTION 'lyrics transition lacks its exact creation snapshot'; END IF;
+  IF expected_event = 'song_lyrics_bound' AND NEW.workflow_revision > 0 AND NOT EXISTS (
+    SELECT 1 FROM media_submission_outbox outbox
+    WHERE outbox.community_id=NEW.community_id AND outbox.actor_user_id=NEW.actor_user_id
+      AND outbox.submission_id=NEW.submission_id AND outbox.operation_id=NEW.operation_id
+      AND outbox.event_type='decision_wakeup'
+      AND outbox.creation_revision=NEW.creation_revision
+      AND outbox.audio_revision=NEW.audio_revision
+      AND outbox.analysis_revision=NEW.analysis_revision
+      AND outbox.lyrics_revision=NEW.current_lyrics_revision
+      AND outbox.workflow_revision=NEW.workflow_revision
+      AND outbox.payload->>'trigger'='lyrics'
+  ) THEN RAISE EXCEPTION 'lyrics transition lacks its exact decision wakeup'; END IF;
   IF expected_event = 'workflow_replaced' AND NOT EXISTS (
     SELECT 1 FROM media_submission_outbox outbox
     WHERE outbox.community_id=NEW.community_id AND outbox.actor_user_id=NEW.actor_user_id
@@ -458,6 +520,48 @@ END;
 $$;
 CREATE TRIGGER media_song_lyrics_insert_guard BEFORE INSERT ON media_song_lyrics_revisions
   FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_insert();
+
+-- Bind the mutable alignment pointer to the lyrics revision as well as the
+-- already-fenced publication/audio/analysis identity.
+ALTER TABLE media_timed_lyrics_artifacts
+  ADD CONSTRAINT media_timed_lyrics_artifact_pointer_lyrics_unique UNIQUE (
+    artifact_ref, artifact_revision, community_id, actor_user_id, submission_id,
+    operation_id, post_id, audio_revision, analysis_revision,
+    canonical_audio_sha256, lyrics_revision
+  );
+ALTER TABLE media_alignment_projections
+  DROP CONSTRAINT media_alignment_projections_current_artifact_ref_current_a_fkey,
+  ADD CONSTRAINT media_alignment_current_artifact_lyrics_fk FOREIGN KEY (
+    current_artifact_ref, current_artifact_revision, community_id, actor_user_id,
+    submission_id, operation_id, post_id, audio_revision, analysis_revision,
+    canonical_audio_sha256, lyrics_revision
+  ) REFERENCES media_timed_lyrics_artifacts (
+    artifact_ref, artifact_revision, community_id, actor_user_id, submission_id,
+    operation_id, post_id, audio_revision, analysis_revision,
+    canonical_audio_sha256, lyrics_revision
+  );
+
+CREATE FUNCTION validate_media_alignment_lyrics_pointer() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.current_artifact_ref IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM media_timed_lyrics_artifacts artifact
+    WHERE artifact.artifact_ref=NEW.current_artifact_ref
+      AND artifact.artifact_revision=NEW.current_artifact_revision
+      AND artifact.community_id=NEW.community_id
+      AND artifact.actor_user_id=NEW.actor_user_id
+      AND artifact.submission_id=NEW.submission_id
+      AND artifact.operation_id=NEW.operation_id
+      AND artifact.post_id=NEW.post_id
+      AND artifact.audio_revision=NEW.audio_revision
+      AND artifact.analysis_revision=NEW.analysis_revision
+      AND artifact.canonical_audio_sha256=NEW.canonical_audio_sha256
+      AND artifact.lyrics_revision=NEW.lyrics_revision
+  ) THEN RAISE EXCEPTION 'alignment artifact lyrics revision is not exact'; END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER media_alignment_lyrics_pointer_guard BEFORE INSERT OR UPDATE ON media_alignment_projections
+  FOR EACH ROW EXECUTE FUNCTION validate_media_alignment_lyrics_pointer();
 
 -- New outbox payloads are closed and identifier-only. Old payloads retain the
 -- 0043 validator; the repository supplies exact shapes for every new edge.

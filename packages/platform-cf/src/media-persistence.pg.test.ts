@@ -25,7 +25,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 20;
+const testCount = 23;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -240,6 +240,7 @@ async function createThroughDecision(
     transcript: string;
     segments: readonly Readonly<{ start_ms: number; end_ms: number; text: string }>[];
   }>,
+  pastedLyrics?: string,
 ): Promise<void> {
   expect(
     await run(connection, (store) =>
@@ -365,6 +366,33 @@ async function createThroughDecision(
       ),
     ).toEqual({ kind: "committed", submissionId: submission });
   }
+  if (pastedLyrics !== undefined) {
+    expect(
+      await run(connection, (store) =>
+        store.bindLyrics({
+          ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-key"),
+          expectedCreationRevision: 2,
+          expectedAudioRevision: 1,
+          baseTranscriptRevision: null,
+          lyrics: pastedLyrics,
+          outbox: {
+            outboxEventId: "media_pg_lyrics_outbox",
+            effectIdentity: "media_pg_lyrics_effect",
+            payload: {
+              kind: "decision_wakeup",
+              submission_id: submission,
+              operation_id: operation,
+              creation_revision: 3,
+              lyrics_revision: 1,
+              trigger: "lyrics",
+              workflow_revision: 1,
+              workflow_instance_id: `media-${operation}-r1`,
+            },
+          },
+        }),
+      ),
+    ).toEqual({ kind: "committed", submissionId: submission });
+  }
   expect(
     await run(connection, (store) =>
       store.acceptAnalysis({
@@ -380,9 +408,9 @@ async function createThroughDecision(
     await run(connection, (store) =>
       store.recordDecision({
         ...command(connection, "/media-post-submissions/:submissionId/decision", "decision-key"),
-        expectedCreationRevision: 2,
-        expectedAudioRevision: 1,
-        expectedAnalysisRevision: 1,
+        expectedCreationRevision: selectedDecision.creationRevision,
+        expectedAudioRevision: selectedDecision.audioRevision,
+        expectedAnalysisRevision: selectedDecision.analysisRevision,
         decision: selectedDecision,
       }),
     ),
@@ -663,6 +691,75 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         current_lyrics_revision: null,
         workflow_replacement_sequence: "0",
       });
+    } finally {
+      await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+      await admin.end();
+    }
+    completedTestCount += 1;
+  }, 40_000);
+  test("fails 0050 atomically over unreconciled ready and timed 0049 rows", async () => {
+    if (connectionString === undefined)
+      throw new Error("Postgres test configuration is unavailable");
+    const schema = schemaName();
+    const admin = new Client({ connectionString });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    const connection = scopedConnection(connectionString, schema);
+    try {
+      const migrations = await loadPostgresMigrations();
+      const lyricsIndex = migrations.findIndex(
+        ({ version }) => version === "0050_song_lyrics_foundation.sql",
+      );
+      expect(lyricsIndex).toBeGreaterThan(0);
+      await runPostgresMigrations({
+        connectionString: connection,
+        migrations: migrations.slice(0, lyricsIndex),
+      });
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      await admin.query("ALTER TABLE media_analysis_evidence DISABLE TRIGGER ALL");
+      await admin.query(
+        `INSERT INTO media_analysis_evidence (
+          submission_id,community_id,actor_user_id,operation_id,analysis_version,
+          audio_revision,analysis_revision,canonical_audio_sha256,finalized_audio_ref,
+          probe_evidence_ref,embedded_metadata_evidence_ref,embedded_metadata_adapter_revision,
+          embedded_title,embedded_title_provenance,cover_status,cover_facts,speech_status,
+          transcript_artifact_ref,transcript_sha256,explicitness,primary_language_bcp47,
+          speech_evidence_ref,speech_policy_revision,speech_adapter_revision,acr_decision,
+          acr_evidence_ref,acr_policy_revision,acr_adapter_revision,media_safety,lyrics_safety,
+          analysis_snapshot,author_persona_id
+        ) VALUES (
+          'legacy-ready','legacy-community','legacy-actor','legacy-operation','song-trusted-analysis-v1',
+          1,1,$1,'legacy-audio','probe','embedded','embedded-v1',NULL,'absent','absent',
+          '{"reasonCode":"not_embedded"}'::jsonb,'ready','legacy-transcript',$1,
+          'not_explicit','en','speech','speech-policy','speech-adapter','allow','acr',
+          'acr-policy','acr-adapter','allow','allow','{}'::jsonb,'legacy-persona'
+        )`,
+        [audioSha256],
+      );
+      await admin.query("ALTER TABLE media_analysis_evidence ENABLE TRIGGER ALL");
+      await admin.query("ALTER TABLE media_timed_lyrics_artifacts DISABLE TRIGGER ALL");
+      await admin.query(
+        "INSERT INTO media_timed_lyrics_artifacts (artifact_ref,community_id,actor_user_id,submission_id,operation_id,post_id,audio_revision,analysis_revision,artifact_revision,canonical_audio_sha256,artifact_sha256,artifact,author_persona_id) VALUES ('legacy-timed','legacy-community','legacy-actor','legacy-ready','legacy-operation','legacy-post',1,1,1,$1,$1,'{\"segments\": []}'::jsonb,'legacy-persona')",
+        [audioSha256],
+      );
+      await admin.query("ALTER TABLE media_timed_lyrics_artifacts ENABLE TRIGGER ALL");
+      await expect(
+        runPostgresMigrations({ connectionString: connection, migrations }),
+      ).rejects.toThrow();
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::text AS count FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='media_post_submissions' AND column_name='lyrics_revision'",
+          )
+        ).rows[0]?.count,
+      ).toBe("0");
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::text AS count FROM schema_migrations WHERE version='0050_song_lyrics_foundation.sql'",
+          )
+        ).rows[0]?.count,
+      ).toBe("0");
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
@@ -1104,6 +1201,72 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           }),
         ),
       ).toEqual({ kind: "none" });
+      await admin.query("BEGIN");
+      await admin.query(
+        "INSERT INTO media_song_lyrics_revisions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,lyrics_revision,creation_revision,audio_revision,canonical_audio_sha256,lyrics_text,lyrics_sha256,base_transcript_revision,provenance) VALUES ($1,$2,$3,$4,$5,1,3,1,$6,'hostile blocked edit',encode(sha256(convert_to('hostile blocked edit','UTF8')),'hex'),NULL,'pasted')",
+        [submission, community, actor, personaFor(connection), operation, audioSha256],
+      );
+      await expect(
+        admin.query(
+          "UPDATE media_post_submissions SET creation_revision=3,current_terms_revision=3,lyrics_revision=1,current_lyrics_revision=1,current_analysis_revision=NULL,decision_revision=0,current_decision_revision=NULL,status='processing',phase='analysis',moderator_action_id=NULL,moderator_actor_id=NULL,moderator_evidence_ref=NULL,moderator_approval_kind=NULL,moderator_reason_code=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+          [submission],
+        ),
+      ).rejects.toThrow("lyrics projection transition is not exact");
+      await admin.query("ROLLBACK");
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("rejects abandoned submissions reopening through a hostile lyrics edit", async () => {
+    await withSchema(async (admin, connection) => {
+      const requiresReference = {
+        ...analysis,
+        acr: { ...analysis.acr, decision: "requires_reference" as const },
+      };
+      await createThroughDecision(connection, decision, requiresReference, true);
+      expect(
+        await run(connection, (store) =>
+          store.requireReference({
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/reference",
+              "abandon-reference-required",
+            ),
+            expectedCreationRevision: 2,
+            expectedAudioRevision: 1,
+            expectedAnalysisRevision: 1,
+            referenceRequestRef: "abandon-reference-request",
+            actionExpiresAt: new Date(Date.now() + 100).toISOString(),
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(
+        await run(connection, (store) =>
+          store.actionDeadlineElapsed({
+            ...command(connection, "/media-post-submissions/:submissionId/expire", "deadline-key"),
+            expectedCreationRevision: 2,
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      await admin.query("BEGIN");
+      await admin.query(
+        "INSERT INTO media_song_lyrics_revisions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,lyrics_revision,creation_revision,audio_revision,canonical_audio_sha256,lyrics_text,lyrics_sha256,base_transcript_revision,provenance) VALUES ($1,$2,$3,$4,$5,1,3,1,$6,'hostile abandoned edit',encode(sha256(convert_to('hostile abandoned edit','UTF8')),'hex'),NULL,'pasted')",
+        [submission, community, actor, personaFor(connection), operation, audioSha256],
+      );
+      await expect(
+        admin.query(
+          "UPDATE media_post_submissions SET creation_revision=3,current_terms_revision=3,lyrics_revision=1,current_lyrics_revision=1,current_analysis_revision=NULL,decision_revision=0,current_decision_revision=NULL,status='processing',phase='analysis',action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,abandonment_reason=NULL,retention_disposition=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1",
+          [submission],
+        ),
+      ).rejects.toThrow("lyrics projection transition is not exact");
+      await admin.query("ROLLBACK");
+      expect(
+        (
+          await admin.query("SELECT status FROM media_post_submissions WHERE submission_id=$1", [
+            submission,
+          ])
+        ).rows[0],
+      ).toEqual({ status: "abandoned" });
     });
     completedTestCount += 1;
   }, 40_000);
@@ -1861,7 +2024,26 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         },
         lyricsSafety: "review_required",
       };
-      await createThroughDecision(connection, decision, unavailable, true);
+      await createThroughDecision(
+        connection,
+        { ...reviewDecision, creationRevision: 3, lyricsRevision: 1 },
+        unavailable,
+        false,
+        undefined,
+        "Author supplied lyrics while ASR was unavailable",
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT status,review_reason_code,current_lyrics_revision FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "manual_review",
+        review_reason_code: "review_required",
+        current_lyrics_revision: "1",
+      });
       expect(
         (
           await admin.query(
@@ -2109,6 +2291,99 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
+  test("publishes explicit classified lyrics with their truthful label", async () => {
+    await withSchema(async (admin, connection) => {
+      const transcript = "explicit fixture lyrics";
+      const transcriptSha256 = sha256(new TextEncoder().encode(transcript));
+      const explicitAnalysis: TrustedSongAnalysis = {
+        ...analysis,
+        speechLyrics: {
+          status: "ready",
+          transcriptArtifactRef: "media_pg_transcript_artifact",
+          transcriptSha256,
+          transcriptRevision: 1,
+          lyricsRevision: 1,
+          materialDisagreement: false,
+          explicitness: "explicit",
+          primaryLanguageBcp47: "en",
+          secondaryLanguageBcp47: null,
+          evidenceRef: "speech_explicit_evidence",
+          policyRevision: "speech_explicit_policy",
+          adapterRevision: "speech_explicit_adapter",
+        },
+        lyricsSafety: "allow",
+      };
+      const explicitDecision: PublicationDecision = {
+        ...decision,
+        creationRevision: 3,
+        lyricsRevision: 1,
+      };
+      await createThroughDecision(connection, explicitDecision, explicitAnalysis, false, {
+        transcript,
+        segments: [],
+      });
+      const postId = `media-post-${operation}`;
+      await run(connection, (store) =>
+        store.publish({
+          ...command(
+            connection,
+            "/media-post-submissions/:submissionId/publish",
+            "publish-explicit",
+          ),
+          expectedCreationRevision: 3,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          postId,
+          outbox: {
+            outboxEventId: "media_pg_explicit_alignment_outbox",
+            effectIdentity: "media_pg_explicit_alignment_effect",
+            payload: {
+              kind: "alignment",
+              submission_id: submission,
+              operation_id: operation,
+              post_id: postId,
+              lyrics_revision: 1,
+              workflow_revision: 2,
+              workflow_instance_id: `media-${operation}-r2`,
+            },
+          },
+        }),
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT lyrics_explicitness,lyrics_revision FROM media_publication_projections WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ lyrics_explicitness: "explicit", lyrics_revision: "1" });
+      await admin.query(
+        "ALTER TABLE media_song_lyrics_revisions DISABLE TRIGGER media_song_lyrics_insert_guard",
+      );
+      await admin.query(
+        "INSERT INTO media_song_lyrics_revisions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,lyrics_revision,creation_revision,audio_revision,canonical_audio_sha256,lyrics_text,lyrics_sha256,base_transcript_revision,provenance) VALUES ($1,$2,$3,$4,$5,2,4,1,$6,'unpublished later lyrics',encode(sha256(convert_to('unpublished later lyrics','UTF8')),'hex'),NULL,'pasted')",
+        [submission, community, actor, personaFor(connection), operation, audioSha256],
+      );
+      await admin.query(
+        "ALTER TABLE media_song_lyrics_revisions ENABLE TRIGGER media_song_lyrics_insert_guard",
+      );
+      await admin.query(
+        "INSERT INTO media_timed_lyrics_artifacts (artifact_ref,community_id,actor_user_id,submission_id,operation_id,post_id,audio_revision,analysis_revision,artifact_revision,canonical_audio_sha256,artifact_sha256,artifact,author_persona_id,lyrics_revision) VALUES ('wrong-lyrics-artifact',$1,$2,$3,$4,$5,1,1,1,$6,encode(sha256(convert_to('{\"segments\": []}'::jsonb::text,'UTF8')),'hex'),'{\"segments\": []}'::jsonb,$7,2)",
+        [community, actor, submission, operation, postId, audioSha256, personaFor(connection)],
+      );
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "UPDATE media_alignment_projections SET alignment_revision=1,status='ready',current_artifact_ref='wrong-lyrics-artifact',current_artifact_revision=1,updated_at=clock_timestamp() WHERE submission_id=$1",
+          [submission],
+        ),
+      ).rejects.toThrow("alignment artifact lyrics revision is not exact");
+      await admin.query("ROLLBACK");
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
   test("requires durable exhaustion evidence for ACR override moderation", async () => {
     await withSchema(async (admin, connection) => {
       await createThroughDecision(
