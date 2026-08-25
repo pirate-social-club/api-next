@@ -26,6 +26,25 @@ export interface AppEnvValue {
 
 export const isProduction = (env: AppEnvValue): boolean => env.API_NEXT_ENV === "production";
 
+export interface MegapotRewardRuntimePosture {
+  readonly API_NEXT_ENV: AppEnvValue["API_NEXT_ENV"];
+  readonly MEGAPOT_REWARDS_ENABLED: boolean;
+  readonly MEGAPOT_CHAIN_ID: number;
+  readonly MEGAPOT_REQUIRED_CONFIRMATIONS: number;
+}
+
+/** Proves the staging-only Base Sepolia reward path is inert in production. */
+export function assertMegapotRewardRuntimePosture(config: MegapotRewardRuntimePosture): number {
+  if (
+    config.MEGAPOT_CHAIN_ID !== 84_532 ||
+    config.MEGAPOT_REQUIRED_CONFIRMATIONS <= 0 ||
+    (config.MEGAPOT_REWARDS_ENABLED && config.API_NEXT_ENV === "production")
+  ) {
+    throw new Error("invalid Megapot reward runtime posture");
+  }
+  return config.MEGAPOT_CHAIN_ID;
+}
+
 /**
  * Fail-closed loader for process-backed configuration. A binding-based Worker
  * uses {@link loadConfigFrom} from its first-request composition boundary
@@ -50,9 +69,18 @@ export const secret = (name: string): Config.Config<RedactedType<string>> =>
   // wrap explicitly until the pinned Effect bump fixes it.
   Config.string(name).pipe(Config.map((value: string) => Redacted.make(value)));
 
-/** The fail-closed money-path variables required by M3. */
+const MegapotRewardConfigFields = {
+  MEGAPOT_REWARDS_ENABLED: Config.boolean("MEGAPOT_REWARDS_ENABLED"),
+  MEGAPOT_CHAIN_ID: Config.int("MEGAPOT_CHAIN_ID"),
+  MEGAPOT_V2_RPC_URL: secret("MEGAPOT_V2_RPC_URL"),
+  MEGAPOT_ATTESTATION_ID: Config.nonEmptyString("MEGAPOT_ATTESTATION_ID"),
+  MEGAPOT_REQUIRED_CONFIRMATIONS: Config.int("MEGAPOT_REQUIRED_CONFIRMATIONS"),
+} as const;
+
+/** The fail-closed money-path variables required by M3 and M5. */
 export const MoneyPathConfig = Config.all({
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
+  ...MegapotRewardConfigFields,
 });
 
 export const JobsWorkerConfig = Config.all({
@@ -149,6 +177,7 @@ export const HttpWorkerConfig = Config.all({
   PRIVY_JWT_ISSUER: Config.nonEmptyString("PRIVY_JWT_ISSUER"),
   PRIVY_JWT_AUDIENCE: Config.nonEmptyString("PRIVY_JWT_AUDIENCE"),
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
+  ...MegapotRewardConfigFields,
 });
 
 export type HttpWorkerConfigValue = Config.Success<typeof HttpWorkerConfig>;

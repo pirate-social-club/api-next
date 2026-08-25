@@ -98,6 +98,7 @@ describe("song reward offer application service", () => {
         legCalls.push(input);
         return Effect.succeed({ leg, replayed: false });
       },
+      recordFundingObservation: unexpected,
     };
     const service = makeSongRewardOfferService({
       store,
@@ -108,6 +109,7 @@ describe("song reward offer application service", () => {
           fundingCalls.push(input);
           return Effect.succeed({ kind: "planned", intent: fundingIntent });
         },
+        observe: unexpected,
       },
     });
     const opened = await Effect.runPromise(
@@ -161,8 +163,12 @@ describe("song reward offer application service", () => {
 
   test("fails a fallback leg before persistence when disclosure policy is unresolved", async () => {
     const service = makeSongRewardOfferService({
-      store: { openOffer: unexpected, addMegapotPoolLeg: unexpected },
-      funding: { plan: unexpected },
+      store: {
+        openOffer: unexpected,
+        addMegapotPoolLeg: unexpected,
+        recordFundingObservation: unexpected,
+      },
+      funding: { plan: unexpected, observe: unexpected },
       requiredConfirmations: 3,
       externalFallbackPolicy: null,
     });

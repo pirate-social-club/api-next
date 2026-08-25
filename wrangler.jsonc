@@ -10,12 +10,18 @@
   "env": {
     "production": {
       "vars": {
-        "API_NEXT_ENV": "production"
+        "API_NEXT_ENV": "production",
+        "MEGAPOT_REWARDS_ENABLED": "false",
+        "MEGAPOT_CHAIN_ID": "84532",
+        "MEGAPOT_REQUIRED_CONFIRMATIONS": "3"
       }
     },
     "staging": {
       "vars": {
-        "API_NEXT_ENV": "staging"
+        "API_NEXT_ENV": "staging",
+        "MEGAPOT_REWARDS_ENABLED": "true",
+        "MEGAPOT_CHAIN_ID": "84532",
+        "MEGAPOT_REQUIRED_CONFIRMATIONS": "3"
       }
     }
   }

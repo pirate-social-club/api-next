@@ -438,6 +438,68 @@ export function makeControlPlaneSongRewardOfferRepository() {
           }),
         );
       }).pipe(mapped),
+
+    recordFundingObservation: (
+      input: Parameters<SongRewardOfferStore["recordFundingObservation"]>[0],
+    ) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((transaction) =>
+          Effect.gen(function* () {
+            const endpoint = "/reward-offer-legs/:legId/funding/:fundingEffectId/observations";
+            yield* lockAction(transaction, { ...input, endpoint });
+            const replay = yield* transaction.execute<Row>({
+              label: "song-reward-offer.funding-observation.replay",
+              text: `SELECT request_hash,leg_id,funding_effect_id
+                       FROM song_reward_offer_actions
+                      WHERE account_id=$1 AND persona_id=$2 AND endpoint_template=$3
+                        AND idempotency_key=$4`,
+              values: [input.accountId, input.personaId, endpoint, input.idempotencyKey],
+              readonly: false,
+            });
+            if (replay.rows.length === 1) {
+              const row = replay.rows[0] as Row;
+              if (
+                text(row, "request_hash") !== input.requestHash ||
+                text(row, "leg_id") !== input.legId ||
+                text(row, "funding_effect_id") !== input.fundingEffectId
+              ) {
+                return yield* rejected("idempotency-conflict");
+              }
+              return { replayed: true };
+            }
+            const inserted = yield* transaction.execute({
+              label: "song-reward-offer.funding-observation.action",
+              text: `INSERT INTO song_reward_offer_actions (
+                       action_id,account_id,persona_id,endpoint_template,idempotency_key,
+                       request_hash,offer_id,leg_id,funding_effect_id,created_at
+                     )
+                     SELECT $1,$2,$3,$4,$5,$6,leg.offer_id,leg.leg_id,
+                            funding.funding_effect_id,$9
+                       FROM song_reward_leg_funding_effects funding
+                       JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
+                       JOIN personas persona ON persona.account_id=$2 AND persona.persona_id=$3
+                         AND persona.status='active'
+                      WHERE leg.leg_id=$7 AND funding.funding_effect_id=$8
+                        AND funding.funder_account_id=$2`,
+              values: [
+                input.actionId,
+                input.accountId,
+                input.personaId,
+                endpoint,
+                input.idempotencyKey,
+                input.requestHash,
+                input.legId,
+                input.fundingEffectId,
+                input.createdAt,
+              ],
+              readonly: false,
+            });
+            if (inserted.rowCount !== 1) return yield* rejected("not-found");
+            return { replayed: false };
+          }),
+        );
+      }).pipe(mapped),
   };
 }
 
@@ -450,5 +512,6 @@ export const makeControlPlaneSongRewardOfferStore = (
   return {
     openOffer: (input) => provide(repository.openOffer(input)),
     addMegapotPoolLeg: (input) => provide(repository.addMegapotPoolLeg(input)),
+    recordFundingObservation: (input) => provide(repository.recordFundingObservation(input)),
   };
 };

@@ -3,6 +3,9 @@ import { Clock, IdGen } from "../ports.ts";
 import { canonicalBodyHash } from "../use-cases/content/common.ts";
 import type { RewardFundingIntent } from "./reward-funding.ts";
 
+export { Clock, IdGen } from "../ports.ts";
+export type { RewardFundingIntent, RewardFundingStore } from "./reward-funding.ts";
+
 export class SongRewardOfferStorageFailed extends Data.TaggedError("SongRewardOfferStorageFailed")<{
   readonly reason: "conflict" | "constraint" | "invalid-row" | "outcome-unknown" | "unavailable";
 }> {}
@@ -92,6 +95,16 @@ export interface SongRewardOfferStore {
     readonly referralPolicyHash: string | null;
     readonly referralDisclosedAt: string | null;
   }) => Effect.Effect<Readonly<{ leg: MegapotPoolLeg; replayed: boolean }>, SongRewardOfferFailure>;
+  readonly recordFundingObservation: (input: {
+    readonly actionId: string;
+    readonly accountId: string;
+    readonly personaId: string;
+    readonly legId: string;
+    readonly fundingEffectId: string;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+    readonly createdAt: string;
+  }) => Effect.Effect<Readonly<{ replayed: boolean }>, SongRewardOfferFailure>;
 }
 
 export type RewardFundingPlan = Readonly<{
@@ -107,6 +120,10 @@ export interface RewardFundingPlanner {
     readonly expectedAmountAtomic: bigint;
     readonly requiredConfirmations: number;
     readonly idempotencyKey: string;
+  }) => Effect.Effect<RewardFundingPlan, unknown>;
+  readonly observe: (input: {
+    readonly fundingEffectId: string;
+    readonly transactionHash: string;
   }) => Effect.Effect<RewardFundingPlan, unknown>;
 }
 
@@ -149,6 +166,18 @@ export interface SongRewardOfferService {
       funding: RewardFundingPlan;
       replayed: boolean;
     }>,
+    SongRewardOfferFailure | unknown,
+    Clock | IdGen
+  >;
+  readonly observeFunding: (input: {
+    readonly accountId: string;
+    readonly personaId: string;
+    readonly legId: string;
+    readonly fundingEffectId: string;
+    readonly idempotencyKey: string;
+    readonly transactionHash: string;
+  }) => Effect.Effect<
+    Readonly<{ funding: RewardFundingPlan; replayed: boolean }>,
     SongRewardOfferFailure | unknown,
     Clock | IdGen
   >;
@@ -294,5 +323,37 @@ export function makeSongRewardOfferService(input: {
     return { leg: result.leg, funding, replayed: result.replayed };
   });
 
-  return { openOffer, addMegapotPoolLeg };
+  const observeFunding = Effect.fn("SongRewardOffer.observeFunding")(function* (
+    request: Parameters<SongRewardOfferService["observeFunding"]>[0],
+  ) {
+    const [requestHash, actionId, clock] = yield* Effect.all([
+      hash({
+        account_id: request.accountId,
+        persona_id: request.personaId,
+        leg_id: request.legId,
+        funding_effect_id: request.fundingEffectId,
+        idempotency_key: request.idempotencyKey,
+        transaction_hash: request.transactionHash,
+      }),
+      nextId("reward_action"),
+      Clock,
+    ]);
+    const action = yield* input.store.recordFundingObservation({
+      actionId,
+      accountId: request.accountId,
+      personaId: request.personaId,
+      legId: request.legId,
+      fundingEffectId: request.fundingEffectId,
+      idempotencyKey: request.idempotencyKey,
+      requestHash,
+      createdAt: new Date(yield* clock.now).toISOString(),
+    });
+    const funding = yield* input.funding.observe({
+      fundingEffectId: request.fundingEffectId,
+      transactionHash: request.transactionHash,
+    });
+    return { funding, replayed: action.replayed };
+  });
+
+  return { openOffer, addMegapotPoolLeg, observeFunding };
 }

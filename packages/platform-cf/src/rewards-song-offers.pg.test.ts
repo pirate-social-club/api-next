@@ -359,6 +359,27 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           requiredConfirmations: 3,
         }),
       );
+      const fundingActionInput = {
+        actionId: "reward-action-funding-observation",
+        accountId: identity.accountId,
+        personaId: identity.personaId,
+        legId: added.leg.legId,
+        fundingEffectId: funding.fundingEffectId,
+        idempotencyKey: "observe-funding-command-1",
+        requestHash: hash("d"),
+        createdAt: new Date().toISOString(),
+      } as const;
+      expect(await Effect.runPromise(store.recordFundingObservation(fundingActionInput))).toEqual({
+        replayed: false,
+      });
+      expect(
+        await Effect.runPromise(
+          store.recordFundingObservation({
+            ...fundingActionInput,
+            actionId: "ignored-observation-action",
+          }),
+        ),
+      ).toEqual({ replayed: true });
       await Effect.runPromise(
         fundingStore.bindTransaction({
           fundingEffectId: funding.fundingEffectId,
@@ -389,7 +410,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           WHERE offer_id=$1`,
         [opened.offer.offerId],
       );
-      expect(rows.rows).toEqual([{ action_count: 2 }]);
+      expect(rows.rows).toEqual([{ action_count: 3 }]);
       await expect(
         Effect.runPromise(store.openOffer({ ...openInput, requestHash: hash("9") })),
       ).rejects.toMatchObject({ reason: "idempotency-conflict" });

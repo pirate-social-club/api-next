@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as BunRuntime from "bun";
+import { assertMegapotRewardRuntimePosture } from "./index.ts";
 
 // Port of the old API's tests/production-money-path-invariant.test.ts
 // (read-only source: api/services/api). The incident history that motivates
@@ -37,9 +38,21 @@ type MoneyPath =
       assertFailsClosed: (env: Record<string, string>) => unknown;
     };
 
-// Empty until M3. Entries take the old shapes verbatim; when the first
-// money flow lands, its chain id joins here with posture mainnet_required.
-const MONEY_PATHS: MoneyPath[] = [];
+const MONEY_PATHS: MoneyPath[] = [
+  {
+    chainIdVar: "MEGAPOT_CHAIN_ID",
+    label: "Megapot pooled rewards",
+    posture: "guarded_testnet_exception",
+    reason: "Spec 015 limits the first operational money path to Base Sepolia staging.",
+    assertFailsClosed: (env) =>
+      assertMegapotRewardRuntimePosture({
+        API_NEXT_ENV: "production",
+        MEGAPOT_REWARDS_ENABLED: true,
+        MEGAPOT_CHAIN_ID: Number(env.MEGAPOT_CHAIN_ID),
+        MEGAPOT_REQUIRED_CONFIRMATIONS: Number(env.MEGAPOT_REQUIRED_CONFIRMATIONS),
+      }),
+  },
+];
 
 const productionVars = await (async (): Promise<Record<string, string>> => {
   const config = BunRuntime.JSONC.parse(await BunRuntime.file(WRANGLER_CONFIG_PATH).text()) as {

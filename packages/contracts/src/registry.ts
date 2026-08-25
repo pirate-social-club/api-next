@@ -35,6 +35,12 @@ import {
   StartStudySession,
   SubmitStudyAnswer,
 } from "./rewards-qualification.ts";
+import {
+  AddMegapotPoolLeg,
+  GetMegapotPoolFunding,
+  ObserveMegapotPoolFunding,
+  OpenSongRewardOffer,
+} from "./rewards-song-offers.ts";
 /** Named registry; the client generator references these exports by name. */
 import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
@@ -67,6 +73,10 @@ export const registry = {
   SetActivityPresentationPersona,
   GetSongActivityLeaderboard,
   GetCommunityActivityLeaderboard,
+  OpenSongRewardOffer,
+  AddMegapotPoolLeg,
+  ObserveMegapotPoolFunding,
+  GetMegapotPoolFunding,
 } as const;
 
 /** The sole source consumed by every generated HTTP artifact. */

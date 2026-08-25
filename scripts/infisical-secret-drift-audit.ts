@@ -20,6 +20,7 @@ const RUNTIME_SECRET_NAMES = [
   "PIRATE_APP_JWT_PRIVATE_KEY",
   "PRIVY_APP_SECRET",
   "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+  "MEGAPOT_V2_RPC_URL",
   "VERY_WEB_SEALING_KEY",
   "ZKPASSPORT_VERIFIER_SHARED_SECRET",
   "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
@@ -28,6 +29,13 @@ const RUNTIME_SECRET_NAMES = [
 const OPERATOR_SECRET_NAMES = [
   "CONTROL_PLANE_POSTGRES_ADMIN_URL",
   "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
+] as const;
+
+const PRODUCTION_RUNTIME_SECRET_NAMES = [
+  "PIRATE_APP_JWT_PRIVATE_KEY",
+  "PRIVY_APP_SECRET",
+  "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+  "MEGAPOT_V2_RPC_URL",
 ] as const;
 
 const STAGING_PROVISIONABLE_OPERATOR_SECRET_NAMES = [
@@ -73,8 +81,8 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
   {
     environment: "prod",
     path: "/services/api-next",
-    requiredNames: requiredWhenRuntimeEnabled("prod", RUNTIME_SECRET_NAMES.slice(0, 3)),
-    allowedNames: [...RUNTIME_SECRET_NAMES.slice(0, 3)],
+    requiredNames: requiredWhenRuntimeEnabled("prod", PRODUCTION_RUNTIME_SECRET_NAMES),
+    allowedNames: [...PRODUCTION_RUNTIME_SECRET_NAMES],
   },
   {
     environment: "prod",

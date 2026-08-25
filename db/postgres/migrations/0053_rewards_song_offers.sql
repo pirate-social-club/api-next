@@ -425,7 +425,7 @@ CREATE TABLE song_reward_offer_actions (
     '/communities/:communityId/posts/:postId/reward-offers',
     '/reward-offers/:offerId/megapot-pool-legs',
     '/reward-offer-legs/:legId/funding',
-    '/reward-offer-legs/:legId/funding/observations',
+    '/reward-offer-legs/:legId/funding/:fundingEffectId/observations',
     '/reward-offers/:offerId/pause',
     '/reward-offers/:offerId/end'
   )),
@@ -450,7 +450,7 @@ CREATE TABLE song_reward_offer_actions (
       AND leg_id IS NOT NULL AND funding_effect_id IS NULL)
     OR (endpoint_template IN (
       '/reward-offer-legs/:legId/funding',
-      '/reward-offer-legs/:legId/funding/observations'
+      '/reward-offer-legs/:legId/funding/:fundingEffectId/observations'
     ) AND leg_id IS NOT NULL AND funding_effect_id IS NOT NULL)
   )
 );
