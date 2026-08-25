@@ -35,6 +35,8 @@
     "./megapot-sweep-repository": "./src/megapot-sweep-repository.ts",
     "./megapot-claim-coordinator": "./src/megapot-claim-coordinator.ts",
     "./megapot-claim-repository": "./src/megapot-claim-repository.ts",
+    "./megapot-cutoff-coordinator": "./src/megapot-cutoff-coordinator.ts",
+    "./megapot-cutoff-repository": "./src/megapot-cutoff-repository.ts",
     "./megapot-drawing-observer": "./src/megapot-drawing-observer.ts",
     "./megapot-drawing-observation-repository": "./src/megapot-drawing-observation-repository.ts",
     "./megapot-purchase-repository": "./src/megapot-purchase-repository.ts",

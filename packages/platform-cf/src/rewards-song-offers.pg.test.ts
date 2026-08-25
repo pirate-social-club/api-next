@@ -7,6 +7,8 @@ import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinat
 import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
 import { makeControlPlaneMegapotApprovalStore } from "./megapot-approval-repository.ts";
 import { makeControlPlaneMegapotClaimStore } from "./megapot-claim-repository.ts";
+import { makeMegapotCutoffCoordinator } from "./megapot-cutoff-coordinator.ts";
+import { makeControlPlaneMegapotCutoffStore } from "./megapot-cutoff-repository.ts";
 import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
 import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
@@ -1284,6 +1286,169 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           observation_id: observation.observationId,
         },
       ]);
+    });
+  });
+
+  test("closes a due no-entry drawing without reserving ticket budget", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "cutoff-empty");
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "cutoff-empty",
+      });
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-cutoff-empty', 'megapot-base-sepolia-v2', 84532, 100,
+           10000, clock_timestamp() + interval '4 minutes', 25, 13, false,
+           100000000000000000, 100000000000000000, 150, $1,
+           clock_timestamp() - interval '2 minutes', 1,
+           clock_timestamp() - interval '1 minute',
+           clock_timestamp() + interval '30 minutes', $2
+         )`,
+        [bytes32("6"), hash("6")],
+      );
+      await admin.query(
+        `INSERT INTO megapot_pool_drawings (
+           pool_leg_id, drawing_id, observation_id, status,
+           entry_cutoff_at, ticket_price_ceiling_atomic
+         ) SELECT $1, 100, observation_id, 'entry_open',
+                  drawing_time - interval '300 seconds', 10000
+             FROM megapot_drawing_observations
+            WHERE observation_id='drawing-observation-cutoff-empty'`,
+        [legId],
+      );
+      const store = makeControlPlaneMegapotCutoffStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const coordinator = makeMegapotCutoffCoordinator({
+        store,
+        externalSponsorDailyTicketCeiling: 5,
+        externalSponsorDailySpendCeilingAtomic: 50_000n,
+        sharedSponsorDailyTicketCeiling: 10,
+        sharedSponsorDailySpendCeilingAtomic: 100_000n,
+      });
+      await expect(Effect.runPromise(coordinator.freezeDue())).resolves.toMatchObject([
+        {
+          poolLegId: legId,
+          drawingId: 100n,
+          status: "closed_no_entries",
+          reservedTicketCostAtomic: 0n,
+          snapshotId: null,
+        },
+      ]);
+      const leg = await admin.query<{ readonly reserved_atomic: string }>(
+        "SELECT reserved_atomic::text FROM song_reward_offer_legs WHERE leg_id=$1",
+        [legId],
+      );
+      expect(leg.rows).toEqual([{ reserved_atomic: "0" }]);
+    });
+  });
+
+  test("freezes the verified external sponsor only when a due drawing has no shares", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "cutoff-fallback");
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: true,
+        suffix: "cutoff-fallback",
+      });
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-cutoff-fallback', 'megapot-base-sepolia-v2', 84532, 100,
+           10000, clock_timestamp() + interval '4 minutes', 25, 13, false,
+           100000000000000000, 100000000000000000, 151, $1,
+           clock_timestamp() - interval '2 minutes', 1,
+           clock_timestamp() - interval '1 minute',
+           clock_timestamp() + interval '30 minutes', $2
+         )`,
+        [bytes32("7"), hash("7")],
+      );
+      await admin.query(
+        `INSERT INTO megapot_pool_drawings (
+           pool_leg_id, drawing_id, observation_id, status,
+           entry_cutoff_at, ticket_price_ceiling_atomic
+         ) SELECT $1, 100, observation_id, 'entry_open',
+                  drawing_time - interval '300 seconds', 10000
+             FROM megapot_drawing_observations
+            WHERE observation_id='drawing-observation-cutoff-fallback'`,
+        [legId],
+      );
+      await admin.query(
+        `INSERT INTO reward_eligibility_decisions (
+           eligibility_decision_id, leg_id, account_id, persona_id, purpose,
+           drawing_id, outcome, policy_version, evidence_hash, decided_at, expires_at
+         ) VALUES (
+           'eligibility-cutoff-fallback', $1, $2, $3, 'fallback_cutoff', 100,
+           'eligible', 'pool-legal-test-v1', $4,
+           clock_timestamp() - interval '1 minute', clock_timestamp() + interval '1 hour'
+         )`,
+        [legId, identity.accountId, identity.personaId, hash("8")],
+      );
+      const store = makeControlPlaneMegapotCutoffStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const coordinator = makeMegapotCutoffCoordinator({
+        store,
+        externalSponsorDailyTicketCeiling: 5,
+        externalSponsorDailySpendCeilingAtomic: 50_000n,
+        sharedSponsorDailyTicketCeiling: 10,
+        sharedSponsorDailySpendCeilingAtomic: 100_000n,
+      });
+      const outcomes = await Effect.runPromise(coordinator.freezeDue());
+      expect(outcomes).toMatchObject([
+        {
+          poolLegId: legId,
+          drawingId: 100n,
+          status: "cutoff_frozen",
+          frozenShareCount: 0,
+          fallback: true,
+          reservedTicketCostAtomic: 10_000n,
+        },
+      ]);
+      const frozen = await admin.query<{
+        readonly account_id: string;
+        readonly persona_id: string;
+        readonly leaf_count: number;
+        readonly reserved_atomic: string;
+        readonly reserved_ticket_count: number;
+      }>(
+        `SELECT leaf.account_id, leaf.persona_id, snapshot.leaf_count,
+                leg.reserved_atomic::text, total.reserved_ticket_count
+           FROM megapot_pool_drawings drawing
+           JOIN megapot_pool_beneficiary_snapshots snapshot
+             ON snapshot.snapshot_id=drawing.snapshot_id
+           JOIN megapot_pool_snapshot_private_leaves leaf
+             ON leaf.snapshot_id=snapshot.snapshot_id
+           JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id
+           JOIN sponsor_daily_ticket_totals total
+             ON total.sponsor_account_id=leg.funder_account_id
+            AND total.sponsor_kind='external_fallback'
+          WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=100`,
+        [legId],
+      );
+      expect(frozen.rows).toEqual([
+        {
+          account_id: identity.accountId,
+          persona_id: identity.personaId,
+          leaf_count: 1,
+          reserved_atomic: "10000",
+          reserved_ticket_count: 1,
+        },
+      ]);
+      await expect(Effect.runPromise(coordinator.freezeDue())).resolves.toEqual([]);
     });
   });
 });
