@@ -1223,7 +1223,7 @@ async function verifyRuntimeCapabilityVectors(): Promise<void> {
   }
 }
 
-export function assertHnsAuthoritativeDnsPolicyV1RuntimeCapabilities(): Promise<void> {
+function assertHnsAuthoritativeDnsPolicyV1RuntimeCapabilities(): Promise<void> {
   runtimeCapabilityCheck ??= verifyRuntimeCapabilityVectors();
   return runtimeCapabilityCheck;
 }

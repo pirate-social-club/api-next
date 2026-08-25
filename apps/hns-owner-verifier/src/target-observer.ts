@@ -145,7 +145,7 @@ export function matchesHnsTargetObserverCreationConfiguration(
   );
 }
 
-export function matchesHnsTargetObserverRenewalConfiguration(
+function matchesHnsTargetObserverRenewalConfiguration(
   request: HnsOwnerActiveLeaseRenewalRequestV1,
   runtime: HnsTargetObserverRuntime,
 ): boolean {

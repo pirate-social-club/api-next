@@ -449,5 +449,3 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
     });
   return { enqueue, get, claim, markDelivered, markFailed };
 }
-export const makeMediaOutboxRepository = makeControlPlaneMediaOutboxRepository;
-export const makeControlPlaneMediaOutboxStore = makeControlPlaneMediaOutboxRepository;

@@ -1202,7 +1202,7 @@ export type HnsTargetObserverLifecycleSourceInput = Readonly<{
   readonly signal: AbortSignal;
 }>;
 
-export function makeHnsTargetObserverSnapshotLifecycle(
+function makeHnsTargetObserverSnapshotLifecycle(
   input: Readonly<{
     readonly ownership_source: HnsOwnershipSource;
     readonly configuration_resolver: HnsControlObserverConfigurationResolverPort;

@@ -51,7 +51,7 @@ function hasLoneSurrogate(value: string): boolean {
 }
 
 /** RFC 8785 JCS for decoded request JSON. */
-export const canonicalJson = (value: unknown): string => {
+const canonicalJson = (value: unknown): string => {
   if (value === null) return "null";
   if (typeof value === "string") {
     if (hasLoneSurrogate(value)) throw new Error("lone surrogate");

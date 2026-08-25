@@ -34,13 +34,13 @@ import { normalizeSelfCountry } from "./self-country-codes.ts";
  * adapter.  It is the open-source, dynamically compiled SelfBackendVerifier
  * ceremony that runs inside the HTTP Worker.
  */
-export const SELF_PASS_PROVIDER_ID = "self.pass" as const;
+const SELF_PASS_PROVIDER_ID = "self.pass" as const;
 export const SELF_PASS_PROTOCOL_VERSION = "self-pass-v1" as const;
-export const SELF_PASS_PRESENTATION_PROTOCOL = "self" as const;
-export const SELF_PASS_PRESENTATION_VERSION = "2" as const;
+const SELF_PASS_PRESENTATION_PROTOCOL = "self" as const;
+const SELF_PASS_PRESENTATION_VERSION = "2" as const;
 export const SELF_PASS_RP_SCOPE = "pirate-social" as const;
-export const SELF_PASS_CONFIGURATION_REFERENCE = "self.pass.disclosure-compiler" as const;
-export const SELF_PASS_CONFIGURATION_VERSION = "1.2.0-beta.1" as const;
+const SELF_PASS_CONFIGURATION_REFERENCE = "self.pass.disclosure-compiler" as const;
+const SELF_PASS_CONFIGURATION_VERSION = "1.2.0-beta.1" as const;
 
 export function selfPassConfigurationFor(
   callback_origin: string,
@@ -88,9 +88,8 @@ export const SELF_PASS_MANIFEST: Schema.Schema.Type<typeof ProofProviderManifest
 
 type SelfCoreModule = typeof import("@selfxyz/core");
 type SelfVerifier = InstanceType<SelfCoreModule["SelfBackendVerifier"]>;
-export type SelfPassProof = Parameters<SelfVerifier["verify"]>[1];
-export type SelfPassPublicSignals = Parameters<SelfVerifier["verify"]>[2];
-export type SelfPassVerificationResult = Awaited<ReturnType<SelfVerifier["verify"]>>;
+type SelfPassProof = Parameters<SelfVerifier["verify"]>[1];
+type SelfPassPublicSignals = Parameters<SelfVerifier["verify"]>[2];
 
 /**
  * The production seam is the actual module returned by the literal dynamic
@@ -105,12 +104,12 @@ export type SelfPassSdk = Readonly<{
   readonly VerifierContractError: SelfCoreModule["VerifierContractError"];
 }>;
 
-export type SelfPassClock = Readonly<{
+type SelfPassClock = Readonly<{
   readonly now: () => CanonicalIsoInstant;
   readonly expiresAt: (now: CanonicalIsoInstant) => CanonicalIsoInstant;
 }>;
 
-export type SelfPassIdentifierKind =
+type SelfPassIdentifierKind =
   | "session"
   | "bundle"
   | "receipt"
@@ -118,11 +117,11 @@ export type SelfPassIdentifierKind =
   | "binding"
   | "assertion";
 
-export type SelfPassIdentifiers = Readonly<{
+type SelfPassIdentifiers = Readonly<{
   readonly next: (kind: SelfPassIdentifierKind) => string;
 }>;
 
-export type SelfPassDigest = Readonly<{
+type SelfPassDigest = Readonly<{
   readonly digest: (value: string) => Effect.Effect<string, VerificationProviderFailure>;
 }>;
 

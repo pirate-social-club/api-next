@@ -32,17 +32,17 @@ import { Effect, Option, Schema } from "effect";
 import { selfCountryAlpha3 } from "./self-country-codes.ts";
 
 /** ZKPassport SDK 0.14.2 is the reviewed-compatible query/verifier contract. */
-export const ZKPASSPORT_PROVIDER_ID = "zkpassport" as const;
+const ZKPASSPORT_PROVIDER_ID = "zkpassport" as const;
 export const ZKPASSPORT_PROTOCOL_VERSION = "zkpassport-v2" as const;
-export const ZKPASSPORT_PRESENTATION_PROTOCOL = "zkpassport" as const;
-export const ZKPASSPORT_PRESENTATION_VERSION = "0.14.2" as const;
+const ZKPASSPORT_PRESENTATION_PROTOCOL = "zkpassport" as const;
+const ZKPASSPORT_PRESENTATION_VERSION = "0.14.2" as const;
 export const ZKPASSPORT_RP_SCOPE = "pirate-social" as const;
-export const ZKPASSPORT_CONFIGURATION_REFERENCE = "zkpassport.dynamic-query" as const;
-export const ZKPASSPORT_CONFIGURATION_VERSION = "query-v1;sdk-0.14.2;verifier-v1" as const;
-export const ZKPASSPORT_DEFAULT_VALIDITY_SECONDS = 3_600;
-export const ZKPASSPORT_DEFAULT_TIMEOUT_MS = 30_000;
-export const ZKPASSPORT_MAX_BODY_BYTES = 10 * 1024 * 1024;
-export const ZKPASSPORT_MAX_RESPONSE_BYTES = 64 * 1024;
+const ZKPASSPORT_CONFIGURATION_REFERENCE = "zkpassport.dynamic-query" as const;
+const ZKPASSPORT_CONFIGURATION_VERSION = "query-v1;sdk-0.14.2;verifier-v1" as const;
+const ZKPASSPORT_DEFAULT_VALIDITY_SECONDS = 3_600;
+const ZKPASSPORT_DEFAULT_TIMEOUT_MS = 30_000;
+const ZKPASSPORT_MAX_BODY_BYTES = 10 * 1024 * 1024;
+const ZKPASSPORT_MAX_RESPONSE_BYTES = 64 * 1024;
 
 const ZKPASSPORT_CLAIMS = [
   "age.minimum",
@@ -94,7 +94,7 @@ export type ZkPassportVerifierInput = Readonly<{
   readonly key_id: string;
 }>;
 
-export type ZkPassportVerifierResult = SignedVerifierResponseEnvelope;
+type ZkPassportVerifierResult = SignedVerifierResponseEnvelope;
 
 export type ZkPassportVerifierTransport = Readonly<{
   readonly verify: (
@@ -102,18 +102,18 @@ export type ZkPassportVerifierTransport = Readonly<{
   ) => Effect.Effect<ZkPassportVerifierResult, VerificationProviderFailure>;
 }>;
 
-export type ZkPassportClock = Readonly<{
+type ZkPassportClock = Readonly<{
   readonly now: () => CanonicalIsoInstant;
   readonly expiresAt: (now: CanonicalIsoInstant) => CanonicalIsoInstant;
 }>;
 
-export type ZkPassportIdentifiers = Readonly<{
+type ZkPassportIdentifiers = Readonly<{
   readonly next: (
     kind: "session" | "bundle" | "receipt" | "subject" | "binding" | "assertion",
   ) => string;
 }>;
 
-export type ZkPassportDigest = Readonly<{
+type ZkPassportDigest = Readonly<{
   readonly digest: (value: string) => Effect.Effect<string, VerificationProviderFailure>;
 }>;
 

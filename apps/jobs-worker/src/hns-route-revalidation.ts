@@ -51,7 +51,7 @@ export const HNS_ROUTE_JOB_TIMEOUT_MS = 45_000;
  * pair of polls remains inside the 45s job deadline, including database work.
  */
 export const HNS_ROUTE_REVALIDATION_BATCH_LIMIT = 2;
-export const HNS_ROUTE_REVALIDATION_PHASE_LIMIT = 1;
+const HNS_ROUTE_REVALIDATION_PHASE_LIMIT = 1;
 
 export const HNS_ROUTE_REVALIDATION_READS = [
   "postgres:communities",
@@ -75,7 +75,7 @@ export const HNS_ROUTE_REVALIDATION_WRITES = [
   "postgres:community_route_lifecycle_transitions",
 ] as const satisfies readonly TableKey[];
 
-export const HNS_ROUTE_REVALIDATION_SEVERITY: SeverityMapping = {
+const HNS_ROUTE_REVALIDATION_SEVERITY: SeverityMapping = {
   expectedFailure: {
     CommunityRouteExpiryStorageFailed: "high",
     HnsRouteRevalidationStartRejected: "medium",

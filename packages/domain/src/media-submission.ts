@@ -1299,5 +1299,3 @@ export const mediaSubmissionMachine = {
   assertInvariants: assertMediaSubmissionInvariant,
   workflowInstanceId: deterministicMediaWorkflowInstanceId,
 } as const;
-export const transition = transitionMediaSubmission;
-export const applyMediaSubmissionEvent = transitionMediaSubmission;

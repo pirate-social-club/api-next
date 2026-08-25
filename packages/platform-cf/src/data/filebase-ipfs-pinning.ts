@@ -1163,5 +1163,3 @@ export function makeFilebaseIpfsPinningAdapter(
   };
   return { pin };
 }
-
-export const makeFilebaseIpfsPinning = makeFilebaseIpfsPinningAdapter;

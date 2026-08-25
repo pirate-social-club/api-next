@@ -38,7 +38,7 @@ export const VERY_OAUTH_PROTOCOL_VERSION = "oauth2-oidc-v1" as const;
 export const VERY_OAUTH_RP_SCOPE = "pirate-social" as const;
 export const VERY_OAUTH_CONFIGURATION_REFERENCE = "very-oauth" as const;
 export const VERY_OAUTH_CONFIGURATION_VERSION = "1" as const;
-export const VERY_OAUTH_EVIDENCE_KIND = "very.oauth.id-token-userinfo.v1" as const;
+const VERY_OAUTH_EVIDENCE_KIND = "very.oauth.id-token-userinfo.v1" as const;
 export const VERY_OAUTH_HTTP_TIMEOUT_MS = 15_000 as const;
 export const VERY_OAUTH_SESSION_TTL_SECONDS = 300 as const;
 export const VERY_OAUTH_MAX_RESPONSE_BYTES = 1_048_576 as const;
@@ -72,12 +72,12 @@ export const VERY_OAUTH_MANIFEST: ProofProviderManifest = {
   subject_key_scope_semantics: "issuer_rp_scope",
 };
 
-export type VeryOauthClock = Readonly<{
+type VeryOauthClock = Readonly<{
   readonly now: () => CanonicalIsoInstant;
   readonly expiresAt: (now: CanonicalIsoInstant) => CanonicalIsoInstant;
 }>;
 
-export type VeryOauthIdentifierKind =
+type VeryOauthIdentifierKind =
   | "session"
   | "bundle"
   | "receipt"
@@ -85,19 +85,19 @@ export type VeryOauthIdentifierKind =
   | "binding"
   | "assertion";
 
-export type VeryOauthIdentifiers = Readonly<{
+type VeryOauthIdentifiers = Readonly<{
   readonly next: (kind: VeryOauthIdentifierKind) => string;
 }>;
 
-export type VeryOauthRandomness = Readonly<{
+type VeryOauthRandomness = Readonly<{
   readonly bytes: (length: number) => Uint8Array;
 }>;
 
-export type VeryOauthDigest = Readonly<{
+type VeryOauthDigest = Readonly<{
   readonly digest: (value: string) => Effect.Effect<string, VerificationProviderFailure>;
 }>;
 
-export type VeryOauthTransportResponse = Readonly<{
+type VeryOauthTransportResponse = Readonly<{
   readonly status: number;
   readonly body: unknown;
 }>;
@@ -120,7 +120,7 @@ export type VeryOauthTransport = Readonly<{
   ) => Effect.Effect<VeryOauthTransportResponse, VerificationProviderFailure>;
 }>;
 
-export type VeryOauthIdTokenClaims = Readonly<{
+type VeryOauthIdTokenClaims = Readonly<{
   readonly issuer: string;
   readonly audience: string;
   readonly subject: string;
@@ -281,7 +281,7 @@ function requestSupported(value: VeryOauthPlanInput): boolean {
   );
 }
 
-export type VeryOauthPlanInput = VerificationProviderPlanInput;
+type VeryOauthPlanInput = VerificationProviderPlanInput;
 
 function configRef(): ProviderConfigurationRef {
   return {

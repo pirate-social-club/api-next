@@ -51,7 +51,7 @@ async function runFixtureStage<A>(
   }
 }
 
-export function makeCommunityCreationStoreForTest(
+function makeCommunityCreationStoreForTest(
   connection: string,
   ttlSeconds = 86_400,
   idPrefix = "intent",

@@ -26,7 +26,7 @@ import {
 } from "@pirate/domain/verification";
 import { Effect, Option, Schema } from "effect";
 
-export const SELF_ENTERPRISE_PROVIDER_ID = "self.enterprise" as const;
+const SELF_ENTERPRISE_PROVIDER_ID = "self.enterprise" as const;
 export const SELF_ENTERPRISE_PROTOCOL_VERSION = "self-enterprise-v1" as const;
 
 const SELF_ENTERPRISE_CLAIMS = [
@@ -69,12 +69,12 @@ export type SelfEnterpriseFlow = Readonly<{
   readonly presentation_version: string;
 }>;
 
-export type SelfEnterpriseClock = Readonly<{
+type SelfEnterpriseClock = Readonly<{
   readonly now: () => CanonicalIsoInstant;
   readonly expiresAt: (now: CanonicalIsoInstant) => CanonicalIsoInstant;
 }>;
 
-export type SelfEnterpriseIdentifierKind =
+type SelfEnterpriseIdentifierKind =
   | "session"
   | "bundle"
   | "receipt"
@@ -82,15 +82,15 @@ export type SelfEnterpriseIdentifierKind =
   | "binding"
   | "assertion";
 
-export type SelfEnterpriseIdentifiers = Readonly<{
+type SelfEnterpriseIdentifiers = Readonly<{
   readonly next: (kind: SelfEnterpriseIdentifierKind) => string;
 }>;
 
-export type SelfEnterpriseDigest = Readonly<{
+type SelfEnterpriseDigest = Readonly<{
   readonly digest: (value: string) => Effect.Effect<string, VerificationProviderFailure>;
 }>;
 
-export type SelfEnterpriseStart = Readonly<{
+type SelfEnterpriseStart = Readonly<{
   readonly upstream_session_ref: string;
   readonly presentation_payload: Schema.Schema.Type<typeof Schema.Json>;
 }>;
@@ -107,7 +107,7 @@ const SelfEnterpriseSubmission = Schema.Struct({
   proof: Schema.Json,
   public_signals: Schema.NonEmptyArray(Schema.Json),
 });
-export type SelfEnterpriseSubmission = Schema.Schema.Type<typeof SelfEnterpriseSubmission>;
+type SelfEnterpriseSubmission = Schema.Schema.Type<typeof SelfEnterpriseSubmission>;
 
 const SelfEnterpriseVerifiedOutput = Schema.Struct({
   session_id: Schema.NonEmptyString,
@@ -120,7 +120,7 @@ const SelfEnterpriseVerifiedOutput = Schema.Struct({
   nationality_allowed: Schema.optional(Schema.Literal(true)),
   gender: Schema.optional(Schema.Literals(["female", "male", "unspecified"])),
 });
-export type SelfEnterpriseVerifiedOutput = Schema.Schema.Type<typeof SelfEnterpriseVerifiedOutput>;
+type SelfEnterpriseVerifiedOutput = Schema.Schema.Type<typeof SelfEnterpriseVerifiedOutput>;
 
 export type SelfEnterpriseTransport = Readonly<{
   readonly start: (

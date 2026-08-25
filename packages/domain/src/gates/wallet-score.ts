@@ -43,8 +43,6 @@ export function evaluateWalletScoreAtom(input: {
   return { outcome: "passed", passed: true, requiredAction: null, actualScore };
 }
 
-export const evaluateWalletScoreGate = evaluateWalletScoreAtom;
-
 function finiteScore(value: string | number | null | undefined): number | null {
   if (value == null || (typeof value === "string" && value.trim() === "")) return null;
   const parsed = typeof value === "number" ? value : Number(value);

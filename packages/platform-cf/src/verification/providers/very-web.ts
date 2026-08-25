@@ -32,11 +32,11 @@ export const VERY_WEB_RP_SCOPE = "pirate-social" as const;
 export const VERY_WEB_ISSUER = "https://verify.very.org" as const;
 export const VERY_WEB_CONFIGURATION_REFERENCE = "very-web" as const;
 export const VERY_WEB_CONFIGURATION_VERSION = "1" as const;
-export const VERY_WEB_EVIDENCE_KIND = "very.web.server-verified.v1" as const;
+const VERY_WEB_EVIDENCE_KIND = "very.web.server-verified.v1" as const;
 export const VERY_WEB_HTTP_TIMEOUT_MS = 15_000 as const;
-export const VERY_WEB_SESSION_TTL_SECONDS = 300 as const;
+const VERY_WEB_SESSION_TTL_SECONDS = 300 as const;
 export const VERY_WEB_MAX_RESPONSE_BYTES = 1_048_576 as const;
-export const VERY_WEB_MAX_SEALED_SESSION_REF_CHARS = 16_384 as const;
+const VERY_WEB_MAX_SEALED_SESSION_REF_CHARS = 16_384 as const;
 const VERY_WEB_CURATED_POLICY_VERSION = "curated-human-membership-v1" as const;
 const VERY_WEB_CONTEXT = "VeryAI - Palm Verification Timestamp" as const;
 // The current app requires the VeryAI launch context, while its issued palm
@@ -110,32 +110,26 @@ export const VERY_WEB_MANIFEST: ProofProviderManifest = {
   subject_key_scope_semantics: "issuer_rp_scope",
 };
 
-export type VeryWebClock = Readonly<{
+type VeryWebClock = Readonly<{
   readonly now: () => CanonicalIsoInstant;
   readonly expiresAt: (now: CanonicalIsoInstant) => CanonicalIsoInstant;
 }>;
 
-export type VeryWebIdentifierKind =
-  | "session"
-  | "bundle"
-  | "receipt"
-  | "subject"
-  | "binding"
-  | "assertion";
+type VeryWebIdentifierKind = "session" | "bundle" | "receipt" | "subject" | "binding" | "assertion";
 
-export type VeryWebIdentifiers = Readonly<{
+type VeryWebIdentifiers = Readonly<{
   readonly next: (kind: VeryWebIdentifierKind) => string;
 }>;
 
-export type VeryWebRandomness = Readonly<{
+type VeryWebRandomness = Readonly<{
   readonly bytes: (length: number) => Uint8Array;
 }>;
 
-export type VeryWebDigest = Readonly<{
+type VeryWebDigest = Readonly<{
   readonly digest: (value: string) => Effect.Effect<string, VerificationProviderFailure>;
 }>;
 
-export type VeryWebTransportResponse = Readonly<{
+type VeryWebTransportResponse = Readonly<{
   readonly status: number;
   readonly body: unknown;
 }>;
@@ -361,7 +355,7 @@ function requestSupported(value: VeryWebPlanInput): boolean {
   );
 }
 
-export type VeryWebPlanInput = VerificationProviderPlanInput;
+type VeryWebPlanInput = VerificationProviderPlanInput;
 
 function encodeBase64Url(bytes: Uint8Array): string {
   let binary = "";
@@ -864,10 +858,6 @@ function encryptedLaunch(
       ),
     catch: () => invalid("start"),
   });
-}
-
-export function validVeryWebOptions(options: VeryWebAdapterOptions): boolean {
-  return configurationValid(options);
 }
 
 export function makeVeryWebProvider(options: VeryWebAdapterOptions): VerificationProviderAdapter {
