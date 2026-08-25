@@ -2362,6 +2362,25 @@ BEGIN
        OR NEW.current_decision_revision IS NOT NULL
        OR NEW.status IS DISTINCT FROM 'processing'
        OR NEW.phase IS DISTINCT FROM 'analysis'
+       OR NEW.action_kind IS NOT NULL
+       OR NEW.action_reference_request_ref IS NOT NULL
+       OR NEW.action_expires_at IS NOT NULL
+       OR NEW.review_ref IS NOT NULL
+       OR NEW.review_reason_code IS NOT NULL
+       OR NEW.review_exhaustion_code IS NOT NULL
+       OR NEW.review_exhaustion_attempt_id IS NOT NULL
+       OR NEW.held_revision IS NOT NULL
+       OR NEW.moderator_action_id IS NOT NULL
+       OR NEW.moderator_actor_id IS NOT NULL
+       OR NEW.moderator_evidence_ref IS NOT NULL
+       OR NEW.moderator_approval_kind IS NOT NULL
+       OR NEW.moderator_reason_code IS NOT NULL
+       OR NEW.failure_code IS NOT NULL
+       OR NEW.failure_retry_count IS NOT NULL
+       OR NEW.retryable IS NOT NULL
+       OR NEW.last_safe_phase IS NOT NULL
+       OR NEW.abandonment_reason IS NOT NULL
+       OR NEW.retention_disposition IS NOT NULL
        OR NEW.event_sequence IS DISTINCT FROM OLD.event_sequence + 1
        OR NEW.updated_at <= OLD.updated_at
        OR (to_jsonb(NEW) - ARRAY[
@@ -5979,6 +5998,10 @@ BEGIN
       AND submission_id=NEW.submission_id FOR SHARE;
   IF submission_record.submission_id IS NULL
      OR NEW.operation_id IS DISTINCT FROM submission_record.operation_id
+     OR NEW.creation_revision IS DISTINCT FROM submission_record.creation_revision
+     OR NEW.audio_revision IS DISTINCT FROM submission_record.audio_revision
+     OR NEW.analysis_revision IS DISTINCT FROM submission_record.analysis_revision
+     OR NEW.lyrics_revision IS DISTINCT FROM submission_record.current_lyrics_revision
      OR NEW.workflow_revision IS DISTINCT FROM submission_record.workflow_revision
      OR NEW.workflow_instance_id IS DISTINCT FROM 'media-' || NEW.operation_id || '-r' || NEW.workflow_revision::text
      OR NEW.payload->>'submission_id' IS DISTINCT FROM NEW.submission_id
@@ -6492,6 +6515,23 @@ BEGIN
     start_ms := start_value::bigint; end_ms := end_value::bigint;
     previous_start := start_ms;
   END LOOP;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION validate_media_timed_lyrics_publication_lineage() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE publication_record media_publication_projections%ROWTYPE;
+BEGIN
+  SELECT * INTO publication_record FROM media_publication_projections
+    WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+      AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id
+      AND post_id=NEW.post_id FOR SHARE;
+  IF publication_record.submission_id IS NULL
+     OR NEW.lyrics_revision IS DISTINCT FROM publication_record.lyrics_revision THEN
+    RAISE EXCEPTION 'timed lyrics artifact is not bound to the published lyrics revision';
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -11382,6 +11422,9 @@ ALTER TABLE ONLY media_submission_outbox
 ALTER TABLE ONLY media_submission_outbox
     ADD CONSTRAINT media_submission_outbox_pkey PRIMARY KEY (outbox_event_id);
 
+ALTER TABLE ONLY media_submission_outbox
+    ADD CONSTRAINT media_submission_outbox_semantic_identity_unique UNIQUE NULLS NOT DISTINCT (community_id, actor_user_id, submission_id, operation_id, event_type, creation_revision, audio_revision, analysis_revision, lyrics_revision, workflow_revision);
+
 ALTER TABLE ONLY media_submission_terms
     ADD CONSTRAINT media_submission_terms_pkey PRIMARY KEY (submission_id, creation_revision);
 
@@ -12128,7 +12171,7 @@ CREATE TRIGGER identity_credentials_enforce_lifecycle BEFORE INSERT OR DELETE OR
 
 CREATE TRIGGER media_alignment_insert_guard BEFORE INSERT ON media_alignment_projections FOR EACH ROW EXECUTE FUNCTION validate_media_alignment_insert();
 
-CREATE TRIGGER media_alignment_lyrics_lineage_guard BEFORE INSERT ON media_alignment_projections FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
+CREATE TRIGGER media_alignment_lyrics_lineage_guard BEFORE INSERT OR UPDATE ON media_alignment_projections FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
 
 CREATE TRIGGER media_alignment_lyrics_pointer_guard BEFORE INSERT OR UPDATE ON media_alignment_projections FOR EACH ROW EXECUTE FUNCTION validate_media_alignment_lyrics_pointer();
 
@@ -12210,7 +12253,7 @@ CREATE TRIGGER media_processing_attempt_update_guard BEFORE UPDATE ON media_proc
 
 CREATE TRIGGER media_publication_decisions_append_only BEFORE DELETE OR UPDATE ON media_publication_decisions FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
 
-CREATE TRIGGER media_publication_lyrics_lineage_guard BEFORE INSERT ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
+CREATE TRIGGER media_publication_lyrics_lineage_guard BEFORE INSERT OR UPDATE ON media_publication_projections FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
 
 CREATE CONSTRAINT TRIGGER media_publication_lyrics_pair AFTER UPDATE ON media_post_submissions DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (((old.status = 'processing'::text) AND (old.phase = 'publish'::text) AND (new.status = 'published'::text))) EXECUTE FUNCTION validate_media_publication_lyrics_pair();
 
@@ -12253,6 +12296,8 @@ CREATE TRIGGER media_terms_snapshot_guard BEFORE INSERT ON media_submission_term
 CREATE TRIGGER media_timed_lyrics_artifact_shape_guard BEFORE INSERT ON media_timed_lyrics_artifacts FOR EACH ROW EXECUTE FUNCTION validate_media_timed_lyrics_artifact();
 
 CREATE TRIGGER media_timed_lyrics_artifacts_append_only BEFORE DELETE OR UPDATE ON media_timed_lyrics_artifacts FOR EACH ROW EXECUTE FUNCTION reject_media_append_only_change();
+
+CREATE TRIGGER media_timed_lyrics_publication_lineage_guard BEFORE INSERT ON media_timed_lyrics_artifacts FOR EACH ROW EXECUTE FUNCTION validate_media_timed_lyrics_publication_lineage();
 
 CREATE TRIGGER media_transcript_artifact_shape_guard BEFORE INSERT ON media_transcript_artifacts FOR EACH ROW EXECUTE FUNCTION validate_media_transcript_artifact();
 

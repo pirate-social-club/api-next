@@ -428,6 +428,32 @@ async function insertAnalysisSnapshotVariant(
   );
 }
 
+async function expectHostileLyricsProjectionLeakRejected(
+  admin: Client,
+  injectFailureFields = false,
+): Promise<void> {
+  await admin.query("BEGIN");
+  await admin.query(
+    "INSERT INTO media_submission_terms (submission_id,community_id,actor_user_id,operation_id,creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,access_mode,terms_snapshot,author_persona_id) SELECT s.submission_id,s.community_id,s.actor_user_id,s.operation_id,s.creation_revision+1,t.license_preset,t.commercial_remix_share_bps,t.royalty_allocations,t.access_mode,t.terms_snapshot,s.author_persona_id FROM media_post_submissions s JOIN media_submission_terms t ON t.submission_id=s.submission_id AND t.creation_revision=s.current_terms_revision WHERE s.submission_id=$1",
+    [submission],
+  );
+  await admin.query(
+    "INSERT INTO media_song_lyrics_revisions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,lyrics_revision,creation_revision,audio_revision,canonical_audio_sha256,lyrics_text,lyrics_sha256,base_transcript_revision,provenance) SELECT s.submission_id,s.community_id,s.actor_user_id,s.author_persona_id,s.operation_id,s.lyrics_revision+1,s.creation_revision+1,s.audio_revision,a.canonical_sha256,'hostile retained fields',encode(sha256(convert_to('hostile retained fields','UTF8')),'hex'),NULL,'pasted' FROM media_post_submissions s JOIN media_audio_revisions a ON a.submission_id=s.submission_id AND a.audio_revision=s.audio_revision WHERE s.submission_id=$1",
+    [submission],
+  );
+  await expect(
+    admin.query(
+      `UPDATE media_post_submissions SET creation_revision=creation_revision+1,current_terms_revision=creation_revision+1,lyrics_revision=lyrics_revision+1,current_lyrics_revision=lyrics_revision+1,current_analysis_revision=NULL,decision_revision=0,current_decision_revision=NULL,status='processing',phase='analysis',${
+        injectFailureFields
+          ? "failure_code='probe_failed',failure_retry_count=1,retryable=TRUE,last_safe_phase='analysis',"
+          : ""
+      }event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE submission_id=$1`,
+      [submission],
+    ),
+  ).rejects.toThrow("lyrics projection transition is not exact");
+  await admin.query("ROLLBACK");
+}
+
 suite("song media persistence PostgreSQL 17 race suite", () => {
   test("applies 0043 over populated 0042 and atomically publishes owned lineage", async () => {
     await withSchema(async (admin, connection) => {
@@ -1077,8 +1103,9 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     completedTestCount += 1;
   }, 40_000);
   test("derives moderator authority and persists an approval decision path", async () => {
-    await withSchema(async (_admin, connection) => {
+    await withSchema(async (admin, connection) => {
       await createThroughDecision(connection, reviewDecision);
+      await expectHostileLyricsProjectionLeakRejected(admin);
       expect(
         await run(connection, (store) =>
           store.moderate({
@@ -1112,7 +1139,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         }),
       );
       expect(state).toMatchObject({ status: "processing", phase: "publish", decisionRevision: 2 });
-      const persisted = await _admin.query(
+      const persisted = await admin.query(
         "SELECT moderator_actor_id,decision_revision FROM media_moderation_projections WHERE submission_id=$1",
         [submission],
       );
@@ -1512,6 +1539,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           }),
         ),
       ).toMatchObject({ kind: "committed" });
+      await expectHostileLyricsProjectionLeakRejected(admin, true);
       expect(
         await run(connection, (store) =>
           store.bindReference({
@@ -1741,6 +1769,51 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ],
         ),
       ).rejects.toThrow();
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ('hostile-stale-revisions',$1,$2,$3,$4,1,9,7,1,$5,'analysis_launch','hostile-stale-revisions-effect',$6::jsonb)",
+          [
+            submission,
+            community,
+            actor,
+            operation,
+            `media-${operation}-r1`,
+            JSON.stringify({
+              kind: "analysis_launch",
+              submission_id: submission,
+              operation_id: operation,
+              audio_revision: 9,
+              analysis_revision: 7,
+              workflow_revision: 1,
+              workflow_instance_id: `media-${operation}-r1`,
+            }),
+          ],
+        ),
+      ).rejects.toThrow("media outbox lineage does not match submission");
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
+      const decisionWakeupPayload = JSON.stringify({
+        kind: "decision_wakeup",
+        submission_id: submission,
+        operation_id: operation,
+        creation_revision: 2,
+        lyrics_revision: null,
+        trigger: "terms",
+        workflow_revision: 1,
+        workflow_instance_id: `media-${operation}-r1`,
+      });
+      await admin.query(
+        "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,lyrics_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ('semantic-effect',$1,$2,$3,$4,2,1,1,NULL,1,$5,'decision_wakeup','semantic-effect-identity',$6::jsonb)",
+        [submission, community, actor, operation, `media-${operation}-r1`, decisionWakeupPayload],
+      );
+      await expect(
+        admin.query(
+          "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,lyrics_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ('semantic-effect-duplicate',$1,$2,$3,$4,2,1,1,NULL,1,$5,'decision_wakeup','different-semantic-effect-identity',$6::jsonb)",
+          [submission, community, actor, operation, `media-${operation}-r1`, decisionWakeupPayload],
+        ),
+      ).rejects.toThrow("media_submission_outbox_semantic_identity_unique");
       await admin.query("ROLLBACK");
       await admin.query("BEGIN");
       await expect(
@@ -2358,6 +2431,22 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           )
         ).rows[0],
       ).toEqual({ lyrics_explicitness: "explicit", lyrics_revision: "1" });
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "UPDATE media_publication_projections SET lyrics_status='no_lyrics',lyrics_revision=NULL,lyrics_text=NULL WHERE submission_id=$1",
+          [submission],
+        ),
+      ).rejects.toThrow("published lyrics projection is not exact");
+      await admin.query("ROLLBACK");
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "UPDATE media_alignment_projections SET alignment_revision=1,status='unavailable',failure_code='alignment_failed',lyrics_revision=NULL,updated_at=clock_timestamp() WHERE submission_id=$1",
+          [submission],
+        ),
+      ).rejects.toThrow("alignment lyrics revision is not the published revision");
+      await admin.query("ROLLBACK");
       await admin.query(
         "ALTER TABLE media_song_lyrics_revisions DISABLE TRIGGER media_song_lyrics_insert_guard",
       );
@@ -2368,9 +2457,23 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       await admin.query(
         "ALTER TABLE media_song_lyrics_revisions ENABLE TRIGGER media_song_lyrics_insert_guard",
       );
+      await admin.query("BEGIN");
+      await expect(
+        admin.query(
+          "INSERT INTO media_timed_lyrics_artifacts (artifact_ref,community_id,actor_user_id,submission_id,operation_id,post_id,audio_revision,analysis_revision,artifact_revision,canonical_audio_sha256,artifact_sha256,artifact,author_persona_id,lyrics_revision) VALUES ('wrong-lyrics-artifact',$1,$2,$3,$4,$5,1,1,1,$6,encode(sha256(convert_to('{\"segments\": []}'::jsonb::text,'UTF8')),'hex'),'{\"segments\": []}'::jsonb,$7,2)",
+          [community, actor, submission, operation, postId, audioSha256, personaFor(connection)],
+        ),
+      ).rejects.toThrow("timed lyrics artifact is not bound to the published lyrics revision");
+      await admin.query("ROLLBACK");
+      await admin.query(
+        "ALTER TABLE media_timed_lyrics_artifacts DISABLE TRIGGER media_timed_lyrics_publication_lineage_guard",
+      );
       await admin.query(
         "INSERT INTO media_timed_lyrics_artifacts (artifact_ref,community_id,actor_user_id,submission_id,operation_id,post_id,audio_revision,analysis_revision,artifact_revision,canonical_audio_sha256,artifact_sha256,artifact,author_persona_id,lyrics_revision) VALUES ('wrong-lyrics-artifact',$1,$2,$3,$4,$5,1,1,1,$6,encode(sha256(convert_to('{\"segments\": []}'::jsonb::text,'UTF8')),'hex'),'{\"segments\": []}'::jsonb,$7,2)",
         [community, actor, submission, operation, postId, audioSha256, personaFor(connection)],
+      );
+      await admin.query(
+        "ALTER TABLE media_timed_lyrics_artifacts ENABLE TRIGGER media_timed_lyrics_publication_lineage_guard",
       );
       await admin.query("BEGIN");
       await expect(
