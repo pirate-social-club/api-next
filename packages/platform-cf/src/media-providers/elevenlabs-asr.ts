@@ -61,6 +61,13 @@ class ElevenLabsAsrAbort extends Error {
   }
 }
 
+class ElevenLabsAsrEvidencePersistenceError extends Error {
+  constructor() {
+    super("evidence_persistence_failed");
+    this.name = "ElevenLabsAsrEvidencePersistenceError";
+  }
+}
+
 function failure(
   attempt_id: string,
   _tag: MediaProviderFailureTag,
@@ -86,7 +93,13 @@ function safeAttemptId(value: unknown): string {
     Predicate.isObject(value.attempt) &&
     Predicate.isString(value.attempt.attempt_id) &&
     value.attempt.attempt_id.length > 0 &&
-    value.attempt.attempt_id.length <= 256
+    value.attempt.attempt_id.length <= 256 &&
+    value.attempt.attempt_id.trim() === value.attempt.attempt_id &&
+    new TextEncoder().encode(value.attempt.attempt_id).byteLength <= 256 &&
+    [...value.attempt.attempt_id].every((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint >= 0x20 && !(codePoint >= 0x7f && codePoint <= 0x9f);
+    })
   ) {
     return value.attempt.attempt_id;
   }
@@ -140,8 +153,7 @@ function configurationIsValid(
     Predicate.isBoolean(configuration.enable_logging) &&
     Predicate.isFunction(configuration.resolve_audio) &&
     Predicate.isFunction(configuration.transport) &&
-    (configuration.evidence_sink === undefined ||
-      Predicate.isFunction(configuration.evidence_sink)) &&
+    Predicate.isFunction(configuration.evidence_sink) &&
     (configuration.random_bytes === undefined ||
       Predicate.isFunction(configuration.random_bytes)) &&
     validLimits(configuration)
@@ -187,13 +199,12 @@ function cancelResponse(response: ElevenLabsAsrTransportResponse, reason: unknow
   }
 }
 
-function recordEvidence(
+async function persistEvidence(
   configuration: EnabledElevenLabsAsrOptions,
   attempt_id: string,
   outcome: ElevenLabsAsrAttemptEvidence["outcome"],
   provider_status?: number,
-): void {
-  if (configuration.evidence_sink === undefined) return;
+): Promise<void> {
   const evidence: ElevenLabsAsrAttemptEvidence = {
     version: "elevenlabs-asr-attempt-evidence-v1",
     provider: "elevenlabs",
@@ -208,10 +219,10 @@ function recordEvidence(
   };
   try {
     const result = configuration.evidence_sink(evidence);
-    if (Effect.isEffect(result)) void Effect.runPromise(result).catch(() => undefined);
-    else if (result !== undefined) void Promise.resolve(result).catch(() => undefined);
+    if (Effect.isEffect(result)) await Effect.runPromise(result);
+    else if (result !== undefined) await Promise.resolve(result);
   } catch {
-    // Evidence persistence cannot turn a provider result into a different result.
+    throw new ElevenLabsAsrEvidencePersistenceError();
   }
 }
 
@@ -379,7 +390,7 @@ async function invoke(
       throw new ElevenLabsAsrFailure(failure(attemptId, tag, retryAfter));
     }
     const result = await resultForParsed(input, configuration, parsed);
-    recordEvidence(configuration, attemptId, result.status, providerStatus);
+    await persistEvidence(configuration, attemptId, result.status, providerStatus);
     return result;
   } catch (error) {
     let selected: MediaProviderFailure;
@@ -387,10 +398,18 @@ async function invoke(
     else if (error instanceof ElevenLabsAsrAbort) selected = failure(attemptId, error.reason);
     else if (error instanceof ElevenLabsAsrBodyError) {
       selected = failure(attemptId, "permanent_rejection");
+    } else if (error instanceof ElevenLabsAsrEvidencePersistenceError) {
+      selected = failure(attemptId, "provider_unavailable");
     } else {
       selected = failure(attemptId, abortReason ?? "provider_unavailable");
     }
-    recordEvidence(configuration, attemptId, selected._tag, providerStatus);
+    if (!(error instanceof ElevenLabsAsrEvidencePersistenceError)) {
+      try {
+        await persistEvidence(configuration, attemptId, selected._tag, providerStatus);
+      } catch {
+        // A failed call remains failed; its evidence sink can be retried with the attempt ledger.
+      }
+    }
     throw new ElevenLabsAsrFailure(selected);
   } finally {
     operationFinished = true;

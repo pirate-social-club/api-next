@@ -3,6 +3,12 @@ import type { Effect } from "effect";
 export const ELEVENLABS_ASR_ENDPOINT = "https://api.elevenlabs.io/v1/speech-to-text" as const;
 export const ELEVENLABS_ASR_HARD_MAX_AUDIO_BYTES = 64 * 1_024 * 1_024;
 export const ELEVENLABS_ASR_HARD_MAX_RESPONSE_BYTES = 4 * 1_024 * 1_024;
+/**
+ * A 60-minute transcript at an intentionally generous 400 words/minute is
+ * fewer than 48,000 alternating word/spacing entries. The byte ceiling remains
+ * the first hostile-response bound; this cap limits decoded collection work.
+ */
+export const ELEVENLABS_ASR_HARD_MAX_PROVIDER_ENTRIES = 50_000;
 export const ELEVENLABS_ASR_HARD_MAX_TIMEOUT_MS = 120_000;
 export const ELEVENLABS_ASR_HARD_MAX_API_KEY_BYTES = 4_096;
 export const ELEVENLABS_ASR_HARD_MAX_MODEL_BYTES = 256;
@@ -110,7 +116,7 @@ export type EnabledElevenLabsAsrOptions = Readonly<{
   readonly limits: ElevenLabsAsrLimits;
   readonly resolve_audio: ElevenLabsAsrAudioResolver;
   readonly transport: ElevenLabsAsrTransport;
-  readonly evidence_sink?: ElevenLabsAsrEvidenceSink;
+  readonly evidence_sink: ElevenLabsAsrEvidenceSink;
   readonly random_bytes?: ElevenLabsAsrRandomBytes;
 }>;
 

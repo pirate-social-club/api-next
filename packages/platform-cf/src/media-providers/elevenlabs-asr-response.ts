@@ -13,6 +13,7 @@ import type {
   ElevenLabsAsrResponseBody,
   ElevenLabsAsrTransportResponse,
 } from "./elevenlabs-asr-types.ts";
+import { ELEVENLABS_ASR_HARD_MAX_PROVIDER_ENTRIES } from "./elevenlabs-asr-types.ts";
 
 const ProviderWord = Schema.Struct({
   text: Schema.String,
@@ -223,7 +224,7 @@ function parseDocument(document: unknown): ElevenLabsAsrParsedResponse {
   if (
     response.text.length > MEDIA_TRANSCRIPT_MAX_LENGTH ||
     textBytes > MEDIA_TRANSCRIPT_MAX_LENGTH * 4 ||
-    response.words.length > MEDIA_TRANSCRIPT_SEGMENT_MAX_COUNT
+    response.words.length > ELEVENLABS_ASR_HARD_MAX_PROVIDER_ENTRIES
   ) {
     return { kind: "failure", failure: "malformed_response" };
   }

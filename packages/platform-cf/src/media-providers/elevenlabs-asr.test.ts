@@ -9,6 +9,7 @@ import {
 } from "../../../../tests/fixtures/media-analysis/elevenlabs-asr/fixtures.ts";
 import {
   ELEVENLABS_ASR_HARD_MAX_AUDIO_BYTES,
+  ELEVENLABS_ASR_HARD_MAX_PROVIDER_ENTRIES,
   type ElevenLabsAsrAttemptEvidence,
   type ElevenLabsAsrAudioSource,
   type ElevenLabsAsrRequestBody,
@@ -105,6 +106,7 @@ function configured(
     },
     resolve_audio: () => audioSource(),
     random_bytes: (length) => new Uint8Array(length).fill(7),
+    evidence_sink: () => undefined,
     transport,
     ...overrides,
   });
@@ -187,6 +189,54 @@ describe("ElevenLabs ASR adapter", () => {
     expect(JSON.stringify(evidence)).not.toContain("Ignore prior instructions");
   });
 
+  test("awaits exact model provenance and fails closed when it cannot persist", async () => {
+    const evidence: ElevenLabsAsrAttemptEvidence[] = [];
+    let releaseSink: (() => void) | undefined;
+    let markSinkStarted: (() => void) | undefined;
+    const sinkStarted = new Promise<void>((resolve) => {
+      markSinkStarted = resolve;
+    });
+    const sinkRelease = new Promise<void>((resolve) => {
+      releaseSink = resolve;
+    });
+    let settled = false;
+    const inFlight = Effect.runPromise(
+      configured(() => response(multilingualResponse), {
+        evidence_sink: async (entry: ElevenLabsAsrAttemptEvidence) => {
+          evidence.push(entry);
+          markSinkStarted?.();
+          await sinkRelease;
+        },
+      }).recognize(asrInput, { signal: new AbortController().signal }),
+    ).finally(() => {
+      settled = true;
+    });
+    await sinkStarted;
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    releaseSink?.();
+    expect((await inFlight).status).toBe("transcript");
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({
+      adapter_revision: "elevenlabs-asr-adapter-v1",
+      requested_model: "fixture-scribe-model",
+      model_revision: "model-revision-2026-08-25",
+    });
+
+    const failed = await providerFailure(
+      configured(() => response(multilingualResponse), {
+        evidence_sink: async () => {
+          throw new Error("fixture persistence failure");
+        },
+      }).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    expect(failed).toMatchObject({
+      _tag: "provider_unavailable",
+      retryability: "retryable",
+      attempt_id: "attempt-asr-1",
+    });
+  });
+
   test("projects music-only output as explicit no-speech evidence", async () => {
     const result = await Effect.runPromise(
       configured(() => response(musicOnlyResponse)).recognize(asrInput, {
@@ -248,6 +298,92 @@ describe("ElevenLabs ASR adapter", () => {
         )
       )._tag,
     ).toBe("malformed_response");
+  });
+
+  test("bounds provider entries separately from aggregated transcript segments", async () => {
+    const entries = Array.from({ length: 5_001 }, (_, index) => {
+      const start = index * 0.002;
+      return [
+        { text: "a", start, end: start + 0.001, type: "word" },
+        { text: " ", start: start + 0.001, end: start + 0.002, type: "spacing" },
+      ];
+    }).flat();
+    const accepted = await Effect.runPromise(
+      configured(
+        () =>
+          response({
+            language_code: "en",
+            language_probability: 1,
+            text: entries.map(({ text }) => text).join(""),
+            words: entries,
+          }),
+        {
+          limits: {
+            max_audio_bytes: 1_024,
+            max_response_bytes: 2 * 1_024 * 1_024,
+            timeout_ms: 5_000,
+          },
+        },
+      ).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    expect(accepted.status).toBe("transcript");
+    if (accepted.status !== "transcript") throw new Error("expected transcript");
+    expect(entries.length).toBeGreaterThan(10_000);
+    expect(accepted.transcript.segments.length).toBeLessThan(10);
+
+    const hostileEntries = Array.from(
+      { length: ELEVENLABS_ASR_HARD_MAX_PROVIDER_ENTRIES + 1 },
+      () => ({ text: "x", start: 0, end: 1, type: "word" }),
+    );
+    const rejected = await providerFailure(
+      configured(
+        () =>
+          response({
+            language_code: "en",
+            language_probability: 1,
+            text: "x",
+            words: hostileEntries,
+          }),
+        {
+          limits: {
+            max_audio_bytes: 1_024,
+            max_response_bytes: 4 * 1_024 * 1_024,
+            timeout_ms: 5_000,
+          },
+        },
+      ).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    expect(rejected._tag).toBe("malformed_response");
+  });
+
+  test("rejects multipart filename controls before transport", async () => {
+    for (const filename of ["song\r\ninjected.mp3", "song\0.mp3", "song\u0085.mp3"]) {
+      let calls = 0;
+      const failed = await providerFailure(
+        configured(
+          () => {
+            calls += 1;
+            return response(multilingualResponse);
+          },
+          { resolve_audio: () => ({ ...audioSource(), filename }) },
+        ).recognize(asrInput, { signal: new AbortController().signal }),
+      );
+      expect(failed._tag).toBe("permanent_rejection");
+      expect(calls).toBe(0);
+    }
+  });
+
+  test("uses only contract-valid fallback attempt identifiers", async () => {
+    for (const attempt_id of ["attempt\nid", "🙂".repeat(256)]) {
+      const failed = await providerFailure(
+        makeElevenLabsAsrAdapter().recognize(
+          { ...asrInput, attempt: { ...asrInput.attempt, attempt_id } },
+          { signal: new AbortController().signal },
+        ),
+      );
+      expect(failed.attempt_id).toBe("invalid-attempt");
+      expect(encoder.encode(failed.attempt_id).byteLength).toBeLessThanOrEqual(256);
+    }
   });
 
   test("separates partial output from malformed provider envelopes", async () => {
