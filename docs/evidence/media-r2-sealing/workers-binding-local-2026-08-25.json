@@ -1,0 +1,52 @@
+{
+  "schema_version": "r2-workers-binding-local-evidence-v1",
+  "run": {
+    "mode": "local-workerd",
+    "date": "2026-08-25",
+    "wrangler_version": "4.123.0",
+    "compatibility_date": "2026-08-18"
+  },
+  "safety": {
+    "provider_contacted": false,
+    "credentials_read": false,
+    "deployment_performed": false,
+    "operator_identifiers_recorded": false,
+    "urls_headers_bodies_recorded": false
+  },
+  "scenarios": [
+    {
+      "run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "scenario": "success",
+      "result": "sealed",
+      "cleanup_complete": true
+    },
+    {
+      "run_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "scenario": "source_precondition_failed",
+      "result": "source_precondition_failed",
+      "cleanup_complete": true
+    },
+    {
+      "run_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      "scenario": "destination_conflict",
+      "result": "destination_conflict",
+      "cleanup_complete": true
+    },
+    {
+      "run_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      "scenario": "expectation_mismatch",
+      "result": "expectation_mismatch",
+      "cleanup_complete": true
+    }
+  ],
+  "validation_notes": [
+    "The first local start rejected a compatibility date newer than the pinned Workerd runtime; the proof was rerun with 2026-08-18.",
+    "The first stream attempt used an unavailable global DigestStream constructor; the implementation was corrected to the documented crypto.DigestStream constructor before the four successful replays."
+  ],
+  "cleanup_boundary": {
+    "full_identity_checked_before_delete": true,
+    "absence_checked_after_delete": true,
+    "binding_delete_is_conditional": false,
+    "production_acceptance": "blocked_pending_cleanup_fence_ratification"
+  }
+}
