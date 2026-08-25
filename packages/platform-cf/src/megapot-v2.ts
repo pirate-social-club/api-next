@@ -352,13 +352,25 @@ export function encodeMegapotUsdcAllowance(owner: string, spender: string): Hex 
   });
 }
 
+export function decodeMegapotUsdcAllowance(data: Hex): bigint {
+  return decodeFunctionResult({ abi: erc20Abi, functionName: "allowance", data });
+}
+
 export function encodeMegapotUsdcBalance(account: string): Hex {
   return encodeFunctionData({ abi: erc20Abi, functionName: "balanceOf", args: [address(account)] });
+}
+
+export function decodeMegapotUsdcBalance(data: Hex): bigint {
+  return decodeFunctionResult({ abi: erc20Abi, functionName: "balanceOf", data });
 }
 
 export function encodeMegapotTicketOwner(ticketId: bigint): Hex {
   if (ticketId < 0n) throw new MegapotV2EvidenceInvalid("wrong-ticket");
   return encodeFunctionData({ abi: erc721Abi, functionName: "ownerOf", args: [ticketId] });
+}
+
+export function decodeMegapotTicketOwner(data: Hex): string {
+  return address(decodeFunctionResult({ abi: erc721Abi, functionName: "ownerOf", data }));
 }
 
 export function validateMegapotPurchaseReceipt(input: {
