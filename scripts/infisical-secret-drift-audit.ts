@@ -7,7 +7,7 @@ export type InfisicalEnvironment = (typeof INFISICAL_ENVIRONMENTS)[number];
 export const INFISICAL_RUNTIME_ENABLED = {
   dev: false,
   staging: true,
-  prod: false,
+  prod: true,
 } as const satisfies Readonly<Record<InfisicalEnvironment, boolean>>;
 export type InfisicalPath = "/" | "/services/api-next" | "/services/api-next/operator";
 export type InfisicalDriftKind =
