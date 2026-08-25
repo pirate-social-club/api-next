@@ -1,6 +1,9 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "ignoreDependencies": ["@effect/language-service", "cloudflare"],
+  "ignoreIssues": {
+    "packages/platform-cf/src/verification/providers/contract-fixture.ts": ["files"]
+  },
   "workspaces": {
     ".": {
       "entry": ["scripts/**/*.ts", "tests/**/entry.ts", "infra/**/src/index.ts"],
