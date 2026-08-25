@@ -12,12 +12,18 @@ import {
 import {
   decodeMegapotCurrentDrawingId,
   decodeMegapotDrawingState,
+  decodeMegapotDrawingTierPayouts,
+  decodeMegapotReferralFees,
+  decodeMegapotTicketTierIds,
   EVM_ZERO_ADDRESS,
   encodeMegapotBuyTickets,
   encodeMegapotClaimWinnings,
   encodeMegapotCurrentDrawingId,
   encodeMegapotDrawingState,
+  encodeMegapotDrawingTierPayouts,
+  encodeMegapotReferralFees,
   encodeMegapotTicketOwner,
+  encodeMegapotTicketTierIds,
   encodeMegapotUsdcApproval,
   MEGAPOT_REFERRAL_SPLIT_SCALE,
   type MegapotReceiptLog,
@@ -69,6 +75,12 @@ const transferEvent = parseAbi([
 ]);
 const approvalEvent = parseAbi([
   "event Approval(address indexed owner, address indexed spender, uint256 value)",
+]);
+const referralFeeCollectedEvent = parseAbi([
+  "event ReferralFeeCollected(address indexed referrer, uint256 amount)",
+]);
+const usdcTransferEvent = parseAbi([
+  "event Transfer(address indexed from, address indexed to, uint256 amount)",
 ]);
 
 function log(input: {
@@ -182,6 +194,18 @@ function claimLogs(drawingId = 8_327n): readonly MegapotReceiptLog[] {
       logIndex: 7,
     }),
     log({
+      address: JACKPOT,
+      topics: topics(
+        encodeEventTopics({
+          abi: referralFeeCollectedEvent,
+          eventName: "ReferralFeeCollected",
+          args: { referrer: REFERRER },
+        }),
+      ),
+      data: encodeAbiParameters(parseAbiParameters("uint256 amount"), [100n]),
+      logIndex: 8,
+    }),
+    log({
       address: NFT,
       topics: topics(
         encodeEventTopics({
@@ -191,7 +215,19 @@ function claimLogs(drawingId = 8_327n): readonly MegapotReceiptLog[] {
         }),
       ),
       data: "0x",
-      logIndex: 8,
+      logIndex: 9,
+    }),
+    log({
+      address: USDC,
+      topics: topics(
+        encodeEventTopics({
+          abi: usdcTransferEvent,
+          eventName: "Transfer",
+          args: { from: JACKPOT, to: CUSTODY },
+        }),
+      ),
+      data: encodeAbiParameters(parseAbiParameters("uint256 amount"), [901n]),
+      logIndex: 10,
     }),
   ];
 }
@@ -203,6 +239,9 @@ describe("Megapot v2 ABI", () => {
     expect(encodeMegapotClaimWinnings([91n]).slice(0, 10)).toBe("0x1bf0ade0");
     expect(encodeMegapotUsdcApproval(JACKPOT, 10_000n).slice(0, 10)).toBe("0x095ea7b3");
     expect(encodeMegapotTicketOwner(91n).slice(0, 10)).toBe("0x6352211e");
+    expect(encodeMegapotDrawingTierPayouts(8_327n).slice(0, 10)).toBe("0xd70ab9d1");
+    expect(encodeMegapotTicketTierIds([91n]).slice(0, 10)).toBe("0xb32b670c");
+    expect(encodeMegapotReferralFees(REFERRER).slice(0, 10)).toBe("0x75780f42");
 
     const currentDrawingData = encodeFunctionResult({
       abi: parseAbi(["function currentDrawingId() view returns (uint256)"]),
@@ -239,6 +278,24 @@ describe("Megapot v2 ABI", () => {
       payoutCalculator: PAYOUT_CALCULATOR,
       jackpotLock: false,
     });
+    const tierData = encodeFunctionResult({
+      abi: parseAbi(["function getDrawingTierPayouts(uint256) view returns (uint256[12])"]),
+      functionName: "getDrawingTierPayouts",
+      result: [0n, 10n, 0n, 20n, 30n, 40n, 50n, 60n, 70n, 80n, 90n, 100n],
+    });
+    expect(decodeMegapotDrawingTierPayouts(tierData)[11]).toBe(100n);
+    const ticketTierData = encodeFunctionResult({
+      abi: parseAbi(["function getTicketTierIds(uint256[]) view returns (uint256[])"]),
+      functionName: "getTicketTierIds",
+      result: [7n],
+    });
+    expect(decodeMegapotTicketTierIds(ticketTierData, 1)).toEqual([7n]);
+    const referralData = encodeFunctionResult({
+      abi: parseAbi(["function referralFees(address) view returns (uint256)"]),
+      functionName: "referralFees",
+      result: 100n,
+    });
+    expect(decodeMegapotReferralFees(referralData)).toBe(100n);
   });
 
   test("encodes exact replayable purchase bytes with custody as recipient", () => {
@@ -364,6 +421,9 @@ describe("Megapot v2 deployment and receipt evidence", () => {
         receipt: receipt(claimLogs()),
         drawingId: 8_327n,
         ticketIds: [91n],
+        expectedGrossWinningsAtomic: 1_001n,
+        expectedNetWinningsAtomic: 901n,
+        expectedReferralAccrualAtomic: 100n,
       }),
     ).toEqual({
       transactionHash: TX,
@@ -371,8 +431,12 @@ describe("Megapot v2 deployment and receipt evidence", () => {
       blockNumber: 123n,
       ticketIds: [91n],
       claimLogIndices: [7],
-      burnLogIndices: [8],
-      grossWinningsAtomic: 901n,
+      burnLogIndices: [9],
+      referralLogIndices: [8],
+      grossWinningsAtomic: 1_001n,
+      netWinningsAtomic: 901n,
+      referralAccrualAtomic: 100n,
+      transferLogIndex: 10,
     });
     expect(() =>
       validateMegapotClaimReceipt({
@@ -380,6 +444,9 @@ describe("Megapot v2 deployment and receipt evidence", () => {
         receipt: receipt(claimLogs().slice(0, 1)),
         drawingId: 8_327n,
         ticketIds: [91n],
+        expectedGrossWinningsAtomic: 1_001n,
+        expectedNetWinningsAtomic: 901n,
+        expectedReferralAccrualAtomic: 100n,
       }),
     ).toThrow("missing-log");
   });

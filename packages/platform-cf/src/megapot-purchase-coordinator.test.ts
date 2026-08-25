@@ -243,6 +243,17 @@ function harness(input: Readonly<{ allowance?: bigint; uncertainSend?: boolean }
         jackpotLock: false,
       },
     }),
+    readCurrentDrawingId: async () => 101n,
+    readDrawing: async () => {
+      throw new Error("unused");
+    },
+    readDrawingTierPayouts: async () => {
+      throw new Error("unused");
+    },
+    readTicketTierIds: async () => {
+      throw new Error("unused");
+    },
+    readReferralFees: async () => 0n,
     readUsdcBalance: async () => 1_000_000n,
     readNativeBalance: async () => 1_000_000_000_000_000n,
     readUsdcAllowance: async () => input.allowance ?? 1_000_000n,

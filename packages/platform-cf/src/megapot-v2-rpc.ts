@@ -2,12 +2,18 @@ import { type Hex, keccak256 } from "viem";
 import {
   decodeMegapotCurrentDrawingId,
   decodeMegapotDrawingState,
+  decodeMegapotDrawingTierPayouts,
+  decodeMegapotReferralFees,
   decodeMegapotTicketOwner,
+  decodeMegapotTicketTierIds,
   decodeMegapotUsdcAllowance,
   decodeMegapotUsdcBalance,
   encodeMegapotCurrentDrawingId,
   encodeMegapotDrawingState,
+  encodeMegapotDrawingTierPayouts,
+  encodeMegapotReferralFees,
   encodeMegapotTicketOwner,
+  encodeMegapotTicketTierIds,
   encodeMegapotUsdcAllowance,
   encodeMegapotUsdcBalance,
   type MegapotTransactionReceipt,
@@ -65,10 +71,21 @@ export interface MegapotV2RpcClient {
     readonly drawingId: bigint;
     readonly state: MegapotV2DrawingState;
   }>;
-  readonly readUsdcBalance: (account: string) => Promise<bigint>;
+  readonly readCurrentDrawingId: (blockNumber?: bigint) => Promise<bigint>;
+  readonly readDrawing: (drawingId: bigint, blockNumber?: bigint) => Promise<MegapotV2DrawingState>;
+  readonly readDrawingTierPayouts: (
+    drawingId: bigint,
+    blockNumber?: bigint,
+  ) => Promise<readonly bigint[]>;
+  readonly readTicketTierIds: (
+    ticketIds: readonly bigint[],
+    blockNumber?: bigint,
+  ) => Promise<readonly bigint[]>;
+  readonly readReferralFees: (account: string, blockNumber?: bigint) => Promise<bigint>;
+  readonly readUsdcBalance: (account: string, blockNumber?: bigint) => Promise<bigint>;
   readonly readNativeBalance: (account: string) => Promise<bigint>;
   readonly readUsdcAllowance: (owner: string, spender: string) => Promise<bigint>;
-  readonly readTicketOwner: (ticketId: bigint) => Promise<string>;
+  readonly readTicketOwner: (ticketId: bigint, blockNumber?: bigint) => Promise<string>;
   readonly readPendingNonce: (account: string) => Promise<bigint>;
   readonly estimateGas: (input: {
     readonly from: string;
@@ -243,8 +260,13 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
     }
   };
 
-  const ethCall = async (to: string, data: Hex): Promise<Hex> =>
-    hexData(await rpc("eth_call", [{ to: canonicalAddress(to), data: hexData(data) }, "latest"]));
+  const ethCall = async (to: string, data: Hex, blockNumber?: bigint): Promise<Hex> =>
+    hexData(
+      await rpc("eth_call", [
+        { to: canonicalAddress(to), data: hexData(data) },
+        blockNumber === undefined ? "latest" : quantityHex(blockNumber),
+      ]),
+    );
 
   const readCodeHash = async (contract: string): Promise<string> => {
     const code = hexData(await rpc("eth_getCode", [canonicalAddress(contract), "latest"]));
@@ -279,9 +301,42 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       );
       return { drawingId, state };
     },
-    readUsdcBalance: async (account) =>
+    readCurrentDrawingId: async (blockNumber) =>
+      decodeMegapotCurrentDrawingId(
+        await ethCall(attestation.jackpotAddress, encodeMegapotCurrentDrawingId(), blockNumber),
+      ),
+    readDrawing: async (drawingId, blockNumber) =>
+      decodeMegapotDrawingState(
+        await ethCall(
+          attestation.jackpotAddress,
+          encodeMegapotDrawingState(drawingId),
+          blockNumber,
+        ),
+      ),
+    readDrawingTierPayouts: async (drawingId, blockNumber) =>
+      decodeMegapotDrawingTierPayouts(
+        await ethCall(
+          attestation.jackpotAddress,
+          encodeMegapotDrawingTierPayouts(drawingId),
+          blockNumber,
+        ),
+      ),
+    readTicketTierIds: async (ticketIds, blockNumber) =>
+      decodeMegapotTicketTierIds(
+        await ethCall(
+          attestation.jackpotAddress,
+          encodeMegapotTicketTierIds(ticketIds),
+          blockNumber,
+        ),
+        ticketIds.length,
+      ),
+    readReferralFees: async (account, blockNumber) =>
+      decodeMegapotReferralFees(
+        await ethCall(attestation.jackpotAddress, encodeMegapotReferralFees(account), blockNumber),
+      ),
+    readUsdcBalance: async (account, blockNumber) =>
       decodeMegapotUsdcBalance(
-        await ethCall(attestation.usdcAddress, encodeMegapotUsdcBalance(account)),
+        await ethCall(attestation.usdcAddress, encodeMegapotUsdcBalance(account), blockNumber),
       ),
     readNativeBalance: async (account) =>
       quantity(await rpc("eth_getBalance", [canonicalAddress(account), "latest"])),
@@ -289,9 +344,13 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       decodeMegapotUsdcAllowance(
         await ethCall(attestation.usdcAddress, encodeMegapotUsdcAllowance(owner, spender)),
       ),
-    readTicketOwner: async (ticketId) =>
+    readTicketOwner: async (ticketId, blockNumber) =>
       decodeMegapotTicketOwner(
-        await ethCall(attestation.ticketNftAddress, encodeMegapotTicketOwner(ticketId)),
+        await ethCall(
+          attestation.ticketNftAddress,
+          encodeMegapotTicketOwner(ticketId),
+          blockNumber,
+        ),
       ),
     readPendingNonce: async (account) =>
       quantity(await rpc("eth_getTransactionCount", [canonicalAddress(account), "pending"])),

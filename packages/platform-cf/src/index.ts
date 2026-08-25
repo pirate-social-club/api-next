@@ -116,8 +116,12 @@ export {
 } from "./identity-repository";
 export * from "./megapot-approval-coordinator.ts";
 export * from "./megapot-approval-repository.ts";
+export * from "./megapot-claim-coordinator.ts";
+export * from "./megapot-claim-repository.ts";
 export * from "./megapot-purchase-coordinator.ts";
 export * from "./megapot-purchase-repository.ts";
+export * from "./megapot-sweep-coordinator.ts";
+export * from "./megapot-sweep-repository.ts";
 export * from "./megapot-v2.ts";
 export * from "./megapot-v2-rpc.ts";
 export * from "./megapot-v2-signer.ts";

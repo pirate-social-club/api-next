@@ -3140,6 +3140,8 @@ DECLARE
   chain_record reward_chain_effects%ROWTYPE;
   attestation_record megapot_deployment_attestations%ROWTYPE;
   ticket_record megapot_ticket_inventory%ROWTYPE;
+  sweep_record megapot_drawing_sweeps%ROWTYPE;
+  sweep_evidence megapot_sweep_ticket_evidence%ROWTYPE;
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'Megapot claim effects are append-only';
@@ -3150,13 +3152,26 @@ BEGIN
    WHERE attestation_id = NEW.attestation_id FOR SHARE;
   SELECT * INTO ticket_record FROM megapot_ticket_inventory
    WHERE attestation_id = NEW.attestation_id AND ticket_id = NEW.ticket_id FOR SHARE;
+  SELECT * INTO sweep_record FROM megapot_drawing_sweeps
+   WHERE sweep_id = NEW.sweep_id FOR SHARE;
+  SELECT * INTO sweep_evidence FROM megapot_sweep_ticket_evidence
+   WHERE sweep_id = NEW.sweep_id AND ticket_id = NEW.ticket_id FOR SHARE;
   IF chain_record.effect_kind <> 'winnings_claim'
      OR chain_record.chain_id <> attestation_record.chain_id
      OR chain_record.signer_address <> attestation_record.custody_address
      OR chain_record.target_address <> attestation_record.jackpot_address
      OR ticket_record.pool_leg_id <> NEW.pool_leg_id
      OR ticket_record.drawing_id <> NEW.drawing_id
-     OR ticket_record.status <> 'claim_pending' THEN
+     OR ticket_record.status <> 'claim_pending'
+     OR sweep_record.state <> 'complete'
+     OR sweep_record.pool_leg_id <> NEW.pool_leg_id
+     OR sweep_record.drawing_id <> NEW.drawing_id
+     OR sweep_evidence.attestation_id <> NEW.attestation_id
+     OR sweep_evidence.tier_id IN (0, 2)
+     OR sweep_evidence.gross_winnings_atomic <> NEW.expected_gross_winnings_atomic
+     OR sweep_evidence.net_winnings_atomic <> NEW.expected_net_winnings_atomic
+     OR sweep_evidence.referral_accrual_atomic <>
+          NEW.expected_referral_accrual_atomic THEN
     RAISE EXCEPTION 'Megapot claim effect does not match custody ticket';
   END IF;
   RETURN NEW;
@@ -3176,13 +3191,21 @@ BEGIN
     IF ROW(
       NEW.claim_effect_id, NEW.attestation_id, NEW.ticket_id, NEW.pool_leg_id,
       NEW.drawing_id, NEW.sweep_id, NEW.expected_gross_winnings_atomic,
-      NEW.expected_net_winnings_atomic, NEW.created_at
+      NEW.expected_net_winnings_atomic, NEW.expected_referral_accrual_atomic,
+      NEW.custody_balance_before_atomic, NEW.referral_balance_before_atomic,
+      NEW.preflight_block_number, NEW.preflight_block_hash, NEW.created_at
     ) IS DISTINCT FROM ROW(
       OLD.claim_effect_id, OLD.attestation_id, OLD.ticket_id, OLD.pool_leg_id,
       OLD.drawing_id, OLD.sweep_id, OLD.expected_gross_winnings_atomic,
-      OLD.expected_net_winnings_atomic, OLD.created_at
-    ) OR OLD.received_atomic IS NOT NULL OR OLD.claim_log_index IS NOT NULL
-       OR NEW.received_atomic IS NULL OR NEW.claim_log_index IS NULL THEN
+      OLD.expected_net_winnings_atomic, OLD.expected_referral_accrual_atomic,
+      OLD.custody_balance_before_atomic, OLD.referral_balance_before_atomic,
+      OLD.preflight_block_number, OLD.preflight_block_hash, OLD.created_at
+    ) OR OLD.received_atomic IS NOT NULL OR OLD.referral_accrual_atomic IS NOT NULL
+       OR OLD.claim_log_index IS NOT NULL OR OLD.burn_log_index IS NOT NULL
+       OR OLD.referral_log_index IS NOT NULL OR OLD.transfer_log_index IS NOT NULL
+       OR NEW.received_atomic IS NULL OR NEW.referral_accrual_atomic IS NULL
+       OR NEW.claim_log_index IS NULL OR NEW.burn_log_index IS NULL
+       OR NEW.referral_log_index IS NULL OR NEW.transfer_log_index IS NULL THEN
       RAISE EXCEPTION 'invalid Megapot claim observation update';
     END IF;
     SELECT * INTO chain_record FROM reward_chain_effects
@@ -3227,12 +3250,12 @@ BEGIN
   END IF;
   IF TG_OP = 'UPDATE' AND (
     ROW(
-      NEW.sweep_id, NEW.attestation_id, NEW.drawing_id,
+      NEW.sweep_id, NEW.pool_leg_id, NEW.attestation_id, NEW.drawing_id,
       NEW.observation_block_number, NEW.observation_block_hash,
       NEW.drawing_state_hash, NEW.ticket_count, NEW.winning_ticket_count,
       NEW.observed_at, NEW.created_at
     ) IS DISTINCT FROM ROW(
-      OLD.sweep_id, OLD.attestation_id, OLD.drawing_id,
+      OLD.sweep_id, OLD.pool_leg_id, OLD.attestation_id, OLD.drawing_id,
       OLD.observation_block_number, OLD.observation_block_hash,
       OLD.drawing_state_hash, OLD.ticket_count, OLD.winning_ticket_count,
       OLD.observed_at, OLD.created_at
@@ -8646,6 +8669,47 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION validate_megapot_sweep_ticket_evidence() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target_sweep_id TEXT;
+  sweep_record megapot_drawing_sweeps%ROWTYPE;
+  evidence_count INTEGER;
+  winning_count INTEGER;
+BEGIN
+  target_sweep_id := NEW.sweep_id;
+  SELECT * INTO sweep_record FROM megapot_drawing_sweeps
+   WHERE sweep_id=target_sweep_id;
+  IF sweep_record.sweep_id IS NULL OR sweep_record.state <> 'complete' THEN
+    RAISE EXCEPTION 'Megapot sweep evidence requires a complete sweep';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM megapot_sweep_ticket_evidence evidence
+    JOIN megapot_ticket_inventory ticket
+      ON ticket.attestation_id=evidence.attestation_id
+     AND ticket.ticket_id=evidence.ticket_id
+    JOIN megapot_deployment_attestations attestation
+      ON attestation.attestation_id=evidence.attestation_id
+    WHERE evidence.sweep_id=target_sweep_id
+      AND (ticket.pool_leg_id <> sweep_record.pool_leg_id
+        OR ticket.drawing_id <> sweep_record.drawing_id
+        OR evidence.attestation_id <> sweep_record.attestation_id
+        OR evidence.custody_owner_address <> attestation.custody_address)
+  ) THEN
+    RAISE EXCEPTION 'Megapot sweep ticket evidence identity mismatch';
+  END IF;
+  SELECT count(*), count(*) FILTER (WHERE tier_id NOT IN (0, 2))
+    INTO evidence_count, winning_count
+    FROM megapot_sweep_ticket_evidence WHERE sweep_id=target_sweep_id;
+  IF evidence_count <> sweep_record.ticket_count
+     OR winning_count <> sweep_record.winning_ticket_count THEN
+    RAISE EXCEPTION 'Megapot sweep ticket evidence count mismatch';
+  END IF;
+  RETURN NULL;
+END
+$$;
+
 CREATE FUNCTION validate_namespace_ownership_attempt_session_coherence() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -12309,14 +12373,73 @@ CREATE TABLE megapot_claim_effects (
     sweep_id text NOT NULL,
     expected_gross_winnings_atomic numeric(78,0) NOT NULL,
     expected_net_winnings_atomic numeric(78,0) NOT NULL,
+    expected_referral_accrual_atomic numeric(78,0) NOT NULL,
+    custody_balance_before_atomic numeric(78,0) NOT NULL,
+    referral_balance_before_atomic numeric(78,0) NOT NULL,
+    preflight_block_number bigint NOT NULL,
+    preflight_block_hash text NOT NULL,
     received_atomic numeric(78,0),
+    referral_accrual_atomic numeric(78,0),
     claim_log_index integer,
+    burn_log_index integer,
+    referral_log_index integer,
+    transfer_log_index integer,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT megapot_claim_effects_burn_log_index_check CHECK (((burn_log_index IS NULL) OR (burn_log_index >= 0))),
     CONSTRAINT megapot_claim_effects_claim_log_index_check CHECK (((claim_log_index IS NULL) OR (claim_log_index >= 0))),
+    CONSTRAINT megapot_claim_effects_custody_balance_before_atomic_check CHECK ((custody_balance_before_atomic >= (0)::numeric)),
     CONSTRAINT megapot_claim_effects_expected_gross_winnings_atomic_check CHECK ((expected_gross_winnings_atomic > (0)::numeric)),
     CONSTRAINT megapot_claim_effects_expected_net_winnings_atomic_check CHECK ((expected_net_winnings_atomic > (0)::numeric)),
+    CONSTRAINT megapot_claim_effects_expected_referral_accrual_atomic_check CHECK ((expected_referral_accrual_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_claim_effects_preflight_block_hash_check CHECK ((preflight_block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT megapot_claim_effects_preflight_block_number_check CHECK ((preflight_block_number >= 0)),
     CONSTRAINT megapot_claim_effects_received_atomic_check CHECK ((received_atomic >= (0)::numeric)),
-    CONSTRAINT megapot_claim_expected_order CHECK ((expected_net_winnings_atomic <= expected_gross_winnings_atomic))
+    CONSTRAINT megapot_claim_effects_referral_accrual_atomic_check CHECK ((referral_accrual_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_claim_effects_referral_balance_before_atomic_check CHECK ((referral_balance_before_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_claim_effects_referral_log_index_check CHECK (((referral_log_index IS NULL) OR (referral_log_index >= 0))),
+    CONSTRAINT megapot_claim_effects_transfer_log_index_check CHECK (((transfer_log_index IS NULL) OR (transfer_log_index >= 0))),
+    CONSTRAINT megapot_claim_expected_order CHECK (((expected_gross_winnings_atomic = (expected_net_winnings_atomic + expected_referral_accrual_atomic)) AND (((received_atomic IS NULL) AND (referral_accrual_atomic IS NULL) AND (claim_log_index IS NULL) AND (burn_log_index IS NULL) AND (referral_log_index IS NULL) AND (transfer_log_index IS NULL)) OR ((received_atomic = expected_net_winnings_atomic) AND (referral_accrual_atomic = expected_referral_accrual_atomic) AND (claim_log_index IS NOT NULL) AND (burn_log_index IS NOT NULL) AND (referral_log_index IS NOT NULL) AND (transfer_log_index IS NOT NULL)))))
+);
+
+CREATE TABLE megapot_claim_receipt_evidence (
+    claim_effect_id text NOT NULL,
+    attestation_id text NOT NULL,
+    ticket_id numeric(78,0) NOT NULL,
+    transaction_hash text NOT NULL,
+    claim_log_index integer NOT NULL,
+    burn_log_index integer NOT NULL,
+    referral_log_index integer NOT NULL,
+    transfer_log_index integer NOT NULL,
+    gross_winnings_atomic numeric(78,0) NOT NULL,
+    referral_accrual_atomic numeric(78,0) NOT NULL,
+    net_winnings_atomic numeric(78,0) NOT NULL,
+    custody_balance_before_atomic numeric(78,0) NOT NULL,
+    custody_balance_after_atomic numeric(78,0) NOT NULL,
+    referral_balance_before_atomic numeric(78,0) NOT NULL,
+    referral_balance_after_atomic numeric(78,0) NOT NULL,
+    block_number bigint NOT NULL,
+    block_hash text NOT NULL,
+    receipt_hash text NOT NULL,
+    confirmations integer NOT NULL,
+    confirmed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT megapot_claim_receipt_conservation CHECK (((gross_winnings_atomic = (net_winnings_atomic + referral_accrual_atomic)) AND (custody_balance_after_atomic = (custody_balance_before_atomic + net_winnings_atomic)) AND (referral_balance_after_atomic = (referral_balance_before_atomic + referral_accrual_atomic)) AND (claim_log_index <> burn_log_index) AND (claim_log_index <> referral_log_index) AND (claim_log_index <> transfer_log_index) AND (burn_log_index <> referral_log_index) AND (burn_log_index <> transfer_log_index) AND (referral_log_index <> transfer_log_index))),
+    CONSTRAINT megapot_claim_receipt_eviden_custody_balance_after_atomic_check CHECK ((custody_balance_after_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_claim_receipt_eviden_custody_balance_before_atomi_check CHECK ((custody_balance_before_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_claim_receipt_eviden_referral_balance_after_atomi_check CHECK ((referral_balance_after_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_claim_receipt_eviden_referral_balance_before_atom_check CHECK ((referral_balance_before_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_claim_receipt_evidence_block_hash_check CHECK ((block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT megapot_claim_receipt_evidence_block_number_check CHECK ((block_number >= 0)),
+    CONSTRAINT megapot_claim_receipt_evidence_burn_log_index_check CHECK ((burn_log_index >= 0)),
+    CONSTRAINT megapot_claim_receipt_evidence_claim_log_index_check CHECK ((claim_log_index >= 0)),
+    CONSTRAINT megapot_claim_receipt_evidence_confirmations_check CHECK ((confirmations > 0)),
+    CONSTRAINT megapot_claim_receipt_evidence_gross_winnings_atomic_check CHECK ((gross_winnings_atomic > (0)::numeric)),
+    CONSTRAINT megapot_claim_receipt_evidence_net_winnings_atomic_check CHECK ((net_winnings_atomic > (0)::numeric)),
+    CONSTRAINT megapot_claim_receipt_evidence_receipt_hash_check CHECK ((receipt_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT megapot_claim_receipt_evidence_referral_accrual_atomic_check CHECK ((referral_accrual_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_claim_receipt_evidence_referral_log_index_check CHECK ((referral_log_index >= 0)),
+    CONSTRAINT megapot_claim_receipt_evidence_transaction_hash_check CHECK ((transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT megapot_claim_receipt_evidence_transfer_log_index_check CHECK ((transfer_log_index >= 0))
 );
 
 CREATE TABLE megapot_deployment_attestations (
@@ -12395,6 +12518,7 @@ CREATE TABLE megapot_drawing_observations (
 
 CREATE TABLE megapot_drawing_sweeps (
     sweep_id text NOT NULL,
+    pool_leg_id text NOT NULL,
     attestation_id text NOT NULL,
     drawing_id numeric(78,0) NOT NULL,
     observation_block_number bigint NOT NULL,
@@ -12586,6 +12710,26 @@ CREATE TABLE megapot_purchase_receipt_evidence (
     CONSTRAINT megapot_purchase_receipt_evidence_receipt_hash_check CHECK ((receipt_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT megapot_purchase_receipt_evidence_referral_fees_atomic_check CHECK ((referral_fees_atomic >= (0)::numeric)),
     CONSTRAINT megapot_purchase_receipt_evidence_transaction_hash_check CHECK ((transaction_hash ~ '^0x[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE megapot_sweep_ticket_evidence (
+    sweep_id text NOT NULL,
+    attestation_id text NOT NULL,
+    ticket_id numeric(78,0) NOT NULL,
+    tier_id smallint NOT NULL,
+    custody_owner_address text NOT NULL,
+    gross_winnings_atomic numeric(78,0) NOT NULL,
+    referral_win_share_atomic numeric(78,0) NOT NULL,
+    referral_accrual_atomic numeric(78,0) NOT NULL,
+    net_winnings_atomic numeric(78,0) NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT megapot_sweep_ticket_conservation CHECK (((gross_winnings_atomic = (net_winnings_atomic + referral_accrual_atomic)) AND (referral_accrual_atomic = trunc(((gross_winnings_atomic * referral_win_share_atomic) / ('1000000000000000000'::bigint)::numeric))) AND (((tier_id = ANY (ARRAY[0, 2])) AND (gross_winnings_atomic = (0)::numeric)) OR ((tier_id <> ALL (ARRAY[0, 2])) AND (gross_winnings_atomic > (0)::numeric))))),
+    CONSTRAINT megapot_sweep_ticket_evidence_custody_owner_address_check CHECK ((custody_owner_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT megapot_sweep_ticket_evidence_gross_winnings_atomic_check CHECK ((gross_winnings_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_sweep_ticket_evidence_net_winnings_atomic_check CHECK ((net_winnings_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_sweep_ticket_evidence_referral_accrual_atomic_check CHECK ((referral_accrual_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_sweep_ticket_evidence_referral_win_share_atomic_check CHECK (((referral_win_share_atomic >= (0)::numeric) AND (referral_win_share_atomic <= ('1000000000000000000'::bigint)::numeric))),
+    CONSTRAINT megapot_sweep_ticket_evidence_tier_id_check CHECK (((tier_id >= 0) AND (tier_id <= 11)))
 );
 
 CREATE TABLE megapot_ticket_inventory (
@@ -14874,6 +15018,21 @@ ALTER TABLE ONLY megapot_claim_effects
 ALTER TABLE ONLY megapot_claim_effects
     ADD CONSTRAINT megapot_claim_effects_pkey PRIMARY KEY (claim_effect_id);
 
+ALTER TABLE ONLY megapot_claim_receipt_evidence
+    ADD CONSTRAINT megapot_claim_receipt_evidenc_attestation_id_transaction_h_key1 UNIQUE (attestation_id, transaction_hash, burn_log_index);
+
+ALTER TABLE ONLY megapot_claim_receipt_evidence
+    ADD CONSTRAINT megapot_claim_receipt_evidenc_attestation_id_transaction_h_key2 UNIQUE (attestation_id, transaction_hash, referral_log_index);
+
+ALTER TABLE ONLY megapot_claim_receipt_evidence
+    ADD CONSTRAINT megapot_claim_receipt_evidenc_attestation_id_transaction_h_key3 UNIQUE (attestation_id, transaction_hash, transfer_log_index);
+
+ALTER TABLE ONLY megapot_claim_receipt_evidence
+    ADD CONSTRAINT megapot_claim_receipt_evidenc_attestation_id_transaction_ha_key UNIQUE (attestation_id, transaction_hash, claim_log_index);
+
+ALTER TABLE ONLY megapot_claim_receipt_evidence
+    ADD CONSTRAINT megapot_claim_receipt_evidence_pkey PRIMARY KEY (claim_effect_id);
+
 ALTER TABLE ONLY megapot_deployment_attestations
     ADD CONSTRAINT megapot_deployment_attestatio_attestation_id_chain_id_jackp_key UNIQUE (attestation_id, chain_id, jackpot_address, usdc_address, custody_address);
 
@@ -14890,10 +15049,13 @@ ALTER TABLE ONLY megapot_drawing_observations
     ADD CONSTRAINT megapot_drawing_observations_pkey PRIMARY KEY (observation_id);
 
 ALTER TABLE ONLY megapot_drawing_sweeps
-    ADD CONSTRAINT megapot_drawing_sweeps_attestation_id_drawing_id_observatio_key UNIQUE (attestation_id, drawing_id, observation_block_hash);
+    ADD CONSTRAINT megapot_drawing_sweeps_attestation_id_drawing_id_observatio_key UNIQUE (attestation_id, drawing_id, observation_block_hash, pool_leg_id);
 
 ALTER TABLE ONLY megapot_drawing_sweeps
     ADD CONSTRAINT megapot_drawing_sweeps_pkey PRIMARY KEY (sweep_id);
+
+ALTER TABLE ONLY megapot_drawing_sweeps
+    ADD CONSTRAINT megapot_drawing_sweeps_pool_leg_id_drawing_id_key UNIQUE (pool_leg_id, drawing_id);
 
 ALTER TABLE ONLY megapot_fallback_cutoff_activity_evidence
     ADD CONSTRAINT megapot_fallback_cutoff_activit_availability_observation_id_key UNIQUE (availability_observation_id);
@@ -14954,6 +15116,9 @@ ALTER TABLE ONLY megapot_purchase_receipt_evidence
 
 ALTER TABLE ONLY megapot_purchase_receipt_evidence
     ADD CONSTRAINT megapot_purchase_receipt_evidence_pkey PRIMARY KEY (purchase_effect_id);
+
+ALTER TABLE ONLY megapot_sweep_ticket_evidence
+    ADD CONSTRAINT megapot_sweep_ticket_evidence_pkey PRIMARY KEY (sweep_id, ticket_id);
 
 ALTER TABLE ONLY megapot_ticket_inventory
     ADD CONSTRAINT megapot_ticket_inventory_attestation_id_minted_transaction__key UNIQUE (attestation_id, minted_transaction_hash, minted_log_index);
@@ -16055,11 +16220,15 @@ CREATE TRIGGER megapot_claim_effects_change_guard BEFORE INSERT ON megapot_claim
 
 CREATE TRIGGER megapot_claim_effects_update_guard BEFORE DELETE OR UPDATE ON megapot_claim_effects FOR EACH ROW EXECUTE FUNCTION guard_megapot_claim_effect_change();
 
+CREATE TRIGGER megapot_claim_receipt_evidence_append_only BEFORE DELETE OR UPDATE ON megapot_claim_receipt_evidence FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
 CREATE TRIGGER megapot_commitment_effects_change_guard BEFORE DELETE OR UPDATE ON megapot_pool_commitment_effects FOR EACH ROW EXECUTE FUNCTION guard_megapot_commitment_effect();
 
 CREATE TRIGGER megapot_deployment_attestations_change_guard BEFORE DELETE OR UPDATE ON megapot_deployment_attestations FOR EACH ROW EXECUTE FUNCTION guard_megapot_attestation_change();
 
 CREATE TRIGGER megapot_drawing_observations_append_only BEFORE DELETE OR UPDATE ON megapot_drawing_observations FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE CONSTRAINT TRIGGER megapot_drawing_sweep_evidence_exact AFTER INSERT ON megapot_drawing_sweeps DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_megapot_sweep_ticket_evidence();
 
 CREATE TRIGGER megapot_drawing_sweeps_change_guard BEFORE DELETE OR UPDATE ON megapot_drawing_sweeps FOR EACH ROW EXECUTE FUNCTION guard_megapot_drawing_sweep();
 
@@ -16074,6 +16243,10 @@ CREATE TRIGGER megapot_pool_drawings_change_guard BEFORE INSERT OR DELETE OR UPD
 CREATE TRIGGER megapot_pool_shares_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_pool_shares FOR EACH ROW EXECUTE FUNCTION guard_megapot_pool_share();
 
 CREATE TRIGGER megapot_purchase_receipt_evidence_append_only BEFORE DELETE OR UPDATE ON megapot_purchase_receipt_evidence FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE TRIGGER megapot_sweep_ticket_evidence_append_only BEFORE DELETE OR UPDATE ON megapot_sweep_ticket_evidence FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+
+CREATE CONSTRAINT TRIGGER megapot_sweep_ticket_evidence_exact AFTER INSERT ON megapot_sweep_ticket_evidence DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_megapot_sweep_ticket_evidence();
 
 CREATE TRIGGER megapot_ticket_inventory_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_ticket_inventory FOR EACH ROW EXECUTE FUNCTION guard_megapot_ticket_inventory();
 
@@ -17119,6 +17292,12 @@ ALTER TABLE ONLY megapot_claim_effects
 ALTER TABLE ONLY megapot_claim_effects
     ADD CONSTRAINT megapot_claim_effects_sweep_id_fkey FOREIGN KEY (sweep_id) REFERENCES megapot_drawing_sweeps(sweep_id);
 
+ALTER TABLE ONLY megapot_claim_receipt_evidence
+    ADD CONSTRAINT megapot_claim_receipt_evidence_attestation_id_ticket_id_fkey FOREIGN KEY (attestation_id, ticket_id) REFERENCES megapot_ticket_inventory(attestation_id, ticket_id);
+
+ALTER TABLE ONLY megapot_claim_receipt_evidence
+    ADD CONSTRAINT megapot_claim_receipt_evidence_claim_effect_id_fkey FOREIGN KEY (claim_effect_id) REFERENCES megapot_claim_effects(claim_effect_id);
+
 ALTER TABLE ONLY megapot_drawing_observations
     ADD CONSTRAINT megapot_drawing_observations_attestation_id_chain_id_fkey FOREIGN KEY (attestation_id, chain_id) REFERENCES megapot_deployment_attestations(attestation_id, chain_id);
 
@@ -17127,6 +17306,9 @@ ALTER TABLE ONLY megapot_drawing_observations
 
 ALTER TABLE ONLY megapot_drawing_sweeps
     ADD CONSTRAINT megapot_drawing_sweeps_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
+
+ALTER TABLE ONLY megapot_drawing_sweeps
+    ADD CONSTRAINT megapot_drawing_sweeps_pool_leg_id_drawing_id_fkey FOREIGN KEY (pool_leg_id, drawing_id) REFERENCES megapot_pool_drawings(pool_leg_id, drawing_id);
 
 ALTER TABLE ONLY megapot_fallback_cutoff_activity_evidence
     ADD CONSTRAINT megapot_fallback_cutoff_activi_availability_observation_id_fkey FOREIGN KEY (availability_observation_id) REFERENCES reward_activity_availability_observations(availability_observation_id);
@@ -17211,6 +17393,12 @@ ALTER TABLE ONLY megapot_purchase_receipt_evidence
 
 ALTER TABLE ONLY megapot_purchase_receipt_evidence
     ADD CONSTRAINT megapot_purchase_receipt_evidence_purchase_effect_id_fkey FOREIGN KEY (purchase_effect_id) REFERENCES megapot_ticket_purchase_effects(purchase_effect_id);
+
+ALTER TABLE ONLY megapot_sweep_ticket_evidence
+    ADD CONSTRAINT megapot_sweep_ticket_evidence_attestation_id_ticket_id_fkey FOREIGN KEY (attestation_id, ticket_id) REFERENCES megapot_ticket_inventory(attestation_id, ticket_id);
+
+ALTER TABLE ONLY megapot_sweep_ticket_evidence
+    ADD CONSTRAINT megapot_sweep_ticket_evidence_sweep_id_fkey FOREIGN KEY (sweep_id) REFERENCES megapot_drawing_sweeps(sweep_id);
 
 ALTER TABLE ONLY megapot_ticket_inventory
     ADD CONSTRAINT megapot_ticket_inventory_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);

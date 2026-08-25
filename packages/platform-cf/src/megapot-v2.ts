@@ -12,6 +12,9 @@ import {
 const jackpotReadAbi = parseAbi([
   "function currentDrawingId() view returns (uint256)",
   "function getDrawingState(uint256 _drawingId) view returns ((uint256 prizePool, uint256 ticketPrice, uint256 edgePerTicket, uint256 referralWinShare, uint256 referralFee, uint256 globalTicketsBought, uint256 lpEarnings, uint256 drawingTime, uint256 winningTicket, uint8 ballMax, uint8 bonusballMax, address payoutCalculator, bool jackpotLock))",
+  "function getDrawingTierPayouts(uint256 _drawingId) view returns (uint256[12])",
+  "function getTicketTierIds(uint256[] _ticketIds) view returns (uint256[] tierIds)",
+  "function referralFees(address _referrer) view returns (uint256)",
 ]);
 
 const jackpotWriteAbi = parseAbi([
@@ -29,6 +32,10 @@ const ticketOrderProcessedAbi = parseAbi([
 
 const ticketWinningsClaimedAbi = parseAbi([
   "event TicketWinningsClaimed(address indexed userAddress, uint256 indexed drawingId, uint256 userTicketId, uint256 matchedNormals, bool bonusballMatch, uint256 winningsAmount)",
+]);
+
+const referralFeeCollectedAbi = parseAbi([
+  "event ReferralFeeCollected(address indexed referrer, uint256 amount)",
 ]);
 
 const erc20Abi = parseAbi([
@@ -119,7 +126,11 @@ export type MegapotClaimReceiptEvidence = Readonly<{
   ticketIds: readonly bigint[];
   claimLogIndices: readonly number[];
   burnLogIndices: readonly number[];
+  referralLogIndices: readonly number[];
   grossWinningsAtomic: bigint;
+  netWinningsAtomic: bigint;
+  referralAccrualAtomic: bigint;
+  transferLogIndex: number;
 }>;
 
 export type MegapotApprovalReceiptEvidence = Readonly<{
@@ -287,6 +298,67 @@ export function decodeMegapotDrawingState(data: Hex): MegapotV2DrawingState {
     throw new MegapotV2EvidenceInvalid("invalid-drawing-state");
   }
   return { ...decoded, payoutCalculator: address(decoded.payoutCalculator) };
+}
+
+export function encodeMegapotDrawingTierPayouts(drawingId: bigint): Hex {
+  if (drawingId < 0n) throw new MegapotV2EvidenceInvalid("wrong-drawing");
+  return encodeFunctionData({
+    abi: jackpotReadAbi,
+    functionName: "getDrawingTierPayouts",
+    args: [drawingId],
+  });
+}
+
+export function decodeMegapotDrawingTierPayouts(data: Hex): readonly bigint[] {
+  return decodeFunctionResult({
+    abi: jackpotReadAbi,
+    functionName: "getDrawingTierPayouts",
+    data,
+  });
+}
+
+export function encodeMegapotTicketTierIds(ticketIds: readonly bigint[]): Hex {
+  if (
+    ticketIds.length === 0 ||
+    ticketIds.some((ticketId) => ticketId < 0n) ||
+    new Set(ticketIds.map(String)).size !== ticketIds.length
+  ) {
+    throw new MegapotV2EvidenceInvalid("wrong-ticket");
+  }
+  return encodeFunctionData({
+    abi: jackpotReadAbi,
+    functionName: "getTicketTierIds",
+    args: [[...ticketIds]],
+  });
+}
+
+export function decodeMegapotTicketTierIds(data: Hex, expectedCount: number): readonly bigint[] {
+  const tierIds = decodeFunctionResult({
+    abi: jackpotReadAbi,
+    functionName: "getTicketTierIds",
+    data,
+  });
+  if (
+    !Number.isSafeInteger(expectedCount) ||
+    expectedCount < 1 ||
+    tierIds.length !== expectedCount ||
+    tierIds.some((tierId) => tierId < 0n || tierId > 11n)
+  ) {
+    throw new MegapotV2EvidenceInvalid("invalid-ticket");
+  }
+  return tierIds;
+}
+
+export function encodeMegapotReferralFees(referrer: string): Hex {
+  return encodeFunctionData({
+    abi: jackpotReadAbi,
+    functionName: "referralFees",
+    args: [address(referrer)],
+  });
+}
+
+export function decodeMegapotReferralFees(data: Hex): bigint {
+  return decodeFunctionResult({ abi: jackpotReadAbi, functionName: "referralFees", data });
 }
 
 export function encodeMegapotBuyTickets(input: {
@@ -567,6 +639,9 @@ export function validateMegapotClaimReceipt(input: {
   readonly receipt: MegapotTransactionReceipt;
   readonly drawingId: bigint;
   readonly ticketIds: readonly bigint[];
+  readonly expectedGrossWinningsAtomic: bigint;
+  readonly expectedNetWinningsAtomic: bigint;
+  readonly expectedReferralAccrualAtomic: bigint;
 }): MegapotClaimReceiptEvidence {
   const deployment = validateMegapotV2DeploymentAttestation(input.deployment);
   const receipt = input.receipt;
@@ -586,6 +661,8 @@ export function validateMegapotClaimReceipt(input: {
   }
   const claims: Array<{ ticketId: bigint; amount: bigint; logIndex: number }> = [];
   const burns: Array<{ ticketId: bigint; logIndex: number }> = [];
+  const referrals: Array<{ amount: bigint; logIndex: number }> = [];
+  const transfers: Array<{ amount: bigint; logIndex: number }> = [];
   for (const log of receipt.logs) {
     if (sameAddress(log.address, deployment.jackpotAddress)) {
       try {
@@ -613,6 +690,22 @@ export function validateMegapotClaimReceipt(input: {
         if (error instanceof MegapotV2EvidenceInvalid) throw error;
       }
     }
+    if (sameAddress(log.address, deployment.jackpotAddress)) {
+      try {
+        const event = decodeEventLog({
+          abi: referralFeeCollectedAbi,
+          data: log.data,
+          topics: log.topics,
+          strict: true,
+        });
+        if (!sameAddress(event.args.referrer, deployment.referrerAddress)) {
+          throw new MegapotV2EvidenceInvalid("wrong-party");
+        }
+        referrals.push({ amount: event.args.amount, logIndex: log.logIndex });
+      } catch (error) {
+        if (error instanceof MegapotV2EvidenceInvalid) throw error;
+      }
+    }
     if (sameAddress(log.address, deployment.ticketNftAddress)) {
       try {
         const event = decodeEventLog({
@@ -634,6 +727,26 @@ export function validateMegapotClaimReceipt(input: {
         if (error instanceof MegapotV2EvidenceInvalid) throw error;
       }
     }
+    if (sameAddress(log.address, deployment.usdcAddress)) {
+      try {
+        const event = decodeEventLog({
+          abi: erc20Abi,
+          eventName: "Transfer",
+          data: log.data,
+          topics: log.topics,
+          strict: true,
+        });
+        if (
+          !sameAddress(event.args.from, deployment.jackpotAddress) ||
+          !sameAddress(event.args.to, deployment.custodyAddress)
+        ) {
+          throw new MegapotV2EvidenceInvalid("wrong-party");
+        }
+        transfers.push({ amount: event.args.amount, logIndex: log.logIndex });
+      } catch (error) {
+        if (error instanceof MegapotV2EvidenceInvalid) throw error;
+      }
+    }
   }
   if (claims.length !== expected.size || burns.length !== expected.size) {
     throw new MegapotV2EvidenceInvalid("missing-log");
@@ -646,6 +759,19 @@ export function validateMegapotClaimReceipt(input: {
       throw new MegapotV2EvidenceInvalid("duplicate-log");
     }
   }
+  const netWinningsAtomic = claims.reduce((sum, claim) => sum + claim.amount, 0n);
+  const referralAccrualAtomic = referrals.reduce((sum, referral) => sum + referral.amount, 0n);
+  const transfer = transfers[0];
+  if (
+    transfer === undefined ||
+    transfers.length !== 1 ||
+    transfer.amount !== input.expectedNetWinningsAtomic ||
+    netWinningsAtomic !== input.expectedNetWinningsAtomic ||
+    referralAccrualAtomic !== input.expectedReferralAccrualAtomic ||
+    netWinningsAtomic + referralAccrualAtomic !== input.expectedGrossWinningsAtomic
+  ) {
+    throw new MegapotV2EvidenceInvalid("missing-log");
+  }
   return {
     transactionHash: hash(receipt.transactionHash),
     blockHash: hash(receipt.blockHash),
@@ -653,6 +779,10 @@ export function validateMegapotClaimReceipt(input: {
     ticketIds: claims.map(({ ticketId }) => ticketId),
     claimLogIndices: claims.map(({ logIndex }) => logIndex),
     burnLogIndices: burns.map(({ logIndex }) => logIndex),
-    grossWinningsAtomic: claims.reduce((sum, claim) => sum + claim.amount, 0n),
+    referralLogIndices: referrals.map(({ logIndex }) => logIndex),
+    grossWinningsAtomic: input.expectedGrossWinningsAtomic,
+    netWinningsAtomic,
+    referralAccrualAtomic,
+    transferLogIndex: transfer.logIndex,
   };
 }

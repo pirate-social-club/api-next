@@ -936,6 +936,7 @@ CREATE TABLE megapot_drawing_sweeps (
   sweep_id TEXT PRIMARY KEY CHECK (
     btrim(sweep_id) <> '' AND sweep_id = btrim(sweep_id) AND octet_length(sweep_id) <= 128
   ),
+  pool_leg_id TEXT NOT NULL,
   attestation_id TEXT NOT NULL REFERENCES megapot_deployment_attestations (attestation_id),
   drawing_id NUMERIC(78, 0) NOT NULL CHECK (drawing_id >= 0),
   observation_block_number BIGINT NOT NULL CHECK (observation_block_number >= 0),
@@ -949,10 +950,42 @@ CREATE TABLE megapot_drawing_sweeps (
   observed_at TIMESTAMPTZ NOT NULL,
   completed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-  UNIQUE (attestation_id, drawing_id, observation_block_hash),
+  FOREIGN KEY (pool_leg_id, drawing_id)
+    REFERENCES megapot_pool_drawings (pool_leg_id, drawing_id),
+  UNIQUE (pool_leg_id, drawing_id),
+  UNIQUE (attestation_id, drawing_id, observation_block_hash, pool_leg_id),
   CONSTRAINT megapot_drawing_sweep_shape CHECK (
     (state IN ('observed', 'reconciliation_required') AND completed_at IS NULL)
     OR (state = 'complete' AND completed_at IS NOT NULL AND completed_at >= observed_at)
+  )
+);
+
+CREATE TABLE megapot_sweep_ticket_evidence (
+  sweep_id TEXT NOT NULL REFERENCES megapot_drawing_sweeps (sweep_id),
+  attestation_id TEXT NOT NULL,
+  ticket_id NUMERIC(78, 0) NOT NULL,
+  tier_id SMALLINT NOT NULL CHECK (tier_id BETWEEN 0 AND 11),
+  custody_owner_address TEXT NOT NULL CHECK (
+    custody_owner_address ~ '^0x[0-9a-f]{40}$'
+  ),
+  gross_winnings_atomic NUMERIC(78, 0) NOT NULL CHECK (gross_winnings_atomic >= 0),
+  referral_win_share_atomic NUMERIC(78, 0) NOT NULL CHECK (
+    referral_win_share_atomic BETWEEN 0 AND 1000000000000000000
+  ),
+  referral_accrual_atomic NUMERIC(78, 0) NOT NULL CHECK (
+    referral_accrual_atomic >= 0
+  ),
+  net_winnings_atomic NUMERIC(78, 0) NOT NULL CHECK (net_winnings_atomic >= 0),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (sweep_id, ticket_id),
+  FOREIGN KEY (attestation_id, ticket_id)
+    REFERENCES megapot_ticket_inventory (attestation_id, ticket_id),
+  CONSTRAINT megapot_sweep_ticket_conservation CHECK (
+    gross_winnings_atomic = net_winnings_atomic + referral_accrual_atomic
+    AND referral_accrual_atomic =
+      trunc(gross_winnings_atomic * referral_win_share_atomic / 1000000000000000000)
+    AND ((tier_id IN (0, 2) AND gross_winnings_atomic = 0)
+      OR (tier_id NOT IN (0, 2) AND gross_winnings_atomic > 0))
   )
 );
 
@@ -967,8 +1000,20 @@ CREATE TABLE megapot_claim_effects (
     CHECK (expected_gross_winnings_atomic > 0),
   expected_net_winnings_atomic NUMERIC(78, 0) NOT NULL
     CHECK (expected_net_winnings_atomic > 0),
+  expected_referral_accrual_atomic NUMERIC(78, 0) NOT NULL
+    CHECK (expected_referral_accrual_atomic >= 0),
+  custody_balance_before_atomic NUMERIC(78, 0) NOT NULL
+    CHECK (custody_balance_before_atomic >= 0),
+  referral_balance_before_atomic NUMERIC(78, 0) NOT NULL
+    CHECK (referral_balance_before_atomic >= 0),
+  preflight_block_number BIGINT NOT NULL CHECK (preflight_block_number >= 0),
+  preflight_block_hash TEXT NOT NULL CHECK (preflight_block_hash ~ '^0x[0-9a-f]{64}$'),
   received_atomic NUMERIC(78, 0) CHECK (received_atomic >= 0),
+  referral_accrual_atomic NUMERIC(78, 0) CHECK (referral_accrual_atomic >= 0),
   claim_log_index INTEGER CHECK (claim_log_index IS NULL OR claim_log_index >= 0),
+  burn_log_index INTEGER CHECK (burn_log_index IS NULL OR burn_log_index >= 0),
+  referral_log_index INTEGER CHECK (referral_log_index IS NULL OR referral_log_index >= 0),
+  transfer_log_index INTEGER CHECK (transfer_log_index IS NULL OR transfer_log_index >= 0),
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   FOREIGN KEY (attestation_id, ticket_id)
     REFERENCES megapot_ticket_inventory (attestation_id, ticket_id),
@@ -976,7 +1021,61 @@ CREATE TABLE megapot_claim_effects (
     REFERENCES megapot_pool_drawings (pool_leg_id, drawing_id),
   UNIQUE (attestation_id, ticket_id),
   CONSTRAINT megapot_claim_expected_order CHECK (
-    expected_net_winnings_atomic <= expected_gross_winnings_atomic
+    expected_gross_winnings_atomic =
+      expected_net_winnings_atomic + expected_referral_accrual_atomic
+    AND ((received_atomic IS NULL AND referral_accrual_atomic IS NULL
+      AND claim_log_index IS NULL AND burn_log_index IS NULL
+      AND referral_log_index IS NULL AND transfer_log_index IS NULL)
+      OR (received_atomic = expected_net_winnings_atomic
+        AND referral_accrual_atomic = expected_referral_accrual_atomic
+        AND claim_log_index IS NOT NULL AND burn_log_index IS NOT NULL
+        AND referral_log_index IS NOT NULL AND transfer_log_index IS NOT NULL))
+  )
+);
+
+CREATE TABLE megapot_claim_receipt_evidence (
+  claim_effect_id TEXT PRIMARY KEY REFERENCES megapot_claim_effects (claim_effect_id),
+  attestation_id TEXT NOT NULL,
+  ticket_id NUMERIC(78, 0) NOT NULL,
+  transaction_hash TEXT NOT NULL CHECK (transaction_hash ~ '^0x[0-9a-f]{64}$'),
+  claim_log_index INTEGER NOT NULL CHECK (claim_log_index >= 0),
+  burn_log_index INTEGER NOT NULL CHECK (burn_log_index >= 0),
+  referral_log_index INTEGER NOT NULL CHECK (referral_log_index >= 0),
+  transfer_log_index INTEGER NOT NULL CHECK (transfer_log_index >= 0),
+  gross_winnings_atomic NUMERIC(78, 0) NOT NULL CHECK (gross_winnings_atomic > 0),
+  referral_accrual_atomic NUMERIC(78, 0) NOT NULL CHECK (referral_accrual_atomic >= 0),
+  net_winnings_atomic NUMERIC(78, 0) NOT NULL CHECK (net_winnings_atomic > 0),
+  custody_balance_before_atomic NUMERIC(78, 0) NOT NULL
+    CHECK (custody_balance_before_atomic >= 0),
+  custody_balance_after_atomic NUMERIC(78, 0) NOT NULL
+    CHECK (custody_balance_after_atomic >= 0),
+  referral_balance_before_atomic NUMERIC(78, 0) NOT NULL
+    CHECK (referral_balance_before_atomic >= 0),
+  referral_balance_after_atomic NUMERIC(78, 0) NOT NULL
+    CHECK (referral_balance_after_atomic >= 0),
+  block_number BIGINT NOT NULL CHECK (block_number >= 0),
+  block_hash TEXT NOT NULL CHECK (block_hash ~ '^0x[0-9a-f]{64}$'),
+  receipt_hash TEXT NOT NULL CHECK (receipt_hash ~ '^[0-9a-f]{64}$'),
+  confirmations INTEGER NOT NULL CHECK (confirmations > 0),
+  confirmed_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  FOREIGN KEY (attestation_id, ticket_id)
+    REFERENCES megapot_ticket_inventory (attestation_id, ticket_id),
+  UNIQUE (attestation_id, transaction_hash, claim_log_index),
+  UNIQUE (attestation_id, transaction_hash, burn_log_index),
+  UNIQUE (attestation_id, transaction_hash, referral_log_index),
+  UNIQUE (attestation_id, transaction_hash, transfer_log_index),
+  CONSTRAINT megapot_claim_receipt_conservation CHECK (
+    gross_winnings_atomic = net_winnings_atomic + referral_accrual_atomic
+    AND custody_balance_after_atomic = custody_balance_before_atomic + net_winnings_atomic
+    AND referral_balance_after_atomic =
+      referral_balance_before_atomic + referral_accrual_atomic
+    AND claim_log_index <> burn_log_index
+    AND claim_log_index <> referral_log_index
+    AND claim_log_index <> transfer_log_index
+    AND burn_log_index <> referral_log_index
+    AND burn_log_index <> transfer_log_index
+    AND referral_log_index <> transfer_log_index
   )
 );
 
@@ -2160,6 +2259,8 @@ DECLARE
   chain_record reward_chain_effects%ROWTYPE;
   attestation_record megapot_deployment_attestations%ROWTYPE;
   ticket_record megapot_ticket_inventory%ROWTYPE;
+  sweep_record megapot_drawing_sweeps%ROWTYPE;
+  sweep_evidence megapot_sweep_ticket_evidence%ROWTYPE;
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'Megapot claim effects are append-only';
@@ -2170,13 +2271,26 @@ BEGIN
    WHERE attestation_id = NEW.attestation_id FOR SHARE;
   SELECT * INTO ticket_record FROM megapot_ticket_inventory
    WHERE attestation_id = NEW.attestation_id AND ticket_id = NEW.ticket_id FOR SHARE;
+  SELECT * INTO sweep_record FROM megapot_drawing_sweeps
+   WHERE sweep_id = NEW.sweep_id FOR SHARE;
+  SELECT * INTO sweep_evidence FROM megapot_sweep_ticket_evidence
+   WHERE sweep_id = NEW.sweep_id AND ticket_id = NEW.ticket_id FOR SHARE;
   IF chain_record.effect_kind <> 'winnings_claim'
      OR chain_record.chain_id <> attestation_record.chain_id
      OR chain_record.signer_address <> attestation_record.custody_address
      OR chain_record.target_address <> attestation_record.jackpot_address
      OR ticket_record.pool_leg_id <> NEW.pool_leg_id
      OR ticket_record.drawing_id <> NEW.drawing_id
-     OR ticket_record.status <> 'claim_pending' THEN
+     OR ticket_record.status <> 'claim_pending'
+     OR sweep_record.state <> 'complete'
+     OR sweep_record.pool_leg_id <> NEW.pool_leg_id
+     OR sweep_record.drawing_id <> NEW.drawing_id
+     OR sweep_evidence.attestation_id <> NEW.attestation_id
+     OR sweep_evidence.tier_id IN (0, 2)
+     OR sweep_evidence.gross_winnings_atomic <> NEW.expected_gross_winnings_atomic
+     OR sweep_evidence.net_winnings_atomic <> NEW.expected_net_winnings_atomic
+     OR sweep_evidence.referral_accrual_atomic <>
+          NEW.expected_referral_accrual_atomic THEN
     RAISE EXCEPTION 'Megapot claim effect does not match custody ticket';
   END IF;
   RETURN NEW;
@@ -2352,13 +2466,21 @@ BEGIN
     IF ROW(
       NEW.claim_effect_id, NEW.attestation_id, NEW.ticket_id, NEW.pool_leg_id,
       NEW.drawing_id, NEW.sweep_id, NEW.expected_gross_winnings_atomic,
-      NEW.expected_net_winnings_atomic, NEW.created_at
+      NEW.expected_net_winnings_atomic, NEW.expected_referral_accrual_atomic,
+      NEW.custody_balance_before_atomic, NEW.referral_balance_before_atomic,
+      NEW.preflight_block_number, NEW.preflight_block_hash, NEW.created_at
     ) IS DISTINCT FROM ROW(
       OLD.claim_effect_id, OLD.attestation_id, OLD.ticket_id, OLD.pool_leg_id,
       OLD.drawing_id, OLD.sweep_id, OLD.expected_gross_winnings_atomic,
-      OLD.expected_net_winnings_atomic, OLD.created_at
-    ) OR OLD.received_atomic IS NOT NULL OR OLD.claim_log_index IS NOT NULL
-       OR NEW.received_atomic IS NULL OR NEW.claim_log_index IS NULL THEN
+      OLD.expected_net_winnings_atomic, OLD.expected_referral_accrual_atomic,
+      OLD.custody_balance_before_atomic, OLD.referral_balance_before_atomic,
+      OLD.preflight_block_number, OLD.preflight_block_hash, OLD.created_at
+    ) OR OLD.received_atomic IS NOT NULL OR OLD.referral_accrual_atomic IS NOT NULL
+       OR OLD.claim_log_index IS NOT NULL OR OLD.burn_log_index IS NOT NULL
+       OR OLD.referral_log_index IS NOT NULL OR OLD.transfer_log_index IS NOT NULL
+       OR NEW.received_atomic IS NULL OR NEW.referral_accrual_atomic IS NULL
+       OR NEW.claim_log_index IS NULL OR NEW.burn_log_index IS NULL
+       OR NEW.referral_log_index IS NULL OR NEW.transfer_log_index IS NULL THEN
       RAISE EXCEPTION 'invalid Megapot claim observation update';
     END IF;
     SELECT * INTO chain_record FROM reward_chain_effects
@@ -2501,6 +2623,12 @@ FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 CREATE TRIGGER megapot_purchase_receipt_evidence_append_only
 BEFORE UPDATE OR DELETE ON megapot_purchase_receipt_evidence
 FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+CREATE TRIGGER megapot_sweep_ticket_evidence_append_only
+BEFORE UPDATE OR DELETE ON megapot_sweep_ticket_evidence
+FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+CREATE TRIGGER megapot_claim_receipt_evidence_append_only
+BEFORE UPDATE OR DELETE ON megapot_claim_receipt_evidence
+FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 CREATE TRIGGER custody_solvency_observations_append_only
 BEFORE UPDATE OR DELETE ON custody_solvency_observations
 FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
@@ -2619,12 +2747,12 @@ BEGIN
   END IF;
   IF TG_OP = 'UPDATE' AND (
     ROW(
-      NEW.sweep_id, NEW.attestation_id, NEW.drawing_id,
+      NEW.sweep_id, NEW.pool_leg_id, NEW.attestation_id, NEW.drawing_id,
       NEW.observation_block_number, NEW.observation_block_hash,
       NEW.drawing_state_hash, NEW.ticket_count, NEW.winning_ticket_count,
       NEW.observed_at, NEW.created_at
     ) IS DISTINCT FROM ROW(
-      OLD.sweep_id, OLD.attestation_id, OLD.drawing_id,
+      OLD.sweep_id, OLD.pool_leg_id, OLD.attestation_id, OLD.drawing_id,
       OLD.observation_block_number, OLD.observation_block_hash,
       OLD.drawing_state_hash, OLD.ticket_count, OLD.winning_ticket_count,
       OLD.observed_at, OLD.created_at
@@ -2639,3 +2767,49 @@ $$;
 CREATE TRIGGER megapot_drawing_sweeps_change_guard
 BEFORE UPDATE OR DELETE ON megapot_drawing_sweeps
 FOR EACH ROW EXECUTE FUNCTION guard_megapot_drawing_sweep();
+
+CREATE FUNCTION validate_megapot_sweep_ticket_evidence() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  target_sweep_id TEXT;
+  sweep_record megapot_drawing_sweeps%ROWTYPE;
+  evidence_count INTEGER;
+  winning_count INTEGER;
+BEGIN
+  target_sweep_id := NEW.sweep_id;
+  SELECT * INTO sweep_record FROM megapot_drawing_sweeps
+   WHERE sweep_id=target_sweep_id;
+  IF sweep_record.sweep_id IS NULL OR sweep_record.state <> 'complete' THEN
+    RAISE EXCEPTION 'Megapot sweep evidence requires a complete sweep';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM megapot_sweep_ticket_evidence evidence
+    JOIN megapot_ticket_inventory ticket
+      ON ticket.attestation_id=evidence.attestation_id
+     AND ticket.ticket_id=evidence.ticket_id
+    JOIN megapot_deployment_attestations attestation
+      ON attestation.attestation_id=evidence.attestation_id
+    WHERE evidence.sweep_id=target_sweep_id
+      AND (ticket.pool_leg_id <> sweep_record.pool_leg_id
+        OR ticket.drawing_id <> sweep_record.drawing_id
+        OR evidence.attestation_id <> sweep_record.attestation_id
+        OR evidence.custody_owner_address <> attestation.custody_address)
+  ) THEN
+    RAISE EXCEPTION 'Megapot sweep ticket evidence identity mismatch';
+  END IF;
+  SELECT count(*), count(*) FILTER (WHERE tier_id NOT IN (0, 2))
+    INTO evidence_count, winning_count
+    FROM megapot_sweep_ticket_evidence WHERE sweep_id=target_sweep_id;
+  IF evidence_count <> sweep_record.ticket_count
+     OR winning_count <> sweep_record.winning_ticket_count THEN
+    RAISE EXCEPTION 'Megapot sweep ticket evidence count mismatch';
+  END IF;
+  RETURN NULL;
+END
+$$;
+CREATE CONSTRAINT TRIGGER megapot_drawing_sweep_evidence_exact
+AFTER INSERT ON megapot_drawing_sweeps DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION validate_megapot_sweep_ticket_evidence();
+CREATE CONSTRAINT TRIGGER megapot_sweep_ticket_evidence_exact
+AFTER INSERT ON megapot_sweep_ticket_evidence DEFERRABLE INITIALLY DEFERRED
+FOR EACH ROW EXECUTE FUNCTION validate_megapot_sweep_ticket_evidence();

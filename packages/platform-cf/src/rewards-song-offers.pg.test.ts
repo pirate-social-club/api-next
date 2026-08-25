@@ -3,7 +3,9 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeControlPlaneMegapotApprovalStore } from "./megapot-approval-repository.ts";
+import { makeControlPlaneMegapotClaimStore } from "./megapot-claim-repository.ts";
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
+import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
@@ -742,6 +744,149 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           }),
         ),
       ).rejects.toMatchObject({ reason: "drawing-not-committed" });
+
+      const sweepStore = makeControlPlaneMegapotSweepStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const sweepCandidate = await Effect.runPromise(
+        sweepStore.loadCandidate({ poolLegId: legId, drawingId: 101n }),
+      );
+      const sweep = await Effect.runPromise(
+        sweepStore.complete({
+          candidate: sweepCandidate,
+          sweepId: "sweep-101",
+          observationBlockNumber: 120n,
+          observationBlockHash: bytes32("c"),
+          drawingStateHash: hash("c"),
+          tierId: 7,
+          custodyOwnerAddress: address("4"),
+          grossWinningsAtomic: 1_001n,
+          referralWinShareAtomic: 100_000_000_000_000_000n,
+          referralAccrualAtomic: 100n,
+          netWinningsAtomic: 901n,
+          observedAt: new Date().toISOString(),
+        }),
+      );
+      expect(sweep).toMatchObject({ outcome: "winnings_detected", netWinningsAtomic: 901n });
+      await expect(Effect.runPromise(sweepStore.findResult("sweep-101"))).resolves.toEqual(sweep);
+      const swept = await admin.query<{
+        readonly drawing_state: string;
+        readonly drawing_version: string;
+        readonly ticket_state: string;
+        readonly sweep_count: string;
+      }>(
+        `SELECT drawing.status AS drawing_state, drawing.version::text AS drawing_version,
+                ticket.status AS ticket_state,
+                (SELECT count(*)::text FROM megapot_sweep_ticket_evidence
+                  WHERE sweep_id='sweep-101') AS sweep_count
+           FROM megapot_pool_drawings drawing
+           JOIN megapot_ticket_inventory ticket
+             ON ticket.pool_leg_id=drawing.pool_leg_id
+            AND ticket.drawing_id=drawing.drawing_id
+          WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=101`,
+        [legId],
+      );
+      expect(swept.rows).toEqual([
+        {
+          drawing_state: "winnings_detected",
+          drawing_version: "7",
+          ticket_state: "custodied",
+          sweep_count: "1",
+        },
+      ]);
+
+      const claimStore = makeControlPlaneMegapotClaimStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const claimCandidate = await Effect.runPromise(
+        claimStore.loadCandidate({ poolLegId: legId, drawingId: 101n }),
+      );
+      expect(claimCandidate).toMatchObject({
+        ticketId: 501n,
+        expectedGrossWinningsAtomic: 1_001n,
+        expectedReferralAccrualAtomic: 100n,
+        expectedNetWinningsAtomic: 901n,
+      });
+      const claimReservation = await Effect.runPromise(
+        claimStore.reserveNonce({
+          candidate: claimCandidate,
+          effectId: "claim-effect-101",
+          custodyBalanceBeforeAtomic: 20_000n,
+          referralBalanceBeforeAtomic: 1_000n,
+          observedPendingNonce: 10n,
+          observedBlockNumber: 121n,
+          observedBlockHash: bytes32("d"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
+      expect(claimReservation.nonce).toBe(10n);
+      const claimTransactionHash = bytes32("e");
+      await Effect.runPromise(
+        claimStore.prepare({
+          reservation: claimReservation,
+          calldata: "0x1bf0ade0",
+          calldataHash: hash("d"),
+          signedTransaction: "0x0506",
+          signedTransactionHash: claimTransactionHash,
+          preparedAt: new Date().toISOString(),
+        }),
+      );
+      await Effect.runPromise(
+        claimStore.recordSubmission({
+          effectId: claimReservation.effectId,
+          transactionHash: claimTransactionHash,
+          submittedAt: new Date().toISOString(),
+          outcome: "accepted",
+        }),
+      );
+      await Effect.runPromise(
+        claimStore.confirm({
+          effectId: claimReservation.effectId,
+          transactionHash: claimTransactionHash,
+          claimLogIndex: 4,
+          burnLogIndex: 5,
+          referralLogIndex: 6,
+          transferLogIndex: 7,
+          grossWinningsAtomic: 1_001n,
+          referralAccrualAtomic: 100n,
+          netWinningsAtomic: 901n,
+          custodyBalanceAfterAtomic: 20_901n,
+          referralBalanceAfterAtomic: 1_100n,
+          blockNumber: 122n,
+          blockHash: bytes32("e"),
+          receiptHash: hash("e"),
+          confirmations: 3,
+          confirmedAt: new Date().toISOString(),
+        }),
+      );
+      const claimed = await admin.query<{
+        readonly effect_state: string;
+        readonly drawing_state: string;
+        readonly ticket_state: string;
+        readonly received_atomic: string;
+        readonly win_share_atomic: string;
+      }>(
+        `SELECT effect.state AS effect_state, drawing.status AS drawing_state,
+                ticket.status AS ticket_state, claim.received_atomic::text,
+                revenue.amount_atomic::text AS win_share_atomic
+           FROM reward_chain_effects effect
+           JOIN megapot_claim_effects claim ON claim.claim_effect_id=effect.effect_id
+           JOIN megapot_pool_drawings drawing ON drawing.claim_effect_id=effect.effect_id
+           JOIN megapot_ticket_inventory ticket
+             ON ticket.attestation_id=claim.attestation_id AND ticket.ticket_id=claim.ticket_id
+           JOIN platform_referral_revenue_ledger revenue
+             ON revenue.ticket_id=claim.ticket_id AND revenue.revenue_kind='win_share'
+          WHERE effect.effect_id='claim-effect-101'`,
+      );
+      expect(claimed.rows).toEqual([
+        {
+          effect_state: "confirmed",
+          drawing_state: "claimed",
+          ticket_state: "claimed",
+          received_atomic: "901",
+          win_share_atomic: "100",
+        },
+      ]);
     });
   });
 

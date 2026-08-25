@@ -170,6 +170,19 @@ function harness(options: Readonly<{ initialAllowance?: bigint; uncertainSend?: 
     readCurrentDrawing: async () => {
       throw new Error("unused");
     },
+    readCurrentDrawingId: async () => {
+      throw new Error("unused");
+    },
+    readDrawing: async () => {
+      throw new Error("unused");
+    },
+    readDrawingTierPayouts: async () => {
+      throw new Error("unused");
+    },
+    readTicketTierIds: async () => {
+      throw new Error("unused");
+    },
+    readReferralFees: async () => 0n,
     readUsdcBalance: async () => 1_000_000n,
     readNativeBalance: async () => 1_000_000_000_000_000n,
     readUsdcAllowance: async () => {
