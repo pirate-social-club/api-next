@@ -13,6 +13,7 @@ export * from "./money/community-purchase-funding-reconciliation.ts";
 export * from "./namespace-ownership/index.ts";
 export * from "./ports.ts";
 export * from "./rewards/activity-qualification.ts";
+export * from "./rewards/megapot-allocation.ts";
 export * from "./rewards/megapot-approval.ts";
 export * from "./rewards/megapot-claim.ts";
 export * from "./rewards/megapot-purchase.ts";

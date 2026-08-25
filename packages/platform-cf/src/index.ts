@@ -114,6 +114,8 @@ export {
   makeControlPlaneIdentityRepository,
   makeControlPlaneIdentityStore,
 } from "./identity-repository";
+export * from "./megapot-allocation-coordinator.ts";
+export * from "./megapot-allocation-repository.ts";
 export * from "./megapot-approval-coordinator.ts";
 export * from "./megapot-approval-repository.ts";
 export * from "./megapot-claim-coordinator.ts";

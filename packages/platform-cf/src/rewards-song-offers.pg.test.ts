@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinator.ts";
+import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
 import { makeControlPlaneMegapotApprovalStore } from "./megapot-approval-repository.ts";
 import { makeControlPlaneMegapotClaimStore } from "./megapot-claim-repository.ts";
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
@@ -617,6 +619,12 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           [legId, bytes32("b"), bytes32("7")],
         );
         await admin.query(
+          `INSERT INTO megapot_pool_snapshot_private_leaves (
+             snapshot_id, ordinal, account_id, persona_id, order_key, leaf_commitment
+           ) VALUES ('snapshot-101', 0, $1, $2, $3, $4)`,
+          [identity.accountId, identity.personaId, bytes32("8"), bytes32("9")],
+        );
+        await admin.query(
           `INSERT INTO megapot_pool_commitment_effects (
              commitment_effect_id, snapshot_id, payload_hash, signing_key_id,
              signature, state, prepared_at, published_at, public_reference
@@ -885,6 +893,59 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           ticket_state: "claimed",
           received_atomic: "901",
           win_share_atomic: "100",
+        },
+      ]);
+
+      const allocationStore = makeControlPlaneMegapotAllocationStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const allocationCoordinator = makeMegapotAllocationCoordinator({
+        store: allocationStore,
+        now: () => Date.parse("2026-08-26T00:00:00.000Z"),
+      });
+      const allocation = await Effect.runPromise(
+        allocationCoordinator.allocate({ poolLegId: legId, drawingId: 101n }),
+      );
+      const allocationReplay = await Effect.runPromise(
+        allocationCoordinator.allocate({ poolLegId: legId, drawingId: 101n }),
+      );
+      expect(allocation.allocations).toHaveLength(1);
+      expect(allocation.allocations[0]).toMatchObject({
+        accountId: identity.accountId,
+        personaId: identity.personaId,
+        amountAtomic: 901n,
+        allocationKind: "participant",
+      });
+      expect(allocationReplay).toEqual(allocation);
+
+      const credited = await admin.query<{
+        readonly drawing_state: string;
+        readonly batch_state: string;
+        readonly amount_atomic: string;
+        readonly credit_state: string;
+        readonly allocation_count: string;
+      }>(
+        `SELECT drawing.status AS drawing_state, batch.state AS batch_state,
+                credit.amount_atomic::text, credit.state AS credit_state,
+                (SELECT count(*)::text FROM megapot_allocations allocation
+                  WHERE allocation.allocation_batch_id=batch.allocation_batch_id)
+                  AS allocation_count
+           FROM megapot_pool_drawings drawing
+           JOIN megapot_allocation_batches batch
+             ON batch.allocation_batch_id=drawing.allocation_batch_id
+           JOIN megapot_allocations allocation
+             ON allocation.allocation_batch_id=batch.allocation_batch_id
+           JOIN reward_ledger_credits credit ON credit.credit_id=allocation.credit_id
+          WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=101`,
+        [legId],
+      );
+      expect(credited.rows).toEqual([
+        {
+          drawing_state: "credited",
+          batch_state: "credited",
+          amount_atomic: "901",
+          credit_state: "credited",
+          allocation_count: "1",
         },
       ]);
     });

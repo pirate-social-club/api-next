@@ -2307,7 +2307,10 @@ DECLARE
   batch_record megapot_allocation_batches%ROWTYPE;
   snapshot_record megapot_pool_beneficiary_snapshots%ROWTYPE;
   leg_record song_reward_offer_legs%ROWTYPE;
+  drawing_record megapot_pool_drawings%ROWTYPE;
   allocation_total NUMERIC(78, 0);
+  base_amount NUMERIC(78, 0);
+  remainder_amount NUMERIC(78, 0);
   row_total INTEGER;
 BEGIN
   target_batch_id := NEW.allocation_batch_id;
@@ -2320,20 +2323,34 @@ BEGIN
    WHERE snapshot_id = batch_record.snapshot_id;
   SELECT * INTO leg_record FROM song_reward_offer_legs
    WHERE leg_id = batch_record.pool_leg_id;
+  SELECT * INTO drawing_record FROM megapot_pool_drawings
+   WHERE pool_leg_id = batch_record.pool_leg_id
+     AND drawing_id = batch_record.drawing_id;
+  base_amount := trunc(batch_record.net_winnings_atomic / snapshot_record.leaf_count);
+  remainder_amount := batch_record.net_winnings_atomic
+    - base_amount * snapshot_record.leaf_count;
   SELECT count(*), COALESCE(sum(amount_atomic), 0)
     INTO row_total, allocation_total FROM megapot_allocations
    WHERE allocation_batch_id = target_batch_id;
   IF row_total <> batch_record.allocation_count
      OR allocation_total <> batch_record.net_winnings_atomic
      OR row_total <> snapshot_record.leaf_count
+     OR drawing_record.status <> 'credited'
+     OR drawing_record.snapshot_id <> batch_record.snapshot_id
+     OR drawing_record.claim_effect_id <> batch_record.claim_effect_id
+     OR drawing_record.allocation_batch_id <> batch_record.allocation_batch_id
+     OR drawing_record.net_winnings_atomic <> batch_record.net_winnings_atomic
      OR EXISTS (
        SELECT 1 FROM megapot_allocations allocation
        LEFT JOIN megapot_pool_snapshot_private_leaves leaf
          ON leaf.snapshot_id = snapshot_record.snapshot_id
+        AND leaf.ordinal = allocation.ordinal
         AND leaf.account_id = allocation.account_id
         AND leaf.persona_id = allocation.persona_id
        WHERE allocation.allocation_batch_id = target_batch_id
-         AND leaf.account_id IS NULL
+         AND (leaf.account_id IS NULL
+           OR allocation.amount_atomic <> base_amount
+             + CASE WHEN allocation.ordinal < remainder_amount THEN 1 ELSE 0 END)
      ) THEN
     RAISE EXCEPTION 'Megapot allocation batch does not conserve exact snapshot winnings';
   END IF;
@@ -2348,6 +2365,18 @@ BEGIN
              AND allocation.allocation_kind = 'platform_sponsorship'))
     ) THEN
       RAISE EXCEPTION 'Megapot fallback allocation is not exact';
+    END IF;
+    IF leg_record.funding_source = 'shared_sponsor_budget' AND NOT EXISTS (
+      SELECT 1 FROM megapot_allocations allocation
+      JOIN platform_sponsorship_budget_entries entry
+        ON entry.source_reference = batch_record.allocation_batch_id
+       AND entry.sponsor_account_id = allocation.account_id
+       AND entry.entry_kind = 'winnings_credited'
+       AND entry.amount_atomic = allocation.amount_atomic
+      WHERE allocation.allocation_batch_id = target_batch_id
+        AND allocation.allocation_kind = 'platform_sponsorship'
+    ) THEN
+      RAISE EXCEPTION 'Megapot platform fallback lacks exact sponsorship credit';
     END IF;
   ELSIF EXISTS (
     SELECT 1 FROM megapot_allocations allocation
