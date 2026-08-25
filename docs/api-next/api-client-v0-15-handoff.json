@@ -5,7 +5,7 @@
   "version": "0.15.0",
   "releaseType": "activity-qualification-and-streak-contracts",
   "wireContract": "wire-v2",
-  "sourceCommit": "67ff772",
+  "sourceCommit": "c18f4dd",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.15.0.tgz",
     "sha256": "5ec12b3c9ba2e9ca9a4229ad0735dcf7579222f3ba1f75744817f8e73c80855d",

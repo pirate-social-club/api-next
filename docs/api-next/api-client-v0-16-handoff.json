@@ -5,7 +5,7 @@
   "version": "0.16.0",
   "releaseType": "qualification-runtime-contract-corrections",
   "wireContract": "wire-v2",
-  "sourceCommit": "f0b5c5d",
+  "sourceCommit": "4b9b2c1",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.16.0.tgz",
     "sha256": "7264ff586e3e6cb09dcf7c977f68e9e51001ff608fdb399a7044941ed16c12d0",
