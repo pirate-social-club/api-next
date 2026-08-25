@@ -312,7 +312,7 @@ export const StudySessionV1 = Schema.Struct({
   qualification_policy_version_id: BoundedIdentifier,
   status: Schema.Literals(["active", "completed"]),
   timezone: IanaTimezone,
-  streak_day: CanonicalDate,
+  streak_day: Schema.NullOr(CanonicalDate),
   items: Schema.NonEmptyArray(StudySessionItemV1).check(Schema.isMaxLength(64)),
   progress: StudySessionProgressV1,
   qualification: Schema.NullOr(ActivityQualificationV1),
@@ -360,6 +360,7 @@ export const StudySessionV1 = Schema.Struct({
 
     if (session.status === "active") {
       return session.completed_at === null &&
+        session.streak_day === null &&
         session.progress.score_bps === null &&
         session.qualification === null
         ? undefined
@@ -369,6 +370,7 @@ export const StudySessionV1 = Schema.Struct({
     const scoreBps = studyScoreBps(firstPassCorrect, exerciseCount);
     if (
       session.completed_at === null ||
+      session.streak_day === null ||
       answered !== exerciseCount ||
       session.progress.score_bps !== scoreBps ||
       session.streak_day !== calendarDateInTimezone(session.completed_at, session.timezone)

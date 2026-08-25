@@ -229,10 +229,10 @@ suite("Postgres 17 activity qualification persistence", () => {
       await expect(
         admin.query(
           `INSERT INTO study_session_answers (
-             session_id, session_item_id, attempt_number, idempotency_key,
+             answer_id, session_id, session_item_id, attempt_number, idempotency_key,
              request_hash, answer, outcome, first_pass, answered_at
            ) VALUES (
-             'study-session-1', 'study-item-1', 1, 'bad-outcome', $1,
+             'study-answer-bad', 'study-session-1', 'study-item-1', 1, 'bad-outcome', $1,
              '{"kind":"text_response","text":"sail away"}'::jsonb,
              'incorrect', true, $2
            )`,
@@ -243,10 +243,10 @@ suite("Postgres 17 activity qualification persistence", () => {
       try {
         await admin.query(
           `INSERT INTO study_session_answers (
-             session_id, session_item_id, attempt_number, idempotency_key,
+             answer_id, session_id, session_item_id, attempt_number, idempotency_key,
              request_hash, answer, outcome, first_pass, answered_at
            ) VALUES (
-             'study-session-1', 'study-item-1', 1, 'answer-1', $1,
+             'study-answer-1', 'study-session-1', 'study-item-1', 1, 'answer-1', $1,
              '{"kind":"text_response","text":"  SAIL   AWAY "}'::jsonb,
              'correct', true, $2
            )`,
@@ -259,10 +259,10 @@ suite("Postgres 17 activity qualification persistence", () => {
         );
         await admin.query(
           `INSERT INTO study_session_answers (
-             session_id, session_item_id, attempt_number, idempotency_key,
+             answer_id, session_id, session_item_id, attempt_number, idempotency_key,
              request_hash, answer, outcome, first_pass, answered_at
            ) VALUES (
-             'study-session-1', 'study-item-2', 1, 'answer-2', $1,
+             'study-answer-2', 'study-session-1', 'study-item-2', 1, 'answer-2', $1,
              '{"kind":"single_select","choice_key":"b"}'::jsonb,
              'correct', true, $2
            )`,

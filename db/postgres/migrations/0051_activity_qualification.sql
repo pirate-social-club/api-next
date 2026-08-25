@@ -150,6 +150,41 @@ CREATE TRIGGER account_streak_clocks_change_guard
 BEFORE INSERT OR UPDATE OR DELETE ON account_streak_clocks
 FOR EACH ROW EXECUTE FUNCTION guard_account_streak_clock();
 
+CREATE TABLE account_streak_timezone_actions (
+  account_id TEXT NOT NULL REFERENCES users (user_id),
+  endpoint_template TEXT NOT NULL DEFAULT '/rewards/streak-timezone'
+    CHECK (endpoint_template = '/rewards/streak-timezone'),
+  idempotency_key TEXT NOT NULL CHECK (
+    btrim(idempotency_key) <> '' AND idempotency_key = btrim(idempotency_key)
+    AND octet_length(idempotency_key) <= 128
+  ),
+  request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  result_timezone TEXT NOT NULL,
+  result_timezone_updated_at TIMESTAMPTZ NOT NULL,
+  result_next_change_allowed_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (account_id, endpoint_template, idempotency_key),
+  CONSTRAINT account_streak_timezone_action_result CHECK (
+    result_next_change_allowed_at = result_timezone_updated_at + INTERVAL '7 days'
+  )
+);
+
+CREATE FUNCTION guard_account_streak_timezone_action() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'account streak timezone actions are append-only';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = NEW.result_timezone) THEN
+    RAISE EXCEPTION 'account streak timezone action is unknown';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER account_streak_timezone_actions_append_only
+BEFORE INSERT OR UPDATE OR DELETE ON account_streak_timezone_actions
+FOR EACH ROW EXECUTE FUNCTION guard_account_streak_timezone_action();
+
 CREATE TABLE study_sessions (
   session_id TEXT PRIMARY KEY CHECK (
     btrim(session_id) <> '' AND session_id = btrim(session_id)
@@ -386,6 +421,10 @@ BEFORE INSERT OR UPDATE OR DELETE ON study_session_items
 FOR EACH ROW EXECUTE FUNCTION guard_study_session_item();
 
 CREATE TABLE study_session_answers (
+  answer_id TEXT NOT NULL UNIQUE CHECK (
+    btrim(answer_id) <> '' AND answer_id = btrim(answer_id)
+    AND octet_length(answer_id) <= 128
+  ),
   session_id TEXT NOT NULL,
   session_item_id TEXT NOT NULL,
   attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
@@ -901,6 +940,38 @@ CREATE TABLE persona_activity_presentations (
 CREATE TRIGGER persona_activity_presentations_active_persona
 BEFORE INSERT OR UPDATE OF account_id, persona_id ON persona_activity_presentations
 FOR EACH ROW EXECUTE FUNCTION require_active_role_persona();
+
+CREATE TABLE persona_activity_presentation_actions (
+  account_id TEXT NOT NULL REFERENCES users (user_id),
+  community_id TEXT NOT NULL REFERENCES communities (community_id),
+  endpoint_template TEXT NOT NULL
+    DEFAULT '/communities/:communityId/rewards/presentation-persona'
+    CHECK (endpoint_template = '/communities/:communityId/rewards/presentation-persona'),
+  idempotency_key TEXT NOT NULL CHECK (
+    btrim(idempotency_key) <> '' AND idempotency_key = btrim(idempotency_key)
+    AND octet_length(idempotency_key) <= 128
+  ),
+  request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  result_persona_id TEXT NOT NULL,
+  result_updated_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (account_id, community_id, endpoint_template, idempotency_key),
+  FOREIGN KEY (account_id, result_persona_id)
+    REFERENCES personas (account_id, persona_id)
+);
+
+CREATE FUNCTION guard_persona_activity_presentation_action() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'persona activity presentation actions are append-only';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER persona_activity_presentation_actions_append_only
+BEFORE UPDATE OR DELETE ON persona_activity_presentation_actions
+FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_presentation_action();
 
 CREATE FUNCTION guard_reward_day_ledger() RETURNS trigger
 LANGUAGE plpgsql AS $$

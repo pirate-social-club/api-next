@@ -31,12 +31,16 @@ describe("karaoke contracts", () => {
     const decodeCreate = Schema.decodeUnknownSync(KaraokeAttemptCreate);
     const decodeLeaderboard = Schema.decodeUnknownSync(KaraokeSongLeaderboard);
 
-    expect(decodeCreate({ timezone: "UTC" })).toEqual({ timezone: "UTC" });
+    expect(decodeCreate({ persona_id: "persona-1", timezone: "UTC" })).toEqual({
+      persona_id: "persona-1",
+      timezone: "UTC",
+    });
     expect(
       decodeSession({
         attempt: "attempt-1",
         id: "session-1",
         object: "karaoke_session",
+        persona_id: "persona-1",
         protocol_version: 1,
         scoring_policy: { kind: "disabled" },
         session_expires_at: 2,
@@ -60,6 +64,7 @@ describe("karaoke contracts", () => {
         lyrics_score: 9200,
         no_recognition_line_count: 0,
         object: "karaoke_attempt",
+        persona_id: "persona-1",
         post_id: "post-1",
         rank_eligible: true,
         scored_line_count: 10,

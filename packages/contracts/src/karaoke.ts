@@ -10,6 +10,7 @@ import {
   ProviderUnavailable,
   RateLimited,
 } from "./errors.ts";
+import { PersonaIdV1 } from "./personas.ts";
 
 export const KaraokeScoringProvider = Schema.Literals([
   "assistant",
@@ -43,6 +44,7 @@ export const KaraokeSession = Schema.Struct({
   id: Schema.String,
   object: Schema.Literal("karaoke_session"),
   attempt: Schema.String,
+  persona_id: PersonaIdV1,
   protocol_version: Schema.Literal(1),
   websocket_url: Schema.String,
   token_expires_at: Schema.Number,
@@ -93,6 +95,7 @@ export const KaraokeAttempt = Schema.Struct({
   object: Schema.Literal("karaoke_attempt"),
   session_id: Schema.String,
   attempt_id: Schema.String,
+  persona_id: PersonaIdV1,
   post_id: Schema.String,
   community_id: Schema.String,
   karaoke_revision_id: Schema.String,
@@ -119,6 +122,7 @@ export const KaraokeAttempt = Schema.Struct({
 export type KaraokeAttempt = Schema.Schema.Type<typeof KaraokeAttempt>;
 
 export const KaraokeAttemptCreate = Schema.Struct({
+  persona_id: PersonaIdV1,
   timezone: Schema.optional(Schema.NullOr(Schema.String)),
 });
 

@@ -8,6 +8,10 @@
 export const platformCf = "api-next/platform-cf: lane C (001 §5), config/ lane A" as const;
 
 export {
+  makeControlPlaneActivityQualificationRepository,
+  makeControlPlaneActivityQualificationStore,
+} from "./activity-qualification-repository";
+export {
   type AlertSinkBindings,
   AlertSinkConfigurationError,
   makeConfiguredAlertSink,

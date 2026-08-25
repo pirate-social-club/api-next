@@ -20,7 +20,7 @@ const activeSession: StudySessionV1 = {
   qualification_policy_version_id: "study_session_first_pass_v2@1",
   status: "active",
   timezone: "UTC",
-  streak_day: "2026-08-25",
+  streak_day: null,
   items: [
     {
       session_item_id: "study_item_1",
@@ -82,9 +82,7 @@ const unexpected = (): never => {
   throw new Error("unexpected fake-store call");
 };
 
-const storeWith = (
-  overrides: Partial<ActivityQualificationStore>,
-): ActivityQualificationStore => ({
+const storeWith = (overrides: Partial<ActivityQualificationStore>): ActivityQualificationStore => ({
   prepareStudySessionStart: unexpected,
   createStudySession: unexpected,
   getStudySession: unexpected,
@@ -96,17 +94,18 @@ const storeWith = (
   ...overrides,
 });
 
-const services = (ids: string[], sourceService: StudyItemSource["Service"]) => [
-  Effect.provideService(Clock, { now: Effect.succeed(Date.parse("2026-08-25T12:00:00.000Z")) }),
-  Effect.provideService(IdGen, {
-    next: Effect.sync(() => {
-      const id = ids.shift();
-      if (id === undefined) throw new Error("fake id sequence exhausted");
-      return id;
+const services = (ids: string[], sourceService: StudyItemSource["Service"]) =>
+  [
+    Effect.provideService(Clock, { now: Effect.succeed(Date.parse("2026-08-25T12:00:00.000Z")) }),
+    Effect.provideService(IdGen, {
+      next: Effect.sync(() => {
+        const id = ids.shift();
+        if (id === undefined) throw new Error("fake id sequence exhausted");
+        return id;
+      }),
     }),
-  }),
-  Effect.provideService(StudyItemSource, sourceService),
-] as const;
+    Effect.provideService(StudyItemSource, sourceService),
+  ] as const;
 
 const startInput = {
   accountId: "account_1",
@@ -137,9 +136,9 @@ describe("activity qualification application service", () => {
         return Effect.succeed(source);
       },
     };
-    const program = service.startStudySession(startInput).pipe(
-      ...services(["session-raw", "item-raw"], sourceService),
-    );
+    const program = service
+      .startStudySession(startInput)
+      .pipe(...services(["session-raw", "item-raw"], sourceService));
 
     await expect(Effect.runPromise(program)).resolves.toEqual(activeSession);
     expect(calls).toEqual([
@@ -160,7 +159,8 @@ describe("activity qualification application service", () => {
     let sourceCalls = 0;
     const service = makeActivityQualificationService(
       storeWith({
-        prepareStudySessionStart: () => Effect.succeed({ kind: "replayed", session: activeSession }),
+        prepareStudySessionStart: () =>
+          Effect.succeed({ kind: "replayed", session: activeSession }),
       }),
     );
     const sourceService: StudyItemSource["Service"] = {
@@ -188,9 +188,7 @@ describe("activity qualification application service", () => {
         Effect.fail(new StudyItemSourceError({ reason: "unavailable" })),
     };
     await expect(
-      Effect.runPromise(
-        service.startStudySession(startInput).pipe(...services([], sourceService)),
-      ),
+      Effect.runPromise(service.startStudySession(startInput).pipe(...services([], sourceService))),
     ).rejects.toMatchObject({
       _tag: "ActivityQualificationRejected",
       reason: "source-unavailable",

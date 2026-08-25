@@ -588,7 +588,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       },
       allowHeaders: ["Authorization", "Content-Type", "X-Request-Id", "X-CSRF-Token"],
       exposeHeaders: ["X-Request-Id"],
-      allowMethods: ["GET", "POST", "PATCH", "OPTIONS"],
+      allowMethods: ["GET", "POST", "PUT", "PATCH", "OPTIONS"],
     }),
   );
 

@@ -1,3 +1,4 @@
+import { type StudyItemSource, StudyItemSourceError } from "@pirate/application";
 import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
 import {
@@ -14,6 +15,7 @@ import {
 } from "@pirate/application/use-cases/session-authentication";
 import { makeSessionIdentityStore } from "@pirate/application/use-cases/session-exchange";
 import type { VerificationIntentResolver } from "@pirate/application/verification";
+import { makeControlPlaneActivityQualificationStore } from "@pirate/platform-cf/activity-qualification-repository";
 import { makeControlPlaneCommunityCreationIntentResolver } from "@pirate/platform-cf/community-creation-intent-resolver";
 import { makeControlPlaneCommunityCreationStore } from "@pirate/platform-cf/community-creation-repository";
 import { makeControlPlaneCommunityJoinIntentResolver } from "@pirate/platform-cf/community-join-intent-resolver";
@@ -82,6 +84,7 @@ import {
 } from "@pirate/platform-cf/verification-provider-registry";
 import { makeControlPlaneVerificationSessionStartStore } from "@pirate/platform-cf/verification-start-repository";
 import { Effect, Redacted, Schema } from "effect";
+import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
 import { makeCanonicalCommunityRouteHandlers } from "./canonical-community-route-handlers.ts";
 import { makeCommunityCreationHandlers } from "./community-creation-handlers.ts";
 import {
@@ -157,6 +160,8 @@ export interface HttpWorkerCompositionDependencies {
   readonly hns_ownership?: Readonly<{
     readonly transport?: HnsOwnerTransport;
   }>;
+  /** Server-owned producer supplied by the Study content-generation composition. */
+  readonly study_item_source?: StudyItemSource["Service"];
 }
 
 type WorkerConfig = HttpWorkerConfigValue;
@@ -628,6 +633,15 @@ export async function createProductionHttpWorker(
       },
     },
   });
+  const activityQualificationHandlers = makeActivityQualificationHandlers({
+    clock: { now: Effect.sync(() => Date.now()) },
+    ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+    store: makeControlPlaneActivityQualificationStore(controlPlane),
+    studyItemSource: dependencies.study_item_source ?? {
+      getForAcceptedSongRevision: () =>
+        Effect.fail(new StudyItemSourceError({ reason: "unavailable" })),
+    },
+  });
   const tokenMinter = makeRs256SessionTokenMinter(sessionCrypto);
   const sessionExchange = {
     proofVerifier,
@@ -677,6 +691,7 @@ export async function createProductionHttpWorker(
       ...verificationHandlers,
       ...fundingHandlers,
       ...personaHandlers,
+      ...activityQualificationHandlers,
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },

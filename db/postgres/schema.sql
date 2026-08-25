@@ -1243,6 +1243,20 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_account_streak_timezone_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'account streak timezone actions are append-only';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = NEW.result_timezone) THEN
+    RAISE EXCEPTION 'account streak timezone action is unknown';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_activity_qualification() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -3417,6 +3431,17 @@ BEGIN
     OR NEW.updated_at < OLD.updated_at
   ) THEN
     RAISE EXCEPTION 'activity presentation identity is immutable';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_persona_activity_presentation_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'persona activity presentation actions are append-only';
   END IF;
   RETURN NEW;
 END
@@ -8039,6 +8064,21 @@ CREATE TABLE account_streak_clocks (
     CONSTRAINT account_streak_clocks_timezone_check CHECK (((btrim(timezone) <> ''::text) AND (timezone = btrim(timezone)) AND (octet_length(timezone) <= 128)))
 );
 
+CREATE TABLE account_streak_timezone_actions (
+    account_id text NOT NULL,
+    endpoint_template text DEFAULT '/rewards/streak-timezone'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_timezone text NOT NULL,
+    result_timezone_updated_at timestamp with time zone NOT NULL,
+    result_next_change_allowed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT account_streak_timezone_action_result CHECK ((result_next_change_allowed_at = (result_timezone_updated_at + '7 days'::interval))),
+    CONSTRAINT account_streak_timezone_actions_endpoint_template_check CHECK ((endpoint_template = '/rewards/streak-timezone'::text)),
+    CONSTRAINT account_streak_timezone_actions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT account_streak_timezone_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE action_challenges (
     action_challenge_id text NOT NULL,
     action_intent_id text NOT NULL,
@@ -10977,6 +11017,20 @@ CREATE TABLE operator_managed_route_operations (
     CONSTRAINT operator_managed_route_operations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE persona_activity_presentation_actions (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    endpoint_template text DEFAULT '/communities/:communityId/rewards/presentation-persona'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_persona_id text NOT NULL,
+    result_updated_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_activity_presentation_actions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/rewards/presentation-persona'::text)),
+    CONSTRAINT persona_activity_presentation_actions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT persona_activity_presentation_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE persona_activity_presentations (
     community_id text NOT NULL,
     account_id text NOT NULL,
@@ -11330,6 +11384,7 @@ CREATE TABLE song_streaks (
 );
 
 CREATE TABLE study_session_answers (
+    answer_id text NOT NULL,
     session_id text NOT NULL,
     session_item_id text NOT NULL,
     attempt_number integer NOT NULL,
@@ -11340,6 +11395,7 @@ CREATE TABLE study_session_answers (
     first_pass boolean NOT NULL,
     answered_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT study_session_answers_answer_check CHECK ((jsonb_typeof(answer) = 'object'::text)),
+    CONSTRAINT study_session_answers_answer_id_check CHECK (((btrim(answer_id) <> ''::text) AND (answer_id = btrim(answer_id)) AND (octet_length(answer_id) <= 128))),
     CONSTRAINT study_session_answers_attempt_number_check CHECK ((attempt_number > 0)),
     CONSTRAINT study_session_answers_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
     CONSTRAINT study_session_answers_outcome_check CHECK ((outcome = ANY (ARRAY['correct'::text, 'incorrect'::text]))),
@@ -11630,6 +11686,9 @@ ALTER TABLE ONLY account_aliases
 
 ALTER TABLE ONLY account_streak_clocks
     ADD CONSTRAINT account_streak_clocks_pkey PRIMARY KEY (account_id);
+
+ALTER TABLE ONLY account_streak_timezone_actions
+    ADD CONSTRAINT account_streak_timezone_actions_pkey PRIMARY KEY (account_id, endpoint_template, idempotency_key);
 
 ALTER TABLE ONLY action_challenges
     ADD CONSTRAINT action_challenges_id_intent_provider_unique UNIQUE (action_challenge_id, action_intent_id, provider_id);
@@ -12411,6 +12470,9 @@ ALTER TABLE ONLY operator_managed_route_operations
 ALTER TABLE ONLY operator_managed_route_operations
     ADD CONSTRAINT operator_managed_route_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY persona_activity_presentation_actions
+    ADD CONSTRAINT persona_activity_presentation_actions_pkey PRIMARY KEY (account_id, community_id, endpoint_template, idempotency_key);
+
 ALTER TABLE ONLY persona_activity_presentations
     ADD CONSTRAINT persona_activity_presentations_pkey PRIMARY KEY (community_id, account_id);
 
@@ -12527,6 +12589,9 @@ ALTER TABLE ONLY song_streak_days
 
 ALTER TABLE ONLY song_streaks
     ADD CONSTRAINT song_streaks_pkey PRIMARY KEY (account_id, post_id);
+
+ALTER TABLE ONLY study_session_answers
+    ADD CONSTRAINT study_session_answers_answer_id_key UNIQUE (answer_id);
 
 ALTER TABLE ONLY study_session_answers
     ADD CONSTRAINT study_session_answers_pkey PRIMARY KEY (session_id, session_item_id, attempt_number);
@@ -12882,6 +12947,8 @@ CREATE UNIQUE INDEX verification_start_reservations_creation_idempotency_uidx ON
 CREATE INDEX verification_start_reservations_lease_idx ON verification_start_reservations USING btree (state, lease_expires_at);
 
 CREATE TRIGGER account_streak_clocks_change_guard BEFORE INSERT OR DELETE OR UPDATE ON account_streak_clocks FOR EACH ROW EXECUTE FUNCTION guard_account_streak_clock();
+
+CREATE TRIGGER account_streak_timezone_actions_append_only BEFORE INSERT OR DELETE OR UPDATE ON account_streak_timezone_actions FOR EACH ROW EXECUTE FUNCTION guard_account_streak_timezone_action();
 
 CREATE TRIGGER action_grants_append_only BEFORE DELETE OR UPDATE ON action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -13285,6 +13352,8 @@ CREATE TRIGGER operator_managed_route_activations_change_guard BEFORE DELETE OR 
 
 CREATE TRIGGER operator_managed_route_operations_change_guard BEFORE DELETE OR UPDATE ON operator_managed_route_operations FOR EACH ROW EXECUTE FUNCTION reject_operator_managed_route_operation_change();
 
+CREATE TRIGGER persona_activity_presentation_actions_append_only BEFORE DELETE OR UPDATE ON persona_activity_presentation_actions FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_presentation_action();
+
 CREATE TRIGGER persona_activity_presentations_active_persona BEFORE INSERT OR UPDATE OF account_id, persona_id ON persona_activity_presentations FOR EACH ROW EXECUTE FUNCTION require_active_role_persona();
 
 CREATE TRIGGER persona_activity_presentations_change_guard BEFORE DELETE OR UPDATE ON persona_activity_presentations FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_presentation();
@@ -13385,6 +13454,9 @@ CREATE TRIGGER users_provision_first_persona AFTER INSERT ON users FOR EACH ROW 
 
 ALTER TABLE ONLY account_streak_clocks
     ADD CONSTRAINT account_streak_clocks_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY account_streak_timezone_actions
+    ADD CONSTRAINT account_streak_timezone_actions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
 ALTER TABLE ONLY action_challenges
     ADD CONSTRAINT action_challenges_intent_fk FOREIGN KEY (action_intent_id) REFERENCES action_intents(action_intent_id);
@@ -14273,6 +14345,15 @@ ALTER TABLE ONLY operator_managed_route_operations
 
 ALTER TABLE ONLY operator_managed_route_operations
     ADD CONSTRAINT operator_managed_route_operati_operator_authority_grant_id_fkey FOREIGN KEY (operator_authority_grant_id) REFERENCES platform_operator_route_authority_grants(grant_id);
+
+ALTER TABLE ONLY persona_activity_presentation_actions
+    ADD CONSTRAINT persona_activity_presentation_account_id_result_persona_id_fkey FOREIGN KEY (account_id, result_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY persona_activity_presentation_actions
+    ADD CONSTRAINT persona_activity_presentation_actions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY persona_activity_presentation_actions
+    ADD CONSTRAINT persona_activity_presentation_actions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY persona_activity_presentations
     ADD CONSTRAINT persona_activity_presentations_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
