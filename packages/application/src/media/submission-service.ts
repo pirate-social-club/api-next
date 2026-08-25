@@ -5,13 +5,18 @@ import {
   BindSongTermsV1,
   Conflict,
   CreateSongSubmissionV1,
+  FinalizeSongUploadV1,
   IdempotencyConflict,
   InternalError,
   MediaPostSubmissionV1,
   MembershipRequired,
   ModerateSongSubmissionV1,
   NotFound,
+  ReserveSongAudioV1,
   RetryOrCancelSongSubmissionV1,
+  SongAudioReservationV1,
+  toErrorBody,
+  UploadObjectMissing,
 } from "@pirate/contracts";
 import { Effect, Schema } from "effect";
 import type {
@@ -22,10 +27,26 @@ import type {
   SongTerms,
 } from "../../../domain/src/media-submission.ts";
 import { transitionMediaSubmission } from "../../../domain/src/media-submission.ts";
-import type { M2Actor } from "../ports.ts";
+import {
+  type M2Actor,
+  type MediaIngressUploadPresigner,
+  type MediaIngressUploadPresignResult,
+  mediaIngressUploadPresignRequest,
+} from "../ports.ts";
 import type { PersonaRecord, PersonaStoreService } from "../use-cases/personas.ts";
+import {
+  MEDIA_AUDIO_MAX_SIZE_BYTES,
+  MediaSealFailure,
+  type MediaSealObjectIdentity,
+  type MediaUploadSealer,
+  mediaImmutableObjectKey,
+  mediaImmutableRef,
+  mediaIngressObjectKey,
+  mediaRetainedDestinationEvidence,
+} from "./submission-sealing.ts";
 
 export const MEDIA_SUBMISSION_ENDPOINTS = {
+  reserve: "/communities/:communityId/media-upload-reservations",
   create: "/communities/:communityId/media-post-submissions",
   terms: "/media-post-submissions/:submissionId/terms",
   lyrics: "/media-post-submissions/:submissionId/lyrics",
@@ -160,6 +181,13 @@ export class MediaUploadStoreError extends Error {
 }
 
 export interface MediaUploadStore {
+  readonly replayReservation: (input: {
+    readonly communityId: string;
+    readonly actorUserId: string;
+    readonly personaId: string;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+  }) => Promise<MediaReservationOutcome | { readonly kind: "none" }>;
   readonly reserve: (input: {
     readonly communityId: string;
     readonly actorUserId: string;
@@ -205,6 +233,10 @@ export interface MediaUploadStore {
     readonly actorUserId: string;
     readonly personaId: string;
   }) => Promise<MediaSubmissionView | null>;
+  readonly getAuthorContext: (input: {
+    readonly submissionId: string;
+    readonly actorUserId: string;
+  }) => Promise<Readonly<{ view: MediaSubmissionView; personaId: string }> | null>;
   readonly getViewForModerator: (input: {
     readonly submissionId: string;
     readonly moderatorActor: M2Actor;
@@ -215,8 +247,19 @@ export interface MediaUploadStore {
     readonly personaId: string;
     readonly reservationId: string;
   }) => Promise<MediaFinalizeContext | null>;
+  readonly beginFinalize: (input: {
+    readonly communityId: string;
+    readonly submissionId: string;
+    readonly actorUserId: string;
+    readonly personaId: string;
+    readonly reservationId: string;
+    readonly idempotencyKey: string;
+    readonly requestHash: string;
+    readonly expectedCreationRevision: number;
+  }) => Promise<Readonly<{ kind: "begun" | "resumed"; submissionId: string; operationId: string }>>;
   readonly bindTerms: (
-    input: MediaCommandBase & Readonly<{ expectedCreationRevision: number; terms: SongTerms; outbox?: MediaOutboxWrite }>,
+    input: MediaCommandBase &
+      Readonly<{ expectedCreationRevision: number; terms: SongTerms; outbox?: MediaOutboxWrite }>,
   ) => Promise<CommitOutcome>;
   readonly bindLyrics: (
     input: MediaCommandBase &
@@ -269,15 +312,18 @@ export interface MediaUploadStore {
       }>,
   ) => Promise<CommitOutcome & Partial<{ immutableRef: string; outboxEventId: string }>>;
   readonly recordFinalizeSourceMissing: (
-    input: MediaCommandBase & Readonly<{ operationId: string }>,
+    input: MediaCommandBase &
+      Readonly<{
+        operationId: string;
+        reservationId: string;
+        expectedCreationRevision: number;
+      }>,
   ) => Promise<ReplayOutcome | { readonly kind: "committed"; readonly submissionId: string }>;
   readonly uploadExpectationMismatch: (
-    input: MediaCommandBase &
-      Readonly<{ expectedCreationRevision: number; evidenceRef: string }>,
+    input: MediaCommandBase & Readonly<{ expectedCreationRevision: number; evidenceRef: string }>,
   ) => Promise<CommitOutcome>;
   readonly uploadSourcePreconditionFailed: (
-    input: MediaCommandBase &
-      Readonly<{ expectedCreationRevision: number; evidenceRef: string }>,
+    input: MediaCommandBase & Readonly<{ expectedCreationRevision: number; evidenceRef: string }>,
   ) => Promise<CommitOutcome>;
   readonly recordSealConflict: (
     input: MediaCommandBase &
@@ -287,6 +333,19 @@ export interface MediaUploadStore {
           code: "upload_seal_conflict";
           retryable: false;
           retryCount: 0 | 1 | 2 | 3;
+          lastSafePhase: "finalize";
+          evidenceRef: string;
+        }>;
+      }>,
+  ) => Promise<CommitOutcome>;
+  readonly recordMediaFailure: (
+    input: MediaCommandBase &
+      Readonly<{
+        expectedCreationRevision: number;
+        failure: Readonly<{
+          code: "hash_failed";
+          retryable: boolean;
+          retryCount: 0;
           lastSafePhase: "finalize";
           evidenceRef: string;
         }>;
@@ -306,6 +365,8 @@ export interface MediaReferenceResolver {
 export type MediaSubmissionServices = Readonly<{
   readonly store: MediaUploadStore;
   readonly personaStore: Pick<PersonaStoreService, "findOwned">;
+  readonly presigner: MediaIngressUploadPresigner["Service"];
+  readonly sealer: MediaUploadSealer;
   readonly nowIso: () => string;
   readonly referenceResolver?: MediaReferenceResolver;
 }>;
@@ -313,7 +374,10 @@ export type MediaSubmissionServices = Readonly<{
 const exactParseOptions = { onExcessProperty: "error" } as const;
 const encoder = new TextEncoder();
 
-function decodeBody<S extends Schema.ConstraintDecoder<unknown>>(schema: S, input: unknown): S["Type"] {
+function decodeBody<S extends Schema.ConstraintDecoder<unknown>>(
+  schema: S,
+  input: unknown,
+): S["Type"] {
   try {
     return Schema.decodeUnknownSync(schema, exactParseOptions)(input);
   } catch {
@@ -352,7 +416,9 @@ export async function requireMediaPersona(
 
 export async function mediaSha256Bytes(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 function canonicalJson(value: unknown): string {
@@ -377,8 +443,8 @@ export async function mediaRequestHash(target: unknown, body: unknown): Promise<
   return mediaSha256Bytes(encoder.encode(canonicalJson({ target, body })));
 }
 
-export async function mediaResponseSnapshot(document: MediaPostSubmissionV1): Promise<{
-  readonly document: MediaPostSubmissionV1;
+async function jsonSnapshot<T>(document: T): Promise<{
+  readonly document: T;
   readonly bytes: Bytes;
   readonly sha256: string;
 }> {
@@ -386,14 +452,60 @@ export async function mediaResponseSnapshot(document: MediaPostSubmissionV1): Pr
   return { document, bytes, sha256: await mediaSha256Bytes(bytes) };
 }
 
+export const mediaResponseSnapshot = (document: MediaPostSubmissionV1) => jsonSnapshot(document);
+
 export function decodeMediaReplay(bytes: Bytes): MediaPostSubmissionV1 {
   try {
-    return Schema.decodeUnknownSync(MediaPostSubmissionV1, exactParseOptions)(
-      JSON.parse(new TextDecoder().decode(bytes)),
-    );
+    return Schema.decodeUnknownSync(
+      MediaPostSubmissionV1,
+      exactParseOptions,
+    )(JSON.parse(new TextDecoder().decode(bytes)));
   } catch {
     throw new InternalError({ message: "Stored media response is invalid" });
   }
+}
+
+function decodeReservationReplay(bytes: Bytes): Schema.Schema.Type<typeof SongAudioReservationV1> {
+  try {
+    return Schema.decodeUnknownSync(
+      SongAudioReservationV1,
+      exactParseOptions,
+    )(JSON.parse(new TextDecoder().decode(bytes)));
+  } catch {
+    throw new InternalError({ message: "Stored media reservation response is invalid" });
+  }
+}
+
+function decodeFinalizeReplay(bytes: Bytes): MediaPostSubmissionV1 {
+  const decoded = JSON.parse(new TextDecoder().decode(bytes)) as unknown;
+  if (decoded !== null && typeof decoded === "object" && "error" in decoded) {
+    const envelope = decoded as {
+      readonly error?: {
+        readonly code?: unknown;
+        readonly retryable?: unknown;
+        readonly details?: Record<string, unknown>;
+      };
+    };
+    const details = envelope.error?.details;
+    if (
+      envelope.error?.code === "conflict" &&
+      envelope.error.retryable === true &&
+      details?.reason_code === "upload_object_missing" &&
+      typeof details.submission_id === "string" &&
+      typeof details.reservation_id === "string"
+    ) {
+      throw new UploadObjectMissing({
+        message: "The reserved upload object is not present",
+        details: {
+          reason_code: "upload_object_missing",
+          submission_id: details.submission_id,
+          reservation_id: details.reservation_id,
+        },
+      });
+    }
+    throw new InternalError({ message: "Stored media finalize response is invalid" });
+  }
+  return decodeMediaReplay(bytes);
 }
 
 function publicPersona(
@@ -538,7 +650,10 @@ export function mapMediaStoreError(error: unknown): Error {
   }
 }
 
-export function applyMediaTransition(current: MediaSubmissionState | null, command: Parameters<typeof transitionMediaSubmission>[1]): MediaSubmissionState {
+export function applyMediaTransition(
+  current: MediaSubmissionState | null,
+  command: Parameters<typeof transitionMediaSubmission>[1],
+): MediaSubmissionState {
   const result = transitionMediaSubmission(current, command);
   if (!result.ok) {
     throw new Conflict({
@@ -637,6 +752,88 @@ function outbox(
   };
 }
 
+export async function reserveMediaUpload(
+  input: Readonly<{ communityId: string; actor: M2Actor; body: unknown }>,
+  services: MediaSubmissionServices,
+): Promise<Schema.Schema.Type<typeof SongAudioReservationV1>> {
+  requireMediaHumanActor(input.actor);
+  const body = decodeBody(ReserveSongAudioV1, input.body);
+  await requireMediaPersona(input.actor, body.persona_id, services);
+  if (body.expected_size_bytes > MEDIA_AUDIO_MAX_SIZE_BYTES) {
+    throw new BadRequest({ message: "Audio upload exceeds the maximum size" });
+  }
+  const digest = await mediaRequestHash({ community_id: input.communityId }, body);
+  let prior: Awaited<ReturnType<MediaUploadStore["replayReservation"]>>;
+  try {
+    prior = await services.store.replayReservation({
+      communityId: input.communityId,
+      actorUserId: input.actor.userId,
+      personaId: body.persona_id,
+      idempotencyKey: body.idempotency_key,
+      requestHash: digest,
+    });
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
+  if (prior.kind === "replay" || prior.kind === "created") {
+    return decodeReservationReplay(prior.bytes);
+  }
+  if (prior.kind === "conflict") throw idempotencyConflict(prior.reservationId);
+
+  const reservationId = `media-reservation-${crypto.randomUUID()}`;
+  let upload: MediaIngressUploadPresignResult;
+  try {
+    upload = await Effect.runPromise(
+      services.presigner.presign(
+        mediaIngressUploadPresignRequest({
+          serverOwnedObjectKey: mediaIngressObjectKey(reservationId),
+          contentType: body.expected_content_type,
+        }),
+      ),
+    );
+  } catch {
+    throw new InternalError({ message: "Media upload reservation is unavailable" });
+  }
+  const document: Schema.Schema.Type<typeof SongAudioReservationV1> = {
+    reservation_id: reservationId,
+    track: "song",
+    slot: "primary_audio",
+    status: "awaiting_upload",
+    upload: {
+      method: "PUT",
+      url: upload.url,
+      required_headers: upload.requiredHeaders,
+      expires_at: upload.expiresAt,
+    },
+  };
+  const response = await jsonSnapshot(document);
+  let outcome: MediaReservationOutcome;
+  try {
+    outcome = await services.store.reserve({
+      communityId: input.communityId,
+      actorUserId: input.actor.userId,
+      personaId: body.persona_id,
+      idempotencyKey: body.idempotency_key,
+      requestHash: digest,
+      expectedContentType: body.expected_content_type,
+      expectedSizeBytes: body.expected_size_bytes,
+      ...(body.expected_sha256 === undefined ? {} : { expectedSha256: body.expected_sha256 }),
+      uploadUrl: upload.url,
+      uploadHeaders: upload.requiredHeaders,
+      expiresAt: upload.expiresAt,
+      responseBytes: response.bytes,
+      responseSha256: response.sha256,
+      reservationId,
+    });
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
+  if (outcome.kind === "replay" || outcome.kind === "created") {
+    return decodeReservationReplay(outcome.bytes);
+  }
+  throw idempotencyConflict(outcome.reservationId);
+}
+
 export async function createMediaSubmission(
   input: Readonly<{ communityId: string; actor: M2Actor; body: unknown }>,
   services: MediaSubmissionServices,
@@ -695,13 +892,468 @@ export async function createMediaSubmission(
 }
 
 export async function getMediaSubmission(
-  input: Readonly<{ submissionId: string; actor: M2Actor; personaId: string }>,
+  input: Readonly<{ submissionId: string; actor: M2Actor }>,
   services: MediaSubmissionServices,
 ): Promise<MediaPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
-  const persona = await requireMediaPersona(input.actor, input.personaId, services);
-  const view = await loadOwnedView(input.submissionId, input.actor, input.personaId, services);
-  return projectMediaSubmission(view, persona);
+  let context: Awaited<ReturnType<MediaUploadStore["getAuthorContext"]>>;
+  try {
+    context = await services.store.getAuthorContext({
+      submissionId: input.submissionId,
+      actorUserId: input.actor.userId,
+    });
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
+  if (context === null) throw new NotFound({ message: "Media submission not found" });
+  const persona = await requireMediaPersona(input.actor, context.personaId, services);
+  return projectMediaSubmission(context.view, persona);
+}
+
+function finalizeCommandBase(input: {
+  readonly state: MediaSubmissionState;
+  readonly actor: M2Actor;
+  readonly personaId: string;
+  readonly idempotencyKey: string;
+  readonly requestHash: string;
+  readonly response: Awaited<ReturnType<typeof mediaResponseSnapshot>>;
+}): MediaCommandBase {
+  return {
+    communityId: input.state.communityId,
+    submissionId: input.state.submissionId,
+    actorUserId: input.actor.userId,
+    personaId: input.personaId,
+    endpointTemplate: MEDIA_SUBMISSION_ENDPOINTS.finalize,
+    idempotencyKey: input.idempotencyKey,
+    requestHash: input.requestHash,
+    responseBytes: input.response.bytes,
+    responseSha256: input.response.sha256,
+  };
+}
+
+function sealEvidence(identity: MediaSealObjectIdentity | undefined, fallback: string): string {
+  return identity === undefined ? fallback : mediaRetainedDestinationEvidence(identity);
+}
+
+export async function finalizeMediaSubmission(
+  input: Readonly<{ submissionId: string; actor: M2Actor; body: unknown }>,
+  services: MediaSubmissionServices,
+): Promise<MediaPostSubmissionV1> {
+  requireMediaHumanActor(input.actor);
+  const body = decodeBody(FinalizeSongUploadV1, input.body);
+  const persona = await requireMediaPersona(input.actor, body.persona_id, services);
+  let context: MediaFinalizeContext | null;
+  try {
+    context = await services.store.getFinalizeContext({
+      submissionId: input.submissionId,
+      actorUserId: input.actor.userId,
+      personaId: body.persona_id,
+      reservationId: body.reservation_id,
+    });
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
+  if (context === null) throw new NotFound({ message: "Media submission not found" });
+  const digest = await mediaRequestHash({ submission_id: input.submissionId }, body);
+  let replay: ReplayOutcome;
+  try {
+    replay = await services.store.replay({
+      communityId: context.view.state.communityId,
+      actorUserId: input.actor.userId,
+      personaId: body.persona_id,
+      endpointTemplate: MEDIA_SUBMISSION_ENDPOINTS.finalize,
+      idempotencyKey: body.idempotency_key,
+      requestHash: digest,
+    });
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
+  if (replay.kind === "replay") return decodeFinalizeReplay(replay.bytes);
+  if (replay.kind === "conflict") throw idempotencyConflict(replay.submissionId);
+
+  const sourceKey = mediaIngressObjectKey(body.reservation_id);
+  let inspection: Awaited<ReturnType<MediaUploadSealer["inspect"]>>;
+  try {
+    inspection = await services.sealer.inspect({
+      sourceKey,
+      expectedSizeBytes: context.reservation.expectedSizeBytes,
+      expectedContentType: context.reservation.expectedContentType,
+    });
+  } catch {
+    throw new InternalError({ message: "Media upload inspection failed" });
+  }
+  if (inspection.outcome === "source_missing") {
+    if (context.view.state.phase === "finalize") {
+      const evidenceRef = `media-source-missing-after-fence:${body.reservation_id}`;
+      const state = applyMediaTransition(context.view.state, {
+        event: "upload_source_precondition_failed",
+        actorId: input.actor.userId,
+        expectedCreationRevision: body.expected_creation_revision,
+        abandonment: {
+          reason: "upload_source_changed_before_finalize",
+          retentionDisposition: "retain_for_reconciliation",
+        },
+        evidenceRef,
+      });
+      const response = await mediaResponseSnapshot(
+        projectMediaSubmission(
+          { state, lyrics: context.view.lyrics, updatedAt: services.nowIso() },
+          persona,
+        ),
+      );
+      try {
+        return await commitSnapshot(
+          await services.store.uploadSourcePreconditionFailed({
+            ...finalizeCommandBase({
+              state,
+              actor: input.actor,
+              personaId: body.persona_id,
+              idempotencyKey: body.idempotency_key,
+              requestHash: digest,
+              response,
+            }),
+            expectedCreationRevision: body.expected_creation_revision,
+            evidenceRef,
+          }),
+          response,
+        );
+      } catch (error) {
+        throw mapMediaStoreError(error);
+      }
+    }
+    const missing = new UploadObjectMissing({
+      message: "The reserved upload object is not present",
+      details: {
+        reason_code: "upload_object_missing",
+        submission_id: input.submissionId,
+        reservation_id: body.reservation_id,
+      },
+    });
+    const response = await jsonSnapshot(toErrorBody(missing).body);
+    let outcome: ReplayOutcome | { readonly kind: "committed"; readonly submissionId: string };
+    try {
+      outcome = await services.store.recordFinalizeSourceMissing({
+        communityId: context.view.state.communityId,
+        submissionId: context.view.state.submissionId,
+        actorUserId: input.actor.userId,
+        personaId: body.persona_id,
+        endpointTemplate: MEDIA_SUBMISSION_ENDPOINTS.finalize,
+        idempotencyKey: body.idempotency_key,
+        requestHash: digest,
+        responseBytes: response.bytes,
+        responseSha256: response.sha256,
+        operationId: context.view.state.operationId,
+        reservationId: body.reservation_id,
+        expectedCreationRevision: body.expected_creation_revision,
+      });
+    } catch (error) {
+      throw mapMediaStoreError(error);
+    }
+    if (outcome.kind === "replay") return decodeFinalizeReplay(outcome.bytes);
+    if (outcome.kind === "conflict") throw idempotencyConflict(outcome.submissionId);
+    throw missing;
+  }
+  if (inspection.outcome === "expectation_mismatch") {
+    const evidenceRef = `media-upload-expectation:${body.reservation_id}`;
+    const state = applyMediaTransition(context.view.state, {
+      event: "upload_expectation_mismatch_recorded",
+      actorId: input.actor.userId,
+      expectedCreationRevision: body.expected_creation_revision,
+      abandonment: {
+        reason: "upload_expectation_mismatch",
+        retentionDisposition: "retain_for_reconciliation",
+      },
+      evidenceRef,
+    });
+    const response = await mediaResponseSnapshot(
+      projectMediaSubmission(
+        { state, lyrics: context.view.lyrics, updatedAt: services.nowIso() },
+        persona,
+      ),
+    );
+    try {
+      return await commitSnapshot(
+        await services.store.uploadExpectationMismatch({
+          ...finalizeCommandBase({
+            state,
+            actor: input.actor,
+            personaId: body.persona_id,
+            idempotencyKey: body.idempotency_key,
+            requestHash: digest,
+            response,
+          }),
+          expectedCreationRevision: body.expected_creation_revision,
+          evidenceRef,
+        }),
+        response,
+      );
+    } catch (error) {
+      throw mapMediaStoreError(error);
+    }
+  }
+
+  let finalizeState = context.view.state;
+  try {
+    await services.store.beginFinalize({
+      communityId: finalizeState.communityId,
+      submissionId: finalizeState.submissionId,
+      actorUserId: input.actor.userId,
+      personaId: body.persona_id,
+      reservationId: body.reservation_id,
+      idempotencyKey: body.idempotency_key,
+      requestHash: digest,
+      expectedCreationRevision: body.expected_creation_revision,
+    });
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
+  if (finalizeState.phase === "awaiting_upload") {
+    finalizeState = applyMediaTransition(finalizeState, {
+      event: "finalize_requested",
+      actorId: input.actor.userId,
+      expectedCreationRevision: body.expected_creation_revision,
+      reservationId: body.reservation_id,
+    });
+  }
+
+  let attempt: Awaited<ReturnType<MediaUploadSealer["seal"]>>;
+  try {
+    attempt = await services.sealer.seal({
+      source: inspection.source,
+      destinationKey: mediaImmutableObjectKey(finalizeState.operationId),
+      immutableRef: mediaImmutableRef(finalizeState.operationId),
+      expectedSizeBytes: context.reservation.expectedSizeBytes,
+      expectedContentType: context.reservation.expectedContentType,
+      ...(context.reservation.expectedSha256 === null
+        ? {}
+        : { expectedSha256: context.reservation.expectedSha256 }),
+      ownershipMarker: finalizeState.operationId,
+    });
+  } catch (error) {
+    if (!(error instanceof MediaSealFailure)) {
+      throw new InternalError({ message: "Media upload seal failed" });
+    }
+    const evidenceRef = sealEvidence(error.retainedDestination, `media-seal-failure:${error.code}`);
+    const failure = {
+      code: "hash_failed" as const,
+      retryable: error.code === "source_get_failed",
+      retryCount: 0 as const,
+      lastSafePhase: "finalize" as const,
+      evidenceRef,
+    };
+    const state = applyMediaTransition(finalizeState, {
+      event: "media_failure_recorded",
+      actorId: input.actor.userId,
+      expectedCreationRevision: body.expected_creation_revision,
+      failure,
+    });
+    const response = await mediaResponseSnapshot(
+      projectMediaSubmission(
+        { state, lyrics: context.view.lyrics, updatedAt: services.nowIso() },
+        persona,
+      ),
+    );
+    try {
+      return await commitSnapshot(
+        await services.store.recordMediaFailure({
+          ...finalizeCommandBase({
+            state,
+            actor: input.actor,
+            personaId: body.persona_id,
+            idempotencyKey: body.idempotency_key,
+            requestHash: digest,
+            response,
+          }),
+          expectedCreationRevision: body.expected_creation_revision,
+          failure,
+        }),
+        response,
+      );
+    } catch (storeError) {
+      throw mapMediaStoreError(storeError);
+    }
+  }
+
+  if (attempt.result.outcome === "source_precondition_failed") {
+    const evidenceRef = `media-source-precondition:${body.reservation_id}`;
+    const state = applyMediaTransition(finalizeState, {
+      event: "upload_source_precondition_failed",
+      actorId: input.actor.userId,
+      expectedCreationRevision: body.expected_creation_revision,
+      abandonment: {
+        reason: "upload_source_changed_before_finalize",
+        retentionDisposition: "retain_for_reconciliation",
+      },
+      evidenceRef,
+    });
+    const response = await mediaResponseSnapshot(
+      projectMediaSubmission(
+        { state, lyrics: context.view.lyrics, updatedAt: services.nowIso() },
+        persona,
+      ),
+    );
+    try {
+      return await commitSnapshot(
+        await services.store.uploadSourcePreconditionFailed({
+          ...finalizeCommandBase({
+            state,
+            actor: input.actor,
+            personaId: body.persona_id,
+            idempotencyKey: body.idempotency_key,
+            requestHash: digest,
+            response,
+          }),
+          expectedCreationRevision: body.expected_creation_revision,
+          evidenceRef,
+        }),
+        response,
+      );
+    } catch (error) {
+      throw mapMediaStoreError(error);
+    }
+  }
+  if (attempt.result.outcome === "expectation_mismatch") {
+    const evidenceRef = sealEvidence(
+      attempt.retainedDestination,
+      `media-upload-expectation:${body.reservation_id}`,
+    );
+    const state = applyMediaTransition(finalizeState, {
+      event: "upload_expectation_mismatch_recorded",
+      actorId: input.actor.userId,
+      expectedCreationRevision: body.expected_creation_revision,
+      abandonment: {
+        reason: "upload_expectation_mismatch",
+        retentionDisposition: "retain_for_reconciliation",
+      },
+      evidenceRef,
+    });
+    const response = await mediaResponseSnapshot(
+      projectMediaSubmission(
+        { state, lyrics: context.view.lyrics, updatedAt: services.nowIso() },
+        persona,
+      ),
+    );
+    try {
+      return await commitSnapshot(
+        await services.store.uploadExpectationMismatch({
+          ...finalizeCommandBase({
+            state,
+            actor: input.actor,
+            personaId: body.persona_id,
+            idempotencyKey: body.idempotency_key,
+            requestHash: digest,
+            response,
+          }),
+          expectedCreationRevision: body.expected_creation_revision,
+          evidenceRef,
+        }),
+        response,
+      );
+    } catch (error) {
+      throw mapMediaStoreError(error);
+    }
+  }
+  if (attempt.result.outcome === "destination_conflict") {
+    const evidenceRef = `media-seal-conflict:${mediaImmutableObjectKey(finalizeState.operationId)}`;
+    const failure = {
+      code: "upload_seal_conflict" as const,
+      retryable: false as const,
+      retryCount: 0 as const,
+      lastSafePhase: "finalize" as const,
+      evidenceRef,
+    };
+    const state = applyMediaTransition(finalizeState, {
+      event: "seal_conflict_recorded",
+      actorId: input.actor.userId,
+      expectedCreationRevision: body.expected_creation_revision,
+      failure,
+    });
+    const response = await mediaResponseSnapshot(
+      projectMediaSubmission(
+        { state, lyrics: context.view.lyrics, updatedAt: services.nowIso() },
+        persona,
+      ),
+    );
+    try {
+      return await commitSnapshot(
+        await services.store.recordSealConflict({
+          ...finalizeCommandBase({
+            state,
+            actor: input.actor,
+            personaId: body.persona_id,
+            idempotencyKey: body.idempotency_key,
+            requestHash: digest,
+            response,
+          }),
+          expectedCreationRevision: body.expected_creation_revision,
+          failure,
+        }),
+        response,
+      );
+    } catch (error) {
+      throw mapMediaStoreError(error);
+    }
+  }
+
+  const audio = {
+    audioRevision: 1,
+    immutableRef: attempt.result.immutable_ref,
+    canonicalSha256: attempt.result.canonical_sha256,
+    contentType: context.reservation.expectedContentType,
+    sizeBytes: attempt.result.size_bytes,
+  };
+  const state = applyMediaTransition(finalizeState, {
+    event: "upload_finalized",
+    actorId: input.actor.userId,
+    expectedCreationRevision: body.expected_creation_revision,
+    expectedAudioRevision: finalizeState.audioRevision,
+    audio,
+  });
+  const response = await mediaResponseSnapshot(
+    projectMediaSubmission(
+      { state, lyrics: context.view.lyrics, updatedAt: services.nowIso() },
+      persona,
+    ),
+  );
+  const launch = outbox(finalizeState, digest, {
+    kind: "analysis_launch",
+    submission_id: state.submissionId,
+    operation_id: state.operationId,
+    audio_revision: state.audioRevision,
+    analysis_revision: state.analysisRevision,
+    workflow_revision: state.workflowRevision,
+    workflow_instance_id: `media-${state.operationId}-r${state.workflowRevision}`,
+  });
+  try {
+    return await commitSnapshot(
+      await services.store.finalizeSealed({
+        ...finalizeCommandBase({
+          state,
+          actor: input.actor,
+          personaId: body.persona_id,
+          idempotencyKey: body.idempotency_key,
+          requestHash: digest,
+          response,
+        }),
+        expectedCreationRevision: body.expected_creation_revision,
+        expectedAudioRevision: finalizeState.audioRevision,
+        reservationId: body.reservation_id,
+        immutableObject: {
+          immutableRef: attempt.result.immutable_ref,
+          destinationRef: attempt.result.destination_ref,
+          etag: attempt.result.etag,
+          objectVersion: attempt.result.version,
+          sizeBytes: attempt.result.size_bytes,
+          contentType: context.reservation.expectedContentType,
+          canonicalSha256: attempt.result.canonical_sha256,
+        },
+        outbox: launch,
+      }),
+      response,
+    );
+  } catch (error) {
+    throw mapMediaStoreError(error);
+  }
 }
 
 async function mutationContext<S extends Schema.ConstraintDecoder<unknown>>(
@@ -709,13 +1361,15 @@ async function mutationContext<S extends Schema.ConstraintDecoder<unknown>>(
   schema: S,
   endpointTemplate: string,
   services: MediaSubmissionServices,
-): Promise<Readonly<{
-  body: S["Type"] & { persona_id: string; idempotency_key: string };
-  persona: PersonaRecord;
-  view: MediaSubmissionView;
-  requestHash: string;
-  replay: MediaPostSubmissionV1 | null;
-}>> {
+): Promise<
+  Readonly<{
+    body: S["Type"] & { persona_id: string; idempotency_key: string };
+    persona: PersonaRecord;
+    view: MediaSubmissionView;
+    requestHash: string;
+    replay: MediaPostSubmissionV1 | null;
+  }>
+> {
   requireMediaHumanActor(input.actor);
   const body = decodeBody(schema, input.body) as S["Type"] & {
     persona_id: string;
@@ -849,7 +1503,8 @@ export async function bindMediaLyrics(
         body.base_transcript_revision === null
           ? "pasted"
           : context.view.lyrics.asrSuggestion.status === "ready" &&
-              context.view.lyrics.asrSuggestion.transcriptRevision === body.base_transcript_revision &&
+              context.view.lyrics.asrSuggestion.transcriptRevision ===
+                body.base_transcript_revision &&
               context.view.lyrics.asrSuggestion.text === body.lyrics
             ? "asr_accepted"
             : "corrected",
@@ -1017,10 +1672,7 @@ export async function moderateMediaSubmission(
   services: MediaSubmissionServices,
 ): Promise<MediaPostSubmissionV1> {
   requireMediaHumanActor(input.actor);
-  if (
-    input.actor.kind !== "admin" ||
-    input.actor.scopes?.includes("moderation") !== true
-  ) {
+  if (input.actor.kind !== "admin" || input.actor.scopes?.includes("moderation") !== true) {
     throw new NotFound({ message: "Media submission not found" });
   }
   const body = decodeBody(ModerateSongSubmissionV1, input.body);
@@ -1048,8 +1700,7 @@ export async function moderateMediaSubmission(
   );
   if (replay !== null) return replay;
 
-  const evidenceRef =
-    "evidence_ref" in body ? body.evidence_ref : `moderation-evidence-${digest}`;
+  const evidenceRef = "evidence_ref" in body ? body.evidence_ref : `moderation-evidence-${digest}`;
   const actionId = `moderation-action-${digest}`;
   let state: MediaSubmissionState;
   let approval: ModeratorApprovalEvidence | undefined;

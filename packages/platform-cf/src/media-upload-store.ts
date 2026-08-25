@@ -2,10 +2,23 @@ import { ControlPlaneDb, type ControlPlaneError, type M2Actor } from "@pirate/ap
 import type {
   MediaLyricsSnapshot,
   MediaModeratorView,
+  MediaSubmissionServices,
   MediaSubmissionView,
   MediaUploadStore,
 } from "@pirate/application/media/submission-service";
-import { MediaUploadStoreError } from "@pirate/application/media/submission-service";
+import {
+  bindMediaLyrics,
+  bindMediaReference,
+  bindMediaTerms,
+  cancelMediaSubmission,
+  createMediaSubmission,
+  finalizeMediaSubmission,
+  getMediaSubmission,
+  MediaUploadStoreError,
+  moderateMediaSubmission,
+  reserveMediaUpload,
+  retryMediaSubmission,
+} from "@pirate/application/media/submission-service";
 import { Effect, type Layer } from "effect";
 import {
   MediaSubmissionRepositoryError,
@@ -46,6 +59,38 @@ function validId(value: unknown): value is string {
     value === value.trim() &&
     !value.includes("\u0000")
   );
+}
+
+function validHash(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{64}$/u.test(value);
+}
+
+function snapshotBytes(value: unknown): Uint8Array | null {
+  if (value instanceof Uint8Array && value.byteLength > 0) return new Uint8Array(value);
+  return null;
+}
+
+function reservationReplay(
+  row: Row,
+  requestHash: string,
+  communityId: string,
+): Awaited<ReturnType<MediaUploadStore["replayReservation"]>> {
+  if (!validId(row.reservation_id)) {
+    throw new MediaUploadStoreError({ reason: "invalid-row" });
+  }
+  if (row.request_hash !== requestHash || row.community_id !== communityId) {
+    return { kind: "conflict", reservationId: row.reservation_id };
+  }
+  const bytes = snapshotBytes(row.response_snapshot_bytes);
+  if (bytes === null || !validHash(row.response_snapshot_sha256)) {
+    throw new MediaUploadStoreError({ reason: "invalid-row" });
+  }
+  return {
+    kind: "replay",
+    reservationId: row.reservation_id,
+    bytes,
+    sha256: row.response_snapshot_sha256,
+  };
 }
 
 function readLocatorByAuthor(input: {
@@ -119,6 +164,60 @@ function readLocatorByModerator(input: {
   });
 }
 
+function readLocatorByAccount(input: {
+  readonly submissionId: string;
+  readonly actorUserId: string;
+}) {
+  return Effect.gen(function* () {
+    const db = yield* ControlPlaneDb;
+    const result = yield* db.execute<Row>({
+      label: "media-upload.account-view-locator",
+      text: "SELECT community_id,author_persona_id FROM media_post_submissions WHERE submission_id=$1 AND actor_account_id=$2",
+      values: [input.submissionId, input.actorUserId],
+      readonly: true,
+    });
+    if (result.rows.length === 0) return null;
+    if (
+      result.rows.length !== 1 ||
+      !validId(result.rows[0]?.community_id) ||
+      !validId(result.rows[0]?.author_persona_id)
+    ) {
+      return yield* Effect.fail(new MediaUploadStoreError({ reason: "invalid-row" }));
+    }
+    return {
+      communityId: result.rows[0]?.community_id as string,
+      personaId: result.rows[0]?.author_persona_id as string,
+    };
+  });
+}
+
+/**
+ * Application command surface injected into the HTTP transport by the later
+ * composition owner. Keeping this adapter outside the Worker preserves the
+ * application import boundary without widening a shared export barrel.
+ */
+export function makeMediaUploadApplicationCommands(services: MediaSubmissionServices) {
+  return {
+    reserve: (input: Parameters<typeof reserveMediaUpload>[0]) =>
+      reserveMediaUpload(input, services),
+    create: (input: Parameters<typeof createMediaSubmission>[0]) =>
+      createMediaSubmission(input, services),
+    bindTerms: (input: Parameters<typeof bindMediaTerms>[0]) => bindMediaTerms(input, services),
+    bindLyrics: (input: Parameters<typeof bindMediaLyrics>[0]) => bindMediaLyrics(input, services),
+    finalize: (input: Parameters<typeof finalizeMediaSubmission>[0]) =>
+      finalizeMediaSubmission(input, services),
+    get: (input: Parameters<typeof getMediaSubmission>[0]) => getMediaSubmission(input, services),
+    bindReference: (input: Parameters<typeof bindMediaReference>[0]) =>
+      bindMediaReference(input, services),
+    retry: (input: Parameters<typeof retryMediaSubmission>[0]) =>
+      retryMediaSubmission(input, services),
+    cancel: (input: Parameters<typeof cancelMediaSubmission>[0]) =>
+      cancelMediaSubmission(input, services),
+    moderate: (input: Parameters<typeof moderateMediaSubmission>[0]) =>
+      moderateMediaSubmission(input, services),
+  };
+}
+
 export function makeMediaUploadStore(
   runtime: Layer.Layer<ControlPlaneDb, ControlPlaneError, never>,
 ): MediaUploadStore {
@@ -158,10 +257,223 @@ export function makeMediaUploadStore(
     return { state, lyrics: lyrics as MediaLyricsSnapshot, updatedAt: locator.updatedAt };
   };
 
+  const replayReservation: MediaUploadStore["replayReservation"] = (input) =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "media-upload.reservation-replay",
+          text: "SELECT community_id,reservation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256 FROM media_upload_reservations WHERE actor_account_id=$1 AND actor_persona_id=$2 AND endpoint_template='/communities/:communityId/media-upload-reservations' AND idempotency_key=$3",
+          values: [input.actorUserId, input.personaId, input.idempotencyKey],
+          readonly: true,
+        });
+        if (result.rows.length === 0) return { kind: "none" } as const;
+        if (result.rows.length !== 1) {
+          return yield* Effect.fail(new MediaUploadStoreError({ reason: "invalid-row" }));
+        }
+        return yield* Effect.try({
+          try: () => reservationReplay(result.rows[0] as Row, input.requestHash, input.communityId),
+          catch: (error) =>
+            error instanceof MediaUploadStoreError
+              ? error
+              : new MediaUploadStoreError({ reason: "invalid-row" }),
+        });
+      }),
+    );
+
+  const getFinalizeContext: MediaUploadStore["getFinalizeContext"] = async (input) => {
+    const authorView = await view(input);
+    if (
+      authorView === null ||
+      authorView.state.reservationId !== input.reservationId ||
+      authorView.state.audioRevision !== 0 ||
+      !["awaiting_upload", "finalize"].includes(authorView.state.phase ?? "")
+    ) {
+      return null;
+    }
+    const reservation = await run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* db.execute<Row>({
+          label: "media-upload.finalize-context",
+          text: "SELECT reservation_id,state,expected_content_type,expected_size_bytes,expected_sha256,expires_at FROM media_upload_reservations WHERE reservation_id=$1 AND actor_account_id=$2 AND actor_persona_id=$3 AND submission_id=$4 AND operation_id=$5",
+          values: [
+            input.reservationId,
+            input.actorUserId,
+            input.personaId,
+            input.submissionId,
+            authorView.state.operationId,
+          ],
+          readonly: true,
+        });
+        if (result.rows.length === 0) return null;
+        if (result.rows.length !== 1) {
+          return yield* Effect.fail(new MediaUploadStoreError({ reason: "invalid-row" }));
+        }
+        const row = result.rows[0] as Row;
+        const size = Number(row.expected_size_bytes);
+        if (
+          row.state !== "claimed" ||
+          !validId(row.reservation_id) ||
+          !validId(row.expected_content_type) ||
+          !Number.isSafeInteger(size) ||
+          size < 1 ||
+          (row.expected_sha256 !== null && !validHash(row.expected_sha256))
+        ) {
+          return yield* Effect.fail(
+            new MediaUploadStoreError({
+              reason: "reservation-conflict",
+              reservationId: input.reservationId,
+            }),
+          );
+        }
+        const expiresAt = yield* Effect.try({
+          try: () => iso(row.expires_at),
+          catch: () => new MediaUploadStoreError({ reason: "invalid-row" }),
+        });
+        if (authorView.state.phase === "awaiting_upload" && Date.parse(expiresAt) <= Date.now()) {
+          return yield* Effect.fail(
+            new MediaUploadStoreError({
+              reason: "reservation-conflict",
+              reservationId: input.reservationId,
+            }),
+          );
+        }
+        return {
+          reservationId: row.reservation_id as string,
+          state: "claimed" as const,
+          expectedContentType: row.expected_content_type as string,
+          expectedSizeBytes: size,
+          expectedSha256: row.expected_sha256 as string | null,
+          expiresAt,
+        };
+      }),
+    );
+    return reservation === null ? null : { view: authorView, reservation };
+  };
+
+  const recordFinalizeSourceMissing: MediaUploadStore["recordFinalizeSourceMissing"] = (input) =>
+    run(
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db.withTransaction((tx) =>
+          Effect.gen(function* () {
+            yield* tx.execute({
+              label: "media-upload.finalize-missing-lock",
+              text: "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+              values: [
+                JSON.stringify([
+                  input.actorUserId,
+                  input.personaId,
+                  input.endpointTemplate,
+                  input.idempotencyKey,
+                ]),
+              ],
+              readonly: false,
+            });
+            const prior = yield* tx.execute<Row>({
+              label: "media-upload.finalize-missing-replay",
+              text: "SELECT community_id,submission_id,operation_id,request_hash,response_snapshot_bytes,response_snapshot_sha256 FROM media_submission_command_replays WHERE actor_account_id=$1 AND actor_persona_id=$2 AND endpoint_template=$3 AND idempotency_key=$4 FOR UPDATE",
+              values: [
+                input.actorUserId,
+                input.personaId,
+                input.endpointTemplate,
+                input.idempotencyKey,
+              ],
+              readonly: false,
+            });
+            if (prior.rows.length > 1) {
+              return yield* Effect.fail(new MediaUploadStoreError({ reason: "invalid-row" }));
+            }
+            if (prior.rows.length === 1) {
+              const row = prior.rows[0] as Row;
+              if (!validId(row.submission_id)) {
+                return yield* Effect.fail(new MediaUploadStoreError({ reason: "invalid-row" }));
+              }
+              if (
+                row.request_hash !== input.requestHash ||
+                row.community_id !== input.communityId
+              ) {
+                return { kind: "conflict", submissionId: row.submission_id } as const;
+              }
+              const bytes = snapshotBytes(row.response_snapshot_bytes);
+              if (
+                bytes === null ||
+                !validHash(row.response_snapshot_sha256) ||
+                !validId(row.operation_id)
+              ) {
+                return yield* Effect.fail(new MediaUploadStoreError({ reason: "invalid-row" }));
+              }
+              return {
+                kind: "replay",
+                submissionId: row.submission_id,
+                operationId: row.operation_id,
+                bytes,
+                sha256: row.response_snapshot_sha256,
+              } as const;
+            }
+            const current = yield* tx.execute<Row>({
+              label: "media-upload.finalize-missing-current",
+              text: "SELECT s.operation_id FROM media_post_submissions s JOIN media_upload_reservations r ON r.community_id=s.community_id AND r.actor_account_id=s.actor_account_id AND r.actor_persona_id=s.author_persona_id AND r.reservation_id=s.audio_reservation_id AND r.submission_id=s.submission_id AND r.operation_id=s.operation_id WHERE s.community_id=$1 AND s.actor_account_id=$2 AND s.author_persona_id=$3 AND s.submission_id=$4 AND s.operation_id=$5 AND s.creation_revision=$6 AND s.status='processing' AND s.phase='awaiting_upload' AND s.audio_revision=0 AND r.reservation_id=$7 AND r.state='claimed' AND r.expires_at>clock_timestamp() FOR UPDATE OF s,r",
+              values: [
+                input.communityId,
+                input.actorUserId,
+                input.personaId,
+                input.submissionId,
+                input.operationId,
+                input.expectedCreationRevision,
+                input.reservationId,
+              ],
+              readonly: false,
+            });
+            if (current.rows.length !== 1) {
+              return yield* Effect.fail(
+                new MediaUploadStoreError({
+                  reason: "transition-rejected",
+                  submissionId: input.submissionId,
+                }),
+              );
+            }
+            const inserted = yield* tx.execute({
+              label: "media-upload.finalize-missing-insert",
+              text: "INSERT INTO media_submission_command_replays (community_id,actor_user_id,actor_persona_id,submission_actor_user_id,submission_author_persona_id,endpoint_template,idempotency_key,request_hash,submission_id,operation_id,response_snapshot_bytes,response_snapshot_sha256) VALUES ($1,$2,$3,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+              values: [
+                input.communityId,
+                input.actorUserId,
+                input.personaId,
+                input.endpointTemplate,
+                input.idempotencyKey,
+                input.requestHash,
+                input.submissionId,
+                input.operationId,
+                input.responseBytes,
+                input.responseSha256,
+              ],
+              readonly: false,
+            });
+            if (inserted.rowCount !== 1) {
+              return yield* Effect.fail(new MediaUploadStoreError({ reason: "constraint" }));
+            }
+            return { kind: "committed", submissionId: input.submissionId } as const;
+          }),
+        );
+      }),
+    );
+
   return {
+    replayReservation,
+    reserve: (input) => run(repository.reserve(input)),
     replay: (input) => run(repository.replay(input)),
     createSubmission: (input) => run(repository.createSubmission(input)),
     getViewForAuthor: view,
+    getAuthorContext: async (input) => {
+      const locator = await run(readLocatorByAccount(input));
+      if (locator === null) return null;
+      const authorView = await view({ ...input, personaId: locator.personaId });
+      return authorView === null ? null : { view: authorView, personaId: locator.personaId };
+    },
+    getFinalizeContext,
+    beginFinalize: (input) => run(repository.beginFinalize(input)),
     getViewForModerator: async (input): Promise<MediaModeratorView | null> => {
       const locator = await run(readLocatorByModerator(input));
       if (locator === null) return null;
@@ -181,6 +493,14 @@ export function makeMediaUploadStore(
       run(repository.bindReference(input as Parameters<typeof repository.bindReference>[0])),
     retry: (input) => run(repository.retry(input)),
     authorCancel: (input) => run(repository.authorCancel(input)),
+    finalizeSealed: (input) =>
+      run(repository.finalizeSealed(input as Parameters<typeof repository.finalizeSealed>[0])),
+    recordFinalizeSourceMissing,
+    uploadExpectationMismatch: (input) => run(repository.uploadExpectationMismatch(input)),
+    uploadSourcePreconditionFailed: (input) =>
+      run(repository.uploadSourcePreconditionFailed(input)),
+    recordSealConflict: (input) => run(repository.recordSealConflict(input)),
+    recordMediaFailure: (input) => run(repository.recordMediaFailure(input)),
     moderate: (input) =>
       run(repository.moderate(input as Parameters<typeof repository.moderate>[0])),
   };
