@@ -4,7 +4,7 @@ import type {
   MediaTransformProbeInput,
 } from "@pirate/application/media/transform";
 import { MediaTransformRequestInvalid } from "@pirate/application/media/transform";
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import {
   disabledTransloaditMediaTransform,
   makeTransloaditMediaTransform,
@@ -30,6 +30,8 @@ const fixtures = (await Bun.file(
 
 const jobId = "a".repeat(32);
 const secondJobId = "b".repeat(32);
+const submittedAtMs = 1_700_000_000_000;
+const runtimeDeadlineMs = submittedAtMs + 60_000;
 const templates = {
   probe: "1".repeat(32),
   samplePrimary: "2".repeat(32),
@@ -126,7 +128,7 @@ function adapter(
     },
     templates,
     limits: overrides.limits ?? limits,
-    clock: overrides.clock ?? (() => 1_700_000_000_000),
+    clock: overrides.clock ?? (() => submittedAtMs),
     transport: { request },
   });
 }
@@ -147,7 +149,7 @@ function fixtureAdapter(value: unknown) {
 }
 
 describe("disabled Transloadit composition", () => {
-  test("is inert by default for transform and deletion", async () => {
+  test("is inert by default for transform and assembly cancellation", async () => {
     expect(await Effect.runPromise(disabledTransloaditMediaTransform.probe(probeInput))).toEqual({
       status: "unavailable",
       reason: "disabled",
@@ -157,8 +159,8 @@ describe("disabled Transloadit composition", () => {
     ).toEqual({ status: "unavailable", reason: "disabled" });
     expect(
       await Effect.runPromise(
-        disabledTransloaditMediaTransform.deleteJob({
-          version: "media-transform-delete-input-v1",
+        disabledTransloaditMediaTransform.cancelAssembly({
+          version: "media-transform-cancel-input-v1",
           requestId: "attempt-1",
           providerJobId: jobId,
         }),
@@ -190,6 +192,9 @@ describe("fixed Transloadit submission", () => {
     });
     const outcome = await Effect.runPromise(service.probe(probeInput));
     expect(outcome.status).toBe("submitted");
+    expect(outcome).toMatchObject({
+      runtimeFence: { submittedAtMs, runtimeDeadlineMs },
+    });
     expect(captured?.method).toBe("POST");
     expect(captured?.url).toBe("https://api2.transloadit.com/assemblies");
     expect(captured?.redirect).toBe("error");
@@ -332,6 +337,29 @@ describe("probe", () => {
     });
   });
 
+  test("rejects video-bearing and container/MIME-contradictory probe evidence", async () => {
+    const base = fixtures.probe_cases[4]?.file ?? {};
+    const videoBearing = {
+      ...base,
+      type: "video",
+      meta: { ...(base.meta as Record<string, unknown>), video_codec: "h264" },
+    };
+    expect(
+      await Effect.runPromise(fixtureAdapter(completed(videoBearing)).probe(probeInput)),
+    ).toMatchObject({ status: "rejected", reason: "video_track_present" });
+
+    const contradictory = { ...base, ext: "mp3", mime: "audio/mp4", type: "audio" };
+    expect(
+      await Effect.runPromise(fixtureAdapter(completed(contradictory)).probe(probeInput)),
+    ).toMatchObject({ status: "rejected", reason: "inconsistent_media_facts" });
+
+    const missingAudioType = { ...base } as Record<string, unknown>;
+    delete missingAudioType.type;
+    expect(
+      await Effect.runPromise(fixtureAdapter(completed(missingAudioType)).probe(probeInput)),
+    ).toMatchObject({ status: "malformed_response", reason: "unsupported_shape" });
+  });
+
   test("resumes by polling the retained assembly id and never resubmits", async () => {
     const requests: TransloaditTransportRequest[] = [];
     const service = adapter((request) => {
@@ -339,7 +367,10 @@ describe("probe", () => {
       return response(completed(fixtures.probe_cases[0]?.file, "probe", jobId));
     });
     const result = await Effect.runPromise(
-      service.probe({ ...probeInput, resume: { providerJobId: jobId } }),
+      service.probe({
+        ...probeInput,
+        resume: { providerJobId: jobId, submittedAtMs, runtimeDeadlineMs },
+      }),
     );
     expect(result.status).toBe("completed");
     expect(requests).toHaveLength(1);
@@ -353,7 +384,7 @@ describe("probe", () => {
       adapter(() => response(completed(fixtures.probe_cases[0]?.file, "probe", secondJobId))).probe(
         {
           ...probeInput,
-          resume: { providerJobId: jobId },
+          resume: { providerJobId: jobId, submittedAtMs, runtimeDeadlineMs },
         },
       ),
     );
@@ -366,6 +397,7 @@ describe("normalized ACR sample extraction", () => {
     return {
       ext: "wav",
       mime: "audio/wav",
+      type: "audio",
       size,
       meta: {
         duration: durationSeconds,
@@ -415,6 +447,7 @@ describe("normalized ACR sample extraction", () => {
         offsetMs: 12_000,
         durationMs: 12_000,
         variant: "primary",
+        retainedObjectVerification: "required",
       },
     });
     if (result.status === "completed") {
@@ -457,10 +490,97 @@ describe("normalized ACR sample extraction", () => {
       fixtureAdapter(completed(wrongCodec, "sample")).extractAudioSample(sampleInput),
     );
     expect(wrong).toMatchObject({ status: "rejected", reason: "unsupported_codec" });
+    for (const metaOverride of [{ audio_channels: 2 }, { audio_samplerate: 48_000 }]) {
+      const nonNormalized = {
+        ...(sampleFile(12) as Record<string, unknown>),
+        meta: {
+          ...((sampleFile(12) as Record<string, unknown>).meta as object),
+          ...metaOverride,
+        },
+      };
+      expect(
+        await Effect.runPromise(
+          fixtureAdapter(completed(nonNormalized, "sample")).extractAudioSample(sampleInput),
+        ),
+      ).toMatchObject({ status: "rejected", reason: "inconsistent_media_facts" });
+    }
   });
 });
 
-describe("bounds, cancellation, and deletion", () => {
+describe("runtime bounds, cancellation, and assembly cancellation", () => {
+  test("requires completion timing and stops polling at the persisted runtime fence", async () => {
+    const base = fixtures.probe_cases[0]?.file ?? {};
+    const missingTiming = completed(base) as Record<string, unknown>;
+    delete missingTiming.execution_duration;
+    expect(await Effect.runPromise(fixtureAdapter(missingTiming).probe(probeInput))).toMatchObject({
+      status: "malformed_response",
+      reason: "unsupported_shape",
+    });
+
+    let now = submittedAtMs;
+    const requests: TransloaditTransportRequest[] = [];
+    const service = adapter(
+      (request) => {
+        requests.push(request);
+        return response(executing());
+      },
+      { clock: () => now },
+    );
+    const submitted = await Effect.runPromise(service.probe(probeInput));
+    expect(submitted).toMatchObject({
+      status: "submitted",
+      runtimeFence: { submittedAtMs, runtimeDeadlineMs },
+    });
+    now = runtimeDeadlineMs;
+    const expired = await Effect.runPromise(
+      service.probe({
+        ...probeInput,
+        resume: { providerJobId: jobId, submittedAtMs, runtimeDeadlineMs },
+      }),
+    );
+    expect(expired).toMatchObject({ status: "rejected", reason: "runtime_exceeded" });
+    expect(requests).toHaveLength(1);
+  });
+
+  test("rejects missing or widened resume fences before polling", async () => {
+    let calls = 0;
+    const service = adapter(() => {
+      calls += 1;
+      return response(executing());
+    });
+    await expect(
+      Effect.runPromise(
+        service.probe({
+          ...probeInput,
+          resume: { providerJobId: jobId } as never,
+        }),
+      ),
+    ).rejects.toMatchObject({ reason: "invalid_runtime_fence" });
+    await expect(
+      Effect.runPromise(
+        service.probe({
+          ...probeInput,
+          resume: {
+            providerJobId: jobId,
+            submittedAtMs,
+            runtimeDeadlineMs: submittedAtMs + limits.maxAssemblyRuntimeMs + 1,
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ reason: "invalid_runtime_fence" });
+    expect(calls).toBe(0);
+  });
+
+  test("rejects provider-reported execution beyond the durable runtime fence", async () => {
+    const file = fixtures.probe_cases[0]?.file ?? {};
+    const beyond = completed(file) as Record<string, unknown>;
+    beyond.execution_duration = 60.001;
+    expect(await Effect.runPromise(fixtureAdapter(beyond).probe(probeInput))).toMatchObject({
+      status: "rejected",
+      reason: "runtime_exceeded",
+    });
+  });
+
   test("classifies wrong content type, malformed JSON, and oversized bodies", async () => {
     const wrongType = adapter(() => response({}, 200, { "content-type": "text/html" }));
     expect(await Effect.runPromise(wrongType.probe(probeInput))).toMatchObject({
@@ -520,6 +640,18 @@ describe("bounds, cancellation, and deletion", () => {
     expect(await promise).toMatchObject({ status: "retryable_failure", reason: "cancelled" });
   });
 
+  test("aborts the transport when the Effect fiber is interrupted", async () => {
+    let transportSignal: AbortSignal | undefined;
+    const service = adapter((request) => {
+      transportSignal = request.signal;
+      return new Promise<TransloaditTransportResponse>(() => undefined);
+    });
+    const fiber = Effect.runFork(service.probe(probeInput));
+    await Effect.runPromise(Effect.sleep(10));
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    expect(transportSignal?.aborted).toBe(true);
+  });
+
   test("surfaces Retry-After and redacts provider prose", async () => {
     const service = adapter(() =>
       response({ error: "secret provider prose" }, 429, {
@@ -536,7 +668,7 @@ describe("bounds, cancellation, and deletion", () => {
     expect(JSON.stringify(result)).not.toContain("provider prose");
   });
 
-  test("deletes only the fixed assembly endpoint and handles replay-safe not-found", async () => {
+  test("requests cancellation only at the fixed endpoint without claiming erasure", async () => {
     const requests: TransloaditTransportRequest[] = [];
     const statuses = [200, 404];
     const service = adapter((request) => {
@@ -544,15 +676,15 @@ describe("bounds, cancellation, and deletion", () => {
       return response({ ok: "ASSEMBLY_COMPLETED", assembly_id: jobId }, statuses.shift());
     });
     const input = {
-      version: "media-transform-delete-input-v1" as const,
+      version: "media-transform-cancel-input-v1" as const,
       requestId: "cleanup-1",
       providerJobId: jobId,
     };
-    expect(await Effect.runPromise(service.deleteJob(input))).toEqual({
-      status: "deleted",
+    expect(await Effect.runPromise(service.cancelAssembly(input))).toEqual({
+      status: "cancellation_accepted",
       providerJobId: jobId,
     });
-    expect(await Effect.runPromise(service.deleteJob(input))).toEqual({
+    expect(await Effect.runPromise(service.cancelAssembly(input))).toEqual({
       status: "rejected",
       reason: "job_not_found",
       providerJobId: jobId,

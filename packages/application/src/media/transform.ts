@@ -3,6 +3,8 @@ import { Context, Data, type Effect } from "effect";
 export const MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS = 60 * 60 * 1_000;
 export const MEDIA_TRANSFORM_SAMPLE_TARGET_MS = 12_000;
 export const MEDIA_TRANSFORM_SAMPLE_MAX_MS = 15_000;
+export const MEDIA_TRANSFORM_SAMPLE_CHANNELS = 1;
+export const MEDIA_TRANSFORM_SAMPLE_RATE_HZ = 44_100;
 
 export type MediaTransformSampleVariant = "primary" | "alternate";
 
@@ -21,6 +23,8 @@ export type MediaTransformSource = Readonly<{
 
 export type MediaTransformResume = Readonly<{
   readonly providerJobId: string;
+  readonly submittedAtMs: number;
+  readonly runtimeDeadlineMs: number;
 }>;
 
 export type MediaTransformProbeInput = Readonly<{
@@ -41,11 +45,16 @@ export type MediaTransformAudioSampleInput = Readonly<{
   readonly signal?: AbortSignal;
 }>;
 
-export type MediaTransformDeleteInput = Readonly<{
-  readonly version: "media-transform-delete-input-v1";
+export type MediaTransformCancelInput = Readonly<{
+  readonly version: "media-transform-cancel-input-v1";
   readonly requestId: string;
   readonly providerJobId: string;
   readonly signal?: AbortSignal;
+}>;
+
+export type MediaTransformRuntimeFence = Readonly<{
+  readonly submittedAtMs: number;
+  readonly runtimeDeadlineMs: number;
 }>;
 
 export type MediaTransformAttemptContext = Readonly<{
@@ -83,6 +92,8 @@ export type MediaTransformSampleArtifact = Readonly<{
   readonly offsetMs: number;
   readonly durationMs: number;
   readonly variant: MediaTransformSampleVariant;
+  /** Integration must HEAD and bind the retained R2 object before ACR consumption. */
+  readonly retainedObjectVerification: "required";
 }>;
 
 export type MediaTransformRetryableReason =
@@ -94,6 +105,7 @@ export type MediaTransformRetryableReason =
 
 export type MediaTransformRejectedReason =
   | "duration_exceeded"
+  | "inconsistent_media_facts"
   | "job_not_found"
   | "no_audio_track"
   | "output_too_large"
@@ -101,7 +113,8 @@ export type MediaTransformRejectedReason =
   | "runtime_exceeded"
   | "unauthorized"
   | "unsupported_codec"
-  | "unsupported_container";
+  | "unsupported_container"
+  | "video_track_present";
 
 export type MediaTransformMalformedReason =
   | "duplicate_results"
@@ -114,6 +127,7 @@ export type MediaTransformProgress =
   | Readonly<{
       readonly status: "submitted" | "processing";
       readonly providerJobId: string;
+      readonly runtimeFence: MediaTransformRuntimeFence;
     }>
   | Readonly<{
       readonly status: "unavailable";
@@ -154,8 +168,8 @@ export type MediaTransformAudioSampleOutcome =
     }>
   | (MediaTransformProgress & Readonly<{ readonly context?: MediaTransformAttemptContext }>);
 
-export type MediaTransformDeleteOutcome =
-  | Readonly<{ readonly status: "deleted"; readonly providerJobId: string }>
+export type MediaTransformCancelOutcome =
+  | Readonly<{ readonly status: "cancellation_accepted"; readonly providerJobId: string }>
   | Readonly<{ readonly status: "unavailable"; readonly reason: "disabled" }>
   | Readonly<{
       readonly status: "retryable_failure";
@@ -178,6 +192,7 @@ export type MediaTransformInvalidReason =
   | "invalid_job_id"
   | "invalid_limits"
   | "invalid_request_id"
+  | "invalid_runtime_fence"
   | "invalid_signal"
   | "invalid_source"
   | "invalid_source_duration"
@@ -196,10 +211,10 @@ export interface MediaTransformService {
   readonly extractAudioSample: (
     input: MediaTransformAudioSampleInput,
   ) => Effect.Effect<MediaTransformAudioSampleOutcome, MediaTransformRequestInvalid>;
-  /** Provider-job cleanup; this is lifecycle control, not a third transform capability. */
-  readonly deleteJob: (
-    input: MediaTransformDeleteInput,
-  ) => Effect.Effect<MediaTransformDeleteOutcome, MediaTransformRequestInvalid>;
+  /** Cancels provider execution only; it does not prove provider or retained-object erasure. */
+  readonly cancelAssembly: (
+    input: MediaTransformCancelInput,
+  ) => Effect.Effect<MediaTransformCancelOutcome, MediaTransformRequestInvalid>;
 }
 
 /** Application-owned media transform port. Concrete providers stay in platform-cf. */

@@ -2,7 +2,7 @@ import type {
   MediaTransformAttemptContext,
   MediaTransformAudioSampleInput,
   MediaTransformBinding,
-  MediaTransformDeleteInput,
+  MediaTransformCancelInput,
   MediaTransformInvalidReason,
   MediaTransformProbeInput,
   MediaTransformSampleVariant,
@@ -93,7 +93,7 @@ export type TransloaditMediaTransformOptions =
   | EnabledTransloaditOptions;
 
 export class TransloaditRequestAbort extends Data.TaggedError("TransloaditRequestAbort")<{
-  readonly reason: "cancelled" | "timeout";
+  readonly reason: "cancelled" | "runtime_exceeded" | "timeout";
 }> {}
 
 export type TransloaditConfig = Readonly<{
@@ -110,6 +110,8 @@ export type TransloaditProbeSnapshot = Readonly<{
   readonly binding: MediaTransformBinding;
   readonly sourceObjectKey: string;
   readonly resumeJobId?: string;
+  readonly resumeSubmittedAtMs?: number;
+  readonly resumeRuntimeDeadlineMs?: number;
   readonly signal?: AbortSignal;
 }>;
 
@@ -120,10 +122,12 @@ export type TransloaditSampleSnapshot = Readonly<{
   readonly sourceDurationMs: number;
   readonly variant: MediaTransformSampleVariant;
   readonly resumeJobId?: string;
+  readonly resumeSubmittedAtMs?: number;
+  readonly resumeRuntimeDeadlineMs?: number;
   readonly signal?: AbortSignal;
 }>;
 
-export type TransloaditDeleteSnapshot = Readonly<{
+export type TransloaditCancelSnapshot = Readonly<{
   readonly requestId: string;
   readonly providerJobId: string;
   readonly signal?: AbortSignal;
@@ -141,6 +145,18 @@ function byteLength(value: string): number {
 
 function validPositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function validRuntimeFence(submittedAtMs: unknown, runtimeDeadlineMs: unknown): boolean {
+  return (
+    typeof submittedAtMs === "number" &&
+    Number.isSafeInteger(submittedAtMs) &&
+    submittedAtMs >= 0 &&
+    typeof runtimeDeadlineMs === "number" &&
+    Number.isSafeInteger(runtimeDeadlineMs) &&
+    runtimeDeadlineMs > submittedAtMs &&
+    runtimeDeadlineMs - submittedAtMs <= TRANSLOADIT_ADAPTER_HARD_MAX_RUNTIME_MS
+  );
 }
 
 function validSignal(signal: unknown): signal is AbortSignal | undefined {
@@ -201,6 +217,12 @@ export function snapshotProbeInput(
   if (input.resume !== undefined && !validTransloaditJobId(resumeJobId)) {
     return { ok: false, reason: "invalid_job_id" };
   }
+  if (
+    input.resume !== undefined &&
+    !validRuntimeFence(input.resume.submittedAtMs, input.resume.runtimeDeadlineMs)
+  ) {
+    return { ok: false, reason: "invalid_runtime_fence" };
+  }
   return {
     ok: true,
     value: Object.freeze({
@@ -208,6 +230,12 @@ export function snapshotProbeInput(
       binding: frozenBinding(input.binding),
       sourceObjectKey: input.source.objectKey,
       ...(resumeJobId === undefined ? {} : { resumeJobId }),
+      ...(input.resume === undefined
+        ? {}
+        : {
+            resumeSubmittedAtMs: input.resume.submittedAtMs,
+            resumeRuntimeDeadlineMs: input.resume.runtimeDeadlineMs,
+          }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     }),
   };
@@ -234,6 +262,12 @@ export function snapshotSampleInput(
   if (input.resume !== undefined && !validTransloaditJobId(resumeJobId)) {
     return { ok: false, reason: "invalid_job_id" };
   }
+  if (
+    input.resume !== undefined &&
+    !validRuntimeFence(input.resume.submittedAtMs, input.resume.runtimeDeadlineMs)
+  ) {
+    return { ok: false, reason: "invalid_runtime_fence" };
+  }
   return {
     ok: true,
     value: Object.freeze({
@@ -243,15 +277,21 @@ export function snapshotSampleInput(
       sourceDurationMs: input.sourceDurationMs,
       variant: input.variant,
       ...(resumeJobId === undefined ? {} : { resumeJobId }),
+      ...(input.resume === undefined
+        ? {}
+        : {
+            resumeSubmittedAtMs: input.resume.submittedAtMs,
+            resumeRuntimeDeadlineMs: input.resume.runtimeDeadlineMs,
+          }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     }),
   };
 }
 
-export function snapshotDeleteInput(
-  input: MediaTransformDeleteInput,
-): ValidationResult<TransloaditDeleteSnapshot> {
-  if (!Predicate.isObject(input) || input.version !== "media-transform-delete-input-v1") {
+export function snapshotCancelInput(
+  input: MediaTransformCancelInput,
+): ValidationResult<TransloaditCancelSnapshot> {
+  if (!Predicate.isObject(input) || input.version !== "media-transform-cancel-input-v1") {
     return { ok: false, reason: "invalid_input_version" };
   }
   if (typeof input.requestId !== "string" || !SAFE_ID.test(input.requestId)) {

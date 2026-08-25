@@ -1,6 +1,8 @@
 import {
   MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS,
+  MEDIA_TRANSFORM_SAMPLE_CHANNELS,
   MEDIA_TRANSFORM_SAMPLE_MAX_MS,
+  MEDIA_TRANSFORM_SAMPLE_RATE_HZ,
   type MediaTransformAudioSampleOutcome,
   type MediaTransformAudioTrack,
   type MediaTransformMalformedReason,
@@ -215,8 +217,7 @@ export function parseTransloaditAssembly(
     }
     return { ok: false, reason: "unsupported_shape" };
   }
-  const executionSeconds =
-    value.execution_duration === undefined ? 0 : finiteNonNegative(value.execution_duration);
+  const executionSeconds = finiteNonNegative(value.execution_duration);
   if (executionSeconds === null) return { ok: false, reason: "unsupported_shape" };
   const result = providerFile(value.results, resultStep);
   if (result === "duplicate") return { ok: false, reason: "duplicate_results" };
@@ -248,10 +249,7 @@ function normalizedCodec(value: unknown): MediaTransformAudioTrack["codec"] | nu
   return null;
 }
 
-function normalizedContainer(
-  extension: unknown,
-  mime: unknown,
-): MediaTransformProbe["container"] | null {
+function containerFromExtension(extension: unknown): MediaTransformProbe["container"] | null {
   const ext = boundedProviderToken(extension);
   if (ext === "mp4" || ext === "mov") return "m4a";
   if (ext === "wave") return "wav";
@@ -267,8 +265,11 @@ function normalizedContainer(
   ) {
     return ext;
   }
-  if (typeof mime !== "string") return null;
-  const normalizedMime = mime.toLowerCase();
+  return null;
+}
+
+function containerFromMime(mime: unknown): MediaTransformProbe["container"] | null {
+  if (typeof mime !== "string" || mime !== mime.toLowerCase()) return null;
   const fromMime: Readonly<Record<string, MediaTransformProbe["container"]>> = {
     "audio/aac": "aac",
     "audio/flac": "flac",
@@ -280,7 +281,7 @@ function normalizedContainer(
     "audio/webm": "webm",
     "audio/x-wav": "wav",
   };
-  return fromMime[normalizedMime] ?? null;
+  return fromMime[mime] ?? null;
 }
 
 function positiveInteger(value: unknown, maximum: number): number | null {
@@ -320,12 +321,19 @@ export function probeFromAssembly(
   if (durationSeconds * 1_000 > MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS) {
     return { status: "rejected", reason: "duration_exceeded" };
   }
+  if (
+    assembly.result.type === "video" ||
+    (meta.video_codec !== undefined && meta.video_codec !== null && meta.video_codec !== "")
+  ) {
+    return { status: "rejected", reason: "video_track_present" };
+  }
+  if (assembly.result.type !== "audio") {
+    return { status: "malformed_response", reason: "unsupported_shape" };
+  }
   const rawCodec = boundedProviderToken(meta.audio_codec);
   if (rawCodec === null) return { status: "rejected", reason: "no_audio_track" };
   const codec = normalizedCodec(rawCodec);
   if (codec === null) return { status: "rejected", reason: "unsupported_codec" };
-  const container = normalizedContainer(assembly.result.ext, assembly.result.mime);
-  if (container === null) return { status: "rejected", reason: "unsupported_container" };
   const mime = assembly.result.mime;
   if (
     typeof mime !== "string" ||
@@ -335,6 +343,15 @@ export function probeFromAssembly(
   ) {
     return { status: "malformed_response", reason: "unsupported_shape" };
   }
+  const extensionContainer = containerFromExtension(assembly.result.ext);
+  const mimeContainer = containerFromMime(mime);
+  if (extensionContainer === null || mimeContainer === null) {
+    return { status: "rejected", reason: "unsupported_container" };
+  }
+  if (extensionContainer !== mimeContainer) {
+    return { status: "rejected", reason: "inconsistent_media_facts" };
+  }
+  const container = extensionContainer;
   const channels = positiveInteger(meta.audio_channels, 32);
   const sampleRateHz = positiveInteger(meta.audio_samplerate, 768_000);
   if (channels === null || sampleRateHz === null) {
@@ -392,10 +409,25 @@ export function sampleFromAssembly(
   const meta = assembly.result.meta;
   if (!Predicate.isObject(meta))
     return { status: "malformed_response", reason: "unsupported_shape" };
+  if (
+    assembly.result.type === "video" ||
+    (meta.video_codec !== undefined && meta.video_codec !== null && meta.video_codec !== "")
+  ) {
+    return { status: "rejected", reason: "video_track_present" };
+  }
+  if (assembly.result.type !== "audio") {
+    return { status: "malformed_response", reason: "unsupported_shape" };
+  }
   const codec = boundedProviderToken(meta.audio_codec);
   const mime = typeof assembly.result.mime === "string" ? assembly.result.mime.toLowerCase() : null;
   if (codec !== "pcm_s16le" || (mime !== "audio/wav" && mime !== "audio/x-wav")) {
     return { status: "rejected", reason: "unsupported_codec" };
+  }
+  if (
+    meta.audio_channels !== MEDIA_TRANSFORM_SAMPLE_CHANNELS ||
+    meta.audio_samplerate !== MEDIA_TRANSFORM_SAMPLE_RATE_HZ
+  ) {
+    return { status: "rejected", reason: "inconsistent_media_facts" };
   }
   const durationSeconds = finiteNonNegative(meta.duration);
   if (durationSeconds === null || durationSeconds <= 0) {
@@ -418,6 +450,7 @@ export function sampleFromAssembly(
     offsetMs: expected.offsetMs,
     durationMs: actualDurationMs,
     variant: operation.variant,
+    retainedObjectVerification: "required",
   });
   return Object.freeze({
     status: "completed",

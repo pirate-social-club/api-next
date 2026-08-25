@@ -2,9 +2,10 @@
 
 import {
   type MediaTransformAudioSampleOutcome,
-  type MediaTransformDeleteOutcome,
+  type MediaTransformCancelOutcome,
   type MediaTransformProbeOutcome,
   MediaTransformRequestInvalid,
+  type MediaTransformRuntimeFence,
   type MediaTransformService,
   mediaTransformSampleWindow,
 } from "@pirate/application/media/transform";
@@ -14,7 +15,7 @@ import {
   encodeTransloaditMultipart,
   retryAfterMilliseconds,
   signTransloaditParams,
-  snapshotDeleteInput,
+  snapshotCancelInput,
   snapshotProbeInput,
   snapshotSampleInput,
   snapshotTransloaditOptions,
@@ -22,8 +23,8 @@ import {
   TRANSLOADIT_ASSEMBLIES_PATH,
   TRANSLOADIT_ORIGIN,
   TRANSLOADIT_SIGNATURE_TTL_MS,
+  type TransloaditCancelSnapshot,
   type TransloaditConfig,
-  type TransloaditDeleteSnapshot,
   type TransloaditMediaTransformOptions,
   type TransloaditOperationSnapshot,
   TransloaditRequestAbort,
@@ -57,7 +58,10 @@ type OperationOutcome = MediaTransformProbeOutcome | MediaTransformAudioSampleOu
 
 type RequestExecution<A> =
   | Readonly<{ readonly ok: true; readonly value: A }>
-  | Readonly<{ readonly ok: false; readonly reason: "cancelled" | "timeout" | "transport" }>;
+  | Readonly<{
+      readonly ok: false;
+      readonly reason: "cancelled" | "runtime_exceeded" | "timeout" | "transport";
+    }>;
 
 function toPromise(result: TransloaditTransportResult): Promise<TransloaditTransportResponse> {
   if (Effect.isEffect(result)) return Effect.runPromise(result);
@@ -74,21 +78,37 @@ function disposeResponse(response: TransloaditTransportResponse): void {
 
 async function executeWithDeadline<A>(
   config: TransloaditConfig,
+  runtimeDeadlineMs: number | undefined,
   externalSignal: AbortSignal | undefined,
+  interruptionSignal: AbortSignal,
   execute: (signal: AbortSignal) => Promise<A>,
 ): Promise<RequestExecution<A>> {
-  if (externalSignal?.aborted) return { ok: false, reason: "cancelled" };
+  if (externalSignal?.aborted || interruptionSignal.aborted) {
+    return { ok: false, reason: "cancelled" };
+  }
+  const now = config.nowMilliseconds();
+  if (!validClockMilliseconds(now)) return { ok: false, reason: "transport" };
+  const runtimeRemainingMs =
+    runtimeDeadlineMs === undefined ? Number.POSITIVE_INFINITY : runtimeDeadlineMs - now;
+  if (runtimeRemainingMs <= 0) return { ok: false, reason: "runtime_exceeded" };
   const controller = new AbortController();
-  let abortReason: "cancelled" | "timeout" | undefined;
+  let abortReason: "cancelled" | "runtime_exceeded" | "timeout" | undefined;
   const externalAbort = () => {
     abortReason = "cancelled";
     controller.abort();
   };
-  externalSignal?.addEventListener("abort", externalAbort, { once: true });
-  const timer = setTimeout(() => {
-    abortReason = "timeout";
+  const interruptionAbort = () => {
+    abortReason = "cancelled";
     controller.abort();
-  }, config.limits.requestTimeoutMs);
+  };
+  externalSignal?.addEventListener("abort", externalAbort, { once: true });
+  interruptionSignal.addEventListener("abort", interruptionAbort, { once: true });
+  const requestDeadlineMs = Math.min(config.limits.requestTimeoutMs, runtimeRemainingMs);
+  const timer = setTimeout(() => {
+    abortReason =
+      runtimeRemainingMs <= config.limits.requestTimeoutMs ? "runtime_exceeded" : "timeout";
+    controller.abort();
+  }, requestDeadlineMs);
   const operation = Promise.resolve().then(() => execute(controller.signal));
   void operation.catch(() => undefined);
   const aborted = new Promise<never>((_resolve, reject) => {
@@ -110,8 +130,52 @@ async function executeWithDeadline<A>(
   } finally {
     clearTimeout(timer);
     externalSignal?.removeEventListener("abort", externalAbort);
+    interruptionSignal.removeEventListener("abort", interruptionAbort);
     controller.abort();
   }
+}
+
+function runtimeFenceFor(
+  config: TransloaditConfig,
+  operation: TransloaditOperationSnapshot,
+): Readonly<{ readonly nowMs: number; readonly fence: MediaTransformRuntimeFence }> | null {
+  const nowMs = config.nowMilliseconds();
+  if (!validClockMilliseconds(nowMs)) return null;
+  if (operation.resumeJobId === undefined) {
+    const runtimeDeadlineMs = nowMs + config.limits.maxAssemblyRuntimeMs;
+    if (!Number.isSafeInteger(runtimeDeadlineMs)) return null;
+    return {
+      nowMs,
+      fence: Object.freeze({ submittedAtMs: nowMs, runtimeDeadlineMs }),
+    };
+  }
+  const submittedAtMs = operation.resumeSubmittedAtMs;
+  const runtimeDeadlineMs = operation.resumeRuntimeDeadlineMs;
+  if (
+    submittedAtMs === undefined ||
+    runtimeDeadlineMs === undefined ||
+    runtimeDeadlineMs - submittedAtMs > config.limits.maxAssemblyRuntimeMs
+  ) {
+    return null;
+  }
+  return {
+    nowMs,
+    fence: Object.freeze({ submittedAtMs, runtimeDeadlineMs }),
+  };
+}
+
+function resumeFenceFitsConfiguration(
+  config: TransloaditConfig,
+  operation: TransloaditOperationSnapshot,
+): boolean {
+  if (operation.resumeJobId === undefined) return true;
+  const submittedAtMs = operation.resumeSubmittedAtMs;
+  const runtimeDeadlineMs = operation.resumeRuntimeDeadlineMs;
+  return (
+    submittedAtMs !== undefined &&
+    runtimeDeadlineMs !== undefined &&
+    runtimeDeadlineMs - submittedAtMs <= config.limits.maxAssemblyRuntimeMs
+  );
 }
 
 function templateFor(config: TransloaditConfig, operation: TransloaditOperationSnapshot): string {
@@ -316,6 +380,7 @@ async function consumeOperationResponse(
   operation: TransloaditOperationSnapshot,
   response: TransloaditTransportResponse,
   signal: AbortSignal,
+  runtimeFence: MediaTransformRuntimeFence,
 ): Promise<OperationOutcome> {
   const early = statusOutcome(operation, config, response);
   if (early !== null) return early;
@@ -351,11 +416,15 @@ async function consumeOperationResponse(
     return Object.freeze({
       status: operation.resumeJobId === undefined ? "submitted" : "processing",
       providerJobId: assembly.providerJobId,
+      runtimeFence,
       context: transloaditAttemptContext(operation.binding, config.adapterRevision),
     });
   }
   if (assembly.state === "failed") return failedAssemblyOutcome(operation, config, assembly);
-  if (assembly.executionDurationMs > config.limits.maxAssemblyRuntimeMs) {
+  if (
+    assembly.executionDurationMs > config.limits.maxAssemblyRuntimeMs ||
+    assembly.executionDurationMs > runtimeFence.runtimeDeadlineMs - runtimeFence.submittedAtMs
+  ) {
     return withContext(operation, config, {
       status: "rejected",
       reason: "runtime_exceeded",
@@ -383,15 +452,44 @@ async function consumeOperationResponse(
 async function executeOperation(
   config: TransloaditConfig,
   operation: TransloaditOperationSnapshot,
+  interruptionSignal: AbortSignal,
 ): Promise<OperationOutcome> {
-  const execution = await executeWithDeadline(config, operation.signal, async (signal) => {
-    const response =
-      operation.resumeJobId === undefined
-        ? await createRequest(config, operation, signal)
-        : await pollRequest(config, operation, signal);
-    return consumeOperationResponse(config, operation, response, signal);
-  });
+  const runtime = runtimeFenceFor(config, operation);
+  if (runtime === null) {
+    return withContext(operation, config, {
+      status: "malformed_response",
+      reason: "unsupported_shape",
+      ...(operation.resumeJobId === undefined ? {} : { providerJobId: operation.resumeJobId }),
+    });
+  }
+  if (runtime.nowMs >= runtime.fence.runtimeDeadlineMs) {
+    return withContext(operation, config, {
+      status: "rejected",
+      reason: "runtime_exceeded",
+      ...(operation.resumeJobId === undefined ? {} : { providerJobId: operation.resumeJobId }),
+    });
+  }
+  const execution = await executeWithDeadline(
+    config,
+    runtime.fence.runtimeDeadlineMs,
+    operation.signal,
+    interruptionSignal,
+    async (signal) => {
+      const response =
+        operation.resumeJobId === undefined
+          ? await createRequest(config, operation, signal)
+          : await pollRequest(config, operation, signal);
+      return consumeOperationResponse(config, operation, response, signal, runtime.fence);
+    },
+  );
   if (execution.ok) return execution.value;
+  if (execution.reason === "runtime_exceeded") {
+    return withContext(operation, config, {
+      status: "rejected",
+      reason: "runtime_exceeded",
+      ...(operation.resumeJobId === undefined ? {} : { providerJobId: operation.resumeJobId }),
+    });
+  }
   return withContext(operation, config, {
     status: "retryable_failure",
     reason: execution.reason,
@@ -399,9 +497,9 @@ async function executeOperation(
   });
 }
 
-function deleteRequest(
+function cancelRequest(
   config: TransloaditConfig,
-  input: TransloaditDeleteSnapshot,
+  input: TransloaditCancelSnapshot,
   signal: AbortSignal,
 ): Promise<TransloaditTransportResponse> {
   const request: TransloaditTransportRequest = {
@@ -415,49 +513,56 @@ function deleteRequest(
   return toPromise(config.request(request));
 }
 
-async function executeDelete(
+async function executeCancel(
   config: TransloaditConfig,
-  input: TransloaditDeleteSnapshot,
-): Promise<MediaTransformDeleteOutcome> {
-  const execution = await executeWithDeadline(config, input.signal, async (signal) => {
-    const response = await deleteRequest(config, input, signal);
-    const retryAfterMs = retryAfterMilliseconds(response.headers);
-    disposeResponse(response);
-    if (response.status >= 200 && response.status < 300) {
-      return { status: "deleted", providerJobId: input.providerJobId } as const;
-    }
-    if (response.status === 404) {
+  input: TransloaditCancelSnapshot,
+  interruptionSignal: AbortSignal,
+): Promise<MediaTransformCancelOutcome> {
+  const execution = await executeWithDeadline(
+    config,
+    undefined,
+    input.signal,
+    interruptionSignal,
+    async (signal) => {
+      const response = await cancelRequest(config, input, signal);
+      const retryAfterMs = retryAfterMilliseconds(response.headers);
+      disposeResponse(response);
+      if (response.status >= 200 && response.status < 300) {
+        return { status: "cancellation_accepted", providerJobId: input.providerJobId } as const;
+      }
+      if (response.status === 404) {
+        return {
+          status: "rejected",
+          reason: "job_not_found",
+          providerJobId: input.providerJobId,
+        } as const;
+      }
+      if (response.status === 401 || response.status === 403) {
+        return {
+          status: "rejected",
+          reason: "unauthorized",
+          providerJobId: input.providerJobId,
+        } as const;
+      }
+      if (response.status === 429 || response.status >= 500) {
+        return {
+          status: "retryable_failure",
+          reason: response.status === 429 ? "throttled" : "provider",
+          providerJobId: input.providerJobId,
+          ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+        } as const;
+      }
       return {
         status: "rejected",
-        reason: "job_not_found",
+        reason: "provider_rejected",
         providerJobId: input.providerJobId,
       } as const;
-    }
-    if (response.status === 401 || response.status === 403) {
-      return {
-        status: "rejected",
-        reason: "unauthorized",
-        providerJobId: input.providerJobId,
-      } as const;
-    }
-    if (response.status === 429 || response.status >= 500) {
-      return {
-        status: "retryable_failure",
-        reason: response.status === 429 ? "throttled" : "provider",
-        providerJobId: input.providerJobId,
-        ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
-      } as const;
-    }
-    return {
-      status: "rejected",
-      reason: "provider_rejected",
-      providerJobId: input.providerJobId,
-    } as const;
-  });
+    },
+  );
   if (execution.ok) return execution.value;
   return {
     status: "retryable_failure",
-    reason: execution.reason,
+    reason: execution.reason === "runtime_exceeded" ? "timeout" : execution.reason,
     providerJobId: input.providerJobId,
   };
 }
@@ -466,7 +571,7 @@ function invalidConfigurationService(
   reason: ConstructorParameters<typeof MediaTransformRequestInvalid>[0]["reason"],
 ): MediaTransformService {
   const failure = () => Effect.fail(new MediaTransformRequestInvalid({ reason }));
-  return { probe: failure, extractAudioSample: failure, deleteJob: failure };
+  return { probe: failure, extractAudioSample: failure, cancelAssembly: failure };
 }
 
 /**
@@ -481,7 +586,7 @@ export function makeTransloaditMediaTransform(
     return {
       probe: () => unavailable,
       extractAudioSample: () => unavailable,
-      deleteJob: () => unavailable,
+      cancelAssembly: () => unavailable,
     };
   }
   const configuration = snapshotTransloaditOptions(options as EnabledTransloaditOptions);
@@ -493,27 +598,33 @@ export function makeTransloaditMediaTransform(
       if (!snapshot.ok) {
         return Effect.fail(new MediaTransformRequestInvalid({ reason: snapshot.reason }));
       }
-      return Effect.promise(() => executeOperation(config, snapshot.value)) as Effect.Effect<
-        MediaTransformProbeOutcome,
-        MediaTransformRequestInvalid
-      >;
+      if (!resumeFenceFitsConfiguration(config, snapshot.value)) {
+        return Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_runtime_fence" }));
+      }
+      return Effect.promise((interruptionSignal) =>
+        executeOperation(config, snapshot.value, interruptionSignal),
+      ) as Effect.Effect<MediaTransformProbeOutcome, MediaTransformRequestInvalid>;
     },
     extractAudioSample: (input) => {
       const snapshot = snapshotSampleInput(input);
       if (!snapshot.ok) {
         return Effect.fail(new MediaTransformRequestInvalid({ reason: snapshot.reason }));
       }
-      return Effect.promise(() => executeOperation(config, snapshot.value)) as Effect.Effect<
-        MediaTransformAudioSampleOutcome,
-        MediaTransformRequestInvalid
-      >;
+      if (!resumeFenceFitsConfiguration(config, snapshot.value)) {
+        return Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_runtime_fence" }));
+      }
+      return Effect.promise((interruptionSignal) =>
+        executeOperation(config, snapshot.value, interruptionSignal),
+      ) as Effect.Effect<MediaTransformAudioSampleOutcome, MediaTransformRequestInvalid>;
     },
-    deleteJob: (input) => {
-      const snapshot = snapshotDeleteInput(input);
+    cancelAssembly: (input) => {
+      const snapshot = snapshotCancelInput(input);
       if (!snapshot.ok) {
         return Effect.fail(new MediaTransformRequestInvalid({ reason: snapshot.reason }));
       }
-      return Effect.promise(() => executeDelete(config, snapshot.value));
+      return Effect.promise((interruptionSignal) =>
+        executeCancel(config, snapshot.value, interruptionSignal),
+      );
     },
   };
 }

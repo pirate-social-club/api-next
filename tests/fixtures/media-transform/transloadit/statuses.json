@@ -5,6 +5,7 @@
       "file": {
         "ext": "mp3",
         "mime": "audio/mpeg",
+        "type": "audio",
         "size": 1200000,
         "meta": {
           "duration": 180.125,
@@ -24,6 +25,7 @@
       "file": {
         "ext": "mp3",
         "mime": "audio/mpeg",
+        "type": "audio",
         "size": 900000,
         "meta": {
           "duration": 121.5,
@@ -43,6 +45,7 @@
       "file": {
         "ext": "wav",
         "mime": "audio/wav",
+        "type": "audio",
         "size": 352844,
         "meta": {
           "duration": 2,
@@ -62,6 +65,7 @@
       "file": {
         "ext": "flac",
         "mime": "audio/flac",
+        "type": "audio",
         "size": 2000000,
         "meta": {
           "duration": 240,
@@ -80,6 +84,7 @@
       "file": {
         "ext": "m4a",
         "mime": "audio/mp4",
+        "type": "audio",
         "size": 1500000,
         "meta": {
           "duration": 300,
@@ -98,6 +103,7 @@
       "file": {
         "ext": "opus",
         "mime": "audio/opus",
+        "type": "audio",
         "size": 800000,
         "meta": {
           "duration": 75,
@@ -116,6 +122,7 @@
       "file": {
         "ext": "flac",
         "mime": "audio/flac",
+        "type": "audio",
         "size": 64000000,
         "meta": {
           "duration": 3600,
@@ -133,6 +140,7 @@
   "hostile_metadata": {
     "ext": "mp3",
     "mime": "audio/mpeg",
+    "type": "audio",
     "size": 1000,
     "name": "<script>do-not-project()</script>.mp3",
     "meta": {
