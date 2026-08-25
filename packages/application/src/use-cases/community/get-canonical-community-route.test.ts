@@ -7,8 +7,8 @@ const hns = {
   family: "hns" as const,
   root_label: "xn--mnchen-3ya",
   root_label_display: "münchen",
-  path_segment: "app.xn--mnchen-3ya",
-  href: "/c/app.xn--mnchen-3ya",
+  path_segment: "xn--mnchen-3ya",
+  href: "/c/xn--mnchen-3ya",
   app_host: null,
 };
 
@@ -91,7 +91,7 @@ describe("getCanonicalCommunityRoute", () => {
 
   test("rejects Unicode, case, and encoded-style aliases before storage", async () => {
     const calls: string[] = [];
-    for (const path_segment of ["app.münchen", "APP.XN--MNCHEN-3YA", "app.xn--mnchen%2D3ya"]) {
+    for (const path_segment of ["münchen", "XN--MNCHEN-3YA", "xn--mnchen%2D3ya"]) {
       await expect(
         Effect.runPromise(
           getCanonicalCommunityRoute(

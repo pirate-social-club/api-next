@@ -37,6 +37,15 @@ export type CommunityCanonicalRoute =
 
 export const OPTIONAL_ROUTE_COMMUNITY_ID_PATTERN =
   /^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+export const PIRATE_PLATFORM_HNS_ROOT = "pirate" as const;
+
+export type CommunityPublicRouteIdentityV2 = Readonly<{
+  readonly family: CommunityRouteFamily;
+  readonly root_label: string;
+  readonly root_label_display: string;
+  readonly path_segment: string;
+  readonly href: string;
+}>;
 
 export type CommunityPathTarget =
   | Readonly<{
@@ -83,9 +92,40 @@ function canonicalIdentityFromAce(
   });
 }
 
+function publicIdentityFromAceV2(
+  family: CommunityRouteFamily,
+  rootLabel: string,
+): CommunityRouteResult<CommunityPublicRouteIdentityV2> {
+  const canonical = parseCanonicalRouteLabelV1(family, rootLabel);
+  if (canonical.kind === "rejected") return rejected(canonical.reason);
+  if (
+    family === "hns" &&
+    (rootLabel === PIRATE_PLATFORM_HNS_ROOT || OPTIONAL_ROUTE_COMMUNITY_ID_PATTERN.test(rootLabel))
+  ) {
+    return rejected("invalid_root_label");
+  }
+
+  const pathSegment = family === "hns" ? rootLabel : `@${rootLabel}`;
+  return accepted({
+    family,
+    root_label: rootLabel,
+    root_label_display: canonical.value.root_label_display,
+    path_segment: pathSegment,
+    href: `/c/${pathSegment}`,
+  });
+}
+
 /** Validates the exact canonical ACE authority used by storage and reads. */
 export function validCommunityRouteRoot(family: CommunityRouteFamily, value: string): boolean {
   return parseCanonicalRouteLabelV1(family, value).kind === "accepted";
+}
+
+/** Rejects roots reserved by the v2 public dispatcher while retaining v1 authority parsing. */
+export function validPublicCommunityRouteRootV2(
+  family: CommunityRouteFamily,
+  value: string,
+): boolean {
+  return publicIdentityFromAceV2(family, value).kind === "accepted";
 }
 
 /** Canonicalizes a mutation/preflight request through route-label-codec-v1. */
@@ -100,9 +140,14 @@ export function deriveCommunityRoute(
   }
 
   const canonical = normalizeRouteLabelV1(input.family, input.root_label);
-  return canonical.kind === "rejected"
-    ? rejected(canonical.reason)
-    : canonicalIdentityFromAce(input.family, canonical.value.root_label);
+  if (canonical.kind === "rejected") return rejected(canonical.reason);
+  if (
+    input.family === "hns" &&
+    !validPublicCommunityRouteRootV2(input.family, canonical.value.root_label)
+  ) {
+    return rejected("invalid_root_label");
+  }
+  return canonicalIdentityFromAce(input.family, canonical.value.root_label);
 }
 
 /** Parses an already-canonical public path without applying write normalization. */
@@ -124,6 +169,28 @@ export function parseCommunityRoutePathSegment(
   return rejected("invalid_path_segment");
 }
 
+/** Parses the v2 public route projection without changing retained v1 authority bytes. */
+export function parseCommunityPublicRoutePathSegmentV2(
+  pathSegment: string,
+): CommunityRouteResult<CommunityPublicRouteIdentityV2> {
+  if (pathSegment.startsWith("@")) {
+    const route = publicIdentityFromAceV2("spaces", pathSegment.slice(1));
+    return route.kind === "accepted" && route.value.path_segment === pathSegment
+      ? route
+      : rejected("invalid_path_segment");
+  }
+  const route = publicIdentityFromAceV2("hns", pathSegment);
+  return route.kind === "accepted" && route.value.path_segment === pathSegment
+    ? route
+    : rejected("invalid_path_segment");
+}
+
+export function projectCommunityPublicRouteV2(
+  route: Pick<CommunityRouteIdentity, "family" | "root_label">,
+): CommunityRouteResult<CommunityPublicRouteIdentityV2> {
+  return publicIdentityFromAceV2(route.family, route.root_label);
+}
+
 /** Distinguishes permanent generated IDs from namespace-derived route segments. */
 export function parseCommunityPathSegment(
   pathSegment: string,
@@ -135,7 +202,7 @@ export function parseCommunityPathSegment(
       href: `/c/${pathSegment}`,
     });
   }
-  const route = parseCommunityRoutePathSegment(pathSegment);
+  const route = parseCommunityPublicRoutePathSegmentV2(pathSegment);
   return route.kind === "accepted"
     ? accepted({ kind: "namespace_route", route: route.value })
     : route;

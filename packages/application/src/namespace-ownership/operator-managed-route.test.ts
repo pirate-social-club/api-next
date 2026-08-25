@@ -16,7 +16,7 @@ const activation = {
   operator_authority_grant_id: "operator-route-grant-1",
   idempotency_key: "operator-route-key-1",
   community_id: "community_123e4567-e89b-42d3-a456-426614174000",
-  canonical_root: "pirate",
+  canonical_root: "jazleeuw",
   registry_reference: "operator-managed-roots-2026-08",
   registry_version: 1,
   registry_digest: digest,
@@ -46,8 +46,8 @@ test("binds activation to the exact registry and canonical route display", async
   expect(result.outcome).toBe("activated");
   expect(calls).toHaveLength(1);
   expect(calls[0]).toMatchObject({
-    canonical_root: "pirate",
-    root_label_display: "pirate",
+    canonical_root: "jazleeuw",
+    root_label_display: "jazleeuw",
     request_hash: expect.stringMatching(/^[0-9a-f]{64}$/u),
   });
   expect(operatorManagedRouteActivationRequestPreimage(activation)).toContain(
@@ -60,6 +60,26 @@ test("rejects noncanonical roots before storage", async () => {
   const exit = await Effect.runPromiseExit(
     activateOperatorManagedRoute(
       { ...activation, canonical_root: "Pirate" },
+      {
+        store: {
+          activate: () => {
+            called = true;
+            return Effect.die("must not run");
+          },
+          revoke: () => Effect.die("not used"),
+        },
+      },
+    ),
+  );
+  expect(Exit.isFailure(exit)).toBe(true);
+  expect(called).toBe(false);
+});
+
+test("rejects the reserved platform root before storage", async () => {
+  let called = false;
+  const exit = await Effect.runPromiseExit(
+    activateOperatorManagedRoute(
+      { ...activation, canonical_root: "pirate" },
       {
         store: {
           activate: () => {

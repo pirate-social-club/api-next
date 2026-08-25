@@ -3,6 +3,9 @@ import { describe, expect, test } from "bun:test";
 const migration = await Bun.file(
   new URL("../../../db/postgres/migrations/0047_hns_operator_managed_routes.sql", import.meta.url),
 ).text();
+const publicRouteMigration = await Bun.file(
+  new URL("../../../db/postgres/migrations/0049_bare_hns_community_route_v2.sql", import.meta.url),
+).text();
 const routeRepository = await Bun.file(
   new URL("./community-route-repository.ts", import.meta.url),
 ).text();
@@ -17,7 +20,10 @@ describe("operator-managed route migration authority", () => {
     expect(migration).toContain("verified_evidence_ref IS NULL");
     expect(migration).toContain("CREATE FUNCTION effective_route_authority_v2");
     expect(migration).toContain("FROM effective_active_route(expected_community_id, database_now)");
-    expect(routeRepository).toContain("effective_route_authority_v2");
+    expect(publicRouteMigration).toContain(
+      "FROM effective_route_authority_v2(expected_community_id, database_now) AS route",
+    );
+    expect(routeRepository).toContain("effective_public_community_route_v2");
   });
 
   test("retains exact registry bytes and derives root admission from them", () => {

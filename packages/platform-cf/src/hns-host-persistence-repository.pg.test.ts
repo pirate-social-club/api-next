@@ -91,7 +91,7 @@ async function seedOperatorRoute(connection: string, admin: Client) {
   const communityId = "community_123e4567-e89b-42d3-a456-426614174048";
   const registryReference = "operator-managed-roots-host-persistence";
   const registryBytes = new TextEncoder().encode(
-    '["pirate-operator-managed-root-registry-v1","operator-managed-roots-host-persistence",1,[["hns","pirate","active"]]]',
+    '["pirate-operator-managed-root-registry-v1","operator-managed-roots-host-persistence",1,[["hns","jazleeuw","active"]]]',
   );
   const registryDigest = await sha256(registryBytes);
   await admin.query("INSERT INTO users (user_id) VALUES ('host-persistence-owner')");
@@ -134,7 +134,7 @@ async function seedOperatorRoute(connection: string, admin: Client) {
     operator_authority_grant_id: "host-persistence-grant",
     idempotency_key: "host-persistence-route-key",
     community_id: communityId,
-    canonical_root: "pirate",
+    canonical_root: "jazleeuw",
     registry_reference: registryReference,
     registry_version: 1,
     registry_digest: registryDigest,
@@ -147,13 +147,13 @@ async function seedOperatorRoute(connection: string, admin: Client) {
 }
 
 async function dnsDocument(inventoryDigest: string, generation: number, zoneRevision = generation) {
-  const zoneBytes = new TextEncoder().encode(`$ORIGIN pirate.\n; revision ${zoneRevision}\n`);
+  const zoneBytes = new TextEncoder().encode(`$ORIGIN jazleeuw.\n; revision ${zoneRevision}\n`);
   const zoneDigest = await sha256(zoneBytes);
   const payload = {
     version: HNS_DNS_ZONE_ACTIVATION_DOCUMENT_VERSION,
-    dns_zone_activation_id: "dns-zone-activation-pirate",
-    canonical_root: "pirate",
-    dns_authority: ["pirate_managed_dns_v1", "dns-authority:pirate", generation] as const,
+    dns_zone_activation_id: "dns-zone-activation-jazleeuw",
+    canonical_root: "jazleeuw",
+    dns_authority: ["pirate_managed_dns_v1", "dns-authority:jazleeuw", generation] as const,
     pirate_dns_authority_inventory: [
       inventoryReference,
       inventoryVersion,
@@ -257,9 +257,9 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
             operation_id: "app-host-operation-1",
             idempotency_key: "app-host-key-1",
             request_hash: "2".repeat(64),
-            app_host_activation_id: "app-host-activation-pirate",
+            app_host_activation_id: "app-host-activation-jazleeuw",
             community_id: communityId,
-            canonical_root: "pirate",
+            canonical_root: "jazleeuw",
             route_binding_id: activation.route_binding_id,
             route_authority_kind: "operator_managed_route_v1",
             route_authority_reference: activation.operator_route_activation_id,
@@ -270,14 +270,14 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
           }),
         ),
       ).resolves.toMatchObject({ outcome: "activated", app_host_activation_generation: 1 });
-      const active = await Effect.runPromise(source.resolve("app.pirate"));
+      const active = await Effect.runPromise(source.resolve("app.jazleeuw"));
       expect(active).not.toBeNull();
       expect(
         active?.variant === "community_app_v1" && isHnsCommunityAppHostAuthorityActive(active),
       ).toBeTrue();
 
       const future = await admin.query(
-        "SELECT * FROM resolve_hns_community_app_host_authority_v1('app.pirate', clock_timestamp() + interval '2 hours')",
+        "SELECT * FROM resolve_hns_community_app_host_authority_v1('app.jazleeuw', clock_timestamp() + interval '2 hours')",
       );
       expect(future.rows[0]).toMatchObject({
         stable_chain_delegation_matches: false,
@@ -297,7 +297,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
           ds_authenticates_zone: false,
         }),
       );
-      const drifted = await Effect.runPromise(source.resolve("app.pirate"));
+      const drifted = await Effect.runPromise(source.resolve("app.jazleeuw"));
       expect(drifted).toMatchObject({
         dns_zone: {
           stable_chain_delegation_matches: false,
@@ -325,7 +325,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
           document: secondDocument,
         }),
       );
-      const staleGeneration = await Effect.runPromise(source.resolve("app.pirate"));
+      const staleGeneration = await Effect.runPromise(source.resolve("app.jazleeuw"));
       expect(staleGeneration).toMatchObject({
         activation_dns_zone_generation: 1,
         dns_zone: { dns_zone_activation_generation: 2 },
@@ -346,7 +346,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
           reason_code: "authority-retired",
         }),
       );
-      const dnsRevoked = await Effect.runPromise(source.resolve("app.pirate"));
+      const dnsRevoked = await Effect.runPromise(source.resolve("app.jazleeuw"));
       expect(dnsRevoked).toMatchObject({ dns_zone: { status: "revoked" } });
       expect(
         dnsRevoked?.variant === "community_app_v1" &&
@@ -361,7 +361,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
             operator_authority_grant_id: activation.operator_authority_grant_id,
             idempotency_key: "host-persistence-route-revoke-key",
             community_id: communityId,
-            canonical_root: "pirate",
+            canonical_root: "jazleeuw",
             operator_route_activation_id: activation.operator_route_activation_id,
             route_binding_id: activation.route_binding_id,
             expected_activation_generation: 1,
@@ -370,7 +370,7 @@ suite("HNS first-party host persistence on PostgreSQL 17", () => {
           { store: operatorStore },
         ),
       );
-      const routeRevoked = await Effect.runPromise(source.resolve("app.pirate"));
+      const routeRevoked = await Effect.runPromise(source.resolve("app.jazleeuw"));
       expect(routeRevoked).toMatchObject({
         route_binding_current: false,
         route_authority_effective: false,

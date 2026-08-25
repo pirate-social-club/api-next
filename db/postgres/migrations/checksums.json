@@ -48,6 +48,7 @@
     "0045_hns_owner_authority_custody.sql": "54c1a874bfe1800abe1c4f6e6189be35f960f5247da7fda3bf2603bbf6bf8d71",
     "0046_account_persona_wallet_privacy.sql": "f9b16c3b24d193436064afb6603d4d8fa6f25708d7f711da3e47f9b7f915110a",
     "0047_hns_operator_managed_routes.sql": "12fb282449f8dd26894635afd22a3fdc575b64a7e707315873453db2a511a567",
-    "0048_hns_first_party_host_persistence.sql": "2a7eaaf55ff2831fce303e2451d07112a94be79388aa1b74773a0eb49837abc5"
+    "0048_hns_first_party_host_persistence.sql": "2a7eaaf55ff2831fce303e2451d07112a94be79388aa1b74773a0eb49837abc5",
+    "0049_bare_hns_community_route_v2.sql": "2a6f4614b3cd159fa640e9b77dcc588e06b740fa97aca50b0fa24ff144e1a02c"
   }
 }

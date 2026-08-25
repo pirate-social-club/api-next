@@ -84,7 +84,9 @@ export const getCanonicalCommunityRoute = Effect.fn("getCanonicalCommunityRoute"
     route.path_segment !== parsed.value.route.path_segment ||
     route.href !== parsed.value.route.href ||
     (route.family === "spaces" && route.app_host !== null) ||
-    (route.family === "hns" && route.app_host !== null && route.app_host !== route.path_segment)
+    (route.family === "hns" &&
+      route.app_host !== null &&
+      route.app_host !== `app.${route.root_label}`)
   ) {
     return yield* new InternalError({ message: "Canonical community route lookup failed" });
   }

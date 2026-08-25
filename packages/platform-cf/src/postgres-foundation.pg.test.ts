@@ -254,6 +254,9 @@ const hnsFirstPartyHostPersistenceMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const bareHnsCommunityRouteV2MigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0049_bare_hns_community_route_v2.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -501,6 +504,11 @@ const hnsFirstPartyHostPersistenceMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0048_hns_first_party_host_persistence.sql"] ?? "",
   sql: hnsFirstPartyHostPersistenceMigrationSql,
 };
+const bareHnsCommunityRouteV2Migration: PostgresMigration = {
+  version: "0049_bare_hns_community_route_v2.sql",
+  checksum: checksumManifest.migrations["0049_bare_hns_community_route_v2.sql"] ?? "",
+  sql: bareHnsCommunityRouteV2MigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -550,6 +558,7 @@ const migrations: readonly PostgresMigration[] = [
   accountPersonaWalletPrivacyMigration,
   hnsOperatorManagedRoutesMigration,
   hnsFirstPartyHostPersistenceMigration,
+  bareHnsCommunityRouteV2Migration,
 ];
 
 function checksum(value: string): string {
@@ -800,6 +809,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(hnsFirstPartyHostPersistenceMigrationSql)).toBe(
         hnsFirstPartyHostPersistenceMigration.checksum,
+      );
+      expect(checksum(bareHnsCommunityRouteV2MigrationSql)).toBe(
+        bareHnsCommunityRouteV2Migration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);

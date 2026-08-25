@@ -128,12 +128,12 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     const appEnvelope = await app.gateway.sign({
       method: "GET",
       normalized_host: appState.normalized_host,
-      path_and_query: "/c/app.xn--pokmon-dva",
+      path_and_query: "/c/xn--pokmon-dva",
       headers: new Headers(),
       body_bytes: new Uint8Array(),
     });
     expect(appEnvelope.headers.get("x-pirate-hns-forwarder-signature")).toBe(
-      "v3=ec8960de956a3de831784501f7a7365c2f16b8c36c915a2ca4ea3bc5efb7f235",
+      "v3=b09e03ea0a1441654d481ca19f34245a4560f3db68b5abde3cda49f2bfb4f9eb",
     );
     const handle = harness(handleState);
     const handleEnvelope = await handle.gateway.sign({
@@ -164,7 +164,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     const envelope = await gateway.sign({
       method: "GET",
       normalized_host: appState.normalized_host,
-      path_and_query: "/c/app.xn--pokmon-dva",
+      path_and_query: "/c/xn--pokmon-dva",
       headers: clientHeaders,
       body_bytes: new Uint8Array(),
     });
@@ -174,7 +174,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     expect(envelope.headers.get("x-pirate-hns-forwarder-nonce")).toBe("");
     const verified = await worker.verify({
       method: "GET",
-      url: "https://worker.internal/c/app.xn--pokmon-dva",
+      url: "https://worker.internal/c/xn--pokmon-dva",
       headers: envelope.headers,
       body_bytes: new Uint8Array(),
     });
@@ -187,7 +187,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     const envelope = await gateway.sign({
       method: "GET",
       normalized_host: appState.normalized_host,
-      path_and_query: "/c/app.xn--pokmon-dva",
+      path_and_query: "/c/xn--pokmon-dva",
       headers: new Headers(),
       body_bytes: new Uint8Array(),
     });
@@ -195,7 +195,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
       await expect(
         worker.verify({
           method: "GET",
-          url: "https://worker.internal/c/app.xn--pokmon-dva",
+          url: "https://worker.internal/c/xn--pokmon-dva",
           headers,
           body_bytes: body,
         }),
@@ -245,14 +245,14 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     const envelope = await gateway.sign({
       method: "GET",
       normalized_host: appState.normalized_host,
-      path_and_query: "/c/app.xn--pokmon-dva",
+      path_and_query: "/c/xn--pokmon-dva",
       headers: new Headers(),
       body_bytes: new Uint8Array(),
     });
     await expect(
       worker.verify({
         method: "GET",
-        url: "https://worker.internal/c/app.xn--pokmon-dva",
+        url: "https://worker.internal/c/xn--pokmon-dva",
         headers: envelope.headers,
         body_bytes: new Uint8Array(),
       }),
@@ -266,13 +266,13 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     const envelope = await gateway.sign({
       method: "POST",
       normalized_host: appState.normalized_host,
-      path_and_query: "/c/app.xn--pokmon-dva/posts?draft=1",
+      path_and_query: "/c/xn--pokmon-dva/posts?draft=1",
       headers: new Headers(),
       body_bytes: bytes,
     });
     const request = {
       method: "POST",
-      url: "https://worker.internal/c/app.xn--pokmon-dva/posts?draft=1",
+      url: "https://worker.internal/c/xn--pokmon-dva/posts?draft=1",
       headers: envelope.headers,
       body_bytes: bytes,
     } as const;
@@ -283,7 +283,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
       gateway.sign({
         method: "POST",
         normalized_host: appState.normalized_host,
-        path_and_query: "/c/app.xn--pokmon-dva/posts",
+        path_and_query: "/c/xn--pokmon-dva/posts",
         headers: new Headers(),
         body_bytes: boundary,
       }),
@@ -304,7 +304,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     const envelope = await gateway.sign({
       method: "GET",
       normalized_host: appState.normalized_host,
-      path_and_query: "/c/app.xn--pokmon-dva",
+      path_and_query: "/c/xn--pokmon-dva",
       headers: new Headers(),
       body_bytes: new Uint8Array(),
     });
@@ -313,7 +313,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     await expect(
       worker.verify({
         method: "GET",
-        url: "https://worker.internal/c/app.xn--pokmon-dva",
+        url: "https://worker.internal/c/xn--pokmon-dva",
         headers: unknownKey,
         body_bytes: new Uint8Array(),
       }),
@@ -323,7 +323,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     await expect(
       worker.verify({
         method: "GET",
-        url: "https://worker.internal/c/app.xn--pokmon-dva",
+        url: "https://worker.internal/c/xn--pokmon-dva",
         headers: future,
         body_bytes: new Uint8Array(),
       }),
@@ -333,7 +333,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
     await expect(
       worker.verify({
         method: "GET",
-        url: "https://worker.internal/c/app.xn--pokmon-dva",
+        url: "https://worker.internal/c/xn--pokmon-dva",
         headers: safeNonce,
         body_bytes: new Uint8Array(),
       }),
@@ -362,7 +362,7 @@ describe("HNS forwarder v3 WebCrypto adapter", () => {
       invalidNonceGateway.sign({
         method: "POST",
         normalized_host: appState.normalized_host,
-        path_and_query: "/c/app.xn--pokmon-dva/posts",
+        path_and_query: "/c/xn--pokmon-dva/posts",
         headers: new Headers(),
         body_bytes: new Uint8Array(),
       }),

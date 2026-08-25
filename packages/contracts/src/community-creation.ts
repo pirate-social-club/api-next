@@ -5,7 +5,11 @@ import {
   CommunityCreationRequirementsV2,
   CreationVerificationRequirementV1,
 } from "./community-creation-requirements.ts";
-import { CommunityCanonicalRouteV1, CommunityRouteRequestV1 } from "./community-routes.ts";
+import {
+  CommunityCanonicalRouteV1,
+  CommunityCanonicalRouteV2,
+  CommunityRouteRequestV1,
+} from "./community-routes.ts";
 import { endpoint } from "./endpoint.ts";
 import { AuthError, BadRequest, Conflict, InternalError, NotFound } from "./errors.ts";
 import { PersonaIdV1, PublicPersonaV1 } from "./personas.ts";
@@ -223,7 +227,7 @@ export const CurrentCommunityResourceV2 = Schema.Struct({
   authority_version: Schema.Literal("optional_route_v2"),
   community_id: OptionalRouteCommunityIdV2,
   href: Schema.NonEmptyString,
-  canonical_route: Schema.NullOr(CommunityCanonicalRouteV1),
+  canonical_route: Schema.NullOr(CommunityCanonicalRouteV2),
   persona_role_presentation: CommunityPersonaRolePresentationV1,
 }).check(
   Schema.makeFilter((resource) =>

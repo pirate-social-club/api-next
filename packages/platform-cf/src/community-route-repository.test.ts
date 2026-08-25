@@ -15,8 +15,8 @@ const hnsRow = (overrides: Row = {}): Row => ({
   family: "hns",
   root_label: "xn--mnchen-3ya",
   root_label_display: "münchen",
-  path_segment: "app.xn--mnchen-3ya",
-  href: "/c/app.xn--mnchen-3ya",
+  path_segment: "xn--mnchen-3ya",
+  href: "/c/xn--mnchen-3ya",
   app_host: null,
   ...overrides,
 });
@@ -103,12 +103,12 @@ describe("canonical community route Postgres repository", () => {
       values: [communityId],
     });
     expect(calls[0]?.text).toContain("community.status = 'active'");
-    expect(calls[0]?.text).toContain("LEFT JOIN LATERAL effective_route_authority_v2");
+    expect(calls[0]?.text).toContain("LEFT JOIN LATERAL effective_public_community_route_v2");
   });
 
   test("resolves HNS IDN and Spaces emoji paths with one exact read", async () => {
     for (const [path_segment, row] of [
-      ["app.xn--mnchen-3ya", hnsRow()],
+      ["xn--mnchen-3ya", hnsRow()],
       ["@xn--4v8h", spacesRow()],
     ] as const) {
       const calls: ControlPlaneStatement[] = [];
@@ -126,7 +126,7 @@ describe("canonical community route Postgres repository", () => {
         values: [path_segment],
         readonly: true,
       });
-      expect(calls[0]?.text).toContain("effective_route_authority_v2(NULL, db_clock.now)");
+      expect(calls[0]?.text).toContain("effective_public_community_route_v2(NULL, db_clock.now)");
       expect(calls[0]?.text).not.toContain("evidence.expires_at");
     }
   });
@@ -135,7 +135,7 @@ describe("canonical community route Postgres repository", () => {
     const calls: ControlPlaneStatement[] = [];
     const exit = await runWith(
       makeControlPlaneCanonicalCommunityRouteRepository().resolveCanonicalRoute({
-        path_segment: "app.xn--mnchen-3ya",
+        path_segment: "xn--mnchen-3ya",
       }),
       fakeDb([], calls),
     );
@@ -147,7 +147,7 @@ describe("canonical community route Postgres repository", () => {
     const invalidCalls: ControlPlaneStatement[] = [];
     const invalid = await runWith(
       makeControlPlaneCanonicalCommunityRouteRepository().resolveCanonicalRoute({
-        path_segment: "app.münchen",
+        path_segment: "münchen",
       }),
       fakeDb([hnsRow()], invalidCalls),
     );
@@ -157,7 +157,7 @@ describe("canonical community route Postgres repository", () => {
 
     const ambiguous = await runWith(
       makeControlPlaneCanonicalCommunityRouteRepository().resolveCanonicalRoute({
-        path_segment: "app.xn--mnchen-3ya",
+        path_segment: "xn--mnchen-3ya",
       }),
       fakeDb([hnsRow(), hnsRow({ community_id: "community-other" })], []),
     );
@@ -167,7 +167,7 @@ describe("canonical community route Postgres repository", () => {
   test("fails closed for a route-shape mismatch and permits only the HNS app host value", async () => {
     const mismatch = await runWith(
       makeControlPlaneCanonicalCommunityRouteRepository().resolveCanonicalRoute({
-        path_segment: "app.xn--mnchen-3ya",
+        path_segment: "xn--mnchen-3ya",
       }),
       fakeDb([hnsRow({ root_label_display: "wrong" })], []),
     );
@@ -176,7 +176,7 @@ describe("canonical community route Postgres repository", () => {
     const healthyCalls: ControlPlaneStatement[] = [];
     const healthy = await runWith(
       makeControlPlaneCanonicalCommunityRouteRepository().resolveCanonicalRoute({
-        path_segment: "app.xn--mnchen-3ya",
+        path_segment: "xn--mnchen-3ya",
       }),
       fakeDb([hnsRow({ app_host: "app.xn--mnchen-3ya" })], healthyCalls),
     );

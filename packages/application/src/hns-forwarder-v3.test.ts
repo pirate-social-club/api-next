@@ -73,12 +73,24 @@ describe("HNS forwarder immutable byte contracts", () => {
     expect(encodeHnsForwarderAuthorityHeader(handleAuthority)).toBe(
       "WyJoYW5kbGVfcGVyc29uYV92MSIsWyJzYWxlX25hbWVzcGFjZV9hY3RpdmF0aW9uXzAxIiwzXSxbInZlcmlmaWVkX25hbWVzcGFjZV92MSIsInJvdXRlX2V2aWRlbmNlXzciLDddLFsiaGFuZGxlX2dyYW50XzAxIiwyXSwicGVyc29uYV9wdWJsaWNfMDEiXQ",
     );
-    const appPreimage = hnsForwarderV3Preimage({
+    const historicalAppPreimage = hnsForwarderV3Preimage({
       key_id: "gateway-key-2026-08",
       timestamp: "1770000000",
       method: "GET",
       normalized_host: "app.xn--pokmon-dva",
       path_and_query: "/c/app.xn--pokmon-dva",
+      canonical_root: "xn--pokmon-dva",
+      community_id: "com_cmt_public_namespace_test",
+      host_authority: appAuthority,
+      body_sha256: emptySha256,
+      nonce: "",
+    });
+    const appPreimage = hnsForwarderV3Preimage({
+      key_id: "gateway-key-2026-08",
+      timestamp: "1770000000",
+      method: "GET",
+      normalized_host: "app.xn--pokmon-dva",
+      path_and_query: "/c/xn--pokmon-dva",
       canonical_root: "xn--pokmon-dva",
       community_id: "com_cmt_public_namespace_test",
       host_authority: appAuthority,
@@ -97,13 +109,17 @@ describe("HNS forwarder immutable byte contracts", () => {
       body_sha256: emptySha256,
       nonce: "",
     });
-    expect(appPreimage).toBe(
+    expect(historicalAppPreimage).toBe(
       '["pirate-hns-forwarder-v3","gateway-key-2026-08","1770000000","GET","app.xn--pokmon-dva","/c/app.xn--pokmon-dva","xn--pokmon-dva","com_cmt_public_namespace_test",["community_app_v1",["app_host_activation_01",3],"route-binding-1",["operator_managed_route_v1","operator_route_activation_01",7]],"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",""]',
+    );
+    expect(appPreimage).toBe(
+      '["pirate-hns-forwarder-v3","gateway-key-2026-08","1770000000","GET","app.xn--pokmon-dva","/c/xn--pokmon-dva","xn--pokmon-dva","com_cmt_public_namespace_test",["community_app_v1",["app_host_activation_01",3],"route-binding-1",["operator_managed_route_v1","operator_route_activation_01",7]],"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",""]',
     );
     expect(handlePreimage).toBe(
       '["pirate-hns-forwarder-v3","gateway-key-2026-08","1770000000","GET","name.xn--pokmon-dva","/","xn--pokmon-dva","com_cmt_public_namespace_test",["handle_persona_v1",["sale_namespace_activation_01",3],["verified_namespace_v1","route_evidence_7",7],["handle_grant_01",2],"persona_public_01"],"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",""]',
     );
-    expect(new TextEncoder().encode(appPreimage).byteLength).toBe(363);
+    expect(new TextEncoder().encode(historicalAppPreimage).byteLength).toBe(363);
+    expect(new TextEncoder().encode(appPreimage).byteLength).toBe(359);
     expect(new TextEncoder().encode(handlePreimage).byteLength).toBe(359);
   });
 });

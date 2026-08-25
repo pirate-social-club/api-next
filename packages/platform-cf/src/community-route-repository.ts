@@ -8,10 +8,10 @@ import {
   type ControlPlaneError,
 } from "@pirate/application";
 import {
-  decodeCanonicalCommunityRouteResolutionV1,
+  decodeCanonicalCommunityRouteResolutionV2,
   decodeCommunityPathResolution,
 } from "@pirate/contracts";
-import { parseCommunityPathSegment, parseCommunityRoutePathSegment } from "@pirate/domain";
+import { parseCommunityPathSegment, parseCommunityPublicRoutePathSegmentV2 } from "@pirate/domain";
 import { Effect, type Layer } from "effect";
 
 const OPERATION = "resolve-canonical-route" as const;
@@ -49,20 +49,20 @@ const resolveCanonicalRouteStatement = (pathSegment: string) =>
                 route.family,
                 route.root_label,
                 route.root_label_display,
-                route.path_segment,
-                route.href,
+                route.public_path_segment AS path_segment,
+                route.public_href AS href,
                 CASE
                   WHEN route.family = 'hns' AND health.health_status = 'healthy'
-                    THEN route.path_segment
+                    THEN 'app.' || route.root_label
                   ELSE NULL
                 END AS app_host
            FROM db_clock
-           CROSS JOIN LATERAL effective_route_authority_v2(NULL, db_clock.now) AS route
+           CROSS JOIN LATERAL effective_public_community_route_v2(NULL, db_clock.now) AS route
            LEFT JOIN community_route_app_host_health AS health
              ON health.route_binding_id = route.route_binding_id
             AND health.family = 'hns'
             AND health.health_generation = route.binding_generation
-          WHERE route.path_segment = $1`,
+          WHERE route.public_path_segment = $1`,
     values: [pathSegment],
     readonly: true,
   }) as const;
@@ -83,11 +83,11 @@ const resolveCommunityIdStatement = (communityId: string) =>
                 route.family,
                 route.root_label,
                 route.root_label_display,
-                route.path_segment,
-                route.href,
+                route.public_path_segment AS path_segment,
+                route.public_href AS href,
                 CASE
                   WHEN route.family = 'hns' AND health.health_status = 'healthy'
-                    THEN route.path_segment
+                    THEN 'app.' || route.root_label
                   ELSE NULL
                 END AS app_host
            FROM db_clock
@@ -98,7 +98,10 @@ const resolveCommunityIdStatement = (communityId: string) =>
            JOIN persona_role_presentations AS presentation
              ON presentation.community_id = community.community_id
             AND presentation.account_id = community.created_by_user_id
-           LEFT JOIN LATERAL effective_route_authority_v2(community.community_id, db_clock.now) AS route
+           LEFT JOIN LATERAL effective_public_community_route_v2(
+             community.community_id,
+             db_clock.now
+           ) AS route
              ON TRUE
            LEFT JOIN community_route_app_host_health AS health
              ON health.route_binding_id = route.route_binding_id
@@ -122,7 +125,10 @@ const validString = (value: unknown): value is string =>
 
 const routeMatches = (
   row: CanonicalCommunityRouteRow,
-  parsed: Extract<ReturnType<typeof parseCommunityRoutePathSegment>, { readonly kind: "accepted" }>,
+  parsed: Extract<
+    ReturnType<typeof parseCommunityPublicRoutePathSegmentV2>,
+    { readonly kind: "accepted" }
+  >,
 ): row is CanonicalCommunityRouteRow & {
   readonly community_id: string;
   readonly family: string;
@@ -138,7 +144,8 @@ const routeMatches = (
   row.root_label_display === parsed.value.root_label_display &&
   row.path_segment === parsed.value.path_segment &&
   row.href === parsed.value.href &&
-  (row.app_host === null || row.app_host === parsed.value.path_segment);
+  (row.app_host === null ||
+    (parsed.value.family === "hns" && row.app_host === `app.${parsed.value.root_label}`));
 
 export function makeControlPlaneCanonicalCommunityRouteRepository(): CanonicalCommunityRouteRepository {
   return {
@@ -178,7 +185,7 @@ export function makeControlPlaneCanonicalCommunityRouteRepository(): CanonicalCo
           let canonicalRoute = null;
           if (row.path_segment !== null) {
             if (typeof row.path_segment !== "string") return yield* Effect.fail(invalidRow());
-            const route = parseCommunityRoutePathSegment(row.path_segment);
+            const route = parseCommunityPublicRoutePathSegmentV2(row.path_segment);
             if (route.kind === "rejected" || !routeMatches(row, route)) {
               return yield* Effect.fail(invalidRow());
             }
@@ -216,7 +223,7 @@ export function makeControlPlaneCanonicalCommunityRouteRepository(): CanonicalCo
         if (!routeMatches(row, routeTarget)) return yield* Effect.fail(invalidRow());
 
         try {
-          return decodeCanonicalCommunityRouteResolutionV1({
+          return decodeCanonicalCommunityRouteResolutionV2({
             community_id: row.community_id,
             canonical_route: {
               family: row.family,
