@@ -66,6 +66,7 @@ export interface MegapotV2RpcClient {
     readonly state: MegapotV2DrawingState;
   }>;
   readonly readUsdcBalance: (account: string) => Promise<bigint>;
+  readonly readNativeBalance: (account: string) => Promise<bigint>;
   readonly readUsdcAllowance: (owner: string, spender: string) => Promise<bigint>;
   readonly readTicketOwner: (ticketId: bigint) => Promise<string>;
   readonly readPendingNonce: (account: string) => Promise<bigint>;
@@ -79,6 +80,10 @@ export interface MegapotV2RpcClient {
   readonly sendRawTransaction: (signedTransaction: Hex) => Promise<string>;
   readonly readReceipt: (transactionHash: string) => Promise<MegapotTransactionReceipt | null>;
   readonly readHead: () => Promise<{
+    readonly blockNumber: bigint;
+    readonly blockHash: string;
+  }>;
+  readonly readBlock: (blockNumber: bigint) => Promise<{
     readonly blockNumber: bigint;
     readonly blockHash: string;
   }>;
@@ -278,6 +283,8 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       decodeMegapotUsdcBalance(
         await ethCall(attestation.usdcAddress, encodeMegapotUsdcBalance(account)),
       ),
+    readNativeBalance: async (account) =>
+      quantity(await rpc("eth_getBalance", [canonicalAddress(account), "latest"])),
     readUsdcAllowance: async (owner, spender) =>
       decodeMegapotUsdcAllowance(
         await ethCall(attestation.usdcAddress, encodeMegapotUsdcAllowance(owner, spender)),
@@ -362,5 +369,13 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       };
     },
     readHead,
+    readBlock: async (blockNumber) => {
+      if (blockNumber < 0n) throw new MegapotV2RpcFailed("invalid-config");
+      const identity = blockIdentity(
+        await rpc("eth_getBlockByNumber", [quantityHex(blockNumber), false]),
+      );
+      if (identity.blockNumber !== blockNumber) throw new MegapotV2RpcFailed("invalid-response");
+      return identity;
+    },
   };
 }

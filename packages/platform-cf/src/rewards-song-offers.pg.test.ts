@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
@@ -25,7 +26,9 @@ const connectionForSchema = (raw: string, schema: string): string => {
   return `${raw}${separator}options=${encodeURIComponent(`-c search_path=${schema}`)}`;
 };
 
-async function withSchema<A>(use: (admin: Client) => Promise<A>): Promise<A> {
+async function withSchema<A>(
+  use: (admin: Client, scopedConnection: string) => Promise<A>,
+): Promise<A> {
   if (connectionString === undefined) throw new Error("test URL was not configured");
   const schema = schemaIdentifier();
   const admin = new Client({ connectionString });
@@ -42,7 +45,7 @@ async function withSchema<A>(use: (admin: Client) => Promise<A>): Promise<A> {
         ),
       ),
     );
-    return await use(admin);
+    return await use(admin, connectionForSchema(connectionString, schema));
   } finally {
     await admin.query("ROLLBACK");
     await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
@@ -555,6 +558,189 @@ suite("Postgres 17 Megapot rewards persistence", () => {
            FROM reward_chain_effects WHERE effect_id='purchase-effect'`,
       );
       expect(effect.rows).toEqual([{ state: "prepared", reserved_amount_atomic: "10000" }]);
+    });
+  });
+
+  test("persists nonce reserve through confirmed custody ticket without duplicate purchase", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "purchase-repository");
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "purchase-repository",
+      });
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-101', 'megapot-base-sepolia-v2', 84532, 101,
+           10000, clock_timestamp() + interval '1 hour', 25, 13, false,
+           100000000000000000, 100000000000000000, 110, $1,
+           clock_timestamp() - interval '1 minute', 3, clock_timestamp(),
+           clock_timestamp() + interval '30 minutes', $2
+         )`,
+        [bytes32("6"), hash("6")],
+      );
+      await admin.query("SET session_replication_role = replica");
+      try {
+        await admin.query(
+          `INSERT INTO megapot_pool_drawings (
+             pool_leg_id, drawing_id, observation_id, status, version,
+             entry_cutoff_at, ticket_price_ceiling_atomic,
+             reserved_ticket_cost_atomic, actual_ticket_cost_atomic,
+             frozen_share_count, fallback_beneficiary, snapshot_id,
+             commitment_effect_id, cutoff_frozen_at
+           ) VALUES (
+             $1, 101, 'drawing-observation-101', 'committed', 3,
+             clock_timestamp() + interval '55 minutes', 10000, 10000, 0,
+             1, false, 'snapshot-101', 'commitment-101', clock_timestamp()
+           )`,
+          [legId],
+        );
+        await admin.query(
+          `INSERT INTO megapot_pool_beneficiary_snapshots (
+             snapshot_id, pool_leg_id, drawing_id, domain, terms_hash,
+             algorithm_version, fallback, leaf_count, snapshot_hash,
+             published_artifact, frozen_at
+           ) VALUES (
+             'snapshot-101', $1, 101,
+             'pirate.megapot-pool-beneficiary-snapshot.v2', $2,
+             'equal_v1', false, 1, $3, '{}'::jsonb, clock_timestamp()
+           )`,
+          [legId, bytes32("b"), bytes32("7")],
+        );
+        await admin.query(
+          `INSERT INTO megapot_pool_commitment_effects (
+             commitment_effect_id, snapshot_id, payload_hash, signing_key_id,
+             signature, state, prepared_at, published_at, public_reference
+           ) VALUES (
+             'commitment-101', 'snapshot-101', $1, 'test-commitment-key',
+             'test-signature', 'published', clock_timestamp(), clock_timestamp(),
+             'urn:pirate:test:commitment-101'
+           )`,
+          [hash("7")],
+        );
+      } finally {
+        await admin.query("SET session_replication_role = origin");
+      }
+
+      await admin.query(`UPDATE song_reward_offer_legs SET reserved_atomic=10000 WHERE leg_id=$1`, [
+        legId,
+      ]);
+
+      const store = makeControlPlaneMegapotPurchaseStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const candidate = await Effect.runPromise(
+        store.loadCandidate({ poolLegId: legId, drawingId: 101n }),
+      );
+      expect(candidate).toMatchObject({
+        drawingVersion: 3,
+        ticketPriceAtomic: 10_000n,
+        ballMax: 25,
+        bonusballMax: 13,
+      });
+      const reserved = await Effect.runPromise(
+        store.reserveNonce({
+          candidate,
+          effectId: "purchase-effect-101",
+          ticket: { normals: [1, 2, 3, 4, 5], bonusball: 6 },
+          observedPendingNonce: 9n,
+          observedBlockNumber: 111n,
+          observedBlockHash: bytes32("8"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
+      expect(reserved.nonce).toBe(9n);
+      const transactionHash = bytes32("9");
+      await Effect.runPromise(
+        store.prepare({
+          reservation: reserved,
+          ticket: { normals: [1, 2, 3, 4, 5], bonusball: 6 },
+          calldata: "0xdeadbeef",
+          calldataHash: hash("8"),
+          signedTransaction: "0x0102",
+          signedTransactionHash: transactionHash,
+          preparedAt: new Date().toISOString(),
+        }),
+      );
+      await Effect.runPromise(
+        store.recordSubmission({
+          effectId: reserved.effectId,
+          transactionHash,
+          submittedAt: new Date().toISOString(),
+          outcome: "accepted",
+        }),
+      );
+      await Effect.runPromise(
+        store.confirm({
+          effectId: reserved.effectId,
+          transactionHash,
+          ticketId: 501n,
+          purchaseLogIndex: 3,
+          mintLogIndex: 4,
+          blockNumber: 112n,
+          blockHash: bytes32("a"),
+          receiptHash: hash("a"),
+          confirmations: 3,
+          referralFeesAtomic: 100n,
+          lpEarningsAtomic: 900n,
+          confirmedAt: new Date().toISOString(),
+        }),
+      );
+      const rows = await admin.query<{
+        readonly effect_state: string;
+        readonly drawing_state: string;
+        readonly ticket_state: string;
+        readonly evidence_count: string;
+        readonly reserved_atomic: string;
+        readonly spent_atomic: string;
+        readonly referral_fees_atomic: string;
+      }>(
+        `SELECT effect.state AS effect_state, drawing.status AS drawing_state,
+                ticket.status AS ticket_state,
+                (SELECT count(*)::text FROM megapot_purchase_receipt_evidence
+                  WHERE purchase_effect_id=effect.effect_id) AS evidence_count,
+                leg.reserved_atomic::text, leg.spent_atomic::text,
+                evidence.referral_fees_atomic::text
+           FROM reward_chain_effects effect
+           JOIN megapot_pool_drawings drawing
+             ON drawing.purchase_effect_id=effect.effect_id
+           JOIN megapot_ticket_inventory ticket
+             ON ticket.purchase_effect_id=effect.effect_id
+           JOIN song_reward_offer_legs leg ON leg.leg_id=drawing.pool_leg_id
+           JOIN megapot_purchase_receipt_evidence evidence
+             ON evidence.purchase_effect_id=effect.effect_id
+          WHERE effect.effect_id='purchase-effect-101'`,
+      );
+      expect(rows.rows).toEqual([
+        {
+          effect_state: "confirmed",
+          drawing_state: "tickets_confirmed",
+          ticket_state: "custodied",
+          evidence_count: "1",
+          reserved_atomic: "0",
+          spent_atomic: "10000",
+          referral_fees_atomic: "100",
+        },
+      ]);
+      await expect(
+        Effect.runPromise(
+          store.reserveNonce({
+            candidate,
+            effectId: "purchase-effect-101-duplicate",
+            ticket: { normals: [1, 2, 3, 4, 5], bonusball: 6 },
+            observedPendingNonce: 9n,
+            observedBlockNumber: 113n,
+            observedBlockHash: bytes32("b"),
+            observedAt: new Date().toISOString(),
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "drawing-not-committed" });
     });
   });
 });

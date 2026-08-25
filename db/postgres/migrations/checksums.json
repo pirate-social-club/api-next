@@ -53,6 +53,6 @@
     "0050_song_lyrics_foundation.sql": "09318fe6ba64eb98d7d98a85d3dd22c631af907f62aedc01ba2448a8cbc61b57",
     "0051_activity_qualification.sql": "6358017bcdfbe50b2707d5a2677d5b4ede4e80a00953c3b262fe299af00a70e7",
     "0052_media_finalize_fence.sql": "2bb62ec5a5575457cace6abd4bbdbaac0a1ab6b7d508a3dafbb709382cd6d644",
-    "0053_rewards_song_offers.sql": "1fde9c70edf9ba86880a34372e7d9fd62f9607060c57a22a480d958f7f15433b"
+    "0053_rewards_song_offers.sql": "28298897e8e80e07e30f1b1c8aa15dec20f532811f749351dd1493ca033b28dd"
   }
 }

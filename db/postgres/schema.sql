@@ -12505,6 +12505,33 @@ CREATE TABLE megapot_pool_snapshot_private_leaves (
     CONSTRAINT megapot_pool_snapshot_private_leaves_ordinal_check CHECK ((ordinal >= 0))
 );
 
+CREATE TABLE megapot_purchase_receipt_evidence (
+    purchase_effect_id text NOT NULL,
+    attestation_id text NOT NULL,
+    ticket_id numeric(78,0) NOT NULL,
+    transaction_hash text NOT NULL,
+    purchase_log_index integer NOT NULL,
+    mint_log_index integer NOT NULL,
+    block_number bigint NOT NULL,
+    block_hash text NOT NULL,
+    receipt_hash text NOT NULL,
+    confirmations integer NOT NULL,
+    referral_fees_atomic numeric(78,0) NOT NULL,
+    lp_earnings_atomic numeric(78,0) NOT NULL,
+    confirmed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT megapot_purchase_receipt_distinct_logs CHECK ((purchase_log_index <> mint_log_index)),
+    CONSTRAINT megapot_purchase_receipt_evidence_block_hash_check CHECK ((block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT megapot_purchase_receipt_evidence_block_number_check CHECK ((block_number >= 0)),
+    CONSTRAINT megapot_purchase_receipt_evidence_confirmations_check CHECK ((confirmations > 0)),
+    CONSTRAINT megapot_purchase_receipt_evidence_lp_earnings_atomic_check CHECK ((lp_earnings_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_purchase_receipt_evidence_mint_log_index_check CHECK ((mint_log_index >= 0)),
+    CONSTRAINT megapot_purchase_receipt_evidence_purchase_log_index_check CHECK ((purchase_log_index >= 0)),
+    CONSTRAINT megapot_purchase_receipt_evidence_receipt_hash_check CHECK ((receipt_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT megapot_purchase_receipt_evidence_referral_fees_atomic_check CHECK ((referral_fees_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_purchase_receipt_evidence_transaction_hash_check CHECK ((transaction_hash ~ '^0x[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE megapot_ticket_inventory (
     attestation_id text NOT NULL,
     ticket_id numeric(78,0) NOT NULL,
@@ -14825,6 +14852,15 @@ ALTER TABLE ONLY megapot_pool_snapshot_private_leaves
 ALTER TABLE ONLY megapot_pool_snapshot_private_leaves
     ADD CONSTRAINT megapot_pool_snapshot_private_leaves_snapshot_id_order_key_key UNIQUE (snapshot_id, order_key);
 
+ALTER TABLE ONLY megapot_purchase_receipt_evidence
+    ADD CONSTRAINT megapot_purchase_receipt_evid_attestation_id_transaction_h_key1 UNIQUE (attestation_id, transaction_hash, mint_log_index);
+
+ALTER TABLE ONLY megapot_purchase_receipt_evidence
+    ADD CONSTRAINT megapot_purchase_receipt_evid_attestation_id_transaction_ha_key UNIQUE (attestation_id, transaction_hash, purchase_log_index);
+
+ALTER TABLE ONLY megapot_purchase_receipt_evidence
+    ADD CONSTRAINT megapot_purchase_receipt_evidence_pkey PRIMARY KEY (purchase_effect_id);
+
 ALTER TABLE ONLY megapot_ticket_inventory
     ADD CONSTRAINT megapot_ticket_inventory_attestation_id_minted_transaction__key UNIQUE (attestation_id, minted_transaction_hash, minted_log_index);
 
@@ -15933,6 +15969,8 @@ CREATE CONSTRAINT TRIGGER megapot_pool_drawing_transition_pair AFTER UPDATE ON m
 CREATE TRIGGER megapot_pool_drawings_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_pool_drawings FOR EACH ROW EXECUTE FUNCTION guard_megapot_pool_drawing();
 
 CREATE TRIGGER megapot_pool_shares_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_pool_shares FOR EACH ROW EXECUTE FUNCTION guard_megapot_pool_share();
+
+CREATE TRIGGER megapot_purchase_receipt_evidence_append_only BEFORE DELETE OR UPDATE ON megapot_purchase_receipt_evidence FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 
 CREATE TRIGGER megapot_ticket_inventory_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_ticket_inventory FOR EACH ROW EXECUTE FUNCTION guard_megapot_ticket_inventory();
 
@@ -17060,6 +17098,12 @@ ALTER TABLE ONLY megapot_pool_snapshot_private_leaves
 
 ALTER TABLE ONLY megapot_pool_snapshot_private_leaves
     ADD CONSTRAINT megapot_pool_snapshot_private_leaves_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES megapot_pool_beneficiary_snapshots(snapshot_id);
+
+ALTER TABLE ONLY megapot_purchase_receipt_evidence
+    ADD CONSTRAINT megapot_purchase_receipt_evidence_attestation_id_ticket_id_fkey FOREIGN KEY (attestation_id, ticket_id) REFERENCES megapot_ticket_inventory(attestation_id, ticket_id);
+
+ALTER TABLE ONLY megapot_purchase_receipt_evidence
+    ADD CONSTRAINT megapot_purchase_receipt_evidence_purchase_effect_id_fkey FOREIGN KEY (purchase_effect_id) REFERENCES megapot_ticket_purchase_effects(purchase_effect_id);
 
 ALTER TABLE ONLY megapot_ticket_inventory
     ADD CONSTRAINT megapot_ticket_inventory_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);

@@ -875,6 +875,31 @@ CREATE TABLE megapot_ticket_inventory (
 CREATE INDEX megapot_ticket_inventory_work_idx
   ON megapot_ticket_inventory (status, drawing_id, attestation_id, ticket_id);
 
+CREATE TABLE megapot_purchase_receipt_evidence (
+  purchase_effect_id TEXT PRIMARY KEY
+    REFERENCES megapot_ticket_purchase_effects (purchase_effect_id),
+  attestation_id TEXT NOT NULL,
+  ticket_id NUMERIC(78, 0) NOT NULL,
+  transaction_hash TEXT NOT NULL CHECK (transaction_hash ~ '^0x[0-9a-f]{64}$'),
+  purchase_log_index INTEGER NOT NULL CHECK (purchase_log_index >= 0),
+  mint_log_index INTEGER NOT NULL CHECK (mint_log_index >= 0),
+  block_number BIGINT NOT NULL CHECK (block_number >= 0),
+  block_hash TEXT NOT NULL CHECK (block_hash ~ '^0x[0-9a-f]{64}$'),
+  receipt_hash TEXT NOT NULL CHECK (receipt_hash ~ '^[0-9a-f]{64}$'),
+  confirmations INTEGER NOT NULL CHECK (confirmations > 0),
+  referral_fees_atomic NUMERIC(78, 0) NOT NULL CHECK (referral_fees_atomic >= 0),
+  lp_earnings_atomic NUMERIC(78, 0) NOT NULL CHECK (lp_earnings_atomic >= 0),
+  confirmed_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  FOREIGN KEY (attestation_id, ticket_id)
+    REFERENCES megapot_ticket_inventory (attestation_id, ticket_id),
+  UNIQUE (attestation_id, transaction_hash, purchase_log_index),
+  UNIQUE (attestation_id, transaction_hash, mint_log_index),
+  CONSTRAINT megapot_purchase_receipt_distinct_logs CHECK (
+    purchase_log_index <> mint_log_index
+  )
+);
+
 CREATE TABLE megapot_drawing_sweeps (
   sweep_id TEXT PRIMARY KEY CHECK (
     btrim(sweep_id) <> '' AND sweep_id = btrim(sweep_id) AND octet_length(sweep_id) <= 128
@@ -2380,6 +2405,9 @@ BEFORE UPDATE OR DELETE ON megapot_pool_drawing_transitions
 FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 CREATE TRIGGER megapot_allocations_append_only
 BEFORE UPDATE OR DELETE ON megapot_allocations
+FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
+CREATE TRIGGER megapot_purchase_receipt_evidence_append_only
+BEFORE UPDATE OR DELETE ON megapot_purchase_receipt_evidence
 FOR EACH ROW EXECUTE FUNCTION reject_reward_append_only_change();
 CREATE TRIGGER custody_solvency_observations_append_only
 BEFORE UPDATE OR DELETE ON custody_solvency_observations
