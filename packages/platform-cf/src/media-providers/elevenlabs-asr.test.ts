@@ -10,10 +10,7 @@ import {
 import {
   ELEVENLABS_ASR_HARD_MAX_AUDIO_BYTES,
   ELEVENLABS_ASR_HARD_MAX_PROVIDER_ENTRIES,
-  type ElevenLabsAsrAttemptEvidence,
   type ElevenLabsAsrAudioSource,
-  type ElevenLabsAsrEvidenceSink,
-  type ElevenLabsAsrPreparedEvidence,
   type ElevenLabsAsrRequestBody,
   type ElevenLabsAsrTransportRequest,
   type ElevenLabsAsrTransportResponse,
@@ -21,38 +18,8 @@ import {
 } from "./elevenlabs-asr.ts";
 
 const encoder = new TextEncoder();
-
-function preparedEvidence(
-  evidence: ElevenLabsAsrAttemptEvidence,
-  onCommit: (entry: ElevenLabsAsrAttemptEvidence) => void = () => undefined,
-  onDiscard: (entry: ElevenLabsAsrAttemptEvidence) => void = () => undefined,
-): ElevenLabsAsrPreparedEvidence {
-  let authoritative: ElevenLabsAsrAttemptEvidence | undefined;
-  return {
-    version: "elevenlabs-asr-prepared-evidence-v1",
-    evidence,
-    settle: (desired) =>
-      Effect.sync(() => {
-        if (authoritative === undefined) {
-          authoritative = desired;
-          onCommit(desired);
-        }
-        return {
-          version: "elevenlabs-asr-evidence-receipt-v1" as const,
-          evidence: authoritative,
-        };
-      }),
-    discard: () => Effect.sync(() => onDiscard(evidence)),
-  };
-}
-
-function evidenceSink(
-  onCommit: (entry: ElevenLabsAsrAttemptEvidence) => void = () => undefined,
-): ElevenLabsAsrEvidenceSink {
-  return {
-    prepare: (evidence) => Effect.succeed(preparedEvidence(evidence, onCommit)),
-  };
-}
+const COMBINED_ADAPTER_REVISION =
+  "elevenlabs-asr-v1:a25:elevenlabs-asr-adapter-v1:m25:model-revision-2026-08-25" as const;
 
 function audioSource(
   bytes: Uint8Array = encoder.encode("fixture-audio"),
@@ -140,7 +107,6 @@ function configured(
     },
     resolve_audio: () => audioSource(),
     random_bytes: (length) => new Uint8Array(length).fill(7),
-    evidence_sink: evidenceSink(),
     transport,
     ...overrides,
   });
@@ -172,9 +138,10 @@ describe("ElevenLabs ASR adapter", () => {
     if (result.status !== "transcript") throw new Error("expected transcript");
     expect(result.transcript.transcript).toBe(multilingualResponse.text);
     expect(result.detected_languages).toEqual([{ language_bcp47: "en", confidence: 0.84 }]);
+    expect(result.adapter_revision).toBe(COMBINED_ADAPTER_REVISION);
     expect(result.transcript.transcript_sha256).toMatch(/^[0-9a-f]{64}$/u);
     expect(result.transcript.transcript_artifact_ref).toMatch(
-      /^elevenlabs-asr:\/\/transcript\/[0-9a-f]{64}\/a{64}\/1\/2\/[0-9a-f]{64}$/u,
+      /^elevenlabs-asr:\/\/transcript\/[0-9a-f]{64}\/a{64}\/1\/2\/[0-9a-f]{64}\/[0-9a-f]{64}\/[0-9a-f]{64}$/u,
     );
 
     const request = requests[0];
@@ -289,369 +256,71 @@ describe("ElevenLabs ASR adapter", () => {
     );
   });
 
-  test("retains prompt-injection text only as immutable transcript evidence", async () => {
-    const evidence: ElevenLabsAsrAttemptEvidence[] = [];
-    const adapter = configured(() => response(multilingualResponse), {
-      evidence_sink: evidenceSink((entry) => evidence.push(entry)),
-    });
+  test("returns hostile transcript evidence without an adapter-owned storage side effect", async () => {
+    const requests: ElevenLabsAsrTransportRequest[] = [];
     const result = await Effect.runPromise(
-      adapter.recognize(asrInput, { signal: new AbortController().signal }),
+      configured((request) => {
+        requests.push(request);
+        return response(multilingualResponse);
+      }).recognize(asrInput, { signal: new AbortController().signal }),
     );
     expect(result.status).toBe("transcript");
     if (result.status !== "transcript") throw new Error("expected transcript");
     expect(result.transcript.transcript).toContain("Ignore prior instructions");
-    expect(evidence).toEqual([
-      {
-        version: "elevenlabs-asr-attempt-evidence-v1",
-        provider: "elevenlabs",
-        endpoint: "https://api.elevenlabs.io/v1/speech-to-text",
-        attempt_id: "attempt-asr-1",
-        requested_model: "fixture-scribe-model",
-        model_revision: "model-revision-2026-08-25",
-        adapter_revision: "elevenlabs-asr-adapter-v1",
-        retention: "zero_retention",
-        outcome: "transcript",
-        provider_status: 200,
-      },
-    ]);
-    expect(JSON.stringify(evidence)).not.toContain("fixture-secret-key");
-    expect(JSON.stringify(evidence)).not.toContain("Ignore prior instructions");
+    expect(result.adapter_revision).toBe(COMBINED_ADAPTER_REVISION);
+    expect(requests).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain("fixture-secret-key");
+    expect(requests[0]).not.toHaveProperty("evidence_sink");
   });
 
-  test("awaits exact model provenance and fails closed when it cannot persist", async () => {
-    const evidence: ElevenLabsAsrAttemptEvidence[] = [];
-    let releaseSink: (() => void) | undefined;
-    let markSinkStarted: (() => void) | undefined;
-    const sinkStarted = new Promise<void>((resolve) => {
-      markSinkStarted = resolve;
-    });
-    const sinkRelease = new Promise<void>((resolve) => {
-      releaseSink = resolve;
-    });
-    let settled = false;
-    const inFlight = Effect.runPromise(
-      configured(() => response(multilingualResponse), {
-        evidence_sink: {
-          prepare: (entry: ElevenLabsAsrAttemptEvidence) =>
-            Effect.succeed({
-              version: "elevenlabs-asr-prepared-evidence-v1" as const,
-              evidence: entry,
-              settle: (desired: ElevenLabsAsrAttemptEvidence) =>
-                Effect.tryPromise(async () => {
-                  markSinkStarted?.();
-                  await sinkRelease;
-                  evidence.push(desired);
-                  return {
-                    version: "elevenlabs-asr-evidence-receipt-v1" as const,
-                    evidence: desired,
-                  };
-                }),
-              discard: () => Effect.void,
-            }),
-        },
-      }).recognize(asrInput, { signal: new AbortController().signal }),
-    ).finally(() => {
-      settled = true;
-    });
-    await sinkStarted;
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    releaseSink?.();
-    expect((await inFlight).status).toBe("transcript");
-    expect(evidence).toHaveLength(1);
-    expect(evidence[0]).toMatchObject({
-      adapter_revision: "elevenlabs-asr-adapter-v1",
-      requested_model: "fixture-scribe-model",
-      model_revision: "model-revision-2026-08-25",
-    });
+  test("derives deterministic bounded model provenance and rejects an oversized combination", async () => {
+    const first = await Effect.runPromise(
+      configured(() => response(multilingualResponse)).recognize(asrInput, {
+        signal: new AbortController().signal,
+      }),
+    );
+    const replay = await Effect.runPromise(
+      configured(() => response(multilingualResponse)).recognize(asrInput, {
+        signal: new AbortController().signal,
+      }),
+    );
+    if (first.status !== "transcript" || replay.status !== "transcript") {
+      throw new Error("expected transcripts");
+    }
+    expect(first.adapter_revision).toBe(COMBINED_ADAPTER_REVISION);
+    expect(replay.adapter_revision).toBe(COMBINED_ADAPTER_REVISION);
+    expect(replay.transcript.transcript_artifact_ref).toBe(
+      first.transcript.transcript_artifact_ref,
+    );
 
-    const failed = await providerFailure(
+    const changedModel = await Effect.runPromise(
       configured(() => response(multilingualResponse), {
-        evidence_sink: {
-          prepare: () => Effect.fail(new Error("fixture persistence failure")),
-        },
+        model_revision: "model-revision-2026-08-26",
       }).recognize(asrInput, { signal: new AbortController().signal }),
     );
-    expect(failed).toMatchObject({
-      _tag: "provider_unavailable",
-      retryability: "retryable",
-      attempt_id: "attempt-asr-1",
-    });
-  });
+    if (changedModel.status !== "transcript") throw new Error("expected transcript");
+    expect(changedModel.adapter_revision).toBe(
+      "elevenlabs-asr-v1:a25:elevenlabs-asr-adapter-v1:m25:model-revision-2026-08-26",
+    );
+    expect(changedModel.transcript.transcript_artifact_ref).not.toBe(
+      first.transcript.transcript_artifact_ref,
+    );
 
-  test("does not expose a permanent provider outcome when its evidence cannot persist", async () => {
-    let evidenceWrites = 0;
-    const committed: ElevenLabsAsrAttemptEvidence[] = [];
-    const failed = await providerFailure(
+    let transports = 0;
+    const oversized = await providerFailure(
       configured(
-        () => ({
-          status: 422,
-          headers: {},
-          body: {
-            open: async function* () {
-              yield encoder.encode('{"detail":"provider rejection"}');
-            },
-            cancel: () => undefined,
-          },
-        }),
-        {
-          evidence_sink: {
-            prepare: (entry: ElevenLabsAsrAttemptEvidence) => {
-              evidenceWrites += 1;
-              return Effect.succeed({
-                version: "elevenlabs-asr-prepared-evidence-v1" as const,
-                evidence: entry,
-                settle: (desired: ElevenLabsAsrAttemptEvidence) =>
-                  desired.outcome === "provider_unavailable"
-                    ? Effect.sync(() => {
-                        committed.push(desired);
-                        return {
-                          version: "elevenlabs-asr-evidence-receipt-v1" as const,
-                          evidence: desired,
-                        };
-                      })
-                    : Effect.fail(new Error("fixture settlement failure")),
-                discard: () => Effect.void,
-              });
-            },
-          },
+        () => {
+          transports += 1;
+          return response(multilingualResponse);
         },
+        { adapter_revision: "a".repeat(100), model_revision: "m".repeat(40) },
       ).recognize(asrInput, { signal: new AbortController().signal }),
     );
-    expect(failed).toEqual({
-      _tag: "provider_unavailable",
-      retryability: "retryable",
-      attempt_id: "attempt-asr-1",
-    });
-    expect(evidenceWrites).toBe(1);
-    expect(committed.map(({ outcome }) => outcome)).toEqual(["provider_unavailable"]);
+    expect(oversized._tag).toBe("permanent_rejection");
+    expect(transports).toBe(0);
   });
 
-  test("rejects a non-authoritative settlement receipt at runtime", async () => {
-    const committed: ElevenLabsAsrAttemptEvidence[] = [];
-    const failed = await providerFailure(
-      configured(() => response(multilingualResponse), {
-        evidence_sink: {
-          prepare: (entry: ElevenLabsAsrAttemptEvidence) =>
-            Effect.succeed({
-              version: "elevenlabs-asr-prepared-evidence-v1" as const,
-              evidence: entry,
-              settle: (desired: ElevenLabsAsrAttemptEvidence) => {
-                if (desired.outcome === "provider_unavailable") {
-                  return Effect.sync(() => {
-                    committed.push(desired);
-                    return {
-                      version: "elevenlabs-asr-evidence-receipt-v1" as const,
-                      evidence: desired,
-                    };
-                  });
-                }
-                return Effect.succeed({
-                  version: "elevenlabs-asr-evidence-receipt-v1" as const,
-                  evidence: { ...desired, outcome: "no_speech" as const },
-                });
-              },
-              discard: () => Effect.void,
-            }),
-        },
-      }).recognize(asrInput, { signal: new AbortController().signal }),
-    );
-    expect(failed).toMatchObject({
-      _tag: "provider_unavailable",
-      retryability: "retryable",
-      attempt_id: "attempt-asr-1",
-    });
-    expect(committed.map(({ outcome }) => outcome)).toEqual(["provider_unavailable"]);
-  });
-
-  test("keeps timeout and caller cancellation authoritative through blocked evidence writes", async () => {
-    const timeoutSinkStarted = Promise.withResolvers<void>();
-    let timeoutSinkAborted = 0;
-    let lateTimeoutCandidateCommits = 0;
-    let attemptLateTimeoutCommit = () => undefined;
-    const timeoutEvidence: ElevenLabsAsrAttemptEvidence[] = [];
-    const timedOut = providerFailure(
-      configured(() => response(multilingualResponse), {
-        limits: { max_audio_bytes: 1_024, max_response_bytes: 32_768, timeout_ms: 50 },
-        evidence_sink: {
-          prepare: (entry: ElevenLabsAsrAttemptEvidence) => {
-            let authoritative: ElevenLabsAsrAttemptEvidence | undefined;
-            return Effect.succeed({
-              version: "elevenlabs-asr-prepared-evidence-v1" as const,
-              evidence: entry,
-              settle: (desired: ElevenLabsAsrAttemptEvidence) => {
-                if (desired.outcome === "timeout") {
-                  return Effect.sync(() => {
-                    authoritative ??= desired;
-                    timeoutEvidence.push(authoritative);
-                    return {
-                      version: "elevenlabs-asr-evidence-receipt-v1" as const,
-                      evidence: authoritative,
-                    };
-                  });
-                }
-                return Effect.callback((resume) => {
-                  let transactionOpen = true;
-                  timeoutSinkStarted.resolve();
-                  attemptLateTimeoutCommit = () => {
-                    if (!transactionOpen) return;
-                    lateTimeoutCandidateCommits += 1;
-                    authoritative ??= desired;
-                    resume(
-                      Effect.succeed({
-                        version: "elevenlabs-asr-evidence-receipt-v1" as const,
-                        evidence: authoritative,
-                      }),
-                    );
-                  };
-                  return Effect.sync(() => {
-                    transactionOpen = false;
-                    timeoutSinkAborted += 1;
-                  });
-                });
-              },
-              discard: () => Effect.void,
-            });
-          },
-        },
-      }).recognize(asrInput, { signal: new AbortController().signal }),
-    );
-    await timeoutSinkStarted.promise;
-    expect(await timedOut).toEqual({
-      _tag: "timeout",
-      retryability: "retryable",
-      attempt_id: "attempt-asr-1",
-    });
-    expect(timeoutSinkAborted).toBe(1);
-    expect(timeoutEvidence.map(({ outcome }) => outcome)).toEqual(["timeout"]);
-    attemptLateTimeoutCommit();
-    expect(lateTimeoutCandidateCommits).toBe(0);
-    expect(timeoutEvidence.map(({ outcome }) => outcome)).toEqual(["timeout"]);
-
-    const cancellationSinkStarted = Promise.withResolvers<void>();
-    let cancellationSinkAborted = 0;
-    let lateCancellationCandidateCommits = 0;
-    let attemptLateCancellationCommit = () => undefined;
-    const cancellationEvidence: ElevenLabsAsrAttemptEvidence[] = [];
-    const controller = new AbortController();
-    const cancelled = providerFailure(
-      configured(() => response(multilingualResponse), {
-        evidence_sink: {
-          prepare: (entry: ElevenLabsAsrAttemptEvidence) => {
-            let authoritative: ElevenLabsAsrAttemptEvidence | undefined;
-            return Effect.succeed({
-              version: "elevenlabs-asr-prepared-evidence-v1" as const,
-              evidence: entry,
-              settle: (desired: ElevenLabsAsrAttemptEvidence) => {
-                if (desired.outcome === "cancelled") {
-                  return Effect.sync(() => {
-                    authoritative ??= desired;
-                    cancellationEvidence.push(authoritative);
-                    return {
-                      version: "elevenlabs-asr-evidence-receipt-v1" as const,
-                      evidence: authoritative,
-                    };
-                  });
-                }
-                return Effect.callback((resume) => {
-                  let transactionOpen = true;
-                  cancellationSinkStarted.resolve();
-                  attemptLateCancellationCommit = () => {
-                    if (!transactionOpen) return;
-                    lateCancellationCandidateCommits += 1;
-                    authoritative ??= desired;
-                    resume(
-                      Effect.succeed({
-                        version: "elevenlabs-asr-evidence-receipt-v1" as const,
-                        evidence: authoritative,
-                      }),
-                    );
-                  };
-                  return Effect.sync(() => {
-                    transactionOpen = false;
-                    cancellationSinkAborted += 1;
-                  });
-                });
-              },
-              discard: () => Effect.void,
-            });
-          },
-        },
-      }).recognize(asrInput, { signal: controller.signal }),
-    );
-    await cancellationSinkStarted.promise;
-    controller.abort();
-    expect(await cancelled).toEqual({
-      _tag: "cancelled",
-      retryability: "cancelled",
-      attempt_id: "attempt-asr-1",
-    });
-    expect(cancellationSinkAborted).toBe(1);
-    expect(cancellationEvidence.map(({ outcome }) => outcome)).toEqual(["cancelled"]);
-    attemptLateCancellationCommit();
-    expect(lateCancellationCandidateCommits).toBe(0);
-    expect(cancellationEvidence.map(({ outcome }) => outcome)).toEqual(["cancelled"]);
-  });
-
-  test("returns an already-committed candidate when timeout races its receipt", async () => {
-    const settlementStarted = Promise.withResolvers<void>();
-    const evidence: ElevenLabsAsrAttemptEvidence[] = [];
-    const result = await Effect.runPromise(
-      configured(() => response(multilingualResponse), {
-        limits: { max_audio_bytes: 1_024, max_response_bytes: 32_768, timeout_ms: 5 },
-        evidence_sink: {
-          prepare: (entry: ElevenLabsAsrAttemptEvidence) => {
-            let authoritative: ElevenLabsAsrAttemptEvidence | undefined;
-            return Effect.succeed({
-              version: "elevenlabs-asr-prepared-evidence-v1" as const,
-              evidence: entry,
-              settle: (desired: ElevenLabsAsrAttemptEvidence) => {
-                if (authoritative !== undefined) {
-                  return Effect.succeed({
-                    version: "elevenlabs-asr-evidence-receipt-v1" as const,
-                    evidence: authoritative,
-                  });
-                }
-                authoritative = desired;
-                evidence.push(desired);
-                settlementStarted.resolve();
-                return Effect.callback(() => Effect.void);
-              },
-              discard: () => Effect.void,
-            });
-          },
-        },
-      }).recognize(asrInput, { signal: new AbortController().signal }),
-    );
-    await settlementStarted.promise;
-    expect(result.status).toBe("transcript");
-    expect(evidence.map(({ outcome }) => outcome)).toEqual(["transcript"]);
-  });
-
-  test("commits one matching evidence outcome for provider failures", async () => {
-    const evidence: ElevenLabsAsrAttemptEvidence[] = [];
-    const failed = await providerFailure(
-      configured(
-        () => ({
-          status: 422,
-          headers: {},
-          body: {
-            open: async function* () {
-              yield encoder.encode('{"detail":"provider rejection"}');
-            },
-            cancel: () => undefined,
-          },
-        }),
-        { evidence_sink: evidenceSink((entry) => evidence.push(entry)) },
-      ).recognize(asrInput, { signal: new AbortController().signal }),
-    );
-    expect(failed._tag).toBe("permanent_rejection");
-    expect(evidence).toMatchObject([
-      { outcome: "permanent_rejection", attempt_id: "attempt-asr-1", provider_status: 422 },
-    ]);
-  });
-
-  test("projects music-only output as explicit no-speech evidence", async () => {
+  test("binds explicit no-speech evidence to full audio and provider lineage", async () => {
     const result = await Effect.runPromise(
       configured(() => response(musicOnlyResponse)).recognize(asrInput, {
         signal: new AbortController().signal,
@@ -661,10 +330,48 @@ describe("ElevenLabs ASR adapter", () => {
       status: "no_speech",
       transcript: null,
       detected_languages: [],
-      adapter_revision: "elevenlabs-asr-adapter-v1",
+      adapter_revision: COMBINED_ADAPTER_REVISION,
     });
     if (result.status !== "no_speech") throw new Error("expected no speech");
     expect(result.evidence_ref).toContain(asrInput.audio.canonical_audio_sha256);
+
+    const replay = await Effect.runPromise(
+      configured(() => response(musicOnlyResponse)).recognize(asrInput, {
+        signal: new AbortController().signal,
+      }),
+    );
+    if (replay.status !== "no_speech") throw new Error("expected no speech");
+    expect(replay.evidence_ref).toBe(result.evidence_ref);
+
+    const changedAudio = {
+      ...asrInput,
+      audio: {
+        ...asrInput.audio,
+        operation_id: "operation-asr-no-speech-2",
+        audio_revision: 2,
+        audio_artifact_ref: "r2://private/audio/operation-asr-no-speech-2/revision-2",
+      },
+      attempt: {
+        ...asrInput.attempt,
+        attempt_id: "attempt-asr-no-speech-2",
+        request_id: "request-asr-no-speech-2",
+      },
+    };
+    const distinct = await Effect.runPromise(
+      configured(() => response(musicOnlyResponse)).recognize(changedAudio, {
+        signal: new AbortController().signal,
+      }),
+    );
+    if (distinct.status !== "no_speech") throw new Error("expected no speech");
+    expect(distinct.evidence_ref).not.toBe(result.evidence_ref);
+
+    const changedModel = await Effect.runPromise(
+      configured(() => response(musicOnlyResponse), {
+        model_revision: "model-revision-2026-08-26",
+      }).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    if (changedModel.status !== "no_speech") throw new Error("expected no speech");
+    expect(changedModel.evidence_ref).not.toBe(result.evidence_ref);
   });
 
   test("rejects contradictory or absent no-speech evidence as malformed", async () => {
@@ -977,6 +684,7 @@ describe("ElevenLabs ASR adapter", () => {
     expect(cancelled.retryability).toBe("cancelled");
 
     let bodyCancelled = 0;
+    const releaseBody = Promise.withResolvers<void>();
     let markBodyStarted: (() => void) | undefined;
     const bodyStarted = new Promise<void>((resolve) => {
       markBodyStarted = resolve;
@@ -989,10 +697,12 @@ describe("ElevenLabs ASR adapter", () => {
         body: {
           open: async function* () {
             markBodyStarted?.();
-            await new Promise<never>(() => undefined);
+            await releaseBody.promise;
+            yield new Uint8Array();
           },
-          cancel: () => {
+          cancel: async () => {
             bodyCancelled += 1;
+            releaseBody.resolve();
           },
         },
       })).recognize(asrInput, { signal: bodyController.signal }),
@@ -1001,6 +711,98 @@ describe("ElevenLabs ASR adapter", () => {
     bodyController.abort();
     expect((await inFlight)._tag).toBe("cancelled");
     expect(bodyCancelled).toBe(1);
+  });
+
+  test("awaits response cancellation and invalid-chunk iterator cleanup", async () => {
+    const cancellationStarted = Promise.withResolvers<void>();
+    const releaseCancellation = Promise.withResolvers<void>();
+    let cancellationFinished = false;
+    let settled = false;
+    const rejected = providerFailure(
+      configured(() => ({
+        status: 422,
+        headers: {},
+        body: {
+          open: async function* () {
+            yield encoder.encode("unused");
+          },
+          cancel: async () => {
+            cancellationStarted.resolve();
+            await releaseCancellation.promise;
+            cancellationFinished = true;
+          },
+        },
+      })).recognize(asrInput, { signal: new AbortController().signal }),
+    ).finally(() => {
+      settled = true;
+    });
+    await cancellationStarted.promise;
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(cancellationFinished).toBe(false);
+    releaseCancellation.resolve();
+    expect((await rejected)._tag).toBe("permanent_rejection");
+    expect(cancellationFinished).toBe(true);
+
+    let invalidCancelled = false;
+    let iteratorClosed = false;
+    const invalidChunk = await providerFailure(
+      configured(() => ({
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: {
+          open: () => ({
+            [Symbol.asyncIterator]: () => ({
+              next: async () => ({ done: false as const, value: "not-bytes" as never }),
+              return: async () => {
+                iteratorClosed = true;
+                return { done: true as const, value: undefined };
+              },
+            }),
+          }),
+          cancel: async () => {
+            invalidCancelled = true;
+          },
+        },
+      })).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    expect(invalidChunk._tag).toBe("malformed_response");
+    expect(invalidCancelled).toBe(true);
+    expect(iteratorClosed).toBe(true);
+  });
+
+  test("Effect interruption promptly aborts transport and cleans a late response", async () => {
+    const transportAborted = Promise.withResolvers<void>();
+    const lateBodyCleaned = Promise.withResolvers<void>();
+    const effect = configured(
+      (request) =>
+        new Promise<ElevenLabsAsrTransportResponse>((resolve) => {
+          request.signal.addEventListener(
+            "abort",
+            () => {
+              transportAborted.resolve();
+              resolve({
+                status: 200,
+                headers: { "content-type": "application/json" },
+                body: {
+                  open: async function* () {
+                    yield encoder.encode(JSON.stringify(multilingualResponse));
+                  },
+                  cancel: async () => {
+                    lateBodyCleaned.resolve();
+                  },
+                },
+              });
+            },
+            { once: true },
+          );
+        }),
+    ).recognize(asrInput, { signal: new AbortController().signal });
+
+    const exit = await Effect.runPromiseExit(Effect.timeout(effect, 5));
+    expect(Exit.isFailure(exit)).toBe(true);
+    await transportAborted.promise;
+    await lateBodyCleaned.promise;
   });
 
   test("maps throttling, transient status, and permanent rejection without reading bodies", async () => {

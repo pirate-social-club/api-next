@@ -73,12 +73,28 @@ export function failureForElevenLabsStatus(status: number): MediaProviderFailure
   return "permanent_rejection";
 }
 
-function cancelBody(body: ElevenLabsAsrResponseBody, reason: unknown): void {
+async function cancelBody(body: ElevenLabsAsrResponseBody, reason: unknown): Promise<void> {
   try {
-    void Promise.resolve(body.cancel(reason)).catch(() => undefined);
+    await body.cancel(reason);
   } catch {
     // Provider bodies and provider errors are never exposed beyond this boundary.
   }
+}
+
+async function closeIterator(iterator: AsyncIterator<Uint8Array> | undefined): Promise<void> {
+  try {
+    await iterator?.return?.();
+  } catch {
+    // Body cancellation is still attempted independently by the caller.
+  }
+}
+
+async function cleanupBody(
+  body: ElevenLabsAsrResponseBody,
+  iterator: AsyncIterator<Uint8Array> | undefined,
+  reason: unknown,
+): Promise<void> {
+  await Promise.all([cancelBody(body, reason), closeIterator(iterator)]);
 }
 
 async function readBoundedBody(
@@ -91,7 +107,7 @@ async function readBoundedBody(
   try {
     iterable = body.open(signal);
   } catch {
-    cancelBody(body, "body_open_failed");
+    await cancelBody(body, "body_open_failed");
     return null;
   }
   const chunks: Uint8Array[] = [];
@@ -110,22 +126,19 @@ async function readBoundedBody(
       if (signal.aborted) throw new DOMException("cancelled", "AbortError");
       const next = await Promise.race([iterator.next(), abortPromise]);
       if (next.done === true) break;
-      if (!(next.value instanceof Uint8Array)) return null;
+      if (!(next.value instanceof Uint8Array)) {
+        await cleanupBody(body, iterator, "invalid_response_chunk");
+        return null;
+      }
       total += next.value.byteLength;
       if (total > maximum) {
-        cancelBody(body, "response_too_large");
-        void iterator.return?.();
+        await cleanupBody(body, iterator, "response_too_large");
         return null;
       }
       chunks.push(next.value);
     }
   } catch (error) {
-    cancelBody(body, signal.aborted ? "cancelled" : "body_read_failed");
-    try {
-      void iterator?.return?.();
-    } catch {
-      // Body cancellation above is authoritative.
-    }
+    await cleanupBody(body, iterator, signal.aborted ? "cancelled" : "body_read_failed");
     if (signal.aborted) throw error;
     return null;
   } finally {
@@ -281,18 +294,18 @@ export async function parseElevenLabsAsrResponse(
 ): Promise<ElevenLabsAsrParsedResponse> {
   const statusFailure = failureForElevenLabsStatus(response.status);
   if (statusFailure !== null) {
-    cancelBody(response.body, "provider_status");
+    await cancelBody(response.body, "provider_status");
     return { kind: "failure", failure: statusFailure };
   }
   const declaredLength = headerValue(response.headers, "content-length");
   if (declaredLength !== null) {
     if (!/^\d+$/u.test(declaredLength) || Number(declaredLength) > limits.max_response_bytes) {
-      cancelBody(response.body, "response_too_large");
+      await cancelBody(response.body, "response_too_large");
       return { kind: "failure", failure: "malformed_response" };
     }
   }
   if (!/^application\/json(?:\s*;|$)/iu.test(headerValue(response.headers, "content-type") ?? "")) {
-    cancelBody(response.body, "wrong_content_type");
+    await cancelBody(response.body, "wrong_content_type");
     return { kind: "failure", failure: "malformed_response" };
   }
   const bytes = await readBoundedBody(response.body, limits.max_response_bytes, signal);
