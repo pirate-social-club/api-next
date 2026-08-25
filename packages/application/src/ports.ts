@@ -145,13 +145,67 @@ export class ControlPlaneDb extends Context.Service<
 // environment and no runtime D1 shard access. See the TASKS.md
 // "postgres-foundation@f4c69e4 ruling" for the removal sequencing.
 
-/** Operator key custody and signing decisions (money paths only). */
-export class OperatorSigner extends Context.Service<
-  OperatorSigner,
+/**
+ * Closed browser-upload signing boundary for the physically separate media
+ * ingress bucket. The implementation owns the bucket and S3 endpoint; callers
+ * can select neither.
+ */
+export const MEDIA_INGRESS_UPLOAD_METHOD = "PUT" as const;
+export const MEDIA_INGRESS_UPLOAD_EXPIRY_SECONDS = 900 as const;
+export const MEDIA_INGRESS_UPLOAD_CONTENT_TYPE_HEADER = "content-type" as const;
+
+export type MediaIngressUploadPresignRequest = Readonly<{
+  readonly serverOwnedObjectKey: string;
+  readonly method: typeof MEDIA_INGRESS_UPLOAD_METHOD;
+  readonly requiredSignedHeaders: readonly [
+    Readonly<{
+      readonly name: typeof MEDIA_INGRESS_UPLOAD_CONTENT_TYPE_HEADER;
+      readonly value: string;
+    }>,
+  ];
+  readonly expiresInSeconds: typeof MEDIA_INGRESS_UPLOAD_EXPIRY_SECONDS;
+}>;
+
+export type MediaIngressUploadPresignResult = Readonly<{
+  readonly url: string;
+  readonly requiredHeaders: readonly [
+    Readonly<{
+      readonly name: typeof MEDIA_INGRESS_UPLOAD_CONTENT_TYPE_HEADER;
+      readonly value: string;
+    }>,
+  ];
+  readonly expiresAt: string;
+}>;
+
+export class MediaIngressUploadPresignFailed extends Data.TaggedError(
+  "MediaIngressUploadPresignFailed",
+)<{
+  readonly reason: "invalid-target" | "unavailable" | "invalid-response";
+}> {}
+
+export const mediaIngressUploadPresignRequest = (input: {
+  readonly serverOwnedObjectKey: string;
+  readonly contentType: string;
+}): MediaIngressUploadPresignRequest => ({
+  serverOwnedObjectKey: input.serverOwnedObjectKey,
+  method: MEDIA_INGRESS_UPLOAD_METHOD,
+  requiredSignedHeaders: [
+    {
+      name: MEDIA_INGRESS_UPLOAD_CONTENT_TYPE_HEADER,
+      value: input.contentType,
+    },
+  ],
+  expiresInSeconds: MEDIA_INGRESS_UPLOAD_EXPIRY_SECONDS,
+});
+
+export class MediaIngressUploadPresigner extends Context.Service<
+  MediaIngressUploadPresigner,
   {
-    readonly sign: (request: unknown) => Effect.Effect<unknown>;
+    readonly presign: (
+      request: MediaIngressUploadPresignRequest,
+    ) => Effect.Effect<MediaIngressUploadPresignResult, MediaIngressUploadPresignFailed>;
   }
->()("OperatorSigner") {}
+>()("MediaIngressUploadPresigner") {}
 
 /** Per-chain clients resolved by chain id; one tag, no provider if-chains. */
 export class ChainClient extends Context.Service<
