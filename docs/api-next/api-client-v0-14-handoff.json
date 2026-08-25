@@ -5,10 +5,10 @@
   "version": "0.14.0",
   "releaseType": "author-reviewed-song-lyrics-foundation",
   "wireContract": "wire-v2",
-  "sourceCommit": "e55e511",
+  "sourceCommit": "60fbac8",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.14.0.tgz",
-    "sha256": "dd4e580264fadb28eaf89c07ec7f18ad83eead1de38a019a3a4920a035531034",
+    "sha256": "0e3a8a35de0811ba4fc50f9956c0844baa2386459531917be2d2f0550f2f2a20",
     "contents": [
       "package/package.json",
       "package/src/generated/client.ts",
@@ -17,20 +17,20 @@
     ]
   },
   "provenance": {
-    "sourceIdentifier": "api-next-contracts@bfeff0720f96331c2f06b6059e458c55ad24bcc4455961b20ba530651c46d96b",
-    "openapiSha256": "bfeff0720f96331c2f06b6059e458c55ad24bcc4455961b20ba530651c46d96b",
-    "clientSha256": "929a8c091764157cb39788ea18238729a6b20a5b2ea6941f792ceb0c5800a3a2"
+    "sourceIdentifier": "api-next-contracts@36a2bf090b510543f78e1fa7964ce6741d427aff3422e69f5e5688c5e245f246",
+    "openapiSha256": "36a2bf090b510543f78e1fa7964ce6741d427aff3422e69f5e5688c5e245f246",
+    "clientSha256": "f82da271b4e14a4f5ad8d3c1918e3f3a3e9f1031316deb4262690216fcd4de10"
   },
   "verification": {
     "checkFresh": "passed",
     "checkBreaking": {
       "status": "passed",
-      "baselineCommit": "5b5340a",
+      "baselineCommit": "1914a61",
       "reason": "Specs 007 and 013 ratify author-reviewed lyrics as a revisioned command, separate hostile classifier input, and exact publication/alignment fence."
     },
     "focusedSongMediaAndBoundaryTests": "43 passed",
     "postgresFoundationTests": "14 passed",
-    "postgresMediaPersistenceTests": "20 passed",
+    "postgresMediaPersistenceTests": "26 passed",
     "packageVerifier": "passed",
     "repositoryCheck": "passed"
   }

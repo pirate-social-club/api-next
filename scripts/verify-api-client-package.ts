@@ -22,7 +22,9 @@ interface ReleaseLedger {
   }[];
 }
 
-async function verifyReleaseLedger(currentVersion: string): Promise<void> {
+type ReleaseLedgerEntry = ReleaseLedger["releases"][number];
+
+async function verifyReleaseLedger(currentVersion: string): Promise<ReleaseLedgerEntry> {
   const ledger = JSON.parse(
     await readFile(join(repositoryRoot, "docs/api-next/api-client-release-ledger.json"), "utf8"),
   ) as ReleaseLedger;
@@ -30,6 +32,7 @@ async function verifyReleaseLedger(currentVersion: string): Promise<void> {
     throw new Error("Invalid api-client release ledger identity");
   }
   const versions = new Set<string>();
+  let currentRelease: ReleaseLedgerEntry | undefined;
   for (const release of ledger.releases) {
     if (versions.has(release.version)) throw new Error(`Duplicate release ${release.version}`);
     versions.add(release.version);
@@ -51,10 +54,12 @@ async function verifyReleaseLedger(currentVersion: string): Promise<void> {
     ) {
       throw new Error(`Api-client handoff does not match its release ledger: ${release.version}`);
     }
+    if (release.version === currentVersion) currentRelease = release;
   }
-  if (!versions.has(currentVersion)) {
+  if (currentRelease === undefined) {
     throw new Error(`Current api-client ${currentVersion} is absent from the release ledger`);
   }
+  return currentRelease;
 }
 
 function run(command: string, args: readonly string[], cwd: string): void {
@@ -110,7 +115,15 @@ async function main(): Promise<void> {
         `Packed package identity/version is not @pirate/api-client@${currentVersion}`,
       );
     }
-    await verifyReleaseLedger(packedPackage.version);
+    const currentRelease = await verifyReleaseLedger(packedPackage.version);
+    const packedArtifactSha256 = createHash("sha256")
+      .update(await readFile(archive))
+      .digest("hex");
+    if (packedArtifactSha256 !== currentRelease.artifactSha256) {
+      throw new Error(
+        `Packed client does not match its immutable release artifact: ${packedPackage.version}`,
+      );
+    }
     for (const field of ["dependencies", "devDependencies", "peerDependencies"] as const) {
       if (packedPackage[field] !== undefined) {
         throw new Error(`Packed client must have zero package dependencies (${field} present)`);
