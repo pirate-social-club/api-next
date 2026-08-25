@@ -95,11 +95,40 @@ export type ElevenLabsAsrAttemptEvidence = Readonly<{
   readonly provider_status?: number;
 }>;
 
-/** Durable sinks must observe `signal`; late completion can never change the selected outcome. */
-export type ElevenLabsAsrEvidenceSink = (
-  evidence: ElevenLabsAsrAttemptEvidence,
-  signal: AbortSignal,
-) => void | PromiseLike<void> | Effect.Effect<void, unknown>;
+export type ElevenLabsAsrEvidenceReceipt = Readonly<{
+  readonly version: "elevenlabs-asr-evidence-receipt-v1";
+  readonly evidence: ElevenLabsAsrAttemptEvidence;
+}>;
+
+/**
+ * A prepared candidate is non-authoritative and may be durably staged. `settle` performs an
+ * awaited, attempt-scoped compare-and-set and returns the one committed
+ * outcome. All handles for an attempt must observe the same committed receipt.
+ * Its Effect may fail only after proving that it did not commit; interruption
+ * completes only after its transaction is rolled back or a committed receipt
+ * is discoverable by the next settlement. `discard` likewise completes only
+ * after its transaction and other asynchronous work have quiesced.
+ */
+export type ElevenLabsAsrPreparedEvidence = Readonly<{
+  readonly version: "elevenlabs-asr-prepared-evidence-v1";
+  readonly evidence: ElevenLabsAsrAttemptEvidence;
+  readonly settle: (
+    desired: ElevenLabsAsrAttemptEvidence,
+  ) => Effect.Effect<ElevenLabsAsrEvidenceReceipt, unknown>;
+  readonly discard: () => Effect.Effect<void, unknown>;
+}>;
+
+/**
+ * Preparing may durably stage evidence, but must not publish it. Interrupted
+ * preparation completes only after rollback or cleanup, so a handle that was
+ * never returned cannot later publish. Implementations must use an async
+ * Effect cleanup/finalizer when durable I/O cancellation itself must be awaited.
+ */
+export type ElevenLabsAsrEvidenceSink = Readonly<{
+  readonly prepare: (
+    evidence: ElevenLabsAsrAttemptEvidence,
+  ) => Effect.Effect<ElevenLabsAsrPreparedEvidence, unknown>;
+}>;
 
 export type ElevenLabsAsrRandomBytes = (length: number) => Uint8Array;
 

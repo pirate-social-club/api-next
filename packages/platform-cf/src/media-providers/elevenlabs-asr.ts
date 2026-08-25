@@ -29,7 +29,9 @@ import {
   ELEVENLABS_ASR_HARD_MAX_TIMEOUT_MS,
   type ElevenLabsAsrAttemptEvidence,
   type ElevenLabsAsrAudioSource,
+  type ElevenLabsAsrEvidenceReceipt,
   type ElevenLabsAsrOptions,
+  type ElevenLabsAsrPreparedEvidence,
   type ElevenLabsAsrTransportResponse,
   type EnabledElevenLabsAsrOptions,
 } from "./elevenlabs-asr-types.ts";
@@ -68,6 +70,8 @@ class ElevenLabsAsrEvidencePersistenceError extends Error {
   }
 }
 
+const EVIDENCE_RECOVERY_TIMEOUT_MS = 1_000 as const;
+
 function failure(
   attempt_id: string,
   _tag: MediaProviderFailureTag,
@@ -85,6 +89,16 @@ function failure(
     retryability,
     ...(_tag === "rate_limited" ? { retry_after_ms: retry_after_ms ?? 1_000 } : {}),
   } as MediaProviderFailure;
+}
+
+function failureForEvidenceOutcome(
+  attempt_id: string,
+  outcome: ElevenLabsAsrAttemptEvidence["outcome"],
+): MediaProviderFailure {
+  return failure(
+    attempt_id,
+    outcome === "transcript" || outcome === "no_speech" ? "provider_unavailable" : outcome,
+  );
 }
 
 function safeAttemptId(value: unknown): string {
@@ -153,7 +167,8 @@ function configurationIsValid(
     Predicate.isBoolean(configuration.enable_logging) &&
     Predicate.isFunction(configuration.resolve_audio) &&
     Predicate.isFunction(configuration.transport) &&
-    Predicate.isFunction(configuration.evidence_sink) &&
+    Predicate.isObject(configuration.evidence_sink) &&
+    Predicate.isFunction(configuration.evidence_sink.prepare) &&
     (configuration.random_bytes === undefined ||
       Predicate.isFunction(configuration.random_bytes)) &&
     validLimits(configuration)
@@ -200,14 +215,13 @@ function cancelResponse(response: ElevenLabsAsrTransportResponse, reason: unknow
   }
 }
 
-async function persistEvidence(
+function makeEvidence(
   configuration: EnabledElevenLabsAsrOptions,
   attempt_id: string,
   outcome: ElevenLabsAsrAttemptEvidence["outcome"],
-  signal: AbortSignal,
   provider_status?: number,
-): Promise<void> {
-  const evidence: ElevenLabsAsrAttemptEvidence = {
+): ElevenLabsAsrAttemptEvidence {
+  return Object.freeze({
     version: "elevenlabs-asr-attempt-evidence-v1",
     provider: "elevenlabs",
     endpoint: ELEVENLABS_ASR_ENDPOINT,
@@ -218,13 +232,143 @@ async function persistEvidence(
     retention: configuration.enable_logging ? "provider_logging" : "zero_retention",
     outcome,
     ...(provider_status === undefined ? {} : { provider_status }),
-  };
-  try {
-    const result = configuration.evidence_sink(evidence, signal);
-    if (result !== undefined) await awaitMaybeEffect(result, signal);
-  } catch (error) {
-    if (signal.aborted) throw error;
+  });
+}
+
+function sameEvidence(
+  left: ElevenLabsAsrAttemptEvidence,
+  right: ElevenLabsAsrAttemptEvidence,
+): boolean {
+  return (
+    left.version === right.version &&
+    left.provider === right.provider &&
+    left.endpoint === right.endpoint &&
+    left.attempt_id === right.attempt_id &&
+    left.requested_model === right.requested_model &&
+    left.model_revision === right.model_revision &&
+    left.adapter_revision === right.adapter_revision &&
+    left.retention === right.retention &&
+    left.outcome === right.outcome &&
+    left.provider_status === right.provider_status
+  );
+}
+
+function validPreparedEvidence(
+  value: unknown,
+  expected: ElevenLabsAsrAttemptEvidence,
+): value is ElevenLabsAsrPreparedEvidence {
+  return (
+    Predicate.isObject(value) &&
+    value.version === "elevenlabs-asr-prepared-evidence-v1" &&
+    Predicate.isObject(value.evidence) &&
+    sameEvidence(value.evidence as ElevenLabsAsrAttemptEvidence, expected) &&
+    Predicate.isFunction(value.settle) &&
+    Predicate.isFunction(value.discard)
+  );
+}
+
+function evidenceFromReceipt(
+  value: unknown,
+  allowed: ReadonlyArray<ElevenLabsAsrAttemptEvidence>,
+): ElevenLabsAsrAttemptEvidence {
+  if (
+    !Predicate.isObject(value) ||
+    value.version !== "elevenlabs-asr-evidence-receipt-v1" ||
+    !Predicate.isObject(value.evidence)
+  ) {
     throw new ElevenLabsAsrEvidencePersistenceError();
+  }
+  const evidence = value.evidence as ElevenLabsAsrAttemptEvidence;
+  const matched = allowed.find((candidate) => sameEvidence(evidence, candidate));
+  if (matched === undefined) throw new ElevenLabsAsrEvidencePersistenceError();
+  return matched;
+}
+
+async function prepareEvidence(
+  configuration: EnabledElevenLabsAsrOptions,
+  evidence: ElevenLabsAsrAttemptEvidence,
+  signal: AbortSignal,
+): Promise<ElevenLabsAsrPreparedEvidence> {
+  const preparation = configuration.evidence_sink.prepare(evidence);
+  if (!Effect.isEffect(preparation)) throw new ElevenLabsAsrEvidencePersistenceError();
+  const prepared = await Effect.runPromise(preparation, { signal });
+  if (!validPreparedEvidence(prepared, evidence)) {
+    throw new ElevenLabsAsrEvidencePersistenceError();
+  }
+  return prepared;
+}
+
+async function settleEvidence(
+  prepared: ElevenLabsAsrPreparedEvidence,
+  desired: ElevenLabsAsrAttemptEvidence,
+  allowed: ReadonlyArray<ElevenLabsAsrAttemptEvidence>,
+  signal: AbortSignal,
+): Promise<ElevenLabsAsrAttemptEvidence> {
+  const settlement = prepared.settle(desired);
+  if (!Effect.isEffect(settlement)) throw new ElevenLabsAsrEvidencePersistenceError();
+  const receipt: ElevenLabsAsrEvidenceReceipt = await Effect.runPromise(settlement, { signal });
+  return evidenceFromReceipt(receipt, allowed);
+}
+
+async function withRecoveryTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), EVIDENCE_RECOVERY_TIMEOUT_MS);
+  try {
+    return await operation(controller.signal);
+  } finally {
+    clearTimeout(timer);
+    controller.abort();
+  }
+}
+
+async function discardPrepared(prepared: ElevenLabsAsrPreparedEvidence): Promise<void> {
+  try {
+    await withRecoveryTimeout(async (signal) => {
+      const discard = prepared.discard();
+      if (!Effect.isEffect(discard)) throw new ElevenLabsAsrEvidencePersistenceError();
+      await Effect.runPromise(discard, { signal });
+    });
+  } catch {
+    // Settlement interruption is required to have quiesced before cleanup begins.
+  }
+}
+
+async function finalizeEvidence(
+  configuration: EnabledElevenLabsAsrOptions,
+  attempt_id: string,
+  candidateOutcome: ElevenLabsAsrAttemptEvidence["outcome"],
+  signal: AbortSignal,
+  replacementOutcome: () => ElevenLabsAsrAttemptEvidence["outcome"],
+  provider_status?: number,
+): Promise<ElevenLabsAsrAttemptEvidence | undefined> {
+  const candidate = makeEvidence(configuration, attempt_id, candidateOutcome, provider_status);
+  let prepared: ElevenLabsAsrPreparedEvidence | undefined;
+  try {
+    prepared = await prepareEvidence(configuration, candidate, signal);
+    return await settleEvidence(prepared, candidate, [candidate], signal);
+  } catch {
+    const replacement = makeEvidence(
+      configuration,
+      attempt_id,
+      replacementOutcome(),
+      provider_status,
+    );
+    try {
+      return await withRecoveryTimeout(async (recoverySignal) => {
+        const recoveryPrepared =
+          prepared ?? (await prepareEvidence(configuration, replacement, recoverySignal));
+        prepared = recoveryPrepared;
+        return settleEvidence(
+          recoveryPrepared,
+          replacement,
+          sameEvidence(candidate, replacement) ? [candidate] : [candidate, replacement],
+          recoverySignal,
+        );
+      });
+    } catch {
+      if (prepared !== undefined) await discardPrepared(prepared);
+      return undefined;
+    }
   }
 }
 
@@ -318,7 +462,9 @@ async function invoke(
 
   const controller = new AbortController();
   let abortReason: "timeout" | "cancelled" | undefined;
+  let authoritativeOutcomeCommitted = false;
   const cancel = () => {
+    if (authoritativeOutcomeCommitted) return;
     abortReason = "cancelled";
     controller.abort();
   };
@@ -326,6 +472,7 @@ async function invoke(
   interruptionSignal.addEventListener("abort", cancel, { once: true });
   const timeoutMs = Math.min(configuration.limits.timeout_ms, input.attempt.timeout_ms);
   const timer = setTimeout(() => {
+    if (authoritativeOutcomeCommitted) return;
     abortReason = "timeout";
     controller.abort();
   }, timeoutMs);
@@ -340,7 +487,7 @@ async function invoke(
 
   let providerStatus: number | undefined;
   let operationFinished = false;
-  let evidencePersistenceStarted = false;
+  let evidenceFinalizationFinished = false;
   try {
     const sourcePromise = Promise.resolve().then(() =>
       awaitMaybeEffect(
@@ -411,12 +558,23 @@ async function invoke(
       resultForParsed(input, configuration, parsed),
       abortPromise,
     ]);
-    evidencePersistenceStarted = true;
-    await Promise.race([
-      persistEvidence(configuration, attemptId, result.status, controller.signal, providerStatus),
-      abortPromise,
-    ]);
-    return result;
+    const authoritativeEvidence = await finalizeEvidence(
+      configuration,
+      attemptId,
+      result.status,
+      controller.signal,
+      () => abortReason ?? "provider_unavailable",
+      providerStatus,
+    );
+    evidenceFinalizationFinished = true;
+    if (authoritativeEvidence === undefined) {
+      throw new ElevenLabsAsrFailure(failure(attemptId, "provider_unavailable"));
+    }
+    authoritativeOutcomeCommitted = true;
+    if (authoritativeEvidence.outcome === result.status) return result;
+    throw new ElevenLabsAsrFailure(
+      failureForEvidenceOutcome(attemptId, authoritativeEvidence.outcome),
+    );
   } catch (error) {
     let selected: MediaProviderFailure;
     if (error instanceof ElevenLabsAsrFailure) selected = error.failure;
@@ -428,25 +586,23 @@ async function invoke(
     } else {
       selected = failure(attemptId, abortReason ?? "provider_unavailable");
     }
-    if (
-      !(error instanceof ElevenLabsAsrEvidencePersistenceError) &&
-      !evidencePersistenceStarted &&
-      abortReason === undefined
-    ) {
-      evidencePersistenceStarted = true;
-      try {
-        await Promise.race([
-          persistEvidence(
-            configuration,
-            attemptId,
-            selected._tag,
-            controller.signal,
-            providerStatus,
-          ),
-          abortPromise,
-        ]);
-      } catch {
-        selected = failure(attemptId, abortReason ?? "provider_unavailable");
+    if (!authoritativeOutcomeCommitted && !evidenceFinalizationFinished) {
+      const authoritativeEvidence = await finalizeEvidence(
+        configuration,
+        attemptId,
+        selected._tag,
+        controller.signal,
+        () => abortReason ?? "provider_unavailable",
+        providerStatus,
+      );
+      evidenceFinalizationFinished = true;
+      if (authoritativeEvidence === undefined) {
+        selected = failure(attemptId, "provider_unavailable");
+      } else {
+        authoritativeOutcomeCommitted = true;
+        if (authoritativeEvidence.outcome !== selected._tag) {
+          selected = failureForEvidenceOutcome(attemptId, authoritativeEvidence.outcome);
+        }
       }
     }
     throw new ElevenLabsAsrFailure(selected);
