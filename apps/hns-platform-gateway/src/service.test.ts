@@ -354,6 +354,14 @@ describe("HNS static platform application gateway", () => {
   test("rejects unauthorized unsafe requests, safe-method bodies, ambiguous targets, and bounds", async () => {
     const service = makeHnsStaticPlatformGatewayService({ upstream_fetch: () => new Response() });
     expect((await service.handle(request("app.pirate", { method: "POST" }))).status).toBe(400);
+    const apexPost = await service.handle(
+      request("pirate", {
+        method: "POST",
+        header_fields: [...request("pirate").header_fields, ["Origin", "https://app.pirate"]],
+      }),
+    );
+    expect(apexPost.status).toBe(405);
+    expect(apexPost.headers.get("allow")).toBe("GET, HEAD");
     expect(
       (await service.handle(request("app.pirate", { body_bytes: new Uint8Array([1]) }))).status,
     ).toBe(413);

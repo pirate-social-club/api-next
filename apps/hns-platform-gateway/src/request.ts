@@ -30,6 +30,7 @@ export type HnsStaticPlatformGatewayAdmission = Readonly<{
 export type HnsStaticPlatformGatewayRejection = Readonly<{
   status: 400 | 405 | 413 | 421;
   reason: "invalid_request" | "method_not_allowed" | "request_too_large" | "unavailable";
+  allow?: "GET, HEAD" | "GET, HEAD, POST, PATCH";
 }>;
 
 const encoder = new TextEncoder();
@@ -136,8 +137,9 @@ function headerValues(
 
 function rejection(
   status: HnsStaticPlatformGatewayRejection["status"],
+  allow?: HnsStaticPlatformGatewayRejection["allow"],
 ): HnsStaticPlatformGatewayRejection {
-  if (status === 405) return { status, reason: "method_not_allowed" };
+  if (status === 405) return { status, reason: "method_not_allowed", ...(allow ? { allow } : {}) };
   if (status === 413) return { status, reason: "request_too_large" };
   if (status === 421) return { status, reason: "unavailable" };
   return { status, reason: "invalid_request" };
@@ -151,7 +153,7 @@ export function admitHnsStaticPlatformGatewayRequest(
       request.method as "GET" | "HEAD" | "POST" | "PATCH",
     )
   ) {
-    return rejection(405);
+    return rejection(405, "GET, HEAD, POST, PATCH");
   }
   if (!targetIsValid(request.target)) return rejection(400);
   if (
@@ -194,7 +196,7 @@ export function admitHnsStaticPlatformGatewayRequest(
   if (host === null || canonicalAuthority(sni) !== sni || host !== sni) return rejection(421);
   if (host !== HNS_PLATFORM_ROOT && host !== HNS_PLATFORM_APP_HOST) return rejection(421);
   if (host === HNS_PLATFORM_ROOT && request.method !== "GET" && request.method !== "HEAD") {
-    return rejection(405);
+    return rejection(405, "GET, HEAD");
   }
 
   const cookie = headerValues(request.header_fields, "cookie");
