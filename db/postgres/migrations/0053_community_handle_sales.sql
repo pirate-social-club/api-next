@@ -962,7 +962,7 @@ CREATE TABLE handle_direct_grant_recipient_tokens (
   ),
   CONSTRAINT handle_recipient_token_cipher_shape CHECK (
     (token_ciphertext IS NULL AND token_envelope_key_version IS NULL)
-    OR (octet_length(token_ciphertext) BETWEEN 29 AND 1024
+    OR ((octet_length(token_ciphertext) >= 29 AND octet_length(token_ciphertext) <= 1024)
       AND is_handle_sales_identifier_v1(token_envelope_key_version, 64))
   ),
   CONSTRAINT handle_recipient_token_state_shape CHECK (
