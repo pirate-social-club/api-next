@@ -26,6 +26,15 @@ import {
   ListMyPersonas,
   PreparePersonaEvmWallet,
 } from "./personas.ts";
+import {
+  GetCommunityActivityLeaderboard,
+  GetSongActivityLeaderboard,
+  GetStudySession,
+  SetAccountStreakTimezone,
+  SetActivityPresentationPersona,
+  StartStudySession,
+  SubmitStudyAnswer,
+} from "./rewards-qualification.ts";
 /** Named registry; the client generator references these exports by name. */
 import { v1Registry } from "./v1.ts";
 import * as verification from "./verification.ts";
@@ -51,6 +60,13 @@ export const registry = {
   CreateKaraokeAttempt,
   GetKaraokeAttempt,
   GetKaraokeLeaderboard,
+  StartStudySession,
+  GetStudySession,
+  SubmitStudyAnswer,
+  SetAccountStreakTimezone,
+  SetActivityPresentationPersona,
+  GetSongActivityLeaderboard,
+  GetCommunityActivityLeaderboard,
 } as const;
 
 /** The sole source consumed by every generated HTTP artifact. */
