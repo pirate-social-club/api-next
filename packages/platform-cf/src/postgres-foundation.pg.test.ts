@@ -260,6 +260,9 @@ const bareHnsCommunityRouteV2MigrationSql = await Bun.file(
 const songLyricsFoundationMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0050_song_lyrics_foundation.sql", import.meta.url),
 ).text();
+const activityQualificationMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0051_activity_qualification.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -517,6 +520,11 @@ const songLyricsFoundationMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0050_song_lyrics_foundation.sql"] ?? "",
   sql: songLyricsFoundationMigrationSql,
 };
+const activityQualificationMigration: PostgresMigration = {
+  version: "0051_activity_qualification.sql",
+  checksum: checksumManifest.migrations["0051_activity_qualification.sql"] ?? "",
+  sql: activityQualificationMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -568,6 +576,7 @@ const migrations: readonly PostgresMigration[] = [
   hnsFirstPartyHostPersistenceMigration,
   bareHnsCommunityRouteV2Migration,
   songLyricsFoundationMigration,
+  activityQualificationMigration,
 ];
 
 function checksum(value: string): string {
@@ -825,6 +834,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(songLyricsFoundationMigrationSql)).toBe(
         songLyricsFoundationMigration.checksum,
       );
+      expect(checksum(activityQualificationMigrationSql)).toBe(
+        activityQualificationMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -846,10 +858,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(tables.rows.map((row) => row.table_name).sort()).toEqual([
         "account_aliases",
+        "account_streak_clocks",
         "action_challenges",
         "action_grants",
         "action_intents",
         "active_subject_key_bindings",
+        "activity_qualifications",
+        "activity_registry",
         "assertion_bindings",
         "assertion_revalidation_events",
         "assertions",
@@ -915,6 +930,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_route_revalidation_evidence_snapshots",
         "community_route_revalidation_sessions",
         "community_route_revalidation_start_reservations",
+        "community_streak_days",
+        "community_streaks",
         "content_publication_outbox",
         "decision_records",
         "evidence_receipts",
@@ -935,6 +952,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "hns_dns_zone_lifecycle_operations",
         "home_feed_projection",
         "identity_credentials",
+        "karaoke_attempts",
+        "karaoke_sessions",
         "media_alignment_projections",
         "media_analysis_evidence",
         "media_audio_revisions",
@@ -965,6 +984,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "operator_managed_root_registry_versions",
         "operator_managed_route_activations",
         "operator_managed_route_operations",
+        "persona_activity_presentations",
         "persona_create_actions",
         "persona_profiles",
         "persona_role_presentations",
@@ -979,9 +999,16 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "proof_session_presentations",
         "proof_sessions",
         "public_handle_index",
+        "qualification_policy_versions",
         "reward_subject_consumptions",
         "reward_uniqueness_authorities",
         "schema_migrations",
+        "song_streak_day_activities",
+        "song_streak_days",
+        "song_streaks",
+        "study_session_answers",
+        "study_session_items",
+        "study_sessions",
         "subject_key_binding_events",
         "subject_keys",
         "text_content_held_revisions",
@@ -1109,6 +1136,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_route_lifecycle_transition_append_only",
         "community_route_ownership_evidence_append_only",
         "community_route_revalidation_snapshot_append_only",
+        "community_streak_days_append_only",
         "decision_records_append_only",
         "evidence_receipts_append_only",
         "evidence_receipts_validate_metadata",
@@ -1141,8 +1169,10 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "policy_versions_append_only",
         "proof_session_completion_events_append_only",
         "proof_session_presentations_append_only",
+        "qualification_policy_versions_append_only",
         "reward_subject_consumptions_append_only",
         "reward_uniqueness_authorities_append_only",
+        "song_streak_days_append_only",
         "subject_key_binding_events_append_only",
         "subject_keys_append_only",
         "text_content_held_revisions_append_only",

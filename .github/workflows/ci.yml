@@ -84,6 +84,7 @@ jobs:
           /tmp/api-next-control-plane-postgres-content-suite-complete
           /tmp/api-next-control-plane-postgres-text-submission-suite-complete
           /tmp/api-next-control-plane-postgres-persona-suite-complete
+          /tmp/api-next-control-plane-postgres-rewards-qualification-suite-complete
           /tmp/api-next-control-plane-postgres-public-profile-suite-complete
           /tmp/api-next-control-plane-postgres-public-community-threads-suite-complete
           /tmp/api-next-control-plane-postgres-verification-suite-complete
@@ -110,6 +111,7 @@ jobs:
           CONTROL_PLANE_POSTGRES_CONTENT_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-content-suite-complete
           CONTROL_PLANE_POSTGRES_TEXT_SUBMISSION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-text-submission-suite-complete
           CONTROL_PLANE_POSTGRES_PERSONA_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-persona-suite-complete
+          CONTROL_PLANE_POSTGRES_REWARDS_QUALIFICATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-rewards-qualification-suite-complete
           CONTROL_PLANE_POSTGRES_PUBLIC_PROFILE_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-public-profile-suite-complete
           CONTROL_PLANE_POSTGRES_PUBLIC_COMMUNITY_THREADS_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-public-community-threads-suite-complete
           CONTROL_PLANE_POSTGRES_VERIFICATION_TEST_SENTINEL: /tmp/api-next-control-plane-postgres-verification-suite-complete
@@ -139,6 +141,7 @@ jobs:
             packages/platform-cf/src/content-repository.pg.test.ts \
             packages/platform-cf/src/text-submission-repository.pg.test.ts \
             packages/platform-cf/src/persona-repository.pg.test.ts \
+            packages/platform-cf/src/rewards-qualification.pg.test.ts \
             packages/platform-cf/src/public-profile.pg.test.ts \
             packages/platform-cf/src/public-community-threads-repository.pg.test.ts \
             packages/platform-cf/src/verification-completion-repository.pg.test.ts \
