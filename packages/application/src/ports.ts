@@ -22,6 +22,7 @@ import type {
   UpdateCommunityCreationIntent,
 } from "@pirate/contracts";
 import { Context, Data, type Effect, type Schema } from "effect";
+import type { StudyItemSourceSetV1 } from "./study-item-source.ts";
 
 /**
  * Initial service-tag catalog (api-next 000 §7; 001 phase 0 step 4).
@@ -180,6 +181,28 @@ export class Analytics extends Context.Service<
     readonly track: (event: string, properties?: unknown) => Effect.Effect<void>;
   }
 >()("Analytics") {}
+
+export type StudyItemSourceRequest = Readonly<{
+  communityId: string;
+  postId: string;
+  audioRevision: number;
+  lyricsRevision: number;
+}>;
+
+export class StudyItemSourceError extends Data.TaggedError("StudyItemSourceError")<{
+  readonly reason: "unavailable" | "invalid-source";
+}> {}
+
+export interface StudyItemSourceService {
+  readonly getForAcceptedSongRevision: (
+    input: StudyItemSourceRequest,
+  ) => Effect.Effect<StudyItemSourceSetV1, StudyItemSourceError>;
+}
+
+/** Server-only source; callers project prompts explicitly before any browser wire. */
+export class StudyItemSource extends Context.Service<StudyItemSource, StudyItemSourceService>()(
+  "StudyItemSource",
+) {}
 
 /**
  * Synchronous safety evaluation. Provider adapters implement this port
