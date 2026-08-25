@@ -414,6 +414,49 @@ CREATE UNIQUE INDEX song_reward_funding_transaction_log_uidx
   ON song_reward_leg_funding_effects (chain_id, transaction_hash, log_index)
   WHERE transaction_hash IS NOT NULL AND log_index IS NOT NULL;
 
+CREATE TABLE song_reward_offer_actions (
+  action_id TEXT PRIMARY KEY CHECK (
+    btrim(action_id) <> '' AND action_id = btrim(action_id)
+    AND octet_length(action_id) <= 128
+  ),
+  account_id TEXT NOT NULL REFERENCES users (user_id),
+  persona_id TEXT NOT NULL,
+  endpoint_template TEXT NOT NULL CHECK (endpoint_template IN (
+    '/communities/:communityId/posts/:postId/reward-offers',
+    '/reward-offers/:offerId/megapot-pool-legs',
+    '/reward-offer-legs/:legId/funding',
+    '/reward-offer-legs/:legId/funding/observations',
+    '/reward-offers/:offerId/pause',
+    '/reward-offers/:offerId/end'
+  )),
+  idempotency_key TEXT NOT NULL CHECK (
+    btrim(idempotency_key) <> '' AND idempotency_key = btrim(idempotency_key)
+    AND octet_length(idempotency_key) <= 128
+  ),
+  request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+  offer_id TEXT NOT NULL REFERENCES song_reward_offers (offer_id),
+  leg_id TEXT REFERENCES song_reward_offer_legs (leg_id),
+  funding_effect_id TEXT REFERENCES song_reward_leg_funding_effects (funding_effect_id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  FOREIGN KEY (account_id, persona_id) REFERENCES personas (account_id, persona_id),
+  UNIQUE (account_id, persona_id, endpoint_template, idempotency_key),
+  CONSTRAINT song_reward_offer_action_result_shape CHECK (
+    (endpoint_template IN (
+      '/communities/:communityId/posts/:postId/reward-offers',
+      '/reward-offers/:offerId/pause',
+      '/reward-offers/:offerId/end'
+    ) AND leg_id IS NULL AND funding_effect_id IS NULL)
+    OR (endpoint_template = '/reward-offers/:offerId/megapot-pool-legs'
+      AND leg_id IS NOT NULL AND funding_effect_id IS NULL)
+    OR (endpoint_template IN (
+      '/reward-offer-legs/:legId/funding',
+      '/reward-offer-legs/:legId/funding/observations'
+    ) AND leg_id IS NOT NULL AND funding_effect_id IS NOT NULL)
+  )
+);
+CREATE INDEX song_reward_offer_actions_resource_idx
+  ON song_reward_offer_actions (offer_id, leg_id, created_at, action_id);
+
 CREATE TABLE sponsor_daily_ticket_totals (
   sponsor_account_id TEXT NOT NULL REFERENCES users (user_id),
   sponsor_day DATE NOT NULL,
@@ -1626,6 +1669,38 @@ $$;
 CREATE TRIGGER reward_activity_availability_change_guard
 BEFORE INSERT OR UPDATE OR DELETE ON reward_activity_availability_observations
 FOR EACH ROW EXECUTE FUNCTION guard_reward_availability_observation();
+
+CREATE FUNCTION guard_song_reward_offer_action() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'song reward offer actions are append-only';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM song_reward_offers offer
+     WHERE offer.offer_id = NEW.offer_id
+       AND offer.created_by_account_id = CASE
+         WHEN NEW.endpoint_template = '/communities/:communityId/posts/:postId/reward-offers'
+         THEN NEW.account_id
+         ELSE offer.created_by_account_id
+       END
+  ) OR (NEW.leg_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM song_reward_offer_legs leg
+     WHERE leg.leg_id = NEW.leg_id AND leg.offer_id = NEW.offer_id
+  )) OR (NEW.funding_effect_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM song_reward_leg_funding_effects funding
+     WHERE funding.funding_effect_id = NEW.funding_effect_id
+       AND funding.leg_id = NEW.leg_id
+       AND funding.funder_account_id = NEW.account_id
+  )) THEN
+    RAISE EXCEPTION 'song reward offer action result is not exact';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER song_reward_offer_actions_change_guard
+BEFORE INSERT OR UPDATE OR DELETE ON song_reward_offer_actions
+FOR EACH ROW EXECUTE FUNCTION guard_song_reward_offer_action();
 
 CREATE FUNCTION guard_song_reward_funding_effect() RETURNS trigger
 LANGUAGE plpgsql AS $$

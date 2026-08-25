@@ -327,6 +327,21 @@ export function makeControlPlaneRewardFundingRepository() {
               readonly: false,
             });
             if (leg.rowCount !== 1) return yield* rejected("funding-not-allowed");
+            yield* transaction.execute({
+              label: "reward-funding.leg.activate-no-purchase",
+              text: `UPDATE song_reward_offer_legs leg
+                        SET status='active', activated_at=clock_timestamp(),
+                            updated_at=clock_timestamp()
+                       FROM song_reward_offers offer
+                      WHERE leg.leg_id=$1 AND leg.offer_id=offer.offer_id
+                        AND leg.kind='megapot_pool' AND leg.status='funding'
+                        AND leg.empty_pool_policy='no_purchase'
+                        AND leg.funded_atomic >= leg.max_ticket_price_atomic
+                        AND offer.status='active' AND offer.starts_at <= clock_timestamp()
+                        AND offer.ends_at > clock_timestamp()`,
+              values: [text(row, "leg_id")],
+              readonly: false,
+            });
           }),
         );
       }).pipe(mapped),

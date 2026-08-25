@@ -19,6 +19,7 @@ import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
+import { makeControlPlaneSongRewardOfferStore } from "./song-reward-offer-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -249,6 +250,152 @@ async function seedActivePoolLeg(
 }
 
 suite("Postgres 17 Megapot rewards persistence", () => {
+  test("opens an offer and one future-drawing pool leg with exact action replay", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "offer-command");
+      await seedMegapotAuthority(admin);
+      await admin.query(
+        `INSERT INTO megapot_drawing_observations (
+           observation_id, attestation_id, chain_id, drawing_id,
+           ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+           drawing_locked, referral_fee_wei, referral_win_share_wei,
+           block_number, block_hash, block_timestamp, confirmations,
+           observed_at, expires_at, raw_state_hash
+         ) VALUES (
+           'drawing-observation-offer-command', 'megapot-base-sepolia-v2', 84532, 41,
+           10000, clock_timestamp() + interval '1 hour', 25, 13, false,
+           100000000000000000, 100000000000000000, 141, $1,
+           clock_timestamp() - interval '2 minutes', 3, clock_timestamp(),
+           clock_timestamp() + interval '30 minutes', $2
+         )`,
+        [bytes32("4"), hash("4")],
+      );
+      const store = makeControlPlaneSongRewardOfferStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const openInput = {
+        actionId: "reward-action-open-command",
+        offerId: "reward-offer-command",
+        accountId: identity.accountId,
+        personaId: identity.personaId,
+        communityId: identity.communityId,
+        postId: identity.postId,
+        idempotencyKey: "open-command-1",
+        requestHash: hash("5"),
+        termsHash: hash("6"),
+        startsAt: new Date().toISOString(),
+        endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+        createdAt: new Date().toISOString(),
+      } as const;
+      const opened = await Effect.runPromise(store.openOffer(openInput));
+      const openReplay = await Effect.runPromise(
+        store.openOffer({
+          ...openInput,
+          actionId: "ignored-replay-action",
+          offerId: "ignored-replay-offer",
+        }),
+      );
+      expect(opened).toMatchObject({ replayed: false, offer: { audioRevision: 3 } });
+      expect(openReplay).toEqual({ ...opened, replayed: true });
+
+      const legInput = {
+        actionId: "reward-action-leg-command",
+        legId: "reward-leg-command",
+        offerId: opened.offer.offerId,
+        accountId: identity.accountId,
+        personaId: identity.personaId,
+        idempotencyKey: "leg-command-1",
+        requestHash: hash("7"),
+        legTermsHash: bytes32("8"),
+        createdAt: new Date(Date.now() + 1).toISOString(),
+        maxTicketPriceAtomic: 20_000n,
+        entryCutoffSeconds: 300,
+        eligibleActivities: ["study"] as const,
+        minScoreBps: 7_000,
+        emptyPoolPolicy: "no_purchase" as const,
+        fallbackPayoutPersonaId: null,
+        referralAllocationVersion: null,
+        referralPolicyHash: null,
+        referralDisclosedAt: null,
+      };
+      const added = await Effect.runPromise(store.addMegapotPoolLeg(legInput));
+      const legReplay = await Effect.runPromise(
+        store.addMegapotPoolLeg({
+          ...legInput,
+          actionId: "ignored-leg-action",
+          legId: "ignored-leg-id",
+        }),
+      );
+      expect(added).toMatchObject({
+        replayed: false,
+        leg: {
+          status: "funding",
+          chainId: 84_532,
+          participationStartsDrawingId: 42n,
+          custodyAddress: address("4"),
+        },
+      });
+      expect(legReplay).toEqual({ ...added, replayed: true });
+      await admin.query(
+        `INSERT INTO persona_wallet_assignments (
+           assignment_id,persona_id,account_id,chain_account_kind,hd_wallet_index,
+           address,status,reservation_idempotency_key,assigned_at,created_at,updated_at
+         ) VALUES (
+           'wallet-offer-command',$1,$2,'evm',7,$3,'active','wallet-offer-command',
+           clock_timestamp(),clock_timestamp(),clock_timestamp()
+         )`,
+        [identity.personaId, identity.accountId, address("d")],
+      );
+      const fundingStore = makeControlPlaneRewardFundingStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const funding = await Effect.runPromise(
+        fundingStore.plan({
+          fundingEffectId: "funding-offer-command",
+          legId: added.leg.legId,
+          funderAccountId: identity.accountId,
+          senderAddress: address("d"),
+          expectedAmountAtomic: 20_000n,
+          requiredConfirmations: 3,
+        }),
+      );
+      await Effect.runPromise(
+        fundingStore.bindTransaction({
+          fundingEffectId: funding.fundingEffectId,
+          transactionHash: bytes32("d"),
+        }),
+      );
+      await Effect.runPromise(
+        fundingStore.confirm({
+          fundingEffectId: funding.fundingEffectId,
+          transactionHash: bytes32("d"),
+          transferLogIndex: 1,
+          amountAtomic: 20_000n,
+          blockNumber: 150n,
+          blockHash: bytes32("e"),
+          observationHash: hash("e"),
+          confirmedAt: new Date().toISOString(),
+        }),
+      );
+      const activated = await admin.query<{
+        readonly funded_atomic: string;
+        readonly status: string;
+      }>(`SELECT funded_atomic::text,status FROM song_reward_offer_legs WHERE leg_id=$1`, [
+        added.leg.legId,
+      ]);
+      expect(activated.rows).toEqual([{ funded_atomic: "20000", status: "active" }]);
+      const rows = await admin.query<{ readonly action_count: number }>(
+        `SELECT count(*)::integer AS action_count FROM song_reward_offer_actions
+          WHERE offer_id=$1`,
+        [opened.offer.offerId],
+      );
+      expect(rows.rows).toEqual([{ action_count: 2 }]);
+      await expect(
+        Effect.runPromise(store.openOffer({ ...openInput, requestHash: hash("9") })),
+      ).rejects.toMatchObject({ reason: "idempotency-conflict" });
+    });
+  });
+
   test("closes fallback score, availability, parallel-leg, and foreign-funder routes", async () => {
     await withSchema(async (admin) => {
       const identity = await seedSong(admin, "fallback");

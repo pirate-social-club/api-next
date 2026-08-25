@@ -269,6 +269,7 @@ export {
   SessionTokenVerificationError,
   type SessionTokenVerifier,
 } from "./session-tokens";
+export * from "./song-reward-offer-repository.ts";
 export {
   makeControlPlaneTextPostRepository,
   makeControlPlaneTextSubmissionRepository,

@@ -4536,6 +4536,36 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_song_reward_offer_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'song reward offer actions are append-only';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM song_reward_offers offer
+     WHERE offer.offer_id = NEW.offer_id
+       AND offer.created_by_account_id = CASE
+         WHEN NEW.endpoint_template = '/communities/:communityId/posts/:postId/reward-offers'
+         THEN NEW.account_id
+         ELSE offer.created_by_account_id
+       END
+  ) OR (NEW.leg_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM song_reward_offer_legs leg
+     WHERE leg.leg_id = NEW.leg_id AND leg.offer_id = NEW.offer_id
+  )) OR (NEW.funding_effect_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM song_reward_leg_funding_effects funding
+     WHERE funding.funding_effect_id = NEW.funding_effect_id
+       AND funding.leg_id = NEW.leg_id
+       AND funding.funder_account_id = NEW.account_id
+  )) THEN
+    RAISE EXCEPTION 'song reward offer action result is not exact';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_song_reward_offer_leg() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -13987,6 +14017,24 @@ CREATE TABLE song_reward_leg_funding_effects (
     CONSTRAINT song_reward_leg_funding_effects_transaction_hash_check CHECK (((transaction_hash IS NULL) OR (transaction_hash ~ '^0x[0-9a-f]{64}$'::text)))
 );
 
+CREATE TABLE song_reward_offer_actions (
+    action_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    endpoint_template text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    offer_id text NOT NULL,
+    leg_id text,
+    funding_effect_id text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT song_reward_offer_action_result_shape CHECK ((((endpoint_template = ANY (ARRAY['/communities/:communityId/posts/:postId/reward-offers'::text, '/reward-offers/:offerId/pause'::text, '/reward-offers/:offerId/end'::text])) AND (leg_id IS NULL) AND (funding_effect_id IS NULL)) OR ((endpoint_template = '/reward-offers/:offerId/megapot-pool-legs'::text) AND (leg_id IS NOT NULL) AND (funding_effect_id IS NULL)) OR ((endpoint_template = ANY (ARRAY['/reward-offer-legs/:legId/funding'::text, '/reward-offer-legs/:legId/funding/observations'::text])) AND (leg_id IS NOT NULL) AND (funding_effect_id IS NOT NULL)))),
+    CONSTRAINT song_reward_offer_actions_action_id_check CHECK (((btrim(action_id) <> ''::text) AND (action_id = btrim(action_id)) AND (octet_length(action_id) <= 128))),
+    CONSTRAINT song_reward_offer_actions_endpoint_template_check CHECK ((endpoint_template = ANY (ARRAY['/communities/:communityId/posts/:postId/reward-offers'::text, '/reward-offers/:offerId/megapot-pool-legs'::text, '/reward-offer-legs/:legId/funding'::text, '/reward-offer-legs/:legId/funding/observations'::text, '/reward-offers/:offerId/pause'::text, '/reward-offers/:offerId/end'::text]))),
+    CONSTRAINT song_reward_offer_actions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT song_reward_offer_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE song_reward_offer_legs (
     leg_id text NOT NULL,
     offer_id text NOT NULL,
@@ -15572,6 +15620,12 @@ ALTER TABLE ONLY song_reward_bundle_claims
 ALTER TABLE ONLY song_reward_leg_funding_effects
     ADD CONSTRAINT song_reward_leg_funding_effects_pkey PRIMARY KEY (funding_effect_id);
 
+ALTER TABLE ONLY song_reward_offer_actions
+    ADD CONSTRAINT song_reward_offer_actions_account_id_persona_id_endpoint_te_key UNIQUE (account_id, persona_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY song_reward_offer_actions
+    ADD CONSTRAINT song_reward_offer_actions_pkey PRIMARY KEY (action_id);
+
 ALTER TABLE ONLY song_reward_offer_legs
     ADD CONSTRAINT song_reward_offer_legs_pkey PRIMARY KEY (leg_id);
 
@@ -15944,6 +15998,8 @@ CREATE INDEX reward_eligibility_decisions_lookup_idx ON reward_eligibility_decis
 CREATE INDEX reward_ledger_credits_account_idx ON reward_ledger_credits USING btree (account_id, state, created_at, credit_id);
 
 CREATE UNIQUE INDEX song_reward_funding_transaction_log_uidx ON song_reward_leg_funding_effects USING btree (chain_id, transaction_hash, log_index) WHERE ((transaction_hash IS NOT NULL) AND (log_index IS NOT NULL));
+
+CREATE INDEX song_reward_offer_actions_resource_idx ON song_reward_offer_actions USING btree (offer_id, leg_id, created_at, action_id);
 
 CREATE INDEX song_reward_offer_legs_active_idx ON song_reward_offer_legs USING btree (offer_id, status, kind, leg_id);
 
@@ -16538,6 +16594,8 @@ CREATE CONSTRAINT TRIGGER route_v1_creation_intent_requirement_cardinality AFTER
 CREATE CONSTRAINT TRIGGER route_v1_creation_requirement_cardinality AFTER INSERT OR DELETE OR UPDATE ON community_creation_requirement_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_route_v1_creation_requirement_cardinality();
 
 CREATE TRIGGER song_reward_leg_funding_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_leg_funding_effects FOR EACH ROW EXECUTE FUNCTION guard_song_reward_funding_effect();
+
+CREATE TRIGGER song_reward_offer_actions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_offer_actions FOR EACH ROW EXECUTE FUNCTION guard_song_reward_offer_action();
 
 CREATE TRIGGER song_reward_offer_legs_change_guard BEFORE INSERT OR DELETE OR UPDATE ON song_reward_offer_legs FOR EACH ROW EXECUTE FUNCTION guard_song_reward_offer_leg();
 
@@ -17904,6 +17962,21 @@ ALTER TABLE ONLY song_reward_leg_funding_effects
 
 ALTER TABLE ONLY song_reward_leg_funding_effects
     ADD CONSTRAINT song_reward_leg_funding_effects_leg_id_fkey FOREIGN KEY (leg_id) REFERENCES song_reward_offer_legs(leg_id);
+
+ALTER TABLE ONLY song_reward_offer_actions
+    ADD CONSTRAINT song_reward_offer_actions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY song_reward_offer_actions
+    ADD CONSTRAINT song_reward_offer_actions_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY song_reward_offer_actions
+    ADD CONSTRAINT song_reward_offer_actions_funding_effect_id_fkey FOREIGN KEY (funding_effect_id) REFERENCES song_reward_leg_funding_effects(funding_effect_id);
+
+ALTER TABLE ONLY song_reward_offer_actions
+    ADD CONSTRAINT song_reward_offer_actions_leg_id_fkey FOREIGN KEY (leg_id) REFERENCES song_reward_offer_legs(leg_id);
+
+ALTER TABLE ONLY song_reward_offer_actions
+    ADD CONSTRAINT song_reward_offer_actions_offer_id_fkey FOREIGN KEY (offer_id) REFERENCES song_reward_offers(offer_id);
 
 ALTER TABLE ONLY song_reward_offer_legs
     ADD CONSTRAINT song_reward_offer_legs_attestation_id_chain_id_fkey FOREIGN KEY (attestation_id, chain_id) REFERENCES megapot_deployment_attestations(attestation_id, chain_id);
