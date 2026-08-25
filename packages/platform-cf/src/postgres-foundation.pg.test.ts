@@ -257,6 +257,9 @@ const hnsFirstPartyHostPersistenceMigrationSql = await Bun.file(
 const bareHnsCommunityRouteV2MigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0049_bare_hns_community_route_v2.sql", import.meta.url),
 ).text();
+const songLyricsFoundationMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0050_song_lyrics_foundation.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -509,6 +512,11 @@ const bareHnsCommunityRouteV2Migration: PostgresMigration = {
   checksum: checksumManifest.migrations["0049_bare_hns_community_route_v2.sql"] ?? "",
   sql: bareHnsCommunityRouteV2MigrationSql,
 };
+const songLyricsFoundationMigration: PostgresMigration = {
+  version: "0050_song_lyrics_foundation.sql",
+  checksum: checksumManifest.migrations["0050_song_lyrics_foundation.sql"] ?? "",
+  sql: songLyricsFoundationMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -559,6 +567,7 @@ const migrations: readonly PostgresMigration[] = [
   hnsOperatorManagedRoutesMigration,
   hnsFirstPartyHostPersistenceMigration,
   bareHnsCommunityRouteV2Migration,
+  songLyricsFoundationMigration,
 ];
 
 function checksum(value: string): string {
@@ -813,6 +822,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(bareHnsCommunityRouteV2MigrationSql)).toBe(
         bareHnsCommunityRouteV2Migration.checksum,
       );
+      expect(checksum(songLyricsFoundationMigrationSql)).toBe(
+        songLyricsFoundationMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -934,6 +946,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_publication_decisions",
         "media_publication_projections",
         "media_reference_evidence",
+        "media_song_lyrics_revisions",
         "media_submission_command_replays",
         "media_submission_events",
         "media_submission_outbox",
@@ -1116,6 +1129,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_moderation_actions_append_only",
         "media_publication_decisions_append_only",
         "media_reference_evidence_append_only",
+        "media_song_lyrics_append_only",
         "media_submission_command_replays_append_only",
         "media_submission_events_append_only",
         "media_submission_terms_append_only",
@@ -1275,7 +1289,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       ]);
     });
     completedTestCount += 1;
-  });
+  }, 20_000);
 
   test("refuses to invent provider configuration for an unexpected existing session", async () => {
     await withSchema(async (admin, scopedConnectionString) => {

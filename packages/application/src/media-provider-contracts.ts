@@ -1,3 +1,9 @@
+import {
+  SONG_TRANSCRIPT_MAX_DURATION_MS,
+  SONG_TRANSCRIPT_SEGMENT_MAX_COUNT,
+  SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH,
+  SONG_TRANSCRIPT_TEXT_MAX_LENGTH,
+} from "@pirate/contracts";
 import { Context, type Effect, Schema } from "effect";
 
 /**
@@ -9,10 +15,10 @@ import { Context, type Effect, Schema } from "effect";
 export const MEDIA_ARTIFACT_REFERENCE_MAX_BYTES = 512 as const;
 export const MEDIA_IDENTIFIER_MAX_BYTES = 256 as const;
 export const MEDIA_REVISION_MAX_BYTES = 128 as const;
-export const MEDIA_TRANSCRIPT_MAX_LENGTH = 200_000 as const;
-export const MEDIA_TRANSCRIPT_SEGMENT_MAX_LENGTH = 4_096 as const;
-export const MEDIA_TRANSCRIPT_SEGMENT_MAX_COUNT = 10_000 as const;
-export const MEDIA_TRANSCRIPT_MAX_DURATION_MS = 86_400_000 as const;
+export const MEDIA_TRANSCRIPT_MAX_LENGTH = SONG_TRANSCRIPT_TEXT_MAX_LENGTH;
+export const MEDIA_TRANSCRIPT_SEGMENT_MAX_LENGTH = SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH;
+export const MEDIA_TRANSCRIPT_SEGMENT_MAX_COUNT = SONG_TRANSCRIPT_SEGMENT_MAX_COUNT;
+export const MEDIA_TRANSCRIPT_MAX_DURATION_MS = SONG_TRANSCRIPT_MAX_DURATION_MS;
 export const MEDIA_LANGUAGE_EVIDENCE_MAX_COUNT = 4 as const;
 export const MEDIA_CLASSIFIER_EVIDENCE_MAX_COUNT = 128 as const;
 export const MEDIA_PROVIDER_TIMEOUT_MAX_MS = 120_000 as const;
@@ -224,6 +230,33 @@ const MediaTranscriptIdentityFields = {
 export const MediaTranscriptIdentity = Schema.Struct(MediaTranscriptIdentityFields);
 export type MediaTranscriptIdentity = Schema.Schema.Type<typeof MediaTranscriptIdentity>;
 
+const MediaLyricsIdentityFields = {
+  operation_id: BoundedIdentifier,
+  audio_revision: PositiveRevision,
+  lyrics_revision: PositiveRevision,
+  canonical_audio_sha256: Sha256Hex,
+  base_transcript_revision: Schema.NullOr(PositiveRevision),
+};
+
+/** Closed identity for one immutable author-accepted lyrics revision. */
+export const MediaLyricsIdentity = Schema.Struct(MediaLyricsIdentityFields);
+export type MediaLyricsIdentity = Schema.Schema.Type<typeof MediaLyricsIdentity>;
+
+/** Author-reviewed hostile data retained separately from immutable ASR evidence. */
+export const MediaAcceptedLyrics = Schema.Struct({
+  version: Schema.Literal("media-accepted-lyrics-v1"),
+  ...MediaLyricsIdentityFields,
+  lyrics: Schema.NonEmptyString.check(
+    Schema.isMaxLength(MEDIA_TRANSCRIPT_MAX_LENGTH),
+    Schema.makeFilter((value) =>
+      utf8ByteLength(value) <= MEDIA_TRANSCRIPT_MAX_LENGTH * 4
+        ? undefined
+        : "Lyrics exceed their UTF-8 byte ceiling",
+    ),
+  ),
+});
+export type MediaAcceptedLyrics = Schema.Schema.Type<typeof MediaAcceptedLyrics>;
+
 /**
  * Private hostile-data evidence. `transcript` and segment text are inert data;
  * this shape has no tool, network, storage, secret, policy, or instruction
@@ -309,11 +342,13 @@ const ClassifierProvenance = {
 
 const ClassifierResultIdentity = {
   transcript_identity: MediaTranscriptIdentity,
+  lyrics_identity: MediaLyricsIdentity,
   attempt_id: BoundedIdentifier,
 };
 
 const ClassifierEvidence = Schema.Struct({
   kind: Schema.Literals(["explicitness", "primary_language", "secondary_language"]),
+  source: Schema.Literals(["transcript", "lyrics"]),
   segment_index: NonNegativeInteger.check(
     Schema.isBetween({ minimum: 0, maximum: MEDIA_TRANSCRIPT_SEGMENT_MAX_COUNT - 1 }),
   ),
@@ -332,12 +367,23 @@ const ClassifierFailureEvidence = Schema.Array(ClassifierEvidence).check(
   Schema.isMaxLength(MEDIA_CLASSIFIER_EVIDENCE_MAX_COUNT),
 );
 
-/** Classifier input is bounded transcript data, not an instruction channel. */
+/** Classifier input keeps immutable ASR evidence and accepted lyrics separate. */
 export const MediaExplicitnessClassifierInput = Schema.Struct({
   version: Schema.Literal("media-explicitness-classifier-input-v1"),
   transcript: MediaTranscriptArtifact,
+  accepted_lyrics: MediaAcceptedLyrics,
   attempt: MediaProviderAttemptMetadata,
-});
+}).check(
+  Schema.makeFilter(({ transcript, accepted_lyrics }) =>
+    transcript.operation_id === accepted_lyrics.operation_id &&
+    transcript.audio_revision === accepted_lyrics.audio_revision &&
+    transcript.canonical_audio_sha256 === accepted_lyrics.canonical_audio_sha256 &&
+    (accepted_lyrics.base_transcript_revision === null ||
+      accepted_lyrics.base_transcript_revision === transcript.analysis_revision)
+      ? undefined
+      : "Transcript and accepted lyrics must share exact audio lineage",
+  ),
+);
 export type MediaExplicitnessClassifierInput = Schema.Schema.Type<
   typeof MediaExplicitnessClassifierInput
 >;
@@ -346,6 +392,9 @@ const MediaExplicitnessClassifiedResult = Schema.Struct({
   version: Schema.Literal("media-explicitness-classifier-result-v1"),
   status: Schema.Literal("classified"),
   explicitness: Schema.Literals(["not_explicit", "explicit", "uncertain"]),
+  transcript_explicitness: Schema.Literals(["not_explicit", "explicit", "uncertain"]),
+  lyrics_explicitness: Schema.Literals(["not_explicit", "explicit", "uncertain"]),
+  material_disagreement: Schema.Boolean,
   primary_language_bcp47: MediaBcp47LanguageTag,
   secondary_language_bcp47: Schema.NullOr(MediaBcp47LanguageTag),
   confidence: Schema.Struct({
@@ -358,7 +407,16 @@ const MediaExplicitnessClassifiedResult = Schema.Struct({
   ...ClassifierProvenance,
 }).check(
   Schema.makeFilter(
-    ({ primary_language_bcp47, secondary_language_bcp47, confidence, evidence }) => {
+    ({
+      explicitness,
+      transcript_explicitness,
+      lyrics_explicitness,
+      material_disagreement,
+      primary_language_bcp47,
+      secondary_language_bcp47,
+      confidence,
+      evidence,
+    }) => {
       const evidenceKinds = new Set(evidence.map(({ kind }) => kind));
       const secondaryLanguagePresent = secondary_language_bcp47 !== null;
       const secondaryConfidencePresent = confidence.secondary_language !== null;
@@ -370,11 +428,24 @@ const MediaExplicitnessClassifiedResult = Schema.Struct({
         (secondaryLanguagePresent
           ? evidenceKinds.has("secondary_language")
           : !evidenceKinds.has("secondary_language"));
+      const safetyRank = { not_explicit: 0, uncertain: 1, explicit: 2 } as const;
+      const sourceSafety = Math.max(
+        safetyRank[transcript_explicitness],
+        safetyRank[lyrics_explicitness],
+      );
+      const sourceSafetyRetained = safetyRank[explicitness] >= sourceSafety;
+      const disagreementFailsClosed =
+        !material_disagreement || explicitness === "explicit" || explicitness === "uncertain";
+      const agreementIsTruthful =
+        material_disagreement || transcript_explicitness === lyrics_explicitness;
       return languagesAreDistinct &&
         secondaryLanguagePresent === secondaryConfidencePresent &&
-        evidenceCoversClaimedFields
+        evidenceCoversClaimedFields &&
+        sourceSafetyRetained &&
+        disagreementFailsClosed &&
+        agreementIsTruthful
         ? undefined
-        : "Classifier language, confidence, and evidence claims must agree";
+        : "Classifier language, safety, disagreement, and evidence claims must agree";
     },
   ),
 );
@@ -473,7 +544,9 @@ export const isMediaClassifierResultBoundToTranscript = (
   result: MediaExplicitnessClassifierResult,
 ): boolean => {
   const identity = result.transcript_identity;
+  const lyricsIdentity = result.lyrics_identity;
   const transcript = input.transcript;
+  const lyrics = input.accepted_lyrics;
   const identityMatches =
     result.attempt_id === input.attempt.attempt_id &&
     identity.operation_id === transcript.operation_id &&
@@ -481,9 +554,14 @@ export const isMediaClassifierResultBoundToTranscript = (
     identity.analysis_revision === transcript.analysis_revision &&
     identity.canonical_audio_sha256 === transcript.canonical_audio_sha256 &&
     identity.transcript_artifact_ref === transcript.transcript_artifact_ref &&
-    identity.transcript_sha256 === transcript.transcript_sha256;
-  const evidenceIndexesInBounds = result.evidence.every(
-    ({ segment_index }) => segment_index < transcript.segments.length,
+    identity.transcript_sha256 === transcript.transcript_sha256 &&
+    lyricsIdentity.operation_id === lyrics.operation_id &&
+    lyricsIdentity.audio_revision === lyrics.audio_revision &&
+    lyricsIdentity.lyrics_revision === lyrics.lyrics_revision &&
+    lyricsIdentity.canonical_audio_sha256 === lyrics.canonical_audio_sha256 &&
+    lyricsIdentity.base_transcript_revision === lyrics.base_transcript_revision;
+  const evidenceIndexesInBounds = result.evidence.every(({ source, segment_index }) =>
+    source === "lyrics" ? segment_index === 0 : segment_index < transcript.segments.length,
   );
   if (!identityMatches || !evidenceIndexesInBounds || result.status !== "classified") {
     return identityMatches && evidenceIndexesInBounds;
@@ -503,6 +581,8 @@ export const isMediaClassifierResultBoundToTranscript = (
     evidenceCoversClaimedFields
   );
 };
+
+export const isMediaClassifierResultBoundToInputs = isMediaClassifierResultBoundToTranscript;
 
 /** The processor must not accept evidence for a different immutable audio revision. */
 export const isMediaAsrResultBoundToInput = (

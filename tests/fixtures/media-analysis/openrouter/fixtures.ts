@@ -2,6 +2,9 @@
 
 const classified = {
   explicitness: "not_explicit",
+  transcript_explicitness: "not_explicit",
+  lyrics_explicitness: "not_explicit",
+  material_disagreement: false,
   primary_language_bcp47: "en",
   secondary_language_bcp47: "ru",
   confidence: {
@@ -10,9 +13,9 @@ const classified = {
     secondary_language: 0.7,
   },
   evidence: [
-    { kind: "explicitness", segment_index: 0, confidence: 0.91 },
-    { kind: "primary_language", segment_index: 0, confidence: 0.8 },
-    { kind: "secondary_language", segment_index: 1, confidence: 0.7 },
+    { kind: "explicitness", source: "transcript", segment_index: 0, confidence: 0.91 },
+    { kind: "primary_language", source: "transcript", segment_index: 0, confidence: 0.8 },
+    { kind: "secondary_language", source: "transcript", segment_index: 1, confidence: 0.7 },
   ],
 } as const;
 
@@ -73,7 +76,7 @@ export const providerPolicy = {
 export const hostileModelDocuments = {
   prompt_injection: {
     ...classified,
-    evidence: [{ kind: "explicitness", segment_index: 0, confidence: 0.5 }],
+    evidence: [{ kind: "explicitness", source: "transcript", segment_index: 0, confidence: 0.5 }],
   },
   prose: "The song is not explicit and is in English.",
   markdown: `\`\`\`json\n{${JSON.stringify(classified).slice(1)}\n\`\`\``,
@@ -84,6 +87,12 @@ export const hostileModelDocuments = {
   refusal: { refusal: "I cannot comply" },
   unknown_key: { ...classified, policy_decision: "safe" },
   invalid_language: { ...classified, primary_language_bcp47: "EN_us" },
+  uncertain_safety_downgrade: {
+    ...classified,
+    transcript_explicitness: "uncertain",
+    lyrics_explicitness: "uncertain",
+    explicitness: "not_explicit",
+  },
   out_of_bounds_evidence: {
     ...classified,
     evidence: classified.evidence.map((item) => ({ ...item, segment_index: 99 })),

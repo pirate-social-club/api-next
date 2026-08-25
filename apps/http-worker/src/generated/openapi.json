@@ -22617,6 +22617,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -22649,6 +22661,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "phase"
@@ -22691,6 +22705,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -22746,6 +22772,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "action"
@@ -22789,6 +22817,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -22825,6 +22865,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -22868,6 +22910,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -22916,6 +22970,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "published_resource"
@@ -22959,6 +23015,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -22986,6 +23054,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -23028,6 +23098,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -23074,6 +23156,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -23119,6 +23203,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -23150,6 +23246,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -23207,6 +23305,200 @@
                         "display_name",
                         "avatar_ref",
                         "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "asr_suggestion": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "transcript_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "transcript_revision",
+                                "text"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_speech"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "base_transcript_revision": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision",
+                                "base_transcript_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "asr_suggestion",
+                        "current"
                       ],
                       "additionalProperties": false
                     }
@@ -23775,6 +24067,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -23807,6 +24111,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "phase"
@@ -23849,6 +24155,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -23904,6 +24222,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "action"
@@ -23947,6 +24267,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -23983,6 +24315,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -24026,6 +24360,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -24074,6 +24420,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "published_resource"
@@ -24117,6 +24465,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -24144,6 +24504,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -24186,6 +24548,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -24232,6 +24606,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -24277,6 +24653,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -24308,6 +24696,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -24365,6 +24755,1521 @@
                         "display_name",
                         "avatar_ref",
                         "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "asr_suggestion": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "transcript_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "transcript_revision",
+                                "text"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_speech"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "base_transcript_revision": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision",
+                                "base_transcript_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "asr_suggestion",
+                        "current"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "401": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "auth_error"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "409": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "type": "object",
+                          "properties": {
+                            "reason_code": {
+                              "type": "string",
+                              "enum": [
+                                "idempotency_conflict"
+                              ]
+                            },
+                            "submission_id": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "reason_code",
+                            "submission_id"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "conflict",
+              "conflict"
+            ]
+          },
+          "429": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "rate_limited"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "userOrAdmin"
+          }
+        },
+        "x-errors": [
+          "AuthError",
+          "BadRequest",
+          "Conflict",
+          "IdempotencyConflict",
+          "NotFound",
+          "RateLimited"
+        ]
+      }
+    },
+    "/media-post-submissions/{submissionId}/lyrics": {
+      "post": {
+        "operationId": "post_mediaPostSubmissionsSubmissionIdLyrics",
+        "parameters": [
+          {
+            "name": "submissionId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "persona_id": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string",
+                    "enum": [
+                      "bind-song-lyrics-v1"
+                    ]
+                  },
+                  "idempotency_key": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      }
+                    ]
+                  },
+                  "expected_creation_revision": {
+                    "type": "integer",
+                    "allOf": [
+                      {
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    ]
+                  },
+                  "expected_audio_revision": {
+                    "type": "integer",
+                    "allOf": [
+                      {
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    ]
+                  },
+                  "lyrics": {
+                    "type": "string",
+                    "allOf": [
+                      {
+                        "minLength": 1
+                      },
+                      {
+                        "maxLength": 200000
+                      }
+                    ]
+                  },
+                  "base_transcript_revision": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "allOf": [
+                          {
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "persona_id",
+                  "version",
+                  "idempotency_key",
+                  "expected_creation_revision",
+                  "expected_audio_revision",
+                  "lyrics",
+                  "base_transcript_revision"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "processing"
+                          ]
+                        },
+                        "phase": {
+                          "type": "string",
+                          "enum": [
+                            "reserve",
+                            "awaiting_upload",
+                            "finalize",
+                            "analysis",
+                            "decision",
+                            "publish"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "author_persona",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
+                        "updated_at",
+                        "status",
+                        "phase"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "action_required"
+                          ]
+                        },
+                        "action": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "reference_required"
+                              ]
+                            },
+                            "expires_at": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "reference_request_ref": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "expires_at",
+                            "reference_request_ref"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "author_persona",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
+                        "updated_at",
+                        "status",
+                        "action"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "manual_review"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "review_required",
+                            "moderation_unavailable"
+                          ]
+                        },
+                        "review_ref": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "author_persona",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
+                        "updated_at",
+                        "status",
+                        "reason_code",
+                        "review_ref"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "published"
+                          ]
+                        },
+                        "published_resource": {
+                          "type": "object",
+                          "properties": {
+                            "post_id": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            },
+                            "href": {
+                              "type": "string",
+                              "allOf": [
+                                {
+                                  "minLength": 1
+                                }
+                              ]
+                            }
+                          },
+                          "required": [
+                            "post_id",
+                            "href"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "author_persona",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
+                        "updated_at",
+                        "status",
+                        "published_resource"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "blocked"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "policy_violation"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "author_persona",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
+                        "updated_at",
+                        "status",
+                        "reason_code"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "processing_failed"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_media",
+                            "unsupported_media",
+                            "probe_failed",
+                            "hash_failed",
+                            "transform_failed",
+                            "publication_failed",
+                            "upload_seal_conflict"
+                          ]
+                        },
+                        "retry_count": {
+                          "type": "number",
+                          "enum": [
+                            0,
+                            1,
+                            2,
+                            3
+                          ]
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "author_persona",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
+                        "updated_at",
+                        "status",
+                        "reason_code",
+                        "retry_count",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "submission_id": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "author_persona": {
+                          "$ref": "#/$defs/Objects_"
+                        },
+                        "href": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "track": {
+                          "type": "string",
+                          "enum": [
+                            "song"
+                          ]
+                        },
+                        "creation_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
+                        "updated_at": {
+                          "type": "string",
+                          "allOf": [
+                            {
+                              "minLength": 1
+                            }
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "abandoned"
+                          ]
+                        },
+                        "reason_code": {
+                          "type": "string",
+                          "enum": [
+                            "upload_reservation_expired",
+                            "upload_expectation_mismatch",
+                            "upload_source_changed_before_finalize",
+                            "reference_window_expired",
+                            "author_cancelled_before_finalize"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "submission_id",
+                        "author_persona",
+                        "href",
+                        "track",
+                        "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
+                        "updated_at",
+                        "status",
+                        "reason_code"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ],
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "asr_suggestion": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "transcript_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "transcript_revision",
+                                "text"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_speech"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "base_transcript_revision": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision",
+                                "base_transcript_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "asr_suggestion",
+                        "current"
                       ],
                       "additionalProperties": false
                     }
@@ -24767,6 +26672,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -24799,6 +26716,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "phase"
@@ -24841,6 +26760,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -24896,6 +26827,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "action"
@@ -24939,6 +26872,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -24975,6 +26920,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -25018,6 +26965,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -25066,6 +27025,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "published_resource"
@@ -25109,6 +27070,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -25136,6 +27109,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -25178,6 +27153,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -25224,6 +27211,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -25269,6 +27258,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -25300,6 +27301,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -25357,6 +27360,200 @@
                         "display_name",
                         "avatar_ref",
                         "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "asr_suggestion": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "transcript_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "transcript_revision",
+                                "text"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_speech"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "base_transcript_revision": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision",
+                                "base_transcript_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "asr_suggestion",
+                        "current"
                       ],
                       "additionalProperties": false
                     }
@@ -25741,6 +27938,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -25773,6 +27982,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "phase"
@@ -25815,6 +28026,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -25870,6 +28093,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "action"
@@ -25913,6 +28138,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -25949,6 +28186,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -25992,6 +28231,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -26040,6 +28291,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "published_resource"
@@ -26083,6 +28336,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -26110,6 +28375,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -26152,6 +28419,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -26198,6 +28477,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -26243,6 +28524,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -26274,6 +28567,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -26331,6 +28626,200 @@
                         "display_name",
                         "avatar_ref",
                         "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "asr_suggestion": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "transcript_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "transcript_revision",
+                                "text"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_speech"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "base_transcript_revision": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision",
+                                "base_transcript_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "asr_suggestion",
+                        "current"
                       ],
                       "additionalProperties": false
                     }
@@ -26624,6 +29113,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -26656,6 +29157,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "phase"
@@ -26698,6 +29201,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -26753,6 +29268,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "action"
@@ -26796,6 +29313,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -26832,6 +29361,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -26875,6 +29406,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -26923,6 +29466,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "published_resource"
@@ -26966,6 +29511,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -26993,6 +29550,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -27035,6 +29594,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -27081,6 +29652,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -27126,6 +29699,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -27157,6 +29742,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -27214,6 +29801,200 @@
                         "display_name",
                         "avatar_ref",
                         "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "asr_suggestion": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "transcript_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "transcript_revision",
+                                "text"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_speech"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "base_transcript_revision": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision",
+                                "base_transcript_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "asr_suggestion",
+                        "current"
                       ],
                       "additionalProperties": false
                     }
@@ -27607,6 +30388,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -27639,6 +30432,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "phase"
@@ -27681,6 +30476,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -27736,6 +30543,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "action"
@@ -27779,6 +30588,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -27815,6 +30636,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -27858,6 +30681,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -27906,6 +30741,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "published_resource"
@@ -27949,6 +30786,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -27976,6 +30825,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -28018,6 +30869,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -28064,6 +30927,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -28109,6 +30974,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -28140,6 +31017,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -28197,6 +31076,200 @@
                         "display_name",
                         "avatar_ref",
                         "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "asr_suggestion": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "transcript_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "transcript_revision",
+                                "text"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_speech"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "base_transcript_revision": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision",
+                                "base_transcript_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "asr_suggestion",
+                        "current"
                       ],
                       "additionalProperties": false
                     }
@@ -28590,6 +31663,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -28622,6 +31707,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "phase"
@@ -28664,6 +31751,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -28719,6 +31818,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "action"
@@ -28762,6 +31863,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -28798,6 +31911,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -28841,6 +31956,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -28889,6 +32016,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "published_resource"
@@ -28932,6 +32061,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -28959,6 +32100,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -29001,6 +32144,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -29047,6 +32202,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -29092,6 +32249,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -29123,6 +32292,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -29180,6 +32351,200 @@
                         "display_name",
                         "avatar_ref",
                         "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "asr_suggestion": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "transcript_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "transcript_revision",
+                                "text"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_speech"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "base_transcript_revision": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision",
+                                "base_transcript_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "asr_suggestion",
+                        "current"
                       ],
                       "additionalProperties": false
                     }
@@ -29696,6 +33061,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -29728,6 +33105,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "phase"
@@ -29770,6 +33149,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -29825,6 +33216,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "action"
@@ -29868,6 +33261,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -29904,6 +33309,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -29947,6 +33354,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -29995,6 +33414,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "published_resource"
@@ -30038,6 +33459,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -30065,6 +33498,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -30107,6 +33542,18 @@
                               "maximum": 9007199254740991
                             }
                           ]
+                        },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
                         },
                         "updated_at": {
                           "type": "string",
@@ -30153,6 +33600,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code",
@@ -30198,6 +33647,18 @@
                             }
                           ]
                         },
+                        "audio_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 0,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "lyrics_state": {
+                          "$ref": "#/$defs/Objects_1"
+                        },
                         "updated_at": {
                           "type": "string",
                           "allOf": [
@@ -30229,6 +33690,8 @@
                         "href",
                         "track",
                         "creation_revision",
+                        "audio_revision",
+                        "lyrics_state",
                         "updated_at",
                         "status",
                         "reason_code"
@@ -30286,6 +33749,200 @@
                         "display_name",
                         "avatar_ref",
                         "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "Objects_1": {
+                      "type": "object",
+                      "properties": {
+                        "asr_suggestion": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "pending"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "transcript_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "transcript_revision",
+                                "text"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_speech"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "unavailable"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "current": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "not_bound"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "ready"
+                                  ]
+                                },
+                                "text": {
+                                  "type": "string",
+                                  "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
+                                    {
+                                      "maxLength": 200000
+                                    }
+                                  ]
+                                },
+                                "lyrics_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "audio_revision": {
+                                  "type": "integer",
+                                  "allOf": [
+                                    {
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    }
+                                  ]
+                                },
+                                "base_transcript_revision": {
+                                  "anyOf": [
+                                    {
+                                      "type": "integer",
+                                      "allOf": [
+                                        {
+                                          "minimum": 1,
+                                          "maximum": 9007199254740991
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status",
+                                "text",
+                                "lyrics_revision",
+                                "audio_revision",
+                                "base_transcript_revision"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "status": {
+                                  "type": "string",
+                                  "enum": [
+                                    "no_lyrics"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "status"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "asr_suggestion",
+                        "current"
                       ],
                       "additionalProperties": false
                     }
