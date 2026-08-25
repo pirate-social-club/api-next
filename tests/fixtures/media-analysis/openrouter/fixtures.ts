@@ -87,6 +87,12 @@ export const hostileModelDocuments = {
   refusal: { refusal: "I cannot comply" },
   unknown_key: { ...classified, policy_decision: "safe" },
   invalid_language: { ...classified, primary_language_bcp47: "EN_us" },
+  uncertain_safety_downgrade: {
+    ...classified,
+    transcript_explicitness: "uncertain",
+    lyrics_explicitness: "uncertain",
+    explicitness: "not_explicit",
+  },
   out_of_bounds_evidence: {
     ...classified,
     evidence: classified.evidence.map((item) => ({ ...item, segment_index: 99 })),

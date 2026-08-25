@@ -311,6 +311,55 @@ describe("song media Spec 013 machine", () => {
         decision: { ...staleDecision, lyricsRevision: 1 },
       }),
     ).toMatchObject({ ok: false, rejection: { _tag: "decision_evidence_invalid" } });
+    expect(
+      transitionMediaSubmission(withLyrics, {
+        event: "blocking_analysis_completed",
+        actorId,
+        expectedAudioRevision: 1,
+        expectedCanonicalAudioSha256: audioHash,
+        analysis: analysis(),
+      }),
+    ).toMatchObject({
+      ok: false,
+      rejection: { _tag: "decision_evidence_invalid", reasonCode: "input_hash_mismatch" },
+    });
+    const noSpeechDisagreement = ok(
+      transitionMediaSubmission(withLyrics, {
+        event: "blocking_analysis_completed",
+        actorId,
+        expectedAudioRevision: 1,
+        expectedCanonicalAudioSha256: audioHash,
+        analysis: { ...analysis(), lyricsSafety: "review_required" },
+      }),
+    );
+    expect(noSpeechDisagreement.lyrics).toEqual(lyrics);
+    expect(
+      transitionMediaSubmission(noSpeechDisagreement, {
+        event: "publication_allowed",
+        actorId,
+        expectedCreationRevision: 3,
+        expectedAudioRevision: 1,
+        expectedAnalysisRevision: 1,
+        decision: { ...staleDecision, lyricsRevision: 1 },
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "decision_evidence_invalid" } });
+    expect(
+      ok(
+        transitionMediaSubmission(noSpeechDisagreement, {
+          event: "review_required",
+          actorId,
+          expectedCreationRevision: 3,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          review: { reviewRef: "no-speech-review", heldRevision: 3, reasonCode: "review_required" },
+          decision: {
+            ...staleDecision,
+            outcome: "manual_review",
+            lyricsRevision: 1,
+          },
+        }),
+      ),
+    ).toMatchObject({ status: "manual_review", lyrics });
   });
 
   test("requires exact reference evidence before remix publication", () => {

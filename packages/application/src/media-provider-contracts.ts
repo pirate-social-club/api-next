@@ -422,8 +422,12 @@ const MediaExplicitnessClassifiedResult = Schema.Struct({
         (secondaryLanguagePresent
           ? evidenceKinds.has("secondary_language")
           : !evidenceKinds.has("secondary_language"));
-      const strongerAudioEvidenceRetained =
-        transcript_explicitness !== "explicit" || explicitness === "explicit";
+      const safetyRank = { not_explicit: 0, uncertain: 1, explicit: 2 } as const;
+      const sourceSafety = Math.max(
+        safetyRank[transcript_explicitness],
+        safetyRank[lyrics_explicitness],
+      );
+      const sourceSafetyRetained = safetyRank[explicitness] >= sourceSafety;
       const disagreementFailsClosed =
         !material_disagreement || explicitness === "explicit" || explicitness === "uncertain";
       const agreementIsTruthful =
@@ -431,7 +435,7 @@ const MediaExplicitnessClassifiedResult = Schema.Struct({
       return languagesAreDistinct &&
         secondaryLanguagePresent === secondaryConfidencePresent &&
         evidenceCoversClaimedFields &&
-        strongerAudioEvidenceRetained &&
+        sourceSafetyRetained &&
         disagreementFailsClosed &&
         agreementIsTruthful
         ? undefined

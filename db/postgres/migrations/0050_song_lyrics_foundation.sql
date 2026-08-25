@@ -105,11 +105,13 @@ ALTER TABLE media_analysis_evidence
       AND lyrics_safety IN ('skipped', 'allow', 'review_required', 'blocked'))
     OR (speech_status = 'no_speech'
       AND transcript_artifact_ref IS NULL AND transcript_sha256 IS NULL
-      AND transcript_revision IS NULL AND lyrics_revision IS NULL
-      AND material_disagreement = FALSE
+      AND transcript_revision IS NULL
       AND explicitness = 'no_lyrics'
       AND primary_language_bcp47 IS NULL AND secondary_language_bcp47 IS NULL
-      AND lyrics_safety = 'skipped')
+      AND (
+        (lyrics_revision IS NULL AND material_disagreement = FALSE AND lyrics_safety = 'skipped')
+        OR (lyrics_revision > 0 AND material_disagreement = TRUE AND lyrics_safety = 'review_required')
+      ))
     OR (speech_status = 'unavailable'
       AND transcript_artifact_ref IS NULL AND transcript_sha256 IS NULL
       AND transcript_revision IS NULL AND lyrics_revision IS NULL
@@ -201,6 +203,34 @@ ALTER TABLE media_submission_outbox
   )),
   DROP CONSTRAINT media_submission_outbox_community_id_actor_user_id_submissi_key;
 
+-- Rows created by 0043 used closed payloads that predated creation/lyrics
+-- identity. Upgrade those immutable effects in place before installing the new
+-- update guard. The row tuple remains authoritative and effect identity is
+-- preserved.
+DROP TRIGGER media_outbox_update_guard ON media_submission_outbox;
+UPDATE media_submission_outbox
+SET payload = jsonb_build_object(
+  'kind', 'publication',
+  'submission_id', submission_id,
+  'operation_id', operation_id,
+  'creation_revision', creation_revision,
+  'lyrics_revision', lyrics_revision,
+  'workflow_revision', workflow_revision,
+  'workflow_instance_id', workflow_instance_id
+)
+WHERE event_type = 'publication';
+UPDATE media_submission_outbox
+SET payload = jsonb_build_object(
+  'kind', 'alignment',
+  'submission_id', submission_id,
+  'operation_id', operation_id,
+  'post_id', payload->>'post_id',
+  'lyrics_revision', lyrics_revision,
+  'workflow_revision', workflow_revision,
+  'workflow_instance_id', workflow_instance_id
+)
+WHERE event_type = 'alignment';
+
 ALTER TABLE media_submission_outbox
   ADD CONSTRAINT media_submission_outbox_semantic_identity_unique
   UNIQUE NULLS NOT DISTINCT (
@@ -221,6 +251,8 @@ BEGIN
   RETURN NEW;
 END;
 $$;
+CREATE TRIGGER media_outbox_update_guard BEFORE UPDATE ON media_submission_outbox
+  FOR EACH ROW EXECUTE FUNCTION guard_media_outbox_update();
 
 CREATE FUNCTION validate_media_lyrics_lineage() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE submission_record media_post_submissions%ROWTYPE; publication_record media_publication_projections%ROWTYPE;
@@ -240,8 +272,15 @@ BEGIN
               AND transcript.canonical_audio_sha256=NEW.canonical_audio_sha256
           )
         ))
-       OR (NEW.speech_status = 'no_speech'
-           AND submission_record.current_lyrics_revision IS NOT NULL)
+       OR (NEW.speech_status = 'no_speech' AND (
+            NEW.lyrics_revision IS DISTINCT FROM submission_record.current_lyrics_revision
+            OR (submission_record.current_lyrics_revision IS NULL AND (
+                 NEW.material_disagreement OR NEW.lyrics_safety <> 'skipped'
+               ))
+            OR (submission_record.current_lyrics_revision IS NOT NULL AND (
+                 NOT NEW.material_disagreement OR NEW.lyrics_safety <> 'review_required'
+               ))
+          ))
        OR (NEW.material_disagreement AND NEW.lyrics_safety <> 'review_required') THEN
       RAISE EXCEPTION 'analysis lyrics lineage is not exact';
     END IF;
@@ -622,8 +661,8 @@ $$;
 CREATE TRIGGER media_alignment_lyrics_pointer_guard BEFORE INSERT OR UPDATE ON media_alignment_projections
   FOR EACH ROW EXECUTE FUNCTION validate_media_alignment_lyrics_pointer();
 
--- New outbox payloads are closed and identifier-only. Old payloads retain the
--- 0043 validator; the repository supplies exact shapes for every new edge.
+-- Outbox payloads are closed and identifier-only. Legacy publication and
+-- alignment rows were upgraded above; every row now has the v2 shape.
 DROP TRIGGER media_outbox_payload_guard ON media_submission_outbox;
 CREATE FUNCTION validate_media_outbox_payload_v2() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE keys TEXT[]; expected TEXT[]; submission_record media_post_submissions%ROWTYPE;

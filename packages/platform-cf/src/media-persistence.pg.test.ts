@@ -699,8 +699,44 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           persona,
         ],
       );
+      const legacyPostId = "media_0048_legacy_post";
+      await admin.query(
+        "INSERT INTO posts (community_id,post_id,author_user_id,post_type,status,visibility,title,created_at,updated_at,idempotency_key,idempotency_body_hash,author_persona_id) VALUES ($1,$2,$3,'song','published','public','0048 song',clock_timestamp(),clock_timestamp(),'media-0048-post',$4,$5)",
+        [community, legacyPostId, actor, requestHash, persona],
+      );
+      await admin.query(
+        "UPDATE media_post_submissions SET audio_revision=1,analysis_revision=1,workflow_revision=1,current_immutable_ref='media-0048-immutable',status='published',phase=NULL,post_id=$2 WHERE submission_id=$1",
+        [submission, legacyPostId],
+      );
       await admin.query("ALTER TABLE media_post_submissions ENABLE TRIGGER USER");
       await admin.query("ALTER TABLE media_upload_reservations ENABLE TRIGGER USER");
+      const legacyWorkflowInstanceId = `media-${operation}-r1`;
+      for (const [eventType, outboxEventId, effectIdentity] of [
+        ["publication", "media_0048_publication_outbox", "media_0048_publication_effect"],
+        ["alignment", "media_0048_alignment_outbox", "media_0048_alignment_effect"],
+      ] as const)
+        await admin.query(
+          "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload,author_persona_id) VALUES ($1,$2,$3,$4,$5,1,1,1,1,$6,$7,$8,$9::jsonb,$10)",
+          [
+            outboxEventId,
+            submission,
+            community,
+            actor,
+            operation,
+            legacyWorkflowInstanceId,
+            eventType,
+            effectIdentity,
+            JSON.stringify({
+              kind: eventType,
+              submission_id: submission,
+              operation_id: operation,
+              post_id: legacyPostId,
+              workflow_revision: 1,
+              workflow_instance_id: legacyWorkflowInstanceId,
+            }),
+            persona,
+          ],
+        );
       await runPostgresMigrations({
         connectionString: connection,
         migrations,
@@ -717,6 +753,51 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         current_lyrics_revision: null,
         workflow_replacement_sequence: "0",
       });
+      for (const [eventType, outboxEventId, effectIdentity] of [
+        ["publication", "media_0048_publication_outbox", "media_0048_publication_effect"],
+        ["alignment", "media_0048_alignment_outbox", "media_0048_alignment_effect"],
+      ] as const) {
+        const upgraded = await run(connection, (_store, outbox) => outbox.get(outboxEventId));
+        expect(upgraded).toMatchObject({
+          outboxEventId,
+          effectIdentity,
+          eventType,
+          creationRevision: 1,
+          audioRevision: 1,
+          analysisRevision: 1,
+          lyricsRevision: null,
+          workflowRevision: 1,
+          payload: {
+            kind: eventType,
+            submission_id: submission,
+            operation_id: operation,
+            lyrics_revision: null,
+            workflow_revision: 1,
+            workflow_instance_id: legacyWorkflowInstanceId,
+          },
+        });
+        const claimed = await run(connection, (_store, outbox) =>
+          outbox.claim({
+            outboxEventId,
+            workflowRevision: 1,
+            workerId: `media_0048_${eventType}_worker`,
+            leaseSeconds: 30,
+          }),
+        );
+        expect(claimed).toMatchObject({ state: "running", claimFence: 1 });
+        if (claimed === null) throw new Error(`failed to claim ${eventType} fixture`);
+        expect(
+          await run(connection, (_store, outbox) =>
+            outbox.markDelivered({
+              outboxEventId,
+              workflowRevision: 1,
+              workflowInstanceId: legacyWorkflowInstanceId,
+              workerId: `media_0048_${eventType}_worker`,
+              claimFence: claimed.claimFence,
+            }),
+          ),
+        ).toBe(true);
+      }
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
@@ -725,6 +806,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
   test("binds lyrics after sealed finalization before independent terms", async () => {
     await withSchema(async (admin, connection) => {
+      const authorReviewedLyrics = "Author reviewed lyrics ".repeat(30);
       expect(
         await run(connection, (store) =>
           store.reserve({
@@ -805,7 +887,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             expectedCreationRevision: 1,
             expectedAudioRevision: 1,
             baseTranscriptRevision: null,
-            lyrics: "Author reviewed lyrics",
+            lyrics: authorReviewedLyrics,
             outbox: {
               outboxEventId: "media_pg_lyrics_outbox",
               effectIdentity: "media_pg_lyrics_effect",
@@ -823,6 +905,17 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           }),
         ),
       ).toEqual({ kind: "committed", submissionId: submission });
+      expect(authorReviewedLyrics.length).toBeGreaterThan(512);
+      expect(
+        await run(connection, (store) =>
+          store.getForAuthor({
+            communityId: community,
+            submissionId: submission,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+          }),
+        ),
+      ).toMatchObject({ lyrics: { text: authorReviewedLyrics, lyricsRevision: 1 } });
       expect(
         (
           await admin.query(
@@ -2295,7 +2388,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
-  test("accepts normalized unavailable and ready speech snapshots and closes ready scalar refs", async () => {
+  test("accepts normalized unavailable, no-speech disagreement, and ready speech snapshots", async () => {
     await withSchema(async (admin, connection) => {
       const unavailable: TrustedSongAnalysis = {
         ...analysis,
@@ -2380,6 +2473,53 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           transcriptSha256: "forged-transcript-hash",
           primaryLanguageBcp47: "en",
           secondaryLanguageBcp47: "fr",
+        },
+      });
+    });
+    await withSchema(async (admin, connection) => {
+      const noSpeechDisagreement: TrustedSongAnalysis = {
+        ...analysis,
+        lyricsSafety: "review_required",
+      };
+      await createThroughDecision(
+        connection,
+        { ...reviewDecision, creationRevision: 3, lyricsRevision: 1 },
+        noSpeechDisagreement,
+        false,
+        undefined,
+        "Author lyrics retained after no-speech evidence",
+      );
+      expect(
+        (
+          await admin.query(
+            "SELECT s.status,s.review_reason_code,s.current_lyrics_revision,a.speech_status,a.lyrics_revision,a.material_disagreement,a.lyrics_safety FROM media_post_submissions s JOIN media_analysis_evidence a ON a.submission_id=s.submission_id AND a.analysis_revision=s.current_analysis_revision WHERE s.submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({
+        status: "manual_review",
+        review_reason_code: "review_required",
+        current_lyrics_revision: "1",
+        speech_status: "no_speech",
+        lyrics_revision: "1",
+        material_disagreement: true,
+        lyrics_safety: "review_required",
+      });
+      expect(
+        await run(connection, (store) =>
+          store.getForAuthor({
+            communityId: community,
+            submissionId: submission,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+          }),
+        ),
+      ).toMatchObject({
+        status: "manual_review",
+        lyrics: { text: "Author lyrics retained after no-speech evidence" },
+        analysis: {
+          speechLyrics: { status: "no_speech" },
+          lyricsSafety: "review_required",
         },
       });
     });

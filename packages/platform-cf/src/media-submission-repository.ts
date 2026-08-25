@@ -569,6 +569,11 @@ const validId = (value: unknown): value is string =>
   value.length <= 512 &&
   !value.includes("\u0000") &&
   ID.test(value);
+const validLyricsText = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.length >= 1 &&
+  value.length <= 200_000 &&
+  new TextEncoder().encode(value).byteLength <= 800_000;
 const validHash = (value: unknown): value is string =>
   typeof value === "string" && HASH.test(value);
 const validRevision = (value: unknown, minimum = 0): value is number =>
@@ -730,7 +735,7 @@ function decodeState(
     (lyricsRevision === 0) !== (row.current_lyrics_revision === null) ||
     (lyricsRevision > 0 &&
       (integer(row.current_lyrics_revision) !== lyricsRevision ||
-        !validId(row.lyrics_text) ||
+        !validLyricsText(row.lyrics_text) ||
         !validHash(row.lyrics_sha256) ||
         !["asr_accepted", "pasted", "corrected"].includes(String(row.lyrics_provenance)))) ||
     (analysisRevision === 0 && analysis !== null) ||
@@ -1590,9 +1595,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         !validCommand(input) ||
         !validRevision(input.expectedCreationRevision, 1) ||
         !validRevision(input.expectedAudioRevision, 1) ||
-        input.lyrics.length < 1 ||
-        input.lyrics.length > 200_000 ||
-        new TextEncoder().encode(input.lyrics).byteLength > 800_000 ||
+        !validLyricsText(input.lyrics) ||
         (input.baseTranscriptRevision !== null &&
           !validRevision(input.baseTranscriptRevision, 1)) ||
         !validId(input.outbox.outboxEventId) ||
@@ -2103,8 +2106,14 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               json(trustedAnalysisSnapshot(input.analysis)),
               current.personaId,
               speech.status === "ready" ? speech.transcriptRevision : null,
-              speech.status === "ready" ? speech.lyricsRevision : null,
-              speech.status === "ready" ? speech.materialDisagreement : false,
+              speech.status === "ready"
+                ? speech.lyricsRevision
+                : speech.status === "no_speech"
+                  ? current.lyricsRevision || null
+                  : null,
+              speech.status === "ready"
+                ? speech.materialDisagreement
+                : speech.status === "no_speech" && current.lyrics !== null,
             ],
             readonly: false,
           });

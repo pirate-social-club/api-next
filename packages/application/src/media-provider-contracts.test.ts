@@ -287,6 +287,24 @@ describe("provider-neutral media analysis contracts", () => {
     expect(() =>
       decodeMediaExplicitnessClassifierResult({
         ...classifierResult,
+        explicitness: "not_explicit",
+        transcript_explicitness: "uncertain",
+        lyrics_explicitness: "uncertain",
+        material_disagreement: false,
+      }),
+    ).toThrow();
+    expect(
+      decodeMediaExplicitnessClassifierResult({
+        ...classifierResult,
+        explicitness: "uncertain",
+        transcript_explicitness: "uncertain",
+        lyrics_explicitness: "not_explicit",
+        material_disagreement: true,
+      }),
+    ).toMatchObject({ explicitness: "uncertain" });
+    expect(() =>
+      decodeMediaExplicitnessClassifierResult({
+        ...classifierResult,
         transcript_explicitness: "explicit",
         lyrics_explicitness: "not_explicit",
         material_disagreement: false,

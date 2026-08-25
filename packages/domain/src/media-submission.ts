@@ -605,8 +605,8 @@ function validAnalysis(analysis: TrustedSongAnalysis, state: MediaSubmissionStat
       return false;
   } else if (
     speech.status === "no_speech" &&
-    (state.lyrics !== null ||
-      analysis.lyricsSafety !== "skipped" ||
+    ((state.lyrics === null && analysis.lyricsSafety !== "skipped") ||
+      (state.lyrics !== null && analysis.lyricsSafety !== "review_required") ||
       (speech.transcriptArtifactRef !== undefined && speech.transcriptArtifactRef !== null) ||
       (speech.transcriptSha256 !== undefined && speech.transcriptSha256 !== null) ||
       (speech.primaryLanguageBcp47 !== undefined && speech.primaryLanguageBcp47 !== null) ||

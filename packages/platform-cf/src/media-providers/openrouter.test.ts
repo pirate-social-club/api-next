@@ -256,6 +256,12 @@ describe("OpenRouter classifier scaffold", () => {
       ),
     );
     expect(invalidLanguage).toBe("out_of_policy");
+    const unsafeUncertainDowngrade = await failureTag(
+      configured(() =>
+        response(modelResponse(hostileModelDocuments.uncertain_safety_downgrade)),
+      ).classify(classifierInput, { signal: new AbortController().signal }),
+    );
+    expect(unsafeUncertainDowngrade).toBe("out_of_policy");
     const outOfBounds = await failureTag(
       configured(() =>
         response(modelResponse(hostileModelDocuments.out_of_bounds_evidence)),
