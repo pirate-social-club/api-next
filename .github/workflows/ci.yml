@@ -142,6 +142,7 @@ jobs:
             packages/platform-cf/src/text-submission-repository.pg.test.ts \
             packages/platform-cf/src/persona-repository.pg.test.ts \
             packages/platform-cf/src/rewards-qualification.pg.test.ts \
+            packages/platform-cf/src/activity-qualification-repository.pg.test.ts \
             packages/platform-cf/src/public-profile.pg.test.ts \
             packages/platform-cf/src/public-community-threads-repository.pg.test.ts \
             packages/platform-cf/src/verification-completion-repository.pg.test.ts \

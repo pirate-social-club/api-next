@@ -859,6 +859,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(tables.rows.map((row) => row.table_name).sort()).toEqual([
         "account_aliases",
         "account_streak_clocks",
+        "account_streak_timezone_actions",
         "action_challenges",
         "action_grants",
         "action_intents",
@@ -984,6 +985,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "operator_managed_root_registry_versions",
         "operator_managed_route_activations",
         "operator_managed_route_operations",
+        "persona_activity_presentation_actions",
         "persona_activity_presentations",
         "persona_create_actions",
         "persona_profiles",
@@ -1101,6 +1103,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
          ORDER BY trigger.tgname`,
       );
       expect(gateTriggers.rows.map((row) => row.trigger_name)).toEqual([
+        "account_streak_timezone_actions_append_only",
         "action_grants_append_only",
         "assertion_bindings_append_only",
         "assertion_revalidation_events_append_only",
@@ -1165,6 +1168,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "media_transcript_artifacts_append_only",
         "namespace_ownership_evidence_snapshot_append_only",
         "observations_append_only",
+        "persona_activity_presentation_actions_append_only",
         "persona_create_actions_append_only",
         "policy_versions_append_only",
         "proof_session_completion_events_append_only",
