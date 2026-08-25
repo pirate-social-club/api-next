@@ -45,10 +45,7 @@ export function makeHnsStaticPlatformGatewayService(input: {
     handle: async (request) => {
       const admitted = admitHnsStaticPlatformGatewayRequest(request);
       if ("status" in admitted) {
-        return redacted(
-          admitted.status,
-          admitted.status === 405 ? "GET, HEAD, POST, PATCH" : undefined,
-        );
+        return redacted(admitted.status, admitted.allow);
       }
       if (admitted.host === HNS_PLATFORM_ROOT) {
         return new Response(null, {
