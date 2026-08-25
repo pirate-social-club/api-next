@@ -272,7 +272,7 @@ describe("label claim rules", () => {
   test("rule input validation enforces caps, normalized unique labels, and id shape", () => {
     const validExpression = {
       version: 1,
-      expression: { op: "gate", gate: { type: "altcha_pow" } },
+      expression: { op: "gate", gate: { type: "unique_human", provider: "self" } },
     };
     expect(
       validateLabelClaimRulesInput(

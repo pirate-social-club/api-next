@@ -1,7 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { evaluateErc721HoldingAtom, evaluateErc721InventoryMatchAtom } from "./erc721";
-import { isPowSatisfiableGatePolicy } from "./open-participation";
-import { evaluateProofOfWorkAtom } from "./proof-of-work";
 import { evaluateWalletScoreAtom, type WalletScoreEvidence } from "./wallet-score";
 
 describe("wallet-score atom evaluator", () => {
@@ -119,97 +117,5 @@ describe("ERC-721 atom evaluators", () => {
       outcome: "provider_unavailable",
       requiredAction: null,
     });
-  });
-});
-
-describe("proof-of-work atom evaluator", () => {
-  const atom = { type: "altcha_pow" as const };
-
-  test("preview and diagnose request the exact action without consuming evidence", () => {
-    const result = evaluateProofOfWorkAtom({
-      atom,
-      mode: "preview",
-      actorUserId: "user_1",
-      scope: "community_join",
-      action: "join",
-      verifiedEvidence: { actorUserId: "user_1", scope: "community_join", action: "join" },
-    });
-    expect(result).toMatchObject({
-      outcome: "action_required",
-      requiredAction: { provider: "altcha", capability: "altcha_pow", scope: "community_join" },
-    });
-  });
-
-  test("enforce passes only actor-, scope-, and action-bound verified evidence", () => {
-    const input = {
-      atom,
-      mode: "enforce" as const,
-      actorUserId: "user_1",
-      scope: "community_join",
-      action: "join",
-    };
-    expect(
-      evaluateProofOfWorkAtom({
-        ...input,
-        verifiedEvidence: { actorUserId: "user_1", scope: "community_join", action: "join" },
-      }),
-    ).toMatchObject({ outcome: "passed", passed: true });
-    expect(
-      evaluateProofOfWorkAtom({
-        ...input,
-        verifiedEvidence: { actorUserId: "user_2", scope: "community_join", action: "join" },
-      }),
-    ).toMatchObject({ outcome: "action_required", passed: false });
-  });
-});
-
-describe("proof-of-work open participation", () => {
-  test("keeps old AND/OR precedence for bare and nested proof-of-work policies", () => {
-    const bare = JSON.parse(
-      '{"version":1,"expression":{"op":"gate","gate":{"type":"altcha_pow"}}}',
-    );
-    const conjunction = JSON.parse(`{
-      "version": 1,
-      "expression": {
-        "op": "and",
-        "children": [
-          { "op": "gate", "gate": { "type": "altcha_pow" } },
-          { "op": "gate", "gate": { "type": "unique_human", "provider": "self" } }
-        ]
-      }
-    }`);
-    const disjunction = JSON.parse(`{
-      "version": 1,
-      "expression": {
-        "op": "or",
-        "children": [
-          { "op": "gate", "gate": { "type": "altcha_pow" } },
-          { "op": "gate", "gate": { "type": "unique_human", "provider": "self" } }
-        ]
-      }
-    }`);
-    const nestedAnd = JSON.parse(`{
-      "version": 1,
-      "expression": {
-        "op": "and",
-        "children": [
-          { "op": "and", "children": [
-            { "op": "gate", "gate": { "type": "altcha_pow" } },
-            { "op": "gate", "gate": { "type": "altcha_pow" } }
-          ] }
-        ]
-      }
-    }`);
-    const identityOnly = JSON.parse(
-      '{"version":1,"expression":{"op":"gate","gate":{"type":"unique_human","provider":"self"}}}',
-    );
-    const empty = JSON.parse('{"version":1,"expression":{"op":"and","children":[]}}');
-    expect(isPowSatisfiableGatePolicy(bare)).toBe(true);
-    expect(isPowSatisfiableGatePolicy(conjunction)).toBe(false);
-    expect(isPowSatisfiableGatePolicy(disjunction)).toBe(true);
-    expect(isPowSatisfiableGatePolicy(nestedAnd)).toBe(true);
-    expect(isPowSatisfiableGatePolicy(identityOnly)).toBe(false);
-    expect(isPowSatisfiableGatePolicy(empty)).toBe(false);
-    expect(isPowSatisfiableGatePolicy(null)).toBe(false);
   });
 });
