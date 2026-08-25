@@ -115,17 +115,17 @@ describe("HNS forwarder v3 in Workerd", () => {
     const envelope = await gateway.sign({
       method: "GET",
       normalized_host: state.normalized_host,
-      path_and_query: "/c/app.xn--pokmon-dva",
+      path_and_query: "/c/xn--pokmon-dva",
       headers: new Headers(),
       body_bytes: new Uint8Array(),
     });
     expect(envelope.headers.get("x-pirate-hns-forwarder-signature")).toBe(
-      "v3=ec8960de956a3de831784501f7a7365c2f16b8c36c915a2ca4ea3bc5efb7f235",
+      "v3=b09e03ea0a1441654d481ca19f34245a4560f3db68b5abde3cda49f2bfb4f9eb",
     );
     await expect(
       worker.verify({
         method: "GET",
-        url: "https://worker.internal/c/app.xn--pokmon-dva",
+        url: "https://worker.internal/c/xn--pokmon-dva",
         headers: envelope.headers,
         body_bytes: new Uint8Array(),
       }),

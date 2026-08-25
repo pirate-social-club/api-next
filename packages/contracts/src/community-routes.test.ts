@@ -3,6 +3,7 @@ import { Schema } from "effect";
 import {
   CommunityRouteLifecycleStatusV1,
   decodeCommunityCanonicalRouteV1,
+  decodeCommunityCanonicalRouteV2,
   decodeCommunityRouteRequestV1,
 } from "./community-routes.ts";
 
@@ -179,5 +180,50 @@ describe("community route contracts", () => {
     expect(decode("suspended")).toBe("suspended");
     expect(() => decode("hidden")).toThrow();
     expect(() => decode("archived")).toThrow();
+  });
+
+  test("separates the public HNS route v2 path from the retained app host", () => {
+    expect(
+      decodeCommunityCanonicalRouteV2({
+        family: "hns",
+        root_label: "xn--mnchen-3ya",
+        root_label_display: "münchen",
+        path_segment: "xn--mnchen-3ya",
+        href: "/c/xn--mnchen-3ya",
+        app_host: "app.xn--mnchen-3ya",
+      }),
+    ).toMatchObject({ path_segment: "xn--mnchen-3ya", app_host: "app.xn--mnchen-3ya" });
+    expect(
+      decodeCommunityCanonicalRouteV2({
+        family: "hns",
+        root_label: "community_music",
+        root_label_display: "community_music",
+        path_segment: "community_music",
+        href: "/c/community_music",
+        app_host: null,
+      }),
+    ).toMatchObject({ root_label: "community_music" });
+    for (const root_label of ["pirate", "community_123e4567-e89b-42d3-a456-426614174000"]) {
+      expect(() =>
+        decodeCommunityCanonicalRouteV2({
+          family: "hns",
+          root_label,
+          root_label_display: root_label,
+          path_segment: root_label,
+          href: `/c/${root_label}`,
+          app_host: null,
+        }),
+      ).toThrow();
+    }
+    expect(() =>
+      decodeCommunityCanonicalRouteV2({
+        family: "hns",
+        root_label: "jazleeuw",
+        root_label_display: "jazleeuw",
+        path_segment: "app.jazleeuw",
+        href: "/c/app.jazleeuw",
+        app_host: "app.jazleeuw",
+      }),
+    ).toThrow();
   });
 });

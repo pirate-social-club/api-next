@@ -90,7 +90,7 @@
     },
     {
       "operationId": "get_cPathSegment",
-      "reason": "2026-08-23 optional-route v2 clean break: /c/community_... permanently resolves an active community without namespace authority, while canonical_route is nullable until an active namespace binding exists."
+      "reason": "2026-08-25 bare HNS route-v2 clean break: /c/community_... remains the permanent opaque route, /c/@root remains the Spaces route, and an HNS binding now resolves at /c/root while app.root remains only the optional direct host; the public canonical_route projection changes without rewriting retained v1 authority evidence."
     },
     {
       "operationId": "post_postsPostIdVote",

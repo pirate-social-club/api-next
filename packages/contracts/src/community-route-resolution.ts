@@ -3,6 +3,7 @@ import { Auth } from "./auth.ts";
 import { CurrentCommunityResourceV2 } from "./community-creation.ts";
 import {
   CommunityCanonicalRouteV1,
+  CommunityCanonicalRouteV2,
   CommunityRouteContractParseOptions,
 } from "./community-routes.ts";
 import { endpoint } from "./endpoint.ts";
@@ -15,6 +16,7 @@ export type CanonicalCommunityRoutePathV1 = Schema.Schema.Type<
   typeof CanonicalCommunityRoutePathV1
 >;
 
+/** Historical route-v1 response retained for replay and package compatibility. */
 export const CanonicalCommunityRouteResolutionV1 = Schema.Struct({
   community_id: Schema.NonEmptyString,
   canonical_route: CommunityCanonicalRouteV1,
@@ -28,9 +30,22 @@ export const decodeCanonicalCommunityRouteResolutionV1 = Schema.decodeUnknownSyn
   CommunityRouteContractParseOptions,
 );
 
+export const CanonicalCommunityRouteResolutionV2 = Schema.Struct({
+  community_id: Schema.NonEmptyString,
+  canonical_route: CommunityCanonicalRouteV2,
+});
+export type CanonicalCommunityRouteResolutionV2 = Schema.Schema.Type<
+  typeof CanonicalCommunityRouteResolutionV2
+>;
+
+export const decodeCanonicalCommunityRouteResolutionV2 = Schema.decodeUnknownSync(
+  CanonicalCommunityRouteResolutionV2,
+  CommunityRouteContractParseOptions,
+);
+
 export const CommunityPathResolution = Schema.Union([
   CurrentCommunityResourceV2,
-  CanonicalCommunityRouteResolutionV1,
+  CanonicalCommunityRouteResolutionV2,
 ]);
 export type CommunityPathResolution = Schema.Schema.Type<typeof CommunityPathResolution>;
 

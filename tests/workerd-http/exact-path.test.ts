@@ -61,8 +61,8 @@ describe("exact raw path parameters in workerd", () => {
                 family: "hns",
                 root_label: "xn--mnchen-3ya",
                 root_label_display: "münchen",
-                path_segment: "app.xn--mnchen-3ya",
-                href: "/c/app.xn--mnchen-3ya",
+                path_segment: "xn--mnchen-3ya",
+                href: "/c/xn--mnchen-3ya",
                 app_host: null,
               },
             });
@@ -71,15 +71,15 @@ describe("exact raw path parameters in workerd", () => {
       }),
     });
 
-    const exact = await app.request("https://worker.test/c/app.xn--mnchen-3ya");
+    const exact = await app.request("https://worker.test/c/xn--mnchen-3ya");
     expect(exact.status).toBe(200);
 
     for (const alias of [
-      "app.%78n--mnchen-3ya",
-      "app.%2578n--mnchen-3ya",
-      "APP.XN--MNCHEN-3YA",
-      "app.m%C3%BCnchen",
-      "app.ｍｕｓｉｃ",
+      "%78n--mnchen-3ya",
+      "%2578n--mnchen-3ya",
+      "XN--MNCHEN-3YA",
+      "m%C3%BCnchen",
+      "ｍｕｓｉｃ",
     ]) {
       const response = await app.request(`https://worker.test/c/${alias}`);
       expect(response.status, alias).toBe(400);

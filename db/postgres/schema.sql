@@ -543,6 +543,37 @@ CREATE FUNCTION effective_active_route(expected_community_id text, database_now 
      AND evidence.expires_at > database_now
 $$;
 
+CREATE FUNCTION effective_public_community_route_v2(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, authority_route_key_v1 text, public_path_segment text, public_href text, route_authority_kind text, authority_reference text, authority_generation bigint, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
+    LANGUAGE sql STABLE
+    AS $_$
+  SELECT route.community_id,
+         route.route_binding_id,
+         route.family,
+         route.root_label,
+         route.root_label_display,
+         route.path_segment,
+         binding.public_path_segment_v2,
+         binding.public_href_v2,
+         route.route_authority_kind,
+         route.authority_reference,
+         route.authority_generation,
+         route.verified_evidence_ref,
+         route.binding_generation,
+         route.evidence_expires_at
+    FROM effective_route_authority_v2(expected_community_id, database_now) AS route
+    JOIN community_canonical_route_bindings AS binding
+      ON binding.route_binding_id = route.route_binding_id
+     AND binding.community_id = route.community_id
+     AND binding.family = route.family
+     AND binding.root_label = route.root_label
+     AND binding.path_segment = route.path_segment
+   WHERE route.family <> 'hns'
+      OR (
+        route.root_label <> 'pirate'
+        AND route.root_label !~ '^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      )
+$_$;
+
 CREATE FUNCTION effective_route_authority_v2(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, path_segment text, href text, route_authority_kind text, authority_reference text, authority_generation bigint, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
     LANGUAGE sql STABLE
     AS $$
@@ -7299,6 +7330,18 @@ END)) STORED,
     route_authority_kind text DEFAULT 'verified_namespace_v1'::text NOT NULL,
     authority_reference text,
     authority_generation bigint,
+    public_path_segment_v2 text GENERATED ALWAYS AS (
+CASE family
+    WHEN 'hns'::text THEN root_label
+    WHEN 'spaces'::text THEN ('@'::text || root_label)
+    ELSE NULL::text
+END) STORED,
+    public_href_v2 text GENERATED ALWAYS AS (('/c/'::text ||
+CASE family
+    WHEN 'hns'::text THEN root_label
+    WHEN 'spaces'::text THEN ('@'::text || root_label)
+    ELSE NULL::text
+END)) STORED,
     CONSTRAINT community_canonical_route_bindings_active_shape CHECK (((route_lifecycle_status <> 'active'::text) OR ((route_authority_kind = 'verified_namespace_v1'::text) AND (ownership_status = 'verified'::text) AND (verified_evidence_ref IS NOT NULL)) OR ((route_authority_kind = 'operator_managed_route_v1'::text) AND (ownership_status = 'pending'::text) AND (verified_evidence_ref IS NULL)))),
     CONSTRAINT community_canonical_route_bindings_authority_kind_check CHECK ((route_authority_kind = ANY (ARRAY['verified_namespace_v1'::text, 'operator_managed_route_v1'::text]))),
     CONSTRAINT community_canonical_route_bindings_authority_shape CHECK ((((route_authority_kind = 'verified_namespace_v1'::text) AND (authority_reference IS NULL) AND (authority_generation IS NULL)) OR ((route_authority_kind = 'operator_managed_route_v1'::text) AND (family = 'hns'::text) AND (ownership_status <> 'verified'::text) AND (verified_evidence_ref IS NULL) AND (btrim(authority_reference) <> ''::text) AND (authority_reference = btrim(authority_reference)) AND (authority_generation = binding_generation) AND (authority_generation > 0)))),
@@ -7306,6 +7349,7 @@ END)) STORED,
     CONSTRAINT community_canonical_route_bindings_family_check CHECK ((family = ANY (ARRAY['hns'::text, 'spaces'::text]))),
     CONSTRAINT community_canonical_route_bindings_id_not_blank CHECK (((btrim(route_binding_id) <> ''::text) AND (route_binding_id = btrim(route_binding_id)))),
     CONSTRAINT community_canonical_route_bindings_ownership_status_check CHECK ((ownership_status = ANY (ARRAY['pending'::text, 'verified'::text, 'expired'::text, 'disputed'::text, 'revoked'::text]))),
+    CONSTRAINT community_canonical_route_bindings_public_v2_eligibility CHECK (((family <> 'hns'::text) OR ((root_label <> 'pirate'::text) AND (root_label !~ '^community_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'::text)))),
     CONSTRAINT community_canonical_route_bindings_root_shape CHECK (((is_community_route_root_label(family, root_label) IS TRUE) AND (is_community_route_root_label_display(root_label_display) IS TRUE))),
     CONSTRAINT community_canonical_route_bindings_route_lifecycle_status_check CHECK ((route_lifecycle_status = ANY (ARRAY['active'::text, 'suspended'::text]))),
     CONSTRAINT community_canonical_route_bindings_time_order CHECK ((updated_at >= created_at))
@@ -10412,6 +10456,9 @@ ALTER TABLE ONLY community_canonical_route_bindings
 
 ALTER TABLE ONLY community_canonical_route_bindings
     ADD CONSTRAINT community_canonical_route_bindings_pkey PRIMARY KEY (route_binding_id);
+
+ALTER TABLE ONLY community_canonical_route_bindings
+    ADD CONSTRAINT community_canonical_route_bindings_public_path_v2_unique UNIQUE (public_path_segment_v2);
 
 ALTER TABLE ONLY community_commerce_allocation_policy_versions
     ADD CONSTRAINT community_commerce_allocation_policy_versions_pkey PRIMARY KEY (community_id, policy_version);

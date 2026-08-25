@@ -7,7 +7,10 @@ import {
 import type { Sha256Hex } from "@pirate/domain/verification";
 import { Effect } from "effect";
 import { Client } from "pg";
-import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import {
+  loadPostgresMigrations,
+  runPostgresMigrations,
+} from "../../../scripts/postgres-migrations.ts";
 import { makeControlPlaneCommunityRouteExpiryStore } from "./community-route-expiry-repository.ts";
 import { makeControlPlaneCanonicalCommunityRouteStore } from "./community-route-repository.ts";
 import { makeControlPlaneOperatorManagedRouteStore } from "./operator-managed-route-repository.ts";
@@ -373,6 +376,61 @@ function expireHnsRoutes(connection: string, limit = 25) {
 }
 
 suite("canonical community route Postgres repository", () => {
+  test("refuses the route-v2 migration when retained history contains the platform root", async () => {
+    await withSchema(async (connection, admin) => {
+      const migrations = await loadPostgresMigrations();
+      const routeV2Index = migrations.findIndex(
+        (migration) => migration.version === "0049_bare_hns_community_route_v2.sql",
+      );
+      expect(routeV2Index).toBeGreaterThan(0);
+      await runPostgresMigrations({
+        connectionString: connection,
+        migrations: migrations.slice(0, routeV2Index),
+      });
+      await admin.query("INSERT INTO users (user_id) VALUES ('reserved-route-owner')");
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug, route_authority_version
+         ) VALUES ('community_123e4567-e89b-42d3-a456-426614174049',
+           'Reserved platform route', 'active',
+           'reserved-route-owner', clock_timestamp(), clock_timestamp(), NULL,
+           'optional_route_v2')`,
+      );
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_canonical_route_bindings (
+           route_binding_id, community_id, family, root_label, root_label_display,
+           ownership_status, route_lifecycle_status, binding_generation,
+           verified_evidence_ref
+         ) VALUES ('reserved-platform-binding',
+           'community_123e4567-e89b-42d3-a456-426614174049', 'hns',
+           'pirate', 'pirate', 'pending', 'suspended', 1, NULL)`,
+      );
+      await admin.query(
+        `UPDATE communities
+            SET canonical_route_binding_id = 'reserved-platform-binding'
+          WHERE community_id = 'community_123e4567-e89b-42d3-a456-426614174049'`,
+      );
+      await admin.query("COMMIT");
+
+      await expect(
+        runPostgresMigrations({ connectionString: connection, migrations }),
+      ).rejects.toBeDefined();
+      await expect(
+        admin.query(
+          "SELECT count(*)::integer AS count FROM schema_migrations WHERE version = '0049_bare_hns_community_route_v2.sql'",
+        ),
+      ).resolves.toMatchObject({ rows: [{ count: 0 }] });
+      await expect(
+        admin.query(
+          "SELECT root_label FROM community_canonical_route_bindings WHERE route_binding_id = 'reserved-platform-binding'",
+        ),
+      ).resolves.toMatchObject({ rows: [{ root_label: "pirate" }] });
+      completedTestCount += 1;
+    });
+  }, 30_000);
+
   test("resolves an active optional-route community by permanent id without a binding", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
@@ -438,6 +496,65 @@ suite("canonical community route Postgres repository", () => {
     });
   }, 30_000);
 
+  test("projects a suspended Spaces binding under the disjoint at-sign path", async () => {
+    await withSchema(async (connection, admin) => {
+      await runPostgresMigrations({ connectionString: connection });
+      const communityId = "community_123e4567-e89b-42d3-a456-426614174050";
+      await admin.query("INSERT INTO users (user_id) VALUES ('spaces-route-owner')");
+      await admin.query(
+        `INSERT INTO communities (
+           community_id, display_name, status, created_by_user_id,
+           created_at, updated_at, route_slug, route_authority_version
+         ) VALUES ($1, 'Spaces route', 'active', 'spaces-route-owner',
+           clock_timestamp(), clock_timestamp(), NULL, 'optional_route_v2')`,
+        [communityId],
+      );
+      await admin.query("BEGIN");
+      await admin.query(
+        `INSERT INTO community_canonical_route_bindings (
+           route_binding_id, community_id, family, root_label, root_label_display,
+           ownership_status, route_lifecycle_status, binding_generation,
+           verified_evidence_ref
+         ) VALUES ('spaces-route-binding', $1, 'spaces', 'xn--4v8h', '🔥',
+           'pending', 'suspended', 1, NULL)`,
+        [communityId],
+      );
+      await admin.query(
+        `UPDATE communities
+            SET canonical_route_binding_id = 'spaces-route-binding'
+          WHERE community_id = $1`,
+        [communityId],
+      );
+      await admin.query("COMMIT");
+
+      await expect(
+        admin.query(
+          `SELECT path_segment, href, public_path_segment_v2, public_href_v2
+             FROM community_canonical_route_bindings
+            WHERE route_binding_id = 'spaces-route-binding'`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            path_segment: "@xn--4v8h",
+            href: "/c/@xn--4v8h",
+            public_path_segment_v2: "@xn--4v8h",
+            public_href_v2: "/c/@xn--4v8h",
+          },
+        ],
+      });
+      const store = makeControlPlaneCanonicalCommunityRouteStore(
+        makeDirectPostgresControlPlaneLayer(connection),
+      );
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "@xn--4v8h" })),
+        ),
+      ).resolves.toBeNull();
+      completedTestCount += 1;
+    });
+  }, 30_000);
+
   test("resolves a live verified HNS IDN binding with no legacy fallback", async () => {
     await withSchema(async (connection, admin) => {
       await runPostgresMigrations({ connectionString: connection });
@@ -453,6 +570,15 @@ suite("canonical community route Postgres repository", () => {
         communityId: "community-route-hns",
         bindingId: "binding-route-hns",
       });
+      await seedRoute(admin, {
+        suffix: "hns-underscore",
+        family: "hns",
+        rootLabel: "community_music",
+        rootLabelDisplay: "community_music",
+        pathSegment: "app.community_music",
+        communityId: "community-route-hns-underscore",
+        bindingId: "binding-route-hns-underscore",
+      });
       await admin.query(
         `INSERT INTO communities (
            community_id, display_name, status, created_by_user_id,
@@ -466,7 +592,7 @@ suite("canonical community route Postgres repository", () => {
       );
       await expect(
         Effect.runPromise(
-          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.xn--mnchen-3ya" })),
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "xn--mnchen-3ya" })),
         ),
       ).resolves.toMatchObject({
         community_id: "community-route-hns",
@@ -474,9 +600,21 @@ suite("canonical community route Postgres repository", () => {
           family: "hns",
           root_label: "xn--mnchen-3ya",
           root_label_display: "münchen",
-          path_segment: "app.xn--mnchen-3ya",
-          href: "/c/app.xn--mnchen-3ya",
+          path_segment: "xn--mnchen-3ya",
+          href: "/c/xn--mnchen-3ya",
           app_host: "app.xn--mnchen-3ya",
+        },
+      });
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "community_music" })),
+        ),
+      ).resolves.toMatchObject({
+        community_id: "community-route-hns-underscore",
+        canonical_route: {
+          path_segment: "community_music",
+          href: "/c/community_music",
+          app_host: "app.community_music",
         },
       });
       const effective = await admin.query(
@@ -498,7 +636,7 @@ suite("canonical community route Postgres repository", () => {
       });
       await expect(
         Effect.runPromise(
-          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.legacy-route" })),
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "legacy-route" })),
         ),
       ).resolves.toBeNull();
 
@@ -510,7 +648,7 @@ suite("canonical community route Postgres repository", () => {
       );
       await expect(
         Effect.runPromise(
-          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.xn--mnchen-3ya" })),
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "xn--mnchen-3ya" })),
         ),
       ).resolves.toBeNull();
       const suspended = await admin.query(
@@ -543,14 +681,14 @@ suite("canonical community route Postgres repository", () => {
       );
       await expect(
         Effect.runPromise(
-          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.expiry-route" })),
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "expiry-route" })),
         ),
       ).resolves.toMatchObject({ community_id: "community-route-expiry" });
 
       await new Promise((resolve) => setTimeout(resolve, 5_100));
       await expect(
         Effect.runPromise(
-          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.expiry-route" })),
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "expiry-route" })),
         ),
       ).resolves.toBeNull();
       const stored = await admin.query(
@@ -696,7 +834,7 @@ suite("canonical community route Postgres repository", () => {
       );
       await expect(
         Effect.runPromise(
-          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "app.null-expiry-route" })),
+          Effect.scoped(store.resolveCanonicalRoute({ path_segment: "null-expiry-route" })),
         ),
       ).resolves.toBeNull();
       await expect(expireHnsRoutes(connection)).resolves.toEqual({
@@ -817,10 +955,10 @@ suite("canonical community route Postgres repository", () => {
       await runPostgresMigrations({ connectionString: connection });
       const communityId = "community_123e4567-e89b-42d3-a456-426614174001";
       const registryBytes = new TextEncoder().encode(
-        '["pirate-operator-managed-root-registry-v1","operator-managed-roots-2026-08",1,[["hns","pirate","active"]]]',
+        '["pirate-operator-managed-root-registry-v1","operator-managed-roots-2026-08",1,[["hns","jazleeuw","active"]]]',
       );
       const registryDigest =
-        "f60b4c58bdf17672aae9014e6fed2f522fc77ef0190ed80b822249b8826b1292" as Sha256Hex;
+        "6e94ee9dfb2681ad1a21f0ac21bad302fbd139f8364721879a553b7ad6e44c9e" as Sha256Hex;
       await admin.query("INSERT INTO users (user_id) VALUES ('operator-route-owner')");
       await admin.query(
         `INSERT INTO communities (
@@ -860,13 +998,28 @@ suite("canonical community route Postgres repository", () => {
       const operatorStore = makeControlPlaneOperatorManagedRouteStore(
         makeDirectPostgresControlPlaneLayer(connection),
       );
+      for (const [routeBindingId, rootLabel] of [
+        ["reserved-platform-binding", "pirate"],
+        ["reserved-opaque-binding", "community_123e4567-e89b-42d3-a456-426614174000"],
+      ] as const) {
+        await expect(
+          admin.query(
+            `INSERT INTO community_canonical_route_bindings (
+               route_binding_id, community_id, family, root_label, root_label_display,
+               ownership_status, route_lifecycle_status, binding_generation,
+               verified_evidence_ref
+             ) VALUES ($1, $2, 'hns', $3, $3, 'pending', 'suspended', 1, NULL)`,
+            [routeBindingId, communityId, rootLabel],
+          ),
+        ).rejects.toMatchObject({ code: "23514" });
+      }
       const activationInput = {
         operation_id: "operator-route-operation-1",
         operator_principal_id: "platform-operator-1",
         operator_authority_grant_id: "operator-route-grant-1",
         idempotency_key: "operator-route-activation-key-1",
         community_id: communityId,
-        canonical_root: "pirate",
+        canonical_root: "jazleeuw",
         registry_reference: "operator-managed-roots-2026-08",
         registry_version: 1,
         registry_digest: registryDigest,
@@ -874,6 +1027,19 @@ suite("canonical community route Postgres repository", () => {
         route_binding_id: "operator-route-binding-1",
         reason_code: "first-party-root",
       } as const;
+      await expect(
+        Effect.runPromise(
+          activateOperatorManagedRoute(
+            {
+              ...activationInput,
+              operation_id: "operator-route-operation-reserved",
+              idempotency_key: "operator-route-activation-key-reserved",
+              canonical_root: "pirate",
+            },
+            { store: operatorStore },
+          ),
+        ),
+      ).rejects.toBeDefined();
       await expect(
         Effect.runPromise(activateOperatorManagedRoute(activationInput, { store: operatorStore })),
       ).resolves.toEqual({
@@ -899,11 +1065,11 @@ suite("canonical community route Postgres repository", () => {
       );
       await expect(
         Effect.runPromise(
-          Effect.scoped(routeStore.resolveCanonicalRoute({ path_segment: "app.pirate" })),
+          Effect.scoped(routeStore.resolveCanonicalRoute({ path_segment: "jazleeuw" })),
         ),
       ).resolves.toMatchObject({
         community_id: communityId,
-        canonical_route: { path_segment: "app.pirate", app_host: null },
+        canonical_route: { path_segment: "jazleeuw", app_host: null },
       });
       await admin.query(
         `INSERT INTO community_route_app_host_health (
@@ -912,10 +1078,10 @@ suite("canonical community route Postgres repository", () => {
       );
       await expect(
         Effect.runPromise(
-          Effect.scoped(routeStore.resolveCanonicalRoute({ path_segment: "app.pirate" })),
+          Effect.scoped(routeStore.resolveCanonicalRoute({ path_segment: "jazleeuw" })),
         ),
       ).resolves.toMatchObject({
-        canonical_route: { app_host: "app.pirate" },
+        canonical_route: { app_host: "app.jazleeuw" },
       });
 
       const authority = await admin.query(
@@ -946,7 +1112,7 @@ suite("canonical community route Postgres repository", () => {
         operator_authority_grant_id: "operator-route-grant-1",
         idempotency_key: "operator-route-revocation-key-1",
         community_id: communityId,
-        canonical_root: "pirate",
+        canonical_root: "jazleeuw",
         operator_route_activation_id: "operator-route-activation-1",
         route_binding_id: "operator-route-binding-1",
         expected_activation_generation: 1,
@@ -972,7 +1138,7 @@ suite("canonical community route Postgres repository", () => {
       ).rejects.toBeDefined();
       await expect(
         Effect.runPromise(
-          Effect.scoped(routeStore.resolveCanonicalRoute({ path_segment: "app.pirate" })),
+          Effect.scoped(routeStore.resolveCanonicalRoute({ path_segment: "jazleeuw" })),
         ),
       ).resolves.toBeNull();
 
@@ -1011,11 +1177,11 @@ suite("canonical community route Postgres repository", () => {
       await runPostgresMigrations({ connectionString: connection });
       const registryReference = "operator-managed-roots-2026-08";
       const activeBytes = new TextEncoder().encode(
-        '["pirate-operator-managed-root-registry-v1","operator-managed-roots-2026-08",1,[["hns","pirate","active"]]]',
+        '["pirate-operator-managed-root-registry-v1","operator-managed-roots-2026-08",1,[["hns","jazleeuw","active"]]]',
       );
-      const activeDigest = "f60b4c58bdf17672aae9014e6fed2f522fc77ef0190ed80b822249b8826b1292";
+      const activeDigest = "6e94ee9dfb2681ad1a21f0ac21bad302fbd139f8364721879a553b7ad6e44c9e";
       const noncanonicalBytes = new TextEncoder().encode(
-        '["pirate-operator-managed-root-registry-v1", "operator-managed-roots-2026-08", 3, [["hns", "pirate", "active"]]]',
+        '["pirate-operator-managed-root-registry-v1", "operator-managed-roots-2026-08", 3, [["hns", "jazleeuw", "active"]]]',
       );
       const noncanonicalDigestBuffer = await crypto.subtle.digest("SHA-256", noncanonicalBytes);
       const noncanonicalDigest = [...new Uint8Array(noncanonicalDigestBuffer)]
@@ -1079,7 +1245,7 @@ suite("canonical community route Postgres repository", () => {
         operator_authority_grant_id: "operator-route-grant-2",
         idempotency_key: "operator-route-activation-key-2",
         community_id: communityId,
-        canonical_root: "pirate",
+        canonical_root: "jazleeuw",
         registry_reference: registryReference,
         registry_version: 1,
         registry_digest: activeDigest as Sha256Hex,
@@ -1128,7 +1294,7 @@ suite("canonical community route Postgres repository", () => {
               operator_authority_grant_id: "operator-route-grant-2",
               idempotency_key: "operator-route-revocation-key-2",
               community_id: communityId,
-              canonical_root: "pirate",
+              canonical_root: "jazleeuw",
               operator_route_activation_id: "operator-route-activation-2",
               route_binding_id: "operator-route-binding-2",
               expected_activation_generation: 1,
@@ -1263,6 +1429,6 @@ suite("canonical community route Postgres repository", () => {
 });
 
 afterAll(async () => {
-  if (connectionString === undefined || completedTestCount !== 9) return;
+  if (connectionString === undefined || completedTestCount !== 11) return;
   await Bun.write(sentinelPath, sentinelContents);
 });
