@@ -18,6 +18,24 @@ counts, closed outcomes, and safety assertions. It never includes request
 headers, authorization material, object bytes, or environment values. Both the
 field allowlist and a value-level secret/URL guard fail closed before emission.
 
+## Live Workers-binding checkpoint
+
+The sanitized
+[Workers-binding live evidence](./workers-binding-live-2026-08-25.json)
+records the authorized 2026-08-25 proof against one newly created R2 bucket.
+The route-less Worker bundle deployed with workers.dev and preview URLs
+disabled; the proof logic then executed only on localhost through Wrangler's
+authenticated remote R2 binding. All four scenarios reported
+`cleanup_complete: true`. A complete prefix list returned zero objects and
+zero bytes, after which the Worker and bucket were deleted and independently
+confirmed absent.
+
+The evidence intentionally excludes account and resource identifiers, keys,
+ETags, versions, URLs, headers, bodies, payloads and credentials. The live
+runner's unconditional binding delete remains proof-only: production mismatch
+and closed-failure paths retain the exact object identity for separately
+authorized reconciliation.
+
 The fixture set covers these outcomes:
 
 - `success` observes the source ETag, sends exactly one copy with
