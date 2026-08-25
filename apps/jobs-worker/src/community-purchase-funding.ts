@@ -26,13 +26,13 @@ import {
 
 export const COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_JOB = "community-purchase-funding.reconcile";
 export const COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_LANE = "money-reconciliation";
-export const COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_SCHEDULE = "*/5 * * * *";
-export const COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_TIMEOUT = "45 seconds";
-export const COMMUNITY_PURCHASE_FUNDING_SUBMISSION_WINDOW_MS = 30 * 60 * 1_000;
-export const COMMUNITY_PURCHASE_FUNDING_BATCH_LIMIT = 100;
-export const COMMUNITY_PURCHASE_FUNDING_LEASE_MS = 30_000;
+const COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_SCHEDULE = "*/5 * * * *";
+const COMMUNITY_PURCHASE_FUNDING_RECONCILIATION_TIMEOUT = "45 seconds";
+const COMMUNITY_PURCHASE_FUNDING_SUBMISSION_WINDOW_MS = 30 * 60 * 1_000;
+const COMMUNITY_PURCHASE_FUNDING_BATCH_LIMIT = 100;
+const COMMUNITY_PURCHASE_FUNDING_LEASE_MS = 30_000;
 
-export const COMMUNITY_PURCHASE_FUNDING_READS = [
+const COMMUNITY_PURCHASE_FUNDING_READS = [
   "postgres:community_purchase_funding_journal",
   "postgres:community_purchase_funding_requests",
   "postgres:community_purchase_funding_transaction_claims",
@@ -50,7 +50,7 @@ export const COMMUNITY_PURCHASE_FUNDING_WRITES = [
   "postgres:community_purchase_funding_reconciliation_attempts",
 ] as const satisfies readonly TableKey[];
 
-export const COMMUNITY_PURCHASE_FUNDING_SEVERITY: SeverityMapping = {
+const COMMUNITY_PURCHASE_FUNDING_SEVERITY: SeverityMapping = {
   expectedFailure: {
     CommunityPurchaseFundingQueryRejected: "medium",
     CommunityPurchaseFundingStorageFailed: "high",

@@ -227,7 +227,7 @@ function safeContentType(contentType: unknown): string | null {
   return normalized;
 }
 
-export function normalizeAcrCloudHost(host: unknown): string | null {
+function normalizeAcrCloudHost(host: unknown): string | null {
   if (typeof host !== "string" || host.trim().length === 0) return null;
   const value = host.trim();
   if (value.includes("\\") || value.includes("?") || value.includes("#")) return null;

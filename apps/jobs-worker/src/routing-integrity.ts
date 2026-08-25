@@ -59,7 +59,7 @@ const ALERT_SEVERITY: Record<CatalogViolation, "medium" | "high"> = {
   updated_before_created: "high",
 };
 
-export const COMMUNITY_CATALOG_SEVERITY: SeverityMapping = {
+const COMMUNITY_CATALOG_SEVERITY: SeverityMapping = {
   expectedFailure: {
     ControlPlaneAcquireFailed: "medium",
     ControlPlaneOperationTimedOut: "medium",

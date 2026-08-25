@@ -163,7 +163,7 @@ export const createPostInputFrom = (request: DecodedRequest): CreatePostInput =>
   };
 };
 
-export const createCommentInputFrom = (request: DecodedRequest): CreateCommentReplyInput => {
+const createCommentInputFrom = (request: DecodedRequest): CreateCommentReplyInput => {
   const { postId } = postPath(request);
   return {
     surface: "comment",
@@ -173,7 +173,7 @@ export const createCommentInputFrom = (request: DecodedRequest): CreateCommentRe
   };
 };
 
-export const createReplyInputFrom = (request: DecodedRequest): CreateCommentReplyInput => {
+const createReplyInputFrom = (request: DecodedRequest): CreateCommentReplyInput => {
   const { commentId } = commentPath(request);
   return {
     surface: "reply",
@@ -183,12 +183,12 @@ export const createReplyInputFrom = (request: DecodedRequest): CreateCommentRepl
   };
 };
 
-export const reportCommentInputFrom = (request: DecodedRequest): ReportCommentInput => {
+const reportCommentInputFrom = (request: DecodedRequest): ReportCommentInput => {
   const { commentId } = commentPath(request);
   return { commentId, actor: communityActor(request.principal), body: request.body };
 };
 
-export const moderateCaseActionInputFrom = (request: DecodedRequest): ModerateCaseActionInput => {
+const moderateCaseActionInputFrom = (request: DecodedRequest): ModerateCaseActionInput => {
   const { caseRef } = casePath(request);
   return { caseRef, actor: communityActor(request.principal), body: request.body };
 };

@@ -866,10 +866,6 @@ function encryptedLaunch(
   });
 }
 
-export function validVeryWebOptions(options: VeryWebAdapterOptions): boolean {
-  return configurationValid(options);
-}
-
 export function makeVeryWebProvider(options: VeryWebAdapterOptions): VerificationProviderAdapter {
   const configured = configurationValid(options);
   const plan = (input: VerificationProviderPlanInput) =>
