@@ -10,7 +10,7 @@ static unreachability as a product-deletion signal.
 
 At branch base the report showed 1 unused file, 113 unused exports, 114 unused
 exported types, and 8 duplicate-export groups. The hygiene lane reduced that to
-0 unused files, 64 unused exports, 81 unused exported types, and 0 duplicate
+0 unused files, 62 unused exports, 81 unused exported types, and 0 duplicate
 groups. The remaining findings are intentional package and future-lane surface,
 described below.
 
@@ -61,5 +61,5 @@ only exemption is the compile-only fixture, which the dependency gate requires.
 
 ## Baseline numbers
 
-Unused exports: 64. Unused exported types: 81. Unused files: 0. Duplicate
+Unused exports: 62. Unused exported types: 81. Unused files: 0. Duplicate
 exports: 0.
