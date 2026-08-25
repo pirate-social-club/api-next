@@ -1,3 +1,4 @@
+export * from "./hns-community-app-api.ts";
 export * from "./hns-forwarder-v3.ts";
 export * from "./hns-host-persistence.ts";
 export * from "./hns-host-serving.ts";

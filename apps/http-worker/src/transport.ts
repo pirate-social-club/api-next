@@ -22,6 +22,16 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { routeTable } from "./generated/route-table.ts";
+import {
+  disabledProductionHnsCommunityAppApiComposition,
+  type HnsCommunityAppApiComposition,
+} from "./hns-community-app-api-composition.ts";
+import {
+  hasReservedHnsCommunityAppHeader,
+  resolveHnsSolidHostAuthorityRequest,
+  stripHnsCommunityAppPrivateHeaders,
+  verifyHnsCommunityAppApiRequest,
+} from "./hns-community-app-api-transport.ts";
 import { type KaraokeHandlerServices, makeKaraokeHandlers } from "./karaoke-handlers.ts";
 
 export interface Principal {
@@ -106,10 +116,16 @@ export interface HttpWorkerOptions {
   readonly authenticate?: (args: AuthenticationArgs) => Principal | Promise<Principal>;
   /** Runs after decoding and receives only the frozen request shape. */
   readonly authorize?: (args: AuthorizationArgs) => void | Promise<void>;
+  /** Source-closed interactive HNS origin authority. Production remains disabled and unbound. */
+  readonly hnsCommunityAppApi?: HnsCommunityAppApiComposition;
 }
 
 type HttpWorkerEnv = {
-  Variables: { requestId: string };
+  Variables: {
+    requestId: string;
+    hnsCommunityAppApiVerified?: boolean;
+    hnsDynamicCorsOrigin?: string;
+  };
 };
 type HttpContext = Context<HttpWorkerEnv>;
 
@@ -128,6 +144,7 @@ const invalidPath = (): BadRequest =>
 const enforceExactRawPathParameters = (
   endpoint: EndpointDefinition,
   context: HttpContext,
+  pathPrefix = "",
 ): void => {
   const exactParameters = requestShape(endpoint)?.exactRawPathParameters;
   if (exactParameters === undefined || exactParameters.length === 0) return;
@@ -138,7 +155,7 @@ const enforceExactRawPathParameters = (
   } catch {
     throw invalidPath();
   }
-  const templateSegments = endpoint.path.split("/");
+  const templateSegments = `${pathPrefix}${endpoint.path}`.split("/");
   if (rawSegments.length !== templateSegments.length) throw invalidPath();
 
   const rawByName = new Map<string, string>();
@@ -299,10 +316,12 @@ function allowedOrigins(
   context: HttpContext,
   config: HttpWorkerConfig | undefined,
 ): readonly string[] {
-  return (corsOrigin(context, config) ?? "")
+  const configured = (corsOrigin(context, config) ?? "")
     .split(",")
     .map((origin) => origin.trim())
     .filter((origin) => origin !== "" && origin !== "*");
+  const dynamic = context.get("hnsDynamicCorsOrigin");
+  return dynamic === undefined ? configured : [...configured, dynamic];
 }
 
 function enforceExactOrigin(context: HttpContext, config: HttpWorkerConfig | undefined): void {
@@ -437,7 +456,11 @@ const decodeBody = async (context: HttpContext, request: EndpointRequest): Promi
 
 const decodeHeaders = (context: HttpContext, request: EndpointRequest): unknown => {
   if (request.headers === undefined) return undefined;
-  return decode(request.headers, Object.fromEntries(context.req.raw.headers), "headers");
+  return decode(
+    request.headers,
+    Object.fromEntries(stripHnsCommunityAppPrivateHeaders(context.req.raw.headers)),
+    "headers",
+  );
 };
 
 export const decodeInput = async (
@@ -528,8 +551,12 @@ const json = (
   for (const [name, value] of new Headers(responseHeaders ?? {}).entries()) {
     headers.append(name, value);
   }
-  headers.set("cache-control", noStore ? "no-store" : PUBLIC_CACHE_CONTROL);
-  return new Response(JSON.stringify(body), { status, headers });
+  const responseHeadersForClient =
+    context.get("hnsCommunityAppApiVerified") === true
+      ? stripHnsCommunityAppPrivateHeaders(headers)
+      : headers;
+  responseHeadersForClient.set("cache-control", noStore ? "no-store" : PUBLIC_CACHE_CONTROL);
+  return new Response(JSON.stringify(body), { status, headers: responseHeadersForClient });
 };
 
 const decodeResponse = (endpoint: EndpointDefinition, body: unknown): unknown => {
@@ -549,6 +576,8 @@ const validateHandlerStatus = (endpoint: EndpointDefinition, status: number): vo
 };
 
 export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWorkerEnv> {
+  const hnsCommunityAppApi =
+    options.hnsCommunityAppApi ?? disabledProductionHnsCommunityAppApiComposition;
   const karaokeHandlers: Readonly<Record<string, EndpointHandler>> | undefined =
     options.karaoke === undefined ? undefined : makeKaraokeHandlers(options.karaoke);
   const sessionExchangeHandler =
@@ -574,10 +603,42 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     requestId(context);
     await next();
   });
+  app.use("*", async (context, next) => {
+    const pathname = new URL(context.req.raw.url).pathname;
+    const privateAuthorityRequest = pathname === "/internal/hns/solid-host-authority/v2/resolve";
+    const hnsApiRequest = pathname === "/api" || pathname.startsWith("/api/");
+    const hasReservedHeader = hasReservedHnsCommunityAppHeader(context.req.raw.headers);
+
+    if (privateAuthorityRequest) {
+      if (!hnsCommunityAppApi.enabled) throw new AuthError({ message: "Authentication failed" });
+      const body = await resolveHnsSolidHostAuthorityRequest(context.req.raw, hnsCommunityAppApi);
+      return new Response(body, {
+        status: 200,
+        headers: {
+          "cache-control": "no-store",
+          "content-type": "application/json",
+          "x-request-id": requestId(context),
+        },
+      });
+    }
+
+    if (hnsApiRequest && hnsCommunityAppApi.enabled) {
+      const verified = await verifyHnsCommunityAppApiRequest(context.req.raw, hnsCommunityAppApi);
+      context.set("hnsCommunityAppApiVerified", true);
+      context.set("hnsDynamicCorsOrigin", verified.exact_origin);
+      await next();
+      return;
+    }
+
+    if (hasReservedHeader) throw new AuthError({ message: "Authentication failed" });
+    await next();
+  });
   app.use(
     "*",
     cors({
       origin: (origin, context) => {
+        const dynamic = context.get("hnsDynamicCorsOrigin");
+        if (dynamic !== undefined && origin === dynamic) return origin;
         const configured = corsOrigin(context, options.config);
         if (configured === "*") return "*";
         const allowedOrigins = configured
@@ -593,155 +654,164 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
   );
 
   for (const binding of routeTable) {
-    app.on(binding.method, binding.path, async (context) => {
-      enforceExactRawPathParameters(binding.endpoint, context);
-      const handler =
-        options.handlers?.[binding.name] ??
-        karaokeHandlers?.[binding.name] ??
-        (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
-        (binding.name === "RegisterIdentity" && options.identityRegistration !== undefined
-          ? makeIdentityRegistrationHandler(options.identityRegistration)
-          : undefined) ??
-        (binding.name === "SessionLogout" ? () => ({ status: "ok" }) : undefined) ??
-        (binding.name === "GetMyProfile" ? options.profile : undefined);
-      if (handler === undefined) {
-        if (binding.name === "Health") {
-          return json(context, decodeResponse(binding.endpoint, { status: "ok" }), 200, false);
+    const install = (path: string, pathPrefix = ""): void => {
+      app.on(binding.method, path, async (context) => {
+        enforceExactRawPathParameters(binding.endpoint, context, pathPrefix);
+        const handler =
+          options.handlers?.[binding.name] ??
+          karaokeHandlers?.[binding.name] ??
+          (binding.name === "SessionExchange" ? sessionExchangeHandler : undefined) ??
+          (binding.name === "RegisterIdentity" && options.identityRegistration !== undefined
+            ? makeIdentityRegistrationHandler(options.identityRegistration)
+            : undefined) ??
+          (binding.name === "SessionLogout" ? () => ({ status: "ok" }) : undefined) ??
+          (binding.name === "GetMyProfile" ? options.profile : undefined);
+        if (handler === undefined) {
+          if (binding.name === "Health") {
+            return json(context, decodeResponse(binding.endpoint, { status: "ok" }), 200, false);
+          }
+          throw new NotFound({ message: "Endpoint not found" });
         }
-        throw new NotFound({ message: "Endpoint not found" });
-      }
 
-      try {
-        const authorization = context.req.header("authorization");
-        const hasAuthorizationHeader = authorization !== undefined;
-        const hasCredentials = authorization !== undefined && authorization.trim() !== "";
-        const parsedCookies = parseCookies(context);
-        const cookies = parsedCookies.values;
-        if (
-          parsedCookies.duplicateNames.has(SESSION_COOKIE_NAME) ||
-          parsedCookies.duplicateNames.has(CSRF_COOKIE_NAME) ||
-          parsedCookies.invalidNames.has(SESSION_COOKIE_NAME) ||
-          parsedCookies.invalidNames.has(CSRF_COOKIE_NAME)
-        ) {
-          throw new AuthError({ message: "Authentication failed" });
-        }
-        const sessionCookie = cookies.get(SESSION_COOKIE_NAME);
-        const hasSessionCookie = sessionCookie !== undefined && sessionCookie !== "";
-        const hasBrowserCredential = hasSessionCookie;
-        if (hasAuthorizationHeader && hasSessionCookie) {
-          throw new AuthError({ message: "Authentication failed" });
-        }
-        if (isBrowserSessionOnly(binding.endpoint)) {
-          if (hasAuthorizationHeader) {
+        try {
+          const authorization = context.req.header("authorization");
+          const hasAuthorizationHeader = authorization !== undefined;
+          const hasCredentials = authorization !== undefined && authorization.trim() !== "";
+          const parsedCookies = parseCookies(context);
+          const cookies = parsedCookies.values;
+          if (
+            parsedCookies.duplicateNames.has(SESSION_COOKIE_NAME) ||
+            parsedCookies.duplicateNames.has(CSRF_COOKIE_NAME) ||
+            parsedCookies.invalidNames.has(SESSION_COOKIE_NAME) ||
+            parsedCookies.invalidNames.has(CSRF_COOKIE_NAME)
+          ) {
             throw new AuthError({ message: "Authentication failed" });
           }
-          if (!hasSessionCookie) {
+          const sessionCookie = cookies.get(SESSION_COOKIE_NAME);
+          const hasSessionCookie = sessionCookie !== undefined && sessionCookie !== "";
+          const hasBrowserCredential = hasSessionCookie;
+          if (hasAuthorizationHeader && hasSessionCookie) {
+            throw new AuthError({ message: "Authentication failed" });
+          }
+          if (isBrowserSessionOnly(binding.endpoint)) {
+            if (hasAuthorizationHeader) {
+              throw new AuthError({ message: "Authentication failed" });
+            }
+            if (!hasSessionCookie) {
+              throw new AuthError({ message: "Authentication required" });
+            }
+          }
+          let principal: Principal | null = null;
+          if (
+            !isPublic(binding.endpoint) &&
+            !hasCredentials &&
+            !hasBrowserCredential &&
+            !isOptionalUser(binding.endpoint)
+          ) {
             throw new AuthError({ message: "Authentication required" });
           }
-        }
-        let principal: Principal | null = null;
-        if (
-          !isPublic(binding.endpoint) &&
-          !hasCredentials &&
-          !hasBrowserCredential &&
-          !isOptionalUser(binding.endpoint)
-        ) {
-          throw new AuthError({ message: "Authentication required" });
-        }
-        if (
-          !isPublic(binding.endpoint) &&
-          hasAuthorizationHeader &&
-          !hasCredentials &&
-          !hasBrowserCredential
-        ) {
-          throw new AuthError({ message: "Authentication required" });
-        }
-        if (
-          !isPublic(binding.endpoint) &&
-          (hasCredentials || hasBrowserCredential) &&
-          options.authenticate !== undefined
-        ) {
-          principal = await options.authenticate({
-            endpoint: binding.endpoint,
-            credentials: {
-              ...(authorization === undefined ? {} : { authorization }),
-              ...(hasBrowserCredential ? { sessionCookie } : {}),
-            },
-          });
-        }
-        if (isBrowserSessionOnly(binding.endpoint) && principal?.kind !== "user") {
-          throw new AuthError({ message: "Authentication failed" });
-        }
+          if (
+            !isPublic(binding.endpoint) &&
+            hasAuthorizationHeader &&
+            !hasCredentials &&
+            !hasBrowserCredential
+          ) {
+            throw new AuthError({ message: "Authentication required" });
+          }
+          if (
+            !isPublic(binding.endpoint) &&
+            (hasCredentials || hasBrowserCredential) &&
+            options.authenticate !== undefined
+          ) {
+            principal = await options.authenticate({
+              endpoint: binding.endpoint,
+              credentials: {
+                ...(authorization === undefined ? {} : { authorization }),
+                ...(hasBrowserCredential ? { sessionCookie } : {}),
+              },
+            });
+          }
+          if (isBrowserSessionOnly(binding.endpoint) && principal?.kind !== "user") {
+            throw new AuthError({ message: "Authentication failed" });
+          }
 
-        // Cookie credentials are ambient and therefore need a same-origin
-        // proof on every unsafe protected request. Explicit machine bearer
-        // requests remain a separate authentication contract.
-        if (
-          UNSAFE_METHODS.has(context.req.method) &&
-          (binding.name === "SessionExchange" || binding.name === "SessionLogout")
-        ) {
-          enforceExactOrigin(context, options.config);
-        }
+          // Cookie credentials are ambient and therefore need a same-origin
+          // proof on every unsafe protected request. Explicit machine bearer
+          // requests remain a separate authentication contract.
+          if (
+            UNSAFE_METHODS.has(context.req.method) &&
+            (binding.name === "SessionExchange" || binding.name === "SessionLogout")
+          ) {
+            enforceExactOrigin(context, options.config);
+          }
 
-        if (
-          hasBrowserCredential &&
-          UNSAFE_METHODS.has(context.req.method) &&
-          (!isPublic(binding.endpoint) || binding.name === "SessionLogout")
-        ) {
-          enforceCookieCsrf(context, options.config, cookies);
-        }
+          if (
+            hasBrowserCredential &&
+            UNSAFE_METHODS.has(context.req.method) &&
+            (!isPublic(binding.endpoint) || binding.name === "SessionLogout")
+          ) {
+            enforceCookieCsrf(context, options.config, cookies);
+          }
 
-        // Authentication deliberately precedes every request-schema decode.
-        const input = await decodeInput(binding.endpoint, context, principal);
-        const edgeClientIp = context.req.header("CF-Connecting-IP");
-        const requestWithEdgeIp = {
-          ...input,
-          ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
-        };
-        if (
-          !isPublic(binding.endpoint) &&
-          (!isOptionalUser(binding.endpoint) || principal !== null)
-        ) {
-          await options.authorize?.({ endpoint: binding.endpoint, input: requestWithEdgeIp });
-        }
+          // Authentication deliberately precedes every request-schema decode.
+          const input = await decodeInput(binding.endpoint, context, principal);
+          const edgeClientIp = context.req.header("CF-Connecting-IP");
+          const requestWithEdgeIp = {
+            ...input,
+            ...(edgeClientIp === undefined ? {} : { edgeClientIp }),
+          };
+          if (
+            !isPublic(binding.endpoint) &&
+            (!isOptionalUser(binding.endpoint) || principal !== null)
+          ) {
+            await options.authorize?.({ endpoint: binding.endpoint, input: requestWithEdgeIp });
+          }
 
-        const result = await handler(requestWithEdgeIp);
-        const sessionResult =
-          (binding.name === "SessionExchange" || binding.name === "RegisterIdentity") &&
-          isSessionExchangeResult(result)
-            ? result
-            : undefined;
-        const body = sessionResult
-          ? sessionResult.response
-          : isHandlerResult(result)
-            ? result.body
-            : result;
-        const status = isHandlerResult(result)
-          ? (result.status ?? declaredStatuses(binding.endpoint)[0] ?? 200)
-          : (declaredStatuses(binding.endpoint)[0] ?? 200);
-        validateHandlerStatus(binding.endpoint, status);
-        const decoded = decodeResponse(binding.endpoint, body);
-        const responseHeaders = isHandlerResult(result) ? result.responseHeaders : undefined;
-        const cookiesToSet =
-          sessionResult === undefined
-            ? binding.name === "SessionLogout"
-              ? clearSessionCookieHeaders()
-              : undefined
-            : sessionCookieHeaders(sessionResult.sessionToken, sessionResult.sessionTtlSeconds);
-        const request = requestShape(binding.endpoint);
-        const noStore =
-          !isPublic(binding.endpoint) ||
-          authorization !== undefined ||
-          context.req.header("cookie") !== undefined ||
-          request?.body !== undefined ||
-          cookiesToSet !== undefined;
-        const headers = new Headers(responseHeaders);
-        for (const cookie of cookiesToSet ?? []) headers.append("set-cookie", cookie);
-        return json(context, decoded, status, noStore, headers);
-      } catch (error) {
-        throw constrainedError(binding.endpoint, error);
-      }
-    });
+          const result = await handler(requestWithEdgeIp);
+          const sessionResult =
+            (binding.name === "SessionExchange" || binding.name === "RegisterIdentity") &&
+            isSessionExchangeResult(result)
+              ? result
+              : undefined;
+          const body = sessionResult
+            ? sessionResult.response
+            : isHandlerResult(result)
+              ? result.body
+              : result;
+          const status = isHandlerResult(result)
+            ? (result.status ?? declaredStatuses(binding.endpoint)[0] ?? 200)
+            : (declaredStatuses(binding.endpoint)[0] ?? 200);
+          validateHandlerStatus(binding.endpoint, status);
+          const decoded = decodeResponse(binding.endpoint, body);
+          const responseHeaders = isHandlerResult(result) ? result.responseHeaders : undefined;
+          const cookiesToSet =
+            sessionResult === undefined
+              ? binding.name === "SessionLogout"
+                ? clearSessionCookieHeaders()
+                : undefined
+              : sessionCookieHeaders(sessionResult.sessionToken, sessionResult.sessionTtlSeconds);
+          const request = requestShape(binding.endpoint);
+          const noStore =
+            !isPublic(binding.endpoint) ||
+            authorization !== undefined ||
+            context.req.header("cookie") !== undefined ||
+            request?.body !== undefined ||
+            cookiesToSet !== undefined;
+          const headers = new Headers(responseHeaders);
+          for (const cookie of cookiesToSet ?? []) headers.append("set-cookie", cookie);
+          return json(context, decoded, status, noStore, headers);
+        } catch (error) {
+          throw constrainedError(binding.endpoint, error);
+        }
+      });
+    };
+    install(binding.path);
+    if (
+      hnsCommunityAppApi.enabled &&
+      (binding.method === "GET" || binding.method === "POST" || binding.method === "PATCH")
+    ) {
+      install(`/api${binding.path}`, "/api");
+    }
   }
 
   app.onError((error, context) => {

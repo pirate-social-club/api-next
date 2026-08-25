@@ -2,6 +2,10 @@ import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
 const alias = {
+  "@pirate/application/hns-community-app-api": new URL(
+    "../../packages/application/src/hns-community-app-api.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/hns-forwarder-v3": new URL(
     "../../packages/application/src/hns-forwarder-v3.ts",
     import.meta.url,
@@ -68,6 +72,14 @@ const alias = {
   ).pathname,
   "@pirate/platform-cf/hns-forwarder-v3": new URL(
     "../../packages/platform-cf/src/hns-forwarder-v3.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/cloudflare-access-jwt": new URL(
+    "../../packages/platform-cf/src/cloudflare-access-jwt.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/hns-community-app-api": new URL(
+    "../../packages/platform-cf/src/hns-community-app-api.ts",
     import.meta.url,
   ).pathname,
   "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)

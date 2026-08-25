@@ -94,6 +94,7 @@ import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
+import { disabledProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
@@ -686,6 +687,7 @@ export async function createProductionHttpWorker(
 
   return createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
+    hnsCommunityAppApi: disabledProductionHnsCommunityAppApiComposition,
     handlers: {
       ...productHandlers,
       ...communityCreationHandlers,

@@ -37,6 +37,19 @@ export {
   makeLocalAlertSink,
 } from "./alerts";
 export {
+  ACCESS_JWKS_CACHE_MAX_SECONDS,
+  ACCESS_JWKS_DEADLINE_MS,
+  ACCESS_JWKS_MAX_BYTES,
+  ACCESS_JWT_CLOCK_SKEW_SECONDS,
+  ACCESS_JWT_MAX_BYTES,
+  CLOUDFLARE_ACCESS_JWT_POLICY_V1,
+  type CloudflareAccessJwtClockV1,
+  CloudflareAccessJwtFailure,
+  type CloudflareAccessJwtFetch,
+  type CloudflareAccessJwtValidatorV1,
+  makeCloudflareAccessJwtValidatorV1,
+} from "./cloudflare-access-jwt";
+export {
   COMMUNITY_PURCHASE_CHAIN_RPC_MAX_RESPONSE_BYTES,
   COMMUNITY_PURCHASE_CHAIN_RPC_TIMEOUT_MS,
   type CommunityPurchaseFundingChainFetcher,
