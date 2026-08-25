@@ -31,11 +31,11 @@ export const CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS = 30_000;
 export const CONTROL_PLANE_SLOW_STATEMENT_MS = 1_000;
 
 /**
- * Hyperdrive retains the origin host, database, and credential, but its Worker
- * connection string cannot carry the origin URL's startup `options` member.
- * Select the accepted clean-break schema explicitly for Hyperdrive sessions.
+ * Hyperdrive pools origin connections in transaction mode and resets session
+ * state when a transaction returns to the pool. Pin the accepted clean-break
+ * schema inside every transaction rather than relying on startup/session state.
  */
-export const CONTROL_PLANE_HYPERDRIVE_STARTUP_OPTIONS = "-c search_path=api_next,pg_catalog";
+export const CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH = "api_next,pg_catalog";
 
 export interface PostgresStreamLike {
   readonly destroy: (reason?: Error) => unknown;
@@ -176,6 +176,7 @@ class PostgresSession {
     private readonly client: PostgresClientLike,
     private readonly logger: ControlPlaneLogger,
     private readonly now: () => number,
+    private readonly transactionSearchPath?: string,
   ) {}
 
   get isFenced(): boolean {
@@ -229,6 +230,15 @@ class PostgresSession {
   }
 
   execute<Row = unknown>(
+    statement: ControlPlaneStatement,
+  ): Effect.Effect<ControlPlaneResult<Row>, ControlPlaneError> {
+    if (this.transactionSearchPath !== undefined && !this.inTransaction) {
+      return this.withTransaction((transaction) => transaction.execute<Row>(statement));
+    }
+    return this.executeStatement<Row>(statement);
+  }
+
+  private executeStatement<Row = unknown>(
     statement: ControlPlaneStatement,
   ): Effect.Effect<ControlPlaneResult<Row>, ControlPlaneError> {
     if (!this.connected || this.fenced) {
@@ -333,6 +343,14 @@ class PostgresSession {
         values: [`${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`],
         readonly: false,
       });
+      if (session.transactionSearchPath !== undefined) {
+        yield* session.executeInternal({
+          label: "control-plane.transaction.search-path",
+          text: "SELECT set_config('search_path', $1, true)",
+          values: [session.transactionSearchPath],
+          readonly: false,
+        });
+      }
       return new PostgresTransaction(session);
     });
   }
@@ -371,7 +389,7 @@ class PostgresSession {
   private executeInternal<Row = unknown>(
     statement: ControlPlaneStatement,
   ): Effect.Effect<ControlPlaneResult<Row>, ControlPlaneError> {
-    return this.execute(statement);
+    return this.executeStatement(statement);
   }
 
   private terminateEffect(): Effect.Effect<void, never> {
@@ -459,20 +477,19 @@ class PostgresTransaction implements ControlPlaneTransaction {
   }
 }
 
-function makeClientConfig(connectionString: string, startupOptions?: string): ClientConfig {
+function makeClientConfig(connectionString: string): ClientConfig {
   return {
     connectionString,
     connectionTimeoutMillis: CONTROL_PLANE_CONNECT_TIMEOUT_MS,
     statement_timeout: CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
     idle_in_transaction_session_timeout: CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
-    ...(startupOptions === undefined ? {} : { options: startupOptions }),
   };
 }
 
 function makeControlPlaneLayer(
   connectionString: string,
   options: PostgresControlPlaneOptions = {},
-  startupOptions?: string,
+  transactionSearchPath?: string,
 ) {
   const clientFactory = options.clientFactory ?? defaultClientFactory;
   const logger = options.logger ?? DEFAULT_LOGGER;
@@ -485,8 +502,8 @@ function makeControlPlaneLayer(
         Effect.tryPromise({
           try: () =>
             Promise.resolve(
-              clientFactory(connectionString, makeClientConfig(connectionString, startupOptions)),
-            ).then((client) => new PostgresSession(client, logger, now)),
+              clientFactory(connectionString, makeClientConfig(connectionString)),
+            ).then((client) => new PostgresSession(client, logger, now, transactionSearchPath)),
           catch: () =>
             new ControlPlaneAcquireFailed({
               phase: "acquisition",
@@ -517,7 +534,7 @@ export function makeHyperdriveControlPlaneLayer(
   return makeControlPlaneLayer(
     hyperdrive.connectionString,
     options,
-    CONTROL_PLANE_HYPERDRIVE_STARTUP_OPTIONS,
+    CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
   );
 }
 

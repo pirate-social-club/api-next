@@ -6,7 +6,7 @@ import type { ClientConfig } from "pg";
 
 import {
   CONTROL_PLANE_CONNECT_TIMEOUT_MS,
-  CONTROL_PLANE_HYPERDRIVE_STARTUP_OPTIONS,
+  CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
   CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
   CONTROL_PLANE_SLOW_STATEMENT_MS,
   CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
@@ -154,7 +154,7 @@ describe("Postgres control-plane adapter", () => {
     expect(client.events).toEqual(["connect", "end"]);
   });
 
-  test("selects the clean-break schema only for Hyperdrive sessions", async () => {
+  test("selects the clean-break schema transactionally only for Hyperdrive", async () => {
     const hyperdriveClient = new FakePostgresClient();
     const directClient = new FakePostgresClient();
     let hyperdriveConfig: ClientConfig | undefined;
@@ -191,10 +191,85 @@ describe("Postgres control-plane adapter", () => {
       }),
     );
 
-    expect(hyperdriveConfig?.options).toBe(CONTROL_PLANE_HYPERDRIVE_STARTUP_OPTIONS);
+    expect(hyperdriveConfig?.options).toBeUndefined();
     expect(directConfig?.options).toBeUndefined();
+    expect(hyperdriveClient.queries.map(({ text, values }) => ({ text, values }))).toEqual([
+      { text: "BEGIN", values: [] },
+      {
+        text: "SELECT set_config('statement_timeout', $1, true)",
+        values: [`${CONTROL_PLANE_STATEMENT_TIMEOUT_MS}ms`],
+      },
+      {
+        text: "SELECT set_config('idle_in_transaction_session_timeout', $1, true)",
+        values: [`${CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS}ms`],
+      },
+      {
+        text: "SELECT set_config('search_path', $1, true)",
+        values: [CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH],
+      },
+      { text: statement.text, values: statement.values },
+      { text: "COMMIT", values: [] },
+    ]);
+    expect(directClient.queries).toEqual([{ text: statement.text, values: [...statement.values] }]);
     expect(hyperdriveClient.events).toEqual(["connect", "end"]);
     expect(directClient.events).toEqual(["connect", "end"]);
+  });
+
+  test("sets the Hyperdrive schema once for an explicit transaction", async () => {
+    const client = new FakePostgresClient();
+    const layer = makeHyperdriveControlPlaneLayer(
+      { connectionString: "postgres://hyperdrive.invalid/control" },
+      { clientFactory: () => client, logger: silentLogger },
+    );
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          yield* db.withTransaction((transaction) =>
+            Effect.gen(function* () {
+              yield* transaction.execute(statement);
+              yield* transaction.execute(statement);
+            }),
+          );
+        }).pipe(Effect.provide(layer)),
+      ),
+    );
+
+    expect(client.queries.filter(({ text }) => text.includes("set_config('search_path'"))).toEqual([
+      {
+        text: "SELECT set_config('search_path', $1, true)",
+        values: [CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH],
+      },
+    ]);
+    expect(client.queries.at(-1)).toEqual({ text: "COMMIT", values: [] });
+  });
+
+  test("rolls back a failing standalone Hyperdrive statement", async () => {
+    const client = new FakePostgresClient();
+    const layer = makeHyperdriveControlPlaneLayer(
+      { connectionString: "postgres://hyperdrive.invalid/control" },
+      { clientFactory: () => client, logger: silentLogger },
+    );
+
+    const error = await Effect.runPromise(
+      Effect.flip(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            yield* db.execute({ ...statement, text: "SELECT fail" });
+          }).pipe(Effect.provide(layer)),
+        ),
+      ),
+    );
+
+    expect(error).toMatchObject({
+      _tag: "ControlPlaneStatementFailed",
+      label: statement.label,
+      sqlState: "23505",
+      outcomeCertainty: "completed",
+    });
+    expect(client.queries.at(-1)).toEqual({ text: "ROLLBACK", values: [] });
   });
 
   test("uses the single result or final result for multi-statement queries", async () => {
