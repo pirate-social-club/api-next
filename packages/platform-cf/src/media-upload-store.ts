@@ -1,19 +1,15 @@
-import {
-  ControlPlaneDb,
-  type ControlPlaneError,
-  type M2Actor,
-} from "@pirate/application";
+import { ControlPlaneDb, type ControlPlaneError, type M2Actor } from "@pirate/application";
 import type {
   MediaLyricsSnapshot,
   MediaModeratorView,
   MediaSubmissionView,
   MediaUploadStore,
-} from "../../application/src/media/submission-service.ts";
-import { MediaUploadStoreError } from "../../application/src/media/submission-service.ts";
+} from "@pirate/application/media/submission-service";
+import { MediaUploadStoreError } from "@pirate/application/media/submission-service";
 import { Effect, type Layer } from "effect";
 import {
-  makeControlPlaneMediaSubmissionRepository,
   MediaSubmissionRepositoryError,
+  makeControlPlaneMediaSubmissionRepository,
 } from "./media-submission-repository.ts";
 import { publicPersonaFromSql } from "./public-persona-projection.ts";
 
