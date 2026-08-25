@@ -27,6 +27,10 @@ interface ProofRequest {
   readonly scenario: ProofScenario;
 }
 
+interface AuditRequest {
+  readonly acknowledgement: typeof ACKNOWLEDGEMENT;
+}
+
 interface ObjectEvidence {
   readonly key: string;
   readonly version: string;
@@ -103,6 +107,20 @@ function parseProofRequest(value: unknown): ProofRequest {
     run_id: record.run_id,
     scenario: record.scenario,
   };
+}
+
+function parseAuditRequest(value: unknown): AuditRequest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("invalid_request");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    Object.keys(record).join(",") !== "acknowledgement" ||
+    record.acknowledgement !== ACKNOWLEDGEMENT
+  ) {
+    throw new Error("acknowledgement_required");
+  }
+  return { acknowledgement: ACKNOWLEDGEMENT };
 }
 
 async function tokenMatches(request: Request, expectedToken: string): Promise<boolean> {
@@ -341,14 +359,85 @@ async function runProof(env: Env, proof: ProofRequest): Promise<Response> {
   );
 }
 
+async function auditProofPrefix(env: Env): Promise<Response> {
+  if (!PREFIX_PATTERN.test(env.PROOF_PREFIX)) {
+    return jsonResponse({ version: "r2-binding-proof-v1", outcome: "invalid_private_prefix" }, 500);
+  }
+
+  let cursor: string | undefined;
+  let objectCount = 0;
+  let totalBytes = 0;
+  let pages = 0;
+  for (let pageIndex = 0; pageIndex < 20; pageIndex += 1) {
+    const listed = await env.PROOF_BUCKET.list({
+      prefix: `${env.PROOF_PREFIX}/`,
+      limit: 1_000,
+      ...(cursor === undefined ? {} : { cursor }),
+    });
+    pages += 1;
+    objectCount += listed.objects.length;
+    totalBytes += listed.objects.reduce((sum, object) => sum + object.size, 0);
+    if (!listed.truncated) {
+      return jsonResponse({
+        version: "r2-binding-proof-v1",
+        outcome: "audit_complete",
+        scope: "configured_proof_prefix",
+        object_count: objectCount,
+        total_bytes: totalBytes,
+        pages,
+        complete: true,
+      });
+    }
+    if (typeof listed.cursor !== "string" || listed.cursor.length === 0) {
+      return jsonResponse(
+        {
+          version: "r2-binding-proof-v1",
+          outcome: "closed_audit_cursor_missing",
+          complete: false,
+        },
+        500,
+      );
+    }
+    cursor = listed.cursor;
+  }
+
+  return jsonResponse(
+    {
+      version: "r2-binding-proof-v1",
+      outcome: "closed_audit_page_limit",
+      complete: false,
+    },
+    500,
+  );
+}
+
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
-    if (request.method !== "POST" || url.pathname !== "/run") {
+    if (request.method !== "POST" || (url.pathname !== "/run" && url.pathname !== "/audit")) {
       return jsonResponse({ outcome: "not_found" }, 404);
     }
     if (!(await tokenMatches(request, env.PROOF_RUN_TOKEN))) {
       return jsonResponse({ outcome: "unauthorized" }, 401);
+    }
+    if (url.pathname === "/audit") {
+      try {
+        parseAuditRequest(await readBoundedJson(request));
+      } catch {
+        return jsonResponse({ outcome: "invalid_request" }, 400);
+      }
+      try {
+        return await auditProofPrefix(env);
+      } catch {
+        return jsonResponse(
+          {
+            version: "r2-binding-proof-v1",
+            outcome: "closed_internal_failure",
+            failure_class: "proof_audit_failure",
+          },
+          500,
+        );
+      }
     }
     let proof: ProofRequest;
     try {

@@ -19,6 +19,11 @@ URLs and authorization headers. Every cleanup first checks the complete
 returned version, ETag, size, media type, ownership marker, source version and
 stored checksums. Any disagreement is retained as cleanup uncertainty.
 
+After the terminal runs, the same authenticated Worker audit paginates every
+object below the configured proof prefix. It returns only aggregate object and
+byte counts, never keys, and must report a complete zero-object listing before
+the disposable namespace is considered clean.
+
 ## Cleanup boundary
 
 The Workers R2 binding does not expose a conditional or version-targeted
