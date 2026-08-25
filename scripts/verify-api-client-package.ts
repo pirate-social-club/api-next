@@ -73,8 +73,14 @@ async function main(): Promise<void> {
   const tempRoot = await mkdtemp(join(tmpdir(), "pirate-api-client-"));
   const packDirectory = join(tempRoot, "pack");
   const extractedDirectory = join(tempRoot, "extracted");
+  const artifactDirectory = join(tempRoot, "artifact");
   const consumerDirectory = join(tempRoot, "consumer");
-  await Promise.all([mkdir(packDirectory), mkdir(extractedDirectory), mkdir(consumerDirectory)]);
+  await Promise.all([
+    mkdir(packDirectory),
+    mkdir(extractedDirectory),
+    mkdir(artifactDirectory),
+    mkdir(consumerDirectory),
+  ]);
 
   try {
     run("bun", ["pm", "pack", "--destination", packDirectory, "--quiet"], packageRoot);
@@ -116,13 +122,32 @@ async function main(): Promise<void> {
       );
     }
     const currentRelease = await verifyReleaseLedger(packedPackage.version);
-    const packedArtifactSha256 = createHash("sha256")
-      .update(await readFile(archive))
-      .digest("hex");
-    if (packedArtifactSha256 !== currentRelease.artifactSha256) {
+    const immutableArchive = join(repositoryRoot, currentRelease.artifact);
+    const immutableListing = spawnSync("tar", ["-tzf", immutableArchive], { encoding: "utf8" });
+    if (immutableListing.status !== 0) {
+      throw new Error(`Unable to inspect ${immutableArchive}: ${immutableListing.stderr}`);
+    }
+    const immutableFiles = immutableListing.stdout
+      .trim()
+      .split("\n")
+      .filter((entry) => entry.length > 0)
+      .sort();
+    if (JSON.stringify(immutableFiles) !== JSON.stringify(expectedFiles)) {
       throw new Error(
-        `Packed client does not match its immutable release artifact: ${packedPackage.version}`,
+        `Unexpected immutable @pirate/api-client archive contents:\n${immutableFiles.join("\n")}`,
       );
+    }
+    run("tar", ["-xzf", immutableArchive, "-C", artifactDirectory], repositoryRoot);
+    for (const entry of expectedFiles) {
+      const [packedFile, immutableFile] = await Promise.all([
+        readFile(join(extractedDirectory, entry)),
+        readFile(join(artifactDirectory, entry)),
+      ]);
+      if (!packedFile.equals(immutableFile)) {
+        throw new Error(
+          `Packed client content does not match its immutable release artifact: ${entry}`,
+        );
+      }
     }
     for (const field of ["dependencies", "devDependencies", "peerDependencies"] as const) {
       if (packedPackage[field] !== undefined) {
