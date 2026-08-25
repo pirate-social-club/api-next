@@ -379,6 +379,10 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
               current.actorUserId !== input.actorUserId ||
               (input.personaId !== undefined && current.personaId !== input.personaId) ||
               current.operationId !== input.operationId ||
+              current.creationRevision !== input.creationRevision ||
+              current.audioRevision !== input.audioRevision ||
+              current.analysisRevision !== input.analysisRevision ||
+              current.lyricsRevision !== input.lyricsRevision ||
               current.workflowRevision !== input.workflowRevision ||
               current.eventType !== input.eventType ||
               JSON.stringify(current.payload) !== JSON.stringify(input.payload)

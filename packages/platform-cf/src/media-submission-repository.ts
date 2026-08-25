@@ -1588,7 +1588,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     Effect.gen(function* () {
       if (
         !validCommand(input) ||
-        !validRevision(input.expectedCreationRevision, 2) ||
+        !validRevision(input.expectedCreationRevision, 1) ||
         !validRevision(input.expectedAudioRevision, 1) ||
         input.lyrics.length < 1 ||
         input.lyrics.length > 200_000 ||
@@ -1655,28 +1655,25 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             expectedAudioRevision: input.expectedAudioRevision,
             lyrics,
           });
-          if (current.terms === null)
-            return yield* Effect.fail(
-              fail("lyrics", "transition-rejected", { submissionId: current.submissionId }),
-            );
-          yield* tx.execute({
-            label: "media-lyrics.creation-snapshot",
-            text: "INSERT INTO media_submission_terms (submission_id,community_id,actor_user_id,operation_id,creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,access_mode,terms_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10::jsonb,$11)",
-            values: [
-              current.submissionId,
-              current.communityId,
-              current.actorId,
-              current.operationId,
-              next.creationRevision,
-              current.terms.licensePreset,
-              current.terms.commercialRemixShareBps,
-              json(current.terms.royaltyAllocations),
-              current.terms.accessMode,
-              json(current.terms),
-              current.personaId,
-            ],
-            readonly: false,
-          });
+          if (current.terms !== null)
+            yield* tx.execute({
+              label: "media-lyrics.creation-snapshot",
+              text: "INSERT INTO media_submission_terms (submission_id,community_id,actor_user_id,operation_id,creation_revision,license_preset,commercial_remix_share_bps,royalty_allocations,access_mode,terms_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10::jsonb,$11)",
+              values: [
+                current.submissionId,
+                current.communityId,
+                current.actorId,
+                current.operationId,
+                next.creationRevision,
+                current.terms.licensePreset,
+                current.terms.commercialRemixShareBps,
+                json(current.terms.royaltyAllocations),
+                current.terms.accessMode,
+                json(current.terms),
+                current.personaId,
+              ],
+              readonly: false,
+            });
           yield* tx.execute({
             label: "media-lyrics.insert",
             text: "INSERT INTO media_song_lyrics_revisions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,lyrics_revision,creation_revision,audio_revision,canonical_audio_sha256,lyrics_text,lyrics_sha256,base_transcript_revision,provenance) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
@@ -1699,9 +1696,10 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           });
           const updated = yield* tx.execute<Row>({
             label: "media-lyrics.project",
-            text: "UPDATE media_post_submissions SET creation_revision=$1,current_terms_revision=$1,lyrics_revision=$2,current_lyrics_revision=$2,current_analysis_revision=NULL,decision_revision=0,current_decision_revision=NULL,status='processing',phase='analysis',action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,held_revision=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,moderator_evidence_ref=NULL,moderator_approval_kind=NULL,moderator_reason_code=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,abandonment_reason=NULL,retention_disposition=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND audio_revision=$7 RETURNING event_sequence",
+            text: "UPDATE media_post_submissions SET creation_revision=$1,current_terms_revision=$2,lyrics_revision=$3,current_lyrics_revision=$3,current_analysis_revision=NULL,decision_revision=0,current_decision_revision=NULL,status='processing',phase='analysis',action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,held_revision=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,moderator_evidence_ref=NULL,moderator_approval_kind=NULL,moderator_reason_code=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,abandonment_reason=NULL,retention_disposition=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$4 AND actor_user_id=$5 AND submission_id=$6 AND creation_revision=$7 AND audio_revision=$8 RETURNING event_sequence",
             values: [
               next.creationRevision,
+              current.terms === null ? null : next.creationRevision,
               next.lyricsRevision,
               current.communityId,
               current.actorId,

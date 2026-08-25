@@ -2355,7 +2355,8 @@ BEGIN
        OR NEW.lyrics_revision IS DISTINCT FROM OLD.lyrics_revision + 1
        OR NEW.current_lyrics_revision IS DISTINCT FROM NEW.lyrics_revision
        OR NEW.creation_revision IS DISTINCT FROM OLD.creation_revision + 1
-       OR NEW.current_terms_revision IS DISTINCT FROM NEW.creation_revision
+       OR NEW.current_terms_revision IS DISTINCT FROM
+          (CASE WHEN OLD.current_terms_revision IS NULL THEN NULL ELSE NEW.creation_revision END)
        OR NEW.analysis_revision IS DISTINCT FROM OLD.analysis_revision
        OR NEW.current_analysis_revision IS NOT NULL
        OR NEW.decision_revision IS DISTINCT FROM 0
@@ -2440,7 +2441,7 @@ CREATE FUNCTION guard_media_outbox_update() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
 BEGIN
-  IF ROW(NEW.outbox_event_id, NEW.submission_id, NEW.community_id, NEW.actor_user_id, NEW.operation_id, NEW.creation_revision, NEW.audio_revision, NEW.analysis_revision, NEW.workflow_revision, NEW.workflow_instance_id, NEW.event_type, NEW.effect_identity, NEW.payload, NEW.created_at) IS DISTINCT FROM ROW(OLD.outbox_event_id, OLD.submission_id, OLD.community_id, OLD.actor_user_id, OLD.operation_id, OLD.creation_revision, OLD.audio_revision, OLD.analysis_revision, OLD.workflow_revision, OLD.workflow_instance_id, OLD.event_type, OLD.effect_identity, OLD.payload, OLD.created_at) THEN RAISE EXCEPTION 'media outbox effect identity is immutable'; END IF;
+  IF ROW(NEW.outbox_event_id, NEW.submission_id, NEW.community_id, NEW.actor_user_id, NEW.operation_id, NEW.creation_revision, NEW.audio_revision, NEW.analysis_revision, NEW.lyrics_revision, NEW.workflow_revision, NEW.workflow_instance_id, NEW.event_type, NEW.effect_identity, NEW.payload, NEW.created_at) IS DISTINCT FROM ROW(OLD.outbox_event_id, OLD.submission_id, OLD.community_id, OLD.actor_user_id, OLD.operation_id, OLD.creation_revision, OLD.audio_revision, OLD.analysis_revision, OLD.lyrics_revision, OLD.workflow_revision, OLD.workflow_instance_id, OLD.event_type, OLD.effect_identity, OLD.payload, OLD.created_at) THEN RAISE EXCEPTION 'media outbox effect identity is immutable'; END IF;
   IF NEW.updated_at <= OLD.updated_at OR NEW.claim_fence < OLD.claim_fence OR NEW.delivery_attempts < OLD.delivery_attempts OR NEW.delivery_attempts > 3 THEN RAISE EXCEPTION 'media outbox fence must advance'; END IF;
   IF (OLD.state = 'pending' AND (OLD.delivery_attempts >= 3 OR NEW.state <> 'running' OR NEW.delivery_attempts <> OLD.delivery_attempts + 1 OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp())) THEN RAISE EXCEPTION 'media outbox claim is not allowed'; END IF;
   IF (OLD.state = 'failed' AND (OLD.delivery_attempts >= 3 OR OLD.next_eligible_at IS NULL OR OLD.next_eligible_at > clock_timestamp() OR NEW.state <> 'running' OR NEW.delivery_attempts <> OLD.delivery_attempts + 1 OR NEW.claim_fence <> OLD.claim_fence + 1 OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp())) THEN RAISE EXCEPTION 'media outbox claim is not allowed'; END IF;
@@ -5865,7 +5866,7 @@ BEGIN
       AND lyrics.creation_revision=NEW.creation_revision
       AND lyrics.audio_revision=NEW.audio_revision
   ) THEN RAISE EXCEPTION 'lyrics transition lacks its immutable revision'; END IF;
-  IF expected_event = 'song_lyrics_bound' AND NOT EXISTS (
+  IF expected_event = 'song_lyrics_bound' AND NEW.current_terms_revision IS NOT NULL AND NOT EXISTS (
     SELECT 1 FROM media_submission_terms terms
     WHERE terms.community_id=NEW.community_id AND terms.actor_user_id=NEW.actor_user_id
       AND terms.submission_id=NEW.submission_id AND terms.operation_id=NEW.operation_id

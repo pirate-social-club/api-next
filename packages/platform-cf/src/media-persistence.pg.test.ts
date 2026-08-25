@@ -25,7 +25,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 23;
+const testCount = 24;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -721,6 +721,203 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
     }
+    completedTestCount += 1;
+  }, 40_000);
+  test("binds lyrics after sealed finalization before independent terms", async () => {
+    await withSchema(async (admin, connection) => {
+      expect(
+        await run(connection, (store) =>
+          store.reserve({
+            communityId: community,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            idempotencyKey: "reserve-key",
+            requestHash,
+            expectedContentType: "audio/mpeg",
+            expectedSizeBytes: audioBytes.byteLength,
+            expectedSha256: audioSha256,
+            uploadUrl: "https://upload.test/media",
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            responseBytes,
+            responseSha256,
+            reservationId: reservation,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.createSubmission({
+            communityId: community,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            idempotencyKey: "create-key",
+            requestHash,
+            title: "Independent lyrics song",
+            songType: "original",
+            reservationId: reservation,
+            submissionId: submission,
+            operationId: operation,
+            responseBytes,
+            responseSha256,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.finalizeSealed({
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/finalize",
+              "finalize-key",
+            ),
+            expectedCreationRevision: 1,
+            expectedAudioRevision: 0,
+            reservationId: reservation,
+            immutableObject: {
+              immutableRef: analysis.finalizedAudioRef,
+              destinationRef: "media://immutable/fixture",
+              etag: "etag-1",
+              objectVersion: "version-1",
+              sizeBytes: audioBytes.byteLength,
+              contentType: "audio/mpeg",
+              canonicalSha256: audioSha256,
+            },
+            outbox: {
+              outboxEventId: "media_pg_analysis_outbox",
+              effectIdentity: "media_pg_analysis_effect",
+              payload: {
+                kind: "analysis_launch",
+                submission_id: submission,
+                operation_id: operation,
+                audio_revision: 1,
+                analysis_revision: 0,
+                workflow_revision: 1,
+                workflow_instance_id: `media-${operation}-r1`,
+              },
+            },
+          }),
+        ),
+      ).toMatchObject({ kind: "committed" });
+      expect(
+        await run(connection, (store) =>
+          store.bindLyrics({
+            ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-key"),
+            expectedCreationRevision: 1,
+            expectedAudioRevision: 1,
+            baseTranscriptRevision: null,
+            lyrics: "Author reviewed lyrics",
+            outbox: {
+              outboxEventId: "media_pg_lyrics_outbox",
+              effectIdentity: "media_pg_lyrics_effect",
+              payload: {
+                kind: "decision_wakeup",
+                submission_id: submission,
+                operation_id: operation,
+                creation_revision: 2,
+                lyrics_revision: 1,
+                trigger: "lyrics",
+                workflow_revision: 1,
+                workflow_instance_id: `media-${operation}-r1`,
+              },
+            },
+          }),
+        ),
+      ).toEqual({ kind: "committed", submissionId: submission });
+      expect(
+        (
+          await admin.query(
+            "SELECT creation_revision,current_terms_revision,current_lyrics_revision,status,phase FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({
+        creation_revision: "2",
+        current_terms_revision: null,
+        current_lyrics_revision: "1",
+        status: "processing",
+        phase: "analysis",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::text AS count FROM media_submission_terms WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0]?.count,
+      ).toBe("0");
+      await expect(
+        run(connection, (_store, outbox) =>
+          outbox.enqueue({
+            outboxEventId: "media_pg_analysis_outbox",
+            submissionId: submission,
+            communityId: community,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            operationId: operation,
+            creationRevision: 2,
+            audioRevision: 1,
+            analysisRevision: 0,
+            lyricsRevision: 1,
+            workflowRevision: 1,
+            workflowInstanceId: `media-${operation}-r1`,
+            eventType: "analysis_launch",
+            effectIdentity: "media_pg_analysis_effect",
+            payload: {
+              kind: "analysis_launch",
+              submission_id: submission,
+              operation_id: operation,
+              audio_revision: 1,
+              analysis_revision: 0,
+              workflow_revision: 1,
+              workflow_instance_id: `media-${operation}-r1`,
+            },
+          }),
+        ),
+      ).rejects.toMatchObject({ reason: "identity-conflict" });
+      expect(
+        await run(connection, (store) =>
+          store.bindTerms({
+            ...command(connection, "/media-post-submissions/:submissionId/terms", "terms-key"),
+            expectedCreationRevision: 2,
+            terms,
+            outbox: {
+              outboxEventId: "media_pg_terms_outbox",
+              effectIdentity: "media_pg_terms_effect",
+              payload: {
+                kind: "decision_wakeup",
+                submission_id: submission,
+                operation_id: operation,
+                creation_revision: 3,
+                lyrics_revision: 1,
+                trigger: "terms",
+                workflow_revision: 1,
+                workflow_instance_id: `media-${operation}-r1`,
+              },
+            },
+          }),
+        ),
+      ).toEqual({ kind: "committed", submissionId: submission });
+      expect(
+        (
+          await admin.query(
+            "SELECT creation_revision,current_terms_revision,current_lyrics_revision FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({
+        creation_revision: "3",
+        current_terms_revision: "3",
+        current_lyrics_revision: "1",
+      });
+      expect(
+        (
+          await admin.query(
+            "SELECT creation_revision FROM media_submission_terms WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows,
+      ).toEqual([{ creation_revision: "3" }]);
+    });
     completedTestCount += 1;
   }, 40_000);
   test("fails 0050 atomically over unreconciled ready and timed 0049 rows", async () => {
@@ -1684,6 +1881,20 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       const admin = new Client({ connectionString: connection });
       await admin.connect();
       await createThroughDecision(connection, reviewDecision);
+      for (const mutation of [
+        "creation_revision=creation_revision+1",
+        "audio_revision=audio_revision+1",
+        "analysis_revision=analysis_revision+1",
+        "lyrics_revision=1",
+      ]) {
+        await admin.query("BEGIN");
+        await expect(
+          admin.query(
+            `UPDATE media_submission_outbox SET ${mutation},state='running',delivery_attempts=delivery_attempts+1,claim_owner='hostile-worker',claim_fence=claim_fence+1,lease_expires_at=clock_timestamp()+interval '30 seconds',updated_at=clock_timestamp()+interval '1 second' WHERE outbox_event_id='media_pg_analysis_outbox'`,
+          ),
+        ).rejects.toThrow("media outbox effect identity is immutable");
+        await admin.query("ROLLBACK");
+      }
       await admin.query("BEGIN");
       await expect(
         admin.query(
