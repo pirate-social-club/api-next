@@ -12,6 +12,7 @@ export * from "./money/community-purchase-funding-reconciliation.ts";
 export * from "./namespace-ownership/index.ts";
 export * from "./ports.ts";
 export * from "./route-revalidation/index.ts";
+export * from "./study-item-source.ts";
 export * from "./use-cases/community/creation-requirement-projection.ts";
 export * from "./use-cases/community/get-canonical-community-route.ts";
 export { canonicalBodyHash } from "./use-cases/content/common.ts";
