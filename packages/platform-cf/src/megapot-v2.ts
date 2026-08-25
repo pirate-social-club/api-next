@@ -708,6 +708,62 @@ export function validateMegapotUsdcTransferReceipt(input: {
   };
 }
 
+export function validateMegapotUsdcFundingReceipt(input: {
+  readonly deployment: MegapotV2DeploymentAttestation;
+  readonly receipt: MegapotTransactionReceipt;
+  readonly sender: string;
+  readonly amountAtomic: bigint;
+}): MegapotUsdcTransferReceiptEvidence {
+  const deployment = validateMegapotV2DeploymentAttestation(input.deployment);
+  const receipt = input.receipt;
+  const sender = address(input.sender);
+  assertReceiptIdentity(receipt);
+  if (receipt.chainId !== deployment.chainId) throw new MegapotV2EvidenceInvalid("invalid-chain");
+  if (receipt.status !== "success") throw new MegapotV2EvidenceInvalid("invalid-receipt");
+  if (
+    receipt.to === null ||
+    !sameAddress(receipt.to, deployment.usdcAddress) ||
+    !sameAddress(receipt.from, sender) ||
+    input.amountAtomic <= 0n
+  ) {
+    throw new MegapotV2EvidenceInvalid("wrong-party");
+  }
+  const transfers: Array<{ logIndex: number; amountAtomic: bigint }> = [];
+  for (const log of receipt.logs) {
+    if (!sameAddress(log.address, deployment.usdcAddress)) continue;
+    try {
+      const event = decodeEventLog({
+        abi: erc20Abi,
+        eventName: "Transfer",
+        data: log.data,
+        topics: log.topics,
+        strict: true,
+      });
+      if (
+        !sameAddress(event.args.from, sender) ||
+        !sameAddress(event.args.to, deployment.custodyAddress) ||
+        event.args.amount !== input.amountAtomic
+      ) {
+        throw new MegapotV2EvidenceInvalid("wrong-party");
+      }
+      transfers.push({ logIndex: log.logIndex, amountAtomic: event.args.amount });
+    } catch (error) {
+      if (error instanceof MegapotV2EvidenceInvalid) throw error;
+    }
+  }
+  const transfer = transfers[0];
+  if (transfers.length !== 1 || transfer === undefined) {
+    throw new MegapotV2EvidenceInvalid("missing-log");
+  }
+  return {
+    transactionHash: hash(receipt.transactionHash),
+    blockHash: hash(receipt.blockHash),
+    blockNumber: receipt.blockNumber,
+    transferLogIndex: transfer.logIndex,
+    amountAtomic: transfer.amountAtomic,
+  };
+}
+
 export function validateMegapotClaimReceipt(input: {
   readonly deployment: MegapotV2DeploymentAttestation;
   readonly receipt: MegapotTransactionReceipt;

@@ -12,6 +12,7 @@ import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts
 import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
+import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -956,10 +957,11 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         `INSERT INTO persona_wallet_assignments (
            assignment_id, persona_id, account_id, chain_account_kind,
            hd_wallet_index, address, status, reservation_idempotency_key,
-           assigned_at
+           assigned_at, created_at, updated_at
          ) VALUES (
            'wallet-payout-101', $2, $1, 'evm', 101, $3, 'active',
-           'wallet-payout-101', clock_timestamp()
+           'wallet-payout-101', statement_timestamp(), statement_timestamp(),
+           statement_timestamp()
          )`,
         [identity.accountId, identity.personaId, address("f")],
       );
@@ -1146,6 +1148,77 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           approved_amount_atomic: "100000",
           allowance_after_atomic: "100000",
         },
+      ]);
+    });
+  });
+
+  test("confirms an exact user-authorized USDC top-up into the leg budget", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "funding-repository");
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "funding-repository",
+      });
+      await admin.query(
+        `INSERT INTO persona_wallet_assignments (
+           assignment_id, persona_id, account_id, chain_account_kind,
+           hd_wallet_index, address, status, reservation_idempotency_key,
+           assigned_at, created_at, updated_at
+         ) VALUES (
+           'wallet-funding-repository', $2, $1, 'evm', 201, $3, 'active',
+           'wallet-funding-repository', statement_timestamp(), statement_timestamp(),
+           statement_timestamp()
+         )`,
+        [identity.accountId, identity.personaId, address("d")],
+      );
+      const store = makeControlPlaneRewardFundingStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const intent = await Effect.runPromise(
+        store.plan({
+          fundingEffectId: "funding-effect-top-up",
+          legId,
+          funderAccountId: identity.accountId,
+          senderAddress: address("d"),
+          expectedAmountAtomic: 500n,
+          requiredConfirmations: 3,
+        }),
+      );
+      expect(intent).toMatchObject({
+        state: "planned",
+        recipientAddress: address("4"),
+        expectedAmountAtomic: 500n,
+      });
+      const transactionHash = bytes32("3");
+      await Effect.runPromise(
+        store.bindTransaction({ fundingEffectId: intent.fundingEffectId, transactionHash }),
+      );
+      await Effect.runPromise(
+        store.confirm({
+          fundingEffectId: intent.fundingEffectId,
+          transactionHash,
+          transferLogIndex: 9,
+          amountAtomic: 500n,
+          blockNumber: 130n,
+          blockHash: bytes32("4"),
+          observationHash: hash("4"),
+          confirmedAt: new Date().toISOString(),
+        }),
+      );
+      const funded = await admin.query<{
+        readonly state: string;
+        readonly confirmed_amount_atomic: string;
+        readonly funded_atomic: string;
+      }>(
+        `SELECT funding.state, funding.confirmed_amount_atomic::text,
+                leg.funded_atomic::text
+           FROM song_reward_leg_funding_effects funding
+           JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
+          WHERE funding.funding_effect_id='funding-effect-top-up'`,
+      );
+      expect(funded.rows).toEqual([
+        { state: "confirmed", confirmed_amount_atomic: "500", funded_atomic: "100500" },
       ]);
     });
   });

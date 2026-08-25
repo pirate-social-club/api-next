@@ -39,6 +39,8 @@
     "./megapot-purchase-coordinator": "./src/megapot-purchase-coordinator.ts",
     "./reward-payout-coordinator": "./src/reward-payout-coordinator.ts",
     "./reward-payout-repository": "./src/reward-payout-repository.ts",
+    "./reward-funding-coordinator": "./src/reward-funding-coordinator.ts",
+    "./reward-funding-repository": "./src/reward-funding-repository.ts",
     "./public-profile-repository": "./src/public-profile-repository.ts",
     "./registration-rate-limiter": "./src/registration-rate-limiter.ts",
     "./registration-rate-limiter-do": "./src/registration-rate-limiter-do.ts",

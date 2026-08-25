@@ -19,6 +19,7 @@ export * from "./rewards/megapot-approval.ts";
 export * from "./rewards/megapot-claim.ts";
 export * from "./rewards/megapot-purchase.ts";
 export * from "./rewards/megapot-sweep.ts";
+export * from "./rewards/reward-funding.ts";
 export * from "./rewards/reward-payout.ts";
 export * from "./route-revalidation/index.ts";
 export * from "./study-item-source.ts";
