@@ -1,4 +1,5 @@
-// Phase 1 of docs/video-feed-ranking-spec.md.
+// Phase 1 of the vertical video feed ranking scorer. Retained as a completed
+// Lane B port (specs 000 §6 and 002 §4.2).
 //
 // Ranking for the vertical video feed. This module is pure and synchronous: no
 // I/O, no clock, no environment. That is deliberate and load-bearing. Ordering

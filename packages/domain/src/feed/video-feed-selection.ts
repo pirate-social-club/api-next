@@ -1,5 +1,7 @@
 // Phase 1 selection policy for the vertical video feed.
-// See docs/video-feed-ranking-spec.md §5.5.
+// Retained as a completed Lane B port (specs 000 §6 and 002 §4.2); selection
+// ranking policy lives here as explicit constraints for the future vertical
+// video feed lane.
 //
 // Ranking policy lives here as explicit selection constraints rather than as
 // extra multiplicative terms inside the score. Folding an exposure floor or a
