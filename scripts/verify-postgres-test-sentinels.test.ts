@@ -36,6 +36,7 @@ async function sentinelSet(): Promise<{
     "content",
     "text-submission",
     "persona",
+    "rewards-qualification",
     "public-profile",
     "public-community-threads",
     "verification",
@@ -116,6 +117,20 @@ describe("Postgres suite sentinel verification", () => {
         ),
       ).toHaveLength(2);
     }
+  });
+
+  test("keeps rewards qualification persistence fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain("packages/platform-cf/src/rewards-qualification.pg.test.ts");
+    expect(
+      workflow.match(
+        /\/tmp\/api-next-control-plane-postgres-rewards-qualification-suite-complete/gu,
+      ),
+    ).toHaveLength(2);
   });
 
   test("keeps the gates-v2 suite and completion marker wired into Postgres CI", async () => {

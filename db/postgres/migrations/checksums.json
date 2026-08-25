@@ -50,6 +50,7 @@
     "0047_hns_operator_managed_routes.sql": "12fb282449f8dd26894635afd22a3fdc575b64a7e707315873453db2a511a567",
     "0048_hns_first_party_host_persistence.sql": "2a7eaaf55ff2831fce303e2451d07112a94be79388aa1b74773a0eb49837abc5",
     "0049_bare_hns_community_route_v2.sql": "2a6f4614b3cd159fa640e9b77dcc588e06b740fa97aca50b0fa24ff144e1a02c",
-    "0050_song_lyrics_foundation.sql": "09318fe6ba64eb98d7d98a85d3dd22c631af907f62aedc01ba2448a8cbc61b57"
+    "0050_song_lyrics_foundation.sql": "09318fe6ba64eb98d7d98a85d3dd22c631af907f62aedc01ba2448a8cbc61b57",
+    "0051_activity_qualification.sql": "6358017bcdfbe50b2707d5a2677d5b4ede4e80a00953c3b262fe299af00a70e7"
   }
 }

@@ -1198,6 +1198,156 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION grade_study_answer_v1(candidate_answer jsonb, stored_answer_key jsonb) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $$
+  SELECT CASE stored_answer_key->>'kind'
+    WHEN 'single_select' THEN
+      candidate_answer->>'choice_key' = stored_answer_key->>'correct_choice_key'
+    WHEN 'text_response' THEN EXISTS (
+      SELECT 1
+        FROM jsonb_array_elements_text(stored_answer_key->'accepted_answers') AS accepted(value)
+       WHERE regexp_replace(lower(btrim(candidate_answer->>'text')), '\s+', ' ', 'g')
+           = regexp_replace(lower(btrim(accepted.value)), '\s+', ' ', 'g')
+    )
+    ELSE false
+  END
+$$;
+
+CREATE FUNCTION guard_account_streak_clock() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'account streak clocks cannot be deleted';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = NEW.timezone) THEN
+    RAISE EXCEPTION 'account streak timezone is unknown';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF NEW.account_id IS DISTINCT FROM OLD.account_id
+       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+      RAISE EXCEPTION 'account streak clock identity is immutable';
+    END IF;
+    IF NEW.timezone IS NOT DISTINCT FROM OLD.timezone THEN
+      RAISE EXCEPTION 'account streak timezone updates must change the timezone';
+    END IF;
+    IF NEW.timezone_updated_at < OLD.next_change_allowed_at
+       OR NEW.timezone_updated_at > clock_timestamp() THEN
+      RAISE EXCEPTION 'account streak timezone change is outside its prospective window';
+    END IF;
+  ELSIF NEW.timezone_updated_at > clock_timestamp() THEN
+    RAISE EXCEPTION 'account streak timezone pin cannot begin in the future';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_account_streak_timezone_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'account streak timezone actions are append-only';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = NEW.result_timezone) THEN
+    RAISE EXCEPTION 'account streak timezone action is unknown';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_activity_qualification() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  study_record study_sessions%ROWTYPE;
+  karaoke_session_record karaoke_sessions%ROWTYPE;
+  karaoke_attempt_record karaoke_attempts%ROWTYPE;
+  expected_evidence JSONB;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'activity qualifications are append-only';
+  END IF;
+  IF NEW.activity_key = 'study' THEN
+    SELECT * INTO study_record FROM study_sessions
+     WHERE session_id = NEW.study_session_id FOR SHARE;
+    expected_evidence := jsonb_build_object(
+      'kind', 'study_session_first_pass_v2',
+      'qualifying_exercise_count', study_record.qualifying_exercise_count,
+      'first_pass_correct', study_record.first_pass_correct,
+      'required_correct', study_record.required_correct
+    );
+    IF study_record.session_id IS NULL OR study_record.status <> 'completed'
+       OR study_record.first_pass_correct < study_record.required_correct
+       OR ROW(
+         NEW.account_id, NEW.persona_id, NEW.community_id, NEW.post_id,
+         NEW.audio_revision, NEW.qualification_policy_version_id,
+         NEW.score_bps, NEW.qualified_at, NEW.streak_day, NEW.evidence_summary
+       ) IS DISTINCT FROM ROW(
+         study_record.account_id, study_record.persona_id,
+         study_record.community_id, study_record.post_id,
+         study_record.audio_revision, study_record.qualification_policy_version_id,
+         study_record.score_bps, study_record.completed_at,
+         study_record.streak_day, expected_evidence
+       ) THEN
+      RAISE EXCEPTION 'Study qualification is not exact reducer output';
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF NEW.activity_key = 'karaoke' THEN
+    SELECT * INTO karaoke_session_record FROM karaoke_sessions
+     WHERE session_id = NEW.karaoke_session_id
+       AND attempt_id = NEW.karaoke_attempt_id FOR SHARE;
+    SELECT * INTO karaoke_attempt_record FROM karaoke_attempts
+     WHERE session_id = NEW.karaoke_session_id
+       AND attempt_id = NEW.karaoke_attempt_id FOR SHARE;
+    IF karaoke_session_record.session_id IS NULL
+       OR karaoke_session_record.status <> 'completed'
+       OR karaoke_attempt_record.completion_reason <> 'completed'
+       OR karaoke_attempt_record.scored_line_count < 5
+       OR karaoke_attempt_record.coverage_bps < 8500
+       OR karaoke_attempt_record.final_score_bps < 7000
+       OR ROW(
+         NEW.account_id, NEW.persona_id, NEW.community_id, NEW.post_id,
+         NEW.audio_revision, NEW.qualification_policy_version_id,
+         NEW.score_bps, NEW.qualified_at, NEW.streak_day, NEW.evidence_summary
+       ) IS DISTINCT FROM ROW(
+         karaoke_session_record.account_id, karaoke_session_record.persona_id,
+         karaoke_session_record.community_id, karaoke_session_record.post_id,
+         karaoke_session_record.audio_revision,
+         karaoke_session_record.qualification_policy_version_id,
+         karaoke_attempt_record.final_score_bps, karaoke_attempt_record.completed_at,
+         (karaoke_attempt_record.completed_at AT TIME ZONE karaoke_session_record.timezone)::date,
+         karaoke_attempt_record.evidence_summary
+       ) THEN
+      RAISE EXCEPTION 'Karaoke qualification is not exact reducer output';
+    END IF;
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'reserved activities cannot produce qualifications';
+END
+$$;
+
+CREATE FUNCTION guard_activity_registry_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'activity registry entries cannot be deleted';
+  END IF;
+  IF NEW.activity_key IS DISTINCT FROM OLD.activity_key
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN
+    RAISE EXCEPTION 'activity registry identity is immutable';
+  END IF;
+  IF NEW.updated_at < OLD.updated_at THEN
+    RAISE EXCEPTION 'activity registry time cannot move backward';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_community_canonical_route_binding_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2328,6 +2478,95 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_karaoke_attempt() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  session_record karaoke_sessions%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Karaoke attempts are append-only';
+  END IF;
+  SELECT * INTO session_record FROM karaoke_sessions
+   WHERE session_id = NEW.session_id AND attempt_id = NEW.attempt_id FOR SHARE;
+  IF session_record.session_id IS NULL OR session_record.status <> 'active'
+     OR NEW.created_at IS DISTINCT FROM session_record.created_at
+     OR NEW.completed_at < session_record.created_at THEN
+    RAISE EXCEPTION 'Karaoke attempt is not bound to its active session';
+  END IF;
+  IF NEW.evidence_summary <> jsonb_build_object(
+    'kind', 'karaoke_qualification_v1',
+    'scored_line_count', NEW.scored_line_count,
+    'line_count', NEW.line_count,
+    'coverage_bps', floor(10000.0 * NEW.scored_line_count / NEW.line_count)::integer,
+    'final_score_bps', NEW.final_score_bps,
+    'scoring_version', NEW.scoring_version,
+    'scoring_provider', NEW.scoring_provider,
+    'karaoke_revision_id', session_record.karaoke_revision_id
+  ) THEN
+    RAISE EXCEPTION 'Karaoke attempt evidence summary is not exact';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_karaoke_session() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  attempt_record karaoke_attempts%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Karaoke sessions cannot be deleted';
+  END IF;
+  IF NOT active_owned_persona(NEW.account_id, NEW.persona_id)
+     OR NOT active_community_effect(NEW.community_id, NEW.account_id)
+     OR NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = NEW.timezone)
+     OR NOT EXISTS (
+       SELECT 1 FROM account_streak_clocks
+        WHERE account_id = NEW.account_id AND timezone = NEW.timezone
+     ) THEN
+    RAISE EXCEPTION 'Karaoke session account, persona, community, or timezone is ineligible';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM posts
+     WHERE community_id = NEW.community_id AND post_id = NEW.post_id
+       AND post_type = 'song' AND status = 'published' AND visibility = 'public'
+  ) THEN
+    RAISE EXCEPTION 'Karaoke sessions require a public published song';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF ROW(
+      NEW.session_id, NEW.attempt_id, NEW.account_id, NEW.persona_id,
+      NEW.community_id, NEW.post_id, NEW.audio_revision, NEW.karaoke_revision_id,
+      NEW.qualification_policy_version_id, NEW.endpoint_template,
+      NEW.idempotency_key, NEW.request_hash, NEW.timezone, NEW.created_at, NEW.expires_at
+    ) IS DISTINCT FROM ROW(
+      OLD.session_id, OLD.attempt_id, OLD.account_id, OLD.persona_id,
+      OLD.community_id, OLD.post_id, OLD.audio_revision, OLD.karaoke_revision_id,
+      OLD.qualification_policy_version_id, OLD.endpoint_template,
+      OLD.idempotency_key, OLD.request_hash, OLD.timezone, OLD.created_at, OLD.expires_at
+    ) THEN
+      RAISE EXCEPTION 'Karaoke session authority is immutable';
+    END IF;
+    IF OLD.status = 'completed' AND NEW IS DISTINCT FROM OLD THEN
+      RAISE EXCEPTION 'completed Karaoke sessions are immutable';
+    END IF;
+    IF OLD.status = 'active' AND NEW.status = 'completed' THEN
+      SELECT * INTO attempt_record FROM karaoke_attempts
+       WHERE session_id = NEW.session_id AND attempt_id = NEW.attempt_id;
+      IF attempt_record.attempt_id IS NULL
+         OR NEW.completed_at IS DISTINCT FROM attempt_record.completed_at THEN
+        RAISE EXCEPTION 'Karaoke completion requires exact terminal attempt evidence';
+      END IF;
+    ELSIF NEW IS DISTINCT FROM OLD THEN
+      RAISE EXCEPTION 'invalid Karaoke session transition';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_media_lyrics_append_only() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -3178,6 +3417,36 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION guard_persona_activity_presentation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'activity presentation selection cannot be deleted';
+  END IF;
+  IF TG_OP = 'UPDATE' AND (
+    NEW.community_id IS DISTINCT FROM OLD.community_id
+    OR NEW.account_id IS DISTINCT FROM OLD.account_id
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at
+    OR NEW.updated_at < OLD.updated_at
+  ) THEN
+    RAISE EXCEPTION 'activity presentation identity is immutable';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_persona_activity_presentation_action() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'persona activity presentation actions are append-only';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_persona_wallet_assignment() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -3237,6 +3506,190 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
+$$;
+
+CREATE FUNCTION guard_reward_day_ledger() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'reward day ledgers are append-only';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_song_streak_day_activity() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'song streak day activity rows cannot be deleted';
+  END IF;
+  IF TG_OP = 'UPDATE' AND (
+    ROW(NEW.account_id, NEW.community_id, NEW.post_id, NEW.streak_day,
+      NEW.activity_key, NEW.first_qualified_at)
+    IS DISTINCT FROM
+    ROW(OLD.account_id, OLD.community_id, OLD.post_id, OLD.streak_day,
+      OLD.activity_key, OLD.first_qualified_at)
+    OR NEW.qualification_count <> OLD.qualification_count + 1
+    OR NEW.last_qualified_at < OLD.last_qualified_at
+    OR NEW.last_qualification_id IS NOT DISTINCT FROM OLD.last_qualification_id
+  ) THEN
+    RAISE EXCEPTION 'song streak day activity updates must append one qualification';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_streak_projection() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'streak projections cannot be deleted';
+  END IF;
+  IF TG_OP = 'UPDATE' AND NEW.recomputed_at < OLD.recomputed_at THEN
+    RAISE EXCEPTION 'streak projection recompute time cannot move backward';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_study_session() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  item_count INTEGER;
+  answered_count INTEGER;
+  correct_count INTEGER;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Study sessions cannot be deleted';
+  END IF;
+  IF NOT active_owned_persona(NEW.account_id, NEW.persona_id)
+     OR NOT active_community_effect(NEW.community_id, NEW.account_id)
+     OR NOT EXISTS (SELECT 1 FROM pg_timezone_names WHERE name = NEW.timezone)
+     OR NOT EXISTS (
+       SELECT 1 FROM account_streak_clocks
+        WHERE account_id = NEW.account_id AND timezone = NEW.timezone
+     ) THEN
+    RAISE EXCEPTION 'Study session account, persona, community, or timezone is ineligible';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM posts
+     WHERE community_id = NEW.community_id AND post_id = NEW.post_id
+       AND post_type = 'song' AND status = 'published' AND visibility = 'public'
+  ) THEN
+    RAISE EXCEPTION 'Study sessions require a public published song';
+  END IF;
+  IF TG_OP = 'UPDATE' THEN
+    IF ROW(
+      NEW.session_id, NEW.account_id, NEW.persona_id, NEW.community_id, NEW.post_id,
+      NEW.audio_revision, NEW.lyrics_revision, NEW.source_revision,
+      NEW.source_producer_id, NEW.source_producer_revision, NEW.source_snapshot_hash,
+      NEW.qualification_policy_version_id, NEW.endpoint_template,
+      NEW.idempotency_key, NEW.request_hash, NEW.timezone,
+      NEW.qualifying_exercise_count, NEW.required_correct, NEW.created_at
+    ) IS DISTINCT FROM ROW(
+      OLD.session_id, OLD.account_id, OLD.persona_id, OLD.community_id, OLD.post_id,
+      OLD.audio_revision, OLD.lyrics_revision, OLD.source_revision,
+      OLD.source_producer_id, OLD.source_producer_revision, OLD.source_snapshot_hash,
+      OLD.qualification_policy_version_id, OLD.endpoint_template,
+      OLD.idempotency_key, OLD.request_hash, OLD.timezone,
+      OLD.qualifying_exercise_count, OLD.required_correct, OLD.created_at
+    ) THEN
+      RAISE EXCEPTION 'Study session authority is immutable';
+    END IF;
+    IF OLD.status = 'completed' AND NEW IS DISTINCT FROM OLD THEN
+      RAISE EXCEPTION 'completed Study sessions are immutable';
+    END IF;
+    IF OLD.status = 'active' AND NEW.status = 'completed' THEN
+      SELECT count(*),
+             count(*) FILTER (WHERE answer_count > 0),
+             count(*) FILTER (WHERE first_pass_outcome = 'correct')
+        INTO item_count, answered_count, correct_count
+        FROM study_session_items WHERE session_id = NEW.session_id;
+      IF item_count <> NEW.qualifying_exercise_count
+         OR answered_count <> NEW.answered_exercise_count
+         OR correct_count <> NEW.first_pass_correct
+         OR NEW.streak_day <> (NEW.completed_at AT TIME ZONE NEW.timezone)::date THEN
+        RAISE EXCEPTION 'Study completion is not derived from frozen item evidence';
+      END IF;
+    ELSIF NEW IS DISTINCT FROM OLD THEN
+      RAISE EXCEPTION 'invalid Study session transition';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_study_session_answer() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  item_record study_session_items%ROWTYPE;
+  session_record study_sessions%ROWTYPE;
+  expected_outcome TEXT;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Study answers are append-only';
+  END IF;
+  SELECT * INTO session_record FROM study_sessions WHERE session_id = NEW.session_id FOR SHARE;
+  SELECT * INTO item_record FROM study_session_items
+   WHERE session_id = NEW.session_id AND session_item_id = NEW.session_item_id FOR SHARE;
+  IF session_record.status <> 'active' OR item_record.session_item_id IS NULL THEN
+    RAISE EXCEPTION 'Study answers require an active bound item';
+  END IF;
+  IF NEW.attempt_number <> item_record.answer_count + 1
+     OR NEW.first_pass IS DISTINCT FROM (NEW.attempt_number = 1)
+     OR NOT valid_study_answer_v1(NEW.answer, item_record.prompt->>'kind') THEN
+    RAISE EXCEPTION 'Study answer sequence or shape is invalid';
+  END IF;
+  expected_outcome := CASE
+    WHEN grade_study_answer_v1(NEW.answer, item_record.answer_key) THEN 'correct'
+    ELSE 'incorrect'
+  END;
+  IF NEW.outcome <> expected_outcome THEN
+    RAISE EXCEPTION 'Study answer outcome is not server-derived';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_study_session_item() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  session_record study_sessions%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Study session items cannot be deleted';
+  END IF;
+  SELECT * INTO session_record FROM study_sessions WHERE session_id = NEW.session_id FOR SHARE;
+  IF session_record.session_id IS NULL OR session_record.status <> 'active' THEN
+    RAISE EXCEPTION 'Study items require an active session';
+  END IF;
+  IF NOT valid_study_item_v1(NEW.prompt, NEW.answer_key) THEN
+    RAISE EXCEPTION 'Study item prompt and answer key are invalid';
+  END IF;
+  IF TG_OP = 'UPDATE' AND (
+    NEW.session_id IS DISTINCT FROM OLD.session_id
+    OR NEW.session_item_id IS DISTINCT FROM OLD.session_item_id
+    OR NEW.ordinal IS DISTINCT FROM OLD.ordinal
+    OR NEW.source_item_key IS DISTINCT FROM OLD.source_item_key
+    OR NEW.prompt IS DISTINCT FROM OLD.prompt
+    OR NEW.answer_key IS DISTINCT FROM OLD.answer_key
+    OR NEW.presentation_count IS DISTINCT FROM OLD.presentation_count
+    OR NEW.created_at IS DISTINCT FROM OLD.created_at
+    OR NEW.answer_count < OLD.answer_count
+    OR (OLD.first_pass_outcome IS NOT NULL
+      AND NEW.first_pass_outcome IS DISTINCT FROM OLD.first_pass_outcome)
+  ) THEN
+    RAISE EXCEPTION 'Study session item evidence is immutable';
+  END IF;
+  RETURN NEW;
+END
 $$;
 
 CREATE FUNCTION guard_text_content_submission_response_snapshot() RETURNS trigger
@@ -3875,6 +4328,14 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION reject_qualification_policy_version_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'qualification policy versions are append-only';
+END
+$$;
+
 CREATE FUNCTION reject_text_moderation_append_only_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -4216,6 +4677,98 @@ BEGIN
   RETURN QUERY SELECT 'revoked'::TEXT, input_activation_id,
     input_route_binding_id, input_expected_activation_generation + 1;
 END;
+$$;
+
+CREATE FUNCTION valid_study_answer_v1(candidate_answer jsonb, expected_kind text) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $$
+  SELECT CASE expected_kind
+    WHEN 'text_response' THEN
+      jsonb_typeof(candidate_answer) = 'object'
+      AND candidate_answer - 'kind' - 'text' = '{}'::jsonb
+      AND candidate_answer->>'kind' = 'text_response'
+      AND jsonb_typeof(candidate_answer->'text') = 'string'
+      AND btrim(candidate_answer->>'text') <> ''
+      AND char_length(candidate_answer->>'text') <= 4096
+    WHEN 'single_select' THEN
+      jsonb_typeof(candidate_answer) = 'object'
+      AND candidate_answer - 'kind' - 'choice_key' = '{}'::jsonb
+      AND candidate_answer->>'kind' = 'single_select'
+      AND jsonb_typeof(candidate_answer->'choice_key') = 'string'
+      AND btrim(candidate_answer->>'choice_key') <> ''
+      AND octet_length(candidate_answer->>'choice_key') <= 128
+    ELSE false
+  END
+$$;
+
+CREATE FUNCTION valid_study_item_v1(candidate_prompt jsonb, candidate_answer_key jsonb) RETURNS boolean
+    LANGUAGE plpgsql IMMUTABLE
+    AS $$
+DECLARE
+  choice JSONB;
+  accepted JSONB;
+BEGIN
+  IF jsonb_typeof(candidate_prompt) IS DISTINCT FROM 'object'
+     OR jsonb_typeof(candidate_answer_key) IS DISTINCT FROM 'object'
+     OR jsonb_typeof(candidate_prompt->'kind') IS DISTINCT FROM 'string'
+     OR jsonb_typeof(candidate_prompt->'text') IS DISTINCT FROM 'string'
+     OR btrim(candidate_prompt->>'text') = ''
+     OR char_length(candidate_prompt->>'text') > 4096
+     OR candidate_prompt->>'kind' IS DISTINCT FROM candidate_answer_key->>'kind' THEN
+    RETURN false;
+  END IF;
+
+  IF candidate_prompt->>'kind' = 'text_response' THEN
+    IF candidate_prompt - 'kind' - 'text' <> '{}'::jsonb
+       OR candidate_answer_key - 'kind' - 'comparison' - 'accepted_answers' <> '{}'::jsonb
+       OR candidate_answer_key->>'comparison' <> 'unicode_casefold_whitespace_v1'
+       OR jsonb_typeof(candidate_answer_key->'accepted_answers') IS DISTINCT FROM 'array'
+       OR jsonb_array_length(candidate_answer_key->'accepted_answers') NOT BETWEEN 1 AND 12 THEN
+      RETURN false;
+    END IF;
+    FOR accepted IN SELECT value FROM jsonb_array_elements(candidate_answer_key->'accepted_answers')
+    LOOP
+      IF jsonb_typeof(accepted) IS DISTINCT FROM 'string'
+         OR btrim(accepted #>> '{}') = ''
+         OR char_length(accepted #>> '{}') > 4096 THEN
+        RETURN false;
+      END IF;
+    END LOOP;
+    RETURN true;
+  END IF;
+
+  IF candidate_prompt->>'kind' <> 'single_select'
+     OR candidate_prompt - 'kind' - 'text' - 'choices' <> '{}'::jsonb
+     OR candidate_answer_key - 'kind' - 'correct_choice_key' <> '{}'::jsonb
+     OR jsonb_typeof(candidate_prompt->'choices') IS DISTINCT FROM 'array'
+     OR jsonb_array_length(candidate_prompt->'choices') NOT BETWEEN 2 AND 12
+     OR jsonb_typeof(candidate_answer_key->'correct_choice_key') IS DISTINCT FROM 'string'
+     OR btrim(candidate_answer_key->>'correct_choice_key') = '' THEN
+    RETURN false;
+  END IF;
+  FOR choice IN SELECT value FROM jsonb_array_elements(candidate_prompt->'choices')
+  LOOP
+    IF jsonb_typeof(choice) IS DISTINCT FROM 'object'
+       OR choice - 'choice_key' - 'text' <> '{}'::jsonb
+       OR jsonb_typeof(choice->'choice_key') IS DISTINCT FROM 'string'
+       OR jsonb_typeof(choice->'text') IS DISTINCT FROM 'string'
+       OR btrim(choice->>'choice_key') = ''
+       OR btrim(choice->>'text') = ''
+       OR octet_length(choice->>'choice_key') > 128
+       OR char_length(choice->>'text') > 4096 THEN
+      RETURN false;
+    END IF;
+  END LOOP;
+  IF (SELECT count(*) FROM jsonb_array_elements(candidate_prompt->'choices'))
+     <> (SELECT count(DISTINCT value->>'choice_key')
+           FROM jsonb_array_elements(candidate_prompt->'choices')) THEN
+    RETURN false;
+  END IF;
+  RETURN EXISTS (
+    SELECT 1 FROM jsonb_array_elements(candidate_prompt->'choices')
+     WHERE value->>'choice_key' = candidate_answer_key->>'correct_choice_key'
+  );
+END
 $$;
 
 CREATE FUNCTION valid_text_moderation_reason_codes(value jsonb) RETURNS boolean
@@ -7501,6 +8054,31 @@ CREATE TABLE account_aliases (
     CONSTRAINT account_aliases_status_check CHECK ((status = ANY (ARRAY['active'::text, 'finalizing'::text, 'completed'::text, 'inactive'::text])))
 );
 
+CREATE TABLE account_streak_clocks (
+    account_id text NOT NULL,
+    timezone text NOT NULL,
+    timezone_updated_at timestamp with time zone NOT NULL,
+    next_change_allowed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT account_streak_clock_window CHECK ((next_change_allowed_at = (timezone_updated_at + '7 days'::interval))),
+    CONSTRAINT account_streak_clocks_timezone_check CHECK (((btrim(timezone) <> ''::text) AND (timezone = btrim(timezone)) AND (octet_length(timezone) <= 128)))
+);
+
+CREATE TABLE account_streak_timezone_actions (
+    account_id text NOT NULL,
+    endpoint_template text DEFAULT '/rewards/streak-timezone'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_timezone text NOT NULL,
+    result_timezone_updated_at timestamp with time zone NOT NULL,
+    result_next_change_allowed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT account_streak_timezone_action_result CHECK ((result_next_change_allowed_at = (result_timezone_updated_at + '7 days'::interval))),
+    CONSTRAINT account_streak_timezone_actions_endpoint_template_check CHECK ((endpoint_template = '/rewards/streak-timezone'::text)),
+    CONSTRAINT account_streak_timezone_actions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT account_streak_timezone_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE action_challenges (
     action_challenge_id text NOT NULL,
     action_intent_id text NOT NULL,
@@ -7563,6 +8141,46 @@ CREATE TABLE active_subject_key_bindings (
     activated_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT active_subject_key_bindings_binding_epoch_check CHECK ((binding_epoch > 0))
+);
+
+CREATE TABLE activity_qualifications (
+    qualification_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    activity_key text NOT NULL,
+    study_session_id text,
+    karaoke_session_id text,
+    karaoke_attempt_id text,
+    score_bps integer NOT NULL,
+    qualification_policy_version_id text NOT NULL,
+    qualified_at timestamp with time zone NOT NULL,
+    reward_period_key date GENERATED ALWAYS AS (((qualified_at AT TIME ZONE 'UTC'::text))::date) STORED,
+    streak_day date NOT NULL,
+    evidence_summary jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT activity_qualification_attempt_shape CHECK ((((activity_key = 'study'::text) AND (study_session_id IS NOT NULL) AND (karaoke_session_id IS NULL) AND (karaoke_attempt_id IS NULL)) OR ((activity_key = 'karaoke'::text) AND (study_session_id IS NULL) AND (karaoke_session_id IS NOT NULL) AND (karaoke_attempt_id IS NOT NULL)))),
+    CONSTRAINT activity_qualification_commit_time CHECK ((created_at >= qualified_at)),
+    CONSTRAINT activity_qualifications_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT activity_qualifications_evidence_summary_check CHECK ((jsonb_typeof(evidence_summary) = 'object'::text)),
+    CONSTRAINT activity_qualifications_qualification_id_check CHECK (((btrim(qualification_id) <> ''::text) AND (qualification_id = btrim(qualification_id)) AND (octet_length(qualification_id) <= 128))),
+    CONSTRAINT activity_qualifications_score_bps_check CHECK (((score_bps >= 0) AND (score_bps <= 10000)))
+);
+
+CREATE TABLE activity_registry (
+    activity_key text NOT NULL,
+    status text NOT NULL,
+    producer_version text,
+    current_policy_version_id text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT activity_registry_activity_key_check CHECK (((btrim(activity_key) <> ''::text) AND (activity_key = btrim(activity_key)) AND (octet_length(activity_key) <= 128))),
+    CONSTRAINT activity_registry_producer_version_check CHECK (((producer_version IS NULL) OR ((btrim(producer_version) <> ''::text) AND (producer_version = btrim(producer_version)) AND (octet_length(producer_version) <= 128)))),
+    CONSTRAINT activity_registry_state_shape CHECK ((((status = 'active'::text) AND (producer_version IS NOT NULL) AND (current_policy_version_id IS NOT NULL)) OR ((status = 'reserved'::text) AND (producer_version IS NULL) AND (current_policy_version_id IS NULL)))),
+    CONSTRAINT activity_registry_status_check CHECK ((status = ANY (ARRAY['active'::text, 'reserved'::text]))),
+    CONSTRAINT activity_registry_time_order CHECK ((updated_at >= created_at))
 );
 
 CREATE TABLE assertion_bindings (
@@ -8929,6 +9547,30 @@ CREATE TABLE community_route_revalidation_start_reservations (
     CONSTRAINT community_route_revalidation_start_time_order CHECK ((updated_at >= created_at))
 );
 
+CREATE TABLE community_streak_days (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    streak_day date NOT NULL,
+    first_qualification_id text NOT NULL,
+    earned_at timestamp with time zone NOT NULL
+);
+
+CREATE TABLE community_streaks (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    current_count integer NOT NULL,
+    best_count integer NOT NULL,
+    started_day date NOT NULL,
+    last_day date NOT NULL,
+    total_days integer NOT NULL,
+    active_until_at timestamp with time zone NOT NULL,
+    recomputed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_streaks_check CHECK ((best_count >= current_count)),
+    CONSTRAINT community_streaks_check1 CHECK ((total_days >= best_count)),
+    CONSTRAINT community_streaks_current_count_check CHECK ((current_count > 0)),
+    CONSTRAINT community_streaks_day_order CHECK ((last_day >= started_day))
+);
+
 CREATE TABLE content_publication_outbox (
     outbox_event_id text NOT NULL,
     community_id text NOT NULL,
@@ -9293,6 +9935,62 @@ CREATE TABLE identity_credentials (
     CONSTRAINT identity_credentials_subject_not_blank CHECK ((btrim(provider_subject) <> ''::text)),
     CONSTRAINT identity_credentials_tombstone_time_check CHECK ((((status = 'active'::text) AND (tombstoned_at IS NULL)) OR ((status = 'tombstoned'::text) AND (tombstoned_at IS NOT NULL)))),
     CONSTRAINT identity_credentials_user_not_blank CHECK ((btrim(canonical_user_id) <> ''::text))
+);
+
+CREATE TABLE karaoke_attempts (
+    attempt_id text NOT NULL,
+    session_id text NOT NULL,
+    completion_reason text NOT NULL,
+    scoring_version integer NOT NULL,
+    scoring_provider text NOT NULL,
+    scoring_model text NOT NULL,
+    final_score_bps integer NOT NULL,
+    scored_line_count integer NOT NULL,
+    line_count integer NOT NULL,
+    coverage_bps integer GENERATED ALWAYS AS ((floor(((10000.0 * (scored_line_count)::numeric) / (line_count)::numeric)))::integer) STORED,
+    evidence_summary jsonb NOT NULL,
+    completed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    CONSTRAINT karaoke_attempt_terminal_shape CHECK (((completed_at >= created_at) AND ((completion_reason = 'completed'::text) OR ((final_score_bps = 0) AND (scored_line_count = 0))))),
+    CONSTRAINT karaoke_attempts_check CHECK (((line_count > 0) AND (scored_line_count <= line_count))),
+    CONSTRAINT karaoke_attempts_completion_reason_check CHECK ((completion_reason = ANY (ARRAY['completed'::text, 'session_error'::text, 'provider_unavailable'::text, 'abandoned'::text]))),
+    CONSTRAINT karaoke_attempts_evidence_summary_check CHECK ((jsonb_typeof(evidence_summary) = 'object'::text)),
+    CONSTRAINT karaoke_attempts_final_score_bps_check CHECK (((final_score_bps >= 0) AND (final_score_bps <= 10000))),
+    CONSTRAINT karaoke_attempts_scored_line_count_check CHECK ((scored_line_count >= 0)),
+    CONSTRAINT karaoke_attempts_scoring_model_check CHECK (((btrim(scoring_model) <> ''::text) AND (scoring_model = btrim(scoring_model)) AND (octet_length(scoring_model) <= 256))),
+    CONSTRAINT karaoke_attempts_scoring_provider_check CHECK (((btrim(scoring_provider) <> ''::text) AND (scoring_provider = btrim(scoring_provider)) AND (octet_length(scoring_provider) <= 128))),
+    CONSTRAINT karaoke_attempts_scoring_version_check CHECK ((scoring_version > 0))
+);
+
+CREATE TABLE karaoke_sessions (
+    session_id text NOT NULL,
+    attempt_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    karaoke_revision_id text NOT NULL,
+    activity_key text GENERATED ALWAYS AS ('karaoke'::text) STORED,
+    qualification_policy_version_id text NOT NULL,
+    endpoint_template text DEFAULT '/communities/:communityId/posts/:postId/karaoke/attempts'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    timezone text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    expires_at timestamp with time zone NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT karaoke_sessions_attempt_id_check CHECK (((btrim(attempt_id) <> ''::text) AND (attempt_id = btrim(attempt_id)) AND (octet_length(attempt_id) <= 128))),
+    CONSTRAINT karaoke_sessions_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT karaoke_sessions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/posts/:postId/karaoke/attempts'::text)),
+    CONSTRAINT karaoke_sessions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT karaoke_sessions_karaoke_revision_id_check CHECK (((btrim(karaoke_revision_id) <> ''::text) AND (karaoke_revision_id = btrim(karaoke_revision_id)) AND (octet_length(karaoke_revision_id) <= 128))),
+    CONSTRAINT karaoke_sessions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT karaoke_sessions_session_id_check CHECK (((btrim(session_id) <> ''::text) AND (session_id = btrim(session_id)) AND (octet_length(session_id) <= 128))),
+    CONSTRAINT karaoke_sessions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'completed'::text]))),
+    CONSTRAINT karaoke_sessions_time_shape CHECK (((expires_at > created_at) AND (((status = 'active'::text) AND (completed_at IS NULL)) OR ((status = 'completed'::text) AND (completed_at IS NOT NULL) AND (completed_at >= created_at))))),
+    CONSTRAINT karaoke_sessions_timezone_check CHECK (((btrim(timezone) <> ''::text) AND (timezone = btrim(timezone)) AND (octet_length(timezone) <= 128)))
 );
 
 CREATE TABLE media_alignment_projections (
@@ -10319,6 +11017,29 @@ CREATE TABLE operator_managed_route_operations (
     CONSTRAINT operator_managed_route_operations_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE persona_activity_presentation_actions (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    endpoint_template text DEFAULT '/communities/:communityId/rewards/presentation-persona'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    result_persona_id text NOT NULL,
+    result_updated_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_activity_presentation_actions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/rewards/presentation-persona'::text)),
+    CONSTRAINT persona_activity_presentation_actions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT persona_activity_presentation_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE persona_activity_presentations (
+    community_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_activity_presentations_time_order CHECK ((updated_at >= created_at))
+);
+
 CREATE TABLE persona_create_actions (
     account_id text NOT NULL,
     endpoint_template text DEFAULT '/personas'::text NOT NULL,
@@ -10578,6 +11299,18 @@ CREATE TABLE public_handle_index (
     CONSTRAINT public_handle_index_status_target_check CHECK ((((status = 'active'::text) AND (redirect_target_handle_id IS NULL)) OR ((status = 'redirect'::text) AND (redirect_target_handle_id IS NOT NULL)) OR ((status = 'retired'::text) AND (redirect_target_handle_id IS NULL))))
 );
 
+CREATE TABLE qualification_policy_versions (
+    qualification_policy_version_id text NOT NULL,
+    activity_key text NOT NULL,
+    policy_kind text NOT NULL,
+    policy_document jsonb NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT qualification_policy_document_shape CHECK ((((policy_kind = 'study_session_first_pass_v2'::text) AND (policy_document = '{"required_correct_bps": 7000}'::jsonb)) OR ((policy_kind = 'karaoke_qualification_v1'::text) AND (policy_document = '{"minimum_coverage_bps": 8500, "minimum_final_score_bps": 7000, "minimum_scored_line_count": 5}'::jsonb)))),
+    CONSTRAINT qualification_policy_kind_shape CHECK ((((activity_key = 'study'::text) AND (policy_kind = 'study_session_first_pass_v2'::text)) OR ((activity_key = 'karaoke'::text) AND (policy_kind = 'karaoke_qualification_v1'::text)))),
+    CONSTRAINT qualification_policy_version_qualification_policy_version_check CHECK (((btrim(qualification_policy_version_id) <> ''::text) AND (qualification_policy_version_id = btrim(qualification_policy_version_id)) AND (octet_length(qualification_policy_version_id) <= 128))),
+    CONSTRAINT qualification_policy_versions_policy_document_check CHECK ((jsonb_typeof(policy_document) = 'object'::text))
+);
+
 CREATE TABLE reward_subject_consumptions (
     reward_subject_consumption_id text NOT NULL,
     campaign_id text NOT NULL,
@@ -10608,6 +11341,134 @@ CREATE TABLE schema_migrations (
     version text NOT NULL,
     checksum text NOT NULL,
     applied_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+CREATE TABLE song_streak_day_activities (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    streak_day date NOT NULL,
+    activity_key text NOT NULL,
+    qualification_count integer DEFAULT 1 NOT NULL,
+    first_qualified_at timestamp with time zone NOT NULL,
+    last_qualified_at timestamp with time zone NOT NULL,
+    last_qualification_id text NOT NULL,
+    CONSTRAINT song_streak_day_activities_qualification_count_check CHECK ((qualification_count > 0)),
+    CONSTRAINT song_streak_day_activity_time_order CHECK ((last_qualified_at >= first_qualified_at))
+);
+
+CREATE TABLE song_streak_days (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    streak_day date NOT NULL,
+    first_qualification_id text NOT NULL,
+    earned_at timestamp with time zone NOT NULL
+);
+
+CREATE TABLE song_streaks (
+    account_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    current_count integer NOT NULL,
+    best_count integer NOT NULL,
+    started_day date NOT NULL,
+    last_day date NOT NULL,
+    total_days integer NOT NULL,
+    active_until_at timestamp with time zone NOT NULL,
+    recomputed_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT song_streaks_check CHECK ((best_count >= current_count)),
+    CONSTRAINT song_streaks_check1 CHECK ((total_days >= best_count)),
+    CONSTRAINT song_streaks_current_count_check CHECK ((current_count > 0)),
+    CONSTRAINT song_streaks_day_order CHECK ((last_day >= started_day))
+);
+
+CREATE TABLE study_session_answers (
+    answer_id text NOT NULL,
+    session_id text NOT NULL,
+    session_item_id text NOT NULL,
+    attempt_number integer NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    answer jsonb NOT NULL,
+    outcome text NOT NULL,
+    first_pass boolean NOT NULL,
+    answered_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT study_session_answers_answer_check CHECK ((jsonb_typeof(answer) = 'object'::text)),
+    CONSTRAINT study_session_answers_answer_id_check CHECK (((btrim(answer_id) <> ''::text) AND (answer_id = btrim(answer_id)) AND (octet_length(answer_id) <= 128))),
+    CONSTRAINT study_session_answers_attempt_number_check CHECK ((attempt_number > 0)),
+    CONSTRAINT study_session_answers_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT study_session_answers_outcome_check CHECK ((outcome = ANY (ARRAY['correct'::text, 'incorrect'::text]))),
+    CONSTRAINT study_session_answers_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
+);
+
+CREATE TABLE study_session_items (
+    session_id text NOT NULL,
+    session_item_id text NOT NULL,
+    ordinal integer NOT NULL,
+    source_item_key text NOT NULL,
+    prompt jsonb NOT NULL,
+    answer_key jsonb NOT NULL,
+    presentation_count integer DEFAULT 1 NOT NULL,
+    answer_count integer DEFAULT 0 NOT NULL,
+    first_pass_outcome text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT study_session_item_answer_shape CHECK ((((answer_count = 0) AND (first_pass_outcome IS NULL)) OR ((answer_count > 0) AND (first_pass_outcome IS NOT NULL)))),
+    CONSTRAINT study_session_items_answer_count_check CHECK ((answer_count >= 0)),
+    CONSTRAINT study_session_items_answer_key_check CHECK ((jsonb_typeof(answer_key) = 'object'::text)),
+    CONSTRAINT study_session_items_first_pass_outcome_check CHECK ((first_pass_outcome = ANY (ARRAY['correct'::text, 'incorrect'::text]))),
+    CONSTRAINT study_session_items_ordinal_check CHECK (((ordinal >= 0) AND (ordinal <= 63))),
+    CONSTRAINT study_session_items_presentation_count_check CHECK ((presentation_count > 0)),
+    CONSTRAINT study_session_items_prompt_check CHECK ((jsonb_typeof(prompt) = 'object'::text)),
+    CONSTRAINT study_session_items_session_item_id_check CHECK (((btrim(session_item_id) <> ''::text) AND (session_item_id = btrim(session_item_id)) AND (octet_length(session_item_id) <= 128))),
+    CONSTRAINT study_session_items_source_item_key_check CHECK (((btrim(source_item_key) <> ''::text) AND (source_item_key = btrim(source_item_key)) AND (octet_length(source_item_key) <= 128)))
+);
+
+CREATE TABLE study_sessions (
+    session_id text NOT NULL,
+    account_id text NOT NULL,
+    persona_id text NOT NULL,
+    community_id text NOT NULL,
+    post_id text NOT NULL,
+    audio_revision bigint NOT NULL,
+    lyrics_revision bigint NOT NULL,
+    source_revision bigint NOT NULL,
+    source_producer_id text NOT NULL,
+    source_producer_revision text NOT NULL,
+    source_snapshot_hash text NOT NULL,
+    activity_key text GENERATED ALWAYS AS ('study'::text) STORED,
+    qualification_policy_version_id text NOT NULL,
+    endpoint_template text DEFAULT '/communities/:communityId/posts/:postId/study/sessions'::text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    timezone text NOT NULL,
+    status text DEFAULT 'active'::text NOT NULL,
+    qualifying_exercise_count integer NOT NULL,
+    answered_exercise_count integer DEFAULT 0 NOT NULL,
+    first_pass_correct integer DEFAULT 0 NOT NULL,
+    required_correct integer NOT NULL,
+    score_bps integer,
+    streak_day date,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    completed_at timestamp with time zone,
+    CONSTRAINT study_sessions_audio_revision_check CHECK ((audio_revision > 0)),
+    CONSTRAINT study_sessions_check CHECK (((answered_exercise_count >= 0) AND (answered_exercise_count <= qualifying_exercise_count))),
+    CONSTRAINT study_sessions_check1 CHECK (((first_pass_correct >= 0) AND (first_pass_correct <= answered_exercise_count))),
+    CONSTRAINT study_sessions_check2 CHECK ((required_correct = GREATEST(1, (ceil((0.70 * (qualifying_exercise_count)::numeric)))::integer))),
+    CONSTRAINT study_sessions_endpoint_template_check CHECK ((endpoint_template = '/communities/:communityId/posts/:postId/study/sessions'::text)),
+    CONSTRAINT study_sessions_idempotency_key_check CHECK (((btrim(idempotency_key) <> ''::text) AND (idempotency_key = btrim(idempotency_key)) AND (octet_length(idempotency_key) <= 128))),
+    CONSTRAINT study_sessions_lyrics_revision_check CHECK ((lyrics_revision > 0)),
+    CONSTRAINT study_sessions_qualifying_exercise_count_check CHECK (((qualifying_exercise_count >= 1) AND (qualifying_exercise_count <= 64))),
+    CONSTRAINT study_sessions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_sessions_score_bps_check CHECK (((score_bps >= 0) AND (score_bps <= 10000))),
+    CONSTRAINT study_sessions_session_id_check CHECK (((btrim(session_id) <> ''::text) AND (session_id = btrim(session_id)) AND (octet_length(session_id) <= 128))),
+    CONSTRAINT study_sessions_source_producer_id_check CHECK (((btrim(source_producer_id) <> ''::text) AND (source_producer_id = btrim(source_producer_id)) AND (octet_length(source_producer_id) <= 128))),
+    CONSTRAINT study_sessions_source_producer_revision_check CHECK (((btrim(source_producer_revision) <> ''::text) AND (source_producer_revision = btrim(source_producer_revision)) AND (octet_length(source_producer_revision) <= 128))),
+    CONSTRAINT study_sessions_source_revision_check CHECK ((source_revision > 0)),
+    CONSTRAINT study_sessions_source_snapshot_hash_check CHECK ((source_snapshot_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT study_sessions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'completed'::text]))),
+    CONSTRAINT study_sessions_terminal_shape CHECK ((((status = 'active'::text) AND (score_bps IS NULL) AND (streak_day IS NULL) AND (completed_at IS NULL)) OR ((status = 'completed'::text) AND (answered_exercise_count = qualifying_exercise_count) AND (score_bps = (floor(((10000.0 * (first_pass_correct)::numeric) / (qualifying_exercise_count)::numeric)))::integer) AND (streak_day IS NOT NULL) AND (completed_at IS NOT NULL) AND (completed_at >= created_at)))),
+    CONSTRAINT study_sessions_timezone_check CHECK (((btrim(timezone) <> ''::text) AND (timezone = btrim(timezone)) AND (octet_length(timezone) <= 128)))
 );
 
 CREATE TABLE subject_key_binding_events (
@@ -10823,6 +11684,12 @@ CREATE TABLE verification_start_reservations (
 ALTER TABLE ONLY account_aliases
     ADD CONSTRAINT account_aliases_pkey PRIMARY KEY (source_user_id);
 
+ALTER TABLE ONLY account_streak_clocks
+    ADD CONSTRAINT account_streak_clocks_pkey PRIMARY KEY (account_id);
+
+ALTER TABLE ONLY account_streak_timezone_actions
+    ADD CONSTRAINT account_streak_timezone_actions_pkey PRIMARY KEY (account_id, endpoint_template, idempotency_key);
+
 ALTER TABLE ONLY action_challenges
     ADD CONSTRAINT action_challenges_id_intent_provider_unique UNIQUE (action_challenge_id, action_intent_id, provider_id);
 
@@ -10858,6 +11725,12 @@ ALTER TABLE ONLY active_subject_key_bindings
 
 ALTER TABLE ONLY active_subject_key_bindings
     ADD CONSTRAINT active_subject_key_bindings_subject_user_unique UNIQUE (subject_key_id, user_id);
+
+ALTER TABLE ONLY activity_qualifications
+    ADD CONSTRAINT activity_qualifications_pkey PRIMARY KEY (qualification_id);
+
+ALTER TABLE ONLY activity_registry
+    ADD CONSTRAINT activity_registry_pkey PRIMARY KEY (activity_key);
 
 ALTER TABLE ONLY assertion_bindings
     ADD CONSTRAINT assertion_bindings_id_user_unique UNIQUE (binding_group_id, user_id);
@@ -11228,6 +12101,12 @@ ALTER TABLE ONLY community_route_revalidation_start_reservations
 ALTER TABLE ONLY community_route_revalidation_start_reservations
     ADD CONSTRAINT community_route_revalidation_start_reservations_pkey PRIMARY KEY (route_revalidation_id);
 
+ALTER TABLE ONLY community_streak_days
+    ADD CONSTRAINT community_streak_days_pkey PRIMARY KEY (account_id, community_id, streak_day);
+
+ALTER TABLE ONLY community_streaks
+    ADD CONSTRAINT community_streaks_pkey PRIMARY KEY (account_id, community_id);
+
 ALTER TABLE ONLY content_publication_outbox
     ADD CONSTRAINT content_publication_outbox_effect_key_unique UNIQUE (effect_key);
 
@@ -11338,6 +12217,24 @@ ALTER TABLE ONLY identity_credentials
 
 ALTER TABLE ONLY identity_credentials
     ADD CONSTRAINT identity_credentials_provider_subject_unique UNIQUE (provider, provider_app_id, provider_subject);
+
+ALTER TABLE ONLY karaoke_attempts
+    ADD CONSTRAINT karaoke_attempts_pkey PRIMARY KEY (attempt_id);
+
+ALTER TABLE ONLY karaoke_attempts
+    ADD CONSTRAINT karaoke_attempts_session_id_key UNIQUE (session_id);
+
+ALTER TABLE ONLY karaoke_sessions
+    ADD CONSTRAINT karaoke_sessions_attempt_binding_unique UNIQUE (session_id, attempt_id);
+
+ALTER TABLE ONLY karaoke_sessions
+    ADD CONSTRAINT karaoke_sessions_attempt_id_key UNIQUE (attempt_id);
+
+ALTER TABLE ONLY karaoke_sessions
+    ADD CONSTRAINT karaoke_sessions_pkey PRIMARY KEY (session_id);
+
+ALTER TABLE ONLY karaoke_sessions
+    ADD CONSTRAINT karaoke_sessions_replay_unique UNIQUE (account_id, persona_id, endpoint_template, idempotency_key);
 
 ALTER TABLE ONLY media_alignment_projections
     ADD CONSTRAINT media_alignment_projections_community_id_actor_user_id_post_key UNIQUE (community_id, actor_user_id, post_id);
@@ -11573,6 +12470,12 @@ ALTER TABLE ONLY operator_managed_route_operations
 ALTER TABLE ONLY operator_managed_route_operations
     ADD CONSTRAINT operator_managed_route_operations_pkey PRIMARY KEY (operation_id);
 
+ALTER TABLE ONLY persona_activity_presentation_actions
+    ADD CONSTRAINT persona_activity_presentation_actions_pkey PRIMARY KEY (account_id, community_id, endpoint_template, idempotency_key);
+
+ALTER TABLE ONLY persona_activity_presentations
+    ADD CONSTRAINT persona_activity_presentations_pkey PRIMARY KEY (community_id, account_id);
+
 ALTER TABLE ONLY persona_create_actions
     ADD CONSTRAINT persona_create_actions_account_id_persona_id_key UNIQUE (account_id, persona_id);
 
@@ -11660,6 +12563,12 @@ ALTER TABLE ONLY proof_sessions
 ALTER TABLE ONLY public_handle_index
     ADD CONSTRAINT public_handle_index_pkey PRIMARY KEY (handle_id);
 
+ALTER TABLE ONLY qualification_policy_versions
+    ADD CONSTRAINT qualification_policy_versions_pkey PRIMARY KEY (qualification_policy_version_id);
+
+ALTER TABLE ONLY qualification_policy_versions
+    ADD CONSTRAINT qualification_policy_versions_qualification_policy_version__key UNIQUE (qualification_policy_version_id, activity_key);
+
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_campaign_subject_unique UNIQUE (campaign_id, subject_key_id);
 
@@ -11671,6 +12580,39 @@ ALTER TABLE ONLY reward_uniqueness_authorities
 
 ALTER TABLE ONLY schema_migrations
     ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
+
+ALTER TABLE ONLY song_streak_day_activities
+    ADD CONSTRAINT song_streak_day_activities_pkey PRIMARY KEY (account_id, post_id, streak_day, activity_key);
+
+ALTER TABLE ONLY song_streak_days
+    ADD CONSTRAINT song_streak_days_pkey PRIMARY KEY (account_id, post_id, streak_day);
+
+ALTER TABLE ONLY song_streaks
+    ADD CONSTRAINT song_streaks_pkey PRIMARY KEY (account_id, post_id);
+
+ALTER TABLE ONLY study_session_answers
+    ADD CONSTRAINT study_session_answers_answer_id_key UNIQUE (answer_id);
+
+ALTER TABLE ONLY study_session_answers
+    ADD CONSTRAINT study_session_answers_pkey PRIMARY KEY (session_id, session_item_id, attempt_number);
+
+ALTER TABLE ONLY study_session_answers
+    ADD CONSTRAINT study_session_answers_session_id_idempotency_key_key UNIQUE (session_id, idempotency_key);
+
+ALTER TABLE ONLY study_session_items
+    ADD CONSTRAINT study_session_items_pkey PRIMARY KEY (session_id, session_item_id);
+
+ALTER TABLE ONLY study_session_items
+    ADD CONSTRAINT study_session_items_session_id_ordinal_key UNIQUE (session_id, ordinal);
+
+ALTER TABLE ONLY study_session_items
+    ADD CONSTRAINT study_session_items_session_id_source_item_key_key UNIQUE (session_id, source_item_key);
+
+ALTER TABLE ONLY study_sessions
+    ADD CONSTRAINT study_sessions_pkey PRIMARY KEY (session_id);
+
+ALTER TABLE ONLY study_sessions
+    ADD CONSTRAINT study_sessions_replay_unique UNIQUE (account_id, persona_id, endpoint_template, idempotency_key);
 
 ALTER TABLE ONLY subject_key_binding_events
     ADD CONSTRAINT subject_key_binding_events_event_subject_unique UNIQUE (binding_event_id, subject_key_id);
@@ -11759,6 +12701,14 @@ CREATE INDEX action_grants_user_expiry_idx ON action_grants USING btree (user_id
 CREATE INDEX action_intents_expiry_idx ON action_intents USING btree (status, expires_at, action_intent_id);
 
 CREATE INDEX active_subject_key_bindings_user_idx ON active_subject_key_bindings USING btree (user_id, activated_at DESC, subject_key_id);
+
+CREATE INDEX activity_qualifications_account_time_idx ON activity_qualifications USING btree (account_id, qualified_at DESC, qualification_id);
+
+CREATE UNIQUE INDEX activity_qualifications_karaoke_attempt_uidx ON activity_qualifications USING btree (account_id, post_id, activity_key, karaoke_session_id, karaoke_attempt_id) WHERE (activity_key = 'karaoke'::text);
+
+CREATE INDEX activity_qualifications_song_period_idx ON activity_qualifications USING btree (community_id, post_id, reward_period_key, activity_key, qualified_at, qualification_id);
+
+CREATE UNIQUE INDEX activity_qualifications_study_attempt_uidx ON activity_qualifications USING btree (account_id, post_id, activity_key, study_session_id) WHERE (activity_key = 'study'::text);
 
 CREATE INDEX assertion_bindings_user_idx ON assertion_bindings USING btree (user_id, created_at DESC);
 
@@ -11856,6 +12806,10 @@ CREATE UNIQUE INDEX community_route_revalidation_one_leased_attempt_uidx ON comm
 
 CREATE INDEX community_route_revalidation_start_lease_idx ON community_route_revalidation_start_reservations USING btree (state, lease_expires_at);
 
+CREATE INDEX community_streak_days_recompute_idx ON community_streak_days USING btree (account_id, community_id, streak_day);
+
+CREATE INDEX community_streaks_live_leaderboard_idx ON community_streaks USING btree (community_id, current_count DESC, best_count DESC, started_day, account_id, active_until_at);
+
 CREATE INDEX content_publication_outbox_pending_idx ON content_publication_outbox USING btree (state, created_at, outbox_event_id) WHERE (state = ANY (ARRAY['pending'::text, 'failed'::text]));
 
 CREATE UNIQUE INDEX content_publication_outbox_publish_effect_unique ON content_publication_outbox USING btree (submission_id, event_type) WHERE (event_type = ANY (ARRAY['comment_published'::text, 'comment_notification'::text]));
@@ -11889,6 +12843,8 @@ CREATE UNIQUE INDEX home_feed_projection_post_unique ON home_feed_projection USI
 CREATE INDEX home_feed_rank_idx ON home_feed_projection USING btree (community_id, rank_score DESC, feed_item_id);
 
 CREATE INDEX identity_credentials_user_status_idx ON identity_credentials USING btree (canonical_user_id, status, created_at DESC);
+
+CREATE INDEX karaoke_sessions_account_created_idx ON karaoke_sessions USING btree (account_id, created_at DESC, session_id);
 
 CREATE INDEX media_post_submissions_author_idx ON media_post_submissions USING btree (community_id, actor_user_id, updated_at DESC, submission_id);
 
@@ -11958,6 +12914,12 @@ CREATE INDEX public_handle_index_persona_status_idx ON public_handle_index USING
 
 CREATE INDEX public_handle_index_redirect_target_idx ON public_handle_index USING btree (redirect_target_handle_id) WHERE (status = 'redirect'::text);
 
+CREATE INDEX song_streak_days_recompute_idx ON song_streak_days USING btree (account_id, post_id, streak_day);
+
+CREATE INDEX song_streaks_live_leaderboard_idx ON song_streaks USING btree (community_id, post_id, current_count DESC, best_count DESC, started_day, account_id, active_until_at);
+
+CREATE INDEX study_sessions_account_created_idx ON study_sessions USING btree (account_id, created_at DESC, session_id);
+
 CREATE INDEX subject_key_binding_events_user_bound_idx ON subject_key_binding_events USING btree (user_id, bound_at DESC, binding_event_id);
 
 CREATE UNIQUE INDEX subject_keys_action_scope_uidx ON subject_keys USING btree (issuer, method, issuer_rp_scope, issuer_rp_action_scope, subject_digest) WHERE (scope_kind = 'issuer_rp_action_scope'::text);
@@ -11984,9 +12946,17 @@ CREATE UNIQUE INDEX verification_start_reservations_creation_idempotency_uidx ON
 
 CREATE INDEX verification_start_reservations_lease_idx ON verification_start_reservations USING btree (state, lease_expires_at);
 
+CREATE TRIGGER account_streak_clocks_change_guard BEFORE INSERT OR DELETE OR UPDATE ON account_streak_clocks FOR EACH ROW EXECUTE FUNCTION guard_account_streak_clock();
+
+CREATE TRIGGER account_streak_timezone_actions_append_only BEFORE INSERT OR DELETE OR UPDATE ON account_streak_timezone_actions FOR EACH ROW EXECUTE FUNCTION guard_account_streak_timezone_action();
+
 CREATE TRIGGER action_grants_append_only BEFORE DELETE OR UPDATE ON action_grants FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER active_subject_key_bindings_projection_only BEFORE INSERT OR DELETE OR UPDATE ON active_subject_key_bindings FOR EACH ROW EXECUTE FUNCTION gates_v2_active_binding_projection_guard();
+
+CREATE TRIGGER activity_qualifications_change_guard BEFORE INSERT OR DELETE OR UPDATE ON activity_qualifications FOR EACH ROW EXECUTE FUNCTION guard_activity_qualification();
+
+CREATE TRIGGER activity_registry_change_guard BEFORE DELETE OR UPDATE ON activity_registry FOR EACH ROW EXECUTE FUNCTION guard_activity_registry_change();
 
 CREATE TRIGGER assertion_bindings_append_only BEFORE DELETE OR UPDATE ON assertion_bindings FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -12154,6 +13124,10 @@ CREATE CONSTRAINT TRIGGER community_route_revalidation_start_coherence AFTER INS
 
 CREATE TRIGGER community_route_revalidation_start_guard BEFORE INSERT OR DELETE OR UPDATE ON community_route_revalidation_start_reservations FOR EACH ROW EXECUTE FUNCTION guard_community_route_revalidation_start();
 
+CREATE TRIGGER community_streak_days_append_only BEFORE DELETE OR UPDATE ON community_streak_days FOR EACH ROW EXECUTE FUNCTION guard_reward_day_ledger();
+
+CREATE TRIGGER community_streaks_change_guard BEFORE DELETE OR UPDATE ON community_streaks FOR EACH ROW EXECUTE FUNCTION guard_streak_projection();
+
 CREATE TRIGGER decision_records_append_only BEFORE DELETE OR UPDATE ON decision_records FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER evidence_receipts_append_only BEFORE DELETE OR UPDATE ON evidence_receipts FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
@@ -12199,6 +13173,10 @@ CREATE TRIGGER hns_dns_zone_health_operations_append_only BEFORE DELETE OR UPDAT
 CREATE TRIGGER hns_dns_zone_lifecycle_operations_append_only BEFORE DELETE OR UPDATE ON hns_dns_zone_lifecycle_operations FOR EACH ROW EXECUTE FUNCTION reject_hns_host_persistence_append_only_change();
 
 CREATE TRIGGER identity_credentials_enforce_lifecycle BEFORE INSERT OR DELETE OR UPDATE ON identity_credentials FOR EACH ROW EXECUTE FUNCTION identity_credentials_enforce_lifecycle();
+
+CREATE TRIGGER karaoke_attempts_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_attempts FOR EACH ROW EXECUTE FUNCTION guard_karaoke_attempt();
+
+CREATE TRIGGER karaoke_sessions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON karaoke_sessions FOR EACH ROW EXECUTE FUNCTION guard_karaoke_session();
 
 CREATE TRIGGER media_alignment_insert_guard BEFORE INSERT ON media_alignment_projections FOR EACH ROW EXECUTE FUNCTION validate_media_alignment_insert();
 
@@ -12374,6 +13352,12 @@ CREATE TRIGGER operator_managed_route_activations_change_guard BEFORE DELETE OR 
 
 CREATE TRIGGER operator_managed_route_operations_change_guard BEFORE DELETE OR UPDATE ON operator_managed_route_operations FOR EACH ROW EXECUTE FUNCTION reject_operator_managed_route_operation_change();
 
+CREATE TRIGGER persona_activity_presentation_actions_append_only BEFORE DELETE OR UPDATE ON persona_activity_presentation_actions FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_presentation_action();
+
+CREATE TRIGGER persona_activity_presentations_active_persona BEFORE INSERT OR UPDATE OF account_id, persona_id ON persona_activity_presentations FOR EACH ROW EXECUTE FUNCTION require_active_role_persona();
+
+CREATE TRIGGER persona_activity_presentations_change_guard BEFORE DELETE OR UPDATE ON persona_activity_presentations FOR EACH ROW EXECUTE FUNCTION guard_persona_activity_presentation();
+
 CREATE TRIGGER persona_create_actions_append_only BEFORE DELETE OR UPDATE ON persona_create_actions FOR EACH ROW EXECUTE FUNCTION prevent_persona_create_action_change();
 
 CREATE TRIGGER persona_profiles_delete_guard BEFORE DELETE ON persona_profiles FOR EACH ROW EXECUTE FUNCTION prevent_persona_profile_delete();
@@ -12404,6 +13388,8 @@ CREATE TRIGGER public_handle_index_default_persona BEFORE INSERT OR UPDATE OF ow
 
 CREATE CONSTRAINT TRIGGER public_handle_index_redirect_integrity AFTER INSERT OR UPDATE OF status, owner_user_id, owner_persona_id, redirect_target_handle_id ON public_handle_index DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public_handle_index_validate_redirects();
 
+CREATE TRIGGER qualification_policy_versions_append_only BEFORE DELETE OR UPDATE ON qualification_policy_versions FOR EACH ROW EXECUTE FUNCTION reject_qualification_policy_version_change();
+
 CREATE TRIGGER reward_subject_consumptions_append_only BEFORE DELETE OR UPDATE ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER reward_subject_consumptions_validate BEFORE INSERT ON reward_subject_consumptions FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_reward_subject_consumption();
@@ -12413,6 +13399,18 @@ CREATE TRIGGER reward_uniqueness_authorities_append_only BEFORE DELETE OR UPDATE
 CREATE CONSTRAINT TRIGGER route_v1_creation_intent_requirement_cardinality AFTER INSERT OR UPDATE ON community_creation_intents DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_route_v1_creation_requirement_cardinality();
 
 CREATE CONSTRAINT TRIGGER route_v1_creation_requirement_cardinality AFTER INSERT OR DELETE OR UPDATE ON community_creation_requirement_states DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_route_v1_creation_requirement_cardinality();
+
+CREATE TRIGGER song_streak_day_activities_change_guard BEFORE DELETE OR UPDATE ON song_streak_day_activities FOR EACH ROW EXECUTE FUNCTION guard_song_streak_day_activity();
+
+CREATE TRIGGER song_streak_days_append_only BEFORE DELETE OR UPDATE ON song_streak_days FOR EACH ROW EXECUTE FUNCTION guard_reward_day_ledger();
+
+CREATE TRIGGER song_streaks_change_guard BEFORE DELETE OR UPDATE ON song_streaks FOR EACH ROW EXECUTE FUNCTION guard_streak_projection();
+
+CREATE TRIGGER study_session_answers_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_session_answers FOR EACH ROW EXECUTE FUNCTION guard_study_session_answer();
+
+CREATE TRIGGER study_session_items_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_session_items FOR EACH ROW EXECUTE FUNCTION guard_study_session_item();
+
+CREATE TRIGGER study_sessions_change_guard BEFORE INSERT OR DELETE OR UPDATE ON study_sessions FOR EACH ROW EXECUTE FUNCTION guard_study_session();
 
 CREATE TRIGGER subject_key_binding_events_append_only BEFORE DELETE OR UPDATE ON subject_key_binding_events FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
@@ -12454,6 +13452,12 @@ CREATE TRIGGER used_action_grants_append_only BEFORE DELETE OR UPDATE ON used_ac
 
 CREATE TRIGGER users_provision_first_persona AFTER INSERT ON users FOR EACH ROW EXECUTE FUNCTION provision_first_persona_for_new_account();
 
+ALTER TABLE ONLY account_streak_clocks
+    ADD CONSTRAINT account_streak_clocks_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY account_streak_timezone_actions
+    ADD CONSTRAINT account_streak_timezone_actions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
 ALTER TABLE ONLY action_challenges
     ADD CONSTRAINT action_challenges_intent_fk FOREIGN KEY (action_intent_id) REFERENCES action_intents(action_intent_id);
 
@@ -12477,6 +13481,24 @@ ALTER TABLE ONLY action_intents
 
 ALTER TABLE ONLY active_subject_key_bindings
     ADD CONSTRAINT active_subject_key_bindings_event_fk FOREIGN KEY (binding_event_id, subject_key_id, binding_epoch, user_id) REFERENCES subject_key_binding_events(binding_event_id, subject_key_id, binding_epoch, user_id);
+
+ALTER TABLE ONLY activity_qualifications
+    ADD CONSTRAINT activity_qualifications_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY activity_qualifications
+    ADD CONSTRAINT activity_qualifications_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY activity_qualifications
+    ADD CONSTRAINT activity_qualifications_activity_key_fkey FOREIGN KEY (activity_key) REFERENCES activity_registry(activity_key);
+
+ALTER TABLE ONLY activity_qualifications
+    ADD CONSTRAINT activity_qualifications_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY activity_qualifications
+    ADD CONSTRAINT activity_qualifications_qualification_policy_version_id_ac_fkey FOREIGN KEY (qualification_policy_version_id, activity_key) REFERENCES qualification_policy_versions(qualification_policy_version_id, activity_key);
+
+ALTER TABLE ONLY activity_registry
+    ADD CONSTRAINT activity_registry_current_policy_fk FOREIGN KEY (current_policy_version_id, activity_key) REFERENCES qualification_policy_versions(qualification_policy_version_id, activity_key);
 
 ALTER TABLE ONLY assertion_bindings
     ADD CONSTRAINT assertion_bindings_receipt_fk FOREIGN KEY (evidence_receipt_id, user_id) REFERENCES evidence_receipts(evidence_receipt_id, user_id);
@@ -12907,6 +13929,21 @@ ALTER TABLE ONLY community_route_revalidation_start_reservations
 ALTER TABLE ONLY community_route_revalidation_start_reservations
     ADD CONSTRAINT community_route_revalidation_start_reservatio_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
+ALTER TABLE ONLY community_streak_days
+    ADD CONSTRAINT community_streak_days_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_streak_days
+    ADD CONSTRAINT community_streak_days_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_streak_days
+    ADD CONSTRAINT community_streak_days_first_qualification_id_fkey FOREIGN KEY (first_qualification_id) REFERENCES activity_qualifications(qualification_id);
+
+ALTER TABLE ONLY community_streaks
+    ADD CONSTRAINT community_streaks_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_streaks
+    ADD CONSTRAINT community_streaks_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
 ALTER TABLE ONLY content_publication_outbox
     ADD CONSTRAINT content_publication_outbox_comment_fk FOREIGN KEY (community_id, comment_id) REFERENCES comments(community_id, comment_id);
 
@@ -12975,6 +14012,21 @@ ALTER TABLE ONLY home_feed_projection
 
 ALTER TABLE ONLY identity_credentials
     ADD CONSTRAINT identity_credentials_canonical_user_id_fkey FOREIGN KEY (canonical_user_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY karaoke_attempts
+    ADD CONSTRAINT karaoke_attempts_session_id_attempt_id_fkey FOREIGN KEY (session_id, attempt_id) REFERENCES karaoke_sessions(session_id, attempt_id);
+
+ALTER TABLE ONLY karaoke_sessions
+    ADD CONSTRAINT karaoke_sessions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY karaoke_sessions
+    ADD CONSTRAINT karaoke_sessions_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY karaoke_sessions
+    ADD CONSTRAINT karaoke_sessions_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY karaoke_sessions
+    ADD CONSTRAINT karaoke_sessions_qualification_policy_version_id_activity__fkey FOREIGN KEY (qualification_policy_version_id, activity_key) REFERENCES qualification_policy_versions(qualification_policy_version_id, activity_key);
 
 ALTER TABLE ONLY media_alignment_projections
     ADD CONSTRAINT media_alignment_current_artifact_lyrics_fk FOREIGN KEY (current_artifact_ref, current_artifact_revision, community_id, actor_user_id, submission_id, operation_id, post_id, audio_revision, analysis_revision, canonical_audio_sha256, lyrics_revision) REFERENCES media_timed_lyrics_artifacts(artifact_ref, artifact_revision, community_id, actor_user_id, submission_id, operation_id, post_id, audio_revision, analysis_revision, canonical_audio_sha256, lyrics_revision);
@@ -13294,6 +14346,21 @@ ALTER TABLE ONLY operator_managed_route_operations
 ALTER TABLE ONLY operator_managed_route_operations
     ADD CONSTRAINT operator_managed_route_operati_operator_authority_grant_id_fkey FOREIGN KEY (operator_authority_grant_id) REFERENCES platform_operator_route_authority_grants(grant_id);
 
+ALTER TABLE ONLY persona_activity_presentation_actions
+    ADD CONSTRAINT persona_activity_presentation_account_id_result_persona_id_fkey FOREIGN KEY (account_id, result_persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY persona_activity_presentation_actions
+    ADD CONSTRAINT persona_activity_presentation_actions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY persona_activity_presentation_actions
+    ADD CONSTRAINT persona_activity_presentation_actions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY persona_activity_presentations
+    ADD CONSTRAINT persona_activity_presentations_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY persona_activity_presentations
+    ADD CONSTRAINT persona_activity_presentations_community_id_account_id_fkey FOREIGN KEY (community_id, account_id) REFERENCES community_memberships(community_id, user_id);
+
 ALTER TABLE ONLY persona_create_actions
     ADD CONSTRAINT persona_create_actions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
 
@@ -13366,6 +14433,9 @@ ALTER TABLE ONLY public_handle_index
 ALTER TABLE ONLY public_handle_index
     ADD CONSTRAINT public_handle_index_redirect_fk FOREIGN KEY (redirect_target_handle_id) REFERENCES public_handle_index(handle_id) DEFERRABLE INITIALLY DEFERRED;
 
+ALTER TABLE ONLY qualification_policy_versions
+    ADD CONSTRAINT qualification_policy_versions_activity_key_fkey FOREIGN KEY (activity_key) REFERENCES activity_registry(activity_key);
+
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_binding_fk FOREIGN KEY (binding_event_id, subject_key_id, binding_epoch, user_id) REFERENCES subject_key_binding_events(binding_event_id, subject_key_id, binding_epoch, user_id);
 
@@ -13374,6 +14444,51 @@ ALTER TABLE ONLY reward_subject_consumptions
 
 ALTER TABLE ONLY reward_subject_consumptions
     ADD CONSTRAINT reward_subject_consumptions_receipt_fk FOREIGN KEY (evidence_receipt_id, subject_key_id, binding_event_id, binding_epoch, user_id) REFERENCES evidence_receipts(evidence_receipt_id, subject_key_id, subject_binding_event_id, subject_binding_epoch, user_id);
+
+ALTER TABLE ONLY song_streak_day_activities
+    ADD CONSTRAINT song_streak_day_activities_account_id_post_id_streak_day_fkey FOREIGN KEY (account_id, post_id, streak_day) REFERENCES song_streak_days(account_id, post_id, streak_day);
+
+ALTER TABLE ONLY song_streak_day_activities
+    ADD CONSTRAINT song_streak_day_activities_activity_key_fkey FOREIGN KEY (activity_key) REFERENCES activity_registry(activity_key);
+
+ALTER TABLE ONLY song_streak_day_activities
+    ADD CONSTRAINT song_streak_day_activities_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY song_streak_day_activities
+    ADD CONSTRAINT song_streak_day_activities_last_qualification_id_fkey FOREIGN KEY (last_qualification_id) REFERENCES activity_qualifications(qualification_id);
+
+ALTER TABLE ONLY song_streak_days
+    ADD CONSTRAINT song_streak_days_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY song_streak_days
+    ADD CONSTRAINT song_streak_days_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY song_streak_days
+    ADD CONSTRAINT song_streak_days_first_qualification_id_fkey FOREIGN KEY (first_qualification_id) REFERENCES activity_qualifications(qualification_id);
+
+ALTER TABLE ONLY song_streaks
+    ADD CONSTRAINT song_streaks_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY song_streaks
+    ADD CONSTRAINT song_streaks_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY study_session_answers
+    ADD CONSTRAINT study_session_answers_session_id_session_item_id_fkey FOREIGN KEY (session_id, session_item_id) REFERENCES study_session_items(session_id, session_item_id);
+
+ALTER TABLE ONLY study_session_items
+    ADD CONSTRAINT study_session_items_session_id_fkey FOREIGN KEY (session_id) REFERENCES study_sessions(session_id);
+
+ALTER TABLE ONLY study_sessions
+    ADD CONSTRAINT study_sessions_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY study_sessions
+    ADD CONSTRAINT study_sessions_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY study_sessions
+    ADD CONSTRAINT study_sessions_community_id_post_id_fkey FOREIGN KEY (community_id, post_id) REFERENCES posts(community_id, post_id);
+
+ALTER TABLE ONLY study_sessions
+    ADD CONSTRAINT study_sessions_qualification_policy_version_id_activity_ke_fkey FOREIGN KEY (qualification_policy_version_id, activity_key) REFERENCES qualification_policy_versions(qualification_policy_version_id, activity_key);
 
 ALTER TABLE ONLY subject_key_binding_events
     ADD CONSTRAINT subject_key_binding_events_previous_fk FOREIGN KEY (previous_binding_event_id, subject_key_id) REFERENCES subject_key_binding_events(binding_event_id, subject_key_id);

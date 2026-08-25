@@ -11,6 +11,7 @@ export * from "./money/community-purchase-funding-query.ts";
 export * from "./money/community-purchase-funding-reconciliation.ts";
 export * from "./namespace-ownership/index.ts";
 export * from "./ports.ts";
+export * from "./rewards/activity-qualification.ts";
 export * from "./route-revalidation/index.ts";
 export * from "./study-item-source.ts";
 export * from "./use-cases/community/creation-requirement-projection.ts";

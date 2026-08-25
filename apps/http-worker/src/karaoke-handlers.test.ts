@@ -7,6 +7,7 @@ const session: KaraokeSession = {
   attempt: "attempt-1",
   id: "session-1",
   object: "karaoke_session",
+  persona_id: "persona-1",
   protocol_version: 1,
   scoring_policy: { kind: "disabled" },
   session_expires_at: 2,
@@ -47,6 +48,7 @@ const attempt: KaraokeAttempt = {
   lyrics_score: 9200,
   no_recognition_line_count: 0,
   object: "karaoke_attempt",
+  persona_id: "persona-1",
   post_id: "post-1",
   rank_eligible: true,
   scored_line_count: 10,
@@ -60,7 +62,7 @@ const attempt: KaraokeAttempt = {
 };
 
 const request = (overrides: Partial<DecodedRequest> = {}): DecodedRequest => ({
-  body: { timezone: "UTC" },
+  body: { persona_id: "persona-1", timezone: "UTC" },
   headers: { "idempotency-key": "idem-1" },
   params: { communityId: "community-1", postId: "post-1" },
   principal: { kind: "user", subject: "user-1" },
@@ -86,6 +88,7 @@ describe("karaoke HTTP handlers", () => {
         communityId: "community-1",
         idempotencyKey: "idem-1",
         postId: "post-1",
+        personaId: "persona-1",
         timezone: "UTC",
         userId: "user-1",
       },

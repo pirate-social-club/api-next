@@ -113,6 +113,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
     contents: "api-next-control-plane-postgres-persona-suite-complete\n",
   },
   {
+    name: "postgres rewards qualification",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_REWARDS_QUALIFICATION_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-rewards-qualification-suite-complete",
+    contents: "api-next-control-plane-postgres-rewards-qualification-suite-complete\n",
+  },
+  {
     name: "postgres public profile",
     path:
       process.env.CONTROL_PLANE_POSTGRES_PUBLIC_PROFILE_TEST_SENTINEL ??

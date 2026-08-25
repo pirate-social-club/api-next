@@ -73,6 +73,7 @@ export * from "./money/failure-fence.ts";
 export * from "./money/interpreter-contract.ts";
 export * from "./money/reconciliation-backoff.ts";
 export * from "./money/state-machine.ts";
+export * from "./rewards/activity-qualification.ts";
 export * from "./rewards/capacity-freshness.ts";
 export * from "./rewards/payout-fairness.ts";
 export * from "./rewards/vault-revert.ts";
