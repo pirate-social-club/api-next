@@ -55220,6 +55220,16 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "persona_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "timezone": {
                     "anyOf": [
                       {
@@ -55261,6 +55271,9 @@
                       ]
                     },
                     "attempt": {
+                      "type": "string"
+                    },
+                    "persona_id": {
                       "type": "string"
                     },
                     "protocol_version": {
@@ -55372,6 +55385,7 @@
                     "id",
                     "object",
                     "attempt",
+                    "persona_id",
                     "protocol_version",
                     "websocket_url",
                     "token_expires_at",
@@ -55761,6 +55775,9 @@
                     "attempt_id": {
                       "type": "string"
                     },
+                    "persona_id": {
+                      "type": "string"
+                    },
                     "post_id": {
                       "type": "string"
                     },
@@ -55994,6 +56011,7 @@
                     "object",
                     "session_id",
                     "attempt_id",
+                    "persona_id",
                     "post_id",
                     "community_id",
                     "karaoke_revision_id",
@@ -56903,7 +56921,14 @@
                       ]
                     },
                     "streak_day": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "items": {
                       "type": "array",
@@ -58081,7 +58106,14 @@
                       ]
                     },
                     "streak_day": {
-                      "type": "string"
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
                     },
                     "items": {
                       "type": "array",
@@ -59302,7 +59334,14 @@
                           ]
                         },
                         "streak_day": {
-                          "type": "string"
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         },
                         "items": {
                           "type": "array",

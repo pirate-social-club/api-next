@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.16.0",
+  "releaseType": "qualification-runtime-contract-corrections",
+  "wireContract": "wire-v2",
+  "sourceCommit": "f0b5c5d",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.16.0.tgz",
+    "sha256": "7264ff586e3e6cb09dcf7c977f68e9e51001ff608fdb399a7044941ed16c12d0",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@75952086ac70416e7e702dfff77bb39f96c3917f9dc12cc0dd4d7351317ccdda",
+    "openapiSha256": "75952086ac70416e7e702dfff77bb39f96c3917f9dc12cc0dd4d7351317ccdda",
+    "clientSha256": "002f2cefd23795e86adef79dc636886280ef312b9c814618c0dc3ac12f77b5f8"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "67ff772",
+      "reason": "Active Study streak days now match nullable storage state, and Karaoke adds only backward-compatible optional persona selection plus response projection."
+    },
+    "focusedContractTests": "8 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}
