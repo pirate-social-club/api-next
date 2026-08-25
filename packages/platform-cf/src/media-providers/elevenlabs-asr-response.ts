@@ -214,6 +214,23 @@ function segmentsFor(
   return segments;
 }
 
+function isCoherentNoSpeech(response: ProviderResponseValue): boolean {
+  if (response.text.length === 0 || response.words.length === 0) return false;
+  if (response.words.some(({ type }) => type !== "audio_event")) return false;
+  if (response.words.map(({ text }) => text).join("") !== response.text) return false;
+
+  let previousEnd = 0;
+  for (const entry of response.words) {
+    if (entry.text.length === 0 || entry.text.length > MEDIA_TRANSCRIPT_SEGMENT_MAX_LENGTH) {
+      return false;
+    }
+    const value = timing(entry);
+    if (value === null || value.start_ms < previousEnd) return false;
+    previousEnd = value.end_ms;
+  }
+  return true;
+}
+
 function parseDocument(document: unknown): ElevenLabsAsrParsedResponse {
   const decoded = Schema.decodeUnknownOption(ProviderResponse, { onExcessProperty: "error" })(
     document,
@@ -228,10 +245,6 @@ function parseDocument(document: unknown): ElevenLabsAsrParsedResponse {
   ) {
     return { kind: "failure", failure: "malformed_response" };
   }
-  if (!response.words.some(({ type }) => type === "word")) return { kind: "no_speech" };
-  if (response.text.length === 0) return { kind: "failure", failure: "unparseable_result" };
-  const segments = segmentsFor(response);
-  if (typeof segments === "string") return { kind: "failure", failure: segments };
   if (
     !/^[a-z]{2,3}$/u.test(response.language_code) ||
     !Number.isFinite(response.language_probability) ||
@@ -240,6 +253,14 @@ function parseDocument(document: unknown): ElevenLabsAsrParsedResponse {
   ) {
     return { kind: "failure", failure: "malformed_response" };
   }
+  if (!response.words.some(({ type }) => type === "word")) {
+    return isCoherentNoSpeech(response)
+      ? { kind: "no_speech" }
+      : { kind: "failure", failure: "malformed_response" };
+  }
+  if (response.text.length === 0) return { kind: "failure", failure: "unparseable_result" };
+  const segments = segmentsFor(response);
+  if (typeof segments === "string") return { kind: "failure", failure: segments };
   return {
     kind: "transcript",
     transcript: response.text,

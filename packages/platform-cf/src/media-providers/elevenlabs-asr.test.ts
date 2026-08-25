@@ -139,8 +139,8 @@ describe("ElevenLabs ASR adapter", () => {
     expect(result.transcript.transcript).toBe(multilingualResponse.text);
     expect(result.detected_languages).toEqual([{ language_bcp47: "en", confidence: 0.84 }]);
     expect(result.transcript.transcript_sha256).toMatch(/^[0-9a-f]{64}$/u);
-    expect(result.transcript.transcript_artifact_ref).toBe(
-      `elevenlabs-asr://transcript/${result.transcript.transcript_sha256}`,
+    expect(result.transcript.transcript_artifact_ref).toMatch(
+      /^elevenlabs-asr:\/\/transcript\/[0-9a-f]{64}\/a{64}\/1\/2\/[0-9a-f]{64}$/u,
     );
 
     const request = requests[0];
@@ -158,6 +158,101 @@ describe("ElevenLabs ASR adapter", () => {
     expect(requestText).toContain('name="timestamps_granularity"\r\n\r\nword');
     expect(requestText).toContain('name="webhook"\r\n\r\nfalse');
     expect(requestText).not.toContain('name="language_code"');
+  });
+
+  test("binds transcript artifact references to full immutable lineage and segment identity", async () => {
+    const adapter = configured(() => response(multilingualResponse));
+    const first = await Effect.runPromise(
+      adapter.recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    const replay = await Effect.runPromise(
+      adapter.recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    if (first.status !== "transcript" || replay.status !== "transcript") {
+      throw new Error("expected transcripts");
+    }
+    expect(replay.transcript.transcript_artifact_ref).toBe(
+      first.transcript.transcript_artifact_ref,
+    );
+
+    const distinctOperationInput = {
+      ...asrInput,
+      audio: {
+        ...asrInput.audio,
+        operation_id: "operation-asr-2",
+        audio_artifact_ref: "r2://private/audio/operation-asr-2/revision-1",
+      },
+      attempt: {
+        ...asrInput.attempt,
+        attempt_id: "attempt-asr-2",
+        request_id: "request-asr-2",
+      },
+    };
+    const distinctOperation = await Effect.runPromise(
+      adapter.recognize(distinctOperationInput, { signal: new AbortController().signal }),
+    );
+    if (distinctOperation.status !== "transcript") throw new Error("expected transcript");
+    expect(distinctOperation.transcript.transcript_sha256).toBe(first.transcript.transcript_sha256);
+    expect(distinctOperation.transcript.transcript_artifact_ref).not.toBe(
+      first.transcript.transcript_artifact_ref,
+    );
+
+    const distinctAudioInput = {
+      ...asrInput,
+      audio: {
+        ...asrInput.audio,
+        audio_revision: 2,
+        canonical_audio_sha256: "b".repeat(64),
+        audio_artifact_ref: "r2://private/audio/operation-asr-1/revision-2",
+      },
+      attempt: {
+        ...asrInput.attempt,
+        attempt_id: "attempt-asr-audio-2",
+        request_id: "request-asr-audio-2",
+      },
+    };
+    const distinctAudio = await Effect.runPromise(
+      adapter.recognize(distinctAudioInput, { signal: new AbortController().signal }),
+    );
+    if (distinctAudio.status !== "transcript") throw new Error("expected transcript");
+    expect(distinctAudio.transcript.transcript_artifact_ref).not.toBe(
+      first.transcript.transcript_artifact_ref,
+    );
+
+    const distinctAnalysisInput = {
+      ...asrInput,
+      audio: { ...asrInput.audio, analysis_revision: 3 },
+      attempt: {
+        ...asrInput.attempt,
+        attempt_id: "attempt-asr-3",
+        request_id: "request-asr-3",
+      },
+    };
+    const distinctAnalysis = await Effect.runPromise(
+      adapter.recognize(distinctAnalysisInput, { signal: new AbortController().signal }),
+    );
+    if (distinctAnalysis.status !== "transcript") throw new Error("expected transcript");
+    expect(distinctAnalysis.transcript.transcript_sha256).toBe(first.transcript.transcript_sha256);
+    expect(distinctAnalysis.transcript.transcript_artifact_ref).not.toBe(
+      first.transcript.transcript_artifact_ref,
+    );
+
+    const changedTiming = {
+      ...multilingualResponse,
+      words: multilingualResponse.words.map((entry, index) =>
+        index === multilingualResponse.words.length - 1 ? { ...entry, end: 3.2 } : entry,
+      ),
+    };
+    const changedSegments = await Effect.runPromise(
+      configured(() => response(changedTiming)).recognize(asrInput, {
+        signal: new AbortController().signal,
+      }),
+    );
+    if (changedSegments.status !== "transcript") throw new Error("expected transcript");
+    expect(changedSegments.transcript.transcript_sha256).toBe(first.transcript.transcript_sha256);
+    expect(changedSegments.transcript.transcript_artifact_ref).not.toBe(
+      first.transcript.transcript_artifact_ref,
+    );
   });
 
   test("retains prompt-injection text only as immutable transcript evidence", async () => {
@@ -267,6 +362,55 @@ describe("ElevenLabs ASR adapter", () => {
     expect(evidenceWrites).toBe(1);
   });
 
+  test("keeps timeout and caller cancellation authoritative through blocked evidence writes", async () => {
+    const timeoutSinkStarted = Promise.withResolvers<void>();
+    const timeoutSinkRelease = Promise.withResolvers<void>();
+    let timeoutSinkAborted = 0;
+    const timedOut = providerFailure(
+      configured(() => response(multilingualResponse), {
+        limits: { max_audio_bytes: 1_024, max_response_bytes: 32_768, timeout_ms: 5 },
+        evidence_sink: (_entry: ElevenLabsAsrAttemptEvidence, signal: AbortSignal) => {
+          timeoutSinkStarted.resolve();
+          signal.addEventListener("abort", () => (timeoutSinkAborted += 1), { once: true });
+          return timeoutSinkRelease.promise;
+        },
+      }).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    await timeoutSinkStarted.promise;
+    expect(await timedOut).toEqual({
+      _tag: "timeout",
+      retryability: "retryable",
+      attempt_id: "attempt-asr-1",
+    });
+    expect(timeoutSinkAborted).toBe(1);
+    timeoutSinkRelease.resolve();
+    await timeoutSinkRelease.promise;
+
+    const cancellationSinkStarted = Promise.withResolvers<void>();
+    const cancellationSinkRelease = Promise.withResolvers<void>();
+    let cancellationSinkAborted = 0;
+    const controller = new AbortController();
+    const cancelled = providerFailure(
+      configured(() => response(multilingualResponse), {
+        evidence_sink: (_entry: ElevenLabsAsrAttemptEvidence, signal: AbortSignal) => {
+          cancellationSinkStarted.resolve();
+          signal.addEventListener("abort", () => (cancellationSinkAborted += 1), { once: true });
+          return cancellationSinkRelease.promise;
+        },
+      }).recognize(asrInput, { signal: controller.signal }),
+    );
+    await cancellationSinkStarted.promise;
+    controller.abort();
+    expect(await cancelled).toEqual({
+      _tag: "cancelled",
+      retryability: "cancelled",
+      attempt_id: "attempt-asr-1",
+    });
+    expect(cancellationSinkAborted).toBe(1);
+    cancellationSinkRelease.resolve();
+    await cancellationSinkRelease.promise;
+  });
+
   test("projects music-only output as explicit no-speech evidence", async () => {
     const result = await Effect.runPromise(
       configured(() => response(musicOnlyResponse)).recognize(asrInput, {
@@ -281,6 +425,47 @@ describe("ElevenLabs ASR adapter", () => {
     });
     if (result.status !== "no_speech") throw new Error("expected no speech");
     expect(result.evidence_ref).toContain(asrInput.audio.canonical_audio_sha256);
+  });
+
+  test("rejects contradictory or absent no-speech evidence as malformed", async () => {
+    for (const document of [
+      {
+        language_code: "en",
+        language_probability: 0.99,
+        text: "explicit hostile lyrics",
+        words: [{ text: "explicit hostile lyrics", start: 0, end: 2, type: "spacing" }],
+      },
+      {
+        language_code: "en",
+        language_probability: 0,
+        text: "(music) hidden words",
+        words: [{ text: "(music)", start: 0, end: 2, type: "audio_event" }],
+      },
+      {
+        language_code: "en",
+        language_probability: 0,
+        text: "",
+        words: [],
+      },
+      {
+        language_code: "en",
+        language_probability: 0,
+        text: "(music)",
+        words: [{ text: "(music)", start: 2, end: 1, type: "audio_event" }],
+      },
+    ]) {
+      expect(
+        await providerFailure(
+          configured(() => response(document)).recognize(asrInput, {
+            signal: new AbortController().signal,
+          }),
+        ),
+      ).toEqual({
+        _tag: "malformed_response",
+        retryability: "permanent",
+        attempt_id: "attempt-asr-1",
+      });
+    }
   });
 
   test("creates bounded ordered segments and rejects invalid timing", async () => {

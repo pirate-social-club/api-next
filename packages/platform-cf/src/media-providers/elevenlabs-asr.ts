@@ -175,8 +175,9 @@ function snapshotInput(value: unknown): MediaAsrInput | null {
 
 async function awaitMaybeEffect<T>(
   value: T | PromiseLike<T> | Effect.Effect<T, unknown>,
+  signal: AbortSignal,
 ): Promise<T> {
-  return Effect.isEffect(value) ? Effect.runPromise(value) : await value;
+  return Effect.isEffect(value) ? Effect.runPromise(value, { signal }) : await value;
 }
 
 function validAudioSource(source: ElevenLabsAsrAudioSource, maximum: number): boolean {
@@ -203,6 +204,7 @@ async function persistEvidence(
   configuration: EnabledElevenLabsAsrOptions,
   attempt_id: string,
   outcome: ElevenLabsAsrAttemptEvidence["outcome"],
+  signal: AbortSignal,
   provider_status?: number,
 ): Promise<void> {
   const evidence: ElevenLabsAsrAttemptEvidence = {
@@ -218,10 +220,10 @@ async function persistEvidence(
     ...(provider_status === undefined ? {} : { provider_status }),
   };
   try {
-    const result = configuration.evidence_sink(evidence);
-    if (Effect.isEffect(result)) await Effect.runPromise(result);
-    else if (result !== undefined) await Promise.resolve(result);
-  } catch {
+    const result = configuration.evidence_sink(evidence, signal);
+    if (result !== undefined) await awaitMaybeEffect(result, signal);
+  } catch (error) {
+    if (signal.aborted) throw error;
     throw new ElevenLabsAsrEvidencePersistenceError();
   }
 }
@@ -253,6 +255,20 @@ async function resultForParsed(
         }
       : await (async () => {
           const transcript_sha256 = await sha256(parsed.transcript);
+          const operation_identity_sha256 = await sha256(input.audio.operation_id);
+          const artifact_identity_sha256 = await sha256(
+            JSON.stringify([
+              "media-transcript-artifact-v1",
+              input.audio.operation_id,
+              input.audio.audio_revision,
+              input.audio.analysis_revision,
+              input.audio.canonical_audio_sha256,
+              input.audio.audio_artifact_ref,
+              transcript_sha256,
+              parsed.transcript,
+              parsed.segments.map(({ start_ms, end_ms, text }) => [start_ms, end_ms, text]),
+            ]),
+          );
           return {
             version: "media-asr-result-v1" as const,
             status: "transcript" as const,
@@ -265,7 +281,7 @@ async function resultForParsed(
               analysis_revision: input.audio.analysis_revision,
               canonical_audio_sha256: input.audio.canonical_audio_sha256,
               audio_artifact_ref: input.audio.audio_artifact_ref,
-              transcript_artifact_ref: `elevenlabs-asr://transcript/${transcript_sha256}`,
+              transcript_artifact_ref: `elevenlabs-asr://transcript/${operation_identity_sha256}/${input.audio.canonical_audio_sha256}/${input.audio.audio_revision}/${input.audio.analysis_revision}/${artifact_identity_sha256}`,
               transcript_sha256,
               transcript: parsed.transcript,
               segments: parsed.segments,
@@ -324,10 +340,12 @@ async function invoke(
 
   let providerStatus: number | undefined;
   let operationFinished = false;
+  let evidencePersistenceStarted = false;
   try {
     const sourcePromise = Promise.resolve().then(() =>
       awaitMaybeEffect(
         configuration.resolve_audio(input.audio.audio_artifact_ref, controller.signal),
+        controller.signal,
       ),
     );
     void sourcePromise.catch(() => undefined);
@@ -359,7 +377,7 @@ async function invoke(
       redirect: "error" as const,
     };
     const transportPromise = Promise.resolve()
-      .then(() => awaitMaybeEffect(configuration.transport(request)))
+      .then(() => awaitMaybeEffect(configuration.transport(request), controller.signal))
       .catch((error: unknown) => {
         if (error instanceof ElevenLabsAsrBodyError) throw error;
         throw new ElevenLabsAsrFailure(failure(attemptId, "provider_unavailable"));
@@ -389,8 +407,15 @@ async function invoke(
         tag === "rate_limited" ? retryAfterMilliseconds(response.headers) : undefined;
       throw new ElevenLabsAsrFailure(failure(attemptId, tag, retryAfter));
     }
-    const result = await resultForParsed(input, configuration, parsed);
-    await persistEvidence(configuration, attemptId, result.status, providerStatus);
+    const result = await Promise.race([
+      resultForParsed(input, configuration, parsed),
+      abortPromise,
+    ]);
+    evidencePersistenceStarted = true;
+    await Promise.race([
+      persistEvidence(configuration, attemptId, result.status, controller.signal, providerStatus),
+      abortPromise,
+    ]);
     return result;
   } catch (error) {
     let selected: MediaProviderFailure;
@@ -403,11 +428,25 @@ async function invoke(
     } else {
       selected = failure(attemptId, abortReason ?? "provider_unavailable");
     }
-    if (!(error instanceof ElevenLabsAsrEvidencePersistenceError)) {
+    if (
+      !(error instanceof ElevenLabsAsrEvidencePersistenceError) &&
+      !evidencePersistenceStarted &&
+      abortReason === undefined
+    ) {
+      evidencePersistenceStarted = true;
       try {
-        await persistEvidence(configuration, attemptId, selected._tag, providerStatus);
+        await Promise.race([
+          persistEvidence(
+            configuration,
+            attemptId,
+            selected._tag,
+            controller.signal,
+            providerStatus,
+          ),
+          abortPromise,
+        ]);
       } catch {
-        selected = failure(attemptId, "provider_unavailable");
+        selected = failure(attemptId, abortReason ?? "provider_unavailable");
       }
     }
     throw new ElevenLabsAsrFailure(selected);

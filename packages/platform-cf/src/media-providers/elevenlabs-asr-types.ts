@@ -95,8 +95,10 @@ export type ElevenLabsAsrAttemptEvidence = Readonly<{
   readonly provider_status?: number;
 }>;
 
+/** Durable sinks must observe `signal`; late completion can never change the selected outcome. */
 export type ElevenLabsAsrEvidenceSink = (
   evidence: ElevenLabsAsrAttemptEvidence,
+  signal: AbortSignal,
 ) => void | PromiseLike<void> | Effect.Effect<void, unknown>;
 
 export type ElevenLabsAsrRandomBytes = (length: number) => Uint8Array;
