@@ -35,6 +35,7 @@ describe("karaoke contracts", () => {
       persona_id: "persona-1",
       timezone: "UTC",
     });
+    expect(decodeCreate({ timezone: "UTC" })).toEqual({ timezone: "UTC" });
     expect(
       decodeSession({
         attempt: "attempt-1",

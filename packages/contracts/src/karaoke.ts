@@ -122,7 +122,7 @@ export const KaraokeAttempt = Schema.Struct({
 export type KaraokeAttempt = Schema.Schema.Type<typeof KaraokeAttempt>;
 
 export const KaraokeAttemptCreate = Schema.Struct({
-  persona_id: PersonaIdV1,
+  persona_id: Schema.optional(PersonaIdV1),
   timezone: Schema.optional(Schema.NullOr(Schema.String)),
 });
 

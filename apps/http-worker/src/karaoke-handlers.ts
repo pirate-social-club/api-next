@@ -15,7 +15,7 @@ export interface KaraokeHandlerServices {
   readonly createAttempt: (input: {
     readonly communityId: string;
     readonly postId: string;
-    readonly personaId: string;
+    readonly personaId: string | null;
     readonly userId: string;
     readonly idempotencyKey: string;
     readonly timezone: string | null;
@@ -69,7 +69,7 @@ const createAttempt: (services: KaraokeHandlerServices) => EndpointHandler =
       communityId: path.communityId,
       idempotencyKey: headers["idempotency-key"],
       postId: path.postId,
-      personaId: body.persona_id,
+      personaId: body.persona_id ?? null,
       timezone: body.timezone ?? null,
       userId,
     });
