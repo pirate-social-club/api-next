@@ -2606,6 +2606,20 @@ export function makeControlPlaneCommunityCreationRepository(
         readonly: false,
       });
       yield* transaction.execute({
+        label: "community.creation.commit-v2.insert-handle-sales-authority",
+        text: `INSERT INTO community_handle_sales_authority_grants (
+                 grant_id, community_id, principal_account_id, authority,
+                 source_kind, source_policy_ref, status, granted_at,
+                 granted_by_account_id
+               ) VALUES (
+                 community_handle_sales_creator_grant_id_v1($1, $2),
+                 $1, $2, 'manage_handle_sales', 'creator_owner', NULL,
+                 'active', $3::timestamptz, $2
+               )`,
+        values: [communityId, input.actor.userId, activationNow],
+        readonly: false,
+      });
+      yield* transaction.execute({
         label: "community.creation.commit-v2.insert-policy",
         text: `INSERT INTO policy_versions (
                  policy_version_id, community_id, policy_key, revision,

@@ -490,6 +490,107 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION community_handle_sales_creator_grant_id_v1(input_community_id text, input_account_id text) RETURNS text
+    LANGUAGE sql IMMUTABLE STRICT
+    AS $$
+  SELECT 'handle_sales_grant_' || encode(
+    sha256(convert_to(
+      'pirate-handle-sales-authority-grant-v1' || chr(0)
+      || input_community_id || chr(0) || input_account_id,
+      'UTF8'
+    )),
+    'hex'
+  )
+$$;
+
+CREATE FUNCTION current_hns_sale_namespace_dependency_v1(input_community_id text, input_namespace_authority_reference text, input_namespace_authority_generation bigint, input_dns_zone_activation_id text, input_dns_zone_activation_generation bigint, database_now timestamp with time zone) RETURNS TABLE(canonical_root text, display_root text, namespace_authority_current boolean, dns_zone_current boolean, dns_delegation_current boolean)
+    LANGUAGE sql STABLE
+    AS $$
+  WITH authority AS (
+    SELECT evidence.root_label,
+           evidence.root_label_display,
+           evidence.binding_generation,
+           evidence.expires_at,
+           evidence.origin,
+           binding.community_id AS bound_community_id,
+           attachment.community_id AS attachment_community_id
+      FROM community_route_ownership_evidence AS evidence
+      LEFT JOIN community_canonical_route_bindings AS binding
+        ON binding.verified_evidence_ref = evidence.evidence_ref
+      LEFT JOIN community_route_attachment_ceremony_attempts AS ceremony
+        ON ceremony.ceremony_intent_id = evidence.route_attachment_ceremony_intent_id
+      LEFT JOIN community_route_attachment_intents AS attachment
+        ON attachment.attachment_intent_id = ceremony.attachment_intent_id
+     WHERE evidence.evidence_ref = input_namespace_authority_reference
+       AND evidence.family = 'hns'
+       AND evidence.binding_generation = input_namespace_authority_generation
+       AND evidence.expires_at IS NOT NULL
+       AND evidence.expires_at > database_now
+       AND (
+         binding.community_id = input_community_id
+         OR (evidence.origin = 'route_attachment'
+           AND attachment.community_id = input_community_id)
+       )
+  ),
+  dns AS (
+    SELECT revision.*,
+           inventory.published_at AS inventory_published_at,
+           inventory.expires_at AS inventory_expires_at
+      FROM hns_dns_zone_activation_current AS current_dns
+      JOIN hns_dns_zone_activation_revisions AS revision
+        ON revision.dns_zone_activation_id = current_dns.dns_zone_activation_id
+       AND revision.dns_zone_activation_generation = current_dns.current_generation
+      JOIN hns_authority_inventories AS inventory
+        ON inventory.authority_inventory_reference
+            = revision.pirate_dns_authority_inventory_reference
+       AND inventory.authority_inventory_version
+            = revision.pirate_dns_authority_inventory_version
+       AND inventory.authority_inventory_digest
+            = revision.pirate_dns_authority_inventory_digest
+     WHERE current_dns.dns_zone_activation_id = input_dns_zone_activation_id
+       AND current_dns.current_generation = input_dns_zone_activation_generation
+       AND revision.status = 'active'
+       AND inventory.published_at <= database_now
+       AND inventory.expires_at > database_now
+  ),
+  health AS (
+    SELECT observation.*
+      FROM hns_dns_zone_health_observations AS observation
+     WHERE observation.dns_zone_activation_id = input_dns_zone_activation_id
+       AND observation.activation_generation = input_dns_zone_activation_generation
+     ORDER BY observation.health_generation DESC
+     LIMIT 1
+  )
+  SELECT authority.root_label,
+         authority.root_label_display,
+         TRUE,
+         COALESCE(dns.canonical_root = authority.root_label, FALSE),
+         COALESCE(
+           dns.canonical_root = authority.root_label
+           AND health.valid_until > database_now
+           AND health.delegation_matches
+           AND health.ds_authenticates_zone
+           AND health.retained_zone_digest_matches
+           AND health.gateway_healthy
+           AND health.stable_chain_delegation_snapshot_reference
+               = dns.stable_chain_delegation_snapshot_reference
+           AND health.stable_chain_delegation_snapshot_digest
+               = dns.stable_chain_delegation_snapshot_digest
+           AND health.observed_dnssec_keyset_reference = dns.dnssec_keyset_reference
+           AND health.observed_dnssec_keyset_version = dns.dnssec_keyset_version
+           AND health.observed_zone_bytes_digest = dns.zone_bytes_digest
+           AND health.observed_gateway_deployment_reference
+               = dns.gateway_deployment_reference
+           AND health.observed_gateway_certificate_spki_sha256
+               = dns.gateway_certificate_spki_sha256,
+           FALSE
+         )
+    FROM authority
+    LEFT JOIN dns ON dns.canonical_root = authority.root_label
+    LEFT JOIN health ON TRUE
+   WHERE database_now IS NOT NULL
+$$;
+
 CREATE FUNCTION default_public_handle_persona() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -541,6 +642,113 @@ CREATE FUNCTION effective_active_route(expected_community_id text, database_now 
      AND evidence.binding_generation = binding.binding_generation
      AND evidence.expires_at IS NOT NULL
      AND evidence.expires_at > database_now
+$$;
+
+CREATE FUNCTION is_community_route_root_label(route_family text, root_label text) RETURNS boolean
+    LANGUAGE sql IMMUTABLE STRICT
+    AS $_$
+  SELECT CASE route_family
+    WHEN 'hns' THEN
+      octet_length(root_label) BETWEEN 1 AND 63
+      AND root_label ~ '^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$'
+      AND root_label NOT IN ('example', 'invalid', 'local', 'localhost', 'test')
+    WHEN 'spaces' THEN
+      octet_length(root_label) BETWEEN 1 AND 62
+      AND root_label ~ '^[a-z0-9-]+$'
+      AND CASE
+        WHEN left(root_label, 4) = 'xn--' AND octet_length(root_label) > 4
+          THEN substring(root_label FROM 5)
+        ELSE root_label
+      END ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+    ELSE FALSE
+  END;
+$_$;
+
+CREATE FUNCTION is_community_route_root_label_display(root_label_display text) RETURNS boolean
+    LANGUAGE sql IMMUTABLE STRICT
+    AS $$
+  SELECT octet_length(root_label_display) BETWEEN 1 AND 255
+    AND root_label_display = btrim(root_label_display)
+    AND root_label_display !~ '[[:cntrl:]]'
+    AND position('@' IN root_label_display) = 0
+    AND position('.' IN root_label_display) = 0
+    AND position('%' IN root_label_display) = 0
+    AND position('/' IN root_label_display) = 0
+    AND position(E'\\' IN root_label_display) = 0;
+$$;
+
+CREATE FUNCTION is_handle_sales_identifier_v1(input_value text, maximum_bytes integer) RETURNS boolean
+    LANGUAGE sql IMMUTABLE
+    AS $$
+  SELECT input_value IS NOT NULL
+    AND btrim(input_value) <> ''
+    AND input_value = btrim(input_value)
+    AND octet_length(input_value) <= maximum_bytes
+    AND input_value !~ '[[:cntrl:]]'
+$$;
+
+CREATE TABLE community_handle_sale_namespace_activation_revisions (
+    sale_namespace_activation_id text NOT NULL,
+    sale_namespace_activation_generation bigint NOT NULL,
+    sale_namespace_activation_hash text NOT NULL,
+    community_id text NOT NULL,
+    family text NOT NULL,
+    canonical_root text NOT NULL,
+    display_root text NOT NULL,
+    namespace_authority_kind text NOT NULL,
+    namespace_authority_reference text NOT NULL,
+    namespace_authority_generation bigint NOT NULL,
+    serving_kind text NOT NULL,
+    dns_zone_activation_id text NOT NULL,
+    dns_zone_activation_generation bigint NOT NULL,
+    root_replacement_kind text NOT NULL,
+    dedicated_root_replacement_confirmed boolean NOT NULL,
+    status text NOT NULL,
+    reason_code text,
+    actor_account_id text NOT NULL,
+    authority_grant_id text NOT NULL,
+    created_at timestamp with time zone NOT NULL,
+    activated_at timestamp with time zone,
+    suspended_at timestamp with time zone,
+    revoked_at timestamp with time zone,
+    recorded_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT community_handle_sale_namesp_dedicated_root_replacement_c_check CHECK ((dedicated_root_replacement_confirmed IS TRUE)),
+    CONSTRAINT community_handle_sale_namespace__namespace_authority_kind_check CHECK ((namespace_authority_kind = 'verified_namespace_v1'::text)),
+    CONSTRAINT community_handle_sale_namespace_act_root_replacement_kind_check CHECK ((root_replacement_kind = 'dedicated_root_replace_v1'::text)),
+    CONSTRAINT community_handle_sale_namespace_activation_identity_check CHECK ((is_handle_sales_identifier_v1(sale_namespace_activation_id, 128) AND ((sale_namespace_activation_generation >= 1) AND (sale_namespace_activation_generation <= '9007199254740991'::bigint)) AND (sale_namespace_activation_hash ~ '^[0-9a-f]{64}$'::text) AND is_community_route_root_label('hns'::text, canonical_root) AND is_community_route_root_label_display(display_root) AND (canonical_root <> 'pirate'::text) AND is_handle_sales_identifier_v1(namespace_authority_reference, 512) AND ((namespace_authority_generation >= 1) AND (namespace_authority_generation <= '9007199254740991'::bigint)) AND is_handle_sales_identifier_v1(dns_zone_activation_id, 256) AND ((dns_zone_activation_generation BETWEEN 1 AND '9007199254740991'::bigint)))),
+    CONSTRAINT community_handle_sale_namespace_activation_r_serving_kind_check CHECK ((serving_kind = 'hns_dns_zone_activation_v1'::text)),
+    CONSTRAINT community_handle_sale_namespace_activation_revisio_family_check CHECK ((family = 'hns'::text)),
+    CONSTRAINT community_handle_sale_namespace_activation_revisio_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'active'::text, 'suspended'::text, 'revoked'::text]))),
+    CONSTRAINT community_handle_sale_namespace_activation_status_shape CHECK ((((status = 'pending'::text) AND (reason_code IS NULL) AND (activated_at IS NULL) AND (suspended_at IS NULL) AND (revoked_at IS NULL)) OR ((status = 'active'::text) AND (reason_code IS NULL) AND (activated_at IS NOT NULL) AND (suspended_at IS NULL) AND (revoked_at IS NULL)) OR ((status = 'suspended'::text) AND is_handle_sales_identifier_v1(reason_code, 128) AND (activated_at IS NOT NULL) AND (suspended_at IS NOT NULL) AND (revoked_at IS NULL)) OR ((status = 'revoked'::text) AND is_handle_sales_identifier_v1(reason_code, 128) AND (activated_at IS NOT NULL) AND (revoked_at IS NOT NULL)))),
+    CONSTRAINT community_handle_sale_namespace_activation_time_order CHECK (((recorded_at >= created_at) AND ((activated_at IS NULL) OR (activated_at >= created_at)) AND ((suspended_at IS NULL) OR (suspended_at >= activated_at)) AND ((revoked_at IS NULL) OR (revoked_at >= activated_at))))
+);
+
+CREATE FUNCTION effective_community_handle_sale_namespace_v1(input_sale_namespace_activation_id text, database_now timestamp with time zone) RETURNS SETOF community_handle_sale_namespace_activation_revisions
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT revision.*
+    FROM community_handle_sale_namespace_activation_current AS current_activation
+    JOIN community_handle_sale_namespace_activation_revisions AS revision
+      ON revision.sale_namespace_activation_id
+          = current_activation.sale_namespace_activation_id
+     AND revision.sale_namespace_activation_generation
+          = current_activation.current_generation
+    JOIN LATERAL current_hns_sale_namespace_dependency_v1(
+      revision.community_id,
+      revision.namespace_authority_reference,
+      revision.namespace_authority_generation,
+      revision.dns_zone_activation_id,
+      revision.dns_zone_activation_generation,
+      database_now
+    ) AS dependency ON TRUE
+   WHERE current_activation.sale_namespace_activation_id
+       = input_sale_namespace_activation_id
+     AND revision.status = 'active'
+     AND dependency.canonical_root = revision.canonical_root
+     AND dependency.display_root = revision.display_root
+     AND dependency.namespace_authority_current
+     AND dependency.dns_zone_current
+     AND dependency.dns_delegation_current
 $$;
 
 CREATE FUNCTION effective_public_community_route_v2(expected_community_id text, database_now timestamp with time zone) RETURNS TABLE(community_id text, route_binding_id text, family text, root_label text, root_label_display text, authority_route_key_v1 text, public_path_segment text, public_href text, route_authority_kind text, authority_reference text, authority_generation bigint, verified_evidence_ref text, binding_generation bigint, evidence_expires_at timestamp with time zone)
@@ -1590,6 +1798,77 @@ BEGIN
       NEW.status;
   END IF;
 
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_community_handle_sale_namespace_current_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  revision community_handle_sale_namespace_activation_revisions%ROWTYPE;
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'community handle sale-namespace current authority cannot be deleted';
+  END IF;
+  SELECT * INTO revision
+    FROM community_handle_sale_namespace_activation_revisions
+   WHERE sale_namespace_activation_id = NEW.sale_namespace_activation_id
+     AND sale_namespace_activation_generation = NEW.current_generation;
+  IF revision.sale_namespace_activation_id IS NULL
+    OR revision.family <> NEW.family
+    OR revision.canonical_root <> NEW.canonical_root
+    OR revision.community_id <> NEW.community_id THEN
+    RAISE EXCEPTION 'community handle sale-namespace current revision does not match';
+  END IF;
+  IF TG_OP = 'UPDATE' AND (
+    NEW.sale_namespace_activation_id <> OLD.sale_namespace_activation_id
+    OR NEW.family <> OLD.family
+    OR NEW.canonical_root <> OLD.canonical_root
+    OR NEW.community_id <> OLD.community_id
+    OR NEW.current_generation <> OLD.current_generation + 1
+    OR NEW.updated_at <= OLD.updated_at
+  ) THEN
+    RAISE EXCEPTION 'community handle sale-namespace current generation is fenced';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_community_handle_sales_authority_grant_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'community handle-sales authority grant cannot be deleted';
+  END IF;
+  IF ROW(
+    NEW.grant_id,
+    NEW.community_id,
+    NEW.principal_account_id,
+    NEW.authority,
+    NEW.source_kind,
+    NEW.source_policy_ref,
+    NEW.granted_at,
+    NEW.granted_by_account_id
+  ) IS DISTINCT FROM ROW(
+    OLD.grant_id,
+    OLD.community_id,
+    OLD.principal_account_id,
+    OLD.authority,
+    OLD.source_kind,
+    OLD.source_policy_ref,
+    OLD.granted_at,
+    OLD.granted_by_account_id
+  ) THEN
+    RAISE EXCEPTION 'community handle-sales authority grant identity is immutable';
+  END IF;
+  IF OLD.status = 'revoked' AND NEW IS DISTINCT FROM OLD THEN
+    RAISE EXCEPTION 'revoked community handle-sales authority grant is terminal';
+  END IF;
+  IF OLD.status = 'active' AND NEW.status <> 'revoked' THEN
+    RAISE EXCEPTION 'community handle-sales authority grant transition is invalid';
+  END IF;
   RETURN NEW;
 END;
 $$;
@@ -3866,6 +4145,19 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION has_community_handle_sales_authority(expected_community_id text, expected_principal_account_id text) RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT EXISTS (
+    SELECT 1
+      FROM community_handle_sales_authority_grants AS authority_grant
+     WHERE authority_grant.community_id = expected_community_id
+       AND authority_grant.principal_account_id = expected_principal_account_id
+       AND authority_grant.authority = 'manage_handle_sales'
+       AND authority_grant.status = 'active'
+  )
+$$;
+
 CREATE FUNCTION has_community_route_authority(expected_community_id text, expected_principal_user_id text) RETURNS boolean
     LANGUAGE sql STABLE
     AS $$
@@ -3921,39 +4213,6 @@ BEGIN
   NEW.updated_at := now();
   RETURN NEW;
 END;
-$$;
-
-CREATE FUNCTION is_community_route_root_label(route_family text, root_label text) RETURNS boolean
-    LANGUAGE sql IMMUTABLE STRICT
-    AS $_$
-  SELECT CASE route_family
-    WHEN 'hns' THEN
-      octet_length(root_label) BETWEEN 1 AND 63
-      AND root_label ~ '^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$'
-      AND root_label NOT IN ('example', 'invalid', 'local', 'localhost', 'test')
-    WHEN 'spaces' THEN
-      octet_length(root_label) BETWEEN 1 AND 62
-      AND root_label ~ '^[a-z0-9-]+$'
-      AND CASE
-        WHEN left(root_label, 4) = 'xn--' AND octet_length(root_label) > 4
-          THEN substring(root_label FROM 5)
-        ELSE root_label
-      END ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$'
-    ELSE FALSE
-  END;
-$_$;
-
-CREATE FUNCTION is_community_route_root_label_display(root_label_display text) RETURNS boolean
-    LANGUAGE sql IMMUTABLE STRICT
-    AS $$
-  SELECT octet_length(root_label_display) BETWEEN 1 AND 255
-    AND root_label_display = btrim(root_label_display)
-    AND root_label_display !~ '[[:cntrl:]]'
-    AND position('@' IN root_label_display) = 0
-    AND position('.' IN root_label_display) = 0
-    AND position('%' IN root_label_display) = 0
-    AND position('/' IN root_label_display) = 0
-    AND position(E'\\' IN root_label_display) = 0;
 $$;
 
 CREATE FUNCTION is_hns_host_persistence_identity(input_value text, maximum_bytes integer) RETURNS boolean
@@ -4358,6 +4617,14 @@ CREATE FUNCTION reject_community_creation_immutable_change() RETURNS trigger
     AS $$
 BEGIN
   RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END;
+$$;
+
+CREATE FUNCTION reject_community_handle_sale_namespace_append_only_change() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  RAISE EXCEPTION 'community handle sale-namespace evidence is append-only';
 END;
 $$;
 
@@ -5228,6 +5495,85 @@ BEGIN
   END IF;
 
   RETURN NULL;
+END;
+$$;
+
+CREATE FUNCTION validate_community_handle_sale_namespace_revision_insert() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  community_record communities%ROWTYPE;
+  authority_grant community_handle_sales_authority_grants%ROWTYPE;
+  dependency RECORD;
+  prior community_handle_sale_namespace_activation_revisions%ROWTYPE;
+BEGIN
+  SELECT * INTO community_record
+    FROM communities
+   WHERE community_id = NEW.community_id
+   FOR SHARE;
+  SELECT * INTO authority_grant
+    FROM community_handle_sales_authority_grants
+   WHERE grant_id = NEW.authority_grant_id
+   FOR SHARE;
+  IF community_record.community_id IS NULL OR community_record.status <> 'active' THEN
+    RAISE EXCEPTION 'handle sale namespace requires an active community';
+  END IF;
+  IF authority_grant.grant_id IS NULL
+    OR authority_grant.community_id <> NEW.community_id
+    OR authority_grant.principal_account_id <> NEW.actor_account_id
+    OR authority_grant.authority <> 'manage_handle_sales'
+    OR authority_grant.status <> 'active' THEN
+    RAISE EXCEPTION 'handle sale namespace requires active manage_handle_sales authority';
+  END IF;
+
+  SELECT * INTO prior
+    FROM community_handle_sale_namespace_activation_revisions AS revision
+   WHERE revision.sale_namespace_activation_id = NEW.sale_namespace_activation_id
+   ORDER BY revision.sale_namespace_activation_generation DESC
+   LIMIT 1
+   FOR SHARE;
+  IF prior.sale_namespace_activation_id IS NULL THEN
+    IF NEW.sale_namespace_activation_generation <> 1 THEN
+      RAISE EXCEPTION 'handle sale namespace must begin at generation one';
+    END IF;
+  ELSE
+    IF NEW.sale_namespace_activation_generation
+         <> prior.sale_namespace_activation_generation + 1
+      OR NEW.community_id <> prior.community_id
+      OR NEW.family <> prior.family
+      OR NEW.canonical_root <> prior.canonical_root
+      OR NEW.display_root <> prior.display_root
+      OR NEW.created_at <> prior.created_at THEN
+      RAISE EXCEPTION 'handle sale namespace identity and generation are immutable';
+    END IF;
+    IF prior.status = 'revoked' THEN
+      RAISE EXCEPTION 'revoked handle sale namespace is terminal';
+    END IF;
+    IF NEW.status = 'pending' OR NEW.status = prior.status THEN
+      RAISE EXCEPTION 'handle sale namespace revision must advance state';
+    END IF;
+  END IF;
+
+  IF NEW.status = 'active' THEN
+    SELECT * INTO dependency
+      FROM current_hns_sale_namespace_dependency_v1(
+        NEW.community_id,
+        NEW.namespace_authority_reference,
+        NEW.namespace_authority_generation,
+        NEW.dns_zone_activation_id,
+        NEW.dns_zone_activation_generation,
+        clock_timestamp()
+      );
+    IF dependency.canonical_root IS NULL
+      OR dependency.canonical_root <> NEW.canonical_root
+      OR dependency.display_root <> NEW.display_root
+      OR dependency.namespace_authority_current IS DISTINCT FROM TRUE
+      OR dependency.dns_zone_current IS DISTINCT FROM TRUE
+      OR dependency.dns_delegation_current IS DISTINCT FROM TRUE THEN
+      RAISE EXCEPTION 'handle sale namespace requires current verified HNS and DNS delegation authority';
+    END IF;
+  END IF;
+  RETURN NEW;
 END;
 $$;
 
@@ -8962,6 +9308,55 @@ CREATE TABLE community_follows (
     CONSTRAINT community_follows_status_timestamp_check CHECK ((((status = 'active'::text) AND (unfollowed_at IS NULL)) OR ((status = 'inactive'::text) AND (unfollowed_at IS NOT NULL))))
 );
 
+CREATE TABLE community_handle_sale_namespace_activation_actions (
+    action_id text NOT NULL,
+    actor_account_id text NOT NULL,
+    community_id text NOT NULL,
+    endpoint_template text NOT NULL,
+    idempotency_key text NOT NULL,
+    request_hash text NOT NULL,
+    sale_namespace_activation_id text NOT NULL,
+    expected_activation_generation bigint NOT NULL,
+    result_activation_generation bigint NOT NULL,
+    result_activation_hash text NOT NULL,
+    committed_at timestamp with time zone NOT NULL,
+    CONSTRAINT community_handle_sale_namespace_ac_result_activation_hash_check CHECK ((result_activation_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT community_handle_sale_namespace_activat_endpoint_template_check CHECK ((endpoint_template = ANY (ARRAY['/communities/:communityId/handle-sale-namespaces'::text, '/communities/:communityId/handle-sale-namespaces/:activationId/revisions'::text]))),
+    CONSTRAINT community_handle_sale_namespace_activation_a_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT handle_sale_activation_actions_identity_check CHECK ((is_handle_sales_identifier_v1(action_id, 128) AND is_handle_sales_identifier_v1(idempotency_key, 128) AND is_handle_sales_identifier_v1(sale_namespace_activation_id, 128) AND ((expected_activation_generation >= 0) AND (expected_activation_generation <= '9007199254740990'::bigint)) AND (result_activation_generation = (expected_activation_generation + 1))))
+);
+
+CREATE TABLE community_handle_sale_namespace_activation_current (
+    sale_namespace_activation_id text NOT NULL,
+    family text NOT NULL,
+    canonical_root text NOT NULL,
+    community_id text NOT NULL,
+    current_generation bigint NOT NULL,
+    updated_at timestamp with time zone NOT NULL,
+    CONSTRAINT community_handle_sale_namespace_activation_current_family_check CHECK ((family = 'hns'::text)),
+    CONSTRAINT handle_sale_activation_current_identity_check CHECK ((is_handle_sales_identifier_v1(sale_namespace_activation_id, 128) AND is_community_route_root_label(family, canonical_root) AND (canonical_root <> 'pirate'::text) AND ((current_generation >= 1) AND (current_generation <= '9007199254740991'::bigint))))
+);
+
+CREATE TABLE community_handle_sales_authority_grants (
+    grant_id text NOT NULL,
+    community_id text NOT NULL,
+    principal_account_id text NOT NULL,
+    authority text NOT NULL,
+    source_kind text NOT NULL,
+    source_policy_ref text,
+    status text NOT NULL,
+    granted_at timestamp with time zone NOT NULL,
+    granted_by_account_id text NOT NULL,
+    revoked_at timestamp with time zone,
+    revoked_by_account_id text,
+    CONSTRAINT community_handle_sales_authority_grants_authority_check CHECK ((authority = 'manage_handle_sales'::text)),
+    CONSTRAINT community_handle_sales_authority_grants_identity_check CHECK (is_handle_sales_identifier_v1(grant_id, 128)),
+    CONSTRAINT community_handle_sales_authority_grants_source_kind_check CHECK ((source_kind = ANY (ARRAY['creator_owner'::text, 'community_policy'::text]))),
+    CONSTRAINT community_handle_sales_authority_grants_source_shape CHECK ((((source_kind = 'creator_owner'::text) AND (source_policy_ref IS NULL)) OR ((source_kind = 'community_policy'::text) AND is_handle_sales_identifier_v1(source_policy_ref, 256)))),
+    CONSTRAINT community_handle_sales_authority_grants_status_check CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text]))),
+    CONSTRAINT community_handle_sales_authority_grants_status_shape CHECK ((((status = 'active'::text) AND (revoked_at IS NULL) AND (revoked_by_account_id IS NULL)) OR ((status = 'revoked'::text) AND (revoked_at IS NOT NULL) AND (revoked_by_account_id IS NOT NULL))))
+);
+
 CREATE TABLE community_memberships (
     community_id text NOT NULL,
     membership_id text NOT NULL,
@@ -12152,6 +12547,24 @@ ALTER TABLE ONLY community_follows
 ALTER TABLE ONLY community_follows
     ADD CONSTRAINT community_follows_user_unique UNIQUE (community_id, user_id);
 
+ALTER TABLE ONLY community_handle_sale_namespace_activation_actions
+    ADD CONSTRAINT community_handle_sale_namespace_activation_actions_pkey PRIMARY KEY (action_id);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_current
+    ADD CONSTRAINT community_handle_sale_namespace_activation_current_pkey PRIMARY KEY (sale_namespace_activation_id);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_current
+    ADD CONSTRAINT community_handle_sale_namespace_activation_current_root_unique UNIQUE (family, canonical_root);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_revisions
+    ADD CONSTRAINT community_handle_sale_namespace_activation_revisions_pk PRIMARY KEY (sale_namespace_activation_id, sale_namespace_activation_generation);
+
+ALTER TABLE ONLY community_handle_sales_authority_grants
+    ADD CONSTRAINT community_handle_sales_authority_grants_pkey PRIMARY KEY (grant_id);
+
+ALTER TABLE ONLY community_handle_sales_authority_grants
+    ADD CONSTRAINT community_handle_sales_authority_grants_tuple_unique UNIQUE (community_id, principal_account_id, authority);
+
 ALTER TABLE ONLY community_memberships
     ADD CONSTRAINT community_memberships_pkey PRIMARY KEY (community_id, membership_id);
 
@@ -12379,6 +12792,9 @@ ALTER TABLE ONLY evidence_receipts
 
 ALTER TABLE ONLY evidence_receipts
     ADD CONSTRAINT evidence_receipts_pkey PRIMARY KEY (evidence_receipt_id);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_actions
+    ADD CONSTRAINT handle_sale_activation_actions_replay_unique UNIQUE (actor_account_id, endpoint_template, idempotency_key);
 
 ALTER TABLE ONLY hns_authority_inventories
     ADD CONSTRAINT hns_authority_inventories_identity_unique UNIQUE (authority_inventory_reference, authority_inventory_version, authority_inventory_digest);
@@ -13015,6 +13431,8 @@ CREATE INDEX community_feed_rank_idx ON community_feed_projection USING btree (c
 
 CREATE INDEX community_follows_user_status_idx ON community_follows USING btree (user_id, status);
 
+CREATE INDEX community_handle_sales_authority_grants_principal_idx ON community_handle_sales_authority_grants USING btree (principal_account_id, community_id, status);
+
 CREATE INDEX community_memberships_status_idx ON community_memberships USING btree (community_id, status, updated_at DESC);
 
 CREATE INDEX community_policy_current_version_idx ON community_policy_current USING btree (policy_version_id);
@@ -13086,6 +13504,8 @@ CREATE UNIQUE INDEX evidence_receipts_session_hash_uidx ON evidence_receipts USI
 CREATE INDEX evidence_receipts_session_observed_idx ON evidence_receipts USING btree (proof_session_id, observed_at DESC, evidence_receipt_id);
 
 CREATE INDEX evidence_receipts_user_observed_idx ON evidence_receipts USING btree (user_id, observed_at DESC, evidence_receipt_id);
+
+CREATE INDEX handle_sale_activation_current_community_idx ON community_handle_sale_namespace_activation_current USING btree (community_id, updated_at DESC);
 
 CREATE INDEX hns_authority_inventories_current_idx ON hns_authority_inventories USING btree (registry_reference, published_at DESC, expires_at);
 
@@ -13285,6 +13705,8 @@ CREATE CONSTRAINT TRIGGER community_creation_route_v1_commit_guard AFTER INSERT 
 
 CREATE TRIGGER community_creation_subject_claim_append_only BEFORE DELETE OR UPDATE ON community_creation_subject_claims FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
 
+CREATE TRIGGER community_handle_sales_authority_grants_change_guard BEFORE DELETE OR UPDATE ON community_handle_sales_authority_grants FOR EACH ROW EXECUTE FUNCTION guard_community_handle_sales_authority_grant_change();
+
 CREATE TRIGGER community_policy_provider_binding_append_only BEFORE DELETE OR UPDATE ON community_policy_provider_bindings FOR EACH ROW EXECUTE FUNCTION reject_community_creation_immutable_change();
 
 CREATE TRIGGER community_purchase_allocation_snapshot_append_only BEFORE DELETE OR UPDATE ON community_purchase_allocation_snapshots FOR EACH ROW EXECUTE FUNCTION reject_community_commerce_immutable_change();
@@ -13388,6 +13810,14 @@ CREATE TRIGGER decision_records_append_only BEFORE DELETE OR UPDATE ON decision_
 CREATE TRIGGER evidence_receipts_append_only BEFORE DELETE OR UPDATE ON evidence_receipts FOR EACH ROW EXECUTE FUNCTION gates_v2_append_only_guard();
 
 CREATE TRIGGER evidence_receipts_validate_metadata BEFORE INSERT OR UPDATE ON evidence_receipts FOR EACH ROW EXECUTE FUNCTION gates_v2_validate_evidence_receipt();
+
+CREATE TRIGGER handle_sale_activation_actions_append_only BEFORE DELETE OR UPDATE ON community_handle_sale_namespace_activation_actions FOR EACH ROW EXECUTE FUNCTION reject_community_handle_sale_namespace_append_only_change();
+
+CREATE TRIGGER handle_sale_activation_current_change_guard BEFORE INSERT OR DELETE OR UPDATE ON community_handle_sale_namespace_activation_current FOR EACH ROW EXECUTE FUNCTION guard_community_handle_sale_namespace_current_change();
+
+CREATE TRIGGER handle_sale_activation_revision_insert_guard BEFORE INSERT ON community_handle_sale_namespace_activation_revisions FOR EACH ROW EXECUTE FUNCTION validate_community_handle_sale_namespace_revision_insert();
+
+CREATE TRIGGER handle_sale_activation_revisions_append_only BEFORE DELETE OR UPDATE ON community_handle_sale_namespace_activation_revisions FOR EACH ROW EXECUTE FUNCTION reject_community_handle_sale_namespace_append_only_change();
 
 CREATE TRIGGER hns_authority_inventories_append_only BEFORE DELETE OR UPDATE ON hns_authority_inventories FOR EACH ROW EXECUTE FUNCTION reject_hns_control_observer_append_only_change();
 
@@ -13974,6 +14404,48 @@ ALTER TABLE ONLY community_feed_projection
 
 ALTER TABLE ONLY community_follows
     ADD CONSTRAINT community_follows_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_revisions
+    ADD CONSTRAINT community_handle_sale_namespa_namespace_authority_referenc_fkey FOREIGN KEY (namespace_authority_reference) REFERENCES community_route_ownership_evidence(evidence_ref);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_revisions
+    ADD CONSTRAINT community_handle_sale_namespace_activat_authority_grant_id_fkey FOREIGN KEY (authority_grant_id) REFERENCES community_handle_sales_authority_grants(grant_id);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_actions
+    ADD CONSTRAINT community_handle_sale_namespace_activati_actor_account_id_fkey1 FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_revisions
+    ADD CONSTRAINT community_handle_sale_namespace_activatio_actor_account_id_fkey FOREIGN KEY (actor_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_actions
+    ADD CONSTRAINT community_handle_sale_namespace_activation_ac_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_actions
+    ADD CONSTRAINT community_handle_sale_namespace_activation_actions_result_fk FOREIGN KEY (sale_namespace_activation_id, result_activation_generation) REFERENCES community_handle_sale_namespace_activation_revisions(sale_namespace_activation_id, sale_namespace_activation_generation) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_current
+    ADD CONSTRAINT community_handle_sale_namespace_activation_cu_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_current
+    ADD CONSTRAINT community_handle_sale_namespace_activation_current_revision_fk FOREIGN KEY (sale_namespace_activation_id, current_generation) REFERENCES community_handle_sale_namespace_activation_revisions(sale_namespace_activation_id, sale_namespace_activation_generation) DEFERRABLE INITIALLY DEFERRED;
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_revisions
+    ADD CONSTRAINT community_handle_sale_namespace_activation_re_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
+
+ALTER TABLE ONLY community_handle_sale_namespace_activation_revisions
+    ADD CONSTRAINT community_handle_sale_namespace_activation_revisions_dns_fk FOREIGN KEY (dns_zone_activation_id, dns_zone_activation_generation) REFERENCES hns_dns_zone_activation_revisions(dns_zone_activation_id, dns_zone_activation_generation);
+
+ALTER TABLE ONLY community_handle_sales_authority_grants
+    ADD CONSTRAINT community_handle_sales_authority_gra_granted_by_account_id_fkey FOREIGN KEY (granted_by_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_handle_sales_authority_grants
+    ADD CONSTRAINT community_handle_sales_authority_gra_revoked_by_account_id_fkey FOREIGN KEY (revoked_by_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_handle_sales_authority_grants
+    ADD CONSTRAINT community_handle_sales_authority_gran_principal_account_id_fkey FOREIGN KEY (principal_account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY community_handle_sales_authority_grants
+    ADD CONSTRAINT community_handle_sales_authority_grants_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY community_memberships
     ADD CONSTRAINT community_memberships_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);

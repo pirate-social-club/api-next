@@ -17,6 +17,7 @@ import {
 } from "./community-creation.ts";
 import * as money from "./community-purchase-funding.ts";
 import { GetCanonicalCommunityRoute } from "./community-route-resolution.ts";
+import { handleSalesRegistry } from "./handle-sales.ts";
 import { PollHnsOwnerRecovery, StartHnsOwnerRecovery } from "./hns-owner-recovery.ts";
 import { CreateKaraokeAttempt, GetKaraokeAttempt, GetKaraokeLeaderboard } from "./karaoke.ts";
 import { PollNamespaceOwnership, StartNamespaceOwnership } from "./namespace-ownership.ts";
@@ -48,6 +49,7 @@ export const registry = {
   GetCanonicalCommunityRoute,
   StartHnsOwnerRecovery,
   PollHnsOwnerRecovery,
+  ...handleSalesRegistry,
   ListMyPersonas,
   CreatePersona,
   PreparePersonaEvmWallet,
