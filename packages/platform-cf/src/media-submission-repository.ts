@@ -2869,5 +2869,3 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     failProcessingAttempt,
   };
 }
-export const makeMediaSubmissionRepository = makeControlPlaneMediaSubmissionRepository;
-export const makeControlPlaneMediaSubmissionStore = makeControlPlaneMediaSubmissionRepository;

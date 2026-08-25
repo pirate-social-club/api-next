@@ -1234,5 +1234,3 @@ export function makeOpenRouterClassifierAdapter(
     },
   };
 }
-
-export const makeOpenRouterClassifier = makeOpenRouterClassifierAdapter;
