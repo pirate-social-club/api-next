@@ -6,12 +6,14 @@ import type { ClientConfig } from "pg";
 
 import {
   CONTROL_PLANE_CONNECT_TIMEOUT_MS,
+  CONTROL_PLANE_HYPERDRIVE_STARTUP_OPTIONS,
   CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
   CONTROL_PLANE_SLOW_STATEMENT_MS,
   CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
   type ControlPlaneLogFields,
   type ControlPlaneLogger,
   makeDirectPostgresControlPlaneLayer,
+  makeHyperdriveControlPlaneLayer,
   type PostgresClientLike,
   type PostgresQueryConfig,
   type PostgresQueryResult,
@@ -150,6 +152,49 @@ describe("Postgres control-plane adapter", () => {
       { text: "COMMIT", values: [] },
     ]);
     expect(client.events).toEqual(["connect", "end"]);
+  });
+
+  test("selects the clean-break schema only for Hyperdrive sessions", async () => {
+    const hyperdriveClient = new FakePostgresClient();
+    const directClient = new FakePostgresClient();
+    let hyperdriveConfig: ClientConfig | undefined;
+    let directConfig: ClientConfig | undefined;
+    const run = (layer: ReturnType<typeof makeDirectPostgresControlPlaneLayer>) =>
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            return yield* db.execute(statement);
+          }).pipe(Effect.provide(layer)),
+        ),
+      );
+
+    await run(
+      makeHyperdriveControlPlaneLayer(
+        { connectionString: "postgres://hyperdrive.invalid/control" },
+        {
+          clientFactory: (_url, config) => {
+            hyperdriveConfig = config;
+            return hyperdriveClient;
+          },
+          logger: silentLogger,
+        },
+      ),
+    );
+    await run(
+      makeDirectPostgresControlPlaneLayer("postgres://direct.invalid/control", {
+        clientFactory: (_url, config) => {
+          directConfig = config;
+          return directClient;
+        },
+        logger: silentLogger,
+      }),
+    );
+
+    expect(hyperdriveConfig?.options).toBe(CONTROL_PLANE_HYPERDRIVE_STARTUP_OPTIONS);
+    expect(directConfig?.options).toBeUndefined();
+    expect(hyperdriveClient.events).toEqual(["connect", "end"]);
+    expect(directClient.events).toEqual(["connect", "end"]);
   });
 
   test("uses the single result or final result for multi-statement queries", async () => {

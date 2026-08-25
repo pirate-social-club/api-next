@@ -30,6 +30,13 @@ export const CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS = 30_000;
  */
 export const CONTROL_PLANE_SLOW_STATEMENT_MS = 1_000;
 
+/**
+ * Hyperdrive retains the origin host, database, and credential, but its Worker
+ * connection string cannot carry the origin URL's startup `options` member.
+ * Select the accepted clean-break schema explicitly for Hyperdrive sessions.
+ */
+export const CONTROL_PLANE_HYPERDRIVE_STARTUP_OPTIONS = "-c search_path=api_next,pg_catalog";
+
 export interface PostgresStreamLike {
   readonly destroy: (reason?: Error) => unknown;
 }
@@ -452,18 +459,20 @@ class PostgresTransaction implements ControlPlaneTransaction {
   }
 }
 
-function makeClientConfig(connectionString: string): ClientConfig {
+function makeClientConfig(connectionString: string, startupOptions?: string): ClientConfig {
   return {
     connectionString,
     connectionTimeoutMillis: CONTROL_PLANE_CONNECT_TIMEOUT_MS,
     statement_timeout: CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
     idle_in_transaction_session_timeout: CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
+    ...(startupOptions === undefined ? {} : { options: startupOptions }),
   };
 }
 
 function makeControlPlaneLayer(
   connectionString: string,
   options: PostgresControlPlaneOptions = {},
+  startupOptions?: string,
 ) {
   const clientFactory = options.clientFactory ?? defaultClientFactory;
   const logger = options.logger ?? DEFAULT_LOGGER;
@@ -476,7 +485,7 @@ function makeControlPlaneLayer(
         Effect.tryPromise({
           try: () =>
             Promise.resolve(
-              clientFactory(connectionString, makeClientConfig(connectionString)),
+              clientFactory(connectionString, makeClientConfig(connectionString, startupOptions)),
             ).then((client) => new PostgresSession(client, logger, now)),
           catch: () =>
             new ControlPlaneAcquireFailed({
@@ -505,7 +514,11 @@ export function makeHyperdriveControlPlaneLayer(
   hyperdrive: HyperdriveConnection,
   options?: PostgresControlPlaneOptions,
 ) {
-  return makeControlPlaneLayer(hyperdrive.connectionString, options);
+  return makeControlPlaneLayer(
+    hyperdrive.connectionString,
+    options,
+    CONTROL_PLANE_HYPERDRIVE_STARTUP_OPTIONS,
+  );
 }
 
 /** Test constructor: accepts a direct Postgres URL and an injectable client. */
