@@ -5,6 +5,12 @@ import {
   type ControlPlaneTransaction,
   type M2Actor,
 } from "@pirate/application";
+import {
+  SONG_TRANSCRIPT_MAX_DURATION_MS,
+  SONG_TRANSCRIPT_SEGMENT_MAX_COUNT,
+  SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH,
+  SONG_TRANSCRIPT_TEXT_MAX_LENGTH,
+} from "@pirate/contracts";
 import { Data, Effect } from "effect";
 import {
   type BoundReference,
@@ -572,8 +578,30 @@ const validId = (value: unknown): value is string =>
 const validLyricsText = (value: unknown): value is string =>
   typeof value === "string" &&
   value.length >= 1 &&
-  value.length <= 200_000 &&
-  new TextEncoder().encode(value).byteLength <= 800_000;
+  value.length <= SONG_TRANSCRIPT_TEXT_MAX_LENGTH &&
+  new TextEncoder().encode(value).byteLength <= SONG_TRANSCRIPT_TEXT_MAX_LENGTH * 4;
+const validTranscriptArtifactContent = (
+  transcript: string,
+  segments: readonly Readonly<{ start_ms: number; end_ms: number; text: string }>[],
+): boolean =>
+  transcript.length > 0 &&
+  transcript.length <= SONG_TRANSCRIPT_TEXT_MAX_LENGTH &&
+  new TextEncoder().encode(transcript).byteLength <= SONG_TRANSCRIPT_TEXT_MAX_LENGTH * 4 &&
+  segments.length > 0 &&
+  segments.length <= SONG_TRANSCRIPT_SEGMENT_MAX_COUNT &&
+  segments.reduce((total, segment) => total + segment.text.length, 0) <=
+    SONG_TRANSCRIPT_TEXT_MAX_LENGTH &&
+  segments.every(
+    (segment, index, all) =>
+      Number.isSafeInteger(segment.start_ms) &&
+      Number.isSafeInteger(segment.end_ms) &&
+      segment.start_ms >= 0 &&
+      segment.end_ms > segment.start_ms &&
+      segment.end_ms <= SONG_TRANSCRIPT_MAX_DURATION_MS &&
+      segment.text.length > 0 &&
+      segment.text.length <= SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH &&
+      (index === 0 || segment.start_ms >= (all[index - 1]?.end_ms ?? -1)),
+  );
 const validHash = (value: unknown): value is string =>
   typeof value === "string" && HASH.test(value);
 const validRevision = (value: unknown, minimum = 0): value is number =>
@@ -1876,21 +1904,8 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         !validHash(input.expectedCanonicalAudioSha256) ||
         !validHash(input.transcriptSha256) ||
         !validId(input.transcriptArtifactRef) ||
-        input.transcript.length > 200_000 ||
-        new TextEncoder().encode(input.transcript).byteLength > 800_000 ||
         sha256Text(input.transcript) !== input.transcriptSha256 ||
-        input.segments.length > 10_000 ||
-        input.segments.reduce((total, segment) => total + segment.text.length, 0) > 200_000 ||
-        !input.segments.every(
-          (segment, index, all) =>
-            Number.isSafeInteger(segment.start_ms) &&
-            Number.isSafeInteger(segment.end_ms) &&
-            segment.start_ms >= 0 &&
-            segment.end_ms >= segment.start_ms &&
-            segment.end_ms <= 86_400_000 &&
-            segment.text.length <= 4096 &&
-            (index === 0 || segment.start_ms >= (all[index - 1]?.start_ms ?? -1)),
-        )
+        !validTranscriptArtifactContent(input.transcript, input.segments)
       )
         return yield* Effect.fail(
           fail("analysis", "invalid-input", { submissionId: input.submissionId }),
@@ -1947,22 +1962,10 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         !validHash(input.expectedCanonicalAudioSha256) ||
         (input.analysis.speechLyrics.status === "ready" &&
           input.transcriptArtifact !== undefined &&
-          (input.transcriptArtifact.transcript.length > 200_000 ||
-            input.transcriptArtifact.segments.reduce(
-              (total, segment) => total + segment.text.length,
-              0,
-            ) > 200_000 ||
-            input.transcriptArtifact.segments.length > 10_000 ||
-            !input.transcriptArtifact.segments.every(
-              (segment, index, all) =>
-                Number.isSafeInteger(segment.start_ms) &&
-                Number.isSafeInteger(segment.end_ms) &&
-                segment.start_ms >= 0 &&
-                segment.end_ms >= segment.start_ms &&
-                segment.end_ms <= 86_400_000 &&
-                segment.text.length <= 4096 &&
-                (index === 0 || segment.start_ms >= (all[index - 1]?.start_ms ?? -1)),
-            ))) ||
+          !validTranscriptArtifactContent(
+            input.transcriptArtifact.transcript,
+            input.transcriptArtifact.segments,
+          )) ||
         (input.analysis.speechLyrics.status === "ready" &&
           input.transcriptArtifact !== undefined &&
           sha256Text(input.transcriptArtifact?.transcript ?? "") !==

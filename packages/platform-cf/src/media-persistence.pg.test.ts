@@ -1,6 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ControlPlaneDb } from "@pirate/application";
+import {
+  SONG_TRANSCRIPT_MAX_DURATION_MS,
+  SONG_TRANSCRIPT_SEGMENT_MAX_COUNT,
+  SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH,
+  SONG_TRANSCRIPT_TEXT_MAX_LENGTH,
+} from "@pirate/contracts";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
@@ -25,7 +31,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 24;
+const testCount = 26;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -1059,6 +1065,54 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         [audioSha256],
       );
       await admin.query("ALTER TABLE media_timed_lyrics_artifacts ENABLE TRIGGER ALL");
+      await expect(
+        runPostgresMigrations({ connectionString: connection, migrations }),
+      ).rejects.toThrow();
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::text AS count FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='media_post_submissions' AND column_name='lyrics_revision'",
+          )
+        ).rows[0]?.count,
+      ).toBe("0");
+      expect(
+        (
+          await admin.query(
+            "SELECT count(*)::text AS count FROM schema_migrations WHERE version='0050_song_lyrics_foundation.sql'",
+          )
+        ).rows[0]?.count,
+      ).toBe("0");
+    } finally {
+      await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+      await admin.end();
+    }
+    completedTestCount += 1;
+  }, 40_000);
+  test("fails 0050 atomically over classifier-incompatible transcript rows", async () => {
+    if (connectionString === undefined)
+      throw new Error("Postgres test configuration is unavailable");
+    const schema = schemaName();
+    const admin = new Client({ connectionString });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    const connection = scopedConnection(connectionString, schema);
+    try {
+      const migrations = await loadPostgresMigrations();
+      const lyricsIndex = migrations.findIndex(
+        ({ version }) => version === "0050_song_lyrics_foundation.sql",
+      );
+      expect(lyricsIndex).toBeGreaterThan(0);
+      await runPostgresMigrations({
+        connectionString: connection,
+        migrations: migrations.slice(0, lyricsIndex),
+      });
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      await admin.query("ALTER TABLE media_transcript_artifacts DISABLE TRIGGER ALL");
+      await admin.query(
+        "INSERT INTO media_transcript_artifacts (transcript_artifact_ref,community_id,actor_user_id,submission_id,operation_id,audio_revision,analysis_revision,canonical_audio_sha256,transcript_sha256,transcript_text,segments,author_persona_id) VALUES ('legacy-empty-transcript','legacy-community','legacy-actor','legacy-submission','legacy-operation',1,1,$1,$2,'legacy transcript','[]'::jsonb,'legacy-persona')",
+        [audioSha256, sha256(new TextEncoder().encode("legacy transcript"))],
+      );
+      await admin.query("ALTER TABLE media_transcript_artifacts ENABLE TRIGGER ALL");
       await expect(
         runPostgresMigrations({ connectionString: connection, migrations }),
       ).rejects.toThrow();
@@ -2388,6 +2442,139 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
+  test("keeps ready transcript persistence aligned with classifier invariants", async () => {
+    await withSchema(async (admin, connection) => {
+      await createThroughDecision(connection, decision, analysis, true);
+      const validSegment = { start_ms: 0, end_ms: 1, text: "valid" } as const;
+      const invalidTranscripts: ReadonlyArray<
+        readonly [
+          string,
+          string,
+          readonly Readonly<{ start_ms: number; end_ms: number; text: string }>[],
+        ]
+      > = [
+        ["empty-transcript", "", [validSegment]],
+        ["empty-segments", "invalid", []],
+        ["zero-duration", "invalid", [{ start_ms: 0, end_ms: 0, text: "invalid" }]],
+        ["empty-segment-text", "invalid", [{ start_ms: 0, end_ms: 1, text: "" }]],
+        [
+          "overlap",
+          "invalid",
+          [
+            { start_ms: 0, end_ms: 10, text: "first" },
+            { start_ms: 5, end_ms: 15, text: "overlap" },
+          ],
+        ],
+        [
+          "unordered",
+          "invalid",
+          [
+            { start_ms: 10, end_ms: 20, text: "first" },
+            { start_ms: 0, end_ms: 5, text: "unordered" },
+          ],
+        ],
+        [
+          "duration-overflow",
+          "invalid",
+          [{ start_ms: 0, end_ms: SONG_TRANSCRIPT_MAX_DURATION_MS + 1, text: "invalid" }],
+        ],
+        [
+          "segment-text-overflow",
+          "invalid",
+          [
+            {
+              start_ms: 0,
+              end_ms: 1,
+              text: "x".repeat(SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH + 1),
+            },
+          ],
+        ],
+        [
+          "segment-count-overflow",
+          "invalid",
+          Array.from({ length: SONG_TRANSCRIPT_SEGMENT_MAX_COUNT + 1 }, (_, index) => ({
+            start_ms: index,
+            end_ms: index + 1,
+            text: "x",
+          })),
+        ],
+        ["transcript-overflow", "x".repeat(SONG_TRANSCRIPT_TEXT_MAX_LENGTH + 1), [validSegment]],
+      ];
+      for (const [suffix, transcript, segments] of invalidTranscripts) {
+        await expect(
+          run(connection, (store) =>
+            store.acceptTranscript({
+              ...command(
+                connection,
+                "/media-post-submissions/:submissionId/transcript",
+                `invalid-transcript-${suffix}`,
+              ),
+              expectedAudioRevision: 1,
+              expectedCanonicalAudioSha256: audioSha256,
+              transcriptRevision: 2,
+              transcriptArtifactRef: `invalid-transcript-${suffix}`,
+              transcriptSha256: sha256(new TextEncoder().encode(transcript)),
+              transcript,
+              segments,
+            }),
+          ),
+        ).rejects.toMatchObject({ reason: "invalid-input" });
+      }
+
+      const boundaryTranscript = "x".repeat(SONG_TRANSCRIPT_TEXT_MAX_LENGTH);
+      const boundarySegments = Array.from(
+        { length: SONG_TRANSCRIPT_SEGMENT_MAX_COUNT },
+        (_, index) => ({
+          start_ms: index,
+          end_ms:
+            index === SONG_TRANSCRIPT_SEGMENT_MAX_COUNT - 1
+              ? SONG_TRANSCRIPT_MAX_DURATION_MS
+              : index + 1,
+          text: index === 0 ? "x".repeat(SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH) : "x",
+        }),
+      );
+      await expect(
+        run(connection, (store) =>
+          store.acceptTranscript({
+            ...command(
+              connection,
+              "/media-post-submissions/:submissionId/transcript",
+              "boundary-transcript",
+            ),
+            expectedAudioRevision: 1,
+            expectedCanonicalAudioSha256: audioSha256,
+            transcriptRevision: 2,
+            transcriptArtifactRef: "boundary-transcript",
+            transcriptSha256: sha256(new TextEncoder().encode(boundaryTranscript)),
+            transcript: boundaryTranscript,
+            segments: boundarySegments,
+          }),
+        ),
+      ).resolves.toEqual({ kind: "committed", submissionId: submission });
+
+      for (const [suffix, transcript, segments] of invalidTranscripts) {
+        await admin.query("BEGIN");
+        await expect(
+          admin.query(
+            "INSERT INTO media_transcript_artifacts (transcript_artifact_ref,community_id,actor_user_id,submission_id,operation_id,audio_revision,analysis_revision,canonical_audio_sha256,transcript_sha256,transcript_text,segments) VALUES ($1,$2,$3,$4,$5,1,3,$6,$7,$8,$9::jsonb)",
+            [
+              `hostile-transcript-${suffix}`,
+              community,
+              actor,
+              submission,
+              operation,
+              audioSha256,
+              sha256(new TextEncoder().encode(transcript)),
+              transcript,
+              JSON.stringify(segments),
+            ],
+          ),
+        ).rejects.toThrow();
+        await admin.query("ROLLBACK");
+      }
+    });
+    completedTestCount += 1;
+  }, 40_000);
   test("accepts normalized unavailable, no-speech disagreement, and ready speech snapshots", async () => {
     await withSchema(async (admin, connection) => {
       const unavailable: TrustedSongAnalysis = {
@@ -2559,7 +2746,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       };
       await createThroughDecision(connection, decision, ready, true, {
         transcript: readyTranscript,
-        segments: [],
+        segments: [{ start_ms: 0, end_ms: 1_000, text: readyTranscript }],
       });
       const storedSnapshotValue = (
         await admin.query(
@@ -2744,7 +2931,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       };
       await createThroughDecision(connection, explicitDecision, explicitAnalysis, false, {
         transcript,
-        segments: [],
+        segments: [{ start_ms: 0, end_ms: 1_000, text: transcript }],
       });
       const postId = `media-post-${operation}`;
       await run(connection, (store) =>

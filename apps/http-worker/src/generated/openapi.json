@@ -23350,6 +23350,9 @@
                                   "type": "string",
                                   "allOf": [
                                     {
+                                      "minLength": 1
+                                    },
+                                    {
                                       "maxLength": 200000
                                     }
                                   ]
@@ -24797,6 +24800,9 @@
                                   "type": "string",
                                   "allOf": [
                                     {
+                                      "minLength": 1
+                                    },
+                                    {
                                       "maxLength": 200000
                                     }
                                   ]
@@ -26115,6 +26121,9 @@
                                   "type": "string",
                                   "allOf": [
                                     {
+                                      "minLength": 1
+                                    },
+                                    {
                                       "maxLength": 200000
                                     }
                                   ]
@@ -27396,6 +27405,9 @@
                                   "type": "string",
                                   "allOf": [
                                     {
+                                      "minLength": 1
+                                    },
+                                    {
                                       "maxLength": 200000
                                     }
                                   ]
@@ -28659,6 +28671,9 @@
                                   "type": "string",
                                   "allOf": [
                                     {
+                                      "minLength": 1
+                                    },
+                                    {
                                       "maxLength": 200000
                                     }
                                   ]
@@ -29830,6 +29845,9 @@
                                 "text": {
                                   "type": "string",
                                   "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
                                     {
                                       "maxLength": 200000
                                     }
@@ -31103,6 +31121,9 @@
                                   "type": "string",
                                   "allOf": [
                                     {
+                                      "minLength": 1
+                                    },
+                                    {
                                       "maxLength": 200000
                                     }
                                   ]
@@ -32374,6 +32395,9 @@
                                 "text": {
                                   "type": "string",
                                   "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
                                     {
                                       "maxLength": 200000
                                     }
@@ -33769,6 +33793,9 @@
                                 "text": {
                                   "type": "string",
                                   "allOf": [
+                                    {
+                                      "minLength": 1
+                                    },
                                     {
                                       "maxLength": 200000
                                     }

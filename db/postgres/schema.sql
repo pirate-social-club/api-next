@@ -6547,17 +6547,40 @@ $$;
 CREATE FUNCTION validate_media_transcript_artifact() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
-DECLARE segment JSONB; previous_start NUMERIC := 0; start_value NUMERIC; end_value NUMERIC; start_ms BIGINT; end_ms BIGINT; total_segment_text BIGINT := 0;
+DECLARE segment JSONB; previous_end NUMERIC := NULL; start_value NUMERIC; end_value NUMERIC; total_segment_text BIGINT := 0;
 BEGIN
-  IF char_length(NEW.transcript_text) > 200000 OR encode(sha256(convert_to(NEW.transcript_text, 'UTF8')), 'hex') IS DISTINCT FROM NEW.transcript_sha256 THEN RAISE EXCEPTION 'transcript payload is not bounded or hashed'; END IF;
+  IF char_length(NEW.transcript_text) < 1
+     OR char_length(NEW.transcript_text) > 200000
+     OR jsonb_array_length(NEW.segments) < 1
+     OR encode(sha256(convert_to(NEW.transcript_text, 'UTF8')), 'hex') IS DISTINCT FROM NEW.transcript_sha256 THEN
+    RAISE EXCEPTION 'transcript payload is not bounded or hashed';
+  END IF;
   FOR segment IN SELECT value FROM jsonb_array_elements(NEW.segments) LOOP
-    IF jsonb_typeof(segment) IS DISTINCT FROM 'object' OR (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(segment) AS key) IS DISTINCT FROM ARRAY['end_ms','start_ms','text']::TEXT[] OR jsonb_typeof(segment->'start_ms') IS DISTINCT FROM 'number' OR jsonb_typeof(segment->'end_ms') IS DISTINCT FROM 'number' OR jsonb_typeof(segment->'text') IS DISTINCT FROM 'string' OR char_length(segment->>'text') > 4096 THEN RAISE EXCEPTION 'transcript segment shape is invalid'; END IF;
+    IF jsonb_typeof(segment) IS DISTINCT FROM 'object'
+       OR (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(segment) AS key)
+          IS DISTINCT FROM ARRAY['end_ms','start_ms','text']::TEXT[]
+       OR jsonb_typeof(segment->'start_ms') IS DISTINCT FROM 'number'
+       OR jsonb_typeof(segment->'end_ms') IS DISTINCT FROM 'number'
+       OR jsonb_typeof(segment->'text') IS DISTINCT FROM 'string'
+       OR char_length(segment->>'text') < 1
+       OR char_length(segment->>'text') > 4096 THEN
+      RAISE EXCEPTION 'transcript segment shape is invalid';
+    END IF;
     total_segment_text := total_segment_text + char_length(segment->>'text');
-    IF total_segment_text > 200000 THEN RAISE EXCEPTION 'transcript segment text aggregate exceeds 200000 characters'; END IF;
-    start_value := (segment->>'start_ms')::numeric; end_value := (segment->>'end_ms')::numeric;
-    IF start_value < 0 OR end_value < start_value OR end_value > 86400000 OR start_value <> trunc(start_value) OR end_value <> trunc(end_value) OR start_value < previous_start THEN RAISE EXCEPTION 'transcript segment timing is invalid'; END IF;
-    start_ms := start_value::bigint; end_ms := end_value::bigint;
-    previous_start := start_ms;
+    IF total_segment_text > 200000 THEN
+      RAISE EXCEPTION 'transcript segment text aggregate exceeds 200000 characters';
+    END IF;
+    start_value := (segment->>'start_ms')::numeric;
+    end_value := (segment->>'end_ms')::numeric;
+    IF start_value < 0
+       OR end_value <= start_value
+       OR end_value > 86400000
+       OR start_value <> trunc(start_value)
+       OR end_value <> trunc(end_value)
+       OR (previous_end IS NOT NULL AND start_value < previous_end) THEN
+      RAISE EXCEPTION 'transcript segment timing is invalid';
+    END IF;
+    previous_end := end_value;
   END LOOP;
   RETURN NEW;
 END;

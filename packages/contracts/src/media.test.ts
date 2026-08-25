@@ -28,6 +28,9 @@ import {
   RetryMediaPostSubmission,
   RetryOrCancelSongSubmissionV1,
   SealUploadResultV1,
+  SONG_TRANSCRIPT_MAX_DURATION_MS,
+  SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH,
+  SONG_TRANSCRIPT_TEXT_MAX_LENGTH,
   SongAudioReservationV1,
   SongPublishedProjectionV1,
   SongStartInputV1,
@@ -786,6 +789,62 @@ describe("song media R1 derived-analysis contracts", () => {
       ],
     } as const;
     expect(decode(SongTranscriptArtifactV1, transcript)).toEqual(transcript);
+    expect(() => decode(SongTranscriptArtifactV1, { ...transcript, transcript: "" })).toThrow();
+    expect(() => decode(SongTranscriptArtifactV1, { ...transcript, segments: [] })).toThrow();
+    expect(() =>
+      decode(SongTranscriptArtifactV1, {
+        ...transcript,
+        segments: [{ start_ms: 0, end_ms: 0, text: "zero duration" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(SongTranscriptArtifactV1, {
+        ...transcript,
+        segments: [{ start_ms: 0, end_ms: 1, text: "" }],
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(SongTranscriptArtifactV1, {
+        ...transcript,
+        segments: [
+          { start_ms: 0, end_ms: 10, text: "first" },
+          { start_ms: 5, end_ms: 15, text: "overlap" },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(SongTranscriptArtifactV1, {
+        ...transcript,
+        segments: [
+          { start_ms: 10, end_ms: 20, text: "first" },
+          { start_ms: 0, end_ms: 5, text: "unordered" },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(SongTranscriptArtifactV1, {
+        ...transcript,
+        segments: [
+          {
+            start_ms: 0,
+            end_ms: SONG_TRANSCRIPT_MAX_DURATION_MS + 1,
+            text: "too long",
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      decode(SongTranscriptArtifactV1, {
+        ...transcript,
+        segments: [
+          {
+            start_ms: 0,
+            end_ms: 1,
+            text: "x".repeat(SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH + 1),
+          },
+        ],
+      }),
+    ).toThrow();
     for (const field of [
       "provider",
       "model_prose",
@@ -808,27 +867,43 @@ describe("song media R1 derived-analysis contracts", () => {
       end_ms: index + 1,
       text,
     });
+    const fullSegmentCount = Math.floor(
+      SONG_TRANSCRIPT_TEXT_MAX_LENGTH / SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH,
+    );
+    const remainingSegmentTextLength =
+      SONG_TRANSCRIPT_TEXT_MAX_LENGTH % SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH;
     const boundarySegments = [
-      ...Array.from({ length: 48 }, (_, index) => segment("x".repeat(4096), index)),
-      segment("x".repeat(3392), 48),
+      ...Array.from({ length: fullSegmentCount }, (_, index) =>
+        segment("x".repeat(SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH), index),
+      ),
+      ...(remainingSegmentTextLength > 0
+        ? [segment("x".repeat(remainingSegmentTextLength), fullSegmentCount)]
+        : []),
     ];
+    const aggregateOverflowSegments =
+      remainingSegmentTextLength > 0
+        ? [
+            ...boundarySegments.slice(0, -1),
+            segment("x".repeat(remainingSegmentTextLength + 1), fullSegmentCount),
+          ]
+        : [...boundarySegments, segment("x", fullSegmentCount)];
     expect(
       decode(SongTranscriptArtifactV1, {
         ...transcript,
-        transcript: "x".repeat(200_000),
+        transcript: "x".repeat(SONG_TRANSCRIPT_TEXT_MAX_LENGTH),
         segments: boundarySegments,
       }),
     ).toMatchObject({ segments: boundarySegments });
     expect(() =>
       decode(SongTranscriptArtifactV1, {
         ...transcript,
-        segments: [...boundarySegments.slice(0, -1), segment("x".repeat(3393), 48)],
+        segments: aggregateOverflowSegments,
       }),
     ).toThrow();
     expect(() =>
       decode(SongTranscriptArtifactV1, {
         ...transcript,
-        transcript: "x".repeat(200_001),
+        transcript: "x".repeat(SONG_TRANSCRIPT_TEXT_MAX_LENGTH + 1),
         segments: [],
       }),
     ).toThrow();

@@ -822,6 +822,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(bareHnsCommunityRouteV2MigrationSql)).toBe(
         bareHnsCommunityRouteV2Migration.checksum,
       );
+      expect(checksum(songLyricsFoundationMigrationSql)).toBe(
+        songLyricsFoundationMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -1286,7 +1289,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       ]);
     });
     completedTestCount += 1;
-  });
+  }, 20_000);
 
   test("refuses to invent provider configuration for an unexpected existing session", async () => {
     await withSchema(async (admin, scopedConnectionString) => {

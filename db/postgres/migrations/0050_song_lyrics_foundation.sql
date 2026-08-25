@@ -2,15 +2,83 @@
 -- evidence; accepted lyrics are a distinct, audio-bound author decision.
 
 -- Pre-0050 ready speech and timed-lyrics rows have no author-accepted lyrics
--- identity. Refuse that lossy upgrade before changing any catalog object; an
+-- identity. Transcript rows may also predate the classifier's strict ready
+-- shape. Refuse either lossy upgrade before changing any catalog object; an
 -- operator must first reconcile those rows through a separately reviewed data
--- migration. Other populated 0048 states upgrade in place below.
+-- migration. Other populated 0049 states upgrade in place below.
 DO $$
 BEGIN
   IF EXISTS (SELECT 1 FROM media_analysis_evidence WHERE speech_status = 'ready')
-     OR EXISTS (SELECT 1 FROM media_timed_lyrics_artifacts) THEN
-    RAISE EXCEPTION '0050 requires reconciliation of pre-foundation ready speech or timed lyrics rows';
+     OR EXISTS (SELECT 1 FROM media_timed_lyrics_artifacts)
+     OR EXISTS (
+       SELECT 1
+       FROM media_transcript_artifacts artifact
+       WHERE char_length(artifact.transcript_text) = 0
+          OR jsonb_array_length(artifact.segments) = 0
+          OR EXISTS (
+            SELECT 1
+            FROM (
+              SELECT
+                entry.segment->>'text' AS segment_text,
+                (entry.segment->>'start_ms')::numeric AS start_ms,
+                (entry.segment->>'end_ms')::numeric AS end_ms,
+                lag((entry.segment->>'end_ms')::numeric)
+                  OVER (ORDER BY entry.ordinality) AS previous_end_ms
+              FROM jsonb_array_elements(artifact.segments)
+                WITH ORDINALITY AS entry(segment, ordinality)
+            ) segment
+            WHERE char_length(segment.segment_text) = 0
+               OR segment.end_ms <= segment.start_ms
+               OR (
+                 segment.previous_end_ms IS NOT NULL
+                 AND segment.start_ms < segment.previous_end_ms
+               )
+          )
+     ) THEN
+    RAISE EXCEPTION '0050 requires reconciliation of pre-foundation ready speech, timed lyrics, or classifier-incompatible transcript rows';
   END IF;
+END;
+$$;
+
+-- These numeric ceilings mirror the exported @pirate/contracts transcript
+-- constants and are exercised against those constants by the PostgreSQL suite.
+CREATE OR REPLACE FUNCTION validate_media_transcript_artifact() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE segment JSONB; previous_end NUMERIC := NULL; start_value NUMERIC; end_value NUMERIC; total_segment_text BIGINT := 0;
+BEGIN
+  IF char_length(NEW.transcript_text) < 1
+     OR char_length(NEW.transcript_text) > 200000
+     OR jsonb_array_length(NEW.segments) < 1
+     OR encode(sha256(convert_to(NEW.transcript_text, 'UTF8')), 'hex') IS DISTINCT FROM NEW.transcript_sha256 THEN
+    RAISE EXCEPTION 'transcript payload is not bounded or hashed';
+  END IF;
+  FOR segment IN SELECT value FROM jsonb_array_elements(NEW.segments) LOOP
+    IF jsonb_typeof(segment) IS DISTINCT FROM 'object'
+       OR (SELECT array_agg(key ORDER BY key) FROM jsonb_object_keys(segment) AS key)
+          IS DISTINCT FROM ARRAY['end_ms','start_ms','text']::TEXT[]
+       OR jsonb_typeof(segment->'start_ms') IS DISTINCT FROM 'number'
+       OR jsonb_typeof(segment->'end_ms') IS DISTINCT FROM 'number'
+       OR jsonb_typeof(segment->'text') IS DISTINCT FROM 'string'
+       OR char_length(segment->>'text') < 1
+       OR char_length(segment->>'text') > 4096 THEN
+      RAISE EXCEPTION 'transcript segment shape is invalid';
+    END IF;
+    total_segment_text := total_segment_text + char_length(segment->>'text');
+    IF total_segment_text > 200000 THEN
+      RAISE EXCEPTION 'transcript segment text aggregate exceeds 200000 characters';
+    END IF;
+    start_value := (segment->>'start_ms')::numeric;
+    end_value := (segment->>'end_ms')::numeric;
+    IF start_value < 0
+       OR end_value <= start_value
+       OR end_value > 86400000
+       OR start_value <> trunc(start_value)
+       OR end_value <> trunc(end_value)
+       OR (previous_end IS NOT NULL AND start_value < previous_end) THEN
+      RAISE EXCEPTION 'transcript segment timing is invalid';
+    END IF;
+    previous_end := end_value;
+  END LOOP;
+  RETURN NEW;
 END;
 $$;
 
