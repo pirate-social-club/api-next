@@ -407,7 +407,7 @@ async function invoke(
       try {
         await persistEvidence(configuration, attemptId, selected._tag, providerStatus);
       } catch {
-        // A failed call remains failed; its evidence sink can be retried with the attempt ledger.
+        selected = failure(attemptId, "provider_unavailable");
       }
     }
     throw new ElevenLabsAsrFailure(selected);

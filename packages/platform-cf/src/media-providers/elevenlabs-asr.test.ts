@@ -237,6 +237,36 @@ describe("ElevenLabs ASR adapter", () => {
     });
   });
 
+  test("does not expose a permanent provider outcome when its evidence cannot persist", async () => {
+    let evidenceWrites = 0;
+    const failed = await providerFailure(
+      configured(
+        () => ({
+          status: 422,
+          headers: {},
+          body: {
+            open: async function* () {
+              yield encoder.encode('{"detail":"provider rejection"}');
+            },
+            cancel: () => undefined,
+          },
+        }),
+        {
+          evidence_sink: async () => {
+            evidenceWrites += 1;
+            throw new Error("fixture persistence failure");
+          },
+        },
+      ).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    expect(failed).toEqual({
+      _tag: "provider_unavailable",
+      retryability: "retryable",
+      attempt_id: "attempt-asr-1",
+    });
+    expect(evidenceWrites).toBe(1);
+  });
+
   test("projects music-only output as explicit no-speech evidence", async () => {
     const result = await Effect.runPromise(
       configured(() => response(musicOnlyResponse)).recognize(asrInput, {
