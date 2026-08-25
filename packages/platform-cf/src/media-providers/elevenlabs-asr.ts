@@ -128,8 +128,9 @@ function validLimits(options: EnabledElevenLabsAsrOptions): boolean {
 function combinedAdapterRevision(configuration: EnabledElevenLabsAsrOptions): string | null {
   const encoder = new TextEncoder();
   const adapterBytes = encoder.encode(configuration.adapter_revision).byteLength;
+  const modelBytes = encoder.encode(configuration.model).byteLength;
   const modelRevisionBytes = encoder.encode(configuration.model_revision).byteLength;
-  const combined = `elevenlabs-asr-v1:a${adapterBytes}:${configuration.adapter_revision}:m${modelRevisionBytes}:${configuration.model_revision}`;
+  const combined = `elevenlabs-asr-v1:a${adapterBytes}:${configuration.adapter_revision}:n${modelBytes}:${configuration.model}:m${modelRevisionBytes}:${configuration.model_revision}`;
   return boundedVisibleText(combined, 128) ? combined : null;
 }
 
@@ -249,6 +250,15 @@ async function resultForParsed(
               configuration.model_revision,
               configuration.adapter_revision,
               adapterRevision,
+              parsed.evidence.language_code,
+              parsed.evidence.language_probability,
+              parsed.evidence.text,
+              parsed.evidence.events.map(({ type, text, start_ms, end_ms }) => [
+                type,
+                text,
+                start_ms,
+                end_ms,
+              ]),
             ]),
           );
           return {
@@ -264,6 +274,8 @@ async function resultForParsed(
         })()
       : await (async () => {
           const transcript_sha256 = await sha256(parsed.transcript);
+          // This reference identifies the transcript artifact only. Detected-language
+          // evidence is a separate field in MediaAsrResult and is persisted beside it.
           const artifact_identity_sha256 = await sha256(
             JSON.stringify([
               "media-transcript-artifact-v1",

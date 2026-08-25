@@ -19,7 +19,7 @@ import {
 
 const encoder = new TextEncoder();
 const COMBINED_ADAPTER_REVISION =
-  "elevenlabs-asr-v1:a25:elevenlabs-asr-adapter-v1:m25:model-revision-2026-08-25" as const;
+  "elevenlabs-asr-v1:a25:elevenlabs-asr-adapter-v1:n20:fixture-scribe-model:m25:model-revision-2026-08-25" as const;
 
 function audioSource(
   bytes: Uint8Array = encoder.encode("fixture-audio"),
@@ -155,7 +155,7 @@ describe("ElevenLabs ASR adapter", () => {
     expect(first.byteLength).toBe(request.body.byteLength);
     const requestText = new TextDecoder().decode(first);
     expect(requestText).toContain('name="model_id"\r\n\r\nfixture-scribe-model');
-    expect(requestText).toContain('name="tag_audio_events"\r\n\r\nfalse');
+    expect(requestText).toContain('name="tag_audio_events"\r\n\r\ntrue');
     expect(requestText).toContain('name="timestamps_granularity"\r\n\r\nword');
     expect(requestText).toContain('name="webhook"\r\n\r\nfalse');
     expect(requestText).not.toContain('name="language_code"');
@@ -254,6 +254,17 @@ describe("ElevenLabs ASR adapter", () => {
     expect(changedSegments.transcript.transcript_artifact_ref).not.toBe(
       first.transcript.transcript_artifact_ref,
     );
+
+    const changedLanguage = await Effect.runPromise(
+      configured(() =>
+        response({ ...multilingualResponse, language_code: "fr", language_probability: 0.11 }),
+      ).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    if (changedLanguage.status !== "transcript") throw new Error("expected transcript");
+    expect(changedLanguage.detected_languages).not.toEqual(first.detected_languages);
+    expect(changedLanguage.transcript.transcript_artifact_ref).toBe(
+      first.transcript.transcript_artifact_ref,
+    );
   });
 
   test("returns hostile transcript evidence without an adapter-owned storage side effect", async () => {
@@ -300,9 +311,22 @@ describe("ElevenLabs ASR adapter", () => {
     );
     if (changedModel.status !== "transcript") throw new Error("expected transcript");
     expect(changedModel.adapter_revision).toBe(
-      "elevenlabs-asr-v1:a25:elevenlabs-asr-adapter-v1:m25:model-revision-2026-08-26",
+      "elevenlabs-asr-v1:a25:elevenlabs-asr-adapter-v1:n20:fixture-scribe-model:m25:model-revision-2026-08-26",
     );
     expect(changedModel.transcript.transcript_artifact_ref).not.toBe(
+      first.transcript.transcript_artifact_ref,
+    );
+
+    const changedRequestedModel = await Effect.runPromise(
+      configured(() => response(multilingualResponse), {
+        model: "fixture-scribe-v2",
+      }).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    if (changedRequestedModel.status !== "transcript") throw new Error("expected transcript");
+    expect(changedRequestedModel.adapter_revision).toBe(
+      "elevenlabs-asr-v1:a25:elevenlabs-asr-adapter-v1:n17:fixture-scribe-v2:m25:model-revision-2026-08-25",
+    );
+    expect(changedRequestedModel.transcript.transcript_artifact_ref).not.toBe(
       first.transcript.transcript_artifact_ref,
     );
 
@@ -372,6 +396,26 @@ describe("ElevenLabs ASR adapter", () => {
     );
     if (changedModel.status !== "no_speech") throw new Error("expected no speech");
     expect(changedModel.evidence_ref).not.toBe(result.evidence_ref);
+
+    const changedEvidence = await Effect.runPromise(
+      configured(() =>
+        response({
+          ...musicOnlyResponse,
+          text: "(applause)",
+          words: [
+            {
+              text: "(applause)",
+              start: 10,
+              end: 12,
+              type: "audio_event",
+              speaker_id: null,
+            },
+          ],
+        }),
+      ).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    if (changedEvidence.status !== "no_speech") throw new Error("expected no speech");
+    expect(changedEvidence.evidence_ref).not.toBe(result.evidence_ref);
   });
 
   test("rejects contradictory or absent no-speech evidence as malformed", async () => {
@@ -399,6 +443,12 @@ describe("ElevenLabs ASR adapter", () => {
         language_probability: 0,
         text: "(music)",
         words: [{ text: "(music)", start: 2, end: 1, type: "audio_event" }],
+      },
+      {
+        language_code: "en",
+        language_probability: 1,
+        text: "(music)",
+        words: [{ text: "(music)", start: 0, end: 2, type: "audio_event" }],
       },
     ]) {
       expect(

@@ -114,7 +114,7 @@ export function encodeElevenLabsAsrMultipart(
   const boundaryBytes = encoder.encode(boundary);
   const fields = [
     ["model_id", input.model],
-    ["tag_audio_events", "false"],
+    ["tag_audio_events", "true"],
     ["timestamps_granularity", "word"],
     ["diarize", "false"],
     ["webhook", "false"],

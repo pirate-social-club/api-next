@@ -41,7 +41,22 @@ export type ElevenLabsAsrParsedResponse =
       readonly segments: readonly MediaTranscriptSegment[];
       readonly detected_languages: readonly MediaDetectedLanguageEvidence[];
     }>
-  | Readonly<{ readonly kind: "no_speech" }>
+  | Readonly<{
+      readonly kind: "no_speech";
+      readonly evidence: Readonly<{
+        readonly language_code: string;
+        readonly language_probability: number;
+        readonly text: string;
+        readonly events: ReadonlyArray<
+          Readonly<{
+            readonly type: "audio_event";
+            readonly text: string;
+            readonly start_ms: number;
+            readonly end_ms: number;
+          }>
+        >;
+      }>;
+    }>
   | Readonly<{ readonly kind: "failure"; readonly failure: MediaProviderFailureTag }>;
 
 function headerValue(
@@ -227,21 +242,44 @@ function segmentsFor(
   return segments;
 }
 
-function isCoherentNoSpeech(response: ProviderResponseValue): boolean {
-  if (response.text.length === 0 || response.words.length === 0) return false;
-  if (response.words.some(({ type }) => type !== "audio_event")) return false;
-  if (response.words.map(({ text }) => text).join("") !== response.text) return false;
+function noSpeechEvidence(
+  response: ProviderResponseValue,
+): Extract<ElevenLabsAsrParsedResponse, { readonly kind: "no_speech" }> | null {
+  if (
+    response.text.length === 0 ||
+    response.words.length === 0 ||
+    response.language_probability !== 0
+  ) {
+    return null;
+  }
+  if (response.words.some(({ type }) => type !== "audio_event")) return null;
+  if (response.words.map(({ text }) => text).join("") !== response.text) return null;
 
   let previousEnd = 0;
+  const events: Array<{
+    readonly type: "audio_event";
+    readonly text: string;
+    readonly start_ms: number;
+    readonly end_ms: number;
+  }> = [];
   for (const entry of response.words) {
     if (entry.text.length === 0 || entry.text.length > MEDIA_TRANSCRIPT_SEGMENT_MAX_LENGTH) {
-      return false;
+      return null;
     }
     const value = timing(entry);
-    if (value === null || value.start_ms < previousEnd) return false;
+    if (value === null || value.start_ms < previousEnd) return null;
     previousEnd = value.end_ms;
+    events.push({ type: "audio_event", text: entry.text, ...value });
   }
-  return true;
+  return {
+    kind: "no_speech",
+    evidence: {
+      language_code: response.language_code,
+      language_probability: response.language_probability,
+      text: response.text,
+      events,
+    },
+  };
 }
 
 function parseDocument(document: unknown): ElevenLabsAsrParsedResponse {
@@ -267,9 +305,7 @@ function parseDocument(document: unknown): ElevenLabsAsrParsedResponse {
     return { kind: "failure", failure: "malformed_response" };
   }
   if (!response.words.some(({ type }) => type === "word")) {
-    return isCoherentNoSpeech(response)
-      ? { kind: "no_speech" }
-      : { kind: "failure", failure: "malformed_response" };
+    return noSpeechEvidence(response) ?? { kind: "failure", failure: "malformed_response" };
   }
   if (response.text.length === 0) return { kind: "failure", failure: "unparseable_result" };
   const segments = segmentsFor(response);
