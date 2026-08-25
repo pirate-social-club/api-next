@@ -318,6 +318,7 @@ export type MediaSubmissionCommand =
       reservationId: string;
     }>
   | (RevisionCommand & Readonly<{ event: "media_reservation_issued" }>)
+  | (RevisionCommand & Readonly<{ event: "finalize_requested"; reservationId: string }>)
   | (RevisionCommand & Readonly<{ event: "song_terms_bound"; terms: SongTerms }>)
   | (RevisionCommand &
       Readonly<{
@@ -845,7 +846,7 @@ export function transitionMediaSubmission(
         return stale(command.expectedCreationRevision, current.creationRevision);
       if (
         !validTerms(command.terms) ||
-        (!["awaiting_upload", "finalize", "analysis", "decision"].includes(current.phase ?? "") &&
+        (!["awaiting_upload", "analysis", "decision"].includes(current.phase ?? "") &&
           !["action_required", "manual_review"].includes(current.status))
       )
         return reject({
@@ -867,6 +868,24 @@ export function transitionMediaSubmission(
         failure: null,
         abandonment: null,
       };
+      break;
+    }
+    case "finalize_requested": {
+      if (command.expectedCreationRevision !== current.creationRevision)
+        return stale(command.expectedCreationRevision, current.creationRevision);
+      if (
+        command.reservationId !== current.reservationId ||
+        current.status !== "processing" ||
+        current.phase !== "awaiting_upload" ||
+        current.audioRevision !== 0 ||
+        current.audio !== null
+      )
+        return reject({
+          _tag: "transition_not_allowed",
+          state: current.status,
+          event: command.event,
+        });
+      next = { ...current, phase: "finalize" };
       break;
     }
     case "song_lyrics_bound": {
@@ -916,7 +935,7 @@ export function transitionMediaSubmission(
         command.expectedAudioRevision !== current.audioRevision ||
         current.audio !== null ||
         command.audio.audioRevision !== 1 ||
-        current.phase !== "awaiting_upload"
+        current.phase !== "finalize"
       )
         return reject({
           _tag: "transition_not_allowed",
