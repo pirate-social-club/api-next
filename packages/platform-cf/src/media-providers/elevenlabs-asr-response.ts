@@ -15,13 +15,50 @@ import type {
 } from "./elevenlabs-asr-types.ts";
 import { ELEVENLABS_ASR_HARD_MAX_PROVIDER_ENTRIES } from "./elevenlabs-asr-types.ts";
 
+const PROVIDER_IDENTIFIER_MAX_BYTES = 256 as const;
+
+const ProviderIdentifier = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(PROVIDER_IDENTIFIER_MAX_BYTES),
+  Schema.makeFilter((value) =>
+    value.trim() === value &&
+    new TextEncoder().encode(value).byteLength <= PROVIDER_IDENTIFIER_MAX_BYTES &&
+    [...value].every((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint >= 0x20 && !(codePoint >= 0x7f && codePoint <= 0x9f);
+    })
+      ? undefined
+      : "Expected a bounded provider identifier",
+  ),
+);
+
+const ProviderLogProbability = Schema.Number.check(
+  Schema.makeFilter((value) =>
+    Number.isFinite(value) && value <= 0
+      ? undefined
+      : "Expected a finite provider log probability no greater than zero",
+  ),
+);
+
+const ProviderAudioDuration = Schema.Number.check(
+  Schema.makeFilter((value) =>
+    Number.isFinite(value) && value >= 0 && value * 1_000 <= MEDIA_TRANSCRIPT_MAX_DURATION_MS
+      ? undefined
+      : "Expected a bounded provider audio duration",
+  ),
+);
+
+const EmptyProviderCollection = Schema.Array(Schema.Unknown).check(Schema.isMaxLength(0));
+
 const ProviderWord = Schema.Struct({
   text: Schema.String,
-  start: Schema.Number,
-  end: Schema.Number,
+  start: Schema.optional(Schema.NullOr(Schema.Number)),
+  end: Schema.optional(Schema.NullOr(Schema.Number)),
   type: Schema.Literals(["word", "spacing", "audio_event"]),
-  speaker_id: Schema.optional(Schema.NullOr(Schema.String)),
-  logprob: Schema.optional(Schema.Number),
+  speaker_id: Schema.optional(Schema.NullOr(ProviderIdentifier)),
+  logprob: ProviderLogProbability,
+  characters: Schema.optional(Schema.NullOr(EmptyProviderCollection)),
+  channel_index: Schema.optional(Schema.Null),
 });
 
 const ProviderResponse = Schema.Struct({
@@ -29,6 +66,11 @@ const ProviderResponse = Schema.Struct({
   language_probability: Schema.Number,
   text: Schema.String,
   words: Schema.Array(ProviderWord),
+  channel_index: Schema.optional(Schema.Null),
+  additional_formats: Schema.optional(Schema.NullOr(EmptyProviderCollection)),
+  transcription_id: Schema.optional(Schema.NullOr(ProviderIdentifier)),
+  entities: Schema.optional(Schema.NullOr(EmptyProviderCollection)),
+  audio_duration_secs: Schema.optional(Schema.NullOr(ProviderAudioDuration)),
 });
 
 type ProviderResponseValue = Schema.Schema.Type<typeof ProviderResponse>;
@@ -170,19 +212,34 @@ async function readBoundedBody(
 
 function timing(
   entry: ProviderWordValue,
-): { readonly start_ms: number; readonly end_ms: number } | null {
+  allowAbsentOrZeroDuration: boolean,
+):
+  | Readonly<{ readonly kind: "absent" }>
+  | Readonly<{ readonly kind: "timed"; readonly start_ms: number; readonly end_ms: number }>
+  | null {
+  const startAbsent = entry.start === undefined || entry.start === null;
+  const endAbsent = entry.end === undefined || entry.end === null;
+  if (startAbsent || endAbsent) {
+    return allowAbsentOrZeroDuration && startAbsent === endAbsent ? { kind: "absent" } : null;
+  }
   if (
     !Number.isFinite(entry.start) ||
     !Number.isFinite(entry.end) ||
     entry.start < 0 ||
-    entry.end <= entry.start ||
+    (allowAbsentOrZeroDuration ? entry.end < entry.start : entry.end <= entry.start) ||
     entry.end * 1_000 > MEDIA_TRANSCRIPT_MAX_DURATION_MS
   ) {
     return null;
   }
   const start_ms = Math.round(entry.start * 1_000);
   const end_ms = Math.round(entry.end * 1_000);
-  return end_ms > start_ms ? { start_ms, end_ms } : null;
+  return allowAbsentOrZeroDuration
+    ? end_ms >= start_ms
+      ? { kind: "timed", start_ms, end_ms }
+      : null
+    : end_ms > start_ms
+      ? { kind: "timed", start_ms, end_ms }
+      : null;
 }
 
 function appendSegment(
@@ -199,11 +256,31 @@ function appendSegment(
   return segments.length <= MEDIA_TRANSCRIPT_SEGMENT_MAX_COUNT;
 }
 
-function segmentsFor(
-  response: ProviderResponseValue,
-): readonly MediaTranscriptSegment[] | MediaProviderFailureTag {
+function segmentsFor(response: ProviderResponseValue):
+  | Readonly<{
+      readonly transcript: string;
+      readonly segments: readonly MediaTranscriptSegment[];
+    }>
+  | MediaProviderFailureTag {
+  if (response.words.map(({ text }) => text).join("") !== response.text) {
+    return "unparseable_result";
+  }
   const included = response.words.filter(({ type }) => type !== "audio_event");
-  if (included.map(({ text }) => text).join("") !== response.text) return "unparseable_result";
+  const transcript = included.map(({ text }) => text).join("");
+  if (transcript.length === 0) return "unparseable_result";
+
+  let previousAudioEventStart = 0;
+  for (const entry of response.words) {
+    if (entry.type !== "audio_event") continue;
+    if (entry.text.length === 0 || entry.text.length > MEDIA_TRANSCRIPT_SEGMENT_MAX_LENGTH) {
+      return "malformed_response";
+    }
+    const value = timing(entry, false);
+    if (value === null || value.kind !== "timed" || value.start_ms < previousAudioEventStart) {
+      return "malformed_response";
+    }
+    previousAudioEventStart = value.start_ms;
+  }
 
   const segments: MediaTranscriptSegment[] = [];
   let parts: string[] = [];
@@ -211,13 +288,19 @@ function segmentsFor(
   let start_ms: number | undefined;
   let end_ms: number | undefined;
   let previousWordEnd = 0;
+  let previousTimedEntryStart = 0;
   for (const entry of included) {
     if (entry.text.length === 0 || entry.text.length > MEDIA_TRANSCRIPT_SEGMENT_MAX_LENGTH) {
       return "malformed_response";
     }
-    const value = timing(entry);
+    const value = timing(entry, entry.type === "spacing");
     if (value === null) return "malformed_response";
-    if (entry.type === "word" && value.start_ms < previousWordEnd) return "malformed_response";
+    if (value.kind === "timed" && value.start_ms < previousTimedEntryStart) {
+      return "malformed_response";
+    }
+    if (entry.type === "word" && (value.kind !== "timed" || value.start_ms < previousWordEnd)) {
+      return "malformed_response";
+    }
     if (
       length + entry.text.length > MEDIA_TRANSCRIPT_SEGMENT_MAX_LENGTH &&
       !appendSegment(segments, parts, start_ms, end_ms)
@@ -232,14 +315,16 @@ function segmentsFor(
     }
     parts.push(entry.text);
     length += entry.text.length;
+    if (value.kind === "timed") previousTimedEntryStart = value.start_ms;
     if (entry.type === "word") {
+      if (value.kind !== "timed") return "malformed_response";
       start_ms ??= value.start_ms;
       end_ms = value.end_ms;
       previousWordEnd = value.end_ms;
     }
   }
   if (!appendSegment(segments, parts, start_ms, end_ms)) return "malformed_response";
-  return segments;
+  return { transcript, segments };
 }
 
 function noSpeechEvidence(
@@ -266,10 +351,15 @@ function noSpeechEvidence(
     if (entry.text.length === 0 || entry.text.length > MEDIA_TRANSCRIPT_SEGMENT_MAX_LENGTH) {
       return null;
     }
-    const value = timing(entry);
-    if (value === null || value.start_ms < previousEnd) return null;
+    const value = timing(entry, false);
+    if (value === null || value.kind !== "timed" || value.start_ms < previousEnd) return null;
     previousEnd = value.end_ms;
-    events.push({ type: "audio_event", text: entry.text, ...value });
+    events.push({
+      type: "audio_event",
+      text: entry.text,
+      start_ms: value.start_ms,
+      end_ms: value.end_ms,
+    });
   }
   return {
     kind: "no_speech",
@@ -296,6 +386,17 @@ function parseDocument(document: unknown): ElevenLabsAsrParsedResponse {
   ) {
     return { kind: "failure", failure: "malformed_response" };
   }
+  if (response.audio_duration_secs !== undefined && response.audio_duration_secs !== null) {
+    for (const entry of response.words) {
+      if (
+        entry.end !== undefined &&
+        entry.end !== null &&
+        entry.end > response.audio_duration_secs
+      ) {
+        return { kind: "failure", failure: "malformed_response" };
+      }
+    }
+  }
   if (
     !/^[a-z]{2,3}$/u.test(response.language_code) ||
     !Number.isFinite(response.language_probability) ||
@@ -312,8 +413,8 @@ function parseDocument(document: unknown): ElevenLabsAsrParsedResponse {
   if (typeof segments === "string") return { kind: "failure", failure: segments };
   return {
     kind: "transcript",
-    transcript: response.text,
-    segments,
+    transcript: segments.transcript,
+    segments: segments.segments,
     detected_languages: [
       {
         language_bcp47: response.language_code,

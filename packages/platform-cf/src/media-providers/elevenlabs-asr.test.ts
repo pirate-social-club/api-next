@@ -3,6 +3,7 @@ import type { MediaProviderFailure } from "@pirate/application/media-provider-co
 import { Cause, Effect, Exit, Result } from "effect";
 import {
   asrInput,
+  documentedHelloWorldResponse,
   multilingualResponse,
   musicOnlyResponse,
   partialResponse,
@@ -16,6 +17,7 @@ import {
   type ElevenLabsAsrTransportResponse,
   makeElevenLabsAsrAdapter,
 } from "./elevenlabs-asr.ts";
+import { parseElevenLabsAsrResponse } from "./elevenlabs-asr-response.ts";
 
 const encoder = new TextEncoder();
 const COMBINED_ADAPTER_REVISION =
@@ -57,6 +59,23 @@ function response(
       cancel: () => undefined,
     },
     ...overrides,
+  };
+}
+
+function rawJsonResponse(json: string): ElevenLabsAsrTransportResponse {
+  const bytes = encoder.encode(json);
+  return {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "content-length": String(bytes.byteLength),
+    },
+    body: {
+      open: async function* () {
+        yield bytes;
+      },
+      cancel: () => undefined,
+    },
   };
 }
 
@@ -161,6 +180,57 @@ describe("ElevenLabs ASR adapter", () => {
     expect(requestText).not.toContain('name="language_code"');
   });
 
+  test("accepts documented zero-duration spacing and bounded optional chunk fields", async () => {
+    const result = await Effect.runPromise(
+      configured(() => response(documentedHelloWorldResponse)).recognize(asrInput, {
+        signal: new AbortController().signal,
+      }),
+    );
+    expect(result.status).toBe("transcript");
+    if (result.status !== "transcript") throw new Error("expected transcript");
+    expect(result.transcript.transcript).toBe("Hello world!");
+    expect(result.transcript.segments).toEqual([
+      { start_ms: 0, end_ms: 1_200, text: "Hello world!" },
+    ]);
+
+    const absentSpacingTiming = await Effect.runPromise(
+      configured(() =>
+        response({
+          ...documentedHelloWorldResponse,
+          words: documentedHelloWorldResponse.words.map((entry) =>
+            entry.type === "spacing" ? { ...entry, start: null, end: null } : entry,
+          ),
+        }),
+      ).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    expect(absentSpacingTiming.status).toBe("transcript");
+
+    const mixedAudioEvent = await Effect.runPromise(
+      configured(() =>
+        response({
+          ...documentedHelloWorldResponse,
+          text: "Hello (music)world!",
+          words: [
+            documentedHelloWorldResponse.words[0],
+            documentedHelloWorldResponse.words[1],
+            {
+              text: "(music)",
+              start: 0.5,
+              end: 0.7,
+              type: "audio_event",
+              speaker_id: null,
+              logprob: -0.2,
+            },
+            { ...documentedHelloWorldResponse.words[2], start: 0.7 },
+          ],
+        }),
+      ).recognize(asrInput, { signal: new AbortController().signal }),
+    );
+    expect(mixedAudioEvent.status).toBe("transcript");
+    if (mixedAudioEvent.status !== "transcript") throw new Error("expected transcript");
+    expect(mixedAudioEvent.transcript.transcript).toBe("Hello world!");
+  });
+
   test("binds transcript artifact references to full immutable lineage and segment identity", async () => {
     const adapter = configured(() => response(multilingualResponse));
     const first = await Effect.runPromise(
@@ -240,6 +310,7 @@ describe("ElevenLabs ASR adapter", () => {
 
     const changedTiming = {
       ...multilingualResponse,
+      audio_duration_secs: 3.2,
       words: multilingualResponse.words.map((entry, index) =>
         index === multilingualResponse.words.length - 1 ? { ...entry, end: 3.2 } : entry,
       ),
@@ -345,6 +416,21 @@ describe("ElevenLabs ASR adapter", () => {
   });
 
   test("binds explicit no-speech evidence to full audio and provider lineage", async () => {
+    const parsed = await parseElevenLabsAsrResponse(
+      response(musicOnlyResponse),
+      { max_audio_bytes: 1_024, max_response_bytes: 32_768, timeout_ms: 1_000 },
+      new AbortController().signal,
+    );
+    expect(parsed).toEqual({
+      kind: "no_speech",
+      evidence: {
+        language_code: "en",
+        language_probability: 0,
+        text: "(music)",
+        events: [{ type: "audio_event", text: "(music)", start_ms: 0, end_ms: 3_000 }],
+      },
+    });
+
     const result = await Effect.runPromise(
       configured(() => response(musicOnlyResponse)).recognize(asrInput, {
         signal: new AbortController().signal,
@@ -402,6 +488,7 @@ describe("ElevenLabs ASR adapter", () => {
         response({
           ...musicOnlyResponse,
           text: "(applause)",
+          audio_duration_secs: 12,
           words: [
             {
               text: "(applause)",
@@ -409,6 +496,7 @@ describe("ElevenLabs ASR adapter", () => {
               end: 12,
               type: "audio_event",
               speaker_id: null,
+              logprob: -0.04,
             },
           ],
         }),
@@ -424,13 +512,21 @@ describe("ElevenLabs ASR adapter", () => {
         language_code: "en",
         language_probability: 0.99,
         text: "explicit hostile lyrics",
-        words: [{ text: "explicit hostile lyrics", start: 0, end: 2, type: "spacing" }],
+        words: [
+          {
+            text: "explicit hostile lyrics",
+            start: 0,
+            end: 2,
+            type: "spacing",
+            logprob: -0.1,
+          },
+        ],
       },
       {
         language_code: "en",
         language_probability: 0,
         text: "(music) hidden words",
-        words: [{ text: "(music)", start: 0, end: 2, type: "audio_event" }],
+        words: [{ text: "(music)", start: 0, end: 2, type: "audio_event", logprob: -0.1 }],
       },
       {
         language_code: "en",
@@ -442,13 +538,13 @@ describe("ElevenLabs ASR adapter", () => {
         language_code: "en",
         language_probability: 0,
         text: "(music)",
-        words: [{ text: "(music)", start: 2, end: 1, type: "audio_event" }],
+        words: [{ text: "(music)", start: 2, end: 1, type: "audio_event", logprob: -0.1 }],
       },
       {
         language_code: "en",
         language_probability: 1,
         text: "(music)",
-        words: [{ text: "(music)", start: 0, end: 2, type: "audio_event" }],
+        words: [{ text: "(music)", start: 0, end: 2, type: "audio_event", logprob: -0.1 }],
       },
     ]) {
       expect(
@@ -473,9 +569,9 @@ describe("ElevenLabs ASR adapter", () => {
       language_probability: 0.99,
       text: `${first} ${second}`,
       words: [
-        { text: first, start: 0, end: 2, type: "word" },
-        { text: " ", start: 1.9, end: 2.1, type: "spacing" },
-        { text: second, start: 2.1, end: 4.5, type: "word" },
+        { text: first, start: 0, end: 2, type: "word", logprob: -0.1 },
+        { text: " ", start: 1.9, end: 2.1, type: "spacing", logprob: -0.01 },
+        { text: second, start: 2.1, end: 4.5, type: "word", logprob: -0.1 },
       ],
     };
     const result = await Effect.runPromise(
@@ -496,9 +592,9 @@ describe("ElevenLabs ASR adapter", () => {
       language_probability: 1,
       text: "one two",
       words: [
-        { text: "one", start: 0, end: 1, type: "word" },
-        { text: " ", start: 0.9, end: 1.1, type: "spacing" },
-        { text: "two", start: 0.8, end: 1.2, type: "word" },
+        { text: "one", start: 0, end: 1, type: "word", logprob: -0.1 },
+        { text: " ", start: 0.9, end: 1.1, type: "spacing", logprob: -0.01 },
+        { text: "two", start: 0.8, end: 1.2, type: "word", logprob: -0.1 },
       ],
     };
     expect(
@@ -516,8 +612,14 @@ describe("ElevenLabs ASR adapter", () => {
     const entries = Array.from({ length: 5_001 }, (_, index) => {
       const start = index * 0.002;
       return [
-        { text: "a", start, end: start + 0.001, type: "word" },
-        { text: " ", start: start + 0.001, end: start + 0.002, type: "spacing" },
+        { text: "a", start, end: start + 0.001, type: "word", logprob: -0.1 },
+        {
+          text: " ",
+          start: start + 0.001,
+          end: start + 0.002,
+          type: "spacing",
+          logprob: -0.01,
+        },
       ];
     }).flat();
     const accepted = await Effect.runPromise(
@@ -545,7 +647,7 @@ describe("ElevenLabs ASR adapter", () => {
 
     const hostileEntries = Array.from(
       { length: ELEVENLABS_ASR_HARD_MAX_PROVIDER_ENTRIES + 1 },
-      () => ({ text: "x", start: 0, end: 1, type: "word" }),
+      () => ({ text: "x", start: 0, end: 1, type: "word", logprob: -0.1 }),
     );
     const rejected = await providerFailure(
       configured(
@@ -639,6 +741,99 @@ describe("ElevenLabs ASR adapter", () => {
         )
       )._tag,
     ).toBe("malformed_response");
+  });
+
+  test("fails closed on missing, non-finite, contradictory, or widened provider fields", async () => {
+    const malformed = async (document: unknown) =>
+      providerFailure(
+        configured(() => response(document)).recognize(asrInput, {
+          signal: new AbortController().signal,
+        }),
+      );
+    const firstWord = documentedHelloWorldResponse.words[0];
+    const spacing = documentedHelloWorldResponse.words[1];
+    if (firstWord === undefined || spacing === undefined) throw new Error("expected fixture words");
+
+    for (const document of [
+      {
+        ...documentedHelloWorldResponse,
+        words: [{ ...firstWord, start: undefined }, ...documentedHelloWorldResponse.words.slice(1)],
+      },
+      {
+        ...documentedHelloWorldResponse,
+        words: [{ ...firstWord, end: undefined }, ...documentedHelloWorldResponse.words.slice(1)],
+      },
+      {
+        ...documentedHelloWorldResponse,
+        words: [
+          { ...firstWord, logprob: undefined },
+          ...documentedHelloWorldResponse.words.slice(1),
+        ],
+      },
+      {
+        ...documentedHelloWorldResponse,
+        words: [{ ...firstWord, logprob: 0.001 }, ...documentedHelloWorldResponse.words.slice(1)],
+      },
+      {
+        ...musicOnlyResponse,
+        words: [{ ...musicOnlyResponse.words[0], end: undefined }],
+      },
+      {
+        ...documentedHelloWorldResponse,
+        words: [firstWord, { ...spacing, start: null }, documentedHelloWorldResponse.words[2]],
+      },
+      {
+        ...documentedHelloWorldResponse,
+        words: [
+          firstWord,
+          { ...spacing, start: 0.7, end: 0.7 },
+          documentedHelloWorldResponse.words[2],
+        ],
+      },
+      { ...documentedHelloWorldResponse, audio_duration_secs: 0.5 },
+      { ...documentedHelloWorldResponse, transcription_id: "x".repeat(257) },
+      { ...documentedHelloWorldResponse, channel_index: 0 },
+      { ...documentedHelloWorldResponse, additional_formats: [{ format: "srt" }] },
+      { ...documentedHelloWorldResponse, entities: [{ text: "world" }] },
+      { ...documentedHelloWorldResponse, unexpected: "provider drift" },
+      {
+        ...documentedHelloWorldResponse,
+        words: [{ ...firstWord, unexpected: true }, ...documentedHelloWorldResponse.words.slice(1)],
+      },
+      {
+        ...documentedHelloWorldResponse,
+        words: [{ ...firstWord, characters: [{ text: "H", start: 0, end: 0.1 }] }],
+        text: "Hello",
+      },
+      {
+        ...documentedHelloWorldResponse,
+        words: [{ ...firstWord, channel_index: 0 }],
+        text: "Hello",
+      },
+    ]) {
+      expect(await malformed(document)).toEqual({
+        _tag: "malformed_response",
+        retryability: "permanent",
+        attempt_id: "attempt-asr-1",
+      });
+    }
+
+    for (const json of [
+      '{"language_code":"en","language_probability":1,"text":"Hello","words":[{"text":"Hello","start":0,"end":0.5,"type":"word","logprob":1e309}]}',
+      '{"language_code":"en","language_probability":1,"text":"Hello","words":[{"text":"Hello","start":1e309,"end":1,"type":"word","logprob":-0.1}]}',
+      '{"language_code":"en","language_probability":1,"text":"Hello","words":[{"text":"Hello","start":0,"end":0.5,"type":"word","logprob":-0.1}],"audio_duration_secs":1e309}',
+      '{"language_code":"en","language_probability":NaN,"text":"Hello","words":[]}',
+    ]) {
+      expect(
+        (
+          await providerFailure(
+            configured(() => rawJsonResponse(json)).recognize(asrInput, {
+              signal: new AbortController().signal,
+            }),
+          )
+        )._tag,
+      ).toBe("malformed_response");
+    }
   });
 
   test("rejects oversized audio before transport", async () => {
