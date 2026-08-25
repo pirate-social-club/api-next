@@ -2,14 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { makeControlPlaneCustodySolvencyStore } from "./custody-solvency-repository.ts";
 import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinator.ts";
 import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
 import { makeControlPlaneMegapotApprovalStore } from "./megapot-approval-repository.ts";
 import { makeControlPlaneMegapotClaimStore } from "./megapot-claim-repository.ts";
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
 import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
+import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
+import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -946,6 +949,117 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           amount_atomic: "901",
           credit_state: "credited",
           allocation_count: "1",
+        },
+      ]);
+
+      await admin.query(
+        `INSERT INTO persona_wallet_assignments (
+           assignment_id, persona_id, account_id, chain_account_kind,
+           hd_wallet_index, address, status, reservation_idempotency_key,
+           assigned_at
+         ) VALUES (
+           'wallet-payout-101', $2, $1, 'evm', 101, $3, 'active',
+           'wallet-payout-101', clock_timestamp()
+         )`,
+        [identity.accountId, identity.personaId, address("f")],
+      );
+      const solvencyStore = makeControlPlaneCustodySolvencyStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const solvencyCandidate = await Effect.runPromise(
+        solvencyStore.loadCandidate("megapot-base-sepolia-v2"),
+      );
+      const solvency = await Effect.runPromise(
+        solvencyStore.record({
+          candidate: solvencyCandidate,
+          observationId: "solvency-123",
+          balanceAtomic: 100_000n,
+          blockNumber: 123n,
+          blockHash: bytes32("f"),
+          observedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 15 * 60 * 1_000).toISOString(),
+        }),
+      );
+      expect(solvency).toMatchObject({
+        outstandingCreditAtomic: 901n,
+        reservedPurchaseAtomic: 0n,
+        pendingRefundAtomic: 90_000n,
+        solvent: true,
+      });
+
+      const payoutStore = makeControlPlaneRewardPayoutStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const creditId = allocation.allocations[0]?.creditId;
+      if (creditId === null || creditId === undefined) throw new Error("missing payout credit");
+      const payoutCandidate = await Effect.runPromise(payoutStore.loadCandidate(creditId));
+      const payoutReservation = await Effect.runPromise(
+        payoutStore.reserveNonce({
+          candidate: payoutCandidate,
+          effectId: "payout-effect-101",
+          observedPendingNonce: 11n,
+          observedBlockNumber: 123n,
+          observedBlockHash: bytes32("f"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
+      expect(payoutReservation.nonce).toBe(11n);
+      const payoutCalldata = encodeMegapotUsdcTransfer(address("f"), 901n);
+      const payoutTransactionHash = bytes32("1");
+      await Effect.runPromise(
+        payoutStore.prepare({
+          reservation: payoutReservation,
+          calldata: payoutCalldata,
+          calldataHash: hash("1"),
+          signedTransaction: "0x0708",
+          signedTransactionHash: payoutTransactionHash,
+          preparedAt: new Date().toISOString(),
+        }),
+      );
+      await Effect.runPromise(
+        payoutStore.recordSubmission({
+          effectId: payoutReservation.effectId,
+          transactionHash: payoutTransactionHash,
+          submittedAt: new Date().toISOString(),
+          outcome: "accepted",
+        }),
+      );
+      await Effect.runPromise(
+        payoutStore.confirm({
+          effectId: payoutReservation.effectId,
+          transactionHash: payoutTransactionHash,
+          transferLogIndex: 8,
+          amountAtomic: 901n,
+          custodyBalanceAfterAtomic: 99_099n,
+          blockNumber: 124n,
+          blockHash: bytes32("2"),
+          receiptHash: hash("2"),
+          confirmations: 3,
+          confirmedAt: new Date().toISOString(),
+        }),
+      );
+      const paid = await admin.query<{
+        readonly credit_state: string;
+        readonly paid_atomic: string;
+        readonly effect_state: string;
+        readonly evidence_count: string;
+      }>(
+        `SELECT credit.state AS credit_state, credit.paid_atomic::text,
+                effect.state AS effect_state,
+                (SELECT count(*)::text FROM reward_erc20_transfer_receipt_evidence
+                  WHERE effect_id=effect.effect_id) AS evidence_count
+           FROM reward_ledger_credits credit
+           JOIN reward_payout_effects payout ON payout.credit_id=credit.credit_id
+           JOIN reward_chain_effects effect ON effect.effect_id=payout.payout_effect_id
+          WHERE credit.credit_id=$1`,
+        [creditId],
+      );
+      expect(paid.rows).toEqual([
+        {
+          credit_state: "sent",
+          paid_atomic: "901",
+          effect_state: "confirmed",
+          evidence_count: "1",
         },
       ]);
     });

@@ -25,6 +25,7 @@ import {
   encodeMegapotTicketOwner,
   encodeMegapotTicketTierIds,
   encodeMegapotUsdcApproval,
+  encodeMegapotUsdcTransfer,
   MEGAPOT_REFERRAL_SPLIT_SCALE,
   type MegapotReceiptLog,
   type MegapotTransactionReceipt,
@@ -34,6 +35,7 @@ import {
   validateMegapotClaimReceipt,
   validateMegapotPurchaseReceipt,
   validateMegapotUsdcApprovalReceipt,
+  validateMegapotUsdcTransferReceipt,
   validateMegapotV2DeploymentAttestation,
 } from "./megapot-v2.ts";
 
@@ -43,6 +45,7 @@ const USDC = "0x036cbd53842c5426634e7929541ec2318f3dcf7e";
 const CUSTODY = "0x1111111111111111111111111111111111111111";
 const REFERRER = "0x2222222222222222222222222222222222222222";
 const PAYOUT_CALCULATOR = "0x3333333333333333333333333333333333333333";
+const RECIPIENT = "0x5555555555555555555555555555555555555555";
 const SOURCE = `0x${"44".repeat(32)}` as Hex;
 const TX = `0x${"aa".repeat(32)}` as Hex;
 const BLOCK = `0x${"bb".repeat(32)}` as Hex;
@@ -378,6 +381,44 @@ describe("Megapot v2 deployment and receipt evidence", () => {
         deployment,
         receipt: { ...receipt([approvalLog]), to: USDC },
         approvedAmountAtomic: 99_999n,
+      }),
+    ).toThrow("wrong-party");
+  });
+
+  test("proves one exact custody USDC payout transfer", () => {
+    const transferLog = log({
+      address: USDC,
+      topics: topics(
+        encodeEventTopics({
+          abi: usdcTransferEvent,
+          eventName: "Transfer",
+          args: { from: CUSTODY, to: RECIPIENT },
+        }),
+      ),
+      data: encodeAbiParameters(parseAbiParameters("uint256 amount"), [901n]),
+      logIndex: 3,
+    });
+    expect(encodeMegapotUsdcTransfer(RECIPIENT, 901n).slice(0, 10)).toBe("0xa9059cbb");
+    expect(
+      validateMegapotUsdcTransferReceipt({
+        deployment,
+        receipt: { ...receipt([transferLog]), to: USDC },
+        recipient: RECIPIENT,
+        amountAtomic: 901n,
+      }),
+    ).toEqual({
+      transactionHash: TX,
+      blockHash: BLOCK,
+      blockNumber: 123n,
+      transferLogIndex: 3,
+      amountAtomic: 901n,
+    });
+    expect(() =>
+      validateMegapotUsdcTransferReceipt({
+        deployment,
+        receipt: { ...receipt([transferLog]), to: USDC },
+        recipient: RECIPIENT,
+        amountAtomic: 900n,
       }),
     ).toThrow("wrong-party");
   });

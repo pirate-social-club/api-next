@@ -1166,15 +1166,42 @@ CREATE TABLE megapot_allocations (
 
 CREATE TABLE reward_payout_effects (
   payout_effect_id TEXT PRIMARY KEY REFERENCES reward_chain_effects (effect_id),
+  attestation_id TEXT NOT NULL REFERENCES megapot_deployment_attestations (attestation_id),
   credit_id TEXT NOT NULL UNIQUE REFERENCES reward_ledger_credits (credit_id),
   account_id TEXT NOT NULL,
   payout_persona_id TEXT NOT NULL,
   destination_address TEXT NOT NULL CHECK (destination_address ~ '^0x[0-9a-f]{40}$'),
   amount_atomic NUMERIC(78, 0) NOT NULL CHECK (amount_atomic > 0),
   wallet_assignment_id TEXT NOT NULL REFERENCES persona_wallet_assignments (assignment_id),
+  solvency_observation_id TEXT NOT NULL CHECK (btrim(solvency_observation_id) <> ''),
+  custody_balance_before_atomic NUMERIC(78, 0) NOT NULL
+    CHECK (custody_balance_before_atomic >= amount_atomic),
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   FOREIGN KEY (account_id, payout_persona_id)
     REFERENCES personas (account_id, persona_id)
+);
+
+CREATE TABLE reward_erc20_transfer_receipt_evidence (
+  effect_id TEXT PRIMARY KEY REFERENCES reward_chain_effects (effect_id),
+  transfer_purpose TEXT NOT NULL CHECK (
+    transfer_purpose IN ('reward_payout', 'reward_refund', 'sponsor_withdrawal')
+  ),
+  attestation_id TEXT NOT NULL REFERENCES megapot_deployment_attestations (attestation_id),
+  token_address TEXT NOT NULL CHECK (token_address ~ '^0x[0-9a-f]{40}$'),
+  sender_address TEXT NOT NULL CHECK (sender_address ~ '^0x[0-9a-f]{40}$'),
+  recipient_address TEXT NOT NULL CHECK (recipient_address ~ '^0x[0-9a-f]{40}$'),
+  amount_atomic NUMERIC(78, 0) NOT NULL CHECK (amount_atomic > 0),
+  transaction_hash TEXT NOT NULL CHECK (transaction_hash ~ '^0x[0-9a-f]{64}$'),
+  transfer_log_index INTEGER NOT NULL CHECK (transfer_log_index >= 0),
+  custody_balance_after_atomic NUMERIC(78, 0) NOT NULL
+    CHECK (custody_balance_after_atomic >= 0),
+  block_number BIGINT NOT NULL CHECK (block_number >= 0),
+  block_hash TEXT NOT NULL CHECK (block_hash ~ '^0x[0-9a-f]{64}$'),
+  receipt_hash TEXT NOT NULL CHECK (receipt_hash ~ '^[0-9a-f]{64}$'),
+  confirmations INTEGER NOT NULL CHECK (confirmations > 0),
+  confirmed_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  UNIQUE (attestation_id, transaction_hash, transfer_log_index)
 );
 
 CREATE TABLE reward_refund_effects (
@@ -1222,6 +1249,11 @@ CREATE TABLE custody_solvency_observations (
 );
 CREATE INDEX custody_solvency_observations_latest_idx
   ON custody_solvency_observations (attestation_id, block_number DESC, observation_id);
+
+ALTER TABLE reward_payout_effects
+  ADD CONSTRAINT reward_payout_effects_solvency_observation_fk
+  FOREIGN KEY (solvency_observation_id)
+  REFERENCES custody_solvency_observations (observation_id);
 
 CREATE TABLE platform_referral_revenue_ledger (
   revenue_entry_id TEXT PRIMARY KEY CHECK (
@@ -2401,6 +2433,12 @@ DECLARE
   chain_record reward_chain_effects%ROWTYPE;
   credit_record reward_ledger_credits%ROWTYPE;
   wallet_record persona_wallet_assignments%ROWTYPE;
+  solvency_record custody_solvency_observations%ROWTYPE;
+  attestation_record megapot_deployment_attestations%ROWTYPE;
+  live_reserved_purchase NUMERIC(78, 0);
+  live_outstanding_credit NUMERIC(78, 0);
+  live_pending_refund NUMERIC(78, 0);
+  live_shared_sponsorship NUMERIC(78, 0);
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'reward payout effects are append-only';
@@ -2411,16 +2449,50 @@ BEGIN
    WHERE credit_id = NEW.credit_id FOR SHARE;
   SELECT * INTO wallet_record FROM persona_wallet_assignments
    WHERE assignment_id = NEW.wallet_assignment_id FOR SHARE;
+  SELECT * INTO solvency_record FROM custody_solvency_observations
+   WHERE observation_id = NEW.solvency_observation_id FOR SHARE;
+  SELECT * INTO attestation_record FROM megapot_deployment_attestations
+   WHERE attestation_id = NEW.attestation_id FOR SHARE;
+  SELECT COALESCE(sum(reserved_atomic), 0) INTO live_reserved_purchase
+    FROM song_reward_offer_legs WHERE kind='megapot_pool' AND funding_source='leg_budget'
+      AND chain_id=credit_record.chain_id AND token_address=credit_record.token_address;
+  SELECT COALESCE(sum(amount_atomic - paid_atomic), 0) INTO live_outstanding_credit
+    FROM reward_ledger_credits WHERE state <> 'sent'
+      AND chain_id=credit_record.chain_id AND token_address=credit_record.token_address;
+  SELECT COALESCE(sum(funded_atomic - reserved_atomic - spent_atomic
+      - fulfilled_atomic - refunded_atomic), 0) INTO live_pending_refund
+    FROM song_reward_offer_legs WHERE funding_source='leg_budget'
+      AND chain_id=credit_record.chain_id AND token_address=credit_record.token_address;
+  SELECT COALESCE(sum(funded_atomic + winnings_credited_atomic
+      - spent_atomic - withdrawn_atomic), 0) INTO live_shared_sponsorship
+    FROM platform_sponsorship_budgets
+    WHERE chain_id=credit_record.chain_id AND token_address=credit_record.token_address;
   IF chain_record.effect_kind <> 'reward_payout'
      OR chain_record.reserved_amount_atomic <> NEW.amount_atomic
+     OR chain_record.chain_id <> credit_record.chain_id
+     OR chain_record.signer_address <> attestation_record.custody_address
+     OR chain_record.target_address <> credit_record.token_address
+     OR attestation_record.status <> 'active'
+     OR attestation_record.chain_id <> credit_record.chain_id
+     OR attestation_record.usdc_address <> credit_record.token_address
      OR credit_record.account_id <> NEW.account_id
      OR credit_record.payout_persona_id <> NEW.payout_persona_id
      OR credit_record.amount_atomic - credit_record.paid_atomic < NEW.amount_atomic
+     OR credit_record.state <> 'payout_reserved'
+     OR credit_record.reserved_atomic <> NEW.amount_atomic
      OR wallet_record.account_id <> NEW.account_id
      OR wallet_record.persona_id <> NEW.payout_persona_id
      OR wallet_record.status <> 'active'
      OR wallet_record.address <> NEW.destination_address
-     OR chain_record.target_address <> NEW.destination_address THEN
+     OR solvency_record.attestation_id <> NEW.attestation_id
+     OR solvency_record.chain_id <> credit_record.chain_id
+     OR solvency_record.custody_address <> chain_record.signer_address
+     OR solvency_record.token_address <> credit_record.token_address
+     OR solvency_record.expires_at <= clock_timestamp()
+     OR NOT solvency_record.solvent
+     OR solvency_record.balance_atomic <> NEW.custody_balance_before_atomic
+     OR solvency_record.balance_atomic < live_reserved_purchase
+       + live_outstanding_credit + live_pending_refund + live_shared_sponsorship THEN
     RAISE EXCEPTION 'reward payout does not match credit and active persona wallet';
   END IF;
   RETURN NEW;
@@ -2429,6 +2501,51 @@ $$;
 CREATE TRIGGER reward_payout_effects_change_guard
 BEFORE INSERT OR UPDATE OR DELETE ON reward_payout_effects
 FOR EACH ROW EXECUTE FUNCTION guard_reward_payout_effect();
+
+CREATE FUNCTION guard_reward_erc20_transfer_receipt() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  chain_record reward_chain_effects%ROWTYPE;
+  attestation_record megapot_deployment_attestations%ROWTYPE;
+  payout_record reward_payout_effects%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'reward ERC20 transfer receipt evidence is append-only';
+  END IF;
+  SELECT * INTO chain_record FROM reward_chain_effects
+   WHERE effect_id = NEW.effect_id FOR SHARE;
+  SELECT * INTO attestation_record FROM megapot_deployment_attestations
+   WHERE attestation_id = NEW.attestation_id FOR SHARE;
+  IF chain_record.state <> 'confirmed'
+     OR chain_record.effect_kind <> NEW.transfer_purpose
+     OR chain_record.signer_address <> NEW.sender_address
+     OR chain_record.target_address <> NEW.token_address
+     OR chain_record.settled_amount_atomic <> NEW.amount_atomic
+     OR chain_record.transaction_hash <> NEW.transaction_hash
+     OR chain_record.receipt_block_number <> NEW.block_number
+     OR chain_record.receipt_block_hash <> NEW.block_hash
+     OR chain_record.receipt_hash <> NEW.receipt_hash
+     OR chain_record.confirmations <> NEW.confirmations
+     OR attestation_record.chain_id <> chain_record.chain_id
+     OR attestation_record.usdc_address <> NEW.token_address
+     OR attestation_record.custody_address <> NEW.sender_address THEN
+    RAISE EXCEPTION 'reward ERC20 transfer receipt does not match confirmed effect';
+  END IF;
+  IF NEW.transfer_purpose = 'reward_payout' THEN
+    SELECT * INTO payout_record FROM reward_payout_effects
+     WHERE payout_effect_id = NEW.effect_id;
+    IF payout_record.attestation_id <> NEW.attestation_id
+       OR payout_record.destination_address <> NEW.recipient_address
+       OR payout_record.amount_atomic <> NEW.amount_atomic THEN
+      RAISE EXCEPTION 'reward payout receipt does not match payout reservation';
+    END IF;
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER reward_erc20_transfer_receipt_guard
+BEFORE INSERT OR UPDATE OR DELETE ON reward_erc20_transfer_receipt_evidence
+FOR EACH ROW EXECUTE FUNCTION guard_reward_erc20_transfer_receipt();
 
 CREATE FUNCTION guard_reward_refund_effect() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -2570,15 +2687,28 @@ BEGIN
     ) OR NEW.reserved_atomic < 0 OR NEW.paid_atomic < OLD.paid_atomic
        OR NEW.updated_at <= OLD.updated_at
        OR NOT (
-         NEW.state = OLD.state
-         OR (OLD.state = 'credited' AND NEW.state IN ('payout_reserved', 'reconciliation_required'))
-         OR (OLD.state = 'payout_reserved' AND NEW.state IN (
-           'credited', 'payout_pending', 'reconciliation_required'
-         ))
-         OR (OLD.state = 'payout_pending' AND NEW.state IN ('sent', 'reconciliation_required'))
-         OR (OLD.state = 'reconciliation_required' AND NEW.state IN (
-           'credited', 'payout_reserved', 'payout_pending', 'sent'
-         ))
+         (OLD.state = 'credited' AND NEW.state = 'payout_reserved'
+           AND OLD.reserved_atomic = 0
+           AND NEW.reserved_atomic = OLD.amount_atomic - OLD.paid_atomic
+           AND NEW.paid_atomic = OLD.paid_atomic)
+         OR (OLD.state = 'payout_reserved' AND NEW.state = 'credited'
+           AND NEW.reserved_atomic = 0 AND NEW.paid_atomic = OLD.paid_atomic)
+         OR (OLD.state = 'payout_reserved'
+           AND NEW.state IN ('payout_pending', 'reconciliation_required')
+           AND NEW.reserved_atomic = OLD.reserved_atomic
+           AND NEW.paid_atomic = OLD.paid_atomic)
+         OR (OLD.state = 'payout_pending' AND NEW.state = 'reconciliation_required'
+           AND NEW.reserved_atomic = OLD.reserved_atomic
+           AND NEW.paid_atomic = OLD.paid_atomic)
+         OR (OLD.state IN ('payout_pending', 'reconciliation_required')
+           AND NEW.state = 'sent' AND NEW.reserved_atomic = 0
+           AND NEW.paid_atomic = OLD.amount_atomic)
+         OR (OLD.state = 'reconciliation_required'
+           AND NEW.state IN ('credited', 'payout_reserved', 'payout_pending')
+           AND NEW.paid_atomic = OLD.paid_atomic
+           AND ((NEW.state = 'credited' AND NEW.reserved_atomic = 0)
+             OR (NEW.state <> 'credited'
+               AND NEW.reserved_atomic = OLD.reserved_atomic)))
        ) THEN
       RAISE EXCEPTION 'invalid reward ledger credit transition';
     END IF;

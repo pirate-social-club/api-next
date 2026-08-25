@@ -95,6 +95,8 @@ export {
   type LeaseRecord,
 } from "./cron-lock";
 export { ScheduledCronLockDO } from "./cron-lock-do";
+export * from "./custody-solvency-coordinator.ts";
+export * from "./custody-solvency-repository.ts";
 export {
   type FeedRepository,
   type FeedRepositoryOptions,
@@ -215,6 +217,8 @@ export {
   queueRetryBackoffSeconds,
   queueRetryDelaySeconds,
 } from "./queue-retry";
+export * from "./reward-payout-coordinator.ts";
+export * from "./reward-payout-repository.ts";
 export {
   makeControlPlaneRouteRevalidationCompletionRepository,
   makeControlPlaneRouteRevalidationCompletionStore,
