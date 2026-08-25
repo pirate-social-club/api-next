@@ -29,8 +29,8 @@ identity check. That is sufficient only for cleaning up this isolated runner,
 whose random prefix and write capability are exclusive.
 
 Do not promote this cleanup helper into the production seal adapter. Production
-acceptance remains blocked until the specification either ratifies the
-identity-check plus exclusive immutable-key capability as its fence or selects
-a deletion mechanism that can carry an ETag or version condition. Cleanup
-evidence from this runner must report that the binding delete was
-unconditional.
+finalize never uses the binding's unconditional delete after a post-write
+mismatch or closed failure. It records the exact returned identity as a
+retained reconciliation candidate; a later cleanup needs separate authority
+and an ETag- or version-conditional mechanism. Cleanup evidence from this
+disposable runner must report that its binding delete was unconditional.
