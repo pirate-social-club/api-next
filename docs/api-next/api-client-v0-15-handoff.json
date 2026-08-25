@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.15.0",
+  "releaseType": "activity-qualification-and-streak-contracts",
+  "wireContract": "wire-v2",
+  "sourceCommit": "67ff772",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.15.0.tgz",
+    "sha256": "5ec12b3c9ba2e9ca9a4229ad0735dcf7579222f3ba1f75744817f8e73c80855d",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@6bfd51a479089c29a47640399188927ad8addcfcf5abc36925ec92ac3c459f3c",
+    "openapiSha256": "6bfd51a479089c29a47640399188927ad8addcfcf5abc36925ec92ac3c459f3c",
+    "clientSha256": "abf966bea762f58094f32f2a653b8a6e65ee50cf2b3637e2384df7de951a07e0"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "5043766",
+      "reason": "Spec 015 ratifies server-authoritative Study qualification, pinned-timezone streaks, presenting personas, and persona-only leaderboards."
+    },
+    "focusedContractTests": "5 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}
