@@ -225,8 +225,8 @@ async function runProof(env: Env, proof: ProofRequest): Promise<Response> {
   }
   const startedAt = new Date().toISOString();
   const baseKey = `${env.PROOF_PREFIX}/${proof.run_id}`;
-  const sourceKey = `${baseKey}/source`;
-  const destinationKey = `${baseKey}/immutable`;
+  const sourceKey = `${baseKey}/ingress`;
+  const destinationKey = `${baseKey}/sealed`;
   const ownershipMarker = `r2-binding-proof:${proof.run_id}`;
   const sourceBytes = fixedPayload(proof.run_id);
   const overwrittenSourceBytes = fixedPayload(ownershipMarker, "overwritten");
