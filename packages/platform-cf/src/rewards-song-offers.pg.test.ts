@@ -7,6 +7,8 @@ import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinat
 import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
 import { makeControlPlaneMegapotApprovalStore } from "./megapot-approval-repository.ts";
 import { makeControlPlaneMegapotClaimStore } from "./megapot-claim-repository.ts";
+import { makeMegapotCommitmentCoordinator } from "./megapot-commitment-coordinator.ts";
+import { makeControlPlaneMegapotCommitmentStore } from "./megapot-commitment-repository.ts";
 import { makeMegapotCutoffCoordinator } from "./megapot-cutoff-coordinator.ts";
 import { makeControlPlaneMegapotCutoffStore } from "./megapot-cutoff-repository.ts";
 import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
@@ -1447,6 +1449,43 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           reserved_atomic: "10000",
           reserved_ticket_count: 1,
         },
+      ]);
+      const commitmentStore = makeControlPlaneMegapotCommitmentStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const commitment = makeMegapotCommitmentCoordinator({
+        store: commitmentStore,
+        signer: {
+          sign: async () => ({
+            signingKeyId: "test-commitment-key-v1",
+            signature: "test-commitment-signature-v1",
+          }),
+        },
+        publisher: {
+          publish: async (input) => ({
+            publicReference: `urn:pirate:test:${input.idempotencyKey}`,
+            publishedAt: new Date(Date.now() + 1_000).toISOString(),
+          }),
+        },
+      });
+      const published = await Effect.runPromise(
+        commitment.commit({ poolLegId: legId, drawingId: 100n }),
+      );
+      const commitmentReplay = await Effect.runPromise(
+        commitment.commit({ poolLegId: legId, drawingId: 100n }),
+      );
+      expect(published).toEqual(commitmentReplay);
+      expect(published).toMatchObject({ state: "published", drawingVersion: 3 });
+      const committed = await admin.query<{
+        readonly status: string;
+        readonly commitment_effect_id: string;
+      }>(
+        `SELECT status, commitment_effect_id
+           FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=100`,
+        [legId],
+      );
+      expect(committed.rows).toEqual([
+        { status: "committed", commitment_effect_id: published.commitmentEffectId },
       ]);
       await expect(Effect.runPromise(coordinator.freezeDue())).resolves.toEqual([]);
     });

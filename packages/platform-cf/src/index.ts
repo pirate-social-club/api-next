@@ -122,6 +122,8 @@ export * from "./megapot-approval-coordinator.ts";
 export * from "./megapot-approval-repository.ts";
 export * from "./megapot-claim-coordinator.ts";
 export * from "./megapot-claim-repository.ts";
+export * from "./megapot-commitment-coordinator.ts";
+export * from "./megapot-commitment-repository.ts";
 export * from "./megapot-cutoff-coordinator.ts";
 export * from "./megapot-cutoff-repository.ts";
 export * from "./megapot-drawing-observation-repository.ts";
