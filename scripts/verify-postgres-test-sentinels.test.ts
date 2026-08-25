@@ -44,6 +44,7 @@ async function sentinelSet(): Promise<{
     "community-purchase-funding",
     "hns-observer",
     "hns-host-persistence",
+    "handle-sales",
   ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),
@@ -194,6 +195,22 @@ describe("Postgres suite sentinel verification", () => {
       workflow.match(
         /\/tmp\/api-next-control-plane-postgres-hns-host-persistence-suite-complete/gu,
       ),
+    ).toHaveLength(2);
+  });
+
+  test("keeps community handle sales fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain("packages/platform-cf/src/handle-sales-repository.pg.test.ts");
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_HANDLE_SALES_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-handle-sales-suite-complete",
+    );
+    expect(
+      workflow.match(/\/tmp\/api-next-control-plane-postgres-handle-sales-suite-complete/gu),
     ).toHaveLength(2);
   });
 

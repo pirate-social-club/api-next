@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   HandleRecipientTokenVault,
@@ -22,6 +22,12 @@ if (required && connectionString === undefined) {
 }
 const suite = connectionString === undefined ? describe.skip : describe;
 const migrations = await loadPostgresMigrations();
+const sentinelPath =
+  process.env.CONTROL_PLANE_POSTGRES_HANDLE_SALES_TEST_SENTINEL ??
+  "/tmp/api-next-control-plane-postgres-handle-sales-suite-complete";
+const sentinelContents = "api-next-control-plane-postgres-handle-sales-suite-complete\n";
+const testCount = 3;
+let completedTestCount = 0;
 
 const schemaIdentifier = (): string =>
   `api_next_handle_sales_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -397,6 +403,7 @@ suite("community handle sales on PostgreSQL 17", () => {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
     }
+    completedTestCount += 1;
   }, 20_000);
 
   test("authors a private direct-grant policy and issues a replay-safe free hosted grant", async () => {
@@ -936,6 +943,7 @@ suite("community handle sales on PostgreSQL 17", () => {
         ),
       ).resolves.toMatchObject({ kind: "account_allowlist_policy_authored_v2" });
     });
+    completedTestCount += 1;
   }, 20_000);
 
   test("activates an unrouted HNS root and fails delegation drift and terminal revocation closed", async () => {
@@ -1104,5 +1112,10 @@ suite("community handle sales on PostgreSQL 17", () => {
         reason: "sale_namespace_inactive",
       });
     });
+    completedTestCount += 1;
   }, 20_000);
+});
+
+afterAll(async () => {
+  if (completedTestCount === testCount) await Bun.write(sentinelPath, sentinelContents);
 });
