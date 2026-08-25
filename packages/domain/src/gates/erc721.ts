@@ -77,9 +77,6 @@ export function evaluateErc721InventoryMatchAtom(input: {
   };
 }
 
-export const evaluateErc721HoldingGate = evaluateErc721HoldingAtom;
-export const evaluateErc721InventoryGate = evaluateErc721InventoryMatchAtom;
-
 function holdingAction(atom: Erc721HoldingAtom, minimumQuantity: number): RequiredActionNode {
   return {
     kind: "action",
