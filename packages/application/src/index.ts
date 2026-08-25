@@ -17,6 +17,7 @@ export * from "./rewards/custody-solvency.ts";
 export * from "./rewards/megapot-allocation.ts";
 export * from "./rewards/megapot-approval.ts";
 export * from "./rewards/megapot-claim.ts";
+export * from "./rewards/megapot-drawing-observation.ts";
 export * from "./rewards/megapot-purchase.ts";
 export * from "./rewards/megapot-sweep.ts";
 export * from "./rewards/reward-funding.ts";

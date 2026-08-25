@@ -62,6 +62,8 @@ export type MegapotV2FeeQuote = Readonly<{
 }>;
 
 export interface MegapotV2RpcClient {
+  /** Present on the production adapter; test doubles may omit it. */
+  readonly deployment?: MegapotV2DeploymentAttestation;
   readonly attestDeployment: () => Promise<{
     readonly jackpotCodeHash: string;
     readonly ticketNftCodeHash: string;
@@ -99,10 +101,12 @@ export interface MegapotV2RpcClient {
   readonly readHead: () => Promise<{
     readonly blockNumber: bigint;
     readonly blockHash: string;
+    readonly blockTimestamp?: bigint;
   }>;
   readonly readBlock: (blockNumber: bigint) => Promise<{
     readonly blockNumber: bigint;
     readonly blockHash: string;
+    readonly blockTimestamp?: bigint;
   }>;
 }
 
@@ -202,11 +206,13 @@ async function boundedBody(response: Response, maxBytes: number): Promise<string
 function blockIdentity(value: unknown): {
   readonly blockNumber: bigint;
   readonly blockHash: string;
+  readonly blockTimestamp?: bigint;
 } {
   const block = object(value);
   return {
     blockNumber: quantity(block.number),
     blockHash: canonicalHash(block.hash),
+    ...(block.timestamp === undefined ? {} : { blockTimestamp: quantity(block.timestamp) }),
   };
 }
 
@@ -277,6 +283,7 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
   const readHead = async () => blockIdentity(await rpc("eth_getBlockByNumber", ["latest", false]));
 
   return {
+    deployment: attestation,
     attestDeployment: async () => {
       const [jackpotCodeHash, ticketNftCodeHash, usdcCodeHash] = await Promise.all([
         readCodeHash(attestation.jackpotAddress),

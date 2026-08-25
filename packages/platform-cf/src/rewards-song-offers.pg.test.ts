@@ -7,6 +7,7 @@ import { makeMegapotAllocationCoordinator } from "./megapot-allocation-coordinat
 import { makeControlPlaneMegapotAllocationStore } from "./megapot-allocation-repository.ts";
 import { makeControlPlaneMegapotApprovalStore } from "./megapot-approval-repository.ts";
 import { makeControlPlaneMegapotClaimStore } from "./megapot-claim-repository.ts";
+import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawing-observation-repository.ts";
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
 import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
 import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
@@ -1219,6 +1220,69 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       );
       expect(funded.rows).toEqual([
         { state: "confirmed", confirmed_amount_atomic: "500", funded_atomic: "100500" },
+      ]);
+    });
+  });
+
+  test("persists an attested drawing observation and opens each eligible pool once", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "drawing-observer");
+      await seedMegapotAuthority(admin);
+      const { legId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "drawing-observer",
+      });
+      const store = makeControlPlaneMegapotDrawingObservationStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const authority = await Effect.runPromise(store.loadCandidate("megapot-base-sepolia-v2"));
+      expect(authority).toMatchObject({
+        chainId: 84_532,
+        jackpotAddress: address("2"),
+        usdcAddress: address("1"),
+        custodyAddress: address("4"),
+      });
+      const now = Date.now();
+      const observation = {
+        observationId: "drawing-observation-repository-100",
+        attestationId: authority.attestationId,
+        chainId: authority.chainId,
+        drawingId: 100n,
+        ticketPriceAtomic: 10_000n,
+        drawingTime: new Date(now + 60 * 60 * 1_000).toISOString(),
+        ballMax: 25,
+        bonusballMax: 13,
+        drawingLocked: false,
+        referralFeeWei: 100_000_000_000_000_000n,
+        referralWinShareWei: 100_000_000_000_000_000n,
+        blockNumber: 140n,
+        blockHash: bytes32("5"),
+        blockTimestamp: new Date(now - 60_000).toISOString(),
+        confirmations: 1,
+        observedAt: new Date(now).toISOString(),
+        expiresAt: new Date(now + 15 * 60 * 1_000).toISOString(),
+        rawStateHash: hash("5"),
+      } as const;
+      const first = await Effect.runPromise(store.recordAndOpen(observation));
+      const replay = await Effect.runPromise(store.recordAndOpen(observation));
+      expect(first.openedPoolLegIds).toEqual([legId]);
+      expect(replay.openedPoolLegIds).toEqual([]);
+      expect(replay.observationId).toBe(first.observationId);
+      const drawings = await admin.query<{
+        readonly pool_leg_id: string;
+        readonly status: string;
+        readonly observation_id: string;
+      }>(
+        `SELECT pool_leg_id, status, observation_id
+           FROM megapot_pool_drawings WHERE pool_leg_id=$1 AND drawing_id=100`,
+        [legId],
+      );
+      expect(drawings.rows).toEqual([
+        {
+          pool_leg_id: legId,
+          status: "entry_open",
+          observation_id: observation.observationId,
+        },
       ]);
     });
   });
