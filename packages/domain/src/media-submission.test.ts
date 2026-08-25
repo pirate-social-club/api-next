@@ -4,6 +4,7 @@ import {
   createMediaSubmissionState,
   deterministicMediaWorkflowInstanceId,
   type ImmutableAudio,
+  type MediaSubmissionState,
   type PublicationDecision,
   type SongTerms,
   type TrustedSongAnalysis,
@@ -82,6 +83,16 @@ const issued = (() => {
   return result.state;
 })();
 
+const beginFinalize = (state: MediaSubmissionState) =>
+  ok(
+    transitionMediaSubmission(state, {
+      event: "finalize_requested",
+      actorId,
+      expectedCreationRevision: state.creationRevision,
+      reservationId: state.reservationId,
+    }),
+  );
+
 function ok<A extends ReturnType<typeof transitionMediaSubmission>>(result: A) {
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error(result.rejection._tag);
@@ -98,7 +109,7 @@ function analyzed(acrDecision: TrustedSongAnalysis["acr"]["decision"] = "allow")
     }),
   );
   const finalized = ok(
-    transitionMediaSubmission(withTerms, {
+    transitionMediaSubmission(beginFinalize(withTerms), {
       event: "upload_finalized",
       actorId,
       expectedCreationRevision: 2,
@@ -127,6 +138,48 @@ describe("song media Spec 013 machine", () => {
     });
     expect(issued.phase).toBe("awaiting_upload");
     expect(deterministicMediaWorkflowInstanceId(operationId, 1)).toBe("media-media_operation-r1");
+  });
+
+  test("durably fences finalize from cancellation and mutable terms", () => {
+    expect(
+      transitionMediaSubmission(issued, {
+        event: "upload_finalized",
+        actorId,
+        expectedCreationRevision: 1,
+        expectedAudioRevision: 0,
+        audio,
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "transition_not_allowed" } });
+    const finalizing = beginFinalize(issued);
+    expect(finalizing).toMatchObject({
+      status: "processing",
+      phase: "finalize",
+      creationRevision: 1,
+      audioRevision: 0,
+    });
+    expect(
+      transitionMediaSubmission(finalizing, {
+        event: "author_cancelled",
+        actorId,
+        expectedCreationRevision: 1,
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "transition_not_allowed" } });
+    expect(
+      transitionMediaSubmission(finalizing, {
+        event: "song_terms_bound",
+        actorId,
+        expectedCreationRevision: 1,
+        terms,
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "transition_not_allowed" } });
+    expect(
+      transitionMediaSubmission(finalizing, {
+        event: "finalize_requested",
+        actorId,
+        expectedCreationRevision: 1,
+        reservationId: "foreign_reservation",
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "transition_not_allowed" } });
   });
 
   test("binds terms separately and accepts the correct initial analysis revision", () => {
@@ -159,7 +212,7 @@ describe("song media Spec 013 machine", () => {
       }),
     );
     const finalized = ok(
-      transitionMediaSubmission(withTerms, {
+      transitionMediaSubmission(beginFinalize(withTerms), {
         event: "upload_finalized",
         actorId,
         expectedCreationRevision: 2,
@@ -391,7 +444,7 @@ describe("song media Spec 013 machine", () => {
       }),
     );
     const finalized = ok(
-      transitionMediaSubmission(withTerms, {
+      transitionMediaSubmission(beginFinalize(withTerms), {
         event: "upload_finalized",
         actorId,
         expectedCreationRevision: 2,
@@ -775,7 +828,7 @@ describe("song media Spec 013 machine", () => {
     }
     expect(
       ok(
-        transitionMediaSubmission(withTerms, {
+        transitionMediaSubmission(beginFinalize(withTerms), {
           event: "upload_expectation_mismatch_recorded",
           actorId,
           expectedCreationRevision: 2,

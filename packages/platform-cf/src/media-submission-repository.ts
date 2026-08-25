@@ -88,6 +88,7 @@ export type MediaSubmissionRepositoryOperation =
   | "get"
   | "terms"
   | "lyrics"
+  | "begin-finalize"
   | "finalize"
   | "analysis"
   | "decision"
@@ -281,6 +282,21 @@ export type FinalizeInput = CommandInput &
     immutableObject: ImmutableObjectInput;
     outbox: OutboxWrite;
   }>;
+export type BeginFinalizeInput = Readonly<{
+  communityId: string;
+  submissionId: string;
+  actorUserId: string;
+  personaId: string;
+  reservationId: string;
+  idempotencyKey: string;
+  requestHash: string;
+  expectedCreationRevision: number;
+}>;
+export type BeginFinalizeOutcome = Readonly<{
+  kind: "begun" | "resumed";
+  submissionId: string;
+  operationId: string;
+}>;
 export type AnalysisInput = CommandInput &
   Readonly<{
     expectedAudioRevision: number;
@@ -471,6 +487,9 @@ export type MediaSubmissionStore = {
   bindLyrics(
     input: LyricsInput,
   ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  beginFinalize(
+    input: BeginFinalizeInput,
+  ): Effect.Effect<BeginFinalizeOutcome, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   finalizeSealed(
     input: FinalizeInput,
   ): Effect.Effect<
@@ -1770,6 +1789,126 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       );
     });
 
+  const beginFinalize: MediaSubmissionStore["beginFinalize"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        ![
+          input.communityId,
+          input.submissionId,
+          input.actorUserId,
+          input.personaId,
+          input.reservationId,
+          input.idempotencyKey,
+        ].every(validId) ||
+        !validHash(input.requestHash) ||
+        !validRevision(input.expectedCreationRevision, 1)
+      )
+        return yield* Effect.fail(
+          fail("begin-finalize", "invalid-input", { submissionId: input.submissionId }),
+        );
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((tx) =>
+        Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "begin-finalize");
+          const current = yield* loadState(tx, input, "begin-finalize", true);
+          if (current === null)
+            return yield* Effect.fail(
+              fail("begin-finalize", "not-found", { submissionId: input.submissionId }),
+            );
+          if (current.phase === "finalize") {
+            const prior = yield* tx.execute<Row>({
+              label: "media-finalize.resume",
+              text: "SELECT event_kind,evidence FROM media_submission_events WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND event_sequence=(SELECT event_sequence FROM media_post_submissions WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3) FOR SHARE",
+              values: [
+                current.communityId,
+                current.actorId,
+                current.submissionId,
+                current.operationId,
+              ],
+              readonly: false,
+            });
+            const evidence = object(prior.rows[0]?.evidence);
+            if (
+              prior.rows.length !== 1 ||
+              prior.rows[0]?.event_kind !== "finalize_requested" ||
+              evidence?.idempotency_key !== input.idempotencyKey ||
+              evidence?.request_hash !== input.requestHash ||
+              evidence?.reservation_id !== input.reservationId ||
+              current.creationRevision !== input.expectedCreationRevision
+            )
+              return yield* Effect.fail(
+                fail("begin-finalize", "transition-rejected", {
+                  submissionId: current.submissionId,
+                }),
+              );
+            return {
+              kind: "resumed",
+              submissionId: current.submissionId,
+              operationId: current.operationId,
+            } as const;
+          }
+          const reservation = yield* tx.execute<Row>({
+            label: "media-finalize.reservation",
+            text: "SELECT reservation_id FROM media_upload_reservations WHERE community_id=$1 AND actor_user_id=$2 AND actor_persona_id=$3 AND reservation_id=$4 AND submission_id=$5 AND operation_id=$6 AND state='claimed' AND expires_at>clock_timestamp() FOR UPDATE",
+            values: [
+              current.communityId,
+              current.actorId,
+              current.personaId,
+              input.reservationId,
+              current.submissionId,
+              current.operationId,
+            ],
+            readonly: false,
+          });
+          if (reservation.rows.length !== 1)
+            return yield* Effect.fail(
+              fail("begin-finalize", "reservation-conflict", {
+                submissionId: current.submissionId,
+                reservationId: input.reservationId,
+              }),
+            );
+          const next = yield* reduce("begin-finalize", current, {
+            event: "finalize_requested",
+            actorId: input.actorUserId,
+            expectedCreationRevision: input.expectedCreationRevision,
+            reservationId: input.reservationId,
+          });
+          const updated = yield* tx.execute<Row>({
+            label: "media-finalize.begin",
+            text: "UPDATE media_post_submissions SET phase='finalize',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$1 AND actor_user_id=$2 AND author_persona_id=$3 AND submission_id=$4 AND operation_id=$5 AND creation_revision=$6 AND audio_revision=0 AND status='processing' AND phase='awaiting_upload' RETURNING event_sequence",
+            values: [
+              current.communityId,
+              current.actorId,
+              current.personaId,
+              current.submissionId,
+              current.operationId,
+              current.creationRevision,
+            ],
+            readonly: false,
+          });
+          if (updated.rowCount !== 1)
+            return yield* Effect.fail(
+              fail("begin-finalize", "stale-revision", { submissionId: current.submissionId }),
+            );
+          const sequence = integer(updated.rows[0]?.event_sequence);
+          if (sequence === null)
+            return yield* Effect.fail(
+              fail("begin-finalize", "invalid-row", { submissionId: current.submissionId }),
+            );
+          yield* insertEvent(tx, next, sequence, "finalize_requested", {
+            idempotency_key: input.idempotencyKey,
+            request_hash: input.requestHash,
+            reservation_id: input.reservationId,
+          });
+          return {
+            kind: "begun",
+            submissionId: current.submissionId,
+            operationId: current.operationId,
+          } as const;
+        }),
+      );
+    });
+
   const finalizeSealed: MediaSubmissionStore["finalizeSealed"] = (input) =>
     Effect.gen(function* () {
       if (
@@ -1850,7 +1989,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           });
           const updated = yield* tx.execute<Row>({
             label: "media-finalize.project",
-            text: "UPDATE media_post_submissions SET audio_revision=1,current_immutable_ref=$1,workflow_revision=$2,status='processing',phase='analysis',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND audio_revision=0 RETURNING event_sequence",
+            text: "UPDATE media_post_submissions SET audio_revision=1,current_immutable_ref=$1,workflow_revision=$2,status='processing',phase='analysis',event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND audio_revision=0 AND phase='finalize' RETURNING event_sequence",
             values: [
               audio.immutableRef,
               next.workflowRevision,
@@ -3390,6 +3529,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     getLyricsForAuthor,
     bindTerms,
     bindLyrics,
+    beginFinalize,
     finalizeSealed,
     acceptAnalysis,
     acceptTranscript,

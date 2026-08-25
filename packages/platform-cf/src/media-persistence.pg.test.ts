@@ -31,7 +31,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 26;
+const testCount = 27;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -224,6 +224,20 @@ const command = (connection: string, endpointTemplate: string, idempotencyKey: s
   responseBytes,
   responseSha256,
 });
+const finalizeFence = (
+  connection: string,
+  idempotencyKey = "finalize-key",
+  expectedCreationRevision = 2,
+) => ({
+  communityId: community,
+  submissionId: submission,
+  actorUserId: actor,
+  personaId: personaFor(connection),
+  reservationId: reservation,
+  idempotencyKey,
+  requestHash,
+  expectedCreationRevision,
+});
 const publicationWakeup = (suffix: string) => ({
   outboxEventId: `media_pg_publication_outbox_${suffix}`,
   effectIdentity: `media_pg_publication_effect_${suffix}`,
@@ -294,6 +308,12 @@ async function createThroughDecision(
       }),
     ),
   ).toEqual({ kind: "committed", submissionId: submission });
+  expect(
+    await run(connection, (store) => store.beginFinalize(finalizeFence(connection))),
+  ).toMatchObject({ kind: "begun", submissionId: submission, operationId: operation });
+  expect(
+    await run(connection, (store) => store.beginFinalize(finalizeFence(connection))),
+  ).toMatchObject({ kind: "resumed", submissionId: submission, operationId: operation });
   expect(
     await run(connection, (store) =>
       store.finalizeSealed({
@@ -597,7 +617,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         values: [submission],
       });
       expect(counts.rows[0]).toEqual({
-        events: "7",
+        events: "8",
         effects: "2",
         publications: "1",
         alignment: "unavailable",
@@ -850,6 +870,11 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           }),
         ),
       ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.beginFinalize(finalizeFence(connection, "finalize-key", 1)),
+        ),
+      ).toMatchObject({ kind: "begun", submissionId: submission, operationId: operation });
       expect(
         await run(connection, (store) =>
           store.finalizeSealed({
@@ -1781,6 +1806,78 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         retention_disposition: "no_object",
         reservation_state: "claimed",
       });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+  test("serializes finalize fencing against author cancellation", async () => {
+    await withSchema(async (admin, connection) => {
+      expect(
+        await run(connection, (store) =>
+          store.reserve({
+            communityId: community,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            idempotencyKey: "race-reserve",
+            requestHash,
+            expectedContentType: "audio/mpeg",
+            expectedSizeBytes: audioBytes.byteLength,
+            expectedSha256: audioSha256,
+            uploadUrl: "https://upload.test/media",
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            responseBytes,
+            responseSha256,
+            reservationId: reservation,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+      expect(
+        await run(connection, (store) =>
+          store.createSubmission({
+            communityId: community,
+            actorUserId: actor,
+            personaId: personaFor(connection),
+            idempotencyKey: "race-create",
+            requestHash,
+            title: "Finalize race song",
+            songType: "original",
+            reservationId: reservation,
+            submissionId: submission,
+            operationId: operation,
+            responseBytes,
+            responseSha256,
+          }),
+        ),
+      ).toMatchObject({ kind: "created" });
+
+      const outcomes = await Promise.allSettled([
+        run(connection, (store) =>
+          store.beginFinalize(finalizeFence(connection, "race-finalize", 1)),
+        ),
+        run(connection, (store) =>
+          store.authorCancel({
+            ...command(connection, "/media-post-submissions/:submissionId/cancel", "race-cancel"),
+            expectedCreationRevision: 1,
+          }),
+        ),
+      ]);
+      expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+      expect(outcomes.filter(({ status }) => status === "rejected")).toHaveLength(1);
+
+      const state = await admin.query<{ status: string; phase: string | null }>(
+        "SELECT status,phase FROM media_post_submissions WHERE submission_id=$1",
+        [submission],
+      );
+      expect(state.rows).toHaveLength(1);
+      if (state.rows[0] === undefined) throw new Error("missing finalize race state");
+      expect([
+        { status: "processing", phase: "finalize" },
+        { status: "abandoned", phase: null },
+      ]).toContainEqual(state.rows[0]);
+      const terminalEvents = await admin.query<{ event_kind: string }>(
+        "SELECT event_kind FROM media_submission_events WHERE submission_id=$1 AND event_kind IN ('finalize_requested','author_cancelled')",
+        [submission],
+      );
+      expect(terminalEvents.rows).toHaveLength(1);
     });
     completedTestCount += 1;
   }, 40_000);

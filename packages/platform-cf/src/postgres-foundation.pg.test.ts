@@ -263,6 +263,9 @@ const songLyricsFoundationMigrationSql = await Bun.file(
 const activityQualificationMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0051_activity_qualification.sql", import.meta.url),
 ).text();
+const mediaFinalizeFenceMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0052_media_finalize_fence.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -525,6 +528,11 @@ const activityQualificationMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0051_activity_qualification.sql"] ?? "",
   sql: activityQualificationMigrationSql,
 };
+const mediaFinalizeFenceMigration: PostgresMigration = {
+  version: "0052_media_finalize_fence.sql",
+  checksum: checksumManifest.migrations["0052_media_finalize_fence.sql"] ?? "",
+  sql: mediaFinalizeFenceMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -577,6 +585,7 @@ const migrations: readonly PostgresMigration[] = [
   bareHnsCommunityRouteV2Migration,
   songLyricsFoundationMigration,
   activityQualificationMigration,
+  mediaFinalizeFenceMigration,
 ];
 
 function checksum(value: string): string {
