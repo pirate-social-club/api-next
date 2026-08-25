@@ -168,6 +168,16 @@
     },
     "production": {
       "name": "pirate-http-worker-production",
+      // Keep workers.dev as a rollback probe while the canonical custom
+      // domain is the public production origin.
+      "workers_dev": true,
+      "preview_urls": false,
+      "routes": [
+        {
+          "pattern": "api-next.pirate.sc",
+          "custom_domain": true
+        }
+      ],
       "durable_objects": {
         "bindings": [
           {
@@ -183,8 +193,9 @@
       "hyperdrive": [
         {
           "binding": "CONTROL_PLANE",
-          // REFERENCE ONLY. Replace with the user-provisioned production ID.
-          "id": "00000000-0000-0000-0000-000000000000",
+          // Dedicated canonical-account production Hyperdrive. Its source
+          // credential selects only the api_next schema.
+          "id": "884b68c5a7904982a86620ed90032b77",
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
@@ -195,6 +206,7 @@
         "REGISTRATION_APPLICATION_LIMIT": "100",
         "REGISTRATION_APPLICATION_WINDOW_SECONDS": "60",
         "CORS_ORIGIN": "https://pirate.app,https://pirate.sc",
+        "PIRATE_API_PUBLIC_ORIGIN": "https://api-next.pirate.sc",
         "SELF_PASS_ENABLED": "false",
         "SELF_PASS_APP_NAME": "Pirate",
         "SELF_PASS_MOCK_PASSPORT": "false",
@@ -203,7 +215,7 @@
         "PIRATE_APP_JWT_ISSUER": "api-next-session-production",
         "PIRATE_APP_JWT_AUDIENCE": "api-next-browser-production",
         "PIRATE_APP_JWT_SCOPE": "api-next-browser-session-production",
-        "PIRATE_APP_JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtJV3ZoN9cXcnkhYR+awL\nWSM/YKLrgx5QrJM9H9Lh8HKWcV3Fghd1GYNziYBOVlccPSs9kv7aAYvNnb4OEIe5\nKJmOJ8gZPc7u4tlCmrNUNHtRJdF7CL7r3lPXrm8MyGX6RtSvfabaVUAuII0Fvfn1\nDv8AKXqUbktdMejJjFCHMHtomzTZ16erl+fK92+G67EYA2cXsJMPHTaxXCa/yo4S\nUFxt27m+GTcC0b3itUpLiwJ93IUHHXcKGcQ9boJX9jTb7xg5CvuVxFYy089jnsUJ\nQ8og2diKehMWTMZfSD1phKXdptXhUwOTACuegqtDPmWzyUDC79kMUFz9P111vYEV\n8QIDAQAB\n-----END PUBLIC KEY-----",
+        "PIRATE_APP_JWT_PUBLIC_KEY": "-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6Znh+9T5Uta6oCZTuMMc\n4cvJiIeCzR/SSrgxIXMcce2nr6ACoVg+RTrPRHlCEAN4Nj2s7wIRwfvl1dGcefRz\nZyXKstxeQgS01Fz+utLdoGrVf7DFANVrcIZmdpPB9AjXl8xfxtzsLzhMu0jhrT3V\nyoPoXUCxfUJWgR0aaZ6o8zOw9ZfgSGuGNY37P+vW2XURQEboMPU5QvVx5/coKj5U\nYHvh7JjE5kKBQjWDncT+E8zkqftk2qSDmd3/XqLiwey4293NhYNAbUbYGiXArXs6\nY3dcKkWH/CtUCWo5x/ZB5++NjF4GVYh6tVFkbRtaD0lilBRZp71xVCUyYkkhtNY9\n3wIDAQAB\n-----END PUBLIC KEY-----",
         "PRIVY_APP_ID": "cmnbdx9xk00ty0clapn2q8pdj",
         "PRIVY_JWKS_URL": "https://auth.privy.io/api/v1/apps/cmnbdx9xk00ty0clapn2q8pdj/jwks.json",
         "PRIVY_JWT_AUDIENCE": "cmnbdx9xk00ty0clapn2q8pdj",

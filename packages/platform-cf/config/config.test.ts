@@ -123,4 +123,40 @@ describe("config system (000 §9)", () => {
     expect(production?.vars?.VERY_WEB_ENABLED).toBeUndefined();
     expect(production?.vars?.VERY_WEB_APP_ID).toBeUndefined();
   });
+
+  test("pins the production HTTP origin to its dedicated Hyperdrive and custom domain", async () => {
+    const config = BunRuntime.JSONC.parse(
+      await BunRuntime.file(
+        new URL("../../../apps/http-worker/wrangler.jsonc", import.meta.url),
+      ).text(),
+    ) as {
+      readonly env?: {
+        readonly production?: {
+          readonly workers_dev?: boolean;
+          readonly routes?: readonly {
+            readonly pattern?: string;
+            readonly custom_domain?: boolean;
+          }[];
+          readonly hyperdrive?: readonly {
+            readonly binding?: string;
+            readonly id?: string;
+            readonly localConnectionString?: string;
+          }[];
+          readonly vars?: Record<string, string>;
+        };
+      };
+    };
+    const production = config.env?.production;
+    expect(production?.workers_dev).toBe(true);
+    expect(production?.routes).toEqual([{ pattern: "api-next.pirate.sc", custom_domain: true }]);
+    expect(production?.hyperdrive).toEqual([
+      {
+        binding: "CONTROL_PLANE",
+        id: "884b68c5a7904982a86620ed90032b77",
+        localConnectionString: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
+      },
+    ]);
+    expect(production?.vars?.PIRATE_API_PUBLIC_ORIGIN).toBe("https://api-next.pirate.sc");
+    expect(production?.vars?.HNS_OWNERSHIP_ENABLED).toBe("false");
+  });
 });

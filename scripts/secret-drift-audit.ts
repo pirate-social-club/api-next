@@ -226,16 +226,10 @@ export function driftKey(input: Pick<Drift, "workerId" | "environment" | "kind" 
 
 export const EXPECTED_CLOUDFLARE_DRIFT: readonly ExpectedDrift[] = [
   {
-    workerId: "http",
-    environment: "production",
-    kind: "worker-not-deployed",
-    reason: "Production remains disabled; the production HTTP Worker is intentionally absent.",
-  },
-  {
     workerId: "jobs",
     environment: "production",
     kind: "worker-not-deployed",
-    reason: "Production remains disabled; the production jobs Worker is intentionally absent.",
+    reason: "The production jobs Worker remains intentionally absent.",
   },
 ];
 
