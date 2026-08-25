@@ -130,7 +130,7 @@
     },
     {
       "operationId": "get_mediaPostSubmissionsSubmissionId",
-      "reason": "2026-08-24 account/persona authorship amendment: the private submission status snapshot projects author_persona and no account/user author identity."
+      "reason": "2026-08-25 author-reviewed lyrics amendment: the private submission snapshot adds audio_revision plus separate immutable ASR suggestion and current accepted-lyrics projections; it continues to expose author_persona and no account/user author identity."
     },
     {
       "operationId": "post_mediaPostSubmissionsSubmissionIdReference",
@@ -174,7 +174,7 @@
     },
     {
       "operationId": "get_postsPostId",
-      "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+      "reason": "2026-08-25 author-reviewed lyrics amendment: the public song projection publishes the exact accepted lyrics revision as ready or proves no_lyrics; the v2 error envelope remains unchanged."
     },
     {
       "operationId": "get_publicCommunitiesCommunityRefFeed",

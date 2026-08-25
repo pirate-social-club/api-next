@@ -10,7 +10,12 @@ import {
 } from "../../domain/src/media-submission.ts";
 
 type Row = Readonly<Record<string, unknown>>;
-type EventType = "analysis_launch" | "publication" | "alignment";
+type EventType =
+  | "analysis_launch"
+  | "decision_wakeup"
+  | "publication"
+  | "alignment"
+  | "workflow_replacement";
 const ID = /^\S(?:.*\S)?$/u;
 const validId = (value: unknown): value is string =>
   typeof value === "string" && value.length <= 512 && !value.includes("\u0000") && ID.test(value);
@@ -39,7 +44,13 @@ const payloadFor = (value: unknown, kind: EventType): MediaOutboxPayload | null 
   const expected =
     kind === "analysis_launch"
       ? "analysis_revision,audio_revision,kind,operation_id,submission_id,workflow_instance_id,workflow_revision"
-      : "kind,operation_id,post_id,submission_id,workflow_instance_id,workflow_revision";
+      : kind === "decision_wakeup"
+        ? "creation_revision,kind,lyrics_revision,operation_id,submission_id,trigger,workflow_instance_id,workflow_revision"
+        : kind === "workflow_replacement"
+          ? "kind,operation_id,replacement_sequence,submission_id,workflow_instance_id,workflow_revision"
+          : kind === "publication"
+            ? "creation_revision,kind,lyrics_revision,operation_id,submission_id,workflow_instance_id,workflow_revision"
+            : "kind,lyrics_revision,operation_id,post_id,submission_id,workflow_instance_id,workflow_revision";
   if (
     keys(object) !== expected ||
     object.kind !== kind ||
@@ -56,10 +67,37 @@ const payloadFor = (value: unknown, kind: EventType): MediaOutboxPayload | null 
   )
     return null;
   if (
-    kind !== "analysis_launch" &&
+    kind === "alignment" &&
     (!validId(object.post_id) ||
       !Number.isSafeInteger(object.workflow_revision) ||
       (object.workflow_revision as number) < 1)
+  )
+    return null;
+  if (
+    kind === "decision_wakeup" &&
+    (!Number.isSafeInteger(object.creation_revision) ||
+      (object.creation_revision as number) < 1 ||
+      (object.lyrics_revision !== null &&
+        (!Number.isSafeInteger(object.lyrics_revision) ||
+          (object.lyrics_revision as number) < 1)) ||
+      !["terms", "lyrics"].includes(String(object.trigger)))
+  )
+    return null;
+  if (
+    kind === "workflow_replacement" &&
+    (!Number.isSafeInteger(object.replacement_sequence) ||
+      (object.replacement_sequence as number) < 1)
+  )
+    return null;
+  if (
+    kind === "publication" &&
+    (!Number.isSafeInteger(object.creation_revision) || (object.creation_revision as number) < 1)
+  )
+    return null;
+  if (
+    (kind === "publication" || kind === "alignment") &&
+    object.lyrics_revision !== null &&
+    (!Number.isSafeInteger(object.lyrics_revision) || (object.lyrics_revision as number) < 1)
   )
     return null;
   return object as unknown as MediaOutboxPayload;
@@ -75,7 +113,17 @@ const payloadMatchesInput = (
   (payload.kind === "analysis_launch"
     ? payload.audio_revision === input.audioRevision &&
       payload.analysis_revision === input.analysisRevision
-    : validId(input.postId) && payload.post_id === input.postId);
+    : payload.kind === "decision_wakeup"
+      ? payload.creation_revision === input.creationRevision &&
+        payload.lyrics_revision === input.lyricsRevision
+      : payload.kind === "workflow_replacement"
+        ? payload.replacement_sequence === input.replacementSequence
+        : payload.kind === "publication"
+          ? payload.creation_revision === input.creationRevision &&
+            payload.lyrics_revision === input.lyricsRevision
+          : validId(input.postId) &&
+            payload.post_id === input.postId &&
+            payload.lyrics_revision === input.lyricsRevision);
 
 export class MediaOutboxRepositoryError extends Data.TaggedError("MediaOutboxRepositoryError")<{
   readonly operation: "enqueue" | "get" | "claim" | "deliver" | "fail";
@@ -98,6 +146,7 @@ export type MediaOutboxRecord = Readonly<{
   creationRevision: number;
   audioRevision: number;
   analysisRevision: number;
+  lyricsRevision: number | null;
   workflowRevision: number;
   workflowInstanceId: string;
   eventType: EventType;
@@ -118,11 +167,13 @@ export type MediaOutboxEnqueueInput = Readonly<{
   creationRevision: number;
   audioRevision: number;
   analysisRevision: number;
+  lyricsRevision: number | null;
   workflowRevision: number;
   workflowInstanceId: string;
   eventType: EventType;
   effectIdentity: string;
   postId?: string;
+  replacementSequence?: number;
   payload: MediaOutboxPayload;
 }>;
 export type MediaOutboxClaimInput = Readonly<{
@@ -190,6 +241,7 @@ function decodeRecord(
   const creationRevision = integer(row.creation_revision),
     audioRevision = integer(row.audio_revision),
     analysisRevision = integer(row.analysis_revision),
+    lyricsRevision = row.lyrics_revision === null ? null : integer(row.lyrics_revision),
     workflowRevision = integer(row.workflow_revision),
     attempts = integer(row.delivery_attempts),
     fence = integer(row.claim_fence);
@@ -215,7 +267,14 @@ function decodeRecord(
     workflowRevision < 1 ||
     row.workflow_instance_id !==
       deterministicMediaWorkflowInstanceId(String(row.operation_id), workflowRevision) ||
-    !["analysis_launch", "publication", "alignment"].includes(eventType) ||
+    ![
+      "analysis_launch",
+      "decision_wakeup",
+      "publication",
+      "alignment",
+      "workflow_replacement",
+    ].includes(eventType) ||
+    (row.lyrics_revision !== null && lyricsRevision === null) ||
     payload === null ||
     payload.submission_id !== row.submission_id ||
     payload.operation_id !== row.operation_id ||
@@ -247,6 +306,7 @@ function decodeRecord(
     creationRevision,
     audioRevision,
     analysisRevision,
+    lyricsRevision,
     workflowRevision,
     workflowInstanceId: row.workflow_instance_id as string,
     eventType,
@@ -289,6 +349,8 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
         input.creationRevision < 1 ||
         input.audioRevision < 1 ||
         input.analysisRevision < 0 ||
+        (input.lyricsRevision !== null &&
+          (!Number.isSafeInteger(input.lyricsRevision) || input.lyricsRevision < 1)) ||
         input.workflowRevision < 1 ||
         input.workflowInstanceId !==
           deterministicMediaWorkflowInstanceId(input.operationId, input.workflowRevision) ||
@@ -326,7 +388,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
           }
           const result = yield* tx.execute({
             label: "media-outbox.enqueue",
-            text: "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)",
+            text: "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,operation_id,creation_revision,audio_revision,analysis_revision,lyrics_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15)",
             values: [
               input.outboxEventId,
               input.submissionId,
@@ -336,6 +398,7 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
               input.creationRevision,
               input.audioRevision,
               input.analysisRevision,
+              input.lyricsRevision,
               input.workflowRevision,
               input.workflowInstanceId,
               input.eventType,

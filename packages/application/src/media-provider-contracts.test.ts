@@ -203,6 +203,7 @@ describe("provider-neutral media analysis contracts", () => {
   test("keeps transcript text inert and rejects authority-shaped fields", () => {
     expect(decodeMediaExplicitnessClassifierInput(classifierInput)).toMatchObject({
       transcript: { transcript: hostileTranscript.transcript },
+      accepted_lyrics: { lyrics_revision: 3 },
     });
     for (const field of hostileAuthorityFields) {
       expect(() =>
@@ -227,6 +228,7 @@ describe("provider-neutral media analysis contracts", () => {
         status,
         evidence: [],
         transcript_identity: classifierResult.transcript_identity,
+        lyrics_identity: classifierResult.lyrics_identity,
         attempt_id: classifierResult.attempt_id,
         policy_revision: "lyrics-policy-1",
         prompt_revision: "classifier-prompt-1",
@@ -273,6 +275,23 @@ describe("provider-neutral media analysis contracts", () => {
         transcript: "transcript must not be repeated in classifier output",
       }),
     ).toThrow();
+    expect(() =>
+      decodeMediaExplicitnessClassifierResult({
+        ...classifierResult,
+        explicitness: "not_explicit",
+        transcript_explicitness: "explicit",
+        lyrics_explicitness: "not_explicit",
+        material_disagreement: true,
+      }),
+    ).toThrow();
+    expect(() =>
+      decodeMediaExplicitnessClassifierResult({
+        ...classifierResult,
+        transcript_explicitness: "explicit",
+        lyrics_explicitness: "not_explicit",
+        material_disagreement: false,
+      }),
+    ).toThrow();
     expect(
       isMediaClassifierResultBoundToTranscript(
         decodeMediaExplicitnessClassifierInput(classifierInput),
@@ -297,8 +316,16 @@ describe("provider-neutral media analysis contracts", () => {
         decodeMediaExplicitnessClassifierResult({
           version: "media-explicitness-classifier-result-v1",
           status: "exhausted",
-          evidence: [{ kind: "explicitness", segment_index: 9_999, confidence: 0.5 }],
+          evidence: [
+            {
+              kind: "explicitness",
+              source: "transcript",
+              segment_index: 9_999,
+              confidence: 0.5,
+            },
+          ],
           transcript_identity: classifierResult.transcript_identity,
+          lyrics_identity: classifierResult.lyrics_identity,
           attempt_id: classifierResult.attempt_id,
           policy_revision: "lyrics-policy-1",
           prompt_revision: "classifier-prompt-1",
@@ -318,11 +345,24 @@ describe("provider-neutral media analysis contracts", () => {
             ...classifierResult.transcript_identity,
             transcript_sha256: "c".repeat(64),
           },
+          lyrics_identity: classifierResult.lyrics_identity,
           attempt_id: classifierResult.attempt_id,
           policy_revision: "lyrics-policy-1",
           prompt_revision: "classifier-prompt-1",
           classifier_revision: "classifier-contract-1",
           adapter_revision: "adapter-revision-1",
+        }),
+      ),
+    ).toBe(false);
+    expect(
+      isMediaClassifierResultBoundToTranscript(
+        decodeMediaExplicitnessClassifierInput(classifierInput),
+        decodeMediaExplicitnessClassifierResult({
+          ...classifierResult,
+          lyrics_identity: {
+            ...classifierResult.lyrics_identity,
+            lyrics_revision: 4,
+          },
         }),
       ),
     ).toBe(false);

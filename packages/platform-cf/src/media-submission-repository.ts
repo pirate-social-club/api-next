@@ -17,6 +17,7 @@ import {
   type ProcessingFailure,
   type PublicationDecision,
   type ReviewCase,
+  type SongLyricsRevision,
   type SongTerms,
   type SongType,
   type TrustedSongAnalysis,
@@ -47,7 +48,8 @@ const trustedAnalysisSnapshot = (analysis: TrustedSongAnalysis): unknown => ({
   ...analysis,
   speechLyrics:
     analysis.speechLyrics.status === "ready"
-      ? analysis.speechLyrics
+      ? (({ transcriptRevision: _, lyricsRevision: __, materialDisagreement: ___, ...speech }) =>
+          speech)(analysis.speechLyrics)
       : {
           ...analysis.speechLyrics,
           transcriptArtifactRef: null,
@@ -66,6 +68,10 @@ const trustedAnalysisSnapshot = (analysis: TrustedSongAnalysis): unknown => ({
           upstreamCommercialRevShareBps: analysis.boundReference.upstreamCommercialRevShareBps,
         },
 });
+const publicationDecisionSnapshot = (decision: PublicationDecision): unknown => {
+  const { lyricsRevision: _, ...snapshot } = decision;
+  return snapshot;
+};
 export const RESERVATION_ENDPOINT = "/communities/:communityId/media-upload-reservations";
 export const SUBMISSION_ENDPOINT = "/communities/:communityId/media-post-submissions";
 
@@ -75,6 +81,7 @@ export type MediaSubmissionRepositoryOperation =
   | "replay"
   | "get"
   | "terms"
+  | "lyrics"
   | "finalize"
   | "analysis"
   | "decision"
@@ -86,6 +93,7 @@ export type MediaSubmissionRepositoryOperation =
   | "alignment"
   | "attempt"
   | "failure"
+  | "workflow"
   | "abandon";
 export type MediaSubmissionRepositoryReason =
   | "invalid-input"
@@ -190,7 +198,15 @@ export type CommandReplayInput = Omit<
 };
 type ReplayIdentityInput = CommandReplayInput;
 export type TermsInput = CommandInput &
-  Readonly<{ expectedCreationRevision: number; terms: SongTerms }>;
+  Readonly<{ expectedCreationRevision: number; terms: SongTerms; outbox?: OutboxWrite }>;
+export type LyricsInput = CommandInput &
+  Readonly<{
+    expectedCreationRevision: number;
+    expectedAudioRevision: number;
+    lyrics: string;
+    baseTranscriptRevision: number | null;
+    outbox: OutboxWrite;
+  }>;
 export type ImmutableObjectInput = Readonly<{
   immutableRef: string;
   destinationRef: string;
@@ -211,10 +227,21 @@ export type MediaOutboxPayload =
       workflow_instance_id: string;
     }>
   | Readonly<{
+      kind: "decision_wakeup";
+      submission_id: string;
+      operation_id: string;
+      creation_revision: number;
+      lyrics_revision: number | null;
+      trigger: "terms" | "lyrics";
+      workflow_revision: number;
+      workflow_instance_id: string;
+    }>
+  | Readonly<{
       kind: "publication";
       submission_id: string;
       operation_id: string;
-      post_id: string;
+      creation_revision: number;
+      lyrics_revision: number | null;
       workflow_revision: number;
       workflow_instance_id: string;
     }>
@@ -223,6 +250,15 @@ export type MediaOutboxPayload =
       submission_id: string;
       operation_id: string;
       post_id: string;
+      lyrics_revision: number | null;
+      workflow_revision: number;
+      workflow_instance_id: string;
+    }>
+  | Readonly<{
+      kind: "workflow_replacement";
+      submission_id: string;
+      operation_id: string;
+      replacement_sequence: number;
       workflow_revision: number;
       workflow_instance_id: string;
     }>;
@@ -249,6 +285,16 @@ export type AnalysisInput = CommandInput &
       segments: readonly Readonly<{ start_ms: number; end_ms: number; text: string }>[];
     }>;
   }>;
+export type TranscriptInput = CommandInput &
+  Readonly<{
+    expectedAudioRevision: number;
+    expectedCanonicalAudioSha256: string;
+    transcriptRevision: number;
+    transcriptArtifactRef: string;
+    transcriptSha256: string;
+    transcript: string;
+    segments: readonly Readonly<{ start_ms: number; end_ms: number; text: string }>[];
+  }>;
 export type DecisionInput = CommandInput &
   Readonly<{
     expectedCreationRevision: number;
@@ -268,6 +314,7 @@ export type ModeratorInput = Omit<CommandInput, "actorUserId" | "personaId"> &
     evidenceRef?: string;
     actor: M2Actor;
     decision?: PublicationDecision;
+    outbox?: OutboxWrite;
   }>;
 export type RetryInput = CommandInput & Readonly<{ expectedCreationRevision: number }>;
 export type FailureInput = CommandInput &
@@ -291,6 +338,7 @@ export type AlignmentInput = Readonly<{
   postId: string;
   audioRevision: number;
   analysisRevision: number;
+  lyricsRevision: number | null;
   canonicalAudioSha256: string;
   outcome: "ready" | "unavailable";
   artifact?: Readonly<{
@@ -300,6 +348,25 @@ export type AlignmentInput = Readonly<{
     artifact: Readonly<Record<string, unknown>>;
   }>;
   failureCode?: MediaAlignmentFailureCode;
+}>;
+export type WorkflowReplacementInput = Readonly<{
+  communityId: string;
+  submissionId: string;
+  actorUserId: string;
+  personaId: string;
+  expectedWorkflowRevision: number;
+  outbox: OutboxWrite;
+}>;
+export type AuthorLyricsSnapshot = Readonly<{
+  asrSuggestion:
+    | { readonly status: "pending" }
+    | { readonly status: "ready"; readonly transcriptRevision: number; readonly text: string }
+    | { readonly status: "no_speech" }
+    | { readonly status: "unavailable" };
+  current:
+    | { readonly status: "not_bound" }
+    | ({ readonly status: "ready" } & SongLyricsRevision)
+    | { readonly status: "no_lyrics" };
 }>;
 export type MediaAlignmentFailureCode =
   | "elevenlabs_key_missing"
@@ -386,8 +453,17 @@ export type MediaSubmissionStore = {
     actorUserId: string;
     personaId: string;
   }): Effect.Effect<MediaSubmissionState | null, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  getLyricsForAuthor(input: {
+    communityId: string;
+    submissionId: string;
+    actorUserId: string;
+    personaId: string;
+  }): Effect.Effect<AuthorLyricsSnapshot | null, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   bindTerms(
     input: TermsInput,
+  ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  bindLyrics(
+    input: LyricsInput,
   ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   finalizeSealed(
     input: FinalizeInput,
@@ -398,6 +474,9 @@ export type MediaSubmissionStore = {
   >;
   acceptAnalysis(
     input: AnalysisInput,
+  ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  acceptTranscript(
+    input: TranscriptInput,
   ): Effect.Effect<ReplayOutcome | Committed, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   recordDecision(
     input: DecisionInput,
@@ -470,6 +549,13 @@ export type MediaSubmissionStore = {
   failProcessingAttempt(
     input: ProcessingAttemptFailInput,
   ): Effect.Effect<boolean, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  replaceLostWorkflow(
+    input: WorkflowReplacementInput,
+  ): Effect.Effect<
+    Committed & { outboxEventId: string },
+    MediaSubmissionRepositoryFailure,
+    ControlPlaneDb
+  >;
 };
 
 const fail = (
@@ -584,7 +670,7 @@ function reservationReplay(
     : { kind: "conflict", reservationId };
 }
 
-const stateSelect = `SELECT s.*, t.terms_snapshot, a.canonical_sha256 AS audio_sha256, a.content_type AS audio_content_type, a.size_bytes AS audio_size_bytes, ae.analysis_snapshot, d.decision_snapshot, r.evidence_ref AS bound_reference_db_evidence_ref, r.inherited_license_preset AS bound_reference_inherited_license_preset, r.inherited_commercial_rev_share_bps AS bound_reference_inherited_share_bps, ap.status AS alignment_status FROM media_post_submissions s LEFT JOIN media_submission_terms t ON t.community_id = s.community_id AND t.actor_user_id = s.actor_user_id AND t.submission_id = s.submission_id AND t.operation_id = s.operation_id AND t.creation_revision = s.current_terms_revision LEFT JOIN media_audio_revisions a ON a.community_id = s.community_id AND a.actor_user_id = s.actor_user_id AND a.submission_id = s.submission_id AND a.operation_id = s.operation_id AND a.audio_revision = s.audio_revision LEFT JOIN media_analysis_evidence ae ON ae.community_id = s.community_id AND ae.actor_user_id = s.actor_user_id AND ae.submission_id = s.submission_id AND ae.operation_id = s.operation_id AND ae.analysis_revision = s.current_analysis_revision LEFT JOIN media_publication_decisions d ON d.community_id = s.community_id AND d.actor_user_id = s.actor_user_id AND d.submission_id = s.submission_id AND d.operation_id = s.operation_id AND d.decision_revision = s.current_decision_revision LEFT JOIN media_reference_evidence r ON r.community_id = s.community_id AND r.actor_user_id = s.actor_user_id AND r.submission_id = s.submission_id AND r.operation_id = s.operation_id AND r.asset_id = s.bound_reference_asset_id AND r.evidence_audio_revision = s.bound_reference_audio_revision AND r.evidence_analysis_revision = s.bound_reference_analysis_revision AND r.evidence_audio_sha256 = s.bound_reference_audio_sha256 LEFT JOIN media_alignment_projections ap ON ap.community_id = s.community_id AND ap.actor_user_id = s.actor_user_id AND ap.submission_id = s.submission_id AND ap.operation_id = s.operation_id`;
+const stateSelect = `SELECT s.*, t.terms_snapshot, a.canonical_sha256 AS audio_sha256, a.content_type AS audio_content_type, a.size_bytes AS audio_size_bytes, l.lyrics_text, l.lyrics_sha256, l.base_transcript_revision, l.provenance AS lyrics_provenance, ae.analysis_snapshot, ae.transcript_revision AS analysis_transcript_revision, ae.lyrics_revision AS analysis_lyrics_revision, ae.material_disagreement AS analysis_material_disagreement, d.decision_snapshot, d.lyrics_revision AS decision_lyrics_revision, r.evidence_ref AS bound_reference_db_evidence_ref, r.inherited_license_preset AS bound_reference_inherited_license_preset, r.inherited_commercial_rev_share_bps AS bound_reference_inherited_share_bps, ap.status AS alignment_status FROM media_post_submissions s LEFT JOIN media_submission_terms t ON t.community_id = s.community_id AND t.actor_user_id = s.actor_user_id AND t.submission_id = s.submission_id AND t.operation_id = s.operation_id AND t.creation_revision = s.current_terms_revision LEFT JOIN media_audio_revisions a ON a.community_id = s.community_id AND a.actor_user_id = s.actor_user_id AND a.submission_id = s.submission_id AND a.operation_id = s.operation_id AND a.audio_revision = s.audio_revision LEFT JOIN media_song_lyrics_revisions l ON l.community_id = s.community_id AND l.actor_user_id = s.actor_user_id AND l.submission_id = s.submission_id AND l.operation_id = s.operation_id AND l.lyrics_revision = s.current_lyrics_revision LEFT JOIN media_analysis_evidence ae ON ae.community_id = s.community_id AND ae.actor_user_id = s.actor_user_id AND ae.submission_id = s.submission_id AND ae.operation_id = s.operation_id AND ae.analysis_revision = s.current_analysis_revision LEFT JOIN media_publication_decisions d ON d.community_id = s.community_id AND d.actor_user_id = s.actor_user_id AND d.submission_id = s.submission_id AND d.operation_id = s.operation_id AND d.decision_revision = s.current_decision_revision LEFT JOIN media_reference_evidence r ON r.community_id = s.community_id AND r.actor_user_id = s.actor_user_id AND r.submission_id = s.submission_id AND r.operation_id = s.operation_id AND r.asset_id = s.bound_reference_asset_id AND r.evidence_audio_revision = s.bound_reference_audio_revision AND r.evidence_analysis_revision = s.bound_reference_analysis_revision AND r.evidence_audio_sha256 = s.bound_reference_audio_sha256 LEFT JOIN media_alignment_projections ap ON ap.community_id = s.community_id AND ap.actor_user_id = s.actor_user_id AND ap.submission_id = s.submission_id AND ap.operation_id = s.operation_id`;
 
 function decodeState(
   row: Row,
@@ -594,6 +680,7 @@ function decodeState(
   const audioRevision = integer(row.audio_revision);
   const analysisRevision = integer(row.analysis_revision);
   const decisionRevision = integer(row.decision_revision);
+  const lyricsRevision = integer(row.lyrics_revision);
   const workflowRevision = integer(row.workflow_revision);
   const retryCount = integer(row.retry_count);
   const failureRetryCount =
@@ -616,6 +703,7 @@ function decodeState(
     audioRevision === null ||
     analysisRevision === null ||
     decisionRevision === null ||
+    lyricsRevision === null ||
     workflowRevision === null ||
     retryCount === null ||
     (row.status === "processing_failed" && (failureRetryCount === null || failureRetryCount > 3)) ||
@@ -639,7 +727,13 @@ function decodeState(
         !validId(row.audio_content_type) ||
         audioSize === null ||
         audioSize < 1)) ||
-    (analysisRevision === 0) !== (analysis === null) ||
+    (lyricsRevision === 0) !== (row.current_lyrics_revision === null) ||
+    (lyricsRevision > 0 &&
+      (integer(row.current_lyrics_revision) !== lyricsRevision ||
+        !validId(row.lyrics_text) ||
+        !validHash(row.lyrics_sha256) ||
+        !["asr_accepted", "pasted", "corrected"].includes(String(row.lyrics_provenance)))) ||
+    (analysisRevision === 0 && analysis !== null) ||
     (decisionRevision === 0) !== (decision === null)
   )
     throw fail(
@@ -698,6 +792,15 @@ function decodeState(
       ? null
       : ({
           ...storedAnalysis,
+          speechLyrics:
+            storedAnalysis.speechLyrics.status === "ready"
+              ? {
+                  ...storedAnalysis.speechLyrics,
+                  transcriptRevision: integer(row.analysis_transcript_revision) ?? 0,
+                  lyricsRevision: integer(row.analysis_lyrics_revision) ?? 0,
+                  materialDisagreement: row.analysis_material_disagreement === true,
+                }
+              : storedAnalysis.speechLyrics,
           boundReference:
             boundReference === null
               ? null
@@ -762,6 +865,7 @@ function decodeState(
     audioRevision,
     analysisRevision,
     decisionRevision,
+    lyricsRevision,
     workflowRevision,
     retryCount,
     status: row.status as MediaSubmissionState["status"],
@@ -777,9 +881,32 @@ function decodeState(
             contentType: row.audio_content_type as string,
             sizeBytes: audioSize as number,
           },
+    lyrics:
+      lyricsRevision === 0
+        ? null
+        : {
+            lyricsRevision,
+            audioRevision,
+            canonicalAudioSha256: row.audio_sha256 as string,
+            text: row.lyrics_text as string,
+            baseTranscriptRevision:
+              row.base_transcript_revision === null
+                ? null
+                : (integer(row.base_transcript_revision) as number),
+            provenance: row.lyrics_provenance as SongLyricsRevision["provenance"],
+          },
     analysis: projectedAnalysis,
     boundReference,
-    decision: decision as PublicationDecision | null,
+    decision:
+      decision === null
+        ? null
+        : ({
+            ...decision,
+            lyricsRevision:
+              row.decision_lyrics_revision === null
+                ? null
+                : (integer(row.decision_lyrics_revision) as number),
+          } as PublicationDecision),
     action,
     review,
     moderatorApproval:
@@ -981,12 +1108,17 @@ const insertEvent = (
 const insertOutbox = (
   tx: ControlPlaneTransaction,
   state: MediaSubmissionState,
-  eventType: "analysis_launch" | "publication" | "alignment",
+  eventType:
+    | "analysis_launch"
+    | "decision_wakeup"
+    | "publication"
+    | "alignment"
+    | "workflow_replacement",
   outbox: OutboxWrite,
 ) =>
   tx.execute({
     label: `media-submission.outbox.${eventType}`,
-    text: "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,author_persona_id,operation_id,creation_revision,audio_revision,analysis_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb)",
+    text: "INSERT INTO media_submission_outbox (outbox_event_id,submission_id,community_id,actor_user_id,author_persona_id,operation_id,creation_revision,audio_revision,analysis_revision,lyrics_revision,workflow_revision,workflow_instance_id,event_type,effect_identity,payload) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb)",
     values: [
       outbox.outboxEventId,
       state.submissionId,
@@ -997,6 +1129,7 @@ const insertOutbox = (
       state.creationRevision,
       state.audioRevision,
       state.analysisRevision,
+      state.lyrics?.lyricsRevision ?? null,
       state.workflowRevision,
       deterministicMediaWorkflowInstanceId(state.operationId, state.workflowRevision),
       eventType,
@@ -1300,6 +1433,59 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       });
     });
 
+  const getLyricsForAuthor: MediaSubmissionStore["getLyricsForAuthor"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        ![input.communityId, input.submissionId, input.actorUserId, input.personaId].every(validId)
+      )
+        return yield* Effect.fail(
+          fail("get", "invalid-input", { submissionId: input.submissionId }),
+        );
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<Row>({
+        label: "media-lyrics.author-snapshot",
+        text: `SELECT s.audio_revision,s.lyrics_revision,l.lyrics_text,l.canonical_audio_sha256,l.base_transcript_revision,l.provenance,t.analysis_revision AS transcript_revision,t.transcript_text,ae.speech_status FROM media_post_submissions s LEFT JOIN media_song_lyrics_revisions l ON l.submission_id=s.submission_id AND l.lyrics_revision=s.current_lyrics_revision LEFT JOIN LATERAL (SELECT analysis_revision,transcript_text FROM media_transcript_artifacts WHERE submission_id=s.submission_id AND audio_revision=s.audio_revision ORDER BY analysis_revision DESC LIMIT 1) t ON TRUE LEFT JOIN LATERAL (SELECT speech_status FROM media_analysis_evidence WHERE submission_id=s.submission_id AND audio_revision=s.audio_revision ORDER BY analysis_revision DESC LIMIT 1) ae ON TRUE WHERE s.community_id=$1 AND s.submission_id=$2 AND s.actor_user_id=$3 AND s.author_persona_id=$4`,
+        values: [input.communityId, input.submissionId, input.actorUserId, input.personaId],
+        readonly: true,
+      });
+      if (result.rows.length === 0) return null;
+      if (result.rows.length !== 1)
+        return yield* Effect.fail(fail("get", "invalid-row", { submissionId: input.submissionId }));
+      const row = result.rows[0] as Row;
+      const audioRevision = integer(row.audio_revision);
+      const lyricsRevision = integer(row.lyrics_revision);
+      const transcriptRevision =
+        row.transcript_revision === null ? null : integer(row.transcript_revision);
+      if (audioRevision === null || lyricsRevision === null)
+        return yield* Effect.fail(fail("get", "invalid-row", { submissionId: input.submissionId }));
+      const asrSuggestion: AuthorLyricsSnapshot["asrSuggestion"] =
+        transcriptRevision !== null && typeof row.transcript_text === "string"
+          ? { status: "ready", transcriptRevision, text: row.transcript_text }
+          : row.speech_status === "no_speech"
+            ? { status: "no_speech" }
+            : row.speech_status === "unavailable"
+              ? { status: "unavailable" }
+              : { status: "pending" };
+      const current: AuthorLyricsSnapshot["current"] =
+        lyricsRevision > 0 && typeof row.lyrics_text === "string"
+          ? {
+              status: "ready",
+              lyricsRevision,
+              audioRevision,
+              canonicalAudioSha256: row.canonical_audio_sha256 as string,
+              text: row.lyrics_text,
+              baseTranscriptRevision:
+                row.base_transcript_revision === null
+                  ? null
+                  : (integer(row.base_transcript_revision) as number),
+              provenance: row.provenance as SongLyricsRevision["provenance"],
+            }
+          : row.speech_status === "no_speech"
+            ? { status: "no_lyrics" }
+            : { status: "not_bound" };
+      return { asrSuggestion, current };
+    });
+
   const bindTerms: MediaSubmissionStore["bindTerms"] = (input) =>
     Effect.gen(function* () {
       if (!validCommand(input) || !validRevision(input.expectedCreationRevision, 1))
@@ -1316,6 +1502,17 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           if (current === null)
             return yield* Effect.fail(
               fail("terms", "not-found", { submissionId: input.submissionId }),
+            );
+          if (
+            current.workflowRevision > 0 &&
+            (input.outbox === undefined ||
+              input.outbox.payload.kind !== "decision_wakeup" ||
+              input.outbox.payload.trigger !== "terms" ||
+              !validId(input.outbox.outboxEventId) ||
+              !validId(input.outbox.effectIdentity))
+          )
+            return yield* Effect.fail(
+              fail("terms", "invalid-input", { submissionId: input.submissionId }),
             );
           const next = yield* reduce("terms", current, {
             event: "song_terms_bound",
@@ -1379,6 +1576,143 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               );
           }
           yield* insertEvent(tx, next, sequence, "song_terms_bound", {});
+          if (input.outbox !== undefined)
+            yield* insertOutbox(tx, next, "decision_wakeup", input.outbox);
+          yield* insertReplay(tx, input, current.operationId);
+          return { kind: "committed", submissionId: current.submissionId } as const;
+        }),
+      );
+    });
+
+  const bindLyrics: MediaSubmissionStore["bindLyrics"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        !validCommand(input) ||
+        !validRevision(input.expectedCreationRevision, 2) ||
+        !validRevision(input.expectedAudioRevision, 1) ||
+        input.lyrics.length < 1 ||
+        input.lyrics.length > 200_000 ||
+        new TextEncoder().encode(input.lyrics).byteLength > 800_000 ||
+        (input.baseTranscriptRevision !== null &&
+          !validRevision(input.baseTranscriptRevision, 1)) ||
+        !validId(input.outbox.outboxEventId) ||
+        !validId(input.outbox.effectIdentity) ||
+        input.outbox.payload.kind !== "decision_wakeup" ||
+        input.outbox.payload.trigger !== "lyrics"
+      )
+        return yield* Effect.fail(
+          fail("lyrics", "invalid-input", { submissionId: input.submissionId }),
+        );
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((tx) =>
+        Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "lyrics");
+          const prior = yield* replayInTx(tx, input, "lyrics");
+          if (prior !== null) return prior;
+          const current = yield* loadState(tx, input, "lyrics", true);
+          if (current === null)
+            return yield* Effect.fail(
+              fail("lyrics", "not-found", { submissionId: input.submissionId }),
+            );
+          let provenance: SongLyricsRevision["provenance"] = "pasted";
+          if (input.baseTranscriptRevision !== null) {
+            const transcript = yield* tx.execute<Row>({
+              label: "media-lyrics.transcript",
+              text: "SELECT transcript_text FROM media_transcript_artifacts WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4 AND audio_revision=$5 AND analysis_revision=$6 AND canonical_audio_sha256=$7",
+              values: [
+                current.communityId,
+                current.actorId,
+                current.submissionId,
+                current.operationId,
+                current.audioRevision,
+                input.baseTranscriptRevision,
+                current.audio?.canonicalSha256 ?? "",
+              ],
+              readonly: true,
+            });
+            if (
+              transcript.rows.length !== 1 ||
+              typeof transcript.rows[0]?.transcript_text !== "string"
+            )
+              return yield* Effect.fail(
+                fail("lyrics", "stale-fence", { submissionId: current.submissionId }),
+              );
+            provenance =
+              transcript.rows[0]?.transcript_text === input.lyrics ? "asr_accepted" : "corrected";
+          }
+          const lyrics: SongLyricsRevision = {
+            lyricsRevision: current.lyricsRevision + 1,
+            audioRevision: input.expectedAudioRevision,
+            canonicalAudioSha256: current.audio?.canonicalSha256 ?? "",
+            text: input.lyrics,
+            baseTranscriptRevision: input.baseTranscriptRevision,
+            provenance,
+          };
+          const next = yield* reduce("lyrics", current, {
+            event: "song_lyrics_bound",
+            actorId: input.actorUserId,
+            expectedCreationRevision: input.expectedCreationRevision,
+            expectedAudioRevision: input.expectedAudioRevision,
+            lyrics,
+          });
+          yield* tx.execute({
+            label: "media-lyrics.insert",
+            text: "INSERT INTO media_song_lyrics_revisions (submission_id,community_id,actor_user_id,author_persona_id,operation_id,lyrics_revision,creation_revision,audio_revision,canonical_audio_sha256,lyrics_text,lyrics_sha256,base_transcript_revision,provenance) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+            values: [
+              current.submissionId,
+              current.communityId,
+              current.actorId,
+              current.personaId,
+              current.operationId,
+              lyrics.lyricsRevision,
+              next.creationRevision,
+              lyrics.audioRevision,
+              lyrics.canonicalAudioSha256,
+              lyrics.text,
+              sha256Text(lyrics.text),
+              lyrics.baseTranscriptRevision,
+              lyrics.provenance,
+            ],
+            readonly: false,
+          });
+          const updated = yield* tx.execute<Row>({
+            label: "media-lyrics.project",
+            text: "UPDATE media_post_submissions SET creation_revision=$1,lyrics_revision=$2,current_lyrics_revision=$2,current_analysis_revision=NULL,decision_revision=0,current_decision_revision=NULL,status='processing',phase='analysis',action_kind=NULL,action_reference_request_ref=NULL,action_expires_at=NULL,review_ref=NULL,review_reason_code=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,held_revision=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,moderator_evidence_ref=NULL,moderator_approval_kind=NULL,moderator_reason_code=NULL,failure_code=NULL,failure_retry_count=NULL,retryable=NULL,last_safe_phase=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$3 AND actor_user_id=$4 AND submission_id=$5 AND creation_revision=$6 AND audio_revision=$7 RETURNING event_sequence",
+            values: [
+              next.creationRevision,
+              next.lyricsRevision,
+              current.communityId,
+              current.actorId,
+              current.submissionId,
+              current.creationRevision,
+              current.audioRevision,
+            ],
+            readonly: false,
+          });
+          if (updated.rowCount !== 1)
+            return yield* Effect.fail(
+              fail("lyrics", "stale-revision", { submissionId: current.submissionId }),
+            );
+          const sequence = integer(updated.rows[0]?.event_sequence);
+          if (sequence === null) return yield* Effect.fail(fail("lyrics", "invalid-row"));
+          if (current.status === "action_required" || current.status === "manual_review") {
+            yield* tx.execute({
+              label: "media-lyrics.moderation-supersede",
+              text: "UPDATE media_moderation_projections SET status='closed',decision_revision=NULL,review_ref=NULL,held_revision=NULL,review_exhaustion_code=NULL,review_exhaustion_attempt_id=NULL,action_kind=NULL,moderator_action_id=NULL,moderator_actor_id=NULL,action_evidence_ref=NULL,updated_at=clock_timestamp() WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND operation_id=$4",
+              values: [
+                current.communityId,
+                current.actorId,
+                current.submissionId,
+                current.operationId,
+              ],
+              readonly: false,
+            });
+          }
+          yield* insertEvent(tx, next, sequence, "song_lyrics_bound", {
+            lyrics_revision: next.lyricsRevision,
+            base_transcript_revision: input.baseTranscriptRevision,
+          });
+          yield* insertOutbox(tx, next, "decision_wakeup", input.outbox);
           yield* insertReplay(tx, input, current.operationId);
           return { kind: "committed", submissionId: current.submissionId } as const;
         }),
@@ -1510,6 +1844,78 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       );
     });
 
+  const acceptTranscript: MediaSubmissionStore["acceptTranscript"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        !validCommand(input) ||
+        !validRevision(input.expectedAudioRevision, 1) ||
+        !validRevision(input.transcriptRevision, 1) ||
+        !validHash(input.expectedCanonicalAudioSha256) ||
+        !validHash(input.transcriptSha256) ||
+        !validId(input.transcriptArtifactRef) ||
+        input.transcript.length > 200_000 ||
+        new TextEncoder().encode(input.transcript).byteLength > 800_000 ||
+        sha256Text(input.transcript) !== input.transcriptSha256 ||
+        input.segments.length > 10_000 ||
+        input.segments.reduce((total, segment) => total + segment.text.length, 0) > 200_000 ||
+        !input.segments.every(
+          (segment, index, all) =>
+            Number.isSafeInteger(segment.start_ms) &&
+            Number.isSafeInteger(segment.end_ms) &&
+            segment.start_ms >= 0 &&
+            segment.end_ms >= segment.start_ms &&
+            segment.end_ms <= 86_400_000 &&
+            segment.text.length <= 4096 &&
+            (index === 0 || segment.start_ms >= (all[index - 1]?.start_ms ?? -1)),
+        )
+      )
+        return yield* Effect.fail(
+          fail("analysis", "invalid-input", { submissionId: input.submissionId }),
+        );
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((tx) =>
+        Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "analysis");
+          const prior = yield* replayInTx(tx, input, "analysis");
+          if (prior !== null) return prior;
+          const current = yield* loadState(tx, input, "analysis", true);
+          if (current === null)
+            return yield* Effect.fail(
+              fail("analysis", "not-found", { submissionId: input.submissionId }),
+            );
+          if (
+            current.audioRevision !== input.expectedAudioRevision ||
+            current.audio?.canonicalSha256 !== input.expectedCanonicalAudioSha256 ||
+            input.transcriptRevision !== current.analysisRevision + 1
+          )
+            return yield* Effect.fail(
+              fail("analysis", "stale-fence", { submissionId: current.submissionId }),
+            );
+          yield* tx.execute({
+            label: "media-transcript.insert",
+            text: "INSERT INTO media_transcript_artifacts (transcript_artifact_ref,community_id,actor_user_id,submission_id,operation_id,audio_revision,analysis_revision,canonical_audio_sha256,transcript_sha256,transcript_text,segments,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)",
+            values: [
+              input.transcriptArtifactRef,
+              current.communityId,
+              current.actorId,
+              current.submissionId,
+              current.operationId,
+              current.audioRevision,
+              input.transcriptRevision,
+              input.expectedCanonicalAudioSha256,
+              input.transcriptSha256,
+              input.transcript,
+              json(input.segments),
+              current.personaId,
+            ],
+            readonly: false,
+          });
+          yield* insertReplay(tx, input, current.operationId);
+          return { kind: "committed", submissionId: current.submissionId } as const;
+        }),
+      );
+    });
+
   const acceptAnalysis: MediaSubmissionStore["acceptAnalysis"] = (input) =>
     Effect.gen(function* () {
       if (
@@ -1517,8 +1923,8 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         !validRevision(input.expectedAudioRevision, 1) ||
         !validHash(input.expectedCanonicalAudioSha256) ||
         (input.analysis.speechLyrics.status === "ready" &&
-          (input.transcriptArtifact === undefined ||
-            input.transcriptArtifact.transcript.length > 200_000 ||
+          input.transcriptArtifact !== undefined &&
+          (input.transcriptArtifact.transcript.length > 200_000 ||
             input.transcriptArtifact.segments.reduce(
               (total, segment) => total + segment.text.length,
               0,
@@ -1535,6 +1941,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 (index === 0 || segment.start_ms >= (all[index - 1]?.start_ms ?? -1)),
             ))) ||
         (input.analysis.speechLyrics.status === "ready" &&
+          input.transcriptArtifact !== undefined &&
           sha256Text(input.transcriptArtifact?.transcript ?? "") !==
             input.analysis.speechLyrics.transcriptSha256)
       )
@@ -1584,10 +1991,10 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               readonly: false,
             });
           }
-          if (speech.status === "ready") {
+          if (speech.status === "ready" && input.transcriptArtifact !== undefined) {
             yield* tx.execute({
               label: "media-transcript.insert",
-              text: "INSERT INTO media_transcript_artifacts (transcript_artifact_ref,community_id,actor_user_id,submission_id,operation_id,audio_revision,analysis_revision,canonical_audio_sha256,transcript_sha256,transcript_text,segments,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)",
+              text: "INSERT INTO media_transcript_artifacts (transcript_artifact_ref,community_id,actor_user_id,submission_id,operation_id,audio_revision,analysis_revision,canonical_audio_sha256,transcript_sha256,transcript_text,segments,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12) ON CONFLICT (transcript_artifact_ref) DO NOTHING",
               values: [
                 speech.transcriptArtifactRef,
                 current.communityId,
@@ -1605,9 +2012,31 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               readonly: false,
             });
           }
+          if (speech.status === "ready") {
+            const transcript = yield* tx.execute<Row>({
+              label: "media-analysis.transcript-fence",
+              text: "SELECT 1 AS present FROM media_transcript_artifacts WHERE transcript_artifact_ref=$1 AND community_id=$2 AND actor_user_id=$3 AND submission_id=$4 AND operation_id=$5 AND audio_revision=$6 AND analysis_revision=$7 AND canonical_audio_sha256=$8 AND transcript_sha256=$9",
+              values: [
+                speech.transcriptArtifactRef,
+                current.communityId,
+                current.actorId,
+                current.submissionId,
+                current.operationId,
+                current.audioRevision,
+                speech.transcriptRevision,
+                input.analysis.canonicalAudioSha256,
+                speech.transcriptSha256,
+              ],
+              readonly: true,
+            });
+            if (transcript.rows.length !== 1)
+              return yield* Effect.fail(
+                fail("analysis", "stale-fence", { submissionId: current.submissionId }),
+              );
+          }
           yield* tx.execute({
             label: "media-analysis.insert",
-            text: "INSERT INTO media_analysis_evidence (submission_id,community_id,actor_user_id,operation_id,analysis_version,audio_revision,analysis_revision,canonical_audio_sha256,finalized_audio_ref,probe_evidence_ref,embedded_metadata_evidence_ref,embedded_metadata_adapter_revision,embedded_title,embedded_title_provenance,cover_status,cover_artifact_ref,cover_artifact_sha256,cover_media_type,cover_width,cover_height,cover_normalization_revision,cover_safety_policy_revision,cover_facts,speech_status,transcript_artifact_ref,transcript_sha256,explicitness,primary_language_bcp47,secondary_language_bcp47,speech_evidence_ref,speech_policy_revision,speech_adapter_revision,acr_decision,acr_evidence_ref,acr_policy_revision,acr_adapter_revision,media_safety,lyrics_safety,bound_reference_asset_id,bound_reference_audio_revision,bound_reference_analysis_revision,bound_reference_audio_sha256,bound_reference_upstream_share_bps,analysis_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,'song-trusted-analysis-v1',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43::jsonb,$44)",
+            text: "INSERT INTO media_analysis_evidence (submission_id,community_id,actor_user_id,operation_id,analysis_version,audio_revision,analysis_revision,canonical_audio_sha256,finalized_audio_ref,probe_evidence_ref,embedded_metadata_evidence_ref,embedded_metadata_adapter_revision,embedded_title,embedded_title_provenance,cover_status,cover_artifact_ref,cover_artifact_sha256,cover_media_type,cover_width,cover_height,cover_normalization_revision,cover_safety_policy_revision,cover_facts,speech_status,transcript_artifact_ref,transcript_sha256,explicitness,primary_language_bcp47,secondary_language_bcp47,speech_evidence_ref,speech_policy_revision,speech_adapter_revision,acr_decision,acr_evidence_ref,acr_policy_revision,acr_adapter_revision,media_safety,lyrics_safety,bound_reference_asset_id,bound_reference_audio_revision,bound_reference_analysis_revision,bound_reference_audio_sha256,bound_reference_upstream_share_bps,analysis_snapshot,author_persona_id,transcript_revision,lyrics_revision,material_disagreement) VALUES ($1,$2,$3,$4,'song-trusted-analysis-v1',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::jsonb,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43::jsonb,$44,$45,$46,$47)",
             values: [
               current.submissionId,
               current.communityId,
@@ -1653,6 +2082,9 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               bound?.upstreamCommercialRevShareBps ?? null,
               json(trustedAnalysisSnapshot(input.analysis)),
               current.personaId,
+              speech.status === "ready" ? speech.transcriptRevision : null,
+              speech.status === "ready" ? speech.lyricsRevision : null,
+              speech.status === "ready" ? speech.materialDisagreement : false,
             ],
             readonly: false,
           });
@@ -1740,7 +2172,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           const next = yield* reduce("decision", current, decisionCommand);
           yield* tx.execute({
             label: "media-decision.insert",
-            text: "INSERT INTO media_publication_decisions (submission_id,community_id,actor_user_id,operation_id,decision_revision,creation_revision,audio_revision,analysis_revision,canonical_audio_sha256,outcome,policy_revision,evidence_ref,decision_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14)",
+            text: "INSERT INTO media_publication_decisions (submission_id,community_id,actor_user_id,operation_id,decision_revision,creation_revision,audio_revision,analysis_revision,canonical_audio_sha256,outcome,policy_revision,evidence_ref,decision_snapshot,author_persona_id,lyrics_revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb,$14,$15)",
             values: [
               current.submissionId,
               current.communityId,
@@ -1754,8 +2186,9 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               input.decision.outcome,
               input.decision.policyRevision,
               input.decision.evidenceRef,
-              json(input.decision),
+              json(publicationDecisionSnapshot(input.decision)),
               current.personaId,
+              input.decision.lyricsRevision,
             ],
             readonly: false,
           });
@@ -2061,7 +2494,13 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     if (
       !validId(actorId) ||
       !moderatorScope ||
-      (input.action === "approve" && (input.approval === undefined || input.decision === undefined))
+      (input.action === "approve" &&
+        (input.approval === undefined ||
+          input.decision === undefined ||
+          input.outbox === undefined ||
+          input.outbox.payload.kind !== "publication" ||
+          !validId(input.outbox.outboxEventId) ||
+          !validId(input.outbox.effectIdentity)))
     )
       return Effect.fail(fail("moderation", "invalid-input", { submissionId: input.submissionId }));
     const authorityInput = { ...input, actorUserId: actorId };
@@ -2145,7 +2584,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             const approvedDecision = input.decision as PublicationDecision;
             yield* tx.execute({
               label: "media-moderation.decision",
-              text: "INSERT INTO media_publication_decisions (submission_id,community_id,actor_user_id,operation_id,decision_revision,creation_revision,audio_revision,analysis_revision,canonical_audio_sha256,outcome,policy_revision,evidence_ref,decision_snapshot,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'allow',$10,$11,$12::jsonb,$13)",
+              text: "INSERT INTO media_publication_decisions (submission_id,community_id,actor_user_id,operation_id,decision_revision,creation_revision,audio_revision,analysis_revision,canonical_audio_sha256,outcome,policy_revision,evidence_ref,decision_snapshot,author_persona_id,lyrics_revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'allow',$10,$11,$12::jsonb,$13,$14)",
               values: [
                 current.submissionId,
                 current.communityId,
@@ -2158,8 +2597,9 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 approvedDecision.canonicalAudioSha256,
                 approvedDecision.policyRevision,
                 approvedDecision.evidenceRef,
-                json(approvedDecision),
+                json(publicationDecisionSnapshot(approvedDecision)),
                 current.personaId,
+                approvedDecision.lyricsRevision,
               ],
               readonly: false,
             });
@@ -2181,7 +2621,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               input.action === "approve" ? next.decisionRevision : null,
               moderatorEvidenceRef,
               input.action === "approve"
-                ? json(input.decision)
+                ? json(publicationDecisionSnapshot(input.decision as PublicationDecision))
                 : json({ reasonCode: "policy_violation" }),
               current.personaId,
             ],
@@ -2255,6 +2695,8 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
             input.action === "approve" ? "moderator_approved" : "moderator_blocked",
             input.action === "approve" ? {} : { reason_code: "policy_violation" },
           );
+          if (input.action === "approve" && input.outbox !== undefined)
+            yield* insertOutbox(tx, next, "publication", input.outbox);
           yield* insertReplay(tx, replayInput, current.operationId, current.actorId);
           return { kind: "committed", submissionId: current.submissionId } as const;
         }),
@@ -2534,7 +2976,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           const cover = current.analysis.embeddedMetadata.cover;
           yield* tx.execute({
             label: "media-publish.projection",
-            text: "INSERT INTO media_publication_projections (submission_id,community_id,actor_user_id,operation_id,post_id,creation_revision,audio_revision,analysis_revision,decision_revision,canonical_audio_sha256,title,audio_asset_ref,cover_artifact_ref,language_status,primary_language_bcp47,secondary_language_bcp47,lyrics_explicitness,analysis_badges,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19)",
+            text: "INSERT INTO media_publication_projections (submission_id,community_id,actor_user_id,operation_id,post_id,creation_revision,audio_revision,analysis_revision,decision_revision,canonical_audio_sha256,title,audio_asset_ref,cover_artifact_ref,language_status,primary_language_bcp47,secondary_language_bcp47,lyrics_explicitness,analysis_badges,author_persona_id,lyrics_status,lyrics_revision,lyrics_text) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,$19,$20,$21,$22)",
             values: [
               current.submissionId,
               current.communityId,
@@ -2555,12 +2997,15 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               speech.explicitness,
               json(current.boundReference === null ? [] : ["reference_bound"]),
               current.personaId,
+              current.lyrics === null ? "no_lyrics" : "ready",
+              current.lyrics?.lyricsRevision ?? null,
+              current.lyrics?.text ?? null,
             ],
             readonly: false,
           });
           yield* tx.execute({
             label: "media-alignment.pending",
-            text: "INSERT INTO media_alignment_projections (submission_id,community_id,actor_user_id,operation_id,post_id,audio_revision,analysis_revision,canonical_audio_sha256,status,author_persona_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9)",
+            text: "INSERT INTO media_alignment_projections (submission_id,community_id,actor_user_id,operation_id,post_id,audio_revision,analysis_revision,canonical_audio_sha256,status,author_persona_id,lyrics_revision) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10)",
             values: [
               current.submissionId,
               current.communityId,
@@ -2571,10 +3016,11 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               current.analysisRevision,
               current.audio.canonicalSha256,
               current.personaId,
+              current.lyrics?.lyricsRevision ?? null,
             ],
             readonly: false,
           });
-          yield* insertOutbox(tx, next, "publication", input.outbox);
+          yield* insertOutbox(tx, next, "alignment", input.outbox);
           yield* insertEvent(tx, next, sequence, "publication_committed", { post_id: ownedPostId });
           yield* insertReplay(tx, input, current.operationId);
           return {
@@ -2594,9 +3040,11 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
         !validId(input.personaId) ||
         !validRevision(input.audioRevision, 1) ||
         !validRevision(input.analysisRevision, 1) ||
+        (input.lyricsRevision !== null && !validRevision(input.lyricsRevision, 1)) ||
         !validHash(input.canonicalAudioSha256) ||
         (input.outcome === "ready" &&
-          (input.failureCode !== undefined ||
+          (input.lyricsRevision === null ||
+            input.failureCode !== undefined ||
             input.artifact === undefined ||
             !validId(input.artifact.artifactRef) ||
             !validHash(input.artifact.artifactSha256) ||
@@ -2623,7 +3071,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               );
             const insertedArtifact = yield* tx.execute({
               label: "media-alignment.artifact",
-              text: "INSERT INTO media_timed_lyrics_artifacts (artifact_ref,community_id,actor_user_id,submission_id,operation_id,post_id,audio_revision,analysis_revision,artifact_revision,canonical_audio_sha256,artifact_sha256,artifact,author_persona_id) SELECT $1,p.community_id,p.actor_user_id,p.submission_id,p.operation_id,p.post_id,p.audio_revision,p.analysis_revision,$2,p.canonical_audio_sha256,$3,$4::jsonb,p.author_persona_id FROM media_publication_projections p WHERE p.community_id=$5 AND p.actor_user_id=$6 AND p.submission_id=$7 AND p.post_id=$8 AND p.audio_revision=$9 AND p.analysis_revision=$10 AND p.canonical_audio_sha256=$11",
+              text: "INSERT INTO media_timed_lyrics_artifacts (artifact_ref,community_id,actor_user_id,submission_id,operation_id,post_id,audio_revision,analysis_revision,artifact_revision,canonical_audio_sha256,artifact_sha256,artifact,author_persona_id,lyrics_revision) SELECT $1,p.community_id,p.actor_user_id,p.submission_id,p.operation_id,p.post_id,p.audio_revision,p.analysis_revision,$2,p.canonical_audio_sha256,$3,$4::jsonb,p.author_persona_id,p.lyrics_revision FROM media_publication_projections p WHERE p.community_id=$5 AND p.actor_user_id=$6 AND p.submission_id=$7 AND p.post_id=$8 AND p.audio_revision=$9 AND p.analysis_revision=$10 AND p.canonical_audio_sha256=$11 AND p.lyrics_revision=$12",
               values: [
                 input.artifact.artifactRef,
                 artifactRevision,
@@ -2636,6 +3084,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
                 input.audioRevision,
                 input.analysisRevision,
                 input.canonicalAudioSha256,
+                input.lyricsRevision,
               ],
               readonly: false,
             });
@@ -2646,7 +3095,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           }
           const updated = yield* tx.execute({
             label: "media-alignment.project",
-            text: "UPDATE media_alignment_projections SET status=$1,current_artifact_ref=$2,current_artifact_revision=$3,alignment_revision=alignment_revision+1,failure_code=$4,updated_at=clock_timestamp() WHERE community_id=$5 AND actor_user_id=$6 AND submission_id=$7 AND post_id=$8 AND audio_revision=$9 AND analysis_revision=$10 AND canonical_audio_sha256=$11",
+            text: "UPDATE media_alignment_projections SET status=$1,current_artifact_ref=$2,current_artifact_revision=$3,alignment_revision=alignment_revision+1,failure_code=$4,updated_at=clock_timestamp() WHERE community_id=$5 AND actor_user_id=$6 AND submission_id=$7 AND post_id=$8 AND audio_revision=$9 AND analysis_revision=$10 AND canonical_audio_sha256=$11 AND lyrics_revision IS NOT DISTINCT FROM $12",
             values: [
               input.outcome,
               input.artifact?.artifactRef ?? null,
@@ -2659,6 +3108,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
               input.audioRevision,
               input.analysisRevision,
               input.canonicalAudioSha256,
+              input.lyricsRevision,
             ],
             readonly: false,
           });
@@ -2839,14 +3289,78 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       return result.rowCount === 1;
     });
 
+  const replaceLostWorkflow: MediaSubmissionStore["replaceLostWorkflow"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        ![input.communityId, input.submissionId, input.actorUserId, input.personaId].every(
+          validId,
+        ) ||
+        !validRevision(input.expectedWorkflowRevision, 1) ||
+        !validId(input.outbox.outboxEventId) ||
+        !validId(input.outbox.effectIdentity) ||
+        input.outbox.payload.kind !== "workflow_replacement"
+      )
+        return yield* Effect.fail(
+          fail("workflow", "invalid-input", { submissionId: input.submissionId }),
+        );
+      const db = yield* ControlPlaneDb;
+      return yield* db.withTransaction((tx) =>
+        Effect.gen(function* () {
+          yield* resolvePersonaId(tx, input.actorUserId, input.personaId, "workflow");
+          const current = yield* loadState(tx, input, "workflow", true);
+          if (current === null)
+            return yield* Effect.fail(
+              fail("workflow", "not-found", { submissionId: input.submissionId }),
+            );
+          if (current.workflowRevision !== input.expectedWorkflowRevision)
+            return yield* Effect.fail(
+              fail("workflow", "stale-revision", { submissionId: current.submissionId }),
+            );
+          const next = {
+            ...current,
+            workflowRevision: current.workflowRevision + 1,
+          };
+          const updated = yield* tx.execute<Row>({
+            label: "media-workflow.replace",
+            text: "UPDATE media_post_submissions SET workflow_revision=workflow_revision+1,workflow_replacement_sequence=workflow_replacement_sequence+1,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$1 AND actor_user_id=$2 AND submission_id=$3 AND workflow_revision=$4 RETURNING event_sequence,workflow_replacement_sequence",
+            values: [
+              current.communityId,
+              current.actorId,
+              current.submissionId,
+              input.expectedWorkflowRevision,
+            ],
+            readonly: false,
+          });
+          const sequence = integer(updated.rows[0]?.event_sequence);
+          const replacementSequence = integer(updated.rows[0]?.workflow_replacement_sequence);
+          if (updated.rowCount !== 1 || sequence === null || replacementSequence === null)
+            return yield* Effect.fail(
+              fail("workflow", "stale-revision", { submissionId: current.submissionId }),
+            );
+          yield* insertEvent(tx, next, sequence, "workflow_replaced", {
+            replacement_sequence: replacementSequence,
+          });
+          yield* insertOutbox(tx, next, "workflow_replacement", input.outbox);
+          return {
+            kind: "committed",
+            submissionId: current.submissionId,
+            outboxEventId: input.outbox.outboxEventId,
+          } as const;
+        }),
+      );
+    });
+
   return {
     reserve,
     createSubmission,
     replay,
     getForAuthor,
+    getLyricsForAuthor,
     bindTerms,
+    bindLyrics,
     finalizeSealed,
     acceptAnalysis,
+    acceptTranscript,
     recordDecision,
     requireReference,
     bindReference,
@@ -2867,5 +3381,6 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     claimProcessingAttempt,
     completeProcessingAttempt,
     failProcessingAttempt,
+    replaceLostWorkflow,
   };
 }

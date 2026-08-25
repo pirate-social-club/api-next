@@ -149,6 +149,170 @@ describe("song media Spec 013 machine", () => {
     ).toMatchObject({ ok: false, rejection: { _tag: "analysis_evidence_stale" } });
   });
 
+  test("fences speech analysis, decisions, and publication to the accepted lyrics revision", () => {
+    const withTerms = ok(
+      transitionMediaSubmission(issued, {
+        event: "song_terms_bound",
+        actorId,
+        expectedCreationRevision: 1,
+        terms,
+      }),
+    );
+    const finalized = ok(
+      transitionMediaSubmission(withTerms, {
+        event: "upload_finalized",
+        actorId,
+        expectedCreationRevision: 2,
+        expectedAudioRevision: 0,
+        audio,
+      }),
+    );
+    const lyrics = {
+      lyricsRevision: 1,
+      audioRevision: 1,
+      canonicalAudioSha256: audioHash,
+      text: "Accepted lyrics",
+      baseTranscriptRevision: 1,
+      provenance: "corrected" as const,
+    };
+    expect(
+      transitionMediaSubmission(finalized, {
+        event: "song_lyrics_bound",
+        actorId,
+        expectedCreationRevision: 1,
+        expectedAudioRevision: 1,
+        lyrics,
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "stale_revision" } });
+    expect(
+      transitionMediaSubmission(finalized, {
+        event: "song_lyrics_bound",
+        actorId,
+        expectedCreationRevision: 2,
+        expectedAudioRevision: 2,
+        lyrics,
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "audio_revision_stale" } });
+    const withLyrics = ok(
+      transitionMediaSubmission(finalized, {
+        event: "song_lyrics_bound",
+        actorId,
+        expectedCreationRevision: 2,
+        expectedAudioRevision: 1,
+        lyrics,
+      }),
+    );
+    const readyAnalysis: TrustedSongAnalysis = {
+      ...analysis(),
+      speechLyrics: {
+        status: "ready",
+        transcriptArtifactRef: "transcript-evidence",
+        transcriptSha256: "b".repeat(64),
+        transcriptRevision: 1,
+        lyricsRevision: 1,
+        materialDisagreement: false,
+        explicitness: "not_explicit",
+        primaryLanguageBcp47: "en",
+        secondaryLanguageBcp47: null,
+        evidenceRef: "speech-ready",
+        policyRevision: "speech-v1",
+        adapterRevision: "speech-adapter-v1",
+      },
+      lyricsSafety: "allow",
+    };
+    const analyzedLyrics = ok(
+      transitionMediaSubmission(withLyrics, {
+        event: "blocking_analysis_completed",
+        actorId,
+        expectedAudioRevision: 1,
+        expectedCanonicalAudioSha256: audioHash,
+        analysis: readyAnalysis,
+      }),
+    );
+    const staleDecision: PublicationDecision = {
+      decisionRevision: 1,
+      outcome: "allow",
+      creationRevision: 3,
+      audioRevision: 1,
+      analysisRevision: 1,
+      lyricsRevision: 2,
+      canonicalAudioSha256: audioHash,
+      policyRevision: "publication-v1",
+      evidenceRef: "decision-evidence",
+    };
+    expect(
+      transitionMediaSubmission(analyzedLyrics, {
+        event: "publication_allowed",
+        actorId,
+        expectedCreationRevision: 3,
+        expectedAudioRevision: 1,
+        expectedAnalysisRevision: 1,
+        decision: staleDecision,
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "decision_evidence_invalid" } });
+    const ready = ok(
+      transitionMediaSubmission(analyzedLyrics, {
+        event: "publication_allowed",
+        actorId,
+        expectedCreationRevision: 3,
+        expectedAudioRevision: 1,
+        expectedAnalysisRevision: 1,
+        decision: { ...staleDecision, lyricsRevision: 1 },
+      }),
+    );
+    expect(
+      ok(
+        transitionMediaSubmission(ready, {
+          event: "publication_committed",
+          actorId,
+          expectedCreationRevision: 3,
+          expectedAudioRevision: 1,
+          expectedAnalysisRevision: 1,
+          expectedDecisionRevision: 1,
+          communityActive: true,
+          membershipActive: true,
+          postId: "media-post-media_operation",
+        }),
+      ).lyrics,
+    ).toEqual(lyrics);
+    const disagreement = ok(
+      transitionMediaSubmission(withLyrics, {
+        event: "blocking_analysis_completed",
+        actorId,
+        expectedAudioRevision: 1,
+        expectedCanonicalAudioSha256: audioHash,
+        analysis: {
+          ...readyAnalysis,
+          speechLyrics: {
+            status: "ready",
+            transcriptArtifactRef: "transcript-evidence",
+            transcriptSha256: "b".repeat(64),
+            transcriptRevision: 1,
+            lyricsRevision: 1,
+            materialDisagreement: true,
+            explicitness: "not_explicit",
+            primaryLanguageBcp47: "en",
+            secondaryLanguageBcp47: null,
+            evidenceRef: "speech-ready",
+            policyRevision: "speech-v1",
+            adapterRevision: "speech-adapter-v1",
+          },
+          lyricsSafety: "review_required",
+        },
+      }),
+    );
+    expect(
+      transitionMediaSubmission(disagreement, {
+        event: "publication_allowed",
+        actorId,
+        expectedCreationRevision: 3,
+        expectedAudioRevision: 1,
+        expectedAnalysisRevision: 1,
+        decision: { ...staleDecision, lyricsRevision: 1 },
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "decision_evidence_invalid" } });
+  });
+
   test("requires exact reference evidence before remix publication", () => {
     const remix = createMediaSubmissionState({
       event: "submission_reserved",
@@ -247,6 +411,7 @@ describe("song media Spec 013 machine", () => {
           creationRevision: 2,
           audioRevision: 1,
           analysisRevision: 1,
+          lyricsRevision: null,
           canonicalAudioSha256: audioHash,
           policyRevision: "review-policy",
           evidenceRef: "review-decision",
@@ -274,6 +439,7 @@ describe("song media Spec 013 machine", () => {
           creationRevision: 2,
           audioRevision: 1,
           analysisRevision: 1,
+          lyricsRevision: null,
           canonicalAudioSha256: audioHash,
           policyRevision: "publication-v1",
           evidenceRef: "moderator-decision",
@@ -344,6 +510,7 @@ describe("song media Spec 013 machine", () => {
             creationRevision: 2,
             audioRevision: 1,
             analysisRevision: 1,
+            lyricsRevision: null,
             canonicalAudioSha256: audioHash,
             policyRevision: "review-policy",
             evidenceRef: "ordinary-review-evidence",
@@ -371,6 +538,7 @@ describe("song media Spec 013 machine", () => {
             creationRevision: 2,
             audioRevision: 1,
             analysisRevision: 1,
+            lyricsRevision: null,
             canonicalAudioSha256: audioHash,
             policyRevision: "publication-v1",
             evidenceRef: "ordinary-acr-decision",
@@ -414,6 +582,7 @@ describe("song media Spec 013 machine", () => {
             creationRevision: 2,
             audioRevision: 1,
             analysisRevision: 1,
+            lyricsRevision: null,
             canonicalAudioSha256: audioHash,
             policyRevision: "publication-v1",
             evidenceRef: "acr-exhausted-decision",
@@ -438,6 +607,7 @@ describe("song media Spec 013 machine", () => {
           creationRevision: 2,
           audioRevision: 1,
           analysisRevision: 1,
+          lyricsRevision: null,
           canonicalAudioSha256: audioHash,
           policyRevision: "review-policy",
           evidenceRef: "held-decision",
@@ -469,6 +639,7 @@ describe("song media Spec 013 machine", () => {
       creationRevision: 2,
       audioRevision: 1,
       analysisRevision: 1,
+      lyricsRevision: null,
       canonicalAudioSha256: audioHash,
       policyRevision: "publication-v1",
       evidenceRef: "decision-evidence",

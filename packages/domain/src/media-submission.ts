@@ -31,6 +31,14 @@ export type ImmutableAudio = Readonly<{
   contentType: string;
   sizeBytes: number;
 }>;
+export type SongLyricsRevision = Readonly<{
+  lyricsRevision: number;
+  audioRevision: number;
+  canonicalAudioSha256: string;
+  text: string;
+  baseTranscriptRevision: number | null;
+  provenance: "asr_accepted" | "pasted" | "corrected";
+}>;
 export type BoundReference = Readonly<{
   assetId: string;
   evidenceAudioRevision: number;
@@ -63,6 +71,9 @@ export type SpeechAnalysis =
       status: "ready";
       transcriptArtifactRef: string;
       transcriptSha256: string;
+      transcriptRevision: number;
+      lyricsRevision: number;
+      materialDisagreement: boolean;
       explicitness: "not_explicit" | "explicit" | "uncertain";
       primaryLanguageBcp47: string;
       secondaryLanguageBcp47: string | null;
@@ -124,6 +135,7 @@ export type PublicationDecision = Readonly<{
   creationRevision: number;
   audioRevision: number;
   analysisRevision: number;
+  lyricsRevision: number | null;
   canonicalAudioSha256: string;
   policyRevision: string;
   evidenceRef: string;
@@ -200,6 +212,8 @@ export type MediaSubmissionState = Readonly<{
   phase: MediaSubmissionPhase;
   terms: SongTerms | null;
   audio: ImmutableAudio | null;
+  lyricsRevision: number;
+  lyrics: SongLyricsRevision | null;
   analysis: TrustedSongAnalysis | null;
   boundReference: BoundReference | null;
   decision: PublicationDecision | null;
@@ -221,10 +235,21 @@ export type MediaOutboxPayload =
       workflow_instance_id: string;
     }>
   | Readonly<{
+      kind: "decision_wakeup";
+      trigger: "terms" | "lyrics";
+      submission_id: string;
+      operation_id: string;
+      creation_revision: number;
+      lyrics_revision: number | null;
+      workflow_revision: number;
+      workflow_instance_id: string;
+    }>
+  | Readonly<{
       kind: "publication";
       submission_id: string;
       operation_id: string;
-      post_id: string;
+      creation_revision: number;
+      lyrics_revision: number | null;
       workflow_revision: number;
       workflow_instance_id: string;
     }>
@@ -233,6 +258,15 @@ export type MediaOutboxPayload =
       submission_id: string;
       operation_id: string;
       post_id: string;
+      lyrics_revision: number | null;
+      workflow_revision: number;
+      workflow_instance_id: string;
+    }>
+  | Readonly<{
+      kind: "workflow_replacement";
+      submission_id: string;
+      operation_id: string;
+      replacement_sequence: number;
       workflow_revision: number;
       workflow_instance_id: string;
     }>;
@@ -249,6 +283,7 @@ export type MediaSubmissionEvent =
   | "upload_source_precondition_failed"
   | "seal_conflict_recorded"
   | "song_terms_bound"
+  | "song_lyrics_bound"
   | "blocking_analysis_completed"
   | "review_exhaustion_recorded"
   | "media_failure_recorded"
@@ -284,6 +319,12 @@ export type MediaSubmissionCommand =
     }>
   | (RevisionCommand & Readonly<{ event: "media_reservation_issued" }>)
   | (RevisionCommand & Readonly<{ event: "song_terms_bound"; terms: SongTerms }>)
+  | (RevisionCommand &
+      Readonly<{
+        event: "song_lyrics_bound";
+        expectedAudioRevision: number;
+        lyrics: SongLyricsRevision;
+      }>)
   | (RevisionCommand &
       Readonly<{ event: "upload_finalized"; expectedAudioRevision: number; audio: ImmutableAudio }>)
   | (AudioFence & Readonly<{ event: "blocking_analysis_completed"; analysis: TrustedSongAnalysis }>)
@@ -373,6 +414,11 @@ export type MediaSubmissionRejection =
         | "submission_owner_required";
     }>
   | Readonly<{ _tag: "analysis_evidence_stale"; expectedRevision: number; actualRevision: number }>
+  | Readonly<{ _tag: "audio_revision_stale"; expectedRevision: number; actualRevision: number }>
+  | Readonly<{
+      _tag: "transcript_revision_invalid";
+      reasonCode: "not_found" | "foreign_audio" | "foreign_submission";
+    }>
   | Readonly<{
       _tag: "capability_unavailable";
       capability: "track" | "locked_delivery";
@@ -489,6 +535,18 @@ function validReference(reference: BoundReference, state: MediaSubmissionState):
       reference.evidenceAnalysisRevision <= state.analysis.analysisRevision)
   );
 }
+function validLyrics(lyrics: SongLyricsRevision, state: MediaSubmissionState): boolean {
+  return (
+    validRevision(lyrics.lyricsRevision, 1) &&
+    lyrics.audioRevision === state.audioRevision &&
+    state.audio !== null &&
+    lyrics.canonicalAudioSha256 === state.audio.canonicalSha256 &&
+    lyrics.text.length > 0 &&
+    lyrics.text.length <= 200_000 &&
+    (lyrics.baseTranscriptRevision === null || validRevision(lyrics.baseTranscriptRevision, 1)) &&
+    ["asr_accepted", "pasted", "corrected"].includes(lyrics.provenance)
+  );
+}
 function validAnalysis(analysis: TrustedSongAnalysis, state: MediaSubmissionState): boolean {
   const speech = analysis.speechLyrics;
   const cover = analysis.embeddedMetadata.cover;
@@ -533,6 +591,12 @@ function validAnalysis(analysis: TrustedSongAnalysis, state: MediaSubmissionStat
     if (
       !validId(speech.transcriptArtifactRef) ||
       !validHash(speech.transcriptSha256) ||
+      !validRevision(speech.transcriptRevision, 1) ||
+      state.lyrics === null ||
+      speech.lyricsRevision !== state.lyricsRevision ||
+      (state.lyrics.baseTranscriptRevision !== null &&
+        state.lyrics.baseTranscriptRevision !== speech.transcriptRevision) ||
+      (speech.materialDisagreement && analysis.lyricsSafety !== "review_required") ||
       !validLanguage(speech.primaryLanguageBcp47) ||
       (speech.secondaryLanguageBcp47 !== null &&
         (!validLanguage(speech.secondaryLanguageBcp47) ||
@@ -541,7 +605,8 @@ function validAnalysis(analysis: TrustedSongAnalysis, state: MediaSubmissionStat
       return false;
   } else if (
     speech.status === "no_speech" &&
-    (analysis.lyricsSafety !== "skipped" ||
+    (state.lyrics !== null ||
+      analysis.lyricsSafety !== "skipped" ||
       (speech.transcriptArtifactRef !== undefined && speech.transcriptArtifactRef !== null) ||
       (speech.transcriptSha256 !== undefined && speech.transcriptSha256 !== null) ||
       (speech.primaryLanguageBcp47 !== undefined && speech.primaryLanguageBcp47 !== null) ||
@@ -612,7 +677,15 @@ export function mediaSubmissionInvariant(state: MediaSubmissionState): string | 
       !validRevision(state.audio.sizeBytes, 1))
   )
     return "audio_identity";
-  if ((state.analysisRevision === 0) !== (state.analysis === null)) return "analysis_presence";
+  if (state.analysisRevision === 0 && state.analysis !== null) return "analysis_presence";
+  if (state.analysis !== null && state.analysis.analysisRevision !== state.analysisRevision)
+    return "analysis_presence";
+  if ((state.lyricsRevision === 0) !== (state.lyrics === null)) return "lyrics_presence";
+  if (
+    state.lyrics !== null &&
+    (state.lyrics.lyricsRevision !== state.lyricsRevision || !validLyrics(state.lyrics, state))
+  )
+    return "lyrics_identity";
   if (state.analysis !== null && !validAnalysis(state.analysis, state)) return "analysis_identity";
   if (state.boundReference !== null && !validReference(state.boundReference, state))
     return "reference_identity";
@@ -629,6 +702,7 @@ export function mediaSubmissionInvariant(state: MediaSubmissionState): string | 
       state.decision.creationRevision !== state.creationRevision ||
       state.decision.audioRevision !== state.audioRevision ||
       state.decision.analysisRevision !== state.analysisRevision ||
+      state.decision.lyricsRevision !== (state.lyrics?.lyricsRevision ?? null) ||
       state.audio === null ||
       state.decision.canonicalAudioSha256 !== state.audio.canonicalSha256)
   )
@@ -713,6 +787,8 @@ export function transitionMediaSubmission(
       phase: "reserve",
       terms: null,
       audio: null,
+      lyricsRevision: 0,
+      lyrics: null,
       analysis: null,
       boundReference: null,
       decision: null,
@@ -785,6 +861,46 @@ export function transitionMediaSubmission(
         decisionRevision: 0,
         status: "processing",
         phase: current.audio === null ? "awaiting_upload" : "analysis",
+        action: null,
+        review: null,
+        moderatorApproval: null,
+        failure: null,
+        abandonment: null,
+      };
+      break;
+    }
+    case "song_lyrics_bound": {
+      if (command.expectedCreationRevision !== current.creationRevision)
+        return stale(command.expectedCreationRevision, current.creationRevision);
+      if (command.expectedAudioRevision !== current.audioRevision)
+        return reject({
+          _tag: "audio_revision_stale",
+          expectedRevision: command.expectedAudioRevision,
+          actualRevision: current.audioRevision,
+        });
+      if (
+        current.audio === null ||
+        current.status === "processing_failed" ||
+        (!["analysis", "decision"].includes(current.phase ?? "") &&
+          !["action_required", "manual_review"].includes(current.status)) ||
+        command.lyrics.lyricsRevision !== current.lyricsRevision + 1 ||
+        !validLyrics(command.lyrics, current)
+      )
+        return reject({
+          _tag: "transition_not_allowed",
+          state: current.status,
+          event: command.event,
+        });
+      next = {
+        ...current,
+        creationRevision: current.creationRevision + 1,
+        lyricsRevision: command.lyrics.lyricsRevision,
+        lyrics: command.lyrics,
+        analysis: null,
+        decision: null,
+        decisionRevision: 0,
+        status: "processing",
+        phase: "analysis",
         action: null,
         review: null,
         moderatorApproval: null,
@@ -958,6 +1074,7 @@ export function transitionMediaSubmission(
         command.decision.creationRevision !== current.creationRevision ||
         command.decision.audioRevision !== current.audioRevision ||
         command.decision.analysisRevision !== current.analysisRevision ||
+        command.decision.lyricsRevision !== (current.lyrics?.lyricsRevision ?? null) ||
         command.decision.canonicalAudioSha256 !== current.audio.canonicalSha256 ||
         current.analysis.acr.decision === "inconclusive" ||
         current.analysis.acr.decision === "skipped" ||
@@ -966,7 +1083,13 @@ export function transitionMediaSubmission(
         current.analysis.mediaSafety !== "allow" ||
         !["skipped", "allow"].includes(current.analysis.lyricsSafety) ||
         current.analysis.speechLyrics.status === "unavailable" ||
-        !["not_explicit", "no_lyrics"].includes(current.analysis.speechLyrics.explicitness)
+        (current.analysis.speechLyrics.status === "ready" &&
+          current.analysis.speechLyrics.materialDisagreement) ||
+        !["not_explicit", "explicit", "no_lyrics"].includes(
+          current.analysis.speechLyrics.explicitness,
+        ) ||
+        (current.analysis.speechLyrics.status === "ready" && current.lyrics === null) ||
+        (current.analysis.speechLyrics.status === "no_speech" && current.lyrics !== null)
       )
         return reject({ _tag: "decision_evidence_invalid", reasonCode: "required_stage_missing" });
       next = {
@@ -1096,12 +1219,17 @@ export function transitionMediaSubmission(
         command.decision.creationRevision !== current.creationRevision ||
         command.decision.audioRevision !== current.audioRevision ||
         command.decision.analysisRevision !== current.analysisRevision ||
+        command.decision.lyricsRevision !== (current.lyrics?.lyricsRevision ?? null) ||
         command.decision.canonicalAudioSha256 !== current.audio.canonicalSha256 ||
         command.decision.decisionRevision !== current.decisionRevision + 1 ||
         current.analysis.mediaSafety !== "allow" ||
         !["skipped", "allow"].includes(current.analysis.lyricsSafety) ||
         current.analysis.speechLyrics.status === "unavailable" ||
-        !["not_explicit", "no_lyrics"].includes(current.analysis.speechLyrics.explicitness) ||
+        !["not_explicit", "explicit", "no_lyrics"].includes(
+          current.analysis.speechLyrics.explicitness,
+        ) ||
+        (current.analysis.speechLyrics.status === "ready" && current.lyrics === null) ||
+        (current.analysis.speechLyrics.status === "no_speech" && current.lyrics !== null) ||
         (current.analysis.acr.decision === "requires_reference" &&
           current.boundReference === null) ||
         (current.review.exhaustionCode === "acr_exhausted" &&

@@ -672,8 +672,12 @@ const PositiveBasisPoints = Schema.Int.check(Schema.isBetween({ minimum: 1, maxi
 const PositiveRevision = Schema.Int.check(
   Schema.isBetween({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
 );
+const NonNegativeRevision = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+);
 const Sha256Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
 const TranscriptTextMaxLength = 200_000;
+const SongLyricsText = Schema.NonEmptyString.check(Schema.isMaxLength(TranscriptTextMaxLength));
 const SongAuthorString = Schema.NonEmptyString;
 const SongTitle = Schema.NonEmptyString.check(Schema.isMaxLength(200));
 const EvidenceRef = Schema.NonEmptyString.check(Schema.isMaxLength(512));
@@ -786,6 +790,18 @@ export const BindSongTermsV1 = Schema.Union([
 ]);
 export type BindSongTermsV1 = Schema.Schema.Type<typeof BindSongTermsV1>;
 
+/** Revisioned author acceptance; language and explicitness are never author fields. */
+export const BindSongLyricsV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
+  version: Schema.Literal("bind-song-lyrics-v1"),
+  idempotency_key: SongAuthorString,
+  expected_creation_revision: PositiveRevision,
+  expected_audio_revision: PositiveRevision,
+  lyrics: SongLyricsText,
+  base_transcript_revision: Schema.NullOr(PositiveRevision),
+});
+export type BindSongLyricsV1 = Schema.Schema.Type<typeof BindSongLyricsV1>;
+
 export const FinalizeSongUploadV1 = Schema.Struct({
   persona_id: PersonaIdV1,
   idempotency_key: SongAuthorString,
@@ -852,6 +868,30 @@ const MediaSubmissionCommon = {
   href: SongAuthorString,
   track: Schema.Literal("song"),
   creation_revision: PositiveRevision,
+  audio_revision: NonNegativeRevision,
+  lyrics_state: Schema.Struct({
+    asr_suggestion: Schema.Union([
+      Schema.Struct({ status: Schema.Literal("pending") }),
+      Schema.Struct({
+        status: Schema.Literal("ready"),
+        transcript_revision: PositiveRevision,
+        text: Schema.String.check(Schema.isMaxLength(TranscriptTextMaxLength)),
+      }),
+      Schema.Struct({ status: Schema.Literal("no_speech") }),
+      Schema.Struct({ status: Schema.Literal("unavailable") }),
+    ]),
+    current: Schema.Union([
+      Schema.Struct({ status: Schema.Literal("not_bound") }),
+      Schema.Struct({
+        status: Schema.Literal("ready"),
+        text: SongLyricsText,
+        lyrics_revision: PositiveRevision,
+        audio_revision: PositiveRevision,
+        base_transcript_revision: Schema.NullOr(PositiveRevision),
+      }),
+      Schema.Struct({ status: Schema.Literal("no_lyrics") }),
+    ]),
+  }),
   updated_at: SongAuthorString,
 };
 export const MediaPostSubmissionV1 = Schema.Union([
@@ -954,6 +994,9 @@ const EmbeddedCoverAnalysisV1 = Schema.Union([
 
 const ReadySpeechAnalysisV1 = Schema.Struct({
   status: Schema.Literal("ready"),
+  transcript_revision: PositiveRevision,
+  lyrics_revision: PositiveRevision,
+  material_disagreement: Schema.Boolean,
   transcript_artifact_ref: EvidenceRef,
   transcript_sha256: Sha256Hex,
   explicitness: Schema.Literals(["not_explicit", "explicit", "uncertain"]),
@@ -1095,6 +1138,14 @@ export const SongPublishedProjectionV1 = Schema.Struct({
   title: SongTitle,
   audio_asset_ref: EvidenceRef,
   cover_artifact_ref: Schema.NullOr(EvidenceRef),
+  lyrics: Schema.Union([
+    Schema.Struct({
+      status: Schema.Literal("ready"),
+      text: SongLyricsText,
+      lyrics_revision: PositiveRevision,
+    }),
+    Schema.Struct({ status: Schema.Literal("no_lyrics") }),
+  ]),
   analysis_badges: Schema.Union([
     Schema.Tuple([]),
     Schema.Tuple([Schema.Literal("reference_bound")]),
@@ -1471,6 +1522,15 @@ export const BindMediaPostSubmissionTerms = endpoint({
   errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
 });
 
+export const BindMediaPostSubmissionLyrics = endpoint({
+  method: "POST",
+  path: "/media-post-submissions/:submissionId/lyrics",
+  auth: Auth.userOrAdmin(),
+  request: { path: PathMediaSubmission, body: BindSongLyricsV1 },
+  response: MediaPostSubmissionV1,
+  errors: [AuthError, BadRequest, Conflict, IdempotencyConflict, NotFound, RateLimited],
+});
+
 export const FinalizeMediaPostSubmission = endpoint({
   method: "POST",
   path: "/media-post-submissions/:submissionId/finalize",
@@ -1737,6 +1797,7 @@ export const v1Registry = {
   CreateMediaUploadReservation,
   CreateMediaPostSubmission,
   BindMediaPostSubmissionTerms,
+  BindMediaPostSubmissionLyrics,
   FinalizeMediaPostSubmission,
   GetMediaPostSubmission,
   BindMediaPostSubmissionReference,

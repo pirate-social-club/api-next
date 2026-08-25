@@ -1,0 +1,516 @@
+-- Revisioned author-reviewed lyrics foundation. ASR transcripts remain immutable
+-- evidence; accepted lyrics are a distinct, audio-bound author decision.
+
+ALTER TABLE media_post_submissions
+  ADD COLUMN lyrics_revision BIGINT NOT NULL DEFAULT 0 CHECK (lyrics_revision >= 0),
+  ADD COLUMN current_lyrics_revision BIGINT,
+  ADD COLUMN workflow_replacement_sequence BIGINT NOT NULL DEFAULT 0
+    CHECK (workflow_replacement_sequence >= 0);
+
+CREATE TABLE media_song_lyrics_revisions (
+  submission_id TEXT NOT NULL,
+  community_id TEXT NOT NULL,
+  actor_user_id TEXT NOT NULL,
+  actor_account_id TEXT GENERATED ALWAYS AS (actor_user_id) STORED,
+  author_persona_id TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  lyrics_revision BIGINT NOT NULL CHECK (lyrics_revision > 0),
+  creation_revision BIGINT NOT NULL CHECK (creation_revision > 1),
+  audio_revision BIGINT NOT NULL CHECK (audio_revision > 0),
+  canonical_audio_sha256 TEXT NOT NULL CHECK (canonical_audio_sha256 ~ '^[0-9a-f]{64}$'),
+  lyrics_text TEXT NOT NULL CHECK (
+    (char_length(lyrics_text) >= 1 AND char_length(lyrics_text) <= 200000)
+    AND octet_length(convert_to(lyrics_text, 'UTF8')) <= 800000
+  ),
+  lyrics_sha256 TEXT NOT NULL CHECK (lyrics_sha256 ~ '^[0-9a-f]{64}$'),
+  base_transcript_revision BIGINT CHECK (base_transcript_revision IS NULL OR base_transcript_revision > 0),
+  provenance TEXT NOT NULL CHECK (provenance IN ('asr_accepted', 'pasted', 'corrected')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (submission_id, lyrics_revision),
+  UNIQUE (submission_id, audio_revision, lyrics_revision),
+  UNIQUE (submission_id, audio_revision, lyrics_revision, canonical_audio_sha256),
+  FOREIGN KEY (community_id, actor_user_id, author_persona_id, submission_id, operation_id)
+    REFERENCES media_post_submissions (
+      community_id, actor_user_id, author_persona_id, submission_id, operation_id
+    ),
+  FOREIGN KEY (actor_account_id, author_persona_id)
+    REFERENCES personas (account_id, persona_id),
+  FOREIGN KEY (submission_id, audio_revision, canonical_audio_sha256)
+    REFERENCES media_audio_revisions (submission_id, audio_revision, canonical_sha256),
+  CONSTRAINT media_song_lyrics_digest_exact CHECK (
+    encode(sha256(convert_to(lyrics_text, 'UTF8')), 'hex') = lyrics_sha256
+  ),
+  CONSTRAINT media_song_lyrics_provenance_shape CHECK (
+    (base_transcript_revision IS NULL AND provenance = 'pasted')
+    OR (base_transcript_revision IS NOT NULL AND provenance IN ('asr_accepted', 'corrected'))
+  )
+);
+
+CREATE UNIQUE INDEX media_transcript_revision_lineage_uidx
+  ON media_transcript_artifacts (
+    submission_id, audio_revision, analysis_revision, canonical_audio_sha256
+  );
+
+ALTER TABLE media_song_lyrics_revisions
+  ADD CONSTRAINT media_song_lyrics_transcript_fk FOREIGN KEY (
+    submission_id, audio_revision, base_transcript_revision, canonical_audio_sha256
+  ) REFERENCES media_transcript_artifacts (
+    submission_id, audio_revision, analysis_revision, canonical_audio_sha256
+  );
+
+ALTER TABLE media_post_submissions
+  ADD CONSTRAINT media_post_submissions_current_lyrics_fk FOREIGN KEY (
+    submission_id, audio_revision, current_lyrics_revision
+  ) REFERENCES media_song_lyrics_revisions (
+    submission_id, audio_revision, lyrics_revision
+  ) DEFERRABLE INITIALLY DEFERRED,
+  ADD CONSTRAINT media_post_submissions_lyrics_shape CHECK (
+    (lyrics_revision = 0 AND current_lyrics_revision IS NULL)
+    OR (lyrics_revision > 0 AND current_lyrics_revision = lyrics_revision)
+  );
+
+ALTER TABLE media_analysis_evidence
+  ADD COLUMN transcript_revision BIGINT,
+  ADD COLUMN lyrics_revision BIGINT,
+  ADD COLUMN material_disagreement BOOLEAN NOT NULL DEFAULT FALSE,
+  DROP CONSTRAINT media_analysis_speech_shape,
+  ADD CONSTRAINT media_analysis_speech_shape CHECK (
+    (speech_status = 'ready'
+      AND transcript_artifact_ref IS NOT NULL
+      AND transcript_sha256 IS NOT NULL
+      AND transcript_revision > 0
+      AND lyrics_revision > 0
+      AND explicitness IN ('not_explicit', 'explicit', 'uncertain')
+      AND primary_language_bcp47 IS NOT NULL
+      AND char_length(primary_language_bcp47) <= 35
+      AND primary_language_bcp47 ~ '^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'
+      AND (secondary_language_bcp47 IS NULL OR (
+        char_length(secondary_language_bcp47) <= 35
+        AND secondary_language_bcp47 ~ '^(?:[a-z]{2,3})(?:-[A-Z][a-z]{3})?(?:-(?:[A-Z]{2}|[0-9]{3}))?(?:-[a-z0-9]{5,8}|-[0-9][a-z0-9]{3})*$'
+        AND secondary_language_bcp47 IS DISTINCT FROM primary_language_bcp47
+      ))
+      AND lyrics_safety IN ('skipped', 'allow', 'review_required', 'blocked'))
+    OR (speech_status = 'no_speech'
+      AND transcript_artifact_ref IS NULL AND transcript_sha256 IS NULL
+      AND transcript_revision IS NULL AND lyrics_revision IS NULL
+      AND material_disagreement = FALSE
+      AND explicitness = 'no_lyrics'
+      AND primary_language_bcp47 IS NULL AND secondary_language_bcp47 IS NULL
+      AND lyrics_safety = 'skipped')
+    OR (speech_status = 'unavailable'
+      AND transcript_artifact_ref IS NULL AND transcript_sha256 IS NULL
+      AND transcript_revision IS NULL AND lyrics_revision IS NULL
+      AND material_disagreement = FALSE
+      AND explicitness = 'uncertain'
+      AND primary_language_bcp47 IS NULL AND secondary_language_bcp47 IS NULL
+      AND lyrics_safety = 'review_required')
+  ),
+  ADD CONSTRAINT media_analysis_lyrics_fk FOREIGN KEY (
+    submission_id, audio_revision, lyrics_revision, canonical_audio_sha256
+  ) REFERENCES media_song_lyrics_revisions (
+    submission_id, audio_revision, lyrics_revision, canonical_audio_sha256
+  );
+
+ALTER TABLE media_analysis_evidence
+  DROP CONSTRAINT media_analysis_transcript_fk,
+  ADD CONSTRAINT media_analysis_transcript_fk FOREIGN KEY (
+    transcript_artifact_ref, community_id, actor_user_id, submission_id, operation_id,
+    audio_revision, transcript_revision, canonical_audio_sha256, transcript_sha256
+  ) REFERENCES media_transcript_artifacts (
+    transcript_artifact_ref, community_id, actor_user_id, submission_id, operation_id,
+    audio_revision, analysis_revision, canonical_audio_sha256, transcript_sha256
+  );
+
+ALTER TABLE media_publication_decisions
+  ADD COLUMN lyrics_revision BIGINT,
+  ADD CONSTRAINT media_decision_lyrics_fk FOREIGN KEY (
+    submission_id, audio_revision, lyrics_revision, canonical_audio_sha256
+  ) REFERENCES media_song_lyrics_revisions (
+    submission_id, audio_revision, lyrics_revision, canonical_audio_sha256
+  );
+
+ALTER TABLE media_publication_projections
+  ADD COLUMN lyrics_status TEXT NOT NULL DEFAULT 'no_lyrics'
+    CHECK (lyrics_status IN ('ready', 'no_lyrics')),
+  ADD COLUMN lyrics_revision BIGINT,
+  ADD COLUMN lyrics_text TEXT,
+  ADD CONSTRAINT media_publication_lyrics_shape CHECK (
+    (lyrics_status = 'ready' AND lyrics_revision > 0 AND lyrics_text IS NOT NULL)
+    OR (lyrics_status = 'no_lyrics' AND lyrics_revision IS NULL AND lyrics_text IS NULL)
+  ),
+  ADD CONSTRAINT media_publication_lyrics_fk FOREIGN KEY (
+    submission_id, audio_revision, lyrics_revision, canonical_audio_sha256
+  ) REFERENCES media_song_lyrics_revisions (
+    submission_id, audio_revision, lyrics_revision, canonical_audio_sha256
+  );
+
+ALTER TABLE media_timed_lyrics_artifacts
+  ADD COLUMN lyrics_revision BIGINT NOT NULL,
+  ADD CONSTRAINT media_timed_lyrics_revision_fk FOREIGN KEY (
+    submission_id, audio_revision, lyrics_revision, canonical_audio_sha256
+  ) REFERENCES media_song_lyrics_revisions (
+    submission_id, audio_revision, lyrics_revision, canonical_audio_sha256
+  );
+
+ALTER TABLE media_alignment_projections
+  ADD COLUMN lyrics_revision BIGINT,
+  ADD CONSTRAINT media_alignment_lyrics_fk FOREIGN KEY (
+    submission_id, audio_revision, lyrics_revision, canonical_audio_sha256
+  ) REFERENCES media_song_lyrics_revisions (
+    submission_id, audio_revision, lyrics_revision, canonical_audio_sha256
+  );
+
+ALTER TABLE media_processing_attempts
+  DROP CONSTRAINT media_processing_attempts_input_kind_check,
+  ADD CONSTRAINT media_processing_attempts_input_kind_check CHECK (
+    input_kind IN ('audio', 'analysis', 'transcript', 'lyrics', 'reference', 'publication')
+  );
+
+ALTER TABLE media_submission_events
+  DROP CONSTRAINT media_submission_events_event_kind_check,
+  ADD CONSTRAINT media_submission_events_event_kind_check CHECK (event_kind IN (
+    'submission_reserved', 'text_input_bound', 'media_reservation_issued', 'finalize_requested',
+    'author_cancelled', 'reservation_expired', 'upload_finalized',
+    'upload_expectation_mismatch_recorded', 'upload_source_precondition_failed',
+    'seal_conflict_recorded', 'song_terms_bound', 'song_lyrics_bound',
+    'blocking_analysis_completed', 'review_exhaustion_recorded', 'media_failure_recorded',
+    'publication_allowed', 'reference_required', 'review_required', 'policy_blocked',
+    'reference_bound', 'action_deadline_elapsed', 'moderator_approved', 'moderator_blocked',
+    'publication_committed', 'technical_exhaustion_recorded', 'retry_authorized',
+    'workflow_replaced'
+  ));
+
+ALTER TABLE media_submission_outbox
+  ADD COLUMN lyrics_revision BIGINT,
+  DROP CONSTRAINT media_submission_outbox_event_type_check,
+  ADD CONSTRAINT media_submission_outbox_event_type_check CHECK (event_type IN (
+    'analysis_launch', 'decision_wakeup', 'publication', 'alignment', 'workflow_replacement'
+  )),
+  DROP CONSTRAINT media_submission_outbox_community_id_actor_user_id_submissi_key;
+
+CREATE FUNCTION validate_media_lyrics_lineage() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE submission_record media_post_submissions%ROWTYPE; publication_record media_publication_projections%ROWTYPE;
+BEGIN
+  SELECT * INTO submission_record FROM media_post_submissions
+    WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+      AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id FOR SHARE;
+  IF TG_TABLE_NAME = 'media_analysis_evidence' THEN
+    IF (NEW.speech_status = 'ready' AND (
+          NEW.lyrics_revision IS DISTINCT FROM submission_record.current_lyrics_revision
+          OR NOT EXISTS (
+            SELECT 1 FROM media_transcript_artifacts transcript
+            WHERE transcript.transcript_artifact_ref=NEW.transcript_artifact_ref
+              AND transcript.submission_id=NEW.submission_id
+              AND transcript.audio_revision=NEW.audio_revision
+              AND transcript.analysis_revision=NEW.transcript_revision
+              AND transcript.canonical_audio_sha256=NEW.canonical_audio_sha256
+          )
+        ))
+       OR (NEW.speech_status IN ('no_speech','unavailable')
+           AND submission_record.current_lyrics_revision IS NOT NULL)
+       OR (NEW.material_disagreement AND NEW.lyrics_safety <> 'review_required') THEN
+      RAISE EXCEPTION 'analysis lyrics lineage is not exact';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'media_publication_decisions' THEN
+    IF NEW.lyrics_revision IS DISTINCT FROM submission_record.current_lyrics_revision THEN
+      RAISE EXCEPTION 'decision lyrics revision is not current';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'media_publication_projections' THEN
+    IF (NEW.language_status = 'ready' AND (
+          NEW.lyrics_status <> 'ready'
+          OR NEW.lyrics_revision IS DISTINCT FROM submission_record.current_lyrics_revision
+          OR NOT EXISTS (
+            SELECT 1 FROM media_song_lyrics_revisions lyrics
+            WHERE lyrics.submission_id=NEW.submission_id
+              AND lyrics.lyrics_revision=NEW.lyrics_revision
+              AND lyrics.lyrics_text=NEW.lyrics_text
+          )
+        ))
+       OR (NEW.language_status = 'no_speech' AND NEW.lyrics_status <> 'no_lyrics')
+       OR NEW.language_status = 'unavailable' THEN
+      RAISE EXCEPTION 'published lyrics projection is not exact';
+    END IF;
+  ELSIF TG_TABLE_NAME = 'media_alignment_projections' THEN
+    SELECT * INTO publication_record FROM media_publication_projections
+      WHERE submission_id=NEW.submission_id AND post_id=NEW.post_id FOR SHARE;
+    IF publication_record.submission_id IS NULL
+       OR NEW.lyrics_revision IS DISTINCT FROM publication_record.lyrics_revision THEN
+      RAISE EXCEPTION 'alignment lyrics revision is not the published revision';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER media_analysis_lyrics_lineage_guard BEFORE INSERT ON media_analysis_evidence
+  FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
+CREATE TRIGGER media_decision_lyrics_lineage_guard BEFORE INSERT ON media_publication_decisions
+  FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
+CREATE TRIGGER media_publication_lyrics_lineage_guard BEFORE INSERT ON media_publication_projections
+  FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
+CREATE TRIGGER media_alignment_lyrics_lineage_guard BEFORE INSERT ON media_alignment_projections
+  FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_lineage();
+
+-- Existing transition guards do not know the two new submission mutations.
+-- Keep them for every old transition and route only the new shapes to exact guards.
+DROP TRIGGER media_submission_update_guard ON media_post_submissions;
+CREATE TRIGGER media_submission_update_guard BEFORE UPDATE ON media_post_submissions
+  FOR EACH ROW WHEN (
+    NEW.current_lyrics_revision IS NOT DISTINCT FROM OLD.current_lyrics_revision
+    AND NEW.workflow_replacement_sequence IS NOT DISTINCT FROM OLD.workflow_replacement_sequence
+  ) EXECUTE FUNCTION guard_media_submission_update();
+
+DROP TRIGGER media_submission_event_pair ON media_post_submissions;
+CREATE CONSTRAINT TRIGGER media_submission_event_pair AFTER UPDATE ON media_post_submissions
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (
+    NEW.current_lyrics_revision IS NOT DISTINCT FROM OLD.current_lyrics_revision
+    AND NEW.workflow_replacement_sequence IS NOT DISTINCT FROM OLD.workflow_replacement_sequence
+    AND NOT (OLD.status = 'processing' AND OLD.phase = 'publish' AND NEW.status = 'published')
+  ) EXECUTE FUNCTION validate_media_submission_event_pair();
+
+CREATE FUNCTION validate_media_publication_lyrics_pair() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE event_record media_submission_events%ROWTYPE;
+BEGIN
+  SELECT * INTO event_record FROM media_submission_events
+    WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+      AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id
+      AND event_sequence=NEW.event_sequence;
+  IF event_record.event_kind IS DISTINCT FROM 'publication_committed'
+     OR event_record.creation_revision IS DISTINCT FROM NEW.creation_revision
+     OR event_record.audio_revision IS DISTINCT FROM NEW.audio_revision
+     OR event_record.analysis_revision IS DISTINCT FROM NEW.analysis_revision
+     OR event_record.decision_revision IS DISTINCT FROM NEW.decision_revision
+     OR event_record.workflow_revision IS DISTINCT FROM NEW.workflow_revision
+     OR NOT EXISTS (
+       SELECT 1 FROM media_publication_projections publication
+       WHERE publication.submission_id=NEW.submission_id
+         AND publication.creation_revision=NEW.creation_revision
+         AND publication.audio_revision=NEW.audio_revision
+         AND publication.analysis_revision=NEW.analysis_revision
+         AND publication.decision_revision=NEW.decision_revision
+         AND publication.lyrics_revision IS NOT DISTINCT FROM NEW.current_lyrics_revision
+     )
+     OR NOT EXISTS (
+       SELECT 1 FROM media_alignment_projections alignment
+       WHERE alignment.submission_id=NEW.submission_id
+         AND alignment.post_id=NEW.post_id
+         AND alignment.audio_revision=NEW.audio_revision
+         AND alignment.analysis_revision=NEW.analysis_revision
+         AND alignment.lyrics_revision IS NOT DISTINCT FROM NEW.current_lyrics_revision
+         AND alignment.status='pending'
+     )
+     OR NOT EXISTS (
+       SELECT 1 FROM media_submission_outbox outbox
+       WHERE outbox.submission_id=NEW.submission_id
+         AND outbox.event_type='alignment'
+         AND outbox.workflow_revision=NEW.workflow_revision
+         AND outbox.lyrics_revision IS NOT DISTINCT FROM NEW.current_lyrics_revision
+     ) THEN
+    RAISE EXCEPTION 'publication commit is missing its lyrics-fenced projection, alignment, or outbox';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER media_publication_lyrics_pair AFTER UPDATE ON media_post_submissions
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (
+    OLD.status = 'processing' AND OLD.phase = 'publish' AND NEW.status = 'published'
+  ) EXECUTE FUNCTION validate_media_publication_lyrics_pair();
+
+CREATE FUNCTION guard_media_lyrics_or_workflow_update() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.current_lyrics_revision IS DISTINCT FROM OLD.current_lyrics_revision THEN
+    IF NEW.lyrics_revision IS DISTINCT FROM OLD.lyrics_revision + 1
+       OR NEW.current_lyrics_revision IS DISTINCT FROM NEW.lyrics_revision
+       OR NEW.creation_revision IS DISTINCT FROM OLD.creation_revision + 1
+       OR NEW.analysis_revision IS DISTINCT FROM OLD.analysis_revision
+       OR NEW.current_analysis_revision IS NOT NULL
+       OR NEW.decision_revision IS DISTINCT FROM 0
+       OR NEW.current_decision_revision IS NOT NULL
+       OR NEW.status IS DISTINCT FROM 'processing'
+       OR NEW.phase IS DISTINCT FROM 'analysis'
+       OR NEW.event_sequence IS DISTINCT FROM OLD.event_sequence + 1
+       OR NEW.updated_at <= OLD.updated_at
+       OR (to_jsonb(NEW) - ARRAY[
+         'lyrics_revision','current_lyrics_revision','creation_revision','current_analysis_revision',
+         'decision_revision','current_decision_revision','status','phase','event_sequence','updated_at',
+         'action_kind','action_reference_request_ref','action_expires_at','review_ref',
+         'review_reason_code','review_exhaustion_code','review_exhaustion_attempt_id','held_revision',
+         'moderator_action_id','moderator_actor_id','moderator_evidence_ref','moderator_approval_kind',
+         'moderator_reason_code','failure_code','failure_retry_count','retryable','last_safe_phase',
+         'actor_account_id'
+       ]) IS DISTINCT FROM (to_jsonb(OLD) - ARRAY[
+         'lyrics_revision','current_lyrics_revision','creation_revision','current_analysis_revision',
+         'decision_revision','current_decision_revision','status','phase','event_sequence','updated_at',
+         'action_kind','action_reference_request_ref','action_expires_at','review_ref',
+         'review_reason_code','review_exhaustion_code','review_exhaustion_attempt_id','held_revision',
+         'moderator_action_id','moderator_actor_id','moderator_evidence_ref','moderator_approval_kind',
+         'moderator_reason_code','failure_code','failure_retry_count','retryable','last_safe_phase',
+         'actor_account_id'
+       ]) THEN
+      RAISE EXCEPTION 'lyrics projection transition is not exact';
+    END IF;
+  ELSIF NEW.workflow_replacement_sequence IS DISTINCT FROM OLD.workflow_replacement_sequence THEN
+    IF NEW.workflow_replacement_sequence IS DISTINCT FROM OLD.workflow_replacement_sequence + 1
+       OR NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision + 1
+       OR NEW.event_sequence IS DISTINCT FROM OLD.event_sequence + 1
+       OR NEW.updated_at <= OLD.updated_at
+       OR (to_jsonb(NEW) - ARRAY['workflow_replacement_sequence','workflow_revision','event_sequence','updated_at','actor_account_id'])
+          IS DISTINCT FROM
+          (to_jsonb(OLD) - ARRAY['workflow_replacement_sequence','workflow_revision','event_sequence','updated_at','actor_account_id']) THEN
+      RAISE EXCEPTION 'workflow replacement transition is not exact';
+    END IF;
+  ELSE
+    RAISE EXCEPTION 'specialized media transition has no owned mutation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER media_lyrics_or_workflow_update_guard BEFORE UPDATE ON media_post_submissions
+  FOR EACH ROW WHEN (
+    NEW.current_lyrics_revision IS DISTINCT FROM OLD.current_lyrics_revision
+    OR NEW.workflow_replacement_sequence IS DISTINCT FROM OLD.workflow_replacement_sequence
+  ) EXECUTE FUNCTION guard_media_lyrics_or_workflow_update();
+
+CREATE FUNCTION validate_media_lyrics_or_workflow_pair() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE expected_event TEXT; event_record media_submission_events%ROWTYPE;
+BEGIN
+  expected_event := CASE
+    WHEN NEW.current_lyrics_revision IS DISTINCT FROM OLD.current_lyrics_revision
+      THEN 'song_lyrics_bound'
+    WHEN NEW.workflow_replacement_sequence IS DISTINCT FROM OLD.workflow_replacement_sequence
+      THEN 'workflow_replaced'
+    ELSE NULL
+  END;
+  SELECT * INTO event_record FROM media_submission_events
+    WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+      AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id
+      AND event_sequence=NEW.event_sequence;
+  IF expected_event IS NULL OR event_record.event_kind IS DISTINCT FROM expected_event
+     OR event_record.creation_revision IS DISTINCT FROM NEW.creation_revision
+     OR event_record.audio_revision IS DISTINCT FROM NEW.audio_revision
+     OR event_record.analysis_revision IS DISTINCT FROM NEW.analysis_revision
+     OR event_record.decision_revision IS DISTINCT FROM NEW.decision_revision
+     OR event_record.workflow_revision IS DISTINCT FROM NEW.workflow_revision
+     OR event_record.evidence->>'event_kind' IS DISTINCT FROM expected_event THEN
+    RAISE EXCEPTION 'specialized media transition requires its exact event';
+  END IF;
+  IF expected_event = 'song_lyrics_bound' AND NOT EXISTS (
+    SELECT 1 FROM media_song_lyrics_revisions lyrics
+    WHERE lyrics.submission_id=NEW.submission_id
+      AND lyrics.community_id=NEW.community_id
+      AND lyrics.actor_user_id=NEW.actor_user_id
+      AND lyrics.operation_id=NEW.operation_id
+      AND lyrics.lyrics_revision=NEW.current_lyrics_revision
+      AND lyrics.creation_revision=NEW.creation_revision
+      AND lyrics.audio_revision=NEW.audio_revision
+  ) THEN RAISE EXCEPTION 'lyrics transition lacks its immutable revision'; END IF;
+  IF expected_event = 'workflow_replaced' AND NOT EXISTS (
+    SELECT 1 FROM media_submission_outbox outbox
+    WHERE outbox.community_id=NEW.community_id AND outbox.actor_user_id=NEW.actor_user_id
+      AND outbox.submission_id=NEW.submission_id AND outbox.operation_id=NEW.operation_id
+      AND outbox.event_type='workflow_replacement'
+      AND outbox.workflow_revision=NEW.workflow_revision
+  ) THEN RAISE EXCEPTION 'workflow replacement lacks its launch outbox'; END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE CONSTRAINT TRIGGER media_lyrics_or_workflow_pair AFTER UPDATE ON media_post_submissions
+  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (
+    NEW.current_lyrics_revision IS DISTINCT FROM OLD.current_lyrics_revision
+    OR NEW.workflow_replacement_sequence IS DISTINCT FROM OLD.workflow_replacement_sequence
+  ) EXECUTE FUNCTION validate_media_lyrics_or_workflow_pair();
+
+CREATE FUNCTION guard_media_lyrics_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'media song lyrics revisions are append-only';
+END;
+$$;
+CREATE TRIGGER media_song_lyrics_append_only BEFORE UPDATE OR DELETE ON media_song_lyrics_revisions
+  FOR EACH ROW EXECUTE FUNCTION guard_media_lyrics_append_only();
+
+CREATE FUNCTION validate_media_lyrics_insert() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE submission_record media_post_submissions%ROWTYPE; transcript_text TEXT;
+BEGIN
+  SELECT * INTO submission_record FROM media_post_submissions
+    WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+      AND submission_id=NEW.submission_id AND operation_id=NEW.operation_id FOR SHARE;
+  IF submission_record.submission_id IS NULL
+     OR NEW.author_persona_id IS DISTINCT FROM submission_record.author_persona_id
+     OR NEW.lyrics_revision IS DISTINCT FROM submission_record.lyrics_revision + 1
+     OR NEW.creation_revision IS DISTINCT FROM submission_record.creation_revision + 1
+     OR NEW.audio_revision IS DISTINCT FROM submission_record.audio_revision THEN
+    RAISE EXCEPTION 'lyrics revision is not current';
+  END IF;
+  IF NEW.base_transcript_revision IS NOT NULL THEN
+    SELECT transcript_artifact.transcript_text INTO transcript_text
+      FROM media_transcript_artifacts transcript_artifact
+      WHERE transcript_artifact.submission_id=NEW.submission_id
+        AND transcript_artifact.audio_revision=NEW.audio_revision
+        AND transcript_artifact.analysis_revision=NEW.base_transcript_revision
+        AND transcript_artifact.canonical_audio_sha256=NEW.canonical_audio_sha256;
+    IF transcript_text IS NULL
+       OR NEW.provenance IS DISTINCT FROM
+          (CASE WHEN transcript_text = NEW.lyrics_text THEN 'asr_accepted' ELSE 'corrected' END) THEN
+      RAISE EXCEPTION 'lyrics transcript provenance is not exact';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER media_song_lyrics_insert_guard BEFORE INSERT ON media_song_lyrics_revisions
+  FOR EACH ROW EXECUTE FUNCTION validate_media_lyrics_insert();
+
+-- New outbox payloads are closed and identifier-only. Old payloads retain the
+-- 0043 validator; the repository supplies exact shapes for every new edge.
+DROP TRIGGER media_outbox_payload_guard ON media_submission_outbox;
+CREATE FUNCTION validate_media_outbox_payload_v2() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE keys TEXT[]; expected TEXT[]; submission_record media_post_submissions%ROWTYPE;
+BEGIN
+  keys := ARRAY(SELECT jsonb_object_keys(NEW.payload) ORDER BY 1);
+  expected := CASE NEW.event_type
+    WHEN 'analysis_launch' THEN ARRAY['analysis_revision','audio_revision','kind','operation_id','submission_id','workflow_instance_id','workflow_revision']
+    WHEN 'decision_wakeup' THEN ARRAY['creation_revision','kind','lyrics_revision','operation_id','submission_id','trigger','workflow_instance_id','workflow_revision']
+    WHEN 'publication' THEN ARRAY['creation_revision','kind','lyrics_revision','operation_id','submission_id','workflow_instance_id','workflow_revision']
+    WHEN 'workflow_replacement' THEN ARRAY['kind','operation_id','replacement_sequence','submission_id','workflow_instance_id','workflow_revision']
+    ELSE ARRAY['kind','lyrics_revision','operation_id','post_id','submission_id','workflow_instance_id','workflow_revision']
+  END;
+  IF keys IS DISTINCT FROM expected OR NEW.payload->>'kind' IS DISTINCT FROM NEW.event_type THEN
+    RAISE EXCEPTION 'media outbox payload is not a closed identifier union';
+  END IF;
+  SELECT * INTO submission_record FROM media_post_submissions
+    WHERE community_id=NEW.community_id AND actor_user_id=NEW.actor_user_id
+      AND submission_id=NEW.submission_id FOR SHARE;
+  IF submission_record.submission_id IS NULL
+     OR NEW.operation_id IS DISTINCT FROM submission_record.operation_id
+     OR NEW.workflow_revision IS DISTINCT FROM submission_record.workflow_revision
+     OR NEW.workflow_instance_id IS DISTINCT FROM 'media-' || NEW.operation_id || '-r' || NEW.workflow_revision::text
+     OR NEW.payload->>'submission_id' IS DISTINCT FROM NEW.submission_id
+     OR NEW.payload->>'operation_id' IS DISTINCT FROM NEW.operation_id
+     OR NEW.payload->>'workflow_instance_id' IS DISTINCT FROM NEW.workflow_instance_id
+     OR NEW.payload->'workflow_revision' IS DISTINCT FROM to_jsonb(NEW.workflow_revision) THEN
+    RAISE EXCEPTION 'media outbox lineage does not match submission';
+  END IF;
+  IF NEW.event_type = 'analysis_launch' AND (
+    NEW.payload->'audio_revision' IS DISTINCT FROM to_jsonb(NEW.audio_revision)
+    OR NEW.payload->'analysis_revision' IS DISTINCT FROM to_jsonb(NEW.analysis_revision)
+  ) THEN RAISE EXCEPTION 'analysis launch payload is not exact'; END IF;
+  IF NEW.event_type = 'decision_wakeup' AND (
+    NEW.payload->>'trigger' NOT IN ('terms','lyrics')
+    OR NEW.payload->'creation_revision' IS DISTINCT FROM to_jsonb(NEW.creation_revision)
+    OR NEW.payload->'lyrics_revision' IS DISTINCT FROM jsonb_build_object('value', NEW.lyrics_revision)->'value'
+  ) THEN RAISE EXCEPTION 'decision wakeup payload is not exact'; END IF;
+  IF NEW.event_type = 'publication' AND (
+    NEW.payload->'creation_revision' IS DISTINCT FROM to_jsonb(NEW.creation_revision)
+    OR NEW.payload->'lyrics_revision' IS DISTINCT FROM jsonb_build_object('value', NEW.lyrics_revision)->'value'
+  ) THEN RAISE EXCEPTION 'publication wakeup payload is not exact'; END IF;
+  IF NEW.event_type = 'alignment' AND (
+    NEW.payload->>'post_id' IS DISTINCT FROM submission_record.post_id
+    OR NEW.payload->'lyrics_revision' IS DISTINCT FROM jsonb_build_object('value', NEW.lyrics_revision)->'value'
+  ) THEN RAISE EXCEPTION 'published effect payload is not exact'; END IF;
+  IF NEW.event_type = 'workflow_replacement' AND (
+    NEW.payload->'replacement_sequence' IS DISTINCT FROM to_jsonb(submission_record.workflow_replacement_sequence)
+  ) THEN RAISE EXCEPTION 'replacement payload is not exact'; END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER media_outbox_payload_guard BEFORE INSERT ON media_submission_outbox
+  FOR EACH ROW EXECUTE FUNCTION validate_media_outbox_payload_v2();

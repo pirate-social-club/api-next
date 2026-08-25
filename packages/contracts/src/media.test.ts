@@ -3,8 +3,10 @@ import { Schema } from "effect";
 import {
   AuthError,
   BadRequest,
+  BindMediaPostSubmissionLyrics,
   BindMediaPostSubmissionReference,
   BindMediaPostSubmissionTerms,
+  BindSongLyricsV1,
   BindSongReferenceV1,
   BindSongTermsV1,
   CancelMediaPostSubmission,
@@ -74,12 +76,40 @@ const published = {
   href: "/media-post-submissions/sub_1",
   track: "song",
   creation_revision: 1,
+  audio_revision: 1,
+  lyrics_state: {
+    asr_suggestion: { status: "ready", transcript_revision: 1, text: "A song" },
+    current: {
+      status: "ready",
+      text: "A song",
+      lyrics_revision: 1,
+      audio_revision: 1,
+      base_transcript_revision: 1,
+    },
+  },
   status: "published",
   published_resource: { post_id: "post_1", href: "/posts/post_1" },
   updated_at: "2026-08-23T12:00:00.000Z",
 } as const;
 
 describe("song media R1 derived-analysis contracts", () => {
+  test("binds only bounded author-reviewed lyrics and rejects system-owned safety fields", () => {
+    const command = {
+      persona_id: authorPersona.persona_id,
+      version: "bind-song-lyrics-v1",
+      idempotency_key: "lyrics_1",
+      expected_creation_revision: 2,
+      expected_audio_revision: 1,
+      lyrics: "Accepted lyrics",
+      base_transcript_revision: 1,
+    } as const;
+    expect(decode(BindSongLyricsV1, command)).toEqual(command);
+    expect(() => decode(BindSongLyricsV1, { ...command, lyrics: "" })).toThrow();
+    expect(() => decode(BindSongLyricsV1, { ...command, lyrics: "x".repeat(200_001) })).toThrow();
+    expect(() => decode(BindSongLyricsV1, { ...command, language: "en" })).toThrow();
+    expect(() => decode(BindSongLyricsV1, { ...command, explicitness: "not_explicit" })).toThrow();
+  });
+
   test("requires an explicit persona on every author mutation and projects no account identity", () => {
     const authorCommands: ReadonlyArray<
       readonly [Schema.Schema<unknown>, Record<string, unknown>]
@@ -97,6 +127,18 @@ describe("song media R1 derived-analysis contracts", () => {
       ],
       [CreateMediaPostSubmission.request?.body as Schema.Schema<unknown>, songInput],
       [BindMediaPostSubmissionTerms.request?.body as Schema.Schema<unknown>, songTerms],
+      [
+        BindMediaPostSubmissionLyrics.request?.body as Schema.Schema<unknown>,
+        {
+          persona_id: authorPersona.persona_id,
+          version: "bind-song-lyrics-v1",
+          idempotency_key: "lyrics_1",
+          expected_creation_revision: 2,
+          expected_audio_revision: 1,
+          lyrics: "A song",
+          base_transcript_revision: 1,
+        },
+      ],
       [
         FinalizeMediaPostSubmission.request?.body as Schema.Schema<unknown>,
         {
@@ -157,6 +199,7 @@ describe("song media R1 derived-analysis contracts", () => {
     expect(CreateMediaPostSubmission.path).toBe("/communities/:communityId/media-post-submissions");
     expect(CreateMediaPostSubmission.successStatus).toBe(201);
     expect(BindMediaPostSubmissionTerms.path).toBe("/media-post-submissions/:submissionId/terms");
+    expect(BindMediaPostSubmissionLyrics.path).toBe("/media-post-submissions/:submissionId/lyrics");
     expect(FinalizeMediaPostSubmission.path).toBe("/media-post-submissions/:submissionId/finalize");
     expect(BindMediaPostSubmissionReference.path).toBe(
       "/media-post-submissions/:submissionId/reference",
@@ -314,6 +357,11 @@ describe("song media R1 derived-analysis contracts", () => {
       href: "/media-post-submissions/sub_1",
       track: "song",
       creation_revision: 1,
+      audio_revision: 0,
+      lyrics_state: {
+        asr_suggestion: { status: "pending" },
+        current: { status: "not_bound" },
+      },
       status: "processing",
       phase: "awaiting_upload",
       updated_at: "2026-08-23T12:00:00.000Z",
@@ -482,6 +530,9 @@ describe("song media R1 derived-analysis contracts", () => {
         status: "ready",
         transcript_artifact_ref: "transcript_1",
         transcript_sha256: "c".repeat(64),
+        transcript_revision: 2,
+        lyrics_revision: 1,
+        material_disagreement: false,
         explicitness: "not_explicit",
         primary_language_bcp47: "en-US",
         secondary_language_bcp47: "es",
@@ -520,6 +571,7 @@ describe("song media R1 derived-analysis contracts", () => {
       title: "Author-confirmed title",
       audio_asset_ref: "audio_1",
       cover_artifact_ref: "cover_1",
+      lyrics: { status: "ready", text: "A song", lyrics_revision: 1 },
       analysis_badges: ["reference_bound"],
       language_detection: {
         status: "ready",
@@ -793,6 +845,7 @@ describe("song media R1 derived-analysis contracts", () => {
         title: "Author override title",
         audio_asset_ref: "audio_1",
         cover_artifact_ref: "cover_1",
+        lyrics: { status: "ready", text: "A song", lyrics_revision: 1 },
         analysis_badges: [],
         language_detection: {
           status: "ready",
@@ -814,6 +867,7 @@ describe("song media R1 derived-analysis contracts", () => {
       title: "Instrumental",
       audio_asset_ref: "audio_2",
       cover_artifact_ref: null,
+      lyrics: { status: "no_lyrics" },
       analysis_badges: [],
       language_detection: { status: "no_speech" },
       lyrics_explicitness: "no_lyrics",

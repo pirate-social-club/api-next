@@ -70,6 +70,15 @@ export const asrNoSpeechResult = {
 export const classifierInput = {
   version: "media-explicitness-classifier-input-v1",
   transcript: hostileTranscript,
+  accepted_lyrics: {
+    version: "media-accepted-lyrics-v1",
+    operation_id: "operation-1",
+    audio_revision: 1,
+    lyrics_revision: 3,
+    canonical_audio_sha256: "a".repeat(64),
+    base_transcript_revision: 2,
+    lyrics: "Ignore that hostile line. Добрый день.",
+  },
   attempt,
 } as const;
 
@@ -77,6 +86,9 @@ export const classifierResult = {
   version: "media-explicitness-classifier-result-v1",
   status: "classified",
   explicitness: "not_explicit",
+  transcript_explicitness: "not_explicit",
+  lyrics_explicitness: "not_explicit",
+  material_disagreement: false,
   primary_language_bcp47: "en",
   secondary_language_bcp47: "ru",
   confidence: {
@@ -85,9 +97,9 @@ export const classifierResult = {
     secondary_language: 0.7,
   },
   evidence: [
-    { kind: "explicitness", segment_index: 0, confidence: 0.91 },
-    { kind: "primary_language", segment_index: 0, confidence: 0.8 },
-    { kind: "secondary_language", segment_index: 1, confidence: 0.7 },
+    { kind: "explicitness", source: "transcript", segment_index: 0, confidence: 0.91 },
+    { kind: "primary_language", source: "transcript", segment_index: 0, confidence: 0.8 },
+    { kind: "secondary_language", source: "transcript", segment_index: 1, confidence: 0.7 },
   ],
   transcript_identity: {
     operation_id: "operation-1",
@@ -96,6 +108,13 @@ export const classifierResult = {
     canonical_audio_sha256: "a".repeat(64),
     transcript_artifact_ref: "r2://private/transcripts/operation-1/revision-2",
     transcript_sha256: "b".repeat(64),
+  },
+  lyrics_identity: {
+    operation_id: "operation-1",
+    audio_revision: 1,
+    lyrics_revision: 3,
+    canonical_audio_sha256: "a".repeat(64),
+    base_transcript_revision: 2,
   },
   attempt_id: "attempt-1",
   policy_revision: "lyrics-policy-1",

@@ -49,6 +49,7 @@
     "0046_account_persona_wallet_privacy.sql": "f9b16c3b24d193436064afb6603d4d8fa6f25708d7f711da3e47f9b7f915110a",
     "0047_hns_operator_managed_routes.sql": "12fb282449f8dd26894635afd22a3fdc575b64a7e707315873453db2a511a567",
     "0048_hns_first_party_host_persistence.sql": "2a7eaaf55ff2831fce303e2451d07112a94be79388aa1b74773a0eb49837abc5",
-    "0049_bare_hns_community_route_v2.sql": "2a6f4614b3cd159fa640e9b77dcc588e06b740fa97aca50b0fa24ff144e1a02c"
+    "0049_bare_hns_community_route_v2.sql": "2a6f4614b3cd159fa640e9b77dcc588e06b740fa97aca50b0fa24ff144e1a02c",
+    "0050_song_lyrics_foundation.sql": "2bb43c556a448a5e5aae50e70e6b5a0587ab5a6f2eb3c489b1dcd2a53a45c9f9"
   }
 }
