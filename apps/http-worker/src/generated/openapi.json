@@ -18728,7 +18728,6 @@
                             "age_over_18",
                             "minimum_age",
                             "wallet_score",
-                            "altcha_pow",
                             "erc721_holding",
                             "erc721_inventory_match",
                             "asset_balance"
@@ -19369,8 +19368,7 @@
                               "minimum_age",
                               "nationality",
                               "gender",
-                              "wallet_score",
-                              "altcha_pow"
+                              "wallet_score"
                             ]
                           }
                         },
@@ -19764,7 +19762,6 @@
                             "age_over_18",
                             "minimum_age",
                             "wallet_score",
-                            "altcha_pow",
                             "erc721_holding",
                             "erc721_inventory_match",
                             "asset_balance"
@@ -33513,7 +33510,6 @@
                             "age_over_18",
                             "minimum_age",
                             "wallet_score",
-                            "altcha_pow",
                             "erc721_holding",
                             "erc721_inventory_match",
                             "asset_balance"
@@ -39546,7 +39542,6 @@
                             "age_over_18",
                             "minimum_age",
                             "wallet_score",
-                            "altcha_pow",
                             "erc721_holding",
                             "erc721_inventory_match",
                             "asset_balance"
@@ -41851,7 +41846,6 @@
                             "age_over_18",
                             "minimum_age",
                             "wallet_score",
-                            "altcha_pow",
                             "erc721_holding",
                             "erc721_inventory_match",
                             "asset_balance"
@@ -45824,7 +45818,6 @@
                             "age_over_18",
                             "minimum_age",
                             "wallet_score",
-                            "altcha_pow",
                             "erc721_holding",
                             "erc721_inventory_match",
                             "asset_balance"

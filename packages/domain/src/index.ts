@@ -22,10 +22,8 @@ export * from "./content/text-moderation.ts";
 export * from "./gates/country-codes.ts";
 export * from "./gates/erc721.ts";
 export * from "./gates/identity-evidence.ts";
-export * from "./gates/open-participation.ts";
 export * from "./gates/policy.ts";
 export * from "./gates/policy-validation.ts";
-export * from "./gates/proof-of-work.ts";
 export * from "./gates/verification-eligibility.ts";
 export * from "./gates/wallet-score.ts";
 export type {

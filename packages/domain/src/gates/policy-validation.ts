@@ -7,7 +7,6 @@ const GATE_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/u;
 const DOCUMENT_PROOF_PROVIDERS = ["self", "zkpassport"] as const;
 
 export type GateAtom =
-  | { readonly type: "altcha_pow" }
   | { readonly type: "unique_human"; readonly provider: "very" | "self" | "zkpassport" }
   | {
       readonly type: "minimum_age";
@@ -140,8 +139,6 @@ function validateAtom(
   const identity = { gate_id: gateId } as const;
 
   switch (input.type) {
-    case "altcha_pow":
-      return { ...identity, type: "altcha_pow" };
     case "unique_human":
       if (!isOneOf(input.provider, ["very", "self", "zkpassport"] as const)) {
         throw new Error("unique_human_provider_invalid");
