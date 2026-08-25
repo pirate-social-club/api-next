@@ -11,6 +11,9 @@ import { Clock, IdGen, StudyItemSource } from "../ports.ts";
 import type { StudyItemSourceSetV1 } from "../study-item-source.ts";
 import { canonicalBodyHash } from "../use-cases/content/common.ts";
 
+export { Clock, IdGen, StudyItemSource, StudyItemSourceError } from "../ports.ts";
+export type { StudyItemSourceSetV1 } from "../study-item-source.ts";
+
 export type ActivityQualificationStorageReason =
   | "constraint"
   | "invalid-row"

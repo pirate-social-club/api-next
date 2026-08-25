@@ -5,7 +5,7 @@ import {
   IdGen,
   makeActivityQualificationService,
   StudyItemSource,
-} from "@pirate/application";
+} from "@pirate/application/use-cases/rewards/activity-qualification";
 import { AuthError, BadRequest, Conflict, InternalError, NotFound } from "@pirate/contracts";
 import { Effect } from "effect";
 import type { EndpointHandler, Principal } from "./transport.ts";

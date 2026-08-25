@@ -1,4 +1,3 @@
-import { type StudyItemSource, StudyItemSourceError } from "@pirate/application";
 import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
 import {
@@ -8,6 +7,10 @@ import {
 import { makeRandomIdentityRegistrationCandidateSource } from "@pirate/application/use-cases/identity-registration";
 import { getMyProfile } from "@pirate/application/use-cases/profile";
 import { makePublicProfileHandler } from "@pirate/application/use-cases/public-profile";
+import {
+  type StudyItemSource,
+  StudyItemSourceError,
+} from "@pirate/application/use-cases/rewards/activity-qualification";
 import {
   type AuthenticatedSession,
   authenticateSession,

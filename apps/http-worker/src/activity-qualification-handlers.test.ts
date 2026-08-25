@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { ActivityQualificationStore, StudyItemSourceSetV1 } from "@pirate/application";
+import type {
+  ActivityQualificationStore,
+  StudyItemSourceSetV1,
+} from "@pirate/application/use-cases/rewards/activity-qualification";
 import type { ActivityStreakLeaderboardV1, StudySessionV1 } from "@pirate/contracts";
 import { Effect } from "effect";
 import { makeActivityQualificationHandlers } from "./activity-qualification-handlers.ts";
