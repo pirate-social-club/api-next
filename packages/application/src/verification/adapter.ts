@@ -56,7 +56,7 @@ export type VerificationSubmission = Schema.Schema.Type<typeof VerificationSubmi
  * resolved server-side from the action intent and is not part of the public
  * verification wire contract.
  */
-export const VerificationIntentType = Schema.Literals([
+const VerificationIntentType = Schema.Literals([
   "community_creation",
   "community_join",
   "post_create",
@@ -66,13 +66,11 @@ export const VerificationIntentType = Schema.Literals([
   "qualifier_disclosure",
   "profile_verification",
 ]);
-export type VerificationIntentType = Schema.Schema.Type<typeof VerificationIntentType>;
 
-export const VerificationProviderPurpose = Schema.Struct({
+const VerificationProviderPurpose = Schema.Struct({
   intent: VerificationIntentType,
   policy_id: Schema.optional(Schema.NonEmptyString),
 });
-export type VerificationProviderPurpose = Schema.Schema.Type<typeof VerificationProviderPurpose>;
 
 export const VerificationProviderStartInput = Schema.Struct({
   actor_id: Schema.NonEmptyString,
