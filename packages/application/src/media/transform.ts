@@ -21,17 +21,36 @@ export type MediaTransformSource = Readonly<{
   readonly objectKey: string;
 }>;
 
-export type MediaTransformResume = Readonly<{
-  readonly providerJobId: string;
+export type MediaTransformRuntimeFence = Readonly<{
   readonly submittedAtMs: number;
   readonly runtimeDeadlineMs: number;
+}>;
+
+/**
+ * Caller-persisted provider-attempt state, keyed by binding.requestId.
+ *
+ * The caller creates and durably records the runtime fence before the first
+ * provider effect. Exact logical-attempt replay must reuse that fence. The
+ * adapter adds providerJobId only after Transloadit returns an assembly id;
+ * adapter memory is never a durability mechanism.
+ */
+export type MediaTransformAttempt = Readonly<{
+  readonly version: "media-transform-attempt-v1";
+  readonly runtimeFence: MediaTransformRuntimeFence;
+  readonly providerJobId?: string;
+}>;
+
+export type MediaTransformAcceptedAttempt = Readonly<{
+  readonly version: "media-transform-attempt-v1";
+  readonly runtimeFence: MediaTransformRuntimeFence;
+  readonly providerJobId: string;
 }>;
 
 export type MediaTransformProbeInput = Readonly<{
   readonly version: "media-transform-probe-input-v1";
   readonly binding: MediaTransformBinding;
   readonly source: MediaTransformSource;
-  readonly resume?: MediaTransformResume;
+  readonly attempt: MediaTransformAttempt;
   readonly signal?: AbortSignal;
 }>;
 
@@ -41,7 +60,7 @@ export type MediaTransformAudioSampleInput = Readonly<{
   readonly source: MediaTransformSource;
   readonly sourceDurationMs: number;
   readonly variant: MediaTransformSampleVariant;
-  readonly resume?: MediaTransformResume;
+  readonly attempt: MediaTransformAttempt;
   readonly signal?: AbortSignal;
 }>;
 
@@ -50,11 +69,6 @@ export type MediaTransformCancelInput = Readonly<{
   readonly requestId: string;
   readonly providerJobId: string;
   readonly signal?: AbortSignal;
-}>;
-
-export type MediaTransformRuntimeFence = Readonly<{
-  readonly submittedAtMs: number;
-  readonly runtimeDeadlineMs: number;
 }>;
 
 export type MediaTransformAttemptContext = Readonly<{
@@ -126,34 +140,34 @@ export type MediaTransformMalformedReason =
 export type MediaTransformProgress =
   | Readonly<{
       readonly status: "submitted" | "processing";
-      readonly providerJobId: string;
-      readonly runtimeFence: MediaTransformRuntimeFence;
+      readonly attempt: MediaTransformAcceptedAttempt;
     }>
   | Readonly<{
       readonly status: "unavailable";
       readonly reason: "disabled";
+      readonly attempt: MediaTransformAttempt;
     }>
   | Readonly<{
       readonly status: "retryable_failure";
       readonly reason: MediaTransformRetryableReason;
-      readonly providerJobId?: string;
+      readonly attempt: MediaTransformAttempt;
       readonly retryAfterMs?: number;
     }>
   | Readonly<{
       readonly status: "rejected";
       readonly reason: MediaTransformRejectedReason;
-      readonly providerJobId?: string;
+      readonly attempt: MediaTransformAttempt;
     }>
   | Readonly<{
       readonly status: "malformed_response";
       readonly reason: MediaTransformMalformedReason;
-      readonly providerJobId?: string;
+      readonly attempt: MediaTransformAttempt;
     }>;
 
 export type MediaTransformProbeOutcome =
   | Readonly<{
       readonly status: "completed";
-      readonly providerJobId: string;
+      readonly attempt: MediaTransformAcceptedAttempt;
       readonly context: MediaTransformAttemptContext;
       readonly probe: MediaTransformProbe;
     }>
@@ -162,7 +176,7 @@ export type MediaTransformProbeOutcome =
 export type MediaTransformAudioSampleOutcome =
   | Readonly<{
       readonly status: "completed";
-      readonly providerJobId: string;
+      readonly attempt: MediaTransformAcceptedAttempt;
       readonly context: MediaTransformAttemptContext;
       readonly artifact: MediaTransformSampleArtifact;
     }>

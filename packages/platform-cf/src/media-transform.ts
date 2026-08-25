@@ -1,11 +1,12 @@
 /** Disabled-by-default Transloadit adapter for the v1 media transform port. */
 
 import {
+  type MediaTransformAcceptedAttempt,
+  type MediaTransformAttempt,
   type MediaTransformAudioSampleOutcome,
   type MediaTransformCancelOutcome,
   type MediaTransformProbeOutcome,
   MediaTransformRequestInvalid,
-  type MediaTransformRuntimeFence,
   type MediaTransformService,
   mediaTransformSampleWindow,
 } from "@pirate/application/media/transform";
@@ -55,6 +56,11 @@ export {
 } from "./media-transform-response.ts";
 
 type OperationOutcome = MediaTransformProbeOutcome | MediaTransformAudioSampleOutcome;
+type OperationFailure = Exclude<
+  OperationOutcome,
+  { status: "completed" | "processing" | "submitted" | "unavailable" }
+>;
+type WithoutOperationMetadata<A> = A extends unknown ? Omit<A, "attempt" | "context"> : never;
 
 type RequestExecution<A> =
   | Readonly<{ readonly ok: true; readonly value: A }>
@@ -135,47 +141,40 @@ async function executeWithDeadline<A>(
   }
 }
 
-function runtimeFenceFor(
+function runtimeFenceFitsConfiguration(
   config: TransloaditConfig,
   operation: TransloaditOperationSnapshot,
-): Readonly<{ readonly nowMs: number; readonly fence: MediaTransformRuntimeFence }> | null {
-  const nowMs = config.nowMilliseconds();
-  if (!validClockMilliseconds(nowMs)) return null;
-  if (operation.resumeJobId === undefined) {
-    const runtimeDeadlineMs = nowMs + config.limits.maxAssemblyRuntimeMs;
-    if (!Number.isSafeInteger(runtimeDeadlineMs)) return null;
-    return {
-      nowMs,
-      fence: Object.freeze({ submittedAtMs: nowMs, runtimeDeadlineMs }),
-    };
-  }
-  const submittedAtMs = operation.resumeSubmittedAtMs;
-  const runtimeDeadlineMs = operation.resumeRuntimeDeadlineMs;
-  if (
-    submittedAtMs === undefined ||
-    runtimeDeadlineMs === undefined ||
-    runtimeDeadlineMs - submittedAtMs > config.limits.maxAssemblyRuntimeMs
-  ) {
-    return null;
-  }
-  return {
-    nowMs,
-    fence: Object.freeze({ submittedAtMs, runtimeDeadlineMs }),
-  };
-}
-
-function resumeFenceFitsConfiguration(
-  config: TransloaditConfig,
-  operation: TransloaditOperationSnapshot,
+  nowMs: number,
 ): boolean {
-  if (operation.resumeJobId === undefined) return true;
-  const submittedAtMs = operation.resumeSubmittedAtMs;
-  const runtimeDeadlineMs = operation.resumeRuntimeDeadlineMs;
+  const { submittedAtMs, runtimeDeadlineMs } = operation.runtimeFence;
   return (
-    submittedAtMs !== undefined &&
-    runtimeDeadlineMs !== undefined &&
+    // The caller and adapter share one server clock. Positive future skew is
+    // deliberately not accepted because it would extend provider wall time.
+    submittedAtMs <= nowMs &&
     runtimeDeadlineMs - submittedAtMs <= config.limits.maxAssemblyRuntimeMs
   );
+}
+
+function attemptFor(
+  operation: TransloaditOperationSnapshot,
+  providerJobId: string | undefined = operation.resumeJobId,
+): MediaTransformAttempt {
+  return Object.freeze({
+    version: "media-transform-attempt-v1",
+    runtimeFence: operation.runtimeFence,
+    ...(providerJobId === undefined ? {} : { providerJobId }),
+  });
+}
+
+function acceptedAttemptFor(
+  operation: TransloaditOperationSnapshot,
+  providerJobId: string,
+): MediaTransformAcceptedAttempt {
+  return Object.freeze({
+    version: "media-transform-attempt-v1",
+    runtimeFence: operation.runtimeFence,
+    providerJobId,
+  });
 }
 
 function templateFor(config: TransloaditConfig, operation: TransloaditOperationSnapshot): string {
@@ -277,10 +276,12 @@ function pollRequest(
 function withContext(
   operation: TransloaditOperationSnapshot,
   config: TransloaditConfig,
-  outcome: Exclude<OperationOutcome, { status: "completed" | "unavailable" }>,
+  outcome: WithoutOperationMetadata<OperationFailure>,
+  providerJobId: string | undefined = operation.resumeJobId,
 ): OperationOutcome {
   return Object.freeze({
     ...outcome,
+    attempt: attemptFor(operation, providerJobId),
     context: transloaditAttemptContext(operation.binding, config.adapterRevision),
   });
 }
@@ -290,14 +291,12 @@ function statusOutcome(
   config: TransloaditConfig,
   response: TransloaditTransportResponse,
 ): OperationOutcome | null {
-  const providerJobId = operation.resumeJobId;
   if (response.status === 429) {
     disposeResponse(response);
     const retryAfterMs = retryAfterMilliseconds(response.headers);
     return withContext(operation, config, {
       status: "retryable_failure",
       reason: "throttled",
-      ...(providerJobId === undefined ? {} : { providerJobId }),
       ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
     });
   }
@@ -306,7 +305,6 @@ function statusOutcome(
     return withContext(operation, config, {
       status: "rejected",
       reason: "unauthorized",
-      ...(providerJobId === undefined ? {} : { providerJobId }),
     });
   }
   if (response.status === 404) {
@@ -314,7 +312,6 @@ function statusOutcome(
     return withContext(operation, config, {
       status: "rejected",
       reason: "job_not_found",
-      ...(providerJobId === undefined ? {} : { providerJobId }),
     });
   }
   if (response.status >= 500) {
@@ -322,7 +319,6 @@ function statusOutcome(
     return withContext(operation, config, {
       status: "retryable_failure",
       reason: "provider",
-      ...(providerJobId === undefined ? {} : { providerJobId }),
     });
   }
   if (response.status < 200 || response.status >= 300) {
@@ -330,7 +326,6 @@ function statusOutcome(
     return withContext(operation, config, {
       status: "rejected",
       reason: "provider_rejected",
-      ...(providerJobId === undefined ? {} : { providerJobId }),
     });
   }
   return null;
@@ -342,37 +337,53 @@ function failedAssemblyOutcome(
   assembly: Extract<TransloaditAssembly, { state: "failed" }>,
 ): OperationOutcome {
   if (assembly.providerCode === "ASSEMBLY_STATUS_FETCHING_RATE_LIMIT_REACHED") {
-    return withContext(operation, config, {
-      status: "retryable_failure",
-      reason: "throttled",
-      providerJobId: assembly.providerJobId,
-    });
+    return withContext(
+      operation,
+      config,
+      {
+        status: "retryable_failure",
+        reason: "throttled",
+      },
+      assembly.providerJobId,
+    );
   }
   if (
     assembly.providerCode === "INVALID_SIGNATURE" ||
     assembly.providerCode === "AUTHENTICATION_ERROR"
   ) {
-    return withContext(operation, config, {
-      status: "rejected",
-      reason: "unauthorized",
-      providerJobId: assembly.providerJobId,
-    });
+    return withContext(
+      operation,
+      config,
+      {
+        status: "rejected",
+        reason: "unauthorized",
+      },
+      assembly.providerJobId,
+    );
   }
   if (
     assembly.providerCode === "ASSEMBLY_NOT_FOUND" ||
     assembly.providerCode === "NO_SUCH_ASSEMBLY"
   ) {
-    return withContext(operation, config, {
-      status: "rejected",
-      reason: "job_not_found",
-      providerJobId: assembly.providerJobId,
-    });
+    return withContext(
+      operation,
+      config,
+      {
+        status: "rejected",
+        reason: "job_not_found",
+      },
+      assembly.providerJobId,
+    );
   }
-  return withContext(operation, config, {
-    status: "rejected",
-    reason: "provider_rejected",
-    providerJobId: assembly.providerJobId,
-  });
+  return withContext(
+    operation,
+    config,
+    {
+      status: "rejected",
+      reason: "provider_rejected",
+    },
+    assembly.providerJobId,
+  );
 }
 
 async function consumeOperationResponse(
@@ -380,7 +391,6 @@ async function consumeOperationResponse(
   operation: TransloaditOperationSnapshot,
   response: TransloaditTransportResponse,
   signal: AbortSignal,
-  runtimeFence: MediaTransformRuntimeFence,
 ): Promise<OperationOutcome> {
   const early = statusOutcome(operation, config, response);
   if (early !== null) return early;
@@ -400,7 +410,6 @@ async function consumeOperationResponse(
     return withContext(operation, config, {
       status: "malformed_response",
       reason,
-      ...(operation.resumeJobId === undefined ? {} : { providerJobId: operation.resumeJobId }),
     });
   }
   const parsed = parseTransloaditAssembly(value, operation.resumeJobId, resultStepFor(operation));
@@ -408,70 +417,70 @@ async function consumeOperationResponse(
     return withContext(operation, config, {
       status: "malformed_response",
       reason: parsed.reason,
-      ...(operation.resumeJobId === undefined ? {} : { providerJobId: operation.resumeJobId }),
     });
   }
   const assembly = parsed.value;
   if (assembly.state === "processing") {
     return Object.freeze({
       status: operation.resumeJobId === undefined ? "submitted" : "processing",
-      providerJobId: assembly.providerJobId,
-      runtimeFence,
+      attempt: acceptedAttemptFor(operation, assembly.providerJobId),
       context: transloaditAttemptContext(operation.binding, config.adapterRevision),
     });
   }
   if (assembly.state === "failed") return failedAssemblyOutcome(operation, config, assembly);
   if (
     assembly.executionDurationMs > config.limits.maxAssemblyRuntimeMs ||
-    assembly.executionDurationMs > runtimeFence.runtimeDeadlineMs - runtimeFence.submittedAtMs
+    assembly.executionDurationMs >
+      operation.runtimeFence.runtimeDeadlineMs - operation.runtimeFence.submittedAtMs
   ) {
-    return withContext(operation, config, {
-      status: "rejected",
-      reason: "runtime_exceeded",
-      providerJobId: assembly.providerJobId,
-    });
+    return withContext(
+      operation,
+      config,
+      {
+        status: "rejected",
+        reason: "runtime_exceeded",
+      },
+      assembly.providerJobId,
+    );
   }
   const context = transloaditAttemptContext(operation.binding, config.adapterRevision);
   const completed =
     operation.kind === "probe"
-      ? probeFromAssembly(assembly, context)
+      ? probeFromAssembly(assembly, context, acceptedAttemptFor(operation, assembly.providerJobId))
       : sampleFromAssembly(
           assembly,
           operation,
           context,
+          acceptedAttemptFor(operation, assembly.providerJobId),
           outputObjectKey(operation),
           config.limits.maxSampleBytes,
         );
   if (completed.status === "completed") return completed;
-  return withContext(operation, config, {
-    ...completed,
-    providerJobId: assembly.providerJobId,
-  });
+  return withContext(
+    operation,
+    config,
+    {
+      ...completed,
+    },
+    assembly.providerJobId,
+  );
 }
 
 async function executeOperation(
   config: TransloaditConfig,
   operation: TransloaditOperationSnapshot,
   interruptionSignal: AbortSignal,
+  nowMs: number,
 ): Promise<OperationOutcome> {
-  const runtime = runtimeFenceFor(config, operation);
-  if (runtime === null) {
-    return withContext(operation, config, {
-      status: "malformed_response",
-      reason: "unsupported_shape",
-      ...(operation.resumeJobId === undefined ? {} : { providerJobId: operation.resumeJobId }),
-    });
-  }
-  if (runtime.nowMs >= runtime.fence.runtimeDeadlineMs) {
+  if (nowMs >= operation.runtimeFence.runtimeDeadlineMs) {
     return withContext(operation, config, {
       status: "rejected",
       reason: "runtime_exceeded",
-      ...(operation.resumeJobId === undefined ? {} : { providerJobId: operation.resumeJobId }),
     });
   }
   const execution = await executeWithDeadline(
     config,
-    runtime.fence.runtimeDeadlineMs,
+    operation.runtimeFence.runtimeDeadlineMs,
     operation.signal,
     interruptionSignal,
     async (signal) => {
@@ -479,7 +488,7 @@ async function executeOperation(
         operation.resumeJobId === undefined
           ? await createRequest(config, operation, signal)
           : await pollRequest(config, operation, signal);
-      return consumeOperationResponse(config, operation, response, signal, runtime.fence);
+      return consumeOperationResponse(config, operation, response, signal);
     },
   );
   if (execution.ok) return execution.value;
@@ -487,13 +496,11 @@ async function executeOperation(
     return withContext(operation, config, {
       status: "rejected",
       reason: "runtime_exceeded",
-      ...(operation.resumeJobId === undefined ? {} : { providerJobId: operation.resumeJobId }),
     });
   }
   return withContext(operation, config, {
     status: "retryable_failure",
     reason: execution.reason,
-    ...(operation.resumeJobId === undefined ? {} : { providerJobId: operation.resumeJobId }),
   });
 }
 
@@ -574,6 +581,24 @@ function invalidConfigurationService(
   return { probe: failure, extractAudioSample: failure, cancelAssembly: failure };
 }
 
+function operationEffect(
+  config: TransloaditConfig,
+  operation: TransloaditOperationSnapshot,
+): Effect.Effect<OperationOutcome, MediaTransformRequestInvalid> {
+  return Effect.suspend(() => {
+    const nowMs = config.nowMilliseconds();
+    if (!validClockMilliseconds(nowMs)) {
+      return Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_clock" }));
+    }
+    if (!runtimeFenceFitsConfiguration(config, operation, nowMs)) {
+      return Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_runtime_fence" }));
+    }
+    return Effect.promise((interruptionSignal) =>
+      executeOperation(config, operation, interruptionSignal, nowMs),
+    );
+  });
+}
+
 /**
  * No network fallback exists. Without explicit enablement and an injected
  * transport, every method is inert and returns `disabled`.
@@ -582,11 +607,12 @@ export function makeTransloaditMediaTransform(
   options: TransloaditMediaTransformOptions = {},
 ): MediaTransformService {
   if (options.enabled !== true) {
-    const unavailable = Effect.succeed({ status: "unavailable", reason: "disabled" } as const);
     return {
-      probe: () => unavailable,
-      extractAudioSample: () => unavailable,
-      cancelAssembly: () => unavailable,
+      probe: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      extractAudioSample: (input) =>
+        Effect.succeed({ status: "unavailable", reason: "disabled", attempt: input.attempt }),
+      cancelAssembly: () => Effect.succeed({ status: "unavailable", reason: "disabled" } as const),
     };
   }
   const configuration = snapshotTransloaditOptions(options as EnabledTransloaditOptions);
@@ -598,24 +624,20 @@ export function makeTransloaditMediaTransform(
       if (!snapshot.ok) {
         return Effect.fail(new MediaTransformRequestInvalid({ reason: snapshot.reason }));
       }
-      if (!resumeFenceFitsConfiguration(config, snapshot.value)) {
-        return Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_runtime_fence" }));
-      }
-      return Effect.promise((interruptionSignal) =>
-        executeOperation(config, snapshot.value, interruptionSignal),
-      ) as Effect.Effect<MediaTransformProbeOutcome, MediaTransformRequestInvalid>;
+      return operationEffect(config, snapshot.value) as Effect.Effect<
+        MediaTransformProbeOutcome,
+        MediaTransformRequestInvalid
+      >;
     },
     extractAudioSample: (input) => {
       const snapshot = snapshotSampleInput(input);
       if (!snapshot.ok) {
         return Effect.fail(new MediaTransformRequestInvalid({ reason: snapshot.reason }));
       }
-      if (!resumeFenceFitsConfiguration(config, snapshot.value)) {
-        return Effect.fail(new MediaTransformRequestInvalid({ reason: "invalid_runtime_fence" }));
-      }
-      return Effect.promise((interruptionSignal) =>
-        executeOperation(config, snapshot.value, interruptionSignal),
-      ) as Effect.Effect<MediaTransformAudioSampleOutcome, MediaTransformRequestInvalid>;
+      return operationEffect(config, snapshot.value) as Effect.Effect<
+        MediaTransformAudioSampleOutcome,
+        MediaTransformRequestInvalid
+      >;
     },
     cancelAssembly: (input) => {
       const snapshot = snapshotCancelInput(input);

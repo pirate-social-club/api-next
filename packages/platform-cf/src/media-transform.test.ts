@@ -40,7 +40,7 @@ const templates = {
 const limits: TransloaditLimits = {
   maxRequestBytes: 16_384,
   maxResponseBytes: 16_384,
-  maxSampleBytes: 1_000_000,
+  maxSampleBytes: 2_000_000,
   requestTimeoutMs: 100,
   maxAssemblyRuntimeMs: 60_000,
 };
@@ -51,10 +51,16 @@ const binding = {
   canonicalAudioSha256: "c".repeat(64),
   requestId: "attempt-1",
 };
+const runtimeFence = { submittedAtMs, runtimeDeadlineMs } as const;
+const attempt = {
+  version: "media-transform-attempt-v1",
+  runtimeFence,
+} as const;
 const probeInput: MediaTransformProbeInput = {
   version: "media-transform-probe-input-v1",
   binding,
   source: { objectKey: "media/sealed/operation-1/audio-r3" },
+  attempt,
 };
 const sampleInput: MediaTransformAudioSampleInput = {
   version: "media-transform-audio-sample-input-v1",
@@ -62,6 +68,7 @@ const sampleInput: MediaTransformAudioSampleInput = {
   source: { objectKey: "media/sealed/operation-1/audio-r3" },
   sourceDurationMs: 60_000,
   variant: "primary",
+  attempt,
 };
 
 function streamBody(bytes: Uint8Array): ReadableStream<Uint8Array> {
@@ -153,10 +160,11 @@ describe("disabled Transloadit composition", () => {
     expect(await Effect.runPromise(disabledTransloaditMediaTransform.probe(probeInput))).toEqual({
       status: "unavailable",
       reason: "disabled",
+      attempt,
     });
     expect(
       await Effect.runPromise(disabledTransloaditMediaTransform.extractAudioSample(sampleInput)),
-    ).toEqual({ status: "unavailable", reason: "disabled" });
+    ).toEqual({ status: "unavailable", reason: "disabled", attempt });
     expect(
       await Effect.runPromise(
         disabledTransloaditMediaTransform.cancelAssembly({
@@ -193,7 +201,7 @@ describe("fixed Transloadit submission", () => {
     const outcome = await Effect.runPromise(service.probe(probeInput));
     expect(outcome.status).toBe("submitted");
     expect(outcome).toMatchObject({
-      runtimeFence: { submittedAtMs, runtimeDeadlineMs },
+      attempt: { runtimeFence: { submittedAtMs, runtimeDeadlineMs } },
     });
     expect(captured?.method).toBe("POST");
     expect(captured?.url).toBe("https://api2.transloadit.com/assemblies");
@@ -360,6 +368,26 @@ describe("probe", () => {
     ).toMatchObject({ status: "malformed_response", reason: "unsupported_shape" });
   });
 
+  test("rejects supported codecs in containers that cannot carry them", async () => {
+    const base = fixtures.probe_cases[0]?.file ?? {};
+    for (const [ext, mime, audioCodec] of [
+      ["mp3", "audio/mpeg", "flac"],
+      ["wav", "audio/wav", "aac"],
+      ["m4a", "audio/mp4", "opus"],
+      ["webm", "audio/webm", "mp3"],
+    ] as const) {
+      const mismatched = {
+        ...base,
+        ext,
+        mime,
+        meta: { ...(base.meta as Record<string, unknown>), audio_codec: audioCodec },
+      };
+      expect(
+        await Effect.runPromise(fixtureAdapter(completed(mismatched)).probe(probeInput)),
+      ).toMatchObject({ status: "rejected", reason: "inconsistent_media_facts" });
+    }
+  });
+
   test("resumes by polling the retained assembly id and never resubmits", async () => {
     const requests: TransloaditTransportRequest[] = [];
     const service = adapter((request) => {
@@ -369,7 +397,7 @@ describe("probe", () => {
     const result = await Effect.runPromise(
       service.probe({
         ...probeInput,
-        resume: { providerJobId: jobId, submittedAtMs, runtimeDeadlineMs },
+        attempt: { ...attempt, providerJobId: jobId },
       }),
     );
     expect(result.status).toBe("completed");
@@ -384,7 +412,7 @@ describe("probe", () => {
       adapter(() => response(completed(fixtures.probe_cases[0]?.file, "probe", secondJobId))).probe(
         {
           ...probeInput,
-          resume: { providerJobId: jobId, submittedAtMs, runtimeDeadlineMs },
+          attempt: { ...attempt, providerJobId: jobId },
         },
       ),
     );
@@ -393,7 +421,14 @@ describe("probe", () => {
 });
 
 describe("normalized ACR sample extraction", () => {
-  function sampleFile(durationSeconds: number, size = 250_000): unknown {
+  function normalizedWavByteLength(durationSeconds: number): number {
+    return Math.round(durationSeconds * 44_100 * 2) + 44;
+  }
+
+  function sampleFile(
+    durationSeconds: number,
+    size = normalizedWavByteLength(durationSeconds),
+  ): unknown {
     return {
       ext: "wav",
       mime: "audio/wav",
@@ -404,6 +439,7 @@ describe("normalized ACR sample extraction", () => {
         audio_codec: "pcm_s16le",
         audio_channels: 1,
         audio_samplerate: 44100,
+        audio_bitrate: 705600,
       },
     };
   }
@@ -440,10 +476,10 @@ describe("normalized ACR sample extraction", () => {
     );
     expect(result).toMatchObject({
       status: "completed",
-      providerJobId: jobId,
+      attempt: { providerJobId: jobId, runtimeFence },
       artifact: {
         contentType: "audio/wav",
-        byteLength: 250_000,
+        byteLength: normalizedWavByteLength(12),
         offsetMs: 12_000,
         durationMs: 12_000,
         variant: "primary",
@@ -475,7 +511,7 @@ describe("normalized ACR sample extraction", () => {
     });
   });
 
-  test("rejects oversized or non-normalized provider output", async () => {
+  test("rejects oversized, contradictory, or physically impossible provider output", async () => {
     const oversized = await Effect.runPromise(
       fixtureAdapter(
         completed(sampleFile(12, limits.maxSampleBytes + 1), "sample"),
@@ -504,6 +540,25 @@ describe("normalized ACR sample extraction", () => {
         ),
       ).toMatchObject({ status: "rejected", reason: "inconsistent_media_facts" });
     }
+
+    for (const contradictory of [
+      { ...(sampleFile(12) as Record<string, unknown>), ext: "mp3" },
+      { ...(sampleFile(12) as Record<string, unknown>), mime: "audio/mpeg" },
+      {
+        ...(sampleFile(12) as Record<string, unknown>),
+        meta: {
+          ...((sampleFile(12) as Record<string, unknown>).meta as object),
+          audio_bitrate: 128_000,
+        },
+      },
+      { ...(sampleFile(12) as Record<string, unknown>), size: 250_000 },
+    ]) {
+      expect(
+        await Effect.runPromise(
+          fixtureAdapter(completed(contradictory, "sample")).extractAudioSample(sampleInput),
+        ),
+      ).toMatchObject({ status: "rejected", reason: "inconsistent_media_facts" });
+    }
   });
 });
 
@@ -529,20 +584,20 @@ describe("runtime bounds, cancellation, and assembly cancellation", () => {
     const submitted = await Effect.runPromise(service.probe(probeInput));
     expect(submitted).toMatchObject({
       status: "submitted",
-      runtimeFence: { submittedAtMs, runtimeDeadlineMs },
+      attempt: { runtimeFence: { submittedAtMs, runtimeDeadlineMs } },
     });
     now = runtimeDeadlineMs;
     const expired = await Effect.runPromise(
       service.probe({
         ...probeInput,
-        resume: { providerJobId: jobId, submittedAtMs, runtimeDeadlineMs },
+        attempt: { ...attempt, providerJobId: jobId },
       }),
     );
     expect(expired).toMatchObject({ status: "rejected", reason: "runtime_exceeded" });
     expect(requests).toHaveLength(1);
   });
 
-  test("rejects missing or widened resume fences before polling", async () => {
+  test("rejects missing, widened, or future-dated attempt fences before provider effects", async () => {
     let calls = 0;
     const service = adapter(() => {
       calls += 1;
@@ -552,7 +607,10 @@ describe("runtime bounds, cancellation, and assembly cancellation", () => {
       Effect.runPromise(
         service.probe({
           ...probeInput,
-          resume: { providerJobId: jobId } as never,
+          attempt: {
+            version: "media-transform-attempt-v1",
+            providerJobId: jobId,
+          } as never,
         }),
       ),
     ).rejects.toMatchObject({ reason: "invalid_runtime_fence" });
@@ -560,15 +618,74 @@ describe("runtime bounds, cancellation, and assembly cancellation", () => {
       Effect.runPromise(
         service.probe({
           ...probeInput,
-          resume: {
+          attempt: {
+            version: "media-transform-attempt-v1",
             providerJobId: jobId,
-            submittedAtMs,
-            runtimeDeadlineMs: submittedAtMs + limits.maxAssemblyRuntimeMs + 1,
+            runtimeFence: {
+              submittedAtMs,
+              runtimeDeadlineMs: submittedAtMs + limits.maxAssemblyRuntimeMs + 1,
+            },
+          },
+        }),
+      ),
+    ).rejects.toMatchObject({ reason: "invalid_runtime_fence" });
+    await expect(
+      Effect.runPromise(
+        service.probe({
+          ...probeInput,
+          attempt: {
+            version: "media-transform-attempt-v1",
+            providerJobId: jobId,
+            runtimeFence: {
+              submittedAtMs: submittedAtMs + 1,
+              runtimeDeadlineMs: runtimeDeadlineMs + 1,
+            },
           },
         }),
       ),
     ).rejects.toMatchObject({ reason: "invalid_runtime_fence" });
     expect(calls).toBe(0);
+  });
+
+  test("preserves the caller-persisted fence when the create response is lost", async () => {
+    let now = submittedAtMs;
+    let calls = 0;
+    const service = adapter(
+      () => {
+        calls += 1;
+        return calls === 1
+          ? new Promise<TransloaditTransportResponse>(() => undefined)
+          : response(executing());
+      },
+      { clock: () => now, limits: { ...limits, requestTimeoutMs: 10 } },
+    );
+
+    const lost = await Effect.runPromise(service.probe(probeInput));
+    expect(lost).toMatchObject({
+      status: "retryable_failure",
+      reason: "timeout",
+      attempt: { runtimeFence },
+    });
+
+    now += 30_000;
+    const replayed = await Effect.runPromise(
+      service.probe({ ...probeInput, attempt: lost.attempt }),
+    );
+    expect(replayed).toMatchObject({
+      status: "submitted",
+      attempt: { providerJobId: jobId, runtimeFence },
+    });
+
+    now = runtimeDeadlineMs;
+    const expired = await Effect.runPromise(
+      service.probe({ ...probeInput, attempt: replayed.attempt }),
+    );
+    expect(expired).toMatchObject({
+      status: "rejected",
+      reason: "runtime_exceeded",
+      attempt: { providerJobId: jobId, runtimeFence },
+    });
+    expect(calls).toBe(2);
   });
 
   test("rejects provider-reported execution beyond the durable runtime fence", async () => {

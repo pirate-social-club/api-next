@@ -3,6 +3,7 @@ import {
   MEDIA_TRANSFORM_SAMPLE_CHANNELS,
   MEDIA_TRANSFORM_SAMPLE_MAX_MS,
   MEDIA_TRANSFORM_SAMPLE_RATE_HZ,
+  type MediaTransformAcceptedAttempt,
   type MediaTransformAudioSampleOutcome,
   type MediaTransformAudioTrack,
   type MediaTransformMalformedReason,
@@ -26,6 +27,10 @@ const MAX_JSON_DEPTH = 12;
 const MAX_JSON_PROPERTIES = 768;
 const MAX_JSON_ARRAY_ITEMS = 64;
 const MAX_JSON_STRING_BYTES = 65_536;
+const SAMPLE_PCM_BITS_PER_CHANNEL = 16;
+const SAMPLE_WAV_MIN_FRAMING_BYTES = 44;
+const SAMPLE_WAV_MAX_FRAMING_BYTES = 4_096;
+const SAMPLE_WAV_DURATION_TOLERANCE_MS = 10;
 const textEncoder = new TextEncoder();
 
 export class TransloaditBodyTooLarge extends Error {
@@ -268,20 +273,37 @@ function containerFromExtension(extension: unknown): MediaTransformProbe["contai
   return null;
 }
 
-function containerFromMime(mime: unknown): MediaTransformProbe["container"] | null {
-  if (typeof mime !== "string" || mime !== mime.toLowerCase()) return null;
-  const fromMime: Readonly<Record<string, MediaTransformProbe["container"]>> = {
-    "audio/aac": "aac",
-    "audio/flac": "flac",
-    "audio/mp4": "m4a",
-    "audio/mpeg": "mp3",
-    "audio/ogg": "ogg",
-    "audio/opus": "opus",
-    "audio/wav": "wav",
-    "audio/webm": "webm",
-    "audio/x-wav": "wav",
-  };
-  return fromMime[mime] ?? null;
+type ProbeFactRule = Readonly<{
+  readonly mimeTypes: readonly string[];
+  readonly codecs: readonly MediaTransformAudioTrack["codec"][];
+}>;
+
+function probeFactRule(
+  mimeTypes: readonly string[],
+  codecs: readonly MediaTransformAudioTrack["codec"][],
+): ProbeFactRule {
+  return Object.freeze({ mimeTypes: Object.freeze(mimeTypes), codecs: Object.freeze(codecs) });
+}
+
+const PROBE_FACT_MATRIX = Object.freeze({
+  aac: probeFactRule(["audio/aac"], ["aac"]),
+  flac: probeFactRule(["audio/flac"], ["flac"]),
+  m4a: probeFactRule(["audio/mp4"], ["aac"]),
+  mp3: probeFactRule(["audio/mpeg"], ["mp3"]),
+  ogg: probeFactRule(["audio/ogg"], ["flac", "opus"]),
+  opus: probeFactRule(["audio/opus"], ["opus"]),
+  wav: probeFactRule(["audio/wav", "audio/x-wav"], ["pcm"]),
+  webm: probeFactRule(["audio/webm"], ["opus"]),
+}) satisfies Readonly<Record<MediaTransformProbe["container"], ProbeFactRule>>;
+
+function coherentProbeFacts(
+  container: MediaTransformProbe["container"],
+  mime: unknown,
+  codec: MediaTransformAudioTrack["codec"],
+): boolean {
+  if (typeof mime !== "string" || mime !== mime.toLowerCase()) return false;
+  const rule: ProbeFactRule = PROBE_FACT_MATRIX[container];
+  return rule.mimeTypes.includes(mime) && rule.codecs.includes(codec);
 }
 
 function positiveInteger(value: unknown, maximum: number): number | null {
@@ -304,6 +326,7 @@ type CompletedSample = Extract<MediaTransformAudioSampleOutcome, { readonly stat
 export function probeFromAssembly(
   assembly: Extract<TransloaditAssembly, { readonly state: "completed" }>,
   context: CompletedProbe["context"],
+  attempt: MediaTransformAcceptedAttempt,
 ):
   | CompletedProbe
   | Readonly<{ readonly status: "rejected"; readonly reason: MediaTransformRejectedReason }>
@@ -344,11 +367,10 @@ export function probeFromAssembly(
     return { status: "malformed_response", reason: "unsupported_shape" };
   }
   const extensionContainer = containerFromExtension(assembly.result.ext);
-  const mimeContainer = containerFromMime(mime);
-  if (extensionContainer === null || mimeContainer === null) {
+  if (extensionContainer === null) {
     return { status: "rejected", reason: "unsupported_container" };
   }
-  if (extensionContainer !== mimeContainer) {
+  if (!coherentProbeFacts(extensionContainer, mime, codec)) {
     return { status: "rejected", reason: "inconsistent_media_facts" };
   }
   const container = extensionContainer;
@@ -381,7 +403,7 @@ export function probeFromAssembly(
   });
   return Object.freeze({
     status: "completed",
-    providerJobId: assembly.providerJobId,
+    attempt,
     context,
     probe,
   });
@@ -391,6 +413,7 @@ export function sampleFromAssembly(
   assembly: Extract<TransloaditAssembly, { readonly state: "completed" }>,
   operation: Extract<TransloaditOperationSnapshot, { readonly kind: "sample" }>,
   context: CompletedSample["context"],
+  attempt: MediaTransformAcceptedAttempt,
   outputObjectKey: string,
   maxSampleBytes: number,
 ):
@@ -419,13 +442,26 @@ export function sampleFromAssembly(
     return { status: "malformed_response", reason: "unsupported_shape" };
   }
   const codec = boundedProviderToken(meta.audio_codec);
-  const mime = typeof assembly.result.mime === "string" ? assembly.result.mime.toLowerCase() : null;
-  if (codec !== "pcm_s16le" || (mime !== "audio/wav" && mime !== "audio/x-wav")) {
+  if (codec !== "pcm_s16le") {
     return { status: "rejected", reason: "unsupported_codec" };
+  }
+  const extension = boundedProviderToken(assembly.result.ext);
+  const mime = assembly.result.mime;
+  if (extension !== "wav" || (mime !== "audio/wav" && mime !== "audio/x-wav")) {
+    return { status: "rejected", reason: "inconsistent_media_facts" };
   }
   if (
     meta.audio_channels !== MEDIA_TRANSFORM_SAMPLE_CHANNELS ||
     meta.audio_samplerate !== MEDIA_TRANSFORM_SAMPLE_RATE_HZ
+  ) {
+    return { status: "rejected", reason: "inconsistent_media_facts" };
+  }
+  const expectedBitrateBps =
+    MEDIA_TRANSFORM_SAMPLE_RATE_HZ * MEDIA_TRANSFORM_SAMPLE_CHANNELS * SAMPLE_PCM_BITS_PER_CHANNEL;
+  if (
+    meta.audio_bitrate !== undefined &&
+    meta.audio_bitrate !== null &&
+    meta.audio_bitrate !== expectedBitrateBps
   ) {
     return { status: "rejected", reason: "inconsistent_media_facts" };
   }
@@ -442,6 +478,19 @@ export function sampleFromAssembly(
   ) {
     return { status: "malformed_response", reason: "unsupported_shape" };
   }
+  const pcmBytesPerSecond = expectedBitrateBps / 8;
+  const minimumPcmDurationMs = Math.max(
+    0,
+    durationSeconds * 1_000 - SAMPLE_WAV_DURATION_TOLERANCE_MS,
+  );
+  const maximumPcmDurationMs = durationSeconds * 1_000 + SAMPLE_WAV_DURATION_TOLERANCE_MS;
+  const minimumPhysicalBytes =
+    Math.floor((minimumPcmDurationMs / 1_000) * pcmBytesPerSecond) + SAMPLE_WAV_MIN_FRAMING_BYTES;
+  const maximumPhysicalBytes =
+    Math.ceil((maximumPcmDurationMs / 1_000) * pcmBytesPerSecond) + SAMPLE_WAV_MAX_FRAMING_BYTES;
+  if (size < minimumPhysicalBytes || size > maximumPhysicalBytes) {
+    return { status: "rejected", reason: "inconsistent_media_facts" };
+  }
   const artifact: MediaTransformSampleArtifact = Object.freeze({
     version: "media-transform-sample-artifact-v1",
     objectKey: outputObjectKey,
@@ -454,7 +503,7 @@ export function sampleFromAssembly(
   });
   return Object.freeze({
     status: "completed",
-    providerJobId: assembly.providerJobId,
+    attempt,
     context,
     artifact,
   });

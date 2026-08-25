@@ -1,10 +1,12 @@
 import type {
+  MediaTransformAttempt,
   MediaTransformAttemptContext,
   MediaTransformAudioSampleInput,
   MediaTransformBinding,
   MediaTransformCancelInput,
   MediaTransformInvalidReason,
   MediaTransformProbeInput,
+  MediaTransformRuntimeFence,
   MediaTransformSampleVariant,
 } from "@pirate/application/media/transform";
 import { Data, type Effect, Predicate } from "effect";
@@ -109,9 +111,8 @@ export type TransloaditProbeSnapshot = Readonly<{
   readonly kind: "probe";
   readonly binding: MediaTransformBinding;
   readonly sourceObjectKey: string;
+  readonly runtimeFence: MediaTransformRuntimeFence;
   readonly resumeJobId?: string;
-  readonly resumeSubmittedAtMs?: number;
-  readonly resumeRuntimeDeadlineMs?: number;
   readonly signal?: AbortSignal;
 }>;
 
@@ -121,9 +122,8 @@ export type TransloaditSampleSnapshot = Readonly<{
   readonly sourceObjectKey: string;
   readonly sourceDurationMs: number;
   readonly variant: MediaTransformSampleVariant;
+  readonly runtimeFence: MediaTransformRuntimeFence;
   readonly resumeJobId?: string;
-  readonly resumeSubmittedAtMs?: number;
-  readonly resumeRuntimeDeadlineMs?: number;
   readonly signal?: AbortSignal;
 }>;
 
@@ -157,6 +157,34 @@ function validRuntimeFence(submittedAtMs: unknown, runtimeDeadlineMs: unknown): 
     runtimeDeadlineMs > submittedAtMs &&
     runtimeDeadlineMs - submittedAtMs <= TRANSLOADIT_ADAPTER_HARD_MAX_RUNTIME_MS
   );
+}
+
+function snapshotAttempt(attempt: unknown): ValidationResult<MediaTransformAttempt> {
+  if (!Predicate.isObject(attempt) || attempt.version !== "media-transform-attempt-v1") {
+    return { ok: false, reason: "invalid_runtime_fence" };
+  }
+  if (
+    !Predicate.isObject(attempt.runtimeFence) ||
+    !validRuntimeFence(attempt.runtimeFence.submittedAtMs, attempt.runtimeFence.runtimeDeadlineMs)
+  ) {
+    return { ok: false, reason: "invalid_runtime_fence" };
+  }
+  if (attempt.providerJobId !== undefined && !validTransloaditJobId(attempt.providerJobId)) {
+    return { ok: false, reason: "invalid_job_id" };
+  }
+  const submittedAtMs = attempt.runtimeFence.submittedAtMs as number;
+  const runtimeDeadlineMs = attempt.runtimeFence.runtimeDeadlineMs as number;
+  return {
+    ok: true,
+    value: Object.freeze({
+      version: "media-transform-attempt-v1",
+      runtimeFence: Object.freeze({
+        submittedAtMs,
+        runtimeDeadlineMs,
+      }),
+      ...(attempt.providerJobId === undefined ? {} : { providerJobId: attempt.providerJobId }),
+    }),
+  };
 }
 
 function validSignal(signal: unknown): signal is AbortSignal | undefined {
@@ -213,29 +241,17 @@ export function snapshotProbeInput(
     return { ok: false, reason: "invalid_source" };
   }
   if (!validSignal(input.signal)) return { ok: false, reason: "invalid_signal" };
-  const resumeJobId = input.resume?.providerJobId;
-  if (input.resume !== undefined && !validTransloaditJobId(resumeJobId)) {
-    return { ok: false, reason: "invalid_job_id" };
-  }
-  if (
-    input.resume !== undefined &&
-    !validRuntimeFence(input.resume.submittedAtMs, input.resume.runtimeDeadlineMs)
-  ) {
-    return { ok: false, reason: "invalid_runtime_fence" };
-  }
+  const attempt = snapshotAttempt(input.attempt);
+  if (!attempt.ok) return attempt;
+  const resumeJobId = attempt.value.providerJobId;
   return {
     ok: true,
     value: Object.freeze({
       kind: "probe",
       binding: frozenBinding(input.binding),
       sourceObjectKey: input.source.objectKey,
+      runtimeFence: attempt.value.runtimeFence,
       ...(resumeJobId === undefined ? {} : { resumeJobId }),
-      ...(input.resume === undefined
-        ? {}
-        : {
-            resumeSubmittedAtMs: input.resume.submittedAtMs,
-            resumeRuntimeDeadlineMs: input.resume.runtimeDeadlineMs,
-          }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     }),
   };
@@ -258,16 +274,9 @@ export function snapshotSampleInput(
     return { ok: false, reason: "invalid_variant" };
   }
   if (!validSignal(input.signal)) return { ok: false, reason: "invalid_signal" };
-  const resumeJobId = input.resume?.providerJobId;
-  if (input.resume !== undefined && !validTransloaditJobId(resumeJobId)) {
-    return { ok: false, reason: "invalid_job_id" };
-  }
-  if (
-    input.resume !== undefined &&
-    !validRuntimeFence(input.resume.submittedAtMs, input.resume.runtimeDeadlineMs)
-  ) {
-    return { ok: false, reason: "invalid_runtime_fence" };
-  }
+  const attempt = snapshotAttempt(input.attempt);
+  if (!attempt.ok) return attempt;
+  const resumeJobId = attempt.value.providerJobId;
   return {
     ok: true,
     value: Object.freeze({
@@ -276,13 +285,8 @@ export function snapshotSampleInput(
       sourceObjectKey: input.source.objectKey,
       sourceDurationMs: input.sourceDurationMs,
       variant: input.variant,
+      runtimeFence: attempt.value.runtimeFence,
       ...(resumeJobId === undefined ? {} : { resumeJobId }),
-      ...(input.resume === undefined
-        ? {}
-        : {
-            resumeSubmittedAtMs: input.resume.submittedAtMs,
-            resumeRuntimeDeadlineMs: input.resume.runtimeDeadlineMs,
-          }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     }),
   };
@@ -430,6 +434,8 @@ export async function stableTransloaditNonce(
     operation.binding.analysisRevision,
     operation.binding.canonicalAudioSha256,
     operation.binding.requestId,
+    operation.runtimeFence.submittedAtMs,
+    operation.runtimeFence.runtimeDeadlineMs,
     operation.kind === "sample" ? operation.variant : "probe",
   ].join("\n");
   const digest = await crypto.subtle.digest("SHA-256", textEncoder.encode(seed));
