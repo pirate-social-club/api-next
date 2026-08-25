@@ -1,4 +1,7 @@
-import { HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE } from "@pirate/application/hns-static-platform-app-gateway";
+import {
+  HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE,
+  HNS_STATIC_PLATFORM_APP_GATEWAY_RESPONSE_COOKIES,
+} from "@pirate/application/hns-static-platform-app-gateway";
 
 export class HnsStaticPlatformGatewayUpstreamError extends Error {
   readonly name = "HnsStaticPlatformGatewayUpstreamError";
@@ -47,8 +50,89 @@ function locationAllowed(value: string): boolean {
   }
 }
 
+function headerSetCookies(headers: Headers): readonly string[] {
+  const getSetCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  if (typeof getSetCookie === "function") return getSetCookie.call(headers);
+  const value = headers.get("set-cookie");
+  return value === null ? [] : [value];
+}
+
+function invalidCookieValue(value: string): boolean {
+  for (const character of value) {
+    const point = character.codePointAt(0) ?? 0;
+    if (point <= 0x20 || point === 0x7f || character === ";" || character === ",") return true;
+  }
+  return false;
+}
+
+function validCookieLine(line: string): string | null {
+  if (new TextEncoder().encode(line).byteLength > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[12]) {
+    return null;
+  }
+  const members = line.split(";").map((member) => member.trim());
+  const cookie = members.shift() ?? "";
+  const separator = cookie.indexOf("=");
+  if (separator <= 0) return null;
+  const name = cookie.slice(0, separator);
+  const value = cookie.slice(separator + 1);
+  if (
+    !HNS_STATIC_PLATFORM_APP_GATEWAY_RESPONSE_COOKIES.includes(
+      name as (typeof HNS_STATIC_PLATFORM_APP_GATEWAY_RESPONSE_COOKIES)[number],
+    ) ||
+    invalidCookieValue(value)
+  ) {
+    return null;
+  }
+
+  const attributes = new Map<string, string | null>();
+  for (const member of members) {
+    if (member.length === 0) return null;
+    const attributeSeparator = member.indexOf("=");
+    const attributeName = (attributeSeparator === -1 ? member : member.slice(0, attributeSeparator))
+      .trim()
+      .toLowerCase();
+    const attributeValue =
+      attributeSeparator === -1 ? null : member.slice(attributeSeparator + 1).trim();
+    if (attributes.has(attributeName)) return null;
+    attributes.set(attributeName, attributeValue);
+  }
+
+  const allowedAttributes = new Set([
+    "secure",
+    "httponly",
+    "path",
+    "samesite",
+    "max-age",
+    "expires",
+  ]);
+  if ([...attributes.keys()].some((attribute) => !allowedAttributes.has(attribute))) return null;
+  if (
+    attributes.get("secure") !== null ||
+    attributes.get("path") !== "/" ||
+    attributes.get("samesite")?.toLowerCase() !== "lax"
+  ) {
+    return null;
+  }
+  const httpOnly = attributes.has("httponly") && attributes.get("httponly") === null;
+  if ((name === "__Host-pirate_session") !== httpOnly) return null;
+
+  const maximumAge = attributes.get("max-age");
+  if (
+    maximumAge !== undefined &&
+    (maximumAge === null || !/^(?:0|[1-9][0-9]*)$/u.test(maximumAge))
+  ) {
+    return null;
+  }
+  const expires = attributes.get("expires");
+  if (expires !== undefined) {
+    const expiresAt = expires === null ? Number.NaN : Date.parse(expires);
+    if (maximumAge !== "0" || !Number.isFinite(expiresAt) || expiresAt >= Date.now()) return null;
+  }
+  return name;
+}
+
 async function boundedBody(response: Response): Promise<Uint8Array> {
-  const maximum = HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[9];
+  const maximum = HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[13];
   const declared = response.headers.get("content-length");
   if (declared !== null && (!/^(?:0|[1-9][0-9]*)$/u.test(declared) || Number(declared) > maximum)) {
     await response.body?.cancel().catch(() => undefined);
@@ -87,7 +171,7 @@ async function boundedBody(response: Response): Promise<Uint8Array> {
 
 export async function sanitizeHnsStaticPlatformGatewayResponse(
   upstream: Response,
-  method: "GET" | "HEAD",
+  method: "GET" | "HEAD" | "POST" | "PATCH",
 ): Promise<Response> {
   if (upstream.status < 200 || upstream.status > 599) {
     throw new HnsStaticPlatformGatewayUpstreamError("Upstream response is invalid");
@@ -99,10 +183,18 @@ export async function sanitizeHnsStaticPlatformGatewayResponse(
   }
   const body = await boundedBody(upstream);
   const declared = upstream.headers.get("content-length");
-  if (method === "GET" && declared !== null && Number(declared) !== body.byteLength) {
+  if (method !== "HEAD" && declared !== null && Number(declared) !== body.byteLength) {
     throw new HnsStaticPlatformGatewayUpstreamError("Upstream response is invalid");
   }
   if ((upstream.status === 204 || upstream.status === 304) && body.byteLength !== 0) {
+    throw new HnsStaticPlatformGatewayUpstreamError("Upstream response is invalid");
+  }
+  const setCookies = headerSetCookies(upstream.headers);
+  const cookieNames = setCookies.map(validCookieLine);
+  if (
+    cookieNames.some((name) => name === null) ||
+    new Set(cookieNames).size !== cookieNames.length
+  ) {
     throw new HnsStaticPlatformGatewayUpstreamError("Upstream response is invalid");
   }
   const connectionFields = (upstream.headers.get("connection") ?? "")
@@ -121,6 +213,7 @@ export async function sanitizeHnsStaticPlatformGatewayResponse(
     }
     headers.append(name, value);
   }
+  for (const cookie of setCookies) headers.append("set-cookie", cookie);
   headers.set("cache-control", "no-store");
   if (method === "GET") headers.set("content-length", String(body.byteLength));
   const noBody = method === "HEAD" || upstream.status === 204 || upstream.status === 304;

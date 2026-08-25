@@ -67,28 +67,36 @@ describe("HNS static platform application gateway", () => {
     expect(calls).toBe(0);
   });
 
-  test("proxies app.pirate only to the closed canonical origin and strips authority", async () => {
+  test("proxies app.pirate only to the closed canonical origin and filters authority", async () => {
     const calls: Request[] = [];
     const service = makeHnsStaticPlatformGatewayService({
       upstream_fetch: (upstream) => {
         calls.push(upstream);
+        const headers = new Headers({
+          "content-type": "text/plain",
+          "cf-access-jwt-assertion": "forbidden",
+          "x-pirate-hns-forwarder-signature": "forbidden",
+        });
+        headers.append(
+          "set-cookie",
+          "__Host-pirate_session=session-token; HttpOnly; Path=/; Secure; SameSite=Lax; Max-Age=3600",
+        );
+        headers.append(
+          "set-cookie",
+          "__Host-pirate_csrf=csrf-token; Path=/; Secure; SameSite=Lax; Max-Age=3600",
+        );
         return new Response("public", {
           status: 200,
-          headers: {
-            "content-type": "text/plain",
-            "set-cookie": "session=forbidden",
-            "cf-access-jwt-assertion": "forbidden",
-            "x-pirate-hns-forwarder-signature": "forbidden",
-          },
+          headers,
         });
       },
     });
     const fields: readonly HnsStaticPlatformGatewayHeaderField[] = [
       ...request("app.pirate").header_fields,
-      ["Cookie", "session=browser"],
+      ["Cookie", "__Host-pirate_session=browser; __Host-pirate_csrf=csrf-token"],
       ["Authorization", "Bearer browser"],
-      ["Origin", "https://evil.invalid"],
-      ["X-CSRF-Token", "browser"],
+      ["Origin", "https://app.pirate"],
+      ["X-CSRF-Token", "csrf-token"],
       ["CF-Access-Client-Secret", "browser"],
       ["X-Pirate-Hns-Forwarder-Key-Id", "browser"],
       ["X-Forwarded-Host", "evil.invalid"],
@@ -109,11 +117,13 @@ describe("HNS static platform application gateway", () => {
     expect(calls[0]?.redirect).toBe("manual");
     expect(calls[0]?.headers.get("accept-encoding")).toBe("identity");
     expect(calls[0]?.headers.get("accept-language")).toBe("en");
+    expect(calls[0]?.headers.get("cookie")).toBe(
+      "__Host-pirate_session=browser; __Host-pirate_csrf=csrf-token",
+    );
+    expect(calls[0]?.headers.get("origin")).toBe("https://app.pirate");
+    expect(calls[0]?.headers.get("x-csrf-token")).toBe("csrf-token");
     for (const name of [
-      "cookie",
       "authorization",
-      "origin",
-      "x-csrf-token",
       "cf-access-client-secret",
       "x-pirate-hns-forwarder-key-id",
       "x-forwarded-host",
@@ -123,10 +133,187 @@ describe("HNS static platform application gateway", () => {
       expect(calls[0]?.headers.get(name)).toBeNull();
     }
     expect(await response.text()).toBe("");
-    expect(response.headers.get("set-cookie")).toBeNull();
+    expect(response.headers.getSetCookie()).toEqual([
+      "__Host-pirate_session=session-token; HttpOnly; Path=/; Secure; SameSite=Lax; Max-Age=3600",
+      "__Host-pirate_csrf=csrf-token; Path=/; Secure; SameSite=Lax; Max-Age=3600",
+    ]);
     expect(response.headers.get("cf-access-jwt-assertion")).toBeNull();
     expect(response.headers.get("x-pirate-hns-forwarder-signature")).toBeNull();
     expect(response.headers.get("cache-control")).toBe("no-store");
+  });
+
+  test("preserves an exact authenticated POST body, cookies, Origin, and CSRF proof", async () => {
+    const body = new TextEncoder().encode('{"identity_token":"provider-token"}');
+    const observations: Array<{ readonly request: Request; readonly body: Uint8Array }> = [];
+    const service = makeHnsStaticPlatformGatewayService({
+      upstream_fetch: async (upstream) => {
+        observations.push({
+          request: upstream,
+          body: new Uint8Array(await upstream.arrayBuffer()),
+        });
+        return new Response('{"status":"ok"}', {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    const response = await service.handle(
+      request("app.pirate", {
+        method: "POST",
+        target: "/api/auth/session/exchange",
+        body_bytes: body,
+        header_fields: [
+          ...request("app.pirate").header_fields,
+          ["Content-Length", String(body.byteLength)],
+          ["Content-Type", "application/json"],
+          ["Cookie", "__Host-pirate_session=session; __Host-pirate_csrf=csrf"],
+          ["Origin", "https://app.pirate"],
+          ["X-CSRF-Token", "csrf"],
+          ["X-Unlisted-Authority", "must-not-pass"],
+        ],
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    const observed = observations[0];
+    expect(observed?.request.url).toBe("https://pirate.sc/api/auth/session/exchange");
+    expect(observed?.request.method).toBe("POST");
+    expect(observed?.request.headers.get("content-type")).toBe("application/json");
+    expect(observed?.request.headers.get("cookie")).toBe(
+      "__Host-pirate_session=session; __Host-pirate_csrf=csrf",
+    );
+    expect(observed?.request.headers.get("origin")).toBe("https://app.pirate");
+    expect(observed?.request.headers.get("x-csrf-token")).toBe("csrf");
+    expect(observed?.request.headers.get("x-unlisted-authority")).toBeNull();
+    expect(observed?.body).toEqual(body);
+  });
+
+  test("rejects missing, duplicate, or foreign unsafe Origin and ambiguous cookies", async () => {
+    let calls = 0;
+    const service = makeHnsStaticPlatformGatewayService({
+      upstream_fetch: () => {
+        calls += 1;
+        return new Response();
+      },
+    });
+    const unsafe = (additional: readonly HnsStaticPlatformGatewayHeaderField[]) =>
+      request("app.pirate", {
+        method: "PATCH",
+        header_fields: [...request("app.pirate").header_fields, ...additional],
+      });
+    expect((await service.handle(unsafe([]))).status).toBe(400);
+    expect((await service.handle(unsafe([["Origin", "https://pirate.sc"]]))).status).toBe(400);
+    expect(
+      (
+        await service.handle(
+          unsafe([
+            ["Origin", "https://app.pirate"],
+            ["Origin", "https://app.pirate"],
+          ]),
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await service.handle(
+          unsafe([
+            ["Origin", "https://app.pirate"],
+            ["Cookie", "a=1"],
+            ["Cookie", "b=2"],
+          ]),
+        )
+      ).status,
+    ).toBe(413);
+    expect(calls).toBe(0);
+  });
+
+  test("accepts the exact request-body and cookie bounds and rejects the next byte", async () => {
+    let calls = 0;
+    const service = makeHnsStaticPlatformGatewayService({
+      upstream_fetch: () => {
+        calls += 1;
+        return new Response();
+      },
+    });
+    const post = (body_bytes: Uint8Array, cookie: string) =>
+      request("app.pirate", {
+        method: "POST",
+        body_bytes,
+        header_fields: [
+          ...request("app.pirate").header_fields,
+          ["Content-Length", String(body_bytes.byteLength)],
+          ["Origin", "https://app.pirate"],
+          ["Cookie", cookie],
+        ],
+      });
+    expect((await service.handle(post(new Uint8Array(1_048_576), "x".repeat(16_384)))).status).toBe(
+      200,
+    );
+    expect((await service.handle(post(new Uint8Array(1_048_577), "x".repeat(16_384)))).status).toBe(
+      413,
+    );
+    expect((await service.handle(post(new Uint8Array(), "x".repeat(16_385)))).status).toBe(413);
+    expect(calls).toBe(1);
+  });
+
+  test("fails unknown, duplicate, or weakened response cookies closed", async () => {
+    const responseWithCookies = (cookies: readonly string[]) => {
+      const headers = new Headers();
+      for (const cookie of cookies) headers.append("set-cookie", cookie);
+      return new Response(null, { headers });
+    };
+    const responses = [
+      responseWithCookies(["other=value; Path=/; Secure; SameSite=Lax"]),
+      responseWithCookies([
+        "__Host-pirate_session=one; HttpOnly; Path=/; Secure; SameSite=Lax",
+        "__Host-pirate_session=two; HttpOnly; Path=/; Secure; SameSite=Lax",
+      ]),
+      responseWithCookies([
+        "__Host-pirate_session=value; HttpOnly; Domain=app.pirate; Path=/; Secure; SameSite=Lax",
+      ]),
+      responseWithCookies(["__Host-pirate_csrf=value; HttpOnly; Path=/; Secure; SameSite=Lax"]),
+      responseWithCookies(["__Host-pirate_session=value; HttpOnly; Path=/; SameSite=Lax"]),
+    ];
+    const service = makeHnsStaticPlatformGatewayService({
+      upstream_fetch: () => responses.shift() ?? new Response(),
+    });
+    for (let index = 0; index < 5; index += 1) {
+      expect((await service.handle(request("app.pirate"))).status).toBe(502);
+    }
+  });
+
+  test("preserves exact host-only cookie clearing and rejects unsafe response framing", async () => {
+    const clearingHeaders = new Headers({ "content-length": "0" });
+    clearingHeaders.append(
+      "set-cookie",
+      "__Host-pirate_session=; Path=/; Secure; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly",
+    );
+    clearingHeaders.append(
+      "set-cookie",
+      "__Host-pirate_csrf=; Path=/; Secure; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0",
+    );
+    const responses = [
+      new Response(null, { headers: clearingHeaders }),
+      new Response("x", { headers: { "content-length": "2" } }),
+    ];
+    const service = makeHnsStaticPlatformGatewayService({
+      upstream_fetch: () => responses.shift() ?? new Response(),
+    });
+    const headers: readonly HnsStaticPlatformGatewayHeaderField[] = [
+      ...request("app.pirate").header_fields,
+      ["Origin", "https://app.pirate"],
+    ];
+    const cleared = await service.handle(
+      request("app.pirate", { method: "POST", header_fields: headers }),
+    );
+    expect(cleared.status).toBe(200);
+    expect(cleared.headers.getSetCookie()).toEqual([
+      "__Host-pirate_session=; Path=/; Secure; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly",
+      "__Host-pirate_csrf=; Path=/; Secure; SameSite=Lax; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0",
+    ]);
+    expect(
+      (await service.handle(request("app.pirate", { method: "POST", header_fields: headers })))
+        .status,
+    ).toBe(502);
   });
 
   test("rejects every unowned host and malformed authority before fetch", async () => {
@@ -164,9 +351,9 @@ describe("HNS static platform application gateway", () => {
     expect(calls).toBe(0);
   });
 
-  test("rejects unsafe methods, bodies, ambiguous targets, and request bounds", async () => {
+  test("rejects unauthorized unsafe requests, safe-method bodies, ambiguous targets, and bounds", async () => {
     const service = makeHnsStaticPlatformGatewayService({ upstream_fetch: () => new Response() });
-    expect((await service.handle(request("app.pirate", { method: "POST" }))).status).toBe(405);
+    expect((await service.handle(request("app.pirate", { method: "POST" }))).status).toBe(400);
     expect(
       (await service.handle(request("app.pirate", { body_bytes: new Uint8Array([1]) }))).status,
     ).toBe(413);
@@ -386,5 +573,50 @@ describe("HNS static platform application gateway", () => {
         ready: () => true,
       }),
     ).rejects.toThrow("configuration is incomplete or invalid");
+  });
+
+  test("the Node listener retains bounded request bodies and separate response cookies", async () => {
+    let observedBody = "";
+    const composition = makeHnsStaticPlatformGatewayComposition(true, {
+      upstream_fetch: async (upstream) => {
+        observedBody = await upstream.text();
+        const headers = new Headers();
+        headers.append(
+          "set-cookie",
+          "__Host-pirate_session=session; HttpOnly; Path=/; Secure; SameSite=Lax; Max-Age=3600",
+        );
+        headers.append(
+          "set-cookie",
+          "__Host-pirate_csrf=csrf; Path=/; Secure; SameSite=Lax; Max-Age=3600",
+        );
+        return new Response("ok", { headers });
+      },
+    });
+    const server = await startHnsStaticPlatformGatewayServer({
+      composition,
+      gateway_host: "127.0.0.1",
+      gateway_port: 0,
+      health_host: "127.0.0.1",
+      health_port: 0,
+      ready: () => true,
+    });
+    runningServers.push(server);
+    const response = await fetch(`http://127.0.0.1:${server.gateway_address.port}/api/test`, {
+      method: "POST",
+      body: '{"ok":true}',
+      headers: {
+        Host: "app.pirate",
+        Origin: "https://app.pirate",
+        "Content-Type": "application/json",
+        [HNS_GATEWAY_EXTERNAL_SCHEME_HEADER]: "https",
+        [HNS_GATEWAY_TLS_SNI_HEADER]: "app.pirate",
+      },
+    });
+    expect(response.status).toBe(200);
+    expect(observedBody).toBe('{"ok":true}');
+    expect(response.headers.getSetCookie()).toEqual([
+      "__Host-pirate_session=session; HttpOnly; Path=/; Secure; SameSite=Lax; Max-Age=3600",
+      "__Host-pirate_csrf=csrf; Path=/; Secure; SameSite=Lax; Max-Age=3600",
+    ]);
   });
 });

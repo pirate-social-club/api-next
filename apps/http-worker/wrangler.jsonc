@@ -205,7 +205,7 @@
         "REGISTRATION_IP_WINDOW_SECONDS": "900",
         "REGISTRATION_APPLICATION_LIMIT": "100",
         "REGISTRATION_APPLICATION_WINDOW_SECONDS": "60",
-        "CORS_ORIGIN": "https://pirate.app,https://pirate.sc",
+        "CORS_ORIGIN": "https://app.pirate,https://pirate.app,https://pirate.sc",
         "PIRATE_API_PUBLIC_ORIGIN": "https://api-next.pirate.sc",
         "SELF_PASS_ENABLED": "false",
         "SELF_PASS_APP_NAME": "Pirate",

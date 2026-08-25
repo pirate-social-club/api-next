@@ -1,7 +1,9 @@
 import {
   HNS_PLATFORM_APP_HOST,
+  HNS_PLATFORM_APP_ORIGIN,
   HNS_PLATFORM_ROOT,
   HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE,
+  HNS_STATIC_PLATFORM_APP_GATEWAY_REQUEST_HEADERS,
 } from "@pirate/application/hns-static-platform-app-gateway";
 
 export const HNS_GATEWAY_EXTERNAL_SCHEME_HEADER = "x-pirate-gateway-external-scheme" as const;
@@ -18,10 +20,11 @@ export type HnsStaticPlatformGatewayRequest = Readonly<{
 }>;
 
 export type HnsStaticPlatformGatewayAdmission = Readonly<{
-  method: "GET" | "HEAD";
+  method: "GET" | "HEAD" | "POST" | "PATCH";
   target: string;
   host: typeof HNS_PLATFORM_ROOT | typeof HNS_PLATFORM_APP_HOST;
   upstream_headers: Headers;
+  body_bytes: Uint8Array;
 }>;
 
 export type HnsStaticPlatformGatewayRejection = Readonly<{
@@ -35,17 +38,15 @@ const canonicalHostPattern =
   /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/u;
 const percentTripletPattern = /^[0-9A-Fa-f]{2}$/u;
 
-const removedRequestHeaders = new Set([
+const prohibitedRequestHeaders = new Set([
   "authorization",
-  "cookie",
   "csrf-token",
   "forwarded",
   "host",
-  "origin",
   "proxy-authorization",
-  "x-csrf-token",
   "x-xsrf-token",
 ]);
+const allowedRequestHeaders = new Set<string>(HNS_STATIC_PLATFORM_APP_GATEWAY_REQUEST_HEADERS);
 const hopByHopHeaders = new Set([
   "connection",
   "keep-alive",
@@ -83,7 +84,7 @@ function targetIsValid(target: string): boolean {
     target.startsWith("//") ||
     target.includes("#") ||
     target.includes("\\") ||
-    byteLength(target) > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[6]
+    byteLength(target) > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[8]
   ) {
     return false;
   }
@@ -145,12 +146,16 @@ function rejection(
 export function admitHnsStaticPlatformGatewayRequest(
   request: HnsStaticPlatformGatewayRequest,
 ): HnsStaticPlatformGatewayAdmission | HnsStaticPlatformGatewayRejection {
-  if (!HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[5].includes(request.method as "GET" | "HEAD")) {
+  if (
+    !HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[5].includes(
+      request.method as "GET" | "HEAD" | "POST" | "PATCH",
+    )
+  ) {
     return rejection(405);
   }
   if (!targetIsValid(request.target)) return rejection(400);
   if (
-    request.header_fields.length > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[7] ||
+    request.header_fields.length > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[9] ||
     request.header_fields.some(
       ([name, value]) => !headerNamePattern.test(name) || invalidHeaderValue(value),
     )
@@ -161,15 +166,22 @@ export function admitHnsStaticPlatformGatewayRequest(
     (sum, [name, value]) => sum + byteLength(name) + byteLength(value),
     0,
   );
-  if (aggregateBytes > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[8]) return rejection(413);
+  if (aggregateBytes > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[10]) return rejection(413);
 
   const transferEncoding = headerValues(request.header_fields, "transfer-encoding");
   const contentLength = headerValues(request.header_fields, "content-length");
   if (
     transferEncoding.length !== 0 ||
-    request.body_bytes.byteLength !== 0 ||
     contentLength.length > 1 ||
-    (contentLength.length === 1 && contentLength[0] !== "0")
+    (contentLength.length === 1 && !/^(?:0|[1-9][0-9]*)$/u.test(contentLength[0] ?? ""))
+  ) {
+    return rejection(413);
+  }
+  const declaredLength = contentLength.length === 0 ? null : Number(contentLength[0]);
+  if (
+    request.body_bytes.byteLength > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[11] ||
+    (declaredLength !== null && declaredLength !== request.body_bytes.byteLength) ||
+    ((request.method === "GET" || request.method === "HEAD") && request.body_bytes.byteLength !== 0)
   ) {
     return rejection(413);
   }
@@ -181,6 +193,25 @@ export function admitHnsStaticPlatformGatewayRequest(
   const host = canonicalAuthority(authority);
   if (host === null || canonicalAuthority(sni) !== sni || host !== sni) return rejection(421);
   if (host !== HNS_PLATFORM_ROOT && host !== HNS_PLATFORM_APP_HOST) return rejection(421);
+  if (host === HNS_PLATFORM_ROOT && request.method !== "GET" && request.method !== "HEAD") {
+    return rejection(405);
+  }
+
+  const cookie = headerValues(request.header_fields, "cookie");
+  if (
+    cookie.length > 1 ||
+    (cookie.length === 1 &&
+      byteLength(cookie[0] ?? "") > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[12])
+  ) {
+    return rejection(413);
+  }
+  const origin = headerValues(request.header_fields, "origin");
+  if (
+    (request.method === "POST" || request.method === "PATCH") &&
+    (origin.length !== 1 || origin[0] !== HNS_PLATFORM_APP_ORIGIN)
+  ) {
+    return rejection(400);
+  }
 
   const connectionFields = request.header_fields
     .filter(([name]) => name.toLowerCase() === "connection")
@@ -189,21 +220,24 @@ export function admitHnsStaticPlatformGatewayRequest(
   for (const [rawName, value] of request.header_fields) {
     const name = rawName.toLowerCase();
     if (
-      removedRequestHeaders.has(name) ||
+      prohibitedRequestHeaders.has(name) ||
       hopByHopHeaders.has(name) ||
       connectionFields.includes(name) ||
-      removedByPrefix(name)
+      removedByPrefix(name) ||
+      !allowedRequestHeaders.has(name)
     ) {
       continue;
     }
-    upstreamHeaders.append(name, value);
+    if (name === "cookie" || name === "origin") upstreamHeaders.set(name, value);
+    else upstreamHeaders.append(name, value);
   }
   upstreamHeaders.delete("content-length");
 
   return {
-    method: request.method as "GET" | "HEAD",
+    method: request.method as "GET" | "HEAD" | "POST" | "PATCH",
     target: request.target,
     host,
     upstream_headers: upstreamHeaders,
+    body_bytes: new Uint8Array(request.body_bytes),
   };
 }
