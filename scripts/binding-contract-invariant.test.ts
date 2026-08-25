@@ -67,6 +67,8 @@ const HTTP_BINDING_KINDS = {
   PRIVY_JWT_ISSUER: "var",
   PRIVY_JWT_AUDIENCE: "var",
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: "secret",
+  HANDLE_RECIPIENT_TOKEN_HMAC_KEYS: "secret",
+  HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS: "secret",
 } as const satisfies BindingManifest<HttpWorkerBindings>;
 
 const ALERT_BINDING_KINDS = {

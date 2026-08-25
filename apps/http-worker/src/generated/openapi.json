@@ -12425,10 +12425,95 @@
                           "anyOf": [
                             {
                               "type": "object",
-                              "additionalProperties": true
+                              "properties": {
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "persona_unavailable",
+                                    "public_linking_confirmation_required",
+                                    "offering_unavailable",
+                                    "platform_namespace_reserved",
+                                    "paid_offerings_disabled",
+                                    "invalid_handle",
+                                    "handle_unavailable",
+                                    "evidence_required",
+                                    "qualification_unsatisfied",
+                                    "quote_expired",
+                                    "reservation_expired",
+                                    "idempotency_conflict",
+                                    "claim_blocked",
+                                    "issuance_pending",
+                                    "issuance_failed",
+                                    "service_unavailable",
+                                    "not_found",
+                                    "not_offered",
+                                    "offering_not_applicable",
+                                    "account_grant_limit_reached",
+                                    "sale_namespace_inactive",
+                                    "dns_delegation_required"
+                                  ]
+                                },
+                                "effective_offering_id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "reason"
+                              ],
+                              "additionalProperties": false
                             },
                             {
-                              "type": "null"
+                              "type": "object",
+                              "properties": {
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "persona_unavailable",
+                                    "public_linking_confirmation_required",
+                                    "offering_unavailable",
+                                    "platform_namespace_reserved",
+                                    "paid_offerings_disabled",
+                                    "invalid_handle",
+                                    "handle_unavailable",
+                                    "evidence_required",
+                                    "qualification_unsatisfied",
+                                    "quote_expired",
+                                    "reservation_expired",
+                                    "idempotency_conflict",
+                                    "claim_blocked",
+                                    "issuance_pending",
+                                    "issuance_failed",
+                                    "service_unavailable",
+                                    "not_found",
+                                    "not_offered",
+                                    "offering_not_applicable",
+                                    "account_grant_limit_reached",
+                                    "sale_namespace_inactive",
+                                    "dns_delegation_required"
+                                  ]
+                                },
+                                "effective_offering_id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "reason"
+                              ],
+                              "additionalProperties": false
                             }
                           ]
                         }
@@ -12452,7 +12537,9 @@
               }
             },
             "x-error-codes": [
-              "conflict"
+              "conflict",
+              "handle_request_rejected",
+              "handle_request_rejected"
             ]
           },
           "429": {
@@ -12571,6 +12658,8 @@
           "AuthError",
           "BadRequest",
           "Conflict",
+          "HandleRequestRejected",
+          "RetryableHandleRequestRejected",
           "RateLimited",
           "InternalError"
         ]
@@ -12650,78 +12739,41 @@
                       "type": "string"
                     },
                     "qualification_policy": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "none_v1"
-                              ]
-                            },
-                            "policy_id": {
-                              "type": "string"
-                            },
-                            "policy_revision": {
-                              "type": "integer",
-                              "allOf": [
-                                {
-                                  "minimum": 1,
-                                  "maximum": 9007199254740991
-                                }
-                              ]
-                            },
-                            "policy_hash": {
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "policy_id",
-                            "policy_revision",
-                            "policy_hash"
-                          ],
-                          "additionalProperties": false
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "curated_policy_v1"
+                          ]
                         },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "curated_policy_v1"
-                              ]
-                            },
-                            "policy_id": {
-                              "type": "string"
-                            },
-                            "policy_revision": {
-                              "type": "integer",
-                              "allOf": [
-                                {
-                                  "minimum": 1,
-                                  "maximum": 9007199254740991
-                                }
-                              ]
-                            },
-                            "policy_hash": {
-                              "type": "string"
-                            },
-                            "provider_binding_hash": {
-                              "type": "string"
+                        "policy_id": {
+                          "type": "string"
+                        },
+                        "policy_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "policy_id",
-                            "policy_revision",
-                            "policy_hash",
-                            "provider_binding_hash"
-                          ],
-                          "additionalProperties": false
+                          ]
+                        },
+                        "policy_hash": {
+                          "type": "string"
+                        },
+                        "provider_binding_hash": {
+                          "type": "string"
                         }
-                      ]
+                      },
+                      "required": [
+                        "kind",
+                        "policy_id",
+                        "policy_revision",
+                        "policy_hash",
+                        "provider_binding_hash"
+                      ],
+                      "additionalProperties": false
                     },
                     "created_at": {
                       "type": "string"
@@ -12759,78 +12811,41 @@
                       "type": "string"
                     },
                     "qualification_policy": {
-                      "anyOf": [
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "none_v1"
-                              ]
-                            },
-                            "policy_id": {
-                              "type": "string"
-                            },
-                            "policy_revision": {
-                              "type": "integer",
-                              "allOf": [
-                                {
-                                  "minimum": 1,
-                                  "maximum": 9007199254740991
-                                }
-                              ]
-                            },
-                            "policy_hash": {
-                              "type": "string"
-                            }
-                          },
-                          "required": [
-                            "kind",
-                            "policy_id",
-                            "policy_revision",
-                            "policy_hash"
-                          ],
-                          "additionalProperties": false
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "curated_policy_v1"
+                          ]
                         },
-                        {
-                          "type": "object",
-                          "properties": {
-                            "kind": {
-                              "type": "string",
-                              "enum": [
-                                "curated_policy_v1"
-                              ]
-                            },
-                            "policy_id": {
-                              "type": "string"
-                            },
-                            "policy_revision": {
-                              "type": "integer",
-                              "allOf": [
-                                {
-                                  "minimum": 1,
-                                  "maximum": 9007199254740991
-                                }
-                              ]
-                            },
-                            "policy_hash": {
-                              "type": "string"
-                            },
-                            "provider_binding_hash": {
-                              "type": "string"
+                        "policy_id": {
+                          "type": "string"
+                        },
+                        "policy_revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
                             }
-                          },
-                          "required": [
-                            "kind",
-                            "policy_id",
-                            "policy_revision",
-                            "policy_hash",
-                            "provider_binding_hash"
-                          ],
-                          "additionalProperties": false
+                          ]
+                        },
+                        "policy_hash": {
+                          "type": "string"
+                        },
+                        "provider_binding_hash": {
+                          "type": "string"
                         }
-                      ]
+                      },
+                      "required": [
+                        "kind",
+                        "policy_id",
+                        "policy_revision",
+                        "policy_hash",
+                        "provider_binding_hash"
+                      ],
+                      "additionalProperties": false
                     },
                     "created_at": {
                       "type": "string"
@@ -13033,10 +13048,95 @@
                           "anyOf": [
                             {
                               "type": "object",
-                              "additionalProperties": true
+                              "properties": {
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "persona_unavailable",
+                                    "public_linking_confirmation_required",
+                                    "offering_unavailable",
+                                    "platform_namespace_reserved",
+                                    "paid_offerings_disabled",
+                                    "invalid_handle",
+                                    "handle_unavailable",
+                                    "evidence_required",
+                                    "qualification_unsatisfied",
+                                    "quote_expired",
+                                    "reservation_expired",
+                                    "idempotency_conflict",
+                                    "claim_blocked",
+                                    "issuance_pending",
+                                    "issuance_failed",
+                                    "service_unavailable",
+                                    "not_found",
+                                    "not_offered",
+                                    "offering_not_applicable",
+                                    "account_grant_limit_reached",
+                                    "sale_namespace_inactive",
+                                    "dns_delegation_required"
+                                  ]
+                                },
+                                "effective_offering_id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "reason"
+                              ],
+                              "additionalProperties": false
                             },
                             {
-                              "type": "null"
+                              "type": "object",
+                              "properties": {
+                                "reason": {
+                                  "type": "string",
+                                  "enum": [
+                                    "persona_unavailable",
+                                    "public_linking_confirmation_required",
+                                    "offering_unavailable",
+                                    "platform_namespace_reserved",
+                                    "paid_offerings_disabled",
+                                    "invalid_handle",
+                                    "handle_unavailable",
+                                    "evidence_required",
+                                    "qualification_unsatisfied",
+                                    "quote_expired",
+                                    "reservation_expired",
+                                    "idempotency_conflict",
+                                    "claim_blocked",
+                                    "issuance_pending",
+                                    "issuance_failed",
+                                    "service_unavailable",
+                                    "not_found",
+                                    "not_offered",
+                                    "offering_not_applicable",
+                                    "account_grant_limit_reached",
+                                    "sale_namespace_inactive",
+                                    "dns_delegation_required"
+                                  ]
+                                },
+                                "effective_offering_id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "reason"
+                              ],
+                              "additionalProperties": false
                             }
                           ]
                         }
@@ -13060,7 +13160,9 @@
               }
             },
             "x-error-codes": [
-              "conflict"
+              "conflict",
+              "handle_request_rejected",
+              "handle_request_rejected"
             ]
           },
           "429": {
@@ -13180,6 +13282,8 @@
           "BadRequest",
           "Conflict",
           "DirectGrantRecipientUnavailable",
+          "HandleRequestRejected",
+          "RetryableHandleRequestRejected",
           "RateLimited",
           "InternalError"
         ]

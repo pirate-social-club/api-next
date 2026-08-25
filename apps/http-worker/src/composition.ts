@@ -37,6 +37,8 @@ import {
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
+import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
+import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
 import {
   makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityStore,
@@ -94,6 +96,7 @@ import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
+import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
@@ -157,6 +160,8 @@ export interface HttpWorkerBindings {
   readonly PRIVY_JWT_ISSUER?: string;
   readonly PRIVY_JWT_AUDIENCE?: string;
   readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
+  readonly HANDLE_RECIPIENT_TOKEN_HMAC_KEYS?: string;
+  readonly HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS?: string;
 }
 
 export interface HttpWorkerCompositionDependencies {
@@ -247,6 +252,8 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     PRIVY_JWT_ISSUER: bindings.PRIVY_JWT_ISSUER,
     PRIVY_JWT_AUDIENCE: bindings.PRIVY_JWT_AUDIENCE,
     COMMUNITY_PURCHASE_FUNDING_RPC_URL: bindings.COMMUNITY_PURCHASE_FUNDING_RPC_URL,
+    HANDLE_RECIPIENT_TOKEN_HMAC_KEYS: bindings.HANDLE_RECIPIENT_TOKEN_HMAC_KEYS,
+    HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS: bindings.HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS,
   };
 }
 
@@ -645,6 +652,14 @@ export async function createProductionHttpWorker(
         Effect.fail(new StudyItemSourceError({ reason: "unavailable" })),
     },
   });
+  const handleSalesHandlers = makeHandleSalesHandlers({
+    store: makeControlPlaneHandleSalesStore(controlPlane),
+    ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+    tokenVault: makeHandleRecipientTokenVault({
+      hmacKeys: Redacted.value(config.HANDLE_RECIPIENT_TOKEN_HMAC_KEYS),
+      envelopeKeys: Redacted.value(config.HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS),
+    }),
+  });
   const tokenMinter = makeRs256SessionTokenMinter(sessionCrypto);
   const sessionExchange = {
     proofVerifier,
@@ -695,6 +710,7 @@ export async function createProductionHttpWorker(
       ...fundingHandlers,
       ...personaHandlers,
       ...activityQualificationHandlers,
+      ...handleSalesHandlers,
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },

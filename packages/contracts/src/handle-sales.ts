@@ -108,6 +108,17 @@ export const HandleFreePricingV1 = Schema.Struct({
 });
 export type HandleFreePricingV1 = Schema.Schema.Type<typeof HandleFreePricingV1>;
 
+export const HandleCuratedQualificationPolicyRefV1 = Schema.Struct({
+  kind: Schema.Literal("curated_policy_v1"),
+  policy_id: BoundedIdentifier,
+  policy_revision: PositiveInteger,
+  policy_hash: Sha256Hex,
+  provider_binding_hash: Sha256Hex,
+});
+export type HandleCuratedQualificationPolicyRefV1 = Schema.Schema.Type<
+  typeof HandleCuratedQualificationPolicyRefV1
+>;
+
 export const HandleQualificationPolicyRefV1 = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("none_v1"),
@@ -115,13 +126,7 @@ export const HandleQualificationPolicyRefV1 = Schema.Union([
     policy_revision: PositiveInteger,
     policy_hash: Sha256Hex,
   }),
-  Schema.Struct({
-    kind: Schema.Literal("curated_policy_v1"),
-    policy_id: BoundedIdentifier,
-    policy_revision: PositiveInteger,
-    policy_hash: Sha256Hex,
-    provider_binding_hash: Sha256Hex,
-  }),
+  HandleCuratedQualificationPolicyRefV1,
 ]);
 export type HandleQualificationPolicyRefV1 = Schema.Schema.Type<
   typeof HandleQualificationPolicyRefV1
@@ -504,7 +509,15 @@ export const CreateHandleDirectGrantRecipientToken = endpoint({
     replayed: Schema.Boolean,
   }),
   successStatus: [200, 201],
-  errors: [AuthError, BadRequest, Conflict, RateLimited, InternalError],
+  errors: [
+    AuthError,
+    BadRequest,
+    Conflict,
+    HandleRequestRejected,
+    RetryableHandleRequestRejected,
+    RateLimited,
+    InternalError,
+  ],
 });
 
 export const CreateHandleQualificationPolicy = endpoint({
@@ -529,7 +542,7 @@ export const CreateHandleQualificationPolicy = endpoint({
   response: Schema.Struct({
     kind: Schema.Literal("account_allowlist_policy_authored_v2"),
     request_hash: Sha256Hex,
-    qualification_policy: HandleQualificationPolicyRefV1,
+    qualification_policy: HandleCuratedQualificationPolicyRefV1,
     created_at: CanonicalInstant,
     replayed: Schema.Boolean,
   }),
@@ -539,6 +552,8 @@ export const CreateHandleQualificationPolicy = endpoint({
     BadRequest,
     Conflict,
     DirectGrantRecipientUnavailable,
+    HandleRequestRejected,
+    RetryableHandleRequestRejected,
     RateLimited,
     InternalError,
   ],
