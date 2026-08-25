@@ -3454,6 +3454,62 @@ BEGIN
 END
 $$;
 
+CREATE FUNCTION guard_megapot_usdc_approval_effect() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  chain_record reward_chain_effects%ROWTYPE;
+  attestation_record megapot_deployment_attestations%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Megapot USDC approval effects are append-only';
+  END IF;
+  SELECT * INTO chain_record FROM reward_chain_effects
+   WHERE effect_id = NEW.approval_effect_id FOR SHARE;
+  SELECT * INTO attestation_record FROM megapot_deployment_attestations
+   WHERE attestation_id = NEW.attestation_id FOR SHARE;
+  IF chain_record.effect_kind <> 'usdc_approval'
+     OR chain_record.chain_id <> attestation_record.chain_id
+     OR chain_record.signer_address <> attestation_record.custody_address
+     OR chain_record.target_address <> attestation_record.usdc_address
+     OR chain_record.reserved_amount_atomic <> 0
+     OR NEW.spender_address <> attestation_record.jackpot_address THEN
+    RAISE EXCEPTION 'Megapot USDC approval effect does not match deployment';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_megapot_usdc_approval_receipt() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  chain_record reward_chain_effects%ROWTYPE;
+  approval_record megapot_usdc_approval_effects%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Megapot USDC approval receipt evidence is append-only';
+  END IF;
+  SELECT * INTO chain_record FROM reward_chain_effects
+   WHERE effect_id = NEW.approval_effect_id FOR SHARE;
+  SELECT * INTO approval_record FROM megapot_usdc_approval_effects
+   WHERE approval_effect_id = NEW.approval_effect_id FOR SHARE;
+  IF chain_record.state <> 'confirmed'
+     OR chain_record.receipt_status <> 'success'
+     OR chain_record.transaction_hash <> NEW.transaction_hash
+     OR chain_record.receipt_block_number <> NEW.block_number
+     OR chain_record.receipt_block_hash <> NEW.block_hash
+     OR chain_record.receipt_hash <> NEW.receipt_hash
+     OR chain_record.confirmations <> NEW.confirmations
+     OR approval_record.attestation_id <> NEW.attestation_id
+     OR approval_record.approved_amount_atomic <> NEW.approved_amount_atomic
+     OR NEW.allowance_after_atomic < approval_record.minimum_allowance_atomic THEN
+    RAISE EXCEPTION 'Megapot USDC approval receipt does not prove allowance';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
 CREATE FUNCTION guard_namespace_ownership_completion_attempt_change() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -12583,6 +12639,44 @@ CREATE TABLE megapot_ticket_purchase_effects (
     CONSTRAINT megapot_ticket_purchase_effects_ticket_price_atomic_check CHECK ((ticket_price_atomic > (0)::numeric))
 );
 
+CREATE TABLE megapot_usdc_approval_effects (
+    approval_effect_id text NOT NULL,
+    attestation_id text NOT NULL,
+    spender_address text NOT NULL,
+    allowance_before_atomic numeric(78,0) NOT NULL,
+    minimum_allowance_atomic numeric(78,0) NOT NULL,
+    approved_amount_atomic numeric(78,0) NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT megapot_usdc_approval_effects_allowance_before_atomic_check CHECK ((allowance_before_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_usdc_approval_effects_check CHECK ((approved_amount_atomic >= minimum_allowance_atomic)),
+    CONSTRAINT megapot_usdc_approval_effects_minimum_allowance_atomic_check CHECK ((minimum_allowance_atomic > (0)::numeric)),
+    CONSTRAINT megapot_usdc_approval_effects_spender_address_check CHECK ((spender_address ~ '^0x[0-9a-f]{40}$'::text))
+);
+
+CREATE TABLE megapot_usdc_approval_receipt_evidence (
+    approval_effect_id text NOT NULL,
+    attestation_id text NOT NULL,
+    transaction_hash text NOT NULL,
+    approval_log_index integer NOT NULL,
+    approved_amount_atomic numeric(78,0) NOT NULL,
+    allowance_after_atomic numeric(78,0) NOT NULL,
+    block_number bigint NOT NULL,
+    block_hash text NOT NULL,
+    receipt_hash text NOT NULL,
+    confirmations integer NOT NULL,
+    confirmed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT megapot_usdc_approval_receipt_allowance CHECK ((allowance_after_atomic >= approved_amount_atomic)),
+    CONSTRAINT megapot_usdc_approval_receipt_evid_allowance_after_atomic_check CHECK ((allowance_after_atomic >= (0)::numeric)),
+    CONSTRAINT megapot_usdc_approval_receipt_evid_approved_amount_atomic_check CHECK ((approved_amount_atomic > (0)::numeric)),
+    CONSTRAINT megapot_usdc_approval_receipt_evidence_approval_log_index_check CHECK ((approval_log_index >= 0)),
+    CONSTRAINT megapot_usdc_approval_receipt_evidence_block_hash_check CHECK ((block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT megapot_usdc_approval_receipt_evidence_block_number_check CHECK ((block_number >= 0)),
+    CONSTRAINT megapot_usdc_approval_receipt_evidence_confirmations_check CHECK ((confirmations > 0)),
+    CONSTRAINT megapot_usdc_approval_receipt_evidence_receipt_hash_check CHECK ((receipt_hash ~ '^[0-9a-f]{64}$'::text)),
+    CONSTRAINT megapot_usdc_approval_receipt_evidence_transaction_hash_check CHECK ((transaction_hash ~ '^0x[0-9a-f]{64}$'::text))
+);
+
 CREATE TABLE moderation_actions (
     community_id text NOT NULL,
     action_id text NOT NULL,
@@ -14876,6 +14970,15 @@ ALTER TABLE ONLY megapot_ticket_purchase_effects
 ALTER TABLE ONLY megapot_ticket_purchase_effects
     ADD CONSTRAINT megapot_ticket_purchase_effects_pool_leg_id_drawing_id_key UNIQUE (pool_leg_id, drawing_id);
 
+ALTER TABLE ONLY megapot_usdc_approval_effects
+    ADD CONSTRAINT megapot_usdc_approval_effects_pkey PRIMARY KEY (approval_effect_id);
+
+ALTER TABLE ONLY megapot_usdc_approval_receipt_evidence
+    ADD CONSTRAINT megapot_usdc_approval_receipt_attestation_id_transaction_ha_key UNIQUE (attestation_id, transaction_hash, approval_log_index);
+
+ALTER TABLE ONLY megapot_usdc_approval_receipt_evidence
+    ADD CONSTRAINT megapot_usdc_approval_receipt_evidence_pkey PRIMARY KEY (approval_effect_id);
+
 ALTER TABLE ONLY moderation_actions
     ADD CONSTRAINT moderation_actions_pkey PRIMARY KEY (community_id, action_id);
 
@@ -15975,6 +16078,10 @@ CREATE TRIGGER megapot_purchase_receipt_evidence_append_only BEFORE DELETE OR UP
 CREATE TRIGGER megapot_ticket_inventory_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_ticket_inventory FOR EACH ROW EXECUTE FUNCTION guard_megapot_ticket_inventory();
 
 CREATE TRIGGER megapot_ticket_purchase_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_ticket_purchase_effects FOR EACH ROW EXECUTE FUNCTION guard_megapot_purchase_effect();
+
+CREATE TRIGGER megapot_usdc_approval_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_usdc_approval_effects FOR EACH ROW EXECUTE FUNCTION guard_megapot_usdc_approval_effect();
+
+CREATE TRIGGER megapot_usdc_approval_receipt_evidence_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_usdc_approval_receipt_evidence FOR EACH ROW EXECUTE FUNCTION guard_megapot_usdc_approval_receipt();
 
 CREATE CONSTRAINT TRIGGER namespace_ownership_attempt_session_coherence AFTER INSERT OR UPDATE ON namespace_ownership_completion_attempts DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_namespace_ownership_attempt_session_coherence();
 
@@ -17131,6 +17238,18 @@ ALTER TABLE ONLY megapot_ticket_purchase_effects
 
 ALTER TABLE ONLY megapot_ticket_purchase_effects
     ADD CONSTRAINT megapot_ticket_purchase_effects_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES megapot_pool_beneficiary_snapshots(snapshot_id);
+
+ALTER TABLE ONLY megapot_usdc_approval_effects
+    ADD CONSTRAINT megapot_usdc_approval_effects_approval_effect_id_fkey FOREIGN KEY (approval_effect_id) REFERENCES reward_chain_effects(effect_id);
+
+ALTER TABLE ONLY megapot_usdc_approval_effects
+    ADD CONSTRAINT megapot_usdc_approval_effects_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
+
+ALTER TABLE ONLY megapot_usdc_approval_receipt_evidence
+    ADD CONSTRAINT megapot_usdc_approval_receipt_evidence_approval_effect_id_fkey FOREIGN KEY (approval_effect_id) REFERENCES megapot_usdc_approval_effects(approval_effect_id);
+
+ALTER TABLE ONLY megapot_usdc_approval_receipt_evidence
+    ADD CONSTRAINT megapot_usdc_approval_receipt_evidence_attestation_id_fkey FOREIGN KEY (attestation_id) REFERENCES megapot_deployment_attestations(attestation_id);
 
 ALTER TABLE ONLY moderation_actions
     ADD CONSTRAINT moderation_actions_community_fk FOREIGN KEY (community_id) REFERENCES communities(community_id);

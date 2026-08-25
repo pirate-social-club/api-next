@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { makeControlPlaneMegapotApprovalStore } from "./megapot-approval-repository.ts";
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
@@ -741,6 +742,91 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           }),
         ),
       ).rejects.toMatchObject({ reason: "drawing-not-committed" });
+    });
+  });
+
+  test("persists exact USDC approval evidence through the shared signer nonce fence", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      await seedMegapotAuthority(admin);
+      const store = makeControlPlaneMegapotApprovalStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const candidate = await Effect.runPromise(store.loadCandidate("megapot-base-sepolia-v2"));
+      const reserved = await Effect.runPromise(
+        store.reserveNonce({
+          candidate,
+          effectId: "approval-effect-100000",
+          allowanceBeforeAtomic: 0n,
+          minimumAllowanceAtomic: 10_000n,
+          approvedAmountAtomic: 100_000n,
+          observedPendingNonce: 12n,
+          observedBlockNumber: 120n,
+          observedBlockHash: bytes32("c"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
+      const transactionHash = bytes32("d");
+      await Effect.runPromise(
+        store.prepare({
+          reservation: reserved,
+          calldata: "0x095ea7b3",
+          calldataHash: hash("d"),
+          signedTransaction: "0x0304",
+          signedTransactionHash: transactionHash,
+          preparedAt: new Date().toISOString(),
+        }),
+      );
+      await Effect.runPromise(
+        store.recordSubmission({
+          effectId: reserved.effectId,
+          transactionHash,
+          submittedAt: new Date().toISOString(),
+          outcome: "accepted",
+        }),
+      );
+      await Effect.runPromise(
+        store.confirm({
+          effectId: reserved.effectId,
+          transactionHash,
+          approvalLogIndex: 2,
+          approvedAmountAtomic: 100_000n,
+          allowanceAfterAtomic: 100_000n,
+          blockNumber: 121n,
+          blockHash: bytes32("e"),
+          receiptHash: hash("e"),
+          confirmations: 3,
+          confirmedAt: new Date().toISOString(),
+        }),
+      );
+      const progress = await Effect.runPromise(store.findProgress(reserved.effectId));
+      expect(progress).toMatchObject({
+        state: "confirmed",
+        approvedAmountAtomic: 100_000n,
+        allowanceAfterAtomic: 100_000n,
+        confirmations: 3,
+      });
+      const evidence = await admin.query<{
+        readonly effect_kind: string;
+        readonly effect_state: string;
+        readonly approved_amount_atomic: string;
+        readonly allowance_after_atomic: string;
+      }>(
+        `SELECT effect.effect_kind, effect.state AS effect_state,
+                evidence.approved_amount_atomic::text,
+                evidence.allowance_after_atomic::text
+           FROM reward_chain_effects effect
+           JOIN megapot_usdc_approval_receipt_evidence evidence
+             ON evidence.approval_effect_id=effect.effect_id
+          WHERE effect.effect_id='approval-effect-100000'`,
+      );
+      expect(evidence.rows).toEqual([
+        {
+          effect_kind: "usdc_approval",
+          effect_state: "confirmed",
+          approved_amount_atomic: "100000",
+          allowance_after_atomic: "100000",
+        },
+      ]);
     });
   });
 });

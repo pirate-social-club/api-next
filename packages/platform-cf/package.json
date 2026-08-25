@@ -25,6 +25,8 @@
     "./megapot-v2": "./src/megapot-v2.ts",
     "./megapot-v2-rpc": "./src/megapot-v2-rpc.ts",
     "./megapot-v2-signer": "./src/megapot-v2-signer.ts",
+    "./megapot-approval-coordinator": "./src/megapot-approval-coordinator.ts",
+    "./megapot-approval-repository": "./src/megapot-approval-repository.ts",
     "./megapot-purchase-repository": "./src/megapot-purchase-repository.ts",
     "./megapot-purchase-coordinator": "./src/megapot-purchase-coordinator.ts",
     "./public-profile-repository": "./src/public-profile-repository.ts",

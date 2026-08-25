@@ -27,6 +27,7 @@ import {
   megapotKeccak256,
   validateMegapotClaimReceipt,
   validateMegapotPurchaseReceipt,
+  validateMegapotUsdcApprovalReceipt,
   validateMegapotV2DeploymentAttestation,
 } from "./megapot-v2.ts";
 
@@ -65,6 +66,9 @@ const ticketWinningsClaimedEvent = parseAbi([
 ]);
 const transferEvent = parseAbi([
   "event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)",
+]);
+const approvalEvent = parseAbi([
+  "event Approval(address indexed owner, address indexed spender, uint256 value)",
 ]);
 
 function log(input: {
@@ -284,6 +288,41 @@ describe("Megapot v2 deployment and receipt evidence", () => {
       referralFeesAtomic: 500n,
       lpEarningsAtomic: 1_000n,
     });
+  });
+
+  test("proves the exact custody USDC allowance approval", () => {
+    const approvalLog = log({
+      address: USDC,
+      topics: topics(
+        encodeEventTopics({
+          abi: approvalEvent,
+          eventName: "Approval",
+          args: { owner: CUSTODY, spender: JACKPOT },
+        }),
+      ),
+      data: encodeAbiParameters(parseAbiParameters("uint256 value"), [100_000n]),
+      logIndex: 2,
+    });
+    expect(
+      validateMegapotUsdcApprovalReceipt({
+        deployment,
+        receipt: { ...receipt([approvalLog]), to: USDC },
+        approvedAmountAtomic: 100_000n,
+      }),
+    ).toEqual({
+      transactionHash: TX,
+      blockHash: BLOCK,
+      blockNumber: 123n,
+      approvalLogIndex: 2,
+      approvedAmountAtomic: 100_000n,
+    });
+    expect(() =>
+      validateMegapotUsdcApprovalReceipt({
+        deployment,
+        receipt: { ...receipt([approvalLog]), to: USDC },
+        approvedAmountAtomic: 99_999n,
+      }),
+    ).toThrow("wrong-party");
   });
 
   test("rejects another drawing, missing NFT custody evidence, and removed logs", () => {

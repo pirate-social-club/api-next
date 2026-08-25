@@ -35,6 +35,7 @@ const erc20Abi = parseAbi([
   "function allowance(address owner, address spender) view returns (uint256)",
   "function approve(address spender, uint256 amount) returns (bool)",
   "function balanceOf(address account) view returns (uint256)",
+  "event Approval(address indexed owner, address indexed spender, uint256 value)",
   "event Transfer(address indexed from, address indexed to, uint256 amount)",
 ]);
 
@@ -119,6 +120,14 @@ export type MegapotClaimReceiptEvidence = Readonly<{
   claimLogIndices: readonly number[];
   burnLogIndices: readonly number[];
   grossWinningsAtomic: bigint;
+}>;
+
+export type MegapotApprovalReceiptEvidence = Readonly<{
+  transactionHash: string;
+  blockHash: string;
+  blockNumber: bigint;
+  approvalLogIndex: number;
+  approvedAmountAtomic: bigint;
 }>;
 
 export class MegapotV2EvidenceInvalid extends Error {
@@ -496,6 +505,60 @@ export function validateMegapotPurchaseReceipt(input: {
     mintLogIndices: mintEvents.map(({ logIndex }) => logIndex),
     referralFeesAtomic: orderEvents[0]?.referralFees ?? 0n,
     lpEarningsAtomic: orderEvents[0]?.lpEarnings ?? 0n,
+  };
+}
+
+export function validateMegapotUsdcApprovalReceipt(input: {
+  readonly deployment: MegapotV2DeploymentAttestation;
+  readonly receipt: MegapotTransactionReceipt;
+  readonly approvedAmountAtomic: bigint;
+}): MegapotApprovalReceiptEvidence {
+  const deployment = validateMegapotV2DeploymentAttestation(input.deployment);
+  const receipt = input.receipt;
+  assertReceiptIdentity(receipt);
+  if (receipt.chainId !== deployment.chainId) throw new MegapotV2EvidenceInvalid("invalid-chain");
+  if (receipt.status !== "success") throw new MegapotV2EvidenceInvalid("invalid-receipt");
+  if (
+    receipt.to === null ||
+    !sameAddress(receipt.to, deployment.usdcAddress) ||
+    !sameAddress(receipt.from, deployment.custodyAddress) ||
+    input.approvedAmountAtomic < 1n
+  ) {
+    throw new MegapotV2EvidenceInvalid("wrong-party");
+  }
+  const approvals: Array<{ logIndex: number; amountAtomic: bigint }> = [];
+  for (const log of receipt.logs) {
+    if (!sameAddress(log.address, deployment.usdcAddress)) continue;
+    try {
+      const event = decodeEventLog({
+        abi: erc20Abi,
+        eventName: "Approval",
+        data: log.data,
+        topics: log.topics,
+        strict: true,
+      });
+      if (
+        !sameAddress(event.args.owner, deployment.custodyAddress) ||
+        !sameAddress(event.args.spender, deployment.jackpotAddress) ||
+        event.args.value !== input.approvedAmountAtomic
+      ) {
+        throw new MegapotV2EvidenceInvalid("wrong-party");
+      }
+      approvals.push({ logIndex: log.logIndex, amountAtomic: event.args.value });
+    } catch (error) {
+      if (error instanceof MegapotV2EvidenceInvalid) throw error;
+    }
+  }
+  const approval = approvals[0];
+  if (approvals.length !== 1 || approval === undefined) {
+    throw new MegapotV2EvidenceInvalid("missing-log");
+  }
+  return {
+    transactionHash: hash(receipt.transactionHash),
+    blockHash: hash(receipt.blockHash),
+    blockNumber: receipt.blockNumber,
+    approvalLogIndex: approval.logIndex,
+    approvedAmountAtomic: approval.amountAtomic,
   };
 }
 

@@ -812,6 +812,38 @@ CREATE TABLE reward_chain_effect_transitions (
   PRIMARY KEY (effect_id, target_version)
 );
 
+CREATE TABLE megapot_usdc_approval_effects (
+  approval_effect_id TEXT PRIMARY KEY REFERENCES reward_chain_effects (effect_id),
+  attestation_id TEXT NOT NULL REFERENCES megapot_deployment_attestations (attestation_id),
+  spender_address TEXT NOT NULL CHECK (spender_address ~ '^0x[0-9a-f]{40}$'),
+  allowance_before_atomic NUMERIC(78, 0) NOT NULL CHECK (allowance_before_atomic >= 0),
+  minimum_allowance_atomic NUMERIC(78, 0) NOT NULL CHECK (minimum_allowance_atomic > 0),
+  approved_amount_atomic NUMERIC(78, 0) NOT NULL CHECK (
+    approved_amount_atomic >= minimum_allowance_atomic
+  ),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+);
+
+CREATE TABLE megapot_usdc_approval_receipt_evidence (
+  approval_effect_id TEXT PRIMARY KEY
+    REFERENCES megapot_usdc_approval_effects (approval_effect_id),
+  attestation_id TEXT NOT NULL REFERENCES megapot_deployment_attestations (attestation_id),
+  transaction_hash TEXT NOT NULL CHECK (transaction_hash ~ '^0x[0-9a-f]{64}$'),
+  approval_log_index INTEGER NOT NULL CHECK (approval_log_index >= 0),
+  approved_amount_atomic NUMERIC(78, 0) NOT NULL CHECK (approved_amount_atomic > 0),
+  allowance_after_atomic NUMERIC(78, 0) NOT NULL CHECK (allowance_after_atomic >= 0),
+  block_number BIGINT NOT NULL CHECK (block_number >= 0),
+  block_hash TEXT NOT NULL CHECK (block_hash ~ '^0x[0-9a-f]{64}$'),
+  receipt_hash TEXT NOT NULL CHECK (receipt_hash ~ '^[0-9a-f]{64}$'),
+  confirmations INTEGER NOT NULL CHECK (confirmations > 0),
+  confirmed_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  UNIQUE (attestation_id, transaction_hash, approval_log_index),
+  CONSTRAINT megapot_usdc_approval_receipt_allowance CHECK (
+    allowance_after_atomic >= approved_amount_atomic
+  )
+);
+
 CREATE TABLE megapot_ticket_purchase_effects (
   purchase_effect_id TEXT PRIMARY KEY REFERENCES reward_chain_effects (effect_id),
   pool_leg_id TEXT NOT NULL,
@@ -1970,6 +2002,66 @@ $$;
 CREATE CONSTRAINT TRIGGER reward_chain_effect_transition_pair
 AFTER UPDATE ON reward_chain_effects DEFERRABLE INITIALLY DEFERRED
 FOR EACH ROW EXECUTE FUNCTION validate_reward_chain_effect_transition();
+
+CREATE FUNCTION guard_megapot_usdc_approval_effect() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  chain_record reward_chain_effects%ROWTYPE;
+  attestation_record megapot_deployment_attestations%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Megapot USDC approval effects are append-only';
+  END IF;
+  SELECT * INTO chain_record FROM reward_chain_effects
+   WHERE effect_id = NEW.approval_effect_id FOR SHARE;
+  SELECT * INTO attestation_record FROM megapot_deployment_attestations
+   WHERE attestation_id = NEW.attestation_id FOR SHARE;
+  IF chain_record.effect_kind <> 'usdc_approval'
+     OR chain_record.chain_id <> attestation_record.chain_id
+     OR chain_record.signer_address <> attestation_record.custody_address
+     OR chain_record.target_address <> attestation_record.usdc_address
+     OR chain_record.reserved_amount_atomic <> 0
+     OR NEW.spender_address <> attestation_record.jackpot_address THEN
+    RAISE EXCEPTION 'Megapot USDC approval effect does not match deployment';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER megapot_usdc_approval_effects_change_guard
+BEFORE INSERT OR UPDATE OR DELETE ON megapot_usdc_approval_effects
+FOR EACH ROW EXECUTE FUNCTION guard_megapot_usdc_approval_effect();
+
+CREATE FUNCTION guard_megapot_usdc_approval_receipt() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  chain_record reward_chain_effects%ROWTYPE;
+  approval_record megapot_usdc_approval_effects%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Megapot USDC approval receipt evidence is append-only';
+  END IF;
+  SELECT * INTO chain_record FROM reward_chain_effects
+   WHERE effect_id = NEW.approval_effect_id FOR SHARE;
+  SELECT * INTO approval_record FROM megapot_usdc_approval_effects
+   WHERE approval_effect_id = NEW.approval_effect_id FOR SHARE;
+  IF chain_record.state <> 'confirmed'
+     OR chain_record.receipt_status <> 'success'
+     OR chain_record.transaction_hash <> NEW.transaction_hash
+     OR chain_record.receipt_block_number <> NEW.block_number
+     OR chain_record.receipt_block_hash <> NEW.block_hash
+     OR chain_record.receipt_hash <> NEW.receipt_hash
+     OR chain_record.confirmations <> NEW.confirmations
+     OR approval_record.attestation_id <> NEW.attestation_id
+     OR approval_record.approved_amount_atomic <> NEW.approved_amount_atomic
+     OR NEW.allowance_after_atomic < approval_record.minimum_allowance_atomic THEN
+    RAISE EXCEPTION 'Megapot USDC approval receipt does not prove allowance';
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER megapot_usdc_approval_receipt_evidence_change_guard
+BEFORE INSERT OR UPDATE OR DELETE ON megapot_usdc_approval_receipt_evidence
+FOR EACH ROW EXECUTE FUNCTION guard_megapot_usdc_approval_receipt();
 
 CREATE FUNCTION guard_megapot_purchase_effect() RETURNS trigger
 LANGUAGE plpgsql AS $$
