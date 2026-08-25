@@ -1,0 +1,88 @@
+{
+  "schema_version": "r2-workers-binding-live-evidence-v1",
+  "run": {
+    "mode": "local-workerd-remote-r2-binding",
+    "date": "2026-08-25",
+    "wrangler_version": "4.123.0",
+    "deployed_compatibility_date": "2026-08-25",
+    "executed_compatibility_date": "2026-08-18",
+    "run_count": 4,
+    "run_limit": 10,
+    "bytes_written": 540,
+    "byte_limit": 1073741824,
+    "spend_limit_usd": 25
+  },
+  "safety": {
+    "provider_contacted": true,
+    "credentials_read": true,
+    "deployment_performed": true,
+    "public_route_created": false,
+    "workers_dev_enabled": false,
+    "preview_urls_enabled": false,
+    "preexisting_resource_accessed": false,
+    "operator_identifiers_recorded": false,
+    "resource_names_recorded": false,
+    "urls_headers_bodies_recorded": false
+  },
+  "scenarios": [
+    {
+      "scenario": "success",
+      "result": "sealed",
+      "seal_cleanup": "not_required",
+      "source_cleanup": "deleted",
+      "destination_cleanup": "deleted",
+      "cleanup_complete": true
+    },
+    {
+      "scenario": "source_precondition_failed",
+      "result": "source_precondition_failed",
+      "seal_cleanup": "not_required",
+      "source_cleanup": "deleted",
+      "destination_cleanup": "already_missing",
+      "cleanup_complete": true
+    },
+    {
+      "scenario": "destination_conflict",
+      "result": "destination_conflict",
+      "seal_cleanup": "not_required",
+      "source_cleanup": "deleted",
+      "destination_cleanup": "deleted",
+      "cleanup_complete": true
+    },
+    {
+      "scenario": "expectation_mismatch",
+      "result": "expectation_mismatch",
+      "seal_cleanup": "deleted",
+      "source_cleanup": "deleted",
+      "destination_cleanup": "already_missing",
+      "cleanup_complete": true
+    }
+  ],
+  "residual_audit": {
+    "method": "authenticated_complete_prefix_list",
+    "object_count": 0,
+    "total_bytes": 0,
+    "pages": 1,
+    "complete": true
+  },
+  "teardown": {
+    "worker_deleted": true,
+    "worker_absence_verified": true,
+    "bucket_deleted": true,
+    "bucket_absence_verified_by_list": true
+  },
+  "cleanup_boundary": {
+    "full_identity_checked_before_delete": true,
+    "absence_checked_after_delete": true,
+    "binding_delete_is_conditional": false,
+    "proof_keys_were_exclusive": true,
+    "production_mismatch_policy": "retain_for_reconciliation"
+  },
+  "validation_notes": [
+    "The sole account was selected under an explicit resource-isolation amendment; every pre-existing account resource remained denied.",
+    "The proof Worker deployed with no targets, workers.dev route, preview URL, custom route, or domain.",
+    "The Worker logic executed only on localhost while Wrangler's authenticated remote binding connected to the dedicated R2 bucket.",
+    "The first local remote-binding start rejected a compatibility date newer than the bundled Workerd runtime and made no R2 request; execution then used the repository-tested 2026-08-18 date.",
+    "Credential values, account and resource identifiers, object keys, ETags, versions, URLs, headers, request bodies, response bodies, and payload bytes are excluded."
+  ]
+}

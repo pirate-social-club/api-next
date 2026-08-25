@@ -18,6 +18,24 @@ counts, closed outcomes, and safety assertions. It never includes request
 headers, authorization material, object bytes, or environment values. Both the
 field allowlist and a value-level secret/URL guard fail closed before emission.
 
+## Live Workers-binding checkpoint
+
+The sanitized
+[Workers-binding live evidence](./workers-binding-live-2026-08-25.json)
+records the authorized 2026-08-25 proof against one newly created R2 bucket.
+The route-less Worker bundle deployed with workers.dev and preview URLs
+disabled; the proof logic then executed only on localhost through Wrangler's
+authenticated remote R2 binding. All four scenarios reported
+`cleanup_complete: true`. A complete prefix list returned zero objects and
+zero bytes, after which the Worker and bucket were deleted and independently
+confirmed absent.
+
+The evidence intentionally excludes account and resource identifiers, keys,
+ETags, versions, URLs, headers, bodies, payloads and credentials. The live
+runner's unconditional binding delete remains proof-only: production mismatch
+and closed-failure paths retain the exact object identity for separately
+authorized reconciliation.
+
 The fixture set covers these outcomes:
 
 - `success` observes the source ETag, sends exactly one copy with
@@ -167,3 +185,18 @@ variables nor a fetch implementation. The CLI supplies the token only when
 the complete argument list is exactly `--execute-staging`. Source-only and
 destination-only guard modes exist only for signed-wire diagnostics; the
 production sealing method always sends both conditional guards.
+
+## Workers-binding replacement proof
+
+The redacted [local Workerd transcript](./workers-binding-local-2026-08-25.json)
+records the four replacement-protocol scenarios without contacting a provider
+or reading credentials. It proves conditional source selection, distinct
+destination conflict handling, trusted streaming SHA-256, destination identity
+verification, and complete cleanup of the disposable local keys.
+
+It also records a remaining platform boundary: the Workers binding accepts an
+object key for deletion but no ETag or version condition. The runner checks the
+complete returned identity before deleting its exclusive random key and checks
+absence afterward. That is not an atomic version/ETag-fenced delete, so the
+local transcript does not satisfy the production cleanup requirement by
+itself.
