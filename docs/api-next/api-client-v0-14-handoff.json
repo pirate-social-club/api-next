@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.14.0",
+  "releaseType": "author-reviewed-song-lyrics-foundation",
+  "wireContract": "wire-v2",
+  "sourceCommit": "e55e511",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.14.0.tgz",
+    "sha256": "dd4e580264fadb28eaf89c07ec7f18ad83eead1de38a019a3a4920a035531034",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@bfeff0720f96331c2f06b6059e458c55ad24bcc4455961b20ba530651c46d96b",
+    "openapiSha256": "bfeff0720f96331c2f06b6059e458c55ad24bcc4455961b20ba530651c46d96b",
+    "clientSha256": "929a8c091764157cb39788ea18238729a6b20a5b2ea6941f792ceb0c5800a3a2"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "5b5340a",
+      "reason": "Specs 007 and 013 ratify author-reviewed lyrics as a revisioned command, separate hostile classifier input, and exact publication/alignment fence."
+    },
+    "focusedSongMediaAndBoundaryTests": "43 passed",
+    "postgresFoundationTests": "14 passed",
+    "postgresMediaPersistenceTests": "20 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}
