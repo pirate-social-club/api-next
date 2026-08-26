@@ -320,5 +320,11 @@ export function makeHandleSalesHandlers(
       if (grant === null) throw new NotFound({ message: "Handle grant not found" });
       return grant;
     },
+    GetPublicPersona: async (request) => {
+      const path = request.params as { readonly personaId: string };
+      const persona = await run(sales.getPublicPersona({ personaId: path.personaId }));
+      if (persona === null) throw new NotFound({ message: "Public persona not found" });
+      return persona;
+    },
   };
 }

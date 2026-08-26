@@ -61,6 +61,7 @@ export type HnsHandlePersonaHostAuthorityStateV1 = Readonly<{
   handle_grant_id: string;
   handle_grant_generation: number;
   handle_grant_active: boolean;
+  fulfillment_kind: "hosted_persona_v1" | "delegated_zone_v1" | "spaces_native_v1";
   owner_persona_id: string;
   owner_persona_public: boolean;
   dns_zone: HnsDnsZoneHealthV1;
@@ -173,6 +174,7 @@ export function isHnsHandlePersonaHostAuthorityActive(
     state.namespace_authority_kind === "verified_namespace_v1" &&
     state.namespace_authority_effective &&
     state.handle_grant_active &&
+    state.fulfillment_kind === "hosted_persona_v1" &&
     state.owner_persona_public &&
     dnsZoneHealthy(
       state.dns_zone,

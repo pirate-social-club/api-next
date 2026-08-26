@@ -33,6 +33,12 @@ export {
   makeProductionHnsCommunityAppApiComposition,
 } from "./hns-community-app-api-production-composition.ts";
 export {
+  disabledProductionHnsHandleHostApiComposition,
+  type HnsHandleHostApiComposition,
+  type HnsHandleHostApiCompositionDependencies,
+  makeHnsHandleHostApiComposition,
+} from "./hns-handle-host-api-composition.ts";
+export {
   disabledProductionHnsHostServingComposition,
   makeHnsHostServingComposition,
 } from "./hns-host-serving-composition.ts";

@@ -117,6 +117,7 @@ export {
   makeDurableObjectHnsForwarderReplayStore,
 } from "./hns-forwarder-replay-store";
 export { HnsForwarderReplayStoreDO } from "./hns-forwarder-replay-store-do";
+export { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "./hns-handle-host-authority-repository.ts";
 export {
   type HnsFirstPartyHostPersistenceRepositoryV1,
   makeControlPlaneHnsCommunityAppHostAuthoritySource,

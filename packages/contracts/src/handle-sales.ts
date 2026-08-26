@@ -411,6 +411,48 @@ export const PublicHandleGrantV2 = Schema.Struct({
 });
 export type PublicHandleGrantV2 = Schema.Schema.Type<typeof PublicHandleGrantV2>;
 
+/** Complete public grant projection required by the handle-host runtime. */
+export const PublicHandleGrantV3 = Schema.Struct({
+  grant_id: BoundedIdentifier,
+  grant_generation: PositiveInteger,
+  community_id: BoundedIdentifier,
+  owner_persona: PublicPersonaV1,
+  sale_namespace_activation_id: BoundedIdentifier,
+  sale_namespace_activation_generation: PositiveInteger,
+  fulfillment: Schema.Struct({ kind: HandleFulfillmentKindV1 }),
+  handle: CommunityHandleKeyV1,
+  display_identifier: Schema.String,
+  host: HandleHostProjectionV1,
+  issued_at: CanonicalInstant,
+});
+export type PublicHandleGrantV3 = Schema.Schema.Type<typeof PublicHandleGrantV3>;
+
+const NullablePublicProfileText = (maximumLength: number, label: string) =>
+  Schema.NullOr(
+    Schema.String.check(
+      Schema.makeFilter((value) =>
+        value.length <= maximumLength &&
+        ![...value].some((character) => {
+          const code = character.charCodeAt(0);
+          return code === 0 || code === 0x7f;
+        })
+          ? undefined
+          : `Expected bounded ${label}`,
+      ),
+    ),
+  );
+
+export const PublicPersonaProfileV1 = Schema.Struct({
+  persona: PublicPersonaV1,
+  profile: Schema.Struct({
+    revision: PositiveInteger,
+    cover_ref: NullablePublicProfileText(2_048, "cover reference"),
+    bio: NullablePublicProfileText(2_000, "bio"),
+  }),
+  handle_grants: Schema.Array(PublicHandleGrantV3),
+});
+export type PublicPersonaProfileV1 = Schema.Schema.Type<typeof PublicPersonaProfileV1>;
+
 const page = <T>(item: Schema.Schema<T>) =>
   Schema.Struct({ items: Schema.Array(item), next_cursor: Schema.NullOr(BoundedIdentifier) });
 
@@ -694,7 +736,7 @@ export const ListPersonaHandleGrants = endpoint({
   path: "/personas/:personaId/handle-grants",
   auth: Auth.public(),
   request: { path: PersonaPath, query: PageQuery },
-  response: page(PublicHandleGrantV2),
+  response: page(PublicHandleGrantV3),
   errors: [BadRequest, InternalError],
 });
 
@@ -706,7 +748,16 @@ export const GetPublicHandleGrant = endpoint({
     path: HandlePath,
     exactRawPathParameters: ["family", "namespaceRoot", "handleLabel"],
   },
-  response: PublicHandleGrantV2,
+  response: PublicHandleGrantV3,
+  errors: [BadRequest, NotFound, InternalError],
+});
+
+export const GetPublicPersona = endpoint({
+  method: "GET",
+  path: "/public-personas/:personaId",
+  auth: Auth.public(),
+  request: { path: PersonaPath },
+  response: PublicPersonaProfileV1,
   errors: [BadRequest, NotFound, InternalError],
 });
 
@@ -726,4 +777,5 @@ export const handleSalesRegistry = {
   GetHandleClaim,
   ListPersonaHandleGrants,
   GetPublicHandleGrant,
+  GetPublicPersona,
 } as const;

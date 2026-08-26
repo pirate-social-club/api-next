@@ -32,6 +32,11 @@ import {
   stripHnsCommunityAppPrivateHeaders,
   verifyHnsCommunityAppApiRequest,
 } from "./hns-community-app-api-transport.ts";
+import {
+  disabledProductionHnsHandleHostApiComposition,
+  type HnsHandleHostApiComposition,
+} from "./hns-handle-host-api-composition.ts";
+import { resolveHnsSolidHandleHostAuthorityRequest } from "./hns-handle-host-api-transport.ts";
 import { type KaraokeHandlerServices, makeKaraokeHandlers } from "./karaoke-handlers.ts";
 
 export interface Principal {
@@ -118,6 +123,8 @@ export interface HttpWorkerOptions {
   readonly authorize?: (args: AuthorizationArgs) => void | Promise<void>;
   /** Source-closed interactive HNS origin authority. Production remains disabled and unbound. */
   readonly hnsCommunityAppApi?: HnsCommunityAppApiComposition;
+  /** Source-closed public handle-host authority. Production remains disabled and unbound. */
+  readonly hnsHandleHostApi?: HnsHandleHostApiComposition;
 }
 
 type HttpWorkerEnv = {
@@ -578,6 +585,8 @@ const validateHandlerStatus = (endpoint: EndpointDefinition, status: number): vo
 export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWorkerEnv> {
   const hnsCommunityAppApi =
     options.hnsCommunityAppApi ?? disabledProductionHnsCommunityAppApiComposition;
+  const hnsHandleHostApi =
+    options.hnsHandleHostApi ?? disabledProductionHnsHandleHostApiComposition;
   const karaokeHandlers: Readonly<Record<string, EndpointHandler>> | undefined =
     options.karaoke === undefined ? undefined : makeKaraokeHandlers(options.karaoke);
   const sessionExchangeHandler =
@@ -607,6 +616,8 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     const requestUrl = new URL(context.req.raw.url);
     const pathname = requestUrl.pathname;
     const privateAuthorityRequest = pathname === "/internal/hns/solid-host-authority/v2/resolve";
+    const privateHandleAuthorityRequest =
+      pathname === "/internal/hns/solid-handle-host-authority/v1/resolve";
     const hnsApiRequest = pathname === "/api" || pathname.startsWith("/api/");
     const hasReservedHeader = hasReservedHnsCommunityAppHeader(context.req.raw.headers);
     const protectedHnsIngress =
@@ -617,6 +628,22 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
         throw new AuthError({ message: "Authentication failed" });
       }
       const body = await resolveHnsSolidHostAuthorityRequest(context.req.raw, hnsCommunityAppApi);
+      return new Response(body, {
+        status: 200,
+        headers: {
+          "cache-control": "no-store",
+          "content-type": "application/json",
+          "x-request-id": requestId(context),
+        },
+      });
+    }
+
+    if (privateHandleAuthorityRequest) {
+      if (!hnsHandleHostApi.enabled) throw new AuthError({ message: "Authentication failed" });
+      const body = await resolveHnsSolidHandleHostAuthorityRequest(
+        context.req.raw,
+        hnsHandleHostApi,
+      );
       return new Response(body, {
         status: 200,
         headers: {
@@ -798,6 +825,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
           const request = requestShape(binding.endpoint);
           const noStore =
             !isPublic(binding.endpoint) ||
+            binding.name === "GetPublicPersona" ||
             authorization !== undefined ||
             context.req.header("cookie") !== undefined ||
             request?.body !== undefined ||

@@ -29,6 +29,7 @@ const storeWith = (overrides: Partial<HandleSalesStore>): HandleSalesStore =>
     getClaim: unexpected,
     listPersonaGrants: unexpected,
     getPublicGrant: unexpected,
+    getPublicPersona: unexpected,
     ...overrides,
   }) as HandleSalesStore;
 
@@ -52,6 +53,66 @@ const workerWith = (store: HandleSalesStore) => {
 };
 
 describe("community handle sales in workerd", () => {
+  it("serves the persona-native V3 public projection without a session", async () => {
+    const app = workerWith(
+      storeWith({
+        getPublicPersona: ({ personaId }) =>
+          Effect.succeed({
+            persona: {
+              object: "persona",
+              persona_id: personaId,
+              display_name: "Workerd Persona",
+              avatar_ref: null,
+              primary_public_handle: null,
+            },
+            profile: { revision: 1, cover_ref: null, bio: null },
+            handle_grants: [
+              {
+                grant_id: "grant-workerd-v3",
+                grant_generation: 1,
+                community_id: "community_123e4567-e89b-42d3-a456-426614174055",
+                owner_persona: {
+                  object: "persona",
+                  persona_id: personaId,
+                  display_name: "Workerd Persona",
+                  avatar_ref: null,
+                  primary_public_handle: null,
+                },
+                sale_namespace_activation_id: "activation-workerd-v3",
+                sale_namespace_activation_generation: 2,
+                fulfillment: { kind: "hosted_persona_v1" },
+                handle: {
+                  family: "hns",
+                  namespace_root: "charizard",
+                  handle_label: "workerdname",
+                },
+                display_identifier: "workerdname.charizard",
+                host: {
+                  kind: "available",
+                  normalized_host: "workerdname.charizard",
+                  sale_namespace_activation_generation: 2,
+                  grant_generation: 1,
+                },
+                issued_at: "2026-08-26T12:00:00.000Z",
+              },
+            ],
+          }),
+      }),
+    );
+    const response = await app.request("https://worker.test/public-personas/persona-workerd-v3");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toMatchObject({
+      persona: { persona_id: "persona-workerd-v3" },
+      handle_grants: [
+        {
+          sale_namespace_activation_id: "activation-workerd-v3",
+          fulfillment: { kind: "hosted_persona_v1" },
+        },
+      ],
+    });
+  });
+
   it("mints a private no-store direct-grant recipient token", async () => {
     const app = workerWith(
       storeWith({
