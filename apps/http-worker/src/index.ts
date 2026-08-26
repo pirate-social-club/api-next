@@ -8,6 +8,7 @@
 import type { ExecutionContext } from "@cloudflare/workers-types";
 import { createProductionHttpWorker, type HttpWorkerBindings } from "./composition.ts";
 
+export { HnsForwarderReplayStoreDO } from "@pirate/platform-cf/hns-forwarder-replay-store-do";
 export {
   RegistrationApplicationRateLimiterDO,
   RegistrationIpRateLimiterDO,
@@ -26,6 +27,11 @@ export {
   type HnsCommunityAppApiCompositionDependencies,
   makeHnsCommunityAppApiComposition,
 } from "./hns-community-app-api-composition.ts";
+export {
+  HNS_FORWARDER_V3_KEY_REGISTRY_MAX_BYTES,
+  HNS_FORWARDER_V3_KEY_REGISTRY_SCHEMA,
+  makeProductionHnsCommunityAppApiComposition,
+} from "./hns-community-app-api-production-composition.ts";
 export {
   disabledProductionHnsHandleHostApiComposition,
   type HnsHandleHostApiComposition,

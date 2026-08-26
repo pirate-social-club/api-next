@@ -111,6 +111,12 @@ export {
   makeControlPlaneHandleSalesRepository,
   makeControlPlaneHandleSalesStore,
 } from "./handle-sales-repository";
+export {
+  HNS_COMMUNITY_APP_API_REPLAY_SCOPE,
+  type HnsForwarderReplayStoreNamespace,
+  makeDurableObjectHnsForwarderReplayStore,
+} from "./hns-forwarder-replay-store";
+export { HnsForwarderReplayStoreDO } from "./hns-forwarder-replay-store-do";
 export { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "./hns-handle-host-authority-repository.ts";
 export {
   type HnsFirstPartyHostPersistenceRepositoryV1,

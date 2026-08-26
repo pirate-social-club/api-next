@@ -7,6 +7,7 @@ import {
 } from "./hns-community-app-api-composition.ts";
 
 const dependencies = {
+  protected_origin: "https://api-next.internal",
   access_validator: { verify: async () => undefined },
   authority_source: { resolve: () => Effect.succeed(null) },
   key_registry: makeStaticHnsForwarderKeyRegistryV1([
@@ -34,6 +35,7 @@ describe("HNS community application API composition", () => {
       access_validator: null,
       forwarder_validator: null,
       authority_source: null,
+      protected_origin: null,
     });
     expect(makeHnsCommunityAppApiComposition(false, dependencies)).toEqual(
       disabledProductionHnsCommunityAppApiComposition,
@@ -57,6 +59,7 @@ describe("HNS community application API composition", () => {
     if (!composition.enabled) throw new Error("expected enabled composition");
     expect(composition.access_validator).toBe(dependencies.access_validator);
     expect(composition.authority_source).toBe(dependencies.authority_source);
+    expect(composition.protected_origin).toBe(dependencies.protected_origin);
     expect(composition.forwarder_validator).toBeDefined();
   });
 });

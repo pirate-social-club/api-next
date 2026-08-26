@@ -16,12 +16,14 @@ export type HnsCommunityAppApiComposition =
       access_validator: null;
       forwarder_validator: null;
       authority_source: null;
+      protected_origin: null;
     }>
   | Readonly<{
       enabled: true;
       access_validator: CloudflareAccessJwtValidatorV1;
       forwarder_validator: HnsForwarderV3WorkerValidator;
       authority_source: HnsForwarderWorkerAuthoritySourceV1;
+      protected_origin: string;
     }>;
 
 export type HnsCommunityAppApiCompositionDependencies = Readonly<{
@@ -31,6 +33,7 @@ export type HnsCommunityAppApiCompositionDependencies = Readonly<{
   replay_store?: HnsForwarderReplayStoreV1;
   clock?: HnsForwarderClockV1;
   limits?: HnsForwarderRuntimeLimitsV1;
+  protected_origin?: string;
 }>;
 
 const disabledComposition: HnsCommunityAppApiComposition = Object.freeze({
@@ -38,6 +41,7 @@ const disabledComposition: HnsCommunityAppApiComposition = Object.freeze({
   access_validator: null,
   forwarder_validator: null,
   authority_source: null,
+  protected_origin: null,
 });
 
 /**
@@ -49,15 +53,23 @@ export function makeHnsCommunityAppApiComposition(
   dependencies: HnsCommunityAppApiCompositionDependencies = {},
 ): HnsCommunityAppApiComposition {
   if (!enabled) return disabledComposition;
-  const { access_validator, authority_source, key_registry, replay_store, clock, limits } =
-    dependencies;
+  const {
+    access_validator,
+    authority_source,
+    key_registry,
+    replay_store,
+    clock,
+    limits,
+    protected_origin,
+  } = dependencies;
   if (
     access_validator === undefined ||
     authority_source === undefined ||
     key_registry === undefined ||
     replay_store === undefined ||
     clock === undefined ||
-    limits === undefined
+    limits === undefined ||
+    protected_origin === undefined
   ) {
     throw new Error("HNS community API composition is incomplete or invalid");
   }
@@ -65,6 +77,7 @@ export function makeHnsCommunityAppApiComposition(
     enabled: true,
     access_validator,
     authority_source,
+    protected_origin,
     forwarder_validator: makeHnsForwarderV3WorkerValidator({
       authority_source,
       key_registry,
@@ -75,6 +88,6 @@ export function makeHnsCommunityAppApiComposition(
   });
 }
 
-/** No production binding or configuration exists in this checkpoint. */
+/** Fail-closed default used whenever the production activation flag is false. */
 export const disabledProductionHnsCommunityAppApiComposition =
   makeHnsCommunityAppApiComposition(false);

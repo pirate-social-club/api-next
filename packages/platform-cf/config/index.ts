@@ -186,6 +186,36 @@ export const HttpWorkerConfig = Config.all({
   HNS_OWNERSHIP_CONFIGURATION_VERSION: Config.string("HNS_OWNERSHIP_CONFIGURATION_VERSION").pipe(
     Config.withDefault(""),
   ),
+  HNS_COMMUNITY_APP_API_ENABLED: Config.boolean("HNS_COMMUNITY_APP_API_ENABLED").pipe(
+    Config.withDefault(false),
+  ),
+  HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: Config.string(
+    "HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN",
+  ).pipe(Config.withDefault("")),
+  HNS_COMMUNITY_APP_API_ACCESS_ISSUER: Config.string("HNS_COMMUNITY_APP_API_ACCESS_ISSUER").pipe(
+    Config.withDefault(""),
+  ),
+  HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL: Config.string(
+    "HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL",
+  ).pipe(Config.withDefault("")),
+  HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE: Config.string(
+    "HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE",
+  ).pipe(Config.withDefault("")),
+  HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE: Config.string(
+    "HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE",
+  ).pipe(Config.withDefault("")),
+  HNS_FORWARDER_V3_KEY_REGISTRY_VERSION: Config.string(
+    "HNS_FORWARDER_V3_KEY_REGISTRY_VERSION",
+  ).pipe(Config.withDefault("")),
+  HNS_FORWARDER_V3_HMAC_KEY_REGISTRY: secret("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
+  HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS: Config.int(
+    "HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS",
+  ).pipe(Config.withDefault(0)),
+  HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS: Config.int(
+    "HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS",
+  ).pipe(Config.withDefault(-1)),
   VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: Config.string(
     "VERIFICATION_CALLBACK_CREDENTIAL_HEADERS",
   ).pipe(Config.withDefault("")),
