@@ -11,23 +11,22 @@
 # rejecting its output shape described the pre-fix implementation and is not
 # current.
 #
-# Radicle supplies /ci/src as a committed source snapshot without Git metadata.
-# `bun run check` includes a guard that invokes `git ls-files --others` for
-# untracked migration SQL, so the plan creates a synthetic Git commit holding
-# the complete shipped snapshot. That preserves the guard's invariant for a
-# commit archive. It is not real history, and it must never be used as an
-# OpenAPI baseline.
+# The deployed adapter clones the Radicle repository and checks out the trigger
+# commit before Ambient archives `/ci/src`. Its source and a retained `src.tar`
+# both prove that the source drive includes `.git`. The plan requires that
+# contract instead of synthesizing an index: missing metadata, a dirty checkout
+# or missing parent history is an adapter failure.
 #
 # Ambient 0.16 stops a plan at the first failed action, so each gate records
 # its status and a final summary action fails the job after every gate has had
 # a chance to run. This mirrors the Solid plan contract.
 #
 # Deliberately absent from the hosted `check` job:
-# - check:breaking. It needs the exact pull-request base commit, and the
-#   shipped snapshot has no parent: a rehearsal returned
-#   `Unable to resolve baseline commit "HEAD^1"`. Shipping and explicitly
-#   selecting the real baseline is owned by a later slice. Absence of the
-#   baseline is a failure, never a bootstrap shortcut.
+# - check:breaking. It needs the exact pull-request base commit selected
+#   explicitly, which this plan cannot name. Delivered history makes a parent
+#   available, but `HEAD^1` is not necessarily the pull-request base for a
+#   multi-commit or stale branch. Absence of the exact baseline is a failure,
+#   never a bootstrap shortcut.
 # The required `postgres17` job is a separate context with its own
 # checksum-bound distribution and budget; it is owned by
 # `api-next-ambient-postgres17-gate`.
@@ -65,11 +64,13 @@ plan:
       test "$(node --version)" = v24.14.0
       test "$(bun --version)" = 1.4.0
       bun install --frozen-lockfile --offline
-      git init -q -b ambient-snapshot
-      git add -- .
-      git -c user.name=ci_operator -c user.email=ci_operator@example.invalid \
-        commit -q -m 'ci: materialize Ambient source snapshot'
+      test -d .git
+      delivered_head="$(git rev-parse --verify HEAD)"
+      delivered_parent="$(git rev-parse --verify HEAD^1)"
+      delivered_commits="$(git rev-list --count HEAD)"
       test -z "$(git status --porcelain)"
+      printf 'delivered Git checkout: head=%s parent=%s commits=%s\n' \
+        "$delivered_head" "$delivered_parent" "$delivered_commits"
       cat > /tmp/run-check-gate <<'EOF'
       #!/bin/bash
       set -uo pipefail

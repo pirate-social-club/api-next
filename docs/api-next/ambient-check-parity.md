@@ -17,12 +17,13 @@ through trusted pre-plan actions. The deployed `bun_get` action builds the
 lockfile-bound cache, and the plan VM performs
 `bun install --frozen-lockfile --offline` without a network route.
 
-Radicle supplies a committed source archive without `.git`. The repository's
-`check:migrations:worktree` guard invokes `git ls-files --others`, so the plan
-creates a synthetic Git repository and commits the complete shipped snapshot
-before running any gate. This makes every delivered migration part of the
-disposable index. It is not real repository history and must never be used as
-the OpenAPI baseline.
+The deployed adapter clones the Radicle repository, checks out the trigger
+commit and archives that checkout for the Ambient source drive. The deployed
+source calls the broker's `get_sources`, which performs `git clone` followed by
+`git checkout`, and the Ambient adapter tars that complete directory. A
+retained VPS `src.tar` contains `.git`, including refs and objects. The plan
+therefore requires Git metadata, a clean checkout and resolvable parent history
+instead of synthesizing an index when the delivery contract is broken.
 
 Ambient 0.16 stops a plan at the first failed action, so each gate records its
 exit status and elapsed seconds and a final summary action fails the job after
@@ -32,33 +33,51 @@ every gate has had a chance to run. This mirrors the Solid plan contract.
 
 | Hosted `check` step | Ambient gate | Rehearsed result |
 | --- | --- | --- |
-| Bun 1.4.0 and dependency install | Plan action 1 | 496 packages installed offline from the lockfile-bound cache in 1 s |
-| `bun run check` | `01-check` | Pass, 40 s |
-| `bun test packages apps scripts` | `02-test-host` | Pass, 7 s; 1874 passed, 283 skipped, 0 failed across 303 files |
-| `bun run test:workerd` | `03-test-workerd` | Pass, 98 s; all four Workerd groups, 9 tests across 6 files |
-| Repeated `bun run check:fresh` | `04-check-fresh` | Pass, 1 s |
-| Jobs Worker Wrangler dry run | `05-wrangler-jobs` | Pass, 3 s |
-| HTTP Worker Wrangler dry run | `06-wrangler-http` | Pass, 3 s |
-| `bun run check:breaking` | Excluded | Fails as designed on the snapshot: `Unable to resolve baseline commit "HEAD^1"` |
+| Bun 1.4.0 and dependency install | Plan action 1 | 496 packages installed offline from the lockfile-bound cache in 0.48 s |
+| `bun run check` | `01-check` | Pass, 39 s |
+| `bun test packages apps scripts` | `02-test-host` | Pass, 12 s; 1874 passed, 283 skipped, 0 failed across 303 files |
+| `bun run test:workerd` | `03-test-workerd` | Pass, 89 s; all four Workerd groups, 84 tests across 25 files |
+| Repeated `bun run check:fresh` | `04-check-fresh` | Pass, less than 1 s |
+| Jobs Worker Wrangler dry run | `05-wrangler-jobs` | Pass, 2 s |
+| HTTP Worker Wrangler dry run | `06-wrangler-http` | Pass, 2 s |
+| `bun run check:breaking` | Excluded | The exact pull-request base SHA is not yet supplied to the plan |
 
-Aggregate gate time was 152 s with a 1.09 GiB peak resident set, measured on
-three pinned CPUs to approximate the 3-CPU, 5 GiB guest. That is far inside the
-60-minute broker `max_run_time`, so the runtime budget question belongs to the
-Postgres 17 gate and not to this one.
+Aggregate gate time was 144 s, wall time was 145.61 s and peak resident set was
+1,109,592 KiB, measured on three pinned CPUs to approximate the 3-CPU, 5 GiB
+guest. That is far inside the 60-minute broker `max_run_time`, so the runtime
+budget question belongs to the Postgres 17 gate and not to this one.
 
 `check:breaking` stays excluded until the exact pull-request base commit is
-shipped and selected explicitly. The synthetic snapshot commit has no parent,
-and absence of the baseline must fail rather than degrade to a default.
+selected explicitly. Delivered history supplies `HEAD^1`, but that is not
+necessarily the pull-request base for a multi-commit or stale branch. Absence
+of the exact baseline must fail rather than degrade to a guessed default.
 
 ## Rehearsal method and its limits
 
-The plan's shell bodies were extracted from the YAML and executed unmodified
-except for two substitutions: the workstation's identically pinned Node
-24.14.0 and Bun 1.4.0 replaced the guest paths under `/ci/deps`, and a local
-directory replaced `/ci/src`. The source tree was the exact tracked file set,
-delivered without `.git`. Execution ran inside an unprivileged network
-namespace pinned to three CPUs. The namespace held zero routes, refused
-outbound TCP, and resolved no DNS name.
+The first rehearsal extracted the plan's shell bodies from the YAML and ran
+them unmodified except for two substitutions: the workstation's identically
+pinned Node 24.14.0 and Bun 1.4.0 replaced the guest paths under `/ci/deps`, and
+a local directory replaced `/ci/src`. Its source was the exact tracked file set
+but deliberately omitted `.git`, following the earlier mistaken archive
+assumption. It proved the gate commands, offline dependency consumption and
+resource budget, but not the adapter's source-delivery path. Execution ran
+inside an unprivileged network namespace pinned to three CPUs. The namespace
+held zero routes, refused outbound TCP, and resolved no DNS name.
+
+A corrective rehearsal then repeated all eight actions against a full
+temporary clone. The candidate changes were captured in rehearsal-only commit
+`cdcbed8b0b4fb8a3df6d13d138859fa98fda8f6e`, on parent
+`c519e4c62ed6e118a6c8460ec13de86997e92842`, so the plan saw a clean `.git`, a
+resolvable parent and 557 commits. The same pinned tools and cache replaced the
+guest paths, and unique temporary HOME, runner and status paths prevented
+cross-run state. The command bodies were otherwise unchanged. The namespace
+again had zero routes and failed DNS. All eight actions and all six gates
+passed. This run also corrected the first record's Workerd count: nine tests
+across six files described only the fourth Vitest invocation, while all four
+groups total 84 tests across 25 files.
+
+The checksum-sealed corrective harness, candidate plan and complete log are at
+`/home/t42/Documents/agents/archive/api-next-ambient-real-checkout-rehearsal-2026-08-26/`.
 
 Three differences from the guest remain, and each is why a live run is still
 required. The cache was populated by workstation Bun from this lockfile rather
