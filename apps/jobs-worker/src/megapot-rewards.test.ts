@@ -1,7 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { MegapotDrawingObservationRejected } from "@pirate/application";
 import type { MegapotWorkStore } from "@pirate/platform-cf/megapot-work-repository";
 import { Effect } from "effect";
-import { type MegapotRewardsRuntime, runMegapotRewardsCycle } from "./megapot-rewards-cycle.ts";
+import {
+  type MegapotRewardsRuntime,
+  observeMegapotDrawingForCycle,
+  runMegapotRewardsCycle,
+} from "./megapot-rewards-cycle.ts";
 
 const drawing = (status: Parameters<MegapotWorkStore["loadDrawings"]>[0]["statuses"][number]) => ({
   poolLegId: "leg-1",
@@ -27,7 +32,7 @@ function fixture(approvalKind: "submitted" | "confirmed") {
     });
   const runtime: MegapotRewardsRuntime = {
     reconcile: () => call("reconcile"),
-    observeDrawing: () => call("observe-drawing"),
+    observeDrawing: () => call("observe-drawing").pipe(Effect.as(true)),
     observeSolvency: () => call("observe-solvency"),
     freezeDue: () => call("cutoff").pipe(Effect.as([{}])),
     publishCommitment: () => call("commitment"),
@@ -67,6 +72,7 @@ describe("Megapot rewards scheduled cycle", () => {
     ]);
     expect(result).toMatchObject({
       reconciled: 1,
+      observed: 1,
       frozen: 1,
       committed: 1,
       purchased: 1,
@@ -110,5 +116,50 @@ describe("Megapot rewards scheduled cycle", () => {
     );
     expect(result.paid).toBe(1);
     expect(result.failures).toContain("RewardPayoutRejected");
+  });
+
+  test("continues return-side work while the contract rolls to its next drawing", async () => {
+    const { calls, runtime, work } = fixture("confirmed");
+    const result = await Effect.runPromise(
+      runMegapotRewardsCycle({
+        work,
+        runtime: {
+          ...runtime,
+          observeDrawing: () =>
+            observeMegapotDrawingForCycle(
+              Effect.sync(() => calls.push("observe-drawing")).pipe(
+                Effect.andThen(
+                  Effect.fail(new MegapotDrawingObservationRejected({ reason: "drawing-closed" })),
+                ),
+              ),
+            ),
+        },
+      }),
+    );
+
+    expect(result.observed).toBe(0);
+    expect(calls).toContain("observe-solvency");
+    expect(calls).toContain("sweep");
+    expect(calls).toContain("claim");
+    expect(calls).toContain("allocate");
+    expect(calls).toContain("refund");
+    expect(calls).toContain("payout");
+  });
+
+  test("keeps every non-rollover drawing rejection fail-closed", async () => {
+    await expect(
+      Effect.runPromise(
+        observeMegapotDrawingForCycle(
+          Effect.fail(
+            new MegapotDrawingObservationRejected({
+              reason: "deployment-attestation-mismatch",
+            }),
+          ),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "MegapotDrawingObservationRejected",
+      reason: "deployment-attestation-mismatch",
+    });
   });
 });
