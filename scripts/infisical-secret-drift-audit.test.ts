@@ -139,9 +139,9 @@ describe("Infisical secret drift audit", () => {
     );
   });
 
-  test("allows only the environment-neutral R2 operator credential names in staging", () => {
+  test("allows staging media runtime provisioning names without requiring them", () => {
     const stagingBase = emptySnapshot("staging");
-    const staging: InfisicalSnapshot = {
+    const stagingWithoutProvisioning: InfisicalSnapshot = {
       ...stagingBase,
       secrets: {
         ...stagingBase.secrets,
@@ -160,29 +160,54 @@ describe("Infisical secret drift audit", () => {
           "CONTROL_PLANE_POSTGRES_ADMIN_URL",
           "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
           "MEGAPOT_REFERRER_PRIVATE_KEY",
+        ],
+      },
+    };
+    expect(auditInfisicalSnapshots([stagingWithoutProvisioning]).violations).toEqual([]);
+
+    const stagingWithProvisioning: InfisicalSnapshot = {
+      ...stagingWithoutProvisioning,
+      secrets: {
+        ...stagingWithoutProvisioning.secrets,
+        "/services/api-next": [
+          ...stagingWithoutProvisioning.secrets["/services/api-next"],
+          "TRANSLOADIT_AUTH_KEY",
+          "TRANSLOADIT_AUTH_SECRET",
+          "ACRCLOUD_ACCESS_KEY",
+          "ACRCLOUD_ACCESS_SECRET",
+          "ELEVENLABS_API_KEY",
+          "FILEBASE_IPFS_TOKEN",
+          "MEDIA_CLASSIFIER_API_KEY",
+        ],
+      },
+    };
+    expect(auditInfisicalSnapshots([stagingWithProvisioning]).violations).toEqual([]);
+
+    const retiredR2Names: InfisicalSnapshot = {
+      ...stagingWithProvisioning,
+      secrets: {
+        ...stagingWithProvisioning.secrets,
+        "/services/api-next/operator": [
+          ...stagingWithProvisioning.secrets["/services/api-next/operator"],
           "R2_SEAL_PROBE_ACCESS_KEY_ID",
           "R2_SEAL_PROBE_SECRET_ACCESS_KEY",
         ],
       },
     };
-    expect(auditInfisicalSnapshots([staging]).violations).toEqual([]);
-
-    const legacyName: InfisicalSnapshot = {
-      ...staging,
-      secrets: {
-        ...staging.secrets,
-        "/services/api-next/operator": [
-          ...staging.secrets["/services/api-next/operator"],
-          "R2_STAGING_ACCESS_KEY_ID",
-        ],
+    expect(auditInfisicalSnapshots([retiredR2Names]).violations).toEqual([
+      {
+        environment: "staging",
+        path: "/services/api-next/operator",
+        kind: "unexpected-secret",
+        name: "R2_SEAL_PROBE_ACCESS_KEY_ID",
       },
-    };
-    expect(auditInfisicalSnapshots([legacyName]).violations).toContainEqual({
-      environment: "staging",
-      path: "/services/api-next/operator",
-      kind: "unexpected-secret",
-      name: "R2_STAGING_ACCESS_KEY_ID",
-    });
+      {
+        environment: "staging",
+        path: "/services/api-next/operator",
+        kind: "unexpected-secret",
+        name: "R2_SEAL_PROBE_SECRET_ACCESS_KEY",
+      },
+    ]);
   });
 
   test("forces the REST query to hide values", async () => {
