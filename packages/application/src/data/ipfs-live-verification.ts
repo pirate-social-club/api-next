@@ -26,7 +26,7 @@ export type IpfsGatewayVerificationResult =
     }>
   | Readonly<{
       status: "rejected";
-      reason: "invalid_input" | "redirect" | "oversized" | "length" | "sha256";
+      reason: "invalid_input" | "redirect" | "oversized" | "cid" | "length" | "sha256";
     }>;
 
 export interface IpfsGatewayVerifier {
@@ -61,6 +61,25 @@ export const pinAndVerifyIpfsArtifact = (
     });
     if (verification.status !== "verified") {
       return { status: "gateway_failed", gateway: verification } as const;
+    }
+    if (
+      verification.cid !== pin.cid ||
+      verification.byte_length !== pin.byte_length ||
+      verification.sha256 !== pin.sha256 ||
+      verification.provider_id !== "ipfs.io"
+    ) {
+      return {
+        status: "gateway_failed",
+        gateway: {
+          status: "rejected",
+          reason:
+            verification.cid !== pin.cid
+              ? "cid"
+              : verification.byte_length !== pin.byte_length
+                ? "length"
+                : "sha256",
+        },
+      } as const;
     }
     return { status: "verified", pin } as const;
   });
