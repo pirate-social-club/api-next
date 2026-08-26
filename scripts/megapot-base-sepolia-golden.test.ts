@@ -21,7 +21,10 @@ const input = parseMegapotGoldenInput({
   max_ticket_price_atomic: "10000",
   entry_cutoff_seconds: 300,
   eligible_activities: ["study"],
-  qualification_fixture_acknowledged: true,
+  study_participant: {
+    timezone: "UTC",
+    accepted_lyrics: "Sail away",
+  },
 });
 
 const offer = {
@@ -79,6 +82,93 @@ const options = {
   authorization: "Bearer staging-test-token",
 } as const;
 
+const activeStudySession = {
+  object: "study_session",
+  session_id: "study_session_1",
+  persona_id: input.persona_id,
+  community_id: input.community_id,
+  post_id: input.post_id,
+  audio_revision: 1,
+  lyrics_revision: 1,
+  source_revision: 1,
+  qualification_policy_version_id: "study_session_first_pass_v2@1",
+  status: "active",
+  timezone: "UTC",
+  streak_day: null,
+  items: [
+    {
+      session_item_id: "study_item_1",
+      ordinal: 0,
+      source_identity: {
+        community_id: input.community_id,
+        post_id: input.post_id,
+        audio_revision: 1,
+        lyrics_revision: 1,
+        source_revision: 1,
+        source_item_key: "line-01",
+      },
+      prompt: { kind: "text_response", text: "Complete the accepted lyric: Sail ____" },
+      presentation_count: 1,
+      answer_count: 0,
+      first_pass_outcome: null,
+    },
+  ],
+  progress: {
+    qualifying_exercise_count: 1,
+    answered_exercise_count: 0,
+    first_pass_correct: 0,
+    required_correct: 1,
+    score_bps: null,
+  },
+  qualification: null,
+  created_at: "2026-08-26T10:00:00.000Z",
+  completed_at: null,
+} as const;
+
+const studyQualification = {
+  object: "activity_qualification",
+  qualification_id: "qualification_1",
+  persona_id: input.persona_id,
+  community_id: input.community_id,
+  post_id: input.post_id,
+  audio_revision: 1,
+  activity: "study",
+  attempt_ref: { kind: "study", session_id: activeStudySession.session_id },
+  score_bps: 10_000,
+  qualification_policy_version_id: activeStudySession.qualification_policy_version_id,
+  qualified_at: "2026-08-26T10:01:00.000Z",
+  reward_period_key: "2026-08-26",
+  streak_day: "2026-08-26",
+  evidence_summary: {
+    kind: "study_session_first_pass_v2",
+    qualifying_exercise_count: 1,
+    first_pass_correct: 1,
+    required_correct: 1,
+  },
+} as const;
+
+const completedStudySession = {
+  ...activeStudySession,
+  status: "completed",
+  streak_day: "2026-08-26",
+  items: [
+    {
+      ...activeStudySession.items[0],
+      answer_count: 1,
+      first_pass_outcome: "correct",
+    },
+  ],
+  progress: {
+    qualifying_exercise_count: 1,
+    answered_exercise_count: 1,
+    first_pass_correct: 1,
+    required_correct: 1,
+    score_bps: 10_000,
+  },
+  qualification: studyQualification,
+  completed_at: "2026-08-26T10:01:00.000Z",
+} as const;
+
 function json(value: unknown, status = 200): Response {
   return Response.json(value, { status });
 }
@@ -104,6 +194,10 @@ describe("Base Sepolia Megapot golden flow", () => {
       chain_id: 84_532,
       empty_pool_policy: "no_purchase",
       min_score_bps: 7_000,
+      qualification: {
+        activity: "study",
+        execution: "authenticated_participant_api",
+      },
       funding_transaction_supplied: false,
     });
   });
@@ -182,6 +276,22 @@ describe("Base Sepolia Megapot golden flow", () => {
           return json({ funding: confirmed });
         }
         if (path.endsWith("/rewards/megapot-pool")) return json({ pool: null });
+        if (path.endsWith("/posts/song_1/study/sessions")) {
+          return json(activeStudySession, 201);
+        }
+        if (path.endsWith("/items/study_item_1/answers")) {
+          return json({
+            object: "study_answer_result",
+            session_item_id: "study_item_1",
+            attempt_number: 1,
+            outcome: "correct",
+            first_pass: true,
+            session: completedStudySession,
+          });
+        }
+        if (path.endsWith(`/study/sessions/${activeStudySession.session_id}`)) {
+          return json(completedStudySession);
+        }
         throw new Error(`unexpected path: ${path}`);
       },
       sleep: async () => {
@@ -191,13 +301,18 @@ describe("Base Sepolia Megapot golden flow", () => {
 
     expect(observations).toBe(2);
     expect(sleeps).toBe(1);
-    expect(methods).toEqual(["POST", "POST", "POST", "POST", "GET", "GET"]);
-    expect(paths.at(-1)).toEndWith("/rewards/megapot-pool");
+    expect(methods).toEqual(["POST", "POST", "POST", "POST", "GET", "GET", "POST", "POST", "GET"]);
+    expect(paths.at(-1)).toEndWith(`/study/sessions/${activeStudySession.session_id}`);
     expect(result).toMatchObject({
       mode: "execute",
-      state: "funded",
+      state: "funded_and_qualified",
       funding: { status: "confirmed", transaction_hash: transactionHash },
       pool: null,
+      participant: {
+        session_id: activeStudySession.session_id,
+        score_bps: 10_000,
+        qualification_id: studyQualification.qualification_id,
+      },
     });
   });
 });
