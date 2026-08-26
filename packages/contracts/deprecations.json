@@ -125,12 +125,16 @@
       "reason": "2026-08-24 account/persona authorship amendment: song terms mutation requires the exact active persona_id bound to the author-side submission lineage and returns only author_persona."
     },
     {
+      "operationId": "post_mediaPostSubmissionsSubmissionIdLyrics",
+      "reason": "2026-08-26 owner-ratified no-ASR clean break: lyrics are optional author-supplied text, the command removes base_transcript_revision, and no transcript or machine-authored lyrics enter the v1 contract."
+    },
+    {
       "operationId": "post_mediaPostSubmissionsSubmissionIdFinalize",
       "reason": "2026-08-24 account/persona authorship amendment: song finalization requires the exact active persona_id bound to the author-side submission lineage and returns only author_persona."
     },
     {
       "operationId": "get_mediaPostSubmissionsSubmissionId",
-      "reason": "2026-08-25 author-reviewed lyrics amendment: the private submission snapshot adds audio_revision plus separate immutable ASR suggestion and current accepted-lyrics projections; it continues to expose author_persona and no account/user author identity."
+      "reason": "2026-08-26 owner-ratified no-ASR amendment: the private submission snapshot retains audio_revision and current author-supplied lyrics, removes machine-authored transcript suggestions, and continues to expose author_persona with no account/user author identity."
     },
     {
       "operationId": "post_mediaPostSubmissionsSubmissionIdReference",

@@ -66,6 +66,7 @@ describe("media processor Worker posture", () => {
       waitForEvent: async () => {
         throw new Error("terminal workflows do not wait");
       },
+      sleep: async () => undefined,
     } as MediaProcessingWorkflowStep;
 
     expect(

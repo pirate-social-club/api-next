@@ -2,6 +2,7 @@ import { Effect } from "effect";
 import {
   MEDIA_TRANSFORM_MAX_AUDIO_DURATION_MS,
   type MediaTransformAttempt,
+  type MediaTransformSampleArtifact,
 } from "../media/transform.ts";
 import {
   isMediaClassifierResultBoundToInputs,
@@ -25,6 +26,7 @@ import {
 
 export type MediaProcessingWorkflowResult =
   | Readonly<{ readonly outcome: "waiting_for_terms" }>
+  | Readonly<{ readonly outcome: "waiting_for_provider" }>
   | Readonly<{
       readonly outcome:
         | "published"
@@ -56,7 +58,14 @@ export type MediaProcessingWorkflowDependencies = Readonly<{
   readonly options: MediaProcessingWorkflowOptions;
 }>;
 
-class DeferredAttempt extends Error {}
+class DeferredAttempt extends Error {
+  constructor(readonly reason: "busy" | "exhausted" | "provider_progress" | "stale_fence") {
+    super(reason);
+    this.name = "DeferredAttempt";
+  }
+}
+
+const TRANSFORM_POLL_DELAY_MS = 10_000;
 
 const attemptId = (
   authority: MediaProcessingAuthority,
@@ -120,9 +129,23 @@ async function completeAttempt(
   dependencies: MediaProcessingWorkflowDependencies,
 ): Promise<void> {
   if (!(await dependencies.store.completeAttempt(lease, result))) {
-    throw new DeferredAttempt("attempt completion fence was lost");
+    throw new DeferredAttempt("stale_fence");
   }
   dependencies.options.observe?.(observation(authority, "attempt_completed", lease.stage));
+}
+
+async function deferAttempt(
+  authority: MediaProcessingAuthority,
+  lease: MediaProcessingAttemptLease,
+  result: MediaProcessingAttemptResult,
+  retryAfterMs: number,
+  dependencies: MediaProcessingWorkflowDependencies,
+): Promise<never> {
+  if (!(await dependencies.store.deferAttempt(lease, result, retryAfterMs))) {
+    throw new DeferredAttempt("stale_fence");
+  }
+  dependencies.options.observe?.(observation(authority, "attempt_completed", lease.stage));
+  throw new DeferredAttempt("provider_progress");
 }
 
 async function failAttempt(
@@ -130,7 +153,9 @@ async function failAttempt(
   lease: MediaProcessingAttemptLease,
   dependencies: MediaProcessingWorkflowDependencies,
 ): Promise<void> {
-  await dependencies.store.failAttempt(lease, "provider_unavailable", true);
+  if (!(await dependencies.store.failAttempt(lease, "provider_unavailable", true))) {
+    throw new DeferredAttempt("stale_fence");
+  }
   dependencies.options.observe?.(observation(authority, "attempt_failed", lease.stage));
 }
 
@@ -168,14 +193,18 @@ async function runProbe(
     dependencies,
   );
   if (started.kind === "replay") return requireAttemptKind(started.result, "probe").value;
+  const prior = started.lease.priorResult;
   const submittedAtMs = dependencies.options.now();
-  const attempt: MediaTransformAttempt = {
-    version: "media-transform-attempt-v1",
-    runtimeFence: {
-      submittedAtMs,
-      runtimeDeadlineMs: submittedAtMs + dependencies.options.transformRuntimeMs,
-    },
-  };
+  const attempt: MediaTransformAttempt =
+    prior === undefined
+      ? {
+          version: "media-transform-attempt-v1",
+          runtimeFence: {
+            submittedAtMs,
+            runtimeDeadlineMs: submittedAtMs + dependencies.options.transformRuntimeMs,
+          },
+        }
+      : requireAttemptKind(prior, "probe").value.attempt;
   try {
     const value = await Effect.runPromise(
       providers.transform.probe({
@@ -191,9 +220,23 @@ async function runProbe(
         attempt,
       }),
     );
+    if (value.status === "submitted" || value.status === "processing") {
+      return await deferAttempt(
+        authority,
+        started.lease,
+        { kind: "probe", value },
+        TRANSFORM_POLL_DELAY_MS,
+        dependencies,
+      );
+    }
+    if (value.status === "retryable_failure") {
+      await failAttempt(authority, started.lease, dependencies);
+      throw new DeferredAttempt("provider_progress");
+    }
     await completeAttempt(authority, started.lease, { kind: "probe", value }, dependencies);
     return value;
   } catch (error) {
+    if (error instanceof DeferredAttempt) throw error;
     await failAttempt(authority, started.lease, dependencies);
     throw error;
   }
@@ -216,7 +259,18 @@ async function runSample(
     dependencies,
   );
   if (started.kind === "replay") return requireAttemptKind(started.result, "sample").value;
+  const prior = started.lease.priorResult;
   const submittedAtMs = dependencies.options.now();
+  const attempt: MediaTransformAttempt =
+    prior === undefined
+      ? {
+          version: "media-transform-attempt-v1",
+          runtimeFence: {
+            submittedAtMs,
+            runtimeDeadlineMs: submittedAtMs + dependencies.options.transformRuntimeMs,
+          },
+        }
+      : requireAttemptKind(prior, "sample").value.attempt;
   try {
     const value = await Effect.runPromise(
       providers.transform.extractAudioSample({
@@ -231,18 +285,26 @@ async function runSample(
         source: { objectKey: authority.audio.immutableRef },
         sourceDurationMs: durationMs,
         variant,
-        attempt: {
-          version: "media-transform-attempt-v1",
-          runtimeFence: {
-            submittedAtMs,
-            runtimeDeadlineMs: submittedAtMs + dependencies.options.transformRuntimeMs,
-          },
-        },
+        attempt,
       }),
     );
+    if (value.status === "submitted" || value.status === "processing") {
+      return await deferAttempt(
+        authority,
+        started.lease,
+        { kind: "sample", value },
+        TRANSFORM_POLL_DELAY_MS,
+        dependencies,
+      );
+    }
+    if (value.status === "retryable_failure") {
+      await failAttempt(authority, started.lease, dependencies);
+      throw new DeferredAttempt("provider_progress");
+    }
     await completeAttempt(authority, started.lease, { kind: "sample", value }, dependencies);
     return value;
   } catch (error) {
+    if (error instanceof DeferredAttempt) throw error;
     await failAttempt(authority, started.lease, dependencies);
     throw error;
   }
@@ -251,7 +313,7 @@ async function runSample(
 async function runAcr(
   authority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
-  objectKey: string,
+  artifact: MediaTransformSampleArtifact,
   variant: "primary" | "alternate",
   dependencies: MediaProcessingWorkflowDependencies,
 ) {
@@ -268,7 +330,7 @@ async function runAcr(
   const abort = new AbortController();
   try {
     const bytes = await providers.artifactReader.readAudioSample(
-      objectKey,
+      artifact,
       dependencies.options.maximumSampleBytes,
       abort.signal,
     );
@@ -288,9 +350,14 @@ async function runAcr(
         },
       }),
     );
+    if (value.outcome === "retryable_failure") {
+      await failAttempt(authority, started.lease, dependencies);
+      throw new DeferredAttempt("provider_progress");
+    }
     await completeAttempt(authority, started.lease, { kind: "acr", value }, dependencies);
     return value;
   } catch (error) {
+    if (error instanceof DeferredAttempt) throw error;
     abort.abort();
     await failAttempt(authority, started.lease, dependencies);
     throw error;
@@ -330,7 +397,7 @@ async function runClassifier(
     attempt: {
       version: "media-provider-attempt-v1",
       attempt_id: started.lease.attemptId,
-      attempt_number: 1,
+      attempt_number: started.lease.attemptNumber,
       request_id: started.lease.attemptId,
       timeout_ms: dependencies.options.classifierTimeoutMs,
     },
@@ -345,6 +412,7 @@ async function runClassifier(
     await completeAttempt(authority, started.lease, { kind: "classifier", value }, dependencies);
     return value;
   } catch (error) {
+    if (error instanceof DeferredAttempt) throw error;
     abort.abort();
     await failAttempt(authority, started.lease, dependencies);
     throw error;
@@ -370,6 +438,7 @@ async function runMetadata(
     await completeAttempt(authority, started.lease, { kind: "metadata", value }, dependencies);
     return value;
   } catch (error) {
+    if (error instanceof DeferredAttempt) throw error;
     abort.abort();
     await failAttempt(authority, started.lease, dependencies);
     throw error;
@@ -436,7 +505,7 @@ async function buildAnalysis(
   let acrOutcome = await runAcr(
     authority,
     providers,
-    primarySample.artifact.objectKey,
+    primarySample.artifact,
     "primary",
     dependencies,
   );
@@ -454,13 +523,7 @@ async function buildAnalysis(
       await dependencies.store.commitProcessingFailure(authority, "transform_failed");
       return "processing_failed";
     }
-    acrOutcome = await runAcr(
-      authority,
-      providers,
-      alternate.artifact.objectKey,
-      "alternate",
-      dependencies,
-    );
+    acrOutcome = await runAcr(authority, providers, alternate.artifact, "alternate", dependencies);
     if (acrOutcome.outcome === "inconclusive_fingerprint") {
       acrOutcome = {
         ...acrOutcome,
@@ -629,10 +692,10 @@ async function publish(
   );
   if (started.kind === "replay") return { outcome: "published" };
   const committed = await dependencies.store.commitPublication(current);
-  if (committed === "stale") throw new DeferredAttempt("publication fence was stale");
+  if (committed === "stale") throw new DeferredAttempt("stale_fence");
   const after = await authoritativeReload(current, dependencies);
   if (after.status !== "published" || after.postId === null) {
-    throw new DeferredAttempt("publication did not converge");
+    throw new DeferredAttempt("stale_fence");
   }
   await completeAttempt(
     after,
@@ -656,45 +719,86 @@ async function align(
   if (current.publishedLyricsRevision !== (current.lyrics?.lyricsRevision ?? null)) {
     return { outcome: "inert" };
   }
-  const started = await startAttempt(
-    current,
-    "alignment",
-    current.publishedLyricsRevision ?? current.analysisRevision,
-    "alignment-port-v1",
-    dependencies,
-  );
+  let started: Awaited<ReturnType<typeof startAttempt>>;
+  try {
+    started = await startAttempt(
+      current,
+      "alignment",
+      current.publishedLyricsRevision ?? current.analysisRevision,
+      "alignment-port-v1",
+      dependencies,
+    );
+  } catch (error) {
+    if (!(error instanceof DeferredAttempt) || error.reason !== "exhausted") throw error;
+    const exhaustedResult = {
+      kind: "alignment",
+      status: "unavailable",
+      failureCode: "provider_unavailable",
+    } as const;
+    const committed = await dependencies.store.commitAlignment(current, exhaustedResult);
+    if (committed === "stale") throw new DeferredAttempt("stale_fence");
+    return { outcome: "alignment_recorded" };
+  }
   if (started.kind === "replay") return { outcome: "alignment_recorded" };
   let result: Extract<MediaProcessingAttemptResult, { readonly kind: "alignment" }>;
   if (current.lyrics === null) {
-    result = { kind: "alignment", status: "unavailable" };
+    result = { kind: "alignment", status: "unavailable", failureCode: "lyrics_missing" };
   } else if (dependencies.providers === null || !dependencies.options.enabled) {
-    result = { kind: "alignment", status: "unavailable" };
+    result = {
+      kind: "alignment",
+      status: "unavailable",
+      failureCode: "provider_unavailable",
+    };
   } else {
     const abort = new AbortController();
-    const aligned = await dependencies.providers.alignment.align({
-      operationId: current.operationId,
-      postId: current.postId,
-      audioRevision: current.audioRevision,
-      analysisRevision: current.analysisRevision,
-      lyricsRevision: current.lyrics.lyricsRevision,
-      canonicalAudioSha256: current.audio.canonicalSha256,
-      audioArtifactRef: current.audio.immutableRef,
-      lyrics: current.lyrics.text,
-      signal: abort.signal,
-    });
-    result =
-      aligned.status === "ready"
-        ? { kind: "alignment", status: "ready", artifactRef: aligned.artifactRef }
-        : { kind: "alignment", status: "unavailable" };
+    try {
+      const aligned = await dependencies.providers.alignment.align({
+        operationId: current.operationId,
+        postId: current.postId,
+        audioRevision: current.audioRevision,
+        analysisRevision: current.analysisRevision,
+        lyricsRevision: current.lyrics.lyricsRevision,
+        canonicalAudioSha256: current.audio.canonicalSha256,
+        audioArtifactRef: current.audio.immutableRef,
+        lyrics: current.lyrics.text,
+        signal: abort.signal,
+      });
+      if (
+        aligned.status === "unavailable" &&
+        ["rate_limited", "provider_unavailable", "timeout"].includes(aligned.failureCode)
+      ) {
+        await failAttempt(current, started.lease, dependencies);
+        throw new DeferredAttempt("provider_progress");
+      }
+      result =
+        aligned.status === "ready"
+          ? {
+              kind: "alignment",
+              status: "ready",
+              artifactRef: aligned.artifactRef,
+              artifactSha256: aligned.artifactSha256,
+              artifact: aligned.artifact,
+            }
+          : {
+              kind: "alignment",
+              status: "unavailable",
+              failureCode: aligned.failureCode,
+            };
+    } catch (error) {
+      if (error instanceof DeferredAttempt) throw error;
+      abort.abort();
+      await failAttempt(current, started.lease, dependencies);
+      throw new DeferredAttempt("provider_progress");
+    }
   }
   const committed = await dependencies.store.commitAlignment(current, result);
-  if (committed === "stale") throw new DeferredAttempt("alignment fence was stale");
+  if (committed === "stale") throw new DeferredAttempt("stale_fence");
   await completeAttempt(current, started.lease, result, dependencies);
   return { outcome: "alignment_recorded" };
 }
 
 /** Durable interpreter. Every effectful phase begins from a fresh authority reload. */
-export async function runMediaProcessingWorkflow(
+async function runMediaProcessingWorkflowOnce(
   rawPayload: unknown,
   eventType: MediaProcessingEventType,
   dependencies: MediaProcessingWorkflowDependencies,
@@ -752,7 +856,7 @@ export async function runMediaProcessingWorkflow(
     authority = await authoritativeReload(authority, dependencies);
     if (authority.analysis === null) {
       const committed = await dependencies.store.commitAnalysis(authority, built);
-      if (committed === "stale") throw new DeferredAttempt("analysis fence was stale");
+      if (committed === "stale") throw new DeferredAttempt("stale_fence");
     }
   } else {
     const refreshed = await refreshLyricsClassification(
@@ -763,12 +867,12 @@ export async function runMediaProcessingWorkflow(
     if (refreshed !== null) {
       authority = await authoritativeReload(authority, dependencies);
       const committed = await dependencies.store.commitAnalysis(authority, refreshed);
-      if (committed === "stale") throw new DeferredAttempt("lyrics classification fence was stale");
+      if (committed === "stale") throw new DeferredAttempt("stale_fence");
     }
   }
 
   authority = await authoritativeReload(authority, dependencies);
-  if (authority.analysis === null) throw new DeferredAttempt("analysis did not converge");
+  if (authority.analysis === null) throw new DeferredAttempt("stale_fence");
   if (
     authority.lyrics !== null &&
     (authority.lyrics.audioRevision !== authority.audioRevision ||
@@ -782,10 +886,34 @@ export async function runMediaProcessingWorkflow(
     return { outcome: decision };
   }
   const decisionCommit = await dependencies.store.commitDecision(authority, decision);
-  if (decisionCommit === "stale") throw new DeferredAttempt("decision fence was stale");
+  if (decisionCommit === "stale") throw new DeferredAttempt("stale_fence");
   authority = await authoritativeReload(authority, dependencies);
   if (decision.outcome === "manual_review") return { outcome: "manual_review" };
   if (decision.outcome === "block") return { outcome: "blocked" };
   if (decision.outcome === "reference_required") return { outcome: "action_required" };
   return publish(authority, dependencies);
+}
+
+export async function runMediaProcessingWorkflow(
+  rawPayload: unknown,
+  eventType: MediaProcessingEventType,
+  dependencies: MediaProcessingWorkflowDependencies,
+): Promise<MediaProcessingWorkflowResult> {
+  try {
+    return await runMediaProcessingWorkflowOnce(rawPayload, eventType, dependencies);
+  } catch (error) {
+    if (!(error instanceof DeferredAttempt)) throw error;
+    if (error.reason === "exhausted") {
+      const payload = decodeMediaProcessingWorkflowPayload(rawPayload);
+      const authority = await dependencies.store.loadAuthority(
+        payload.submissionId,
+        payload.operationId,
+      );
+      if (authority !== null) {
+        await dependencies.store.commitProviderUnavailableReview(authority, "provider_exhausted");
+      }
+      return { outcome: "manual_review" };
+    }
+    return { outcome: "waiting_for_provider" };
+  }
 }

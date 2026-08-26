@@ -3,6 +3,110 @@
 -- columns and tables are historical storage and are no longer writable by the
 -- application runtime.
 
+ALTER TABLE media_submission_events
+  DROP CONSTRAINT media_submission_events_event_kind_check,
+  ADD CONSTRAINT media_submission_events_event_kind_check CHECK (event_kind IN (
+    'submission_reserved', 'text_input_bound', 'media_reservation_issued', 'finalize_requested',
+    'author_cancelled', 'reservation_expired', 'upload_finalized',
+    'upload_expectation_mismatch_recorded', 'upload_source_precondition_failed',
+    'seal_conflict_recorded', 'song_terms_bound', 'song_lyrics_bound',
+    'blocking_analysis_completed', 'review_exhaustion_recorded',
+    'provider_unavailable_review_recorded', 'media_failure_recorded',
+    'publication_allowed', 'reference_required', 'review_required', 'policy_blocked',
+    'reference_bound', 'action_deadline_elapsed', 'moderator_approved', 'moderator_blocked',
+    'publication_committed', 'technical_exhaustion_recorded', 'retry_authorized',
+    'workflow_replaced'
+  ));
+
+ALTER TABLE media_processing_attempts
+  DROP CONSTRAINT media_processing_attempts_stage_check,
+  ADD CONSTRAINT media_processing_attempts_stage_check CHECK (stage IN (
+    'probe', 'sample_primary', 'sample_alternate', 'acr_primary', 'acr_alternate',
+    'metadata', 'classifier', 'publication', 'alignment'
+  )),
+  DROP CONSTRAINT media_processing_attempts_state_check,
+  ADD CONSTRAINT media_processing_attempts_state_check CHECK (state IN (
+    'pending', 'running', 'retry_wait', 'poll_wait', 'failed', 'succeeded', 'exhausted'
+  )),
+  DROP CONSTRAINT media_processing_attempt_state_shape,
+  ADD CONSTRAINT media_processing_attempt_state_shape CHECK (
+    (state = 'pending' AND claim_owner IS NULL AND claim_fence = 0
+      AND lease_expires_at IS NULL AND next_eligible_at IS NULL
+      AND retryable IS NULL AND failure_code IS NULL AND evidence_ref IS NULL AND result IS NULL)
+    OR (state = 'running' AND claim_owner IS NOT NULL AND claim_fence > 0
+      AND lease_expires_at IS NOT NULL AND next_eligible_at IS NULL
+      AND retryable IS NULL AND failure_code IS NULL
+      AND ((evidence_ref IS NULL AND result IS NULL)
+        OR (evidence_ref IS NOT NULL AND result IS NOT NULL)))
+    OR (state = 'retry_wait' AND claim_owner IS NULL AND claim_fence > 0
+      AND lease_expires_at IS NULL AND retryable = TRUE AND next_eligible_at IS NOT NULL
+      AND failure_code IS NOT NULL AND evidence_ref IS NULL AND result IS NULL)
+    OR (state = 'poll_wait' AND claim_owner IS NULL AND claim_fence > 0
+      AND lease_expires_at IS NULL AND retryable IS NULL AND next_eligible_at IS NOT NULL
+      AND failure_code IS NULL AND evidence_ref IS NOT NULL AND result IS NOT NULL)
+    OR (state = 'failed' AND claim_owner IS NULL AND claim_fence > 0
+      AND lease_expires_at IS NULL AND retryable = TRUE AND next_eligible_at IS NOT NULL
+      AND failure_code IS NOT NULL
+      AND (result IS NULL OR evidence_ref IS NOT NULL))
+    OR (state = 'succeeded' AND claim_owner IS NULL AND claim_fence > 0
+      AND lease_expires_at IS NULL AND next_eligible_at IS NULL
+      AND retryable IS NULL AND failure_code IS NULL AND evidence_ref IS NOT NULL AND result IS NOT NULL)
+    OR (state = 'exhausted' AND claim_owner IS NULL AND claim_fence > 0
+      AND lease_expires_at IS NULL AND next_eligible_at IS NULL
+      AND retryable = FALSE AND failure_code IS NOT NULL
+      AND (result IS NULL OR evidence_ref IS NOT NULL))
+  );
+
+DROP INDEX media_processing_attempts_claim_idx;
+CREATE INDEX media_processing_attempts_claim_idx
+  ON media_processing_attempts (state, next_eligible_at, lease_expires_at, attempt_id)
+  WHERE state IN ('pending', 'running', 'retry_wait', 'poll_wait');
+
+CREATE OR REPLACE FUNCTION guard_media_processing_attempt_update() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF ROW(NEW.attempt_id, NEW.submission_id, NEW.community_id, NEW.actor_user_id,
+      NEW.operation_id, NEW.audio_revision, NEW.analysis_revision, NEW.stage,
+      NEW.attempt_number, NEW.input_hash, NEW.provider_idempotency_key, NEW.input_kind,
+      NEW.input_revision, NEW.policy_revision, NEW.adapter_revision, NEW.created_at)
+    IS DISTINCT FROM
+    ROW(OLD.attempt_id, OLD.submission_id, OLD.community_id, OLD.actor_user_id,
+      OLD.operation_id, OLD.audio_revision, OLD.analysis_revision, OLD.stage,
+      OLD.attempt_number, OLD.input_hash, OLD.provider_idempotency_key, OLD.input_kind,
+      OLD.input_revision, OLD.policy_revision, OLD.adapter_revision, OLD.created_at) THEN
+    RAISE EXCEPTION 'media processing attempt identity is immutable';
+  END IF;
+  IF NEW.updated_at <= OLD.updated_at THEN
+    RAISE EXCEPTION 'media processing attempt timestamp must advance';
+  END IF;
+  IF NEW.state = 'retry_wait' AND NEW.attempt_number >= 3 THEN
+    RAISE EXCEPTION 'media processing attempt retry bound is exhausted';
+  END IF;
+  IF OLD.state IN ('retry_wait', 'poll_wait') AND
+      (OLD.next_eligible_at IS NULL OR OLD.next_eligible_at > clock_timestamp()) THEN
+    RAISE EXCEPTION 'media processing attempt retry is not yet eligible';
+  END IF;
+  IF OLD.state IN ('pending', 'retry_wait', 'poll_wait') AND
+      (NEW.state <> 'running' OR NEW.claim_fence <> OLD.claim_fence + 1
+       OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp()) THEN
+    RAISE EXCEPTION 'media processing attempt claim is not allowed';
+  END IF;
+  IF OLD.state = 'running' AND NEW.state = 'running' AND
+      (OLD.lease_expires_at > clock_timestamp() OR NEW.claim_fence <> OLD.claim_fence + 1
+       OR NEW.claim_owner IS NULL OR NEW.lease_expires_at <= clock_timestamp()) THEN
+    RAISE EXCEPTION 'media processing attempt reclaim is not allowed';
+  END IF;
+  IF OLD.state = 'running' AND NEW.state IN ('succeeded', 'retry_wait', 'poll_wait', 'failed', 'exhausted') AND
+      (OLD.lease_expires_at <= clock_timestamp() OR NEW.claim_fence <> OLD.claim_fence
+       OR NEW.claim_owner IS NOT NULL) THEN
+    RAISE EXCEPTION 'media processing attempt completion is not allowed';
+  END IF;
+  IF OLD.state NOT IN ('pending', 'retry_wait', 'poll_wait', 'running') THEN
+    RAISE EXCEPTION 'media processing attempt is terminal';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 ALTER TABLE media_analysis_evidence
   DROP CONSTRAINT media_analysis_evidence_speech_status_check,
   ADD CONSTRAINT media_analysis_evidence_speech_status_check
@@ -72,6 +176,13 @@ ALTER TABLE media_publication_projections
   DROP CONSTRAINT media_publication_projections_alignment_check,
   ADD CONSTRAINT media_publication_projections_alignment_check
     CHECK (alignment IN ('not_applicable', 'pending', 'ready', 'unavailable'));
+
+ALTER TABLE media_song_lyrics_revisions
+  DROP CONSTRAINT media_song_lyrics_provenance_shape,
+  ADD CONSTRAINT media_song_lyrics_provenance_shape CHECK (
+    (base_transcript_revision IS NULL AND provenance IN ('pasted', 'corrected'))
+    OR (base_transcript_revision IS NOT NULL AND provenance IN ('asr_accepted', 'corrected'))
+  );
 
 -- New lyrics revisions can only be author-pasted or corrections of an earlier
 -- author revision. Historical transcript-linked rows remain readable.
@@ -318,13 +429,81 @@ BEGIN
     'analysis_record.media_safety <> ''allow''',
     'analysis_record.media_safety NOT IN (''allow'', ''not_applicable'')');
   patched := replace(patched,
+    'OR (OLD.status = ''processing'' AND OLD.phase = ''analysis'' AND NEW.status = ''manual_review'' AND NEW.phase IS NULL
+      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.creation_revision = OLD.creation_revision AND NEW.audio_revision = OLD.audio_revision',
+    'OR (OLD.status = ''processing'' AND (OLD.phase = ''analysis'' OR (OLD.phase = ''decision'' AND NEW.review_reason_code = ''moderation_unavailable'' AND NEW.review_exhaustion_code IS NULL AND NEW.review_exhaustion_attempt_id IS NULL)) AND NEW.status = ''manual_review'' AND NEW.phase IS NULL
+      AND NEW.decision_revision = 0 AND NEW.current_decision_revision IS NULL AND NEW.creation_revision = OLD.creation_revision AND NEW.audio_revision = OLD.audio_revision');
+  patched := replace(patched,
     'analysis_record.lyrics_safety NOT IN (''skipped'', ''allow'')',
     'analysis_record.lyrics_safety NOT IN (''not_applicable'', ''allow'')');
   patched := replace(patched,
     'analysis_record.explicitness NOT IN (''not_explicit'', ''explicit'', ''no_lyrics'')',
     'COALESCE(analysis_record.explicitness, ''not_applicable'') NOT IN (''not_explicit'', ''explicit'', ''not_applicable'')');
+  patched := replace(patched,
+    'AND NEW.analysis_revision = OLD.analysis_revision AND NEW.review_ref IS NOT NULL AND NEW.review_exhaustion_code = ''acr_exhausted'' AND NEW.review_exhaustion_attempt_id IS NOT NULL
+      AND NEW.held_revision = OLD.creation_revision AND NEW.post_id IS NULL)',
+    'AND NEW.analysis_revision = OLD.analysis_revision AND NEW.review_ref IS NOT NULL
+      AND ((NEW.review_reason_code = ''review_required'' AND NEW.review_exhaustion_code = ''acr_exhausted'' AND NEW.review_exhaustion_attempt_id IS NOT NULL)
+        OR (NEW.review_reason_code = ''moderation_unavailable'' AND NEW.review_exhaustion_code IS NULL AND NEW.review_exhaustion_attempt_id IS NULL))
+      AND NEW.held_revision = OLD.creation_revision AND NEW.post_id IS NULL)');
+  patched := replace(patched,
+    'ELSIF OLD.status = ''processing'' AND OLD.phase = ''analysis'' AND NEW.status = ''manual_review'' AND NEW.decision_revision = 0 AND NEW.review_exhaustion_code = ''acr_exhausted'' THEN',
+    'ELSIF OLD.status = ''processing'' AND OLD.phase IN (''analysis'', ''decision'') AND NEW.status = ''manual_review'' AND NEW.decision_revision = 0 AND NEW.review_reason_code = ''moderation_unavailable'' AND NEW.review_exhaustion_code IS NULL THEN
+    IF NEW.creation_revision IS DISTINCT FROM OLD.creation_revision
+       OR NEW.audio_revision IS DISTINCT FROM OLD.audio_revision
+       OR NEW.analysis_revision IS DISTINCT FROM OLD.analysis_revision
+       OR NEW.current_immutable_ref IS DISTINCT FROM OLD.current_immutable_ref
+       OR NEW.current_analysis_revision IS DISTINCT FROM OLD.current_analysis_revision
+       OR NEW.current_terms_revision IS DISTINCT FROM OLD.current_terms_revision
+       OR NEW.current_decision_revision IS NOT NULL
+       OR ROW(NEW.bound_reference_asset_id,NEW.bound_reference_evidence_ref,NEW.bound_reference_audio_revision,NEW.bound_reference_analysis_revision,NEW.bound_reference_audio_sha256,NEW.bound_reference_upstream_share_bps) IS DISTINCT FROM ROW(OLD.bound_reference_asset_id,OLD.bound_reference_evidence_ref,OLD.bound_reference_audio_revision,OLD.bound_reference_analysis_revision,OLD.bound_reference_audio_sha256,OLD.bound_reference_upstream_share_bps)
+       OR NEW.workflow_revision IS DISTINCT FROM OLD.workflow_revision
+       OR NEW.retry_count IS DISTINCT FROM OLD.retry_count
+       OR NEW.failure_code IS DISTINCT FROM OLD.failure_code
+       OR NEW.failure_retry_count IS DISTINCT FROM OLD.failure_retry_count
+       OR NEW.retryable IS DISTINCT FROM OLD.retryable
+       OR NEW.last_safe_phase IS DISTINCT FROM OLD.last_safe_phase
+       OR NEW.abandonment_reason IS DISTINCT FROM OLD.abandonment_reason
+       OR NEW.retention_disposition IS DISTINCT FROM OLD.retention_disposition
+       OR NEW.post_id IS DISTINCT FROM OLD.post_id
+       OR NEW.review_ref IS NULL
+       OR NEW.review_exhaustion_attempt_id IS NOT NULL
+       OR NEW.held_revision IS DISTINCT FROM OLD.creation_revision
+       OR NEW.action_kind IS NOT NULL
+       OR NEW.action_reference_request_ref IS NOT NULL
+       OR NEW.action_expires_at IS NOT NULL
+       OR NEW.moderator_action_id IS NOT NULL
+       OR NEW.moderator_actor_id IS NOT NULL
+       OR NEW.moderator_evidence_ref IS NOT NULL
+       OR NEW.moderator_approval_kind IS NOT NULL
+       OR NEW.moderator_reason_code IS NOT NULL THEN
+      RAISE EXCEPTION ''provider-unavailable review evidence is not exact'';
+    END IF;
+  ELSIF OLD.status = ''processing'' AND OLD.phase = ''analysis'' AND NEW.status = ''manual_review'' AND NEW.decision_revision = 0 AND NEW.review_exhaustion_code = ''acr_exhausted'' THEN');
+  patched := replace(patched,
+    'a.stage=''acr''',
+    'a.stage IN (''acr_primary'',''acr_alternate'')');
+  patched := replace(patched,
+    'later.stage=''acr''',
+    'later.stage=a.stage');
   IF patched IS NOT DISTINCT FROM definition THEN
     RAISE EXCEPTION '0056 could not patch the publication predicate';
+  END IF;
+  EXECUTE patched;
+END;
+$migration$;
+
+DO $migration$
+DECLARE definition TEXT; patched TEXT;
+BEGIN
+  SELECT pg_get_functiondef('validate_media_submission_event_pair()'::regprocedure)
+    INTO definition;
+  patched := replace(definition,
+    'ELSIF OLD.status = ''processing'' AND OLD.phase = ''analysis'' AND NEW.review_exhaustion_code = ''acr_exhausted'' THEN expected_event := ''review_exhaustion_recorded'';',
+    'ELSIF OLD.status = ''processing'' AND OLD.phase IN (''analysis'', ''decision'') AND NEW.status = ''manual_review'' AND NEW.review_reason_code = ''moderation_unavailable'' THEN expected_event := ''provider_unavailable_review_recorded'';
+  ELSIF OLD.status = ''processing'' AND OLD.phase = ''analysis'' AND NEW.review_exhaustion_code = ''acr_exhausted'' THEN expected_event := ''review_exhaustion_recorded'';');
+  IF patched IS NOT DISTINCT FROM definition THEN
+    RAISE EXCEPTION '0056 could not patch the provider-unavailable review event';
   END IF;
   EXECUTE patched;
 END;

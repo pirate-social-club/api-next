@@ -1,6 +1,7 @@
 import type {
   MediaTransformAudioSampleOutcome,
   MediaTransformProbeOutcome,
+  MediaTransformSampleArtifact,
   MediaTransformService,
 } from "../media/transform.ts";
 import type {
@@ -111,6 +112,7 @@ export type MediaProcessingAuthority = Readonly<{
   readonly analysisRevision: number;
   readonly decisionRevision: number;
   readonly workflowRevision: number;
+  readonly retryCount: number;
   readonly status:
     | "processing"
     | "action_required"
@@ -229,15 +231,34 @@ export type MediaProcessingAttemptResult =
   | Readonly<{ readonly kind: "publication"; readonly postId: string }>
   | Readonly<{
       readonly kind: "alignment";
-      readonly status: "ready" | "unavailable";
-      readonly artifactRef?: string;
+      readonly status: "ready";
+      readonly artifactRef: string;
+      readonly artifactSha256: string;
+      readonly artifact: Readonly<Record<string, unknown>>;
+    }>
+  | Readonly<{
+      readonly kind: "alignment";
+      readonly status: "unavailable";
+      readonly failureCode:
+        | "elevenlabs_key_missing"
+        | "key_invalid"
+        | "rate_limited"
+        | "provider_unavailable"
+        | "timeout"
+        | "invalid_response"
+        | "alignment_failed"
+        | "lyrics_missing"
+        | "audio_missing";
     }>;
 
 export type MediaProcessingAttemptLease = Readonly<{
   readonly attemptId: string;
+  readonly attemptNumber: number;
   readonly stage: MediaProcessingAttemptStage;
   readonly claimOwner: string;
   readonly claimFence: number;
+  /** Persisted provider progress from an earlier poll of this exact attempt. */
+  readonly priorResult?: MediaProcessingAttemptResult;
 }>;
 
 export type MediaProcessingAttemptStart =
@@ -276,6 +297,11 @@ export interface MediaProcessingStore {
     lease: MediaProcessingAttemptLease,
     result: MediaProcessingAttemptResult,
   ) => Promise<boolean>;
+  readonly deferAttempt: (
+    lease: MediaProcessingAttemptLease,
+    result: MediaProcessingAttemptResult,
+    retryAfterMs: number,
+  ) => Promise<boolean>;
   readonly failAttempt: (
     lease: MediaProcessingAttemptLease,
     failure: "provider_unavailable" | "provider_timeout" | "provider_invalid",
@@ -312,7 +338,7 @@ export interface MediaProcessingStore {
 
 export interface MediaProcessingArtifactReader {
   readonly readAudioSample: (
-    objectKey: string,
+    artifact: MediaTransformSampleArtifact,
     maximumBytes: number,
     signal: AbortSignal,
   ) => Promise<Uint8Array>;
@@ -339,8 +365,25 @@ export interface MediaProcessingAlignmentPort {
       signal: AbortSignal;
     }>,
   ) => Promise<
-    | Readonly<{ readonly status: "ready"; readonly artifactRef: string }>
-    | Readonly<{ readonly status: "unavailable" }>
+    | Readonly<{
+        readonly status: "ready";
+        readonly artifactRef: string;
+        readonly artifactSha256: string;
+        readonly artifact: Readonly<Record<string, unknown>>;
+      }>
+    | Readonly<{
+        readonly status: "unavailable";
+        readonly failureCode:
+          | "elevenlabs_key_missing"
+          | "key_invalid"
+          | "rate_limited"
+          | "provider_unavailable"
+          | "timeout"
+          | "invalid_response"
+          | "alignment_failed"
+          | "lyrics_missing"
+          | "audio_missing";
+      }>
   >;
 }
 

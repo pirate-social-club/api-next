@@ -34,6 +34,7 @@ function authority(overrides: Partial<MediaProcessingAuthority> = {}): MediaProc
     analysisRevision: 1,
     decisionRevision: 0,
     workflowRevision: 1,
+    retryCount: 0,
     status: "processing",
     phase: "analysis",
     audio: {
@@ -66,6 +67,7 @@ class FakeStore implements MediaProcessingStore {
       lease: MediaProcessingAttemptLease;
       result?: MediaProcessingAttemptResult;
       failed?: boolean;
+      deferred?: boolean;
     }>
   >();
   readonly outboxes = new Map<string, MediaProcessingOutboxRecord>();
@@ -73,6 +75,10 @@ class FakeStore implements MediaProcessingStore {
   publications = 0;
   alignmentLaunches = 0;
   alignments = 0;
+  readonly alignmentResults: Extract<
+    MediaProcessingAttemptResult,
+    { readonly kind: "alignment" }
+  >[] = [];
   providerReviews = 0;
 
   constructor(
@@ -141,17 +147,37 @@ class FakeStore implements MediaProcessingStore {
 
   startAttempt: MediaProcessingStore["startAttempt"] = async (input) => {
     const prior = this.attempts.get(input.attemptId);
-    if (prior?.result !== undefined) return { kind: "replay", result: prior.result };
-    if (prior !== undefined && prior.failed !== true) return { kind: "busy" };
+    if (prior?.result !== undefined && prior.deferred !== true) {
+      return { kind: "replay", result: prior.result };
+    }
+    if (prior !== undefined && prior.failed !== true && prior.deferred !== true) {
+      return { kind: "busy" };
+    }
     const lease = {
       attemptId: input.attemptId,
+      attemptNumber: prior?.lease.attemptNumber ?? 1,
       stage: input.stage,
       claimOwner: input.workerId,
       claimFence: (prior?.lease.claimFence ?? 0) + 1,
+      ...(prior?.deferred === true && prior.result !== undefined
+        ? { priorResult: prior.result }
+        : {}),
     };
     this.events.push(`persist:${input.stage}:${input.inputHash}`);
     this.attempts.set(input.attemptId, { lease });
     return { kind: "run", lease };
+  };
+
+  deferAttempt = async (
+    lease: MediaProcessingAttemptLease,
+    result: MediaProcessingAttemptResult,
+  ) => {
+    const prior = this.attempts.get(lease.attemptId);
+    if (prior?.lease.claimFence !== lease.claimFence || prior.lease.claimOwner !== lease.claimOwner)
+      return false;
+    this.events.push(`defer:${lease.stage}`);
+    this.attempts.set(lease.attemptId, { lease, result, deferred: true });
+    return true;
   };
 
   completeAttempt = async (
@@ -243,7 +269,7 @@ class FakeStore implements MediaProcessingStore {
     return "committed";
   };
 
-  commitAlignment: MediaProcessingStore["commitAlignment"] = async (expected) => {
+  commitAlignment: MediaProcessingStore["commitAlignment"] = async (expected, result) => {
     if (
       expected.publishedLyricsRevision !== this.current.publishedLyricsRevision ||
       expected.postId !== this.current.postId
@@ -252,6 +278,7 @@ class FakeStore implements MediaProcessingStore {
     if (this.alignments > 0) return "replay";
     this.events.push(`commit:alignment:l${String(expected.publishedLyricsRevision)}`);
     this.alignments += 1;
+    this.alignmentResults.push(result);
     return "committed";
   };
 
@@ -458,7 +485,12 @@ function providers(
     alignment: {
       align: async (input) => {
         events.push(`effect:alignment:l${input.lyricsRevision}:${input.lyrics}`);
-        return { status: "ready", artifactRef: `alignment-l${input.lyricsRevision}` };
+        return {
+          status: "ready",
+          artifactRef: `alignment-l${input.lyricsRevision}`,
+          artifactSha256: "b".repeat(64),
+          artifact: { version: "timed-lyrics-v1", timings: [] },
+        };
       },
     },
   };
@@ -490,6 +522,51 @@ const workflowPayload = (store: FakeStore) => ({
 });
 
 describe("media processing workflow", () => {
+  test("persists and resumes a submitted Transloadit assembly before downstream effects", async () => {
+    const store = new FakeStore(authority({ lyrics: null }));
+    const providerEvents: string[] = [];
+    const base = providers(providerEvents);
+    let polls = 0;
+    const provider: MediaProcessingProviders = {
+      ...base,
+      transform: {
+        ...base.transform,
+        probe: (input) => {
+          polls += 1;
+          if (polls === 1) {
+            return Effect.succeed({
+              status: "submitted",
+              attempt: {
+                version: "media-transform-attempt-v1",
+                runtimeFence: input.attempt.runtimeFence,
+                providerJobId: "durable-probe-assembly",
+              },
+            });
+          }
+          expect(input.attempt.providerJobId).toBe("durable-probe-assembly");
+          return base.transform.probe(input);
+        },
+      },
+    };
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "analysis_launch",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.events).toContain("defer:probe");
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "analysis_launch",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "published_without_alignment" });
+    expect(polls).toBe(2);
+  });
+
   test("runs the terms-first fake-transport golden vertical and consumes the sealed hash", async () => {
     const store = new FakeStore();
     const providerEvents = store.events;
@@ -820,6 +897,96 @@ describe("media processing workflow", () => {
     expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([
       "effect:alignment:l1:accepted lyrics",
     ]);
+  });
+
+  test("alignment provider failures retry without changing published product state", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+      }),
+      "alignment",
+    );
+    const base = providers([]);
+    const provider: MediaProcessingProviders = {
+      ...base,
+      alignment: { align: async () => Promise.reject(new Error("provider unavailable")) },
+    };
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "alignment",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.events).toContain("fail:alignment");
+    expect(store.current.status).toBe("published");
+    expect(store.providerReviews).toBe(0);
+    expect(store.alignments).toBe(0);
+  });
+
+  test("transient alignment outcomes enter the durable retry ledger", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+      }),
+      "alignment",
+    );
+    const base = providers([]);
+    const provider: MediaProcessingProviders = {
+      ...base,
+      alignment: {
+        align: async () => ({ status: "unavailable", failureCode: "provider_unavailable" }),
+      },
+    };
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "alignment",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.events).toContain("fail:alignment");
+    expect(store.current.status).toBe("published");
+    expect(store.providerReviews).toBe(0);
+    expect(store.alignments).toBe(0);
+  });
+
+  test("alignment exhaustion records unavailable without reopening published moderation", async () => {
+    class AlignmentExhaustedStore extends FakeStore {
+      override startAttempt: MediaProcessingStore["startAttempt"] = async () => ({
+        kind: "exhausted",
+      });
+    }
+    const store = new AlignmentExhaustedStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+      }),
+      "alignment",
+    );
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "alignment",
+        dependencies(store, providers([])),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(store.alignmentResults).toEqual([
+      { kind: "alignment", status: "unavailable", failureCode: "provider_unavailable" },
+    ]);
+    expect(store.current.status).toBe("published");
+    expect(store.providerReviews).toBe(0);
   });
 
   test("stale attempt completion is fenced", async () => {

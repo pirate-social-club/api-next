@@ -370,12 +370,14 @@ export type MediaAlignmentFailureCode =
   | "audio_missing";
 export type ProcessingAttemptStage =
   | "probe"
-  | "embedded_metadata"
-  | "cover"
-  | "acr"
-  | "lyrics_safety"
-  | "media_safety"
-  | "publication";
+  | "sample_primary"
+  | "sample_alternate"
+  | "acr_primary"
+  | "acr_alternate"
+  | "metadata"
+  | "classifier"
+  | "publication"
+  | "alignment";
 export type ProcessingAttemptInput = Readonly<{
   attemptId: string;
   communityId: string;
@@ -386,7 +388,7 @@ export type ProcessingAttemptInput = Readonly<{
   audioRevision: number;
   analysisRevision: number;
   stage: ProcessingAttemptStage;
-  inputKind: "audio" | "analysis" | "reference" | "publication";
+  inputKind: "audio" | "analysis" | "lyrics" | "reference" | "publication";
   inputRevision: number;
   policyRevision: string;
   adapterRevision: string;
@@ -406,6 +408,8 @@ export type ProcessingAttemptCompleteInput = Readonly<{
   evidenceRef: string;
   result: Readonly<Record<string, unknown>>;
 }>;
+export type ProcessingAttemptDeferInput = ProcessingAttemptCompleteInput &
+  Readonly<{ retryAfterMs: number }>;
 export type ProcessingAttemptFailInput = Readonly<{
   attemptId: string;
   workerId: string;
@@ -421,6 +425,28 @@ export type MediaProcessingAttemptFailureCode =
   | "provider_unavailable"
   | "provider_timeout"
   | "provider_invalid";
+export type ProcessingAttemptRecord = Readonly<{
+  attemptId: string;
+  stage: ProcessingAttemptStage;
+  attemptNumber: number;
+  state: "pending" | "running" | "retry_wait" | "poll_wait" | "failed" | "succeeded" | "exhausted";
+  claimOwner: string | null;
+  claimFence: number;
+  nextEligibleAt: string | null;
+  evidenceRef: string | null;
+  result: Readonly<Record<string, unknown>> | null;
+}>;
+export type ProcessingAttemptLookupInput = Readonly<{
+  submissionId: string;
+  operationId: string;
+  audioRevision: number;
+  analysisRevision: number;
+  stage: ProcessingAttemptStage;
+  inputRevision: number;
+  inputHash: string;
+  policyRevision: string;
+  adapterRevision: string;
+}>;
 
 export type MediaSubmissionStore = {
   reserve(
@@ -529,11 +555,21 @@ export type MediaSubmissionStore = {
   recordProcessingAttempt(
     input: ProcessingAttemptInput,
   ): Effect.Effect<void, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  listProcessingAttempts(
+    input: ProcessingAttemptLookupInput,
+  ): Effect.Effect<
+    readonly ProcessingAttemptRecord[],
+    MediaSubmissionRepositoryFailure,
+    ControlPlaneDb
+  >;
   claimProcessingAttempt(
     input: ProcessingAttemptClaimInput,
   ): Effect.Effect<boolean, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   completeProcessingAttempt(
     input: ProcessingAttemptCompleteInput,
+  ): Effect.Effect<boolean, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
+  deferProcessingAttempt(
+    input: ProcessingAttemptDeferInput,
   ): Effect.Effect<boolean, MediaSubmissionRepositoryFailure, ControlPlaneDb>;
   failProcessingAttempt(
     input: ProcessingAttemptFailInput,
@@ -2244,7 +2280,7 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
           if (operation === "review" && next.review?.exhaustionCode === "acr_exhausted") {
             const attempt = yield* tx.execute<Row>({
               label: "media-review.exhaustion-attempt",
-              text: "SELECT a.attempt_id FROM media_processing_attempts a WHERE a.attempt_id=$1 AND a.community_id=$2 AND a.actor_user_id=$3 AND a.submission_id=$4 AND a.operation_id=$5 AND a.stage='acr' AND a.input_kind='audio' AND a.audio_revision=$6 AND a.analysis_revision=$7 AND a.input_revision=$6 AND a.input_hash=$8 AND a.state='exhausted' AND a.retryable=FALSE AND a.failure_code IS NOT NULL AND a.attempt_number=3 AND NOT EXISTS (SELECT 1 FROM media_processing_attempts later WHERE later.community_id=a.community_id AND later.actor_user_id=a.actor_user_id AND later.submission_id=a.submission_id AND later.operation_id=a.operation_id AND later.stage='acr' AND later.attempt_number>a.attempt_number)",
+              text: "SELECT a.attempt_id FROM media_processing_attempts a WHERE a.attempt_id=$1 AND a.community_id=$2 AND a.actor_user_id=$3 AND a.submission_id=$4 AND a.operation_id=$5 AND a.stage IN ('acr_primary','acr_alternate') AND a.input_kind='audio' AND a.audio_revision=$6 AND a.analysis_revision=$7 AND a.input_revision=$6 AND a.input_hash=$8 AND a.state='exhausted' AND a.retryable=FALSE AND a.failure_code IS NOT NULL AND a.attempt_number=3 AND NOT EXISTS (SELECT 1 FROM media_processing_attempts later WHERE later.community_id=a.community_id AND later.actor_user_id=a.actor_user_id AND later.submission_id=a.submission_id AND later.operation_id=a.operation_id AND later.stage=a.stage AND later.attempt_number>a.attempt_number)",
               values: [
                 next.review.exhaustionAttemptId,
                 current.communityId,
@@ -2409,13 +2445,19 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       "review",
       input,
       (_current) => ({
-        event: "review_exhaustion_recorded",
+        event:
+          input.review.reasonCode === "moderation_unavailable"
+            ? "provider_unavailable_review_recorded"
+            : "review_exhaustion_recorded",
         actorId: input.actorUserId,
         expectedCreationRevision: input.expectedCreationRevision,
         review: input.review,
       }),
       (_next, current) => ({
-        event: "review_exhaustion_recorded",
+        event:
+          input.review.reasonCode === "moderation_unavailable"
+            ? "provider_unavailable_review_recorded"
+            : "review_exhaustion_recorded",
         text: "UPDATE media_post_submissions SET status='manual_review',phase=NULL,review_ref=$1,review_reason_code=$2,review_exhaustion_code=$3,review_exhaustion_attempt_id=$4,held_revision=$5,decision_revision=0,current_decision_revision=NULL,event_sequence=event_sequence+1,updated_at=clock_timestamp() WHERE community_id=$6 AND actor_user_id=$7 AND submission_id=$8 AND creation_revision=$9",
         values: [
           input.review.reviewRef,
@@ -3172,6 +3214,85 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       )
         return yield* Effect.fail(fail("attempt", "immutable-object-conflict"));
     });
+  const listProcessingAttempts: MediaSubmissionStore["listProcessingAttempts"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        ![input.submissionId, input.operationId, input.policyRevision, input.adapterRevision].every(
+          validId,
+        ) ||
+        !validRevision(input.audioRevision, 1) ||
+        !validRevision(input.analysisRevision, 1) ||
+        !validRevision(input.inputRevision, 1) ||
+        !validHash(input.inputHash)
+      ) {
+        return yield* Effect.fail(fail("attempt", "invalid-input"));
+      }
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<Row>({
+        label: "media-attempt.list",
+        text: "SELECT attempt_id,stage,attempt_number,state,claim_owner,claim_fence,next_eligible_at,evidence_ref,result FROM media_processing_attempts WHERE submission_id=$1 AND operation_id=$2 AND audio_revision=$3 AND analysis_revision=$4 AND stage=$5 AND input_revision=$6 AND input_hash=$7 AND policy_revision=$8 AND adapter_revision=$9 ORDER BY attempt_number",
+        values: [
+          input.submissionId,
+          input.operationId,
+          input.audioRevision,
+          input.analysisRevision,
+          input.stage,
+          input.inputRevision,
+          input.inputHash,
+          input.policyRevision,
+          input.adapterRevision,
+        ],
+        readonly: true,
+      });
+      const attempts: ProcessingAttemptRecord[] = [];
+      for (const row of result.rows) {
+        const attemptNumber = integer(row.attempt_number);
+        const claimFence = integer(row.claim_fence);
+        const state = row.state;
+        const decodedResult = row.result === null ? null : object(row.result);
+        const nextEligibleEpoch =
+          row.next_eligible_at === null ? null : Date.parse(String(row.next_eligible_at));
+        const nextEligibleAt =
+          nextEligibleEpoch === null || !Number.isFinite(nextEligibleEpoch)
+            ? null
+            : new Date(nextEligibleEpoch).toISOString();
+        if (
+          !validId(row.attempt_id) ||
+          row.stage !== input.stage ||
+          attemptNumber === null ||
+          attemptNumber < 1 ||
+          attemptNumber > 3 ||
+          claimFence === null ||
+          ![
+            "pending",
+            "running",
+            "retry_wait",
+            "poll_wait",
+            "failed",
+            "succeeded",
+            "exhausted",
+          ].includes(String(state)) ||
+          (row.claim_owner !== null && !validId(row.claim_owner)) ||
+          (row.evidence_ref !== null && !validId(row.evidence_ref)) ||
+          (row.result !== null && decodedResult === null) ||
+          (row.next_eligible_at !== null && nextEligibleAt === null)
+        ) {
+          return yield* Effect.fail(fail("attempt", "invalid-row"));
+        }
+        attempts.push({
+          attemptId: row.attempt_id,
+          stage: input.stage,
+          attemptNumber,
+          state: state as ProcessingAttemptRecord["state"],
+          claimOwner: row.claim_owner as string | null,
+          claimFence,
+          nextEligibleAt,
+          evidenceRef: row.evidence_ref as string | null,
+          result: decodedResult,
+        });
+      }
+      return attempts;
+    });
   const claimProcessingAttempt: MediaSubmissionStore["claimProcessingAttempt"] = (input) =>
     Effect.gen(function* () {
       if (
@@ -3183,8 +3304,34 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       const db = yield* ControlPlaneDb;
       const result = yield* db.execute({
         label: "media-attempt.claim",
-        text: "UPDATE media_processing_attempts SET state='running',claim_owner=$1,claim_fence=claim_fence+1,lease_expires_at=clock_timestamp()+make_interval(secs=>$2),next_eligible_at=NULL,updated_at=clock_timestamp() WHERE attempt_id=$3 AND (state='pending' OR (state='retry_wait' AND next_eligible_at<=clock_timestamp()) OR (state='running' AND lease_expires_at<=clock_timestamp()))",
+        text: "UPDATE media_processing_attempts SET state='running',claim_owner=$1,claim_fence=claim_fence+1,lease_expires_at=clock_timestamp()+make_interval(secs=>$2),next_eligible_at=NULL,updated_at=clock_timestamp() WHERE attempt_id=$3 AND (state='pending' OR (state IN ('retry_wait','poll_wait') AND next_eligible_at<=clock_timestamp()) OR (state='running' AND lease_expires_at<=clock_timestamp()))",
         values: [input.workerId, input.leaseSeconds, input.attemptId],
+        readonly: false,
+      });
+      return result.rowCount === 1;
+    });
+  const deferProcessingAttempt: MediaSubmissionStore["deferProcessingAttempt"] = (input) =>
+    Effect.gen(function* () {
+      if (
+        ![input.attemptId, input.workerId, input.evidenceRef].every(validId) ||
+        !validRevision(input.claimFence, 1) ||
+        !validRevision(input.retryAfterMs, 1) ||
+        input.retryAfterMs > 300_000
+      ) {
+        return yield* Effect.fail(fail("attempt", "invalid-input"));
+      }
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute({
+        label: "media-attempt.defer",
+        text: "UPDATE media_processing_attempts SET state='poll_wait',claim_owner=NULL,lease_expires_at=NULL,evidence_ref=$1,result=$2::jsonb,next_eligible_at=clock_timestamp()+($3 * interval '1 millisecond'),updated_at=clock_timestamp() WHERE attempt_id=$4 AND state='running' AND claim_owner=$5 AND claim_fence=$6 AND lease_expires_at>clock_timestamp()",
+        values: [
+          input.evidenceRef,
+          json(input.result),
+          input.retryAfterMs,
+          input.attemptId,
+          input.workerId,
+          input.claimFence,
+        ],
         readonly: false,
       });
       return result.rowCount === 1;
@@ -3226,12 +3373,10 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
       )
         return yield* Effect.fail(fail("attempt", "invalid-input"));
       const db = yield* ControlPlaneDb;
-      const state = input.retryable ? "retry_wait" : "exhausted";
       const result = yield* db.execute({
         label: "media-attempt.fail",
-        text: "UPDATE media_processing_attempts SET state=CASE WHEN attempt_number >= 3 THEN 'exhausted' ELSE $1 END,claim_owner=NULL,lease_expires_at=NULL,failure_code=$2,evidence_ref=COALESCE($3,evidence_ref),retryable=CASE WHEN attempt_number >= 3 THEN FALSE ELSE $4 END,next_eligible_at=CASE WHEN attempt_number >= 3 THEN NULL ELSE $5::timestamptz END,updated_at=clock_timestamp() WHERE attempt_id=$6 AND state='running' AND claim_owner=$7 AND claim_fence=$8 AND lease_expires_at>clock_timestamp()",
+        text: "UPDATE media_processing_attempts SET state=CASE WHEN $3 AND attempt_number < 3 THEN 'failed' ELSE 'exhausted' END,claim_owner=NULL,lease_expires_at=NULL,failure_code=$1,evidence_ref=COALESCE($2,evidence_ref),retryable=CASE WHEN $3 AND attempt_number < 3 THEN TRUE ELSE FALSE END,next_eligible_at=CASE WHEN $3 AND attempt_number < 3 THEN $4::timestamptz ELSE NULL END,updated_at=clock_timestamp() WHERE attempt_id=$5 AND state='running' AND claim_owner=$6 AND claim_fence=$7 AND lease_expires_at>clock_timestamp()",
         values: [
-          state,
           input.failureCode,
           input.evidenceRef ?? null,
           input.retryable,
@@ -3334,8 +3479,10 @@ export function makeControlPlaneMediaSubmissionRepository(): MediaSubmissionStor
     publish,
     recordAlignment,
     recordProcessingAttempt,
+    listProcessingAttempts,
     claimProcessingAttempt,
     completeProcessingAttempt,
+    deferProcessingAttempt,
     failProcessingAttempt,
     replaceLostWorkflow,
   };

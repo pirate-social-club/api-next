@@ -680,6 +680,67 @@ describe("song media Spec 013 machine", () => {
     ).toBe("processing");
   });
 
+  test("holds provider-unavailable analysis in review without inventing analysis evidence", () => {
+    const finalized = ok(
+      transitionMediaSubmission(beginFinalize(issued), {
+        event: "upload_finalized",
+        actorId,
+        expectedCreationRevision: 1,
+        expectedAudioRevision: 0,
+        audio,
+      }),
+    );
+    const held = ok(
+      transitionMediaSubmission(finalized, {
+        event: "provider_unavailable_review_recorded",
+        actorId,
+        expectedCreationRevision: 1,
+        review: {
+          reviewRef: "provider-unavailable-review",
+          heldRevision: 1,
+          reasonCode: "moderation_unavailable",
+        },
+      }),
+    );
+    expect(held).toMatchObject({
+      status: "manual_review",
+      phase: null,
+      analysis: null,
+      review: {
+        reviewRef: "provider-unavailable-review",
+        reasonCode: "moderation_unavailable",
+      },
+    });
+    expect(
+      transitionMediaSubmission(held, {
+        event: "moderator_approved",
+        actorId,
+        expectedCreationRevision: 1,
+        communityActive: true,
+        membershipActive: true,
+        approval: {
+          actionId: "unsafe-provider-approval",
+          moderatorActorId: "moderator",
+          evidenceRef: "manual-evidence",
+          approvalKind: "standard",
+          reasonCode: null,
+          heldRevision: 1,
+        },
+        decision: {
+          decisionRevision: 1,
+          outcome: "allow",
+          creationRevision: 1,
+          audioRevision: 1,
+          analysisRevision: 0,
+          lyricsRevision: null,
+          canonicalAudioSha256: audioHash,
+          policyRevision: "publication-v1",
+          evidenceRef: "unsafe-provider-decision",
+        },
+      }),
+    ).toMatchObject({ ok: false, rejection: { _tag: "decision_evidence_invalid" } });
+  });
+
   test("supersedes held review terms with a new creation revision", () => {
     const held = ok(
       transitionMediaSubmission(analyzed(), {

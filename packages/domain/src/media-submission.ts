@@ -272,6 +272,7 @@ export type MediaSubmissionEvent =
   | "song_lyrics_bound"
   | "blocking_analysis_completed"
   | "review_exhaustion_recorded"
+  | "provider_unavailable_review_recorded"
   | "media_failure_recorded"
   | "publication_allowed"
   | "reference_required"
@@ -316,6 +317,8 @@ export type MediaSubmissionCommand =
       Readonly<{ event: "upload_finalized"; expectedAudioRevision: number; audio: ImmutableAudio }>)
   | (AudioFence & Readonly<{ event: "blocking_analysis_completed"; analysis: TrustedSongAnalysis }>)
   | (RevisionCommand & Readonly<{ event: "review_exhaustion_recorded"; review: ReviewCase }>)
+  | (RevisionCommand &
+      Readonly<{ event: "provider_unavailable_review_recorded"; review: ReviewCase }>)
   | (RevisionCommand & Readonly<{ event: "media_failure_recorded"; failure: ProcessingFailure }>)
   | (RevisionCommand &
       Readonly<{
@@ -955,18 +958,26 @@ export function transitionMediaSubmission(
       };
       break;
     }
-    case "review_exhaustion_recorded": {
+    case "review_exhaustion_recorded":
+    case "provider_unavailable_review_recorded": {
+      const providerUnavailable = command.event === "provider_unavailable_review_recorded";
       if (
         command.expectedCreationRevision !== current.creationRevision ||
         current.status !== "processing" ||
-        current.phase !== "analysis" ||
-        current.terms === null ||
-        current.analysis === null ||
-        current.analysis.acr.decision !== "inconclusive" ||
+        (providerUnavailable
+          ? current.phase !== "analysis" && current.phase !== "decision"
+          : current.phase !== "analysis") ||
         !validId(command.review.reviewRef) ||
         command.review.heldRevision !== current.creationRevision ||
-        command.review.exhaustionCode !== "acr_exhausted" ||
-        !validId(command.review.exhaustionAttemptId)
+        (providerUnavailable
+          ? command.review.reasonCode !== "moderation_unavailable" ||
+            command.review.exhaustionCode !== undefined ||
+            command.review.exhaustionAttemptId !== undefined
+          : current.terms === null ||
+            current.analysis === null ||
+            current.analysis.acr.decision !== "inconclusive" ||
+            command.review.exhaustionCode !== "acr_exhausted" ||
+            !validId(command.review.exhaustionAttemptId))
       )
         return reject({
           _tag: "transition_not_allowed",
