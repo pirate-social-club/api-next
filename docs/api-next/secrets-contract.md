@@ -303,7 +303,7 @@ adapters remain disabled and runtime composition is absent.
 | `TRANSLOADIT_AUTH_SECRET` | Transloadit assembly signing secret |
 | `ACRCLOUD_ACCESS_KEY` | ACRCloud identification access key |
 | `ACRCLOUD_ACCESS_SECRET` | ACRCloud identification signing secret |
-| `ELEVENLABS_API_KEY` | Shared platform-funded ASR and forced-alignment key |
+| `ELEVENLABS_API_KEY` | Platform-funded forced-alignment key; v1 has no ASR |
 | `FILEBASE_IPFS_TOKEN` | Filebase bucket-scoped IPFS bearer token |
 | `MEDIA_CLASSIFIER_API_KEY` | Provider-neutral media-classifier credential |
 | `MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID` | Ingress-bucket-only R2 S3 access-key identifier |

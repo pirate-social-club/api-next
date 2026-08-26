@@ -1,0 +1,168 @@
+{
+  "name": "pirate-media-processor-worker",
+  "account_id": "08a4c22cf52e2ecae883e36f80a33f4a",
+  "main": "src/entrypoint.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "hyperdrive": [
+    {
+      "binding": "CONTROL_PLANE",
+      "id": "00000000-0000-0000-0000-000000000000",
+      "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+    }
+  ],
+  "workflows": [
+    {
+      "binding": "MEDIA_PROCESSING_WORKFLOW",
+      "name": "pirate-media-processing",
+      "class_name": "MediaProcessingWorkflow"
+    }
+  ],
+  "queues": {
+    "consumers": [
+      {
+        "queue": "pirate-media-processing-development",
+        "max_batch_size": 10,
+        "max_batch_timeout": 5,
+        "max_retries": 3,
+        "dead_letter_queue": "pirate-media-processing-development-dlq"
+      }
+    ]
+  },
+  "r2_buckets": [
+    {
+      "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+      "bucket_name": "pirate-media-immutable-development"
+    },
+    {
+      "binding": "MEDIA_DERIVED_ARTIFACTS",
+      "bucket_name": "pirate-media-derived-development"
+    }
+  ],
+  "vars": {
+    "MEDIA_PROCESSING_ENABLED": "false",
+    "TRANSLOADIT_PROBE_TEMPLATE_ID": "",
+    "TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID": "",
+    "TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID": "",
+    "ACRCLOUD_IDENTIFY_HOST": ""
+  },
+  "secrets": {
+    "required": [
+      "TRANSLOADIT_AUTH_KEY",
+      "TRANSLOADIT_AUTH_SECRET",
+      "ACRCLOUD_ACCESS_KEY",
+      "ACRCLOUD_ACCESS_SECRET",
+      "ELEVENLABS_API_KEY"
+    ]
+  },
+  "env": {
+    "staging": {
+      "name": "pirate-media-processor-worker-staging",
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "8cb7658a0f7143359c1becfec6a15c23",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "workflows": [
+        {
+          "binding": "MEDIA_PROCESSING_WORKFLOW",
+          "name": "pirate-media-processing-staging",
+          "class_name": "MediaProcessingWorkflow"
+        }
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "pirate-media-processing-staging",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 3,
+            "dead_letter_queue": "pirate-media-processing-staging-dlq"
+          }
+        ]
+      },
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+          "bucket_name": "pirate-media-immutable-staging"
+        },
+        {
+          "binding": "MEDIA_DERIVED_ARTIFACTS",
+          "bucket_name": "pirate-media-derived-staging"
+        }
+      ],
+      "vars": {
+        "MEDIA_PROCESSING_ENABLED": "false",
+        "TRANSLOADIT_PROBE_TEMPLATE_ID": "",
+        "TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID": "",
+        "TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID": "",
+        "ACRCLOUD_IDENTIFY_HOST": ""
+      },
+      "secrets": {
+        "required": [
+          "TRANSLOADIT_AUTH_KEY",
+          "TRANSLOADIT_AUTH_SECRET",
+          "ACRCLOUD_ACCESS_KEY",
+          "ACRCLOUD_ACCESS_SECRET",
+          "ELEVENLABS_API_KEY"
+        ]
+      }
+    },
+    "production": {
+      "name": "pirate-media-processor-worker-production",
+      "hyperdrive": [
+        {
+          "binding": "CONTROL_PLANE",
+          "id": "00000000-0000-0000-0000-000000000000",
+          "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
+        }
+      ],
+      "workflows": [
+        {
+          "binding": "MEDIA_PROCESSING_WORKFLOW",
+          "name": "pirate-media-processing-production",
+          "class_name": "MediaProcessingWorkflow"
+        }
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "pirate-media-processing-production",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            "max_retries": 3,
+            "dead_letter_queue": "pirate-media-processing-production-dlq"
+          }
+        ]
+      },
+      "r2_buckets": [
+        {
+          "binding": "MEDIA_IMMUTABLE_ORIGINALS",
+          "bucket_name": "pirate-media-immutable-production"
+        },
+        {
+          "binding": "MEDIA_DERIVED_ARTIFACTS",
+          "bucket_name": "pirate-media-derived-production"
+        }
+      ],
+      "vars": {
+        "MEDIA_PROCESSING_ENABLED": "false",
+        "TRANSLOADIT_PROBE_TEMPLATE_ID": "",
+        "TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID": "",
+        "TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID": "",
+        "ACRCLOUD_IDENTIFY_HOST": ""
+      },
+      "secrets": {
+        "required": [
+          "TRANSLOADIT_AUTH_KEY",
+          "TRANSLOADIT_AUTH_SECRET",
+          "ACRCLOUD_ACCESS_KEY",
+          "ACRCLOUD_ACCESS_SECRET",
+          "ELEVENLABS_API_KEY"
+        ]
+      }
+    }
+  }
+}

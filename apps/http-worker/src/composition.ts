@@ -47,8 +47,8 @@ import {
 } from "@pirate/platform-cf/identity-repository";
 import { makeR2MediaIngressPresigner } from "@pirate/platform-cf/media-ingress-presigner";
 import {
-  makeR2MediaSealer,
   type MediaSealBuckets,
+  makeR2MediaSealer,
 } from "@pirate/platform-cf/media-sealing-adapter";
 import {
   makeMediaUploadApplicationCommands,

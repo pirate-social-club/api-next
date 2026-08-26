@@ -11,6 +11,7 @@ import { consumeMediaProcessingQueueMessage } from "../../application/src/media/
 
 export interface CloudflareMediaWorkflowBinding {
   readonly get: (instanceId: string) => Promise<{
+    readonly status: () => Promise<Readonly<{ readonly status: string }>>;
     readonly sendEvent: (event: {
       readonly type: MediaProcessingEventType;
       readonly payload: MediaProcessingWorkflowPayload;
@@ -34,6 +35,15 @@ export interface CloudflareMediaQueueBatch {
 
 export type CloudflareMissingWorkflowErrorClassifier = (error: unknown) => boolean;
 
+async function workflowIsPresent(
+  binding: CloudflareMediaWorkflowBinding,
+  instanceId: string,
+): Promise<boolean> {
+  const instance = await binding.get(instanceId);
+  const status = await instance.status();
+  return status.status !== "unknown";
+}
+
 /**
  * Wraps the Cloudflare Workflow binding without exposing platform types to the
  * application layer. A failed create is converged through get because create
@@ -46,8 +56,7 @@ export function makeCloudflareMediaProcessingWorkflowLauncher(
   return {
     get: async (instanceId) => {
       try {
-        await binding.get(instanceId);
-        return "present";
+        return (await workflowIsPresent(binding, instanceId)) ? "present" : "missing";
       } catch (error) {
         if (isMissingInstanceError(error)) return "missing";
         throw error;
@@ -59,8 +68,8 @@ export function makeCloudflareMediaProcessingWorkflowLauncher(
         return "created";
       } catch (createError) {
         try {
-          await binding.get(instanceId);
-          return "already_exists";
+          if (await workflowIsPresent(binding, instanceId)) return "already_exists";
+          throw createError;
         } catch (getError) {
           if (!isMissingInstanceError(getError)) throw getError;
           throw createError;
