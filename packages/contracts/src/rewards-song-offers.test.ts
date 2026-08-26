@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { Schema } from "effect";
 import {
   AddMegapotPoolLeg,
+  GetMegapotPoolStanding,
+  GetSongMegapotPool,
+  ListMyRewardCredits,
   MegapotFundingV1,
+  MegapotPoolStandingV1,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
 } from "./rewards-song-offers.ts";
@@ -74,5 +78,50 @@ describe("song reward offer contracts", () => {
       persona_id: "persona_1",
       transaction_hash: `0x${"4".repeat(64)}`,
     });
+  });
+
+  test("separates public pool facts from private participant and credit reads", () => {
+    expect(GetSongMegapotPool.auth).toMatchObject({
+      policy: { kind: "user" },
+      optionalUser: true,
+    });
+    expect(GetMegapotPoolStanding.auth.policy.kind).toBe("userOrAdmin");
+    expect(ListMyRewardCredits.auth.policy.kind).toBe("userOrAdmin");
+    expect(
+      strict(MegapotPoolStandingV1)({
+        object: "megapot_pool_standing",
+        leg_id: "leg_1",
+        drawing_id: "42",
+        participant_state: "your_share_held",
+        share_held: true,
+        share_amount_atomic: null,
+        sponsor_fallback_state: null,
+        sponsor_fallback_amount_atomic: null,
+        reward_credit_id: null,
+        reward_credit_state: null,
+        beneficiary_count: 2,
+      }),
+    ).not.toHaveProperty("account_id");
+  });
+
+  test("does not widen the established funding status enum", () => {
+    expect(() =>
+      strict(MegapotFundingV1)({
+        object: "megapot_pool_funding",
+        action: "fund_with_usdc",
+        funding_effect_id: "funding_1",
+        leg_id: "leg_1",
+        status: "reclaimable_failed",
+        chain_id: 84_532,
+        token_address: `0x${"1".repeat(40)}`,
+        token_decimals: 6,
+        sender_address: `0x${"2".repeat(40)}`,
+        recipient_address: `0x${"3".repeat(40)}`,
+        expected_amount_atomic: "5000000",
+        confirmed_amount_atomic: null,
+        required_confirmations: 3,
+        transaction_hash: null,
+      }),
+    ).toThrow();
   });
 });

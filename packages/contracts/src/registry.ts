@@ -38,6 +38,9 @@ import {
 import {
   AddMegapotPoolLeg,
   GetMegapotPoolFunding,
+  GetMegapotPoolStanding,
+  GetSongMegapotPool,
+  ListMyRewardCredits,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
 } from "./rewards-song-offers.ts";
@@ -77,6 +80,9 @@ export const registry = {
   AddMegapotPoolLeg,
   ObserveMegapotPoolFunding,
   GetMegapotPoolFunding,
+  GetSongMegapotPool,
+  GetMegapotPoolStanding,
+  ListMyRewardCredits,
 } as const;
 
 /** The sole source consumed by every generated HTTP artifact. */

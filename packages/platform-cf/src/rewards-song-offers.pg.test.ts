@@ -21,6 +21,7 @@ import { applyPostgresMigrations } from "./postgres-migrations.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
 import { makeControlPlaneRewardOfferTerminalStore } from "./reward-offer-terminal-repository.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
+import { makeControlPlaneRewardProjectionStore } from "./reward-projection-repository.ts";
 import { makeControlPlaneRewardRefundStore } from "./reward-refund-repository.ts";
 import { makeControlPlaneSongRewardOfferStore } from "./song-reward-offer-repository.ts";
 
@@ -805,7 +806,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
     await withSchema(async (admin, scopedConnection) => {
       const identity = await seedSong(admin, "purchase-repository");
       await seedMegapotAuthority(admin);
-      const { legId } = await seedActivePoolLeg(admin, identity, {
+      const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
         fallback: false,
         suffix: "purchase-repository",
       });
@@ -1216,6 +1217,63 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       const creditId = allocation.allocations[0]?.creditId;
       if (creditId === null || creditId === undefined) throw new Error("missing payout credit");
       await expect(Effect.runPromise(work.loadCredits(50))).resolves.toContain(creditId);
+      const projections = makeControlPlaneRewardProjectionStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const publicPool = await Effect.runPromise(
+        projections.findPublicSongPool({
+          communityId: identity.communityId,
+          postId: identity.postId,
+        }),
+      );
+      expect(publicPool).toMatchObject({
+        offerId,
+        legId,
+        drawing: {
+          drawingId: 101n,
+          lifecycleStatus: "credited",
+          state: "won",
+          beneficiaryCount: 1,
+          netWinningsAtomic: 901n,
+          ticketId: 501n,
+        },
+      });
+      const serializedPublicPool = JSON.stringify(publicPool, (_key, value) =>
+        typeof value === "bigint" ? value.toString() : value,
+      );
+      expect(serializedPublicPool).not.toContain(identity.accountId);
+      expect(serializedPublicPool).not.toContain(identity.personaId);
+      const standingBeforePayout = await Effect.runPromise(
+        projections.findStanding({ accountId: identity.accountId, legId }),
+      );
+      expect(standingBeforePayout).toEqual({
+        legId,
+        drawingId: 101n,
+        participantState: "won",
+        shareHeld: true,
+        shareAmountAtomic: 901n,
+        sponsorFallbackState: null,
+        sponsorFallbackAmountAtomic: null,
+        rewardCreditId: creditId,
+        rewardCreditState: "credited",
+        beneficiaryCount: 1,
+      });
+      const creditsBeforePayout = await Effect.runPromise(
+        projections.listCredits({ accountId: identity.accountId, cursor: null, limit: 25 }),
+      );
+      expect(creditsBeforePayout).toMatchObject({
+        items: [{ creditId, amountAtomic: 901n, state: "credited" }],
+        nextCursor: null,
+      });
+      await expect(
+        Effect.runPromise(
+          projections.listCredits({
+            accountId: identity.accountId,
+            cursor: "credit-not-owned",
+            limit: 25,
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "RewardProjectionRejected", reason: "invalid-cursor" });
 
       await admin.query(
         `INSERT INTO persona_wallet_assignments (
@@ -1326,6 +1384,20 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           evidence_count: "1",
         },
       ]);
+      await expect(
+        Effect.runPromise(projections.findStanding({ accountId: identity.accountId, legId })),
+      ).resolves.toMatchObject({
+        participantState: "sent",
+        rewardCreditId: creditId,
+        rewardCreditState: "sent",
+      });
+      await expect(
+        Effect.runPromise(
+          projections.listCredits({ accountId: identity.accountId, cursor: null, limit: 25 }),
+        ),
+      ).resolves.toMatchObject({
+        items: [{ creditId, amountAtomic: 901n, paidAtomic: 901n, state: "sent" }],
+      });
     });
   }, 10_000);
 
@@ -1543,6 +1615,9 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       expect(unbound.rows).toEqual([
         { state: "reclaimable_failed", failure_reason: "offer_ended_unbound" },
       ]);
+      await expect(
+        Effect.runPromise(makeControlPlaneRewardFundingStore(layer).find("funding-refund-unbound")),
+      ).resolves.toMatchObject({ state: "reclaimable_failed", transactionHash: null });
 
       const work = makeControlPlaneMegapotWorkStore(layer);
       await expect(Effect.runPromise(work.loadRefunds(10))).resolves.toEqual([
@@ -1983,6 +2058,34 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       expect(committed.rows).toEqual([
         { status: "committed", commitment_effect_id: published.commitmentEffectId },
       ]);
+      const projections = makeControlPlaneRewardProjectionStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      await expect(
+        Effect.runPromise(
+          projections.findPublicSongPool({
+            communityId: identity.communityId,
+            postId: identity.postId,
+          }),
+        ),
+      ).resolves.toMatchObject({
+        emptyPoolPolicy: "funder_fallback",
+        drawing: { state: "committed", beneficiaryCount: 0 },
+      });
+      await expect(
+        Effect.runPromise(projections.findStanding({ accountId: identity.accountId, legId })),
+      ).resolves.toEqual({
+        legId,
+        drawingId: 100n,
+        participantState: "entry_closed",
+        shareHeld: false,
+        shareAmountAtomic: null,
+        sponsorFallbackState: "fallback_active",
+        sponsorFallbackAmountAtomic: null,
+        rewardCreditId: null,
+        rewardCreditState: null,
+        beneficiaryCount: 0,
+      });
       await expect(Effect.runPromise(coordinator.freezeDue())).resolves.toEqual([]);
     });
   });

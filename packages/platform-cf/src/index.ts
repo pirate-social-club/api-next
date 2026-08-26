@@ -230,6 +230,7 @@ export * from "./reward-funding-repository.ts";
 export * from "./reward-offer-terminal-repository.ts";
 export * from "./reward-payout-coordinator.ts";
 export * from "./reward-payout-repository.ts";
+export * from "./reward-projection-repository.ts";
 export * from "./reward-refund-coordinator.ts";
 export * from "./reward-refund-repository.ts";
 export {

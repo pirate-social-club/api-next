@@ -23,7 +23,13 @@ export type RewardFundingIntent = Readonly<{
   recipientAddress: string;
   expectedAmountAtomic: bigint;
   requiredConfirmations: number;
-  state: "planned" | "confirming" | "confirmed" | "reverted" | "reconciliation_required";
+  state:
+    | "planned"
+    | "confirming"
+    | "confirmed"
+    | "reverted"
+    | "reclaimable_failed"
+    | "reconciliation_required";
   transactionHash: string | null;
   confirmedAmountAtomic: bigint | null;
   transferLogIndex: number | null;

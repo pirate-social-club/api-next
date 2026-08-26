@@ -25,6 +25,7 @@ export * from "./rewards/megapot-sweep.ts";
 export * from "./rewards/reward-funding.ts";
 export * from "./rewards/reward-offer-terminal.ts";
 export * from "./rewards/reward-payout.ts";
+export * from "./rewards/reward-projections.ts";
 export * from "./rewards/reward-refund.ts";
 export * from "./rewards/song-reward-offers.ts";
 export * from "./route-revalidation/index.ts";

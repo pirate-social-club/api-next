@@ -70,6 +70,7 @@ import {
 } from "@pirate/platform-cf/registration-rate-limiter";
 import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding-coordinator";
 import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
+import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
 import { makeSessionCrypto } from "@pirate/platform-cf/session-crypto";
 import { makeJwksSessionProofVerifier } from "@pirate/platform-cf/session-proof";
 import {
@@ -696,6 +697,7 @@ export async function createProductionHttpWorker(
               ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
               store: makeControlPlaneSongRewardOfferStore(controlPlane),
               fundingStore: rewardFundingStore,
+              projections: makeControlPlaneRewardProjectionStore(controlPlane),
               funding: makeRewardFundingCoordinator({ store: rewardFundingStore, rpc }),
               requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
               externalFallbackPolicy: null,

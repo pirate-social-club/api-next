@@ -3,6 +3,7 @@ import type {
   MegapotPoolLeg,
   RewardFundingIntent,
   RewardFundingStore,
+  RewardProjectionStore,
   SongRewardOfferStore,
 } from "@pirate/application/rewards/song-reward-offers";
 import { Effect } from "effect";
@@ -64,7 +65,7 @@ const unexpected = (): never => {
   throw new Error("unexpected fake call");
 };
 
-function fixture() {
+function fixture(fundingIntent: RewardFundingIntent = intent) {
   const ids = ["open-action", "open-offer", "leg-action", "pool-leg", "observe-action"];
   const store: SongRewardOfferStore = {
     openOffer: (input) =>
@@ -87,11 +88,82 @@ function fixture() {
   };
   const fundingStore: RewardFundingStore = {
     plan: unexpected,
-    find: () => Effect.succeed(intent),
+    find: () => Effect.succeed(fundingIntent),
     bindTransaction: unexpected,
     confirm: unexpected,
     revert: unexpected,
     requireReconciliation: unexpected,
+  };
+  const projections: RewardProjectionStore = {
+    findPublicSongPool: () =>
+      Effect.succeed({
+        offerId: "reward_offer_1",
+        legId: leg.legId,
+        communityId: "community_1",
+        postId: "post_1",
+        offerStatus: "active",
+        legStatus: "active",
+        chainId: 84_532,
+        tokenAddress: leg.tokenAddress,
+        tokenDecimals: 6,
+        fundedAtomic: 5_000_000n,
+        availableBudgetAtomic: 4_000_000n,
+        maxTicketPriceAtomic: 1_000_000n,
+        entryCutoffSeconds: 300,
+        eligibleActivities: ["study", "karaoke"],
+        minScoreBps: 7_000,
+        emptyPoolPolicy: "no_purchase",
+        fundingSource: "leg_budget",
+        drawing: {
+          drawingId: 42n,
+          lifecycleStatus: "entry_open",
+          state: "entry_open",
+          entryCutoffAt: "2026-08-26T12:55:00.000Z",
+          beneficiaryCount: 2,
+          ticketPriceCeilingAtomic: 1_000_000n,
+          actualTicketCostAtomic: 0n,
+          netWinningsAtomic: 0n,
+          commitmentReference: null,
+          snapshotHash: null,
+          ticketId: null,
+          purchaseTransactionHash: null,
+          claimTransactionHash: null,
+        },
+      }),
+    findStanding: () =>
+      Effect.succeed({
+        legId: leg.legId,
+        drawingId: 42n,
+        participantState: "your_share_held",
+        shareHeld: true,
+        shareAmountAtomic: null,
+        sponsorFallbackState: null,
+        sponsorFallbackAmountAtomic: null,
+        rewardCreditId: null,
+        rewardCreditState: null,
+        beneficiaryCount: 2,
+      }),
+    listCredits: () =>
+      Effect.succeed({
+        items: [
+          {
+            creditId: "credit_1",
+            payoutPersonaId: "persona_1",
+            chainId: 84_532,
+            tokenAddress: leg.tokenAddress,
+            tokenDecimals: 6,
+            amountAtomic: 901n,
+            reservedAtomic: 100n,
+            paidAtomic: 0n,
+            sourceKind: "megapot_allocation",
+            state: "payout_reserved",
+            createdAt: now,
+            updatedAt: now,
+            settledAt: null,
+          },
+        ],
+        nextCursor: null,
+      }),
   };
   const handlers = makeSongRewardOfferHandlers({
     clock: { now: Effect.succeed(Date.parse(now)) },
@@ -104,12 +176,13 @@ function fixture() {
     },
     store,
     fundingStore,
+    projections,
     funding: {
-      plan: () => Effect.succeed({ kind: "planned", intent }),
+      plan: () => Effect.succeed({ kind: "planned", intent: fundingIntent }),
       observe: ({ transactionHash }) =>
         Effect.succeed({
           kind: "confirming",
-          intent: { ...intent, state: "confirming", transactionHash },
+          intent: { ...fundingIntent, state: "confirming", transactionHash },
         }),
     },
     requiredConfirmations: 3,
@@ -121,7 +194,7 @@ function fixture() {
     authenticate: () => ({
       kind: "user",
       subject: "account_1",
-      walletAddress: intent.senderAddress,
+      walletAddress: fundingIntent.senderAddress,
     }),
     authorize: () => undefined,
   });
@@ -192,5 +265,65 @@ describe("song reward offer HTTP handlers", () => {
       funding: { status: "confirming", transaction_hash: hash("a") },
       replayed: false,
     });
+  });
+
+  test("serves a beneficiary-private public pool projection", async () => {
+    const response = await fixture().request(
+      "/communities/community_1/posts/post_1/rewards/megapot-pool",
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const body = await response.json();
+    expect(body).toMatchObject({
+      pool: {
+        object: "song_megapot_pool_projection",
+        ticket_custody: "pirate",
+        allocation_rule: "equal_v1",
+        drawing: { state: "entry_open", beneficiary_count: 2 },
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain("account_1");
+    expect(JSON.stringify(body)).not.toContain("persona_1");
+    expect(JSON.stringify(body)).not.toContain(intent.senderAddress);
+  });
+
+  test("keeps participant standing and reward credits authenticated and no-store", async () => {
+    const headers = { authorization: "Bearer test" };
+    const standing = await fixture().request(`/reward-offer-legs/${leg.legId}/standing`, {
+      headers,
+    });
+    expect(standing.status).toBe(200);
+    expect(standing.headers.get("cache-control")).toBe("no-store");
+    expect(await standing.json()).toMatchObject({
+      standing: {
+        participant_state: "your_share_held",
+        share_held: true,
+        beneficiary_count: 2,
+      },
+    });
+
+    const credits = await fixture().request("/rewards/credits?limit=25", { headers });
+    expect(credits.status).toBe(200);
+    expect(credits.headers.get("cache-control")).toBe("no-store");
+    expect(await credits.json()).toMatchObject({
+      object: "reward_credit_list",
+      items: [
+        {
+          credit_id: "credit_1",
+          amount_atomic: "901",
+          available_atomic: "801",
+          state: "payout_reserved",
+        },
+      ],
+    });
+  });
+
+  test("maps an internally reclaimable terminal plan to the stable wire status", async () => {
+    const response = await fixture({ ...intent, state: "reclaimable_failed" }).request(
+      `/reward-offer-legs/${leg.legId}/funding/${intent.fundingEffectId}`,
+      { headers: { authorization: "Bearer test" } },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ funding: { status: "reverted" } });
   });
 });

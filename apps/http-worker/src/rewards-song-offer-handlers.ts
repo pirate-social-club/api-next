@@ -3,9 +3,13 @@ import {
   IdGen,
   type MegapotPoolLeg,
   makeSongRewardOfferService,
+  type PublicSongMegapotPoolProjection,
+  type RewardCredit,
   type RewardFundingIntent,
   type RewardFundingPlanner,
   type RewardFundingStore,
+  type RewardProjectionFailure,
+  type RewardProjectionStore,
   type SongRewardOffer,
   type SongRewardOfferStore,
 } from "@pirate/application/rewards/song-reward-offers";
@@ -28,6 +32,7 @@ export type SongRewardOfferHandlerServices = Readonly<{
   store: SongRewardOfferStore;
   funding: RewardFundingPlanner;
   fundingStore: RewardFundingStore;
+  projections: RewardProjectionStore;
   requiredConfirmations: number;
   externalFallbackPolicy: Readonly<{
     referralAllocationVersion: string;
@@ -40,6 +45,9 @@ export type SongRewardOfferHandlers = Readonly<{
   AddMegapotPoolLeg: EndpointHandler;
   ObserveMegapotPoolFunding: EndpointHandler;
   GetMegapotPoolFunding: EndpointHandler;
+  GetSongMegapotPool: EndpointHandler;
+  GetMegapotPoolStanding: EndpointHandler;
+  ListMyRewardCredits: EndpointHandler;
 }>;
 
 function user(principal: Principal | null): {
@@ -94,6 +102,14 @@ function wireFailure(error: unknown): Error {
       ? new RetryableConflict({ message: "Reward funding receipt is not yet acceptable" })
       : new ProviderUnavailable({ message: "Reward funding chain service is unavailable" });
   }
+  if (tagged._tag === "RewardProjectionRejected") {
+    return tagged.reason === "not-found"
+      ? new NotFound({ message: "Reward projection is unavailable" })
+      : new BadRequest({ message: "Reward projection cursor is invalid" });
+  }
+  if (tagged._tag === "RewardProjectionStorageFailed") {
+    return new InternalError({ message: "Reward projection failed" });
+  }
   return error instanceof AuthError ? error : new InternalError({ message: "Song reward failed" });
 }
 
@@ -134,7 +150,7 @@ const funding = (value: RewardFundingIntent) => ({
   action: "fund_with_usdc" as const,
   funding_effect_id: value.fundingEffectId,
   leg_id: value.legId,
-  status: value.state,
+  status: value.state === "reclaimable_failed" ? ("reverted" as const) : value.state,
   chain_id: value.chainId as 84_532,
   token_address: value.usdcAddress,
   token_decimals: 6 as const,
@@ -144,6 +160,71 @@ const funding = (value: RewardFundingIntent) => ({
   confirmed_amount_atomic: value.confirmedAmountAtomic?.toString() ?? null,
   required_confirmations: value.requiredConfirmations,
   transaction_hash: value.transactionHash,
+});
+
+const drawingProjection = (value: NonNullable<PublicSongMegapotPoolProjection["drawing"]>) => ({
+  object: "megapot_pool_drawing_projection" as const,
+  drawing_id: value.drawingId.toString(),
+  lifecycle_status: value.lifecycleStatus,
+  state: value.state,
+  entry_cutoff_at: value.entryCutoffAt,
+  beneficiary_count: value.beneficiaryCount,
+  ticket_price_ceiling_atomic: value.ticketPriceCeilingAtomic.toString(),
+  actual_ticket_cost_atomic: value.actualTicketCostAtomic.toString(),
+  net_winnings_atomic: value.netWinningsAtomic.toString(),
+  commitment_reference: value.commitmentReference,
+  snapshot_hash: value.snapshotHash,
+  ticket_id: value.ticketId?.toString() ?? null,
+  purchase_transaction_hash: value.purchaseTransactionHash,
+  claim_transaction_hash: value.claimTransactionHash,
+});
+
+const poolProjection = (value: PublicSongMegapotPoolProjection) => ({
+  object: "song_megapot_pool_projection" as const,
+  offer_id: value.offerId,
+  leg_id: value.legId,
+  community_id: value.communityId,
+  post_id: value.postId,
+  offer_status: value.offerStatus,
+  leg_status: value.legStatus,
+  chain_id: value.chainId as 84_532,
+  token_address: value.tokenAddress,
+  token_decimals: value.tokenDecimals as 6,
+  funded_atomic: value.fundedAtomic.toString(),
+  available_budget_atomic: value.availableBudgetAtomic.toString(),
+  max_ticket_price_atomic: value.maxTicketPriceAtomic.toString(),
+  entry_cutoff_seconds: value.entryCutoffSeconds,
+  eligible_activities: value.eligibleActivities,
+  min_score_bps: value.minScoreBps,
+  empty_pool_policy: value.emptyPoolPolicy,
+  allocation_rule: "equal_v1" as const,
+  ticket_custody: "pirate" as const,
+  winnings_basis: "net_of_referral_win_share" as const,
+  fallback_disclosure:
+    value.fundingSource === "shared_sponsor_budget"
+      ? ("If nobody qualifies, the sponsor keeps this ticket and any winnings." as const)
+      : value.emptyPoolPolicy === "funder_fallback"
+        ? ("If nobody qualifies, the sponsor receives this ticket's net winnings." as const)
+        : null,
+  drawing: value.drawing === null ? null : drawingProjection(value.drawing),
+});
+
+const rewardCredit = (value: RewardCredit) => ({
+  object: "reward_credit" as const,
+  credit_id: value.creditId,
+  payout_persona_id: value.payoutPersonaId,
+  chain_id: value.chainId,
+  token_address: value.tokenAddress,
+  token_decimals: value.tokenDecimals,
+  amount_atomic: value.amountAtomic.toString(),
+  available_atomic: (value.amountAtomic - value.reservedAtomic - value.paidAtomic).toString(),
+  reserved_atomic: value.reservedAtomic.toString(),
+  paid_atomic: value.paidAtomic.toString(),
+  source_kind: value.sourceKind,
+  state: value.state,
+  created_at: value.createdAt,
+  updated_at: value.updatedAt,
+  settled_at: value.settledAt,
 });
 
 export function makeSongRewardOfferHandlers(
@@ -266,6 +347,58 @@ export function makeSongRewardOfferHandlers(
         throw new NotFound({ message: "Reward funding target is unavailable" });
       }
       return { funding: funding(intent) };
+    },
+    GetSongMegapotPool: async (request) => {
+      const path = request.params as { readonly communityId: string; readonly postId: string };
+      const pool = await Effect.runPromise(
+        services.projections
+          .findPublicSongPool({ communityId: path.communityId, postId: path.postId })
+          .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
+      );
+      return { pool: pool === null ? null : poolProjection(pool) };
+    },
+    GetMegapotPoolStanding: async (request) => {
+      const principal = user(request.principal);
+      const path = request.params as { readonly legId: string };
+      const standing = await Effect.runPromise(
+        services.projections
+          .findStanding({ accountId: principal.accountId, legId: path.legId })
+          .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
+      );
+      if (standing === null) throw new NotFound({ message: "Reward projection is unavailable" });
+      return {
+        standing: {
+          object: "megapot_pool_standing" as const,
+          leg_id: standing.legId,
+          drawing_id: standing.drawingId?.toString() ?? null,
+          participant_state: standing.participantState,
+          share_held: standing.shareHeld,
+          share_amount_atomic: standing.shareAmountAtomic?.toString() ?? null,
+          sponsor_fallback_state: standing.sponsorFallbackState,
+          sponsor_fallback_amount_atomic: standing.sponsorFallbackAmountAtomic?.toString() ?? null,
+          reward_credit_id: standing.rewardCreditId,
+          reward_credit_state: standing.rewardCreditState,
+          beneficiary_count: standing.beneficiaryCount,
+        },
+      };
+    },
+    ListMyRewardCredits: async (request) => {
+      const principal = user(request.principal);
+      const query = request.query as { readonly cursor?: string; readonly limit?: string };
+      const result = await Effect.runPromise(
+        services.projections
+          .listCredits({
+            accountId: principal.accountId,
+            cursor: query.cursor ?? null,
+            limit: query.limit === undefined ? 25 : Number(query.limit),
+          })
+          .pipe(Effect.mapError((error) => wireFailure(error as RewardProjectionFailure))),
+      );
+      return {
+        object: "reward_credit_list" as const,
+        items: result.items.map(rewardCredit),
+        next_cursor: result.nextCursor,
+      };
     },
   };
 }

@@ -106,9 +106,14 @@ function intentFromRow(row: Row): RewardFundingIntent {
   const state = text(row, "state");
   const environment = text(row, "environment");
   if (
-    !["planned", "confirming", "confirmed", "reverted", "reconciliation_required"].includes(
-      state,
-    ) ||
+    ![
+      "planned",
+      "confirming",
+      "confirmed",
+      "reverted",
+      "reclaimable_failed",
+      "reconciliation_required",
+    ].includes(state) ||
     (environment !== "test" && environment !== "staging" && environment !== "production")
   ) {
     throw new Error("invalid funding intent");

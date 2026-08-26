@@ -47,6 +47,7 @@
     "./megapot-work-repository": "./src/megapot-work-repository.ts",
     "./reward-payout-coordinator": "./src/reward-payout-coordinator.ts",
     "./reward-payout-repository": "./src/reward-payout-repository.ts",
+    "./reward-projection-repository": "./src/reward-projection-repository.ts",
     "./reward-funding-coordinator": "./src/reward-funding-coordinator.ts",
     "./reward-funding-repository": "./src/reward-funding-repository.ts",
     "./song-reward-offer-repository": "./src/song-reward-offer-repository.ts",

@@ -26,6 +26,7 @@
     "./money/community-purchase-funding-producer": "./src/money/community-purchase-funding-producer.ts",
     "./money/community-purchase-funding-query": "./src/money/community-purchase-funding-query.ts",
     "./rewards/song-reward-offers": "./src/rewards/song-reward-offers.ts",
+    "./rewards/reward-projections": "./src/rewards/reward-projections.ts",
     "./verification": "./src/verification/index.ts",
     "./use-cases/community/creation-intents": "./src/use-cases/community/creation-intents.ts",
     "./use-cases/community/follow-community": "./src/use-cases/community/follow-community.ts",

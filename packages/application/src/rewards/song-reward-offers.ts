@@ -5,6 +5,12 @@ import type { RewardFundingIntent } from "./reward-funding.ts";
 
 export { Clock, IdGen } from "../ports.ts";
 export type { RewardFundingIntent, RewardFundingStore } from "./reward-funding.ts";
+export type {
+  PublicSongMegapotPoolProjection,
+  RewardCredit,
+  RewardProjectionFailure,
+  RewardProjectionStore,
+} from "./reward-projections.ts";
 
 export class SongRewardOfferStorageFailed extends Data.TaggedError("SongRewardOfferStorageFailed")<{
   readonly reason: "conflict" | "constraint" | "invalid-row" | "outcome-unknown" | "unavailable";
