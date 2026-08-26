@@ -6,7 +6,10 @@ import {
   HNS_COMMUNITY_APP_GATEWAY_FORWARDER_KEY_REGISTRY_CREDENTIAL,
   HNS_COMMUNITY_APP_GATEWAY_SOLID_ACCESS_CLIENT_ID_CREDENTIAL,
   HNS_COMMUNITY_APP_GATEWAY_SOLID_ACCESS_CLIENT_SECRET_CREDENTIAL,
+  HNS_COMMUNITY_APP_GATEWAY_STAGING_DEPLOYMENT_SCHEMA,
+  HNS_COMMUNITY_APP_GATEWAY_STAGING_INGRESS_CONTRACT,
   HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT,
+  type HnsCommunityAppGatewayDeploymentMode,
   loadHnsCommunityAppGatewayRuntimeConfigurationV1,
 } from "./community-runtime-config.ts";
 
@@ -27,17 +30,14 @@ function base64url(bytes: Uint8Array): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
 }
 
-async function manifest(overrides: Readonly<Record<string, unknown>> = {}): Promise<string> {
-  return JSON.stringify({
-    schema: HNS_COMMUNITY_APP_GATEWAY_DEPLOYMENT_SCHEMA,
+async function manifest(
+  mode: HnsCommunityAppGatewayDeploymentMode = "production",
+  overrides: Readonly<Record<string, unknown>> = {},
+): Promise<string> {
+  const common = {
     profile_version: "pirate-hns-community-app-interactive-gateway-v2",
     profile_utf8_bytes: 622,
     profile_sha256: "f49ac37bd45da71bdf1e1cc65f184729d85f9d72ce811f0551a70f7785aa8d86",
-    production_gateway_listener: "127.0.0.1:4069",
-    production_health_listener: "127.0.0.1:4071",
-    shadow_gateway_listener: "127.0.0.1:4169",
-    shadow_health_listener: "127.0.0.1:4171",
-    tls_terminator_contract: HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT,
     solid_origin: "https://hns-solid-staging.pirate.sc",
     solid_ingress_composition_reference: "solid-hns-ingress-staging-01",
     solid_access_application_audience: "solid-hns-staging-aud",
@@ -61,11 +61,34 @@ async function manifest(overrides: Readonly<Record<string, unknown>> = {}): Prom
     gateway_upstream_deadline_milliseconds: 15000,
     maximum_private_authority_bytes: 4096,
     private_authority_deadline_milliseconds: 2000,
-    gateway_certificate_spki_sha256: "a".repeat(64),
     api_next_source_commit: sourceCommit,
     bundle_sha256: await sha256(bundleBytes),
-    ...overrides,
-  });
+  };
+  return JSON.stringify(
+    mode === "staging-shadow"
+      ? {
+          schema: HNS_COMMUNITY_APP_GATEWAY_STAGING_DEPLOYMENT_SCHEMA,
+          mode,
+          staging_shadow_gateway_listener: "127.0.0.1:4269",
+          staging_shadow_health_listener: "127.0.0.1:4271",
+          ingress_contract: HNS_COMMUNITY_APP_GATEWAY_STAGING_INGRESS_CONTRACT,
+          public_tls_termination: false,
+          synthetic_certificate_spki_sha256: "b".repeat(64),
+          ...common,
+          ...overrides,
+        }
+      : {
+          schema: HNS_COMMUNITY_APP_GATEWAY_DEPLOYMENT_SCHEMA,
+          production_gateway_listener: "127.0.0.1:4069",
+          production_health_listener: "127.0.0.1:4071",
+          shadow_gateway_listener: "127.0.0.1:4169",
+          shadow_health_listener: "127.0.0.1:4171",
+          tls_terminator_contract: HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT,
+          gateway_certificate_spki_sha256: "a".repeat(64),
+          ...common,
+          ...overrides,
+        },
+  );
 }
 
 function credentials(overrides: Readonly<Record<string, string>> = {}): Record<string, string> {
@@ -95,14 +118,20 @@ function credentials(overrides: Readonly<Record<string, string>> = {}): Record<s
 
 async function load(
   input: {
+    mode?: HnsCommunityAppGatewayDeploymentMode;
+    manifest_mode?: HnsCommunityAppGatewayDeploymentMode;
     manifest_overrides?: Readonly<Record<string, unknown>>;
     credential_overrides?: Readonly<Record<string, string>>;
     bundle_bytes?: Uint8Array;
   } = {},
 ) {
   const values = credentials(input.credential_overrides);
+  const mode = input.mode ?? "production";
   return loadHnsCommunityAppGatewayRuntimeConfigurationV1({
-    manifest_bytes: encoder.encode(await manifest(input.manifest_overrides)),
+    mode,
+    manifest_bytes: encoder.encode(
+      await manifest(input.manifest_mode ?? mode, input.manifest_overrides),
+    ),
     bundle_bytes: input.bundle_bytes ?? bundleBytes,
     api_next_source_commit: sourceCommit,
     read_credential: (name) => {
@@ -115,7 +144,7 @@ async function load(
 
 describe("community gateway deployment configuration", () => {
   test("binds exact manifest bytes, artifact, source, registry, and credential references", async () => {
-    const manifestText = await manifest();
+    const manifestText = await manifest("production");
     const configuration = await load();
     expect(configuration.manifest.api_next_source_commit).toBe(sourceCommit);
     expect(configuration.manifest.bundle_sha256).toBe(await sha256(bundleBytes));
@@ -133,6 +162,38 @@ describe("community gateway deployment configuration", () => {
       freshness_window_seconds: 300,
       future_clock_skew_seconds: 5,
     });
+  });
+
+  test("preserves production v1 decoding and binds the staging-only manifest to its mode", async () => {
+    expect((await load({ mode: "shadow" })).manifest.schema).toBe(
+      HNS_COMMUNITY_APP_GATEWAY_DEPLOYMENT_SCHEMA,
+    );
+    const staging = await load({ mode: "staging-shadow" });
+    expect(staging.manifest.schema).toBe(HNS_COMMUNITY_APP_GATEWAY_STAGING_DEPLOYMENT_SCHEMA);
+    expect(staging.manifest).toMatchObject({
+      mode: "staging-shadow",
+      staging_shadow_gateway_listener: "127.0.0.1:4269",
+      staging_shadow_health_listener: "127.0.0.1:4271",
+      public_tls_termination: false,
+      synthetic_certificate_spki_sha256: "b".repeat(64),
+    });
+    await expect(load({ mode: "staging-shadow", manifest_mode: "production" })).rejects.toThrow(
+      "configuration is incomplete or invalid",
+    );
+    await expect(load({ mode: "production", manifest_mode: "staging-shadow" })).rejects.toThrow(
+      "configuration is incomplete or invalid",
+    );
+    for (const manifest_overrides of [
+      { staging_shadow_gateway_listener: "127.0.0.1:4169" },
+      { staging_shadow_health_listener: "127.0.0.1:4171" },
+      { public_tls_termination: true },
+      { synthetic_certificate_spki_sha256: "c".repeat(63) },
+      { production_gateway_listener: "127.0.0.1:4069" },
+    ]) {
+      await expect(load({ mode: "staging-shadow", manifest_overrides })).rejects.toThrow(
+        "configuration is incomplete or invalid",
+      );
+    }
   });
 
   test("rejects artifact, source, profile, origin, and exact-member substitution", async () => {

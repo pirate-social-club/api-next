@@ -5,8 +5,9 @@ replacing the existing `app.pirate` artifact, unit, listeners, releases, or
 rollback material. The separate bundle is
 `dist/pirate-hns-community-app-gateway.mjs`. Its production gateway and health
 listeners are `127.0.0.1:4069` and `127.0.0.1:4071`; shadow uses
-`127.0.0.1:4169` and `127.0.0.1:4171`. Listener ownership must be re-inventoried
-on the VPS before either unit is installed.
+`127.0.0.1:4169` and `127.0.0.1:4171`. The separate staging-shadow profile
+uses only `127.0.0.1:4269` and `127.0.0.1:4271`. Listener ownership must be
+re-inventoried on the VPS before any unit is installed.
 
 Build only from a clean accepted api-next commit:
 
@@ -16,15 +17,24 @@ sha256sum apps/hns-platform-gateway/dist/pirate-hns-community-app-gateway.mjs
 ```
 
 The build embeds the exact source commit and reports the bundle SHA-256. Copy
-`community/deployment-manifest.template.json` to a candidate outside the
-repository, resolve every placeholder against one named environment tuple,
+`community/deployment-manifest.template.json` for production or production
+shadow. Copy `community/deployment-manifest.staging-shadow.template.json` only
+for the staging-shadow mode. Resolve every placeholder against one named
+environment tuple,
 replace the source commit and bundle digest with the build output, and encode
 the populated object as compact `JSON.stringify` bytes with no trailing
 newline. The runtime computes
 `hns-community-app-gateway-sha256:<manifest_sha256>` as the immutable gateway
 deployment reference. It rejects a changed artifact, source commit, profile,
 listener, limit, secret-reference name, registry identity, origin, or extra
-manifest member before listening.
+manifest member before listening. A production-v1 manifest cannot select the
+staging-shadow mode, and a staging manifest cannot select either production
+listener pair.
+
+The staging manifest records `public_tls_termination: false` and binds a
+synthetic nonpublic SPKI digest used only for authority-tuple equality during
+the loopback preflight. It is not evidence of a certificate, TLS termination,
+TLSA record, DNSSEC validation, or public reachability.
 
 The four credential names in the manifest are logical systemd credential
 names. Values never enter the manifest. The authority database URL must belong
@@ -46,6 +56,13 @@ The production, shadow, and rollback unit names are respectively
 `pirate-hns-platform-gateway-shadow.service` keep their artifact and ports.
 The rollback unit uses the same isolated community production listeners and
 therefore conflicts with the current community production unit.
+
+The staging unit is
+`pirate-hns-community-app-gateway-staging-shadow.service`. It reads only
+`/srv/pirate-hns-community-app-gateway-staging-shadow` and
+`/etc/pirate/hns-community-app-gateway-staging-shadow`, and it does not share a
+release, manifest, credential directory, listener, or unit with production or
+production shadow.
 
 The Caddy file is a composition fragment, not a complete candidate. Resolve
 its one exact `app.<root>` host only after root selection. Insert the route
