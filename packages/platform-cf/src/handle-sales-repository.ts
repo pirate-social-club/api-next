@@ -3067,12 +3067,17 @@ export function makeControlPlaneHandleSalesRepository() {
                       AND handle_grant.issued_at <= $2::timestamptz
                       AND (
                         $3::text IS NULL
-                        OR (handle_grant.family,handle_grant.namespace_root,
-                            handle_grant.handle_label,handle_grant.grant_id)
-                           > ($3::text,$4::text,$5::text,$6::text)
+                        OR (handle_grant.family COLLATE "C",
+                            handle_grant.namespace_root COLLATE "C",
+                            handle_grant.handle_label COLLATE "C",
+                            handle_grant.grant_id COLLATE "C")
+                           > ($3::text COLLATE "C",$4::text COLLATE "C",
+                              $5::text COLLATE "C",$6::text COLLATE "C")
                       )
-                    ORDER BY handle_grant.family,handle_grant.namespace_root,
-                             handle_grant.handle_label,handle_grant.grant_id
+                    ORDER BY handle_grant.family COLLATE "C",
+                             handle_grant.namespace_root COLLATE "C",
+                             handle_grant.handle_label COLLATE "C",
+                             handle_grant.grant_id COLLATE "C"
                     LIMIT $7`,
             values: [
               input.personaId,
@@ -3162,14 +3167,16 @@ export function makeControlPlaneHandleSalesRepository() {
                          FROM handle_grants AS persona_grant
                         WHERE persona_grant.owner_persona_id=persona.persona_id
                           AND persona_grant.status='active'
-                        ORDER BY persona_grant.family,persona_grant.namespace_root,
-                                 persona_grant.handle_label,persona_grant.grant_id
+                        ORDER BY persona_grant.family COLLATE "C",
+                                 persona_grant.namespace_root COLLATE "C",
+                                 persona_grant.handle_label COLLATE "C",
+                                 persona_grant.grant_id COLLATE "C"
                      ) AS handle_grant ON TRUE
                     WHERE persona.persona_id=$1 AND persona.status='active'
-                    ORDER BY handle_grant.family NULLS LAST,
-                             handle_grant.namespace_root NULLS LAST,
-                             handle_grant.handle_label NULLS LAST,
-                             handle_grant.grant_id NULLS LAST`,
+                    ORDER BY handle_grant.family COLLATE "C" NULLS LAST,
+                             handle_grant.namespace_root COLLATE "C" NULLS LAST,
+                             handle_grant.handle_label COLLATE "C" NULLS LAST,
+                             handle_grant.grant_id COLLATE "C" NULLS LAST`,
             values: [input.personaId],
             readonly: true,
           }),

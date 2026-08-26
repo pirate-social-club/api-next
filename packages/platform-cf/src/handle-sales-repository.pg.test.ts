@@ -756,6 +756,79 @@ suite("community handle sales on PostgreSQL 17", () => {
         reason: "qualification_unsatisfied",
       });
 
+      const issueDirectLabel = async (handleLabel: string) => {
+        const suffix = handleLabel.replaceAll("-", "hyphen");
+        const exactOffering = await run(
+          sales.createOffering({
+            accountId: "seller-account",
+            communityId,
+            idempotencyKey: `bytewise-offering-${suffix}`,
+            terms: directGrantTerms(activationId, policy.qualification_policy, handleLabel),
+          }),
+        );
+        await run(
+          sales.confirmPersonaReuse({
+            accountId: "recipient-account",
+            personaId: recipientPersona,
+            offeringId: exactOffering.offering.offering_id,
+            idempotencyKey: `bytewise-link-${suffix}`,
+          }),
+        );
+        const exactQuote = await run(
+          sales.createQuote({
+            accountId: "recipient-account",
+            personaId: recipientPersona,
+            offeringId: exactOffering.offering.offering_id,
+            desiredLabel: handleLabel,
+            idempotencyKey: `bytewise-quote-${suffix}`,
+          }),
+        );
+        if (exactQuote.kind !== "quoted") throw new Error("expected bytewise quote");
+        const exactReservation = await run(
+          sales.createReservation({
+            accountId: "recipient-account",
+            personaId: recipientPersona,
+            quoteId: exactQuote.quote.quote_id,
+            expectedQuoteHash: exactQuote.quote.quote_hash,
+            idempotencyKey: `bytewise-reservation-${suffix}`,
+          }),
+        );
+        await run(
+          sales.submitFreeClaim({
+            accountId: "recipient-account",
+            personaId: recipientPersona,
+            reservationId: exactReservation.reservation.reservation_id,
+            expectedReservationHash: exactReservation.reservation.reservation_hash,
+            idempotencyKey: `bytewise-claim-${suffix}`,
+          }),
+        );
+      };
+      await issueDirectLabel("a-c");
+      await issueDirectLabel("ab");
+      const bytewiseLabels: string[] = [];
+      let bytewiseCursor: string | undefined;
+      do {
+        const page = await run(
+          sales.listPersonaGrants({
+            personaId: recipientPersona,
+            limit: 1,
+            ...(bytewiseCursor === undefined ? {} : { cursor: bytewiseCursor }),
+          }),
+        );
+        bytewiseLabels.push(...page.items.map((item) => item.handle.handle_label));
+        bytewiseCursor = page.next_cursor ?? undefined;
+      } while (bytewiseCursor !== undefined);
+      expect(bytewiseLabels).toEqual(["a-c", "ab", "longname"]);
+      await expect(
+        run(sales.getPublicPersona({ personaId: recipientPersona })),
+      ).resolves.toMatchObject({
+        handle_grants: [
+          { handle: { handle_label: "a-c" } },
+          { handle: { handle_label: "ab" } },
+          { handle: { handle_label: "longname" } },
+        ],
+      });
+
       const contenderA = await seedAccount(admin, "contender-a");
       const contenderB = await seedAccount(admin, "contender-b");
       const contenderInputs = [
@@ -1070,14 +1143,24 @@ suite("community handle sales on PostgreSQL 17", () => {
           WHERE family='hns' AND namespace_root='charizard' AND handle_label='longname'`,
       );
       expect(retainedFence.rows[0]?.permanent_grant_id).toBe(publicGrant.grant_id);
+      const retainedKeyQuote = await run(
+        sales.createQuote({
+          accountId: "recipient-account",
+          personaId: siblingPersona,
+          offeringId: offering.offering.offering_id,
+          desiredLabel: "longname",
+          idempotencyKey: "revoked-key-reclaim-quote",
+        }),
+      );
+      if (retainedKeyQuote.kind !== "quoted") throw new Error("expected retained-key quote");
       await expect(
         run(
-          sales.createQuote({
+          sales.createReservation({
             accountId: "recipient-account",
             personaId: siblingPersona,
-            offeringId: offering.offering.offering_id,
-            desiredLabel: "longname",
-            idempotencyKey: "revoked-key-reclaim-quote",
+            quoteId: retainedKeyQuote.quote.quote_id,
+            expectedQuoteHash: retainedKeyQuote.quote.quote_hash,
+            idempotencyKey: "revoked-key-reclaim-reservation",
           }),
         ),
       ).rejects.toMatchObject({
