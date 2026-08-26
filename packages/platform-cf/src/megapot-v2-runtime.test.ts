@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { CustodySolvencyStore } from "@pirate/application";
+import { Effect } from "effect";
 import {
   encodeFunctionData,
   encodeFunctionResult,
@@ -9,6 +11,7 @@ import {
   recoverMessageAddress,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { makeCustodySolvencyCoordinator } from "./custody-solvency-coordinator.ts";
 import { encodeMegapotV2ClaimRevert } from "./megapot-v2.ts";
 import {
   findMegapotV2ClaimRevert,
@@ -342,6 +345,64 @@ describe("Megapot v2 Worker runtime adapters", () => {
     await client.attestDeployment();
     await client.attestDeployment();
     expect(requestCount).toBe(12);
+  });
+
+  test("paces request starts only when the bounded client opts in", async () => {
+    const requestStarts: number[] = [];
+    const fetchAttestation = attestationFetcher();
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      reuseSuccessfulAttestation: true,
+      minimumRequestIntervalMs: 20,
+      fetcher: async (input, init) => {
+        requestStarts.push(performance.now());
+        return fetchAttestation(input, init);
+      },
+    });
+
+    await client.attestDeployment();
+    expect(requestStarts).toHaveLength(6);
+    for (let index = 1; index < requestStarts.length; index += 1) {
+      expect(
+        (requestStarts[index] as number) - (requestStarts[index - 1] as number),
+      ).toBeGreaterThan(15);
+    }
+  });
+
+  test("classifies the exact solvency RPC stage without exposing provider details", async () => {
+    const deployment = attestation();
+    const fetchAttestation = attestationFetcher();
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: deployment,
+      reuseSuccessfulAttestation: true,
+      fetcher: async (input, init) => {
+        const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
+        if (request.method === "eth_getBlockByNumber") {
+          return new Response(null, { status: 503 });
+        }
+        return fetchAttestation(input, init);
+      },
+    });
+    const store: CustodySolvencyStore = {
+      loadCandidate: () => Effect.succeed(deployment),
+      findObservation: () => Effect.succeed(null),
+      record: () => Effect.die("unexpected solvency record"),
+    };
+
+    await expect(
+      Effect.runPromise(
+        makeCustodySolvencyCoordinator({ store, rpc: client, requiredConfirmations: 3 }).observe(
+          deployment.attestationId,
+        ),
+      ),
+    ).rejects.toMatchObject({
+      reason: "observation_invalid",
+      stage: "head",
+      rpcReason: "unavailable",
+      message: "observation_invalid:head:unavailable",
+    });
   });
 
   test("fails closed on the wrong chain, stale code, or mismatched Jackpot wiring", async () => {

@@ -89,6 +89,8 @@ export type MegapotV2RpcClientOptions = Readonly<{
   maxResponseBytes?: number;
   /** Safe only when the client is scoped to one bounded operation or job attempt. */
   reuseSuccessfulAttestation?: boolean;
+  /** Optional provider-throttle guard; zero or absent preserves immediate request starts. */
+  minimumRequestIntervalMs?: number;
 }>;
 
 export type MegapotV2FeeQuote = Readonly<{
@@ -263,10 +265,34 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
     options.maxResponseBytes,
     MEGAPOT_V2_RPC_MAX_RESPONSE_BYTES,
   );
+  const minimumRequestIntervalMs = options.minimumRequestIntervalMs ?? 0;
+  if (
+    !Number.isSafeInteger(minimumRequestIntervalMs) ||
+    minimumRequestIntervalMs < 0 ||
+    minimumRequestIntervalMs > 1_000
+  ) {
+    throw new MegapotV2RpcFailed("invalid-config");
+  }
   const fetcher = options.fetcher ?? fetch;
   let requestSequence = 0;
+  let previousRequestStart = Promise.resolve();
+  let lastRequestStartedAt = Number.NEGATIVE_INFINITY;
+
+  const waitForRequestStart = (): Promise<void> => {
+    if (minimumRequestIntervalMs === 0) return Promise.resolve();
+    const scheduled = previousRequestStart.then(async () => {
+      const remaining = lastRequestStartedAt + minimumRequestIntervalMs - performance.now();
+      if (remaining > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+      }
+      lastRequestStartedAt = performance.now();
+    });
+    previousRequestStart = scheduled.catch(() => undefined);
+    return scheduled;
+  };
 
   const rpc = async (method: string, params: readonly unknown[]): Promise<unknown> => {
+    await waitForRequestStart();
     requestSequence += 1;
     const id = `megapot:${requestSequence}:${method}`;
     const controller = new AbortController();
