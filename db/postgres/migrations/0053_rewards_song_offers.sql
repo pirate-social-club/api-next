@@ -1254,6 +1254,7 @@ CREATE TABLE reward_erc20_transfer_receipt_evidence (
 
 CREATE TABLE reward_refund_effects (
   refund_effect_id TEXT PRIMARY KEY REFERENCES reward_chain_effects (effect_id),
+  attestation_id TEXT NOT NULL REFERENCES megapot_deployment_attestations (attestation_id),
   leg_id TEXT NOT NULL REFERENCES song_reward_offer_legs (leg_id),
   funding_effect_id TEXT NOT NULL REFERENCES song_reward_leg_funding_effects (funding_effect_id),
   funder_account_id TEXT NOT NULL REFERENCES users (user_id),
@@ -1261,6 +1262,9 @@ CREATE TABLE reward_refund_effects (
   amount_atomic NUMERIC(78, 0) NOT NULL CHECK (amount_atomic > 0),
   pro_rata_numerator_atomic NUMERIC(78, 0) NOT NULL CHECK (pro_rata_numerator_atomic > 0),
   pro_rata_denominator_atomic NUMERIC(78, 0) NOT NULL CHECK (pro_rata_denominator_atomic > 0),
+  solvency_observation_id TEXT NOT NULL,
+  custody_balance_before_atomic NUMERIC(78, 0) NOT NULL
+    CHECK (custody_balance_before_atomic >= amount_atomic),
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
   UNIQUE (leg_id, funding_effect_id),
   CONSTRAINT reward_refund_fraction CHECK (
@@ -1300,6 +1304,11 @@ CREATE INDEX custody_solvency_observations_latest_idx
 
 ALTER TABLE reward_payout_effects
   ADD CONSTRAINT reward_payout_effects_solvency_observation_fk
+  FOREIGN KEY (solvency_observation_id)
+  REFERENCES custody_solvency_observations (observation_id);
+
+ALTER TABLE reward_refund_effects
+  ADD CONSTRAINT reward_refund_effects_solvency_observation_fk
   FOREIGN KEY (solvency_observation_id)
   REFERENCES custody_solvency_observations (observation_id);
 
@@ -1527,6 +1536,7 @@ DECLARE
   offer_record song_reward_offers%ROWTYPE;
   attestation_record megapot_deployment_attestations%ROWTYPE;
   activity TEXT;
+  confirmed_refund_total NUMERIC(78, 0);
 BEGIN
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'song reward offer legs cannot be deleted';
@@ -1624,8 +1634,27 @@ BEGIN
        OR NEW.refunded_atomic < OLD.refunded_atomic THEN
       RAISE EXCEPTION 'song reward offer leg accounting cannot reverse';
     END IF;
-    IF OLD.status IN ('exhausted', 'ended') AND NEW IS DISTINCT FROM OLD THEN
-      RAISE EXCEPTION 'terminal song reward offer leg is immutable';
+    IF NEW.refunded_atomic > OLD.refunded_atomic THEN
+      SELECT COALESCE(sum(refund.amount_atomic), 0) INTO confirmed_refund_total
+        FROM reward_refund_effects refund
+        JOIN reward_erc20_transfer_receipt_evidence receipt
+          ON receipt.effect_id=refund.refund_effect_id
+       WHERE refund.leg_id=NEW.leg_id AND receipt.transfer_purpose='reward_refund';
+      IF NEW.refunded_atomic <> confirmed_refund_total THEN
+        RAISE EXCEPTION 'song reward offer leg refund accounting requires exact receipts';
+      END IF;
+    END IF;
+    IF OLD.status IN ('exhausted', 'ended') AND (
+      ROW(
+        NEW.status, NEW.funded_atomic, NEW.reserved_atomic, NEW.spent_atomic,
+        NEW.fulfilled_atomic, NEW.participation_ends_at, NEW.activated_at
+      ) IS DISTINCT FROM ROW(
+        OLD.status, OLD.funded_atomic, OLD.reserved_atomic, OLD.spent_atomic,
+        OLD.fulfilled_atomic, OLD.participation_ends_at, OLD.activated_at
+      )
+      OR NEW.refunded_atomic < OLD.refunded_atomic
+    ) THEN
+      RAISE EXCEPTION 'terminal song reward offer leg only permits refund settlement';
     END IF;
     IF NOT (
       NEW.status = OLD.status
@@ -2910,6 +2939,7 @@ DECLARE
   chain_record reward_chain_effects%ROWTYPE;
   attestation_record megapot_deployment_attestations%ROWTYPE;
   payout_record reward_payout_effects%ROWTYPE;
+  refund_record reward_refund_effects%ROWTYPE;
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'reward ERC20 transfer receipt evidence is append-only';
@@ -2941,6 +2971,14 @@ BEGIN
        OR payout_record.amount_atomic <> NEW.amount_atomic THEN
       RAISE EXCEPTION 'reward payout receipt does not match payout reservation';
     END IF;
+  ELSIF NEW.transfer_purpose = 'reward_refund' THEN
+    SELECT * INTO refund_record FROM reward_refund_effects
+     WHERE refund_effect_id = NEW.effect_id;
+    IF refund_record.attestation_id <> NEW.attestation_id
+       OR refund_record.destination_address <> NEW.recipient_address
+       OR refund_record.amount_atomic <> NEW.amount_atomic THEN
+      RAISE EXCEPTION 'reward refund receipt does not match refund reservation';
+    END IF;
   END IF;
   RETURN NEW;
 END
@@ -2954,6 +2992,17 @@ LANGUAGE plpgsql AS $$
 DECLARE
   chain_record reward_chain_effects%ROWTYPE;
   funding_record song_reward_leg_funding_effects%ROWTYPE;
+  leg_record song_reward_offer_legs%ROWTYPE;
+  offer_record song_reward_offers%ROWTYPE;
+  attestation_record megapot_deployment_attestations%ROWTYPE;
+  solvency_record custody_solvency_observations%ROWTYPE;
+  confirmed_total NUMERIC(78, 0);
+  refundable_total NUMERIC(78, 0);
+  expected_amount NUMERIC(78, 0);
+  live_reserved_purchase NUMERIC(78, 0);
+  live_outstanding_credit NUMERIC(78, 0);
+  live_pending_refund NUMERIC(78, 0);
+  live_shared_sponsorship NUMERIC(78, 0);
 BEGIN
   IF TG_OP <> 'INSERT' THEN
     RAISE EXCEPTION 'reward refund effects are append-only';
@@ -2962,14 +3011,85 @@ BEGIN
    WHERE effect_id = NEW.refund_effect_id FOR SHARE;
   SELECT * INTO funding_record FROM song_reward_leg_funding_effects
    WHERE funding_effect_id = NEW.funding_effect_id FOR SHARE;
+  SELECT * INTO leg_record FROM song_reward_offer_legs
+   WHERE leg_id = NEW.leg_id FOR SHARE;
+  SELECT * INTO offer_record FROM song_reward_offers
+   WHERE offer_id = leg_record.offer_id FOR SHARE;
+  SELECT * INTO attestation_record FROM megapot_deployment_attestations
+   WHERE attestation_id = NEW.attestation_id FOR SHARE;
+  SELECT * INTO solvency_record FROM custody_solvency_observations
+   WHERE observation_id = NEW.solvency_observation_id FOR SHARE;
+  SELECT COALESCE(sum(confirmed_amount_atomic), 0) INTO confirmed_total
+    FROM song_reward_leg_funding_effects
+   WHERE leg_id = NEW.leg_id AND state = 'confirmed';
+  refundable_total := leg_record.funded_atomic - leg_record.spent_atomic
+    - leg_record.fulfilled_atomic;
+  SELECT COALESCE(sum(reserved_atomic), 0) INTO live_reserved_purchase
+    FROM song_reward_offer_legs WHERE kind='megapot_pool' AND funding_source='leg_budget'
+      AND chain_id=leg_record.chain_id AND token_address=leg_record.token_address;
+  SELECT COALESCE(sum(amount_atomic-paid_atomic), 0) INTO live_outstanding_credit
+    FROM reward_ledger_credits WHERE state <> 'sent'
+      AND chain_id=leg_record.chain_id AND token_address=leg_record.token_address;
+  SELECT COALESCE(sum(funded_atomic-reserved_atomic-spent_atomic
+      -fulfilled_atomic-refunded_atomic), 0) INTO live_pending_refund
+    FROM song_reward_offer_legs WHERE funding_source='leg_budget'
+      AND chain_id=leg_record.chain_id AND token_address=leg_record.token_address;
+  SELECT COALESCE(sum(funded_atomic+winnings_credited_atomic
+      -spent_atomic-withdrawn_atomic), 0) INTO live_shared_sponsorship
+    FROM platform_sponsorship_budgets
+   WHERE chain_id=leg_record.chain_id AND token_address=leg_record.token_address;
+  IF confirmed_total > 0 THEN
+    WITH allocations AS (
+      SELECT candidate.funding_effect_id,
+             floor(refundable_total * candidate.confirmed_amount_atomic / confirmed_total) AS base,
+             row_number() OVER (
+               ORDER BY mod(
+                 refundable_total * candidate.confirmed_amount_atomic, confirmed_total
+               ) DESC, candidate.funding_effect_id
+             ) AS remainder_rank,
+             refundable_total - sum(floor(
+               refundable_total * candidate.confirmed_amount_atomic / confirmed_total
+             )) OVER () AS remainder_units
+        FROM song_reward_leg_funding_effects candidate
+       WHERE candidate.leg_id = NEW.leg_id AND candidate.state = 'confirmed'
+    )
+    SELECT base + CASE WHEN remainder_rank <= remainder_units THEN 1 ELSE 0 END
+      INTO expected_amount FROM allocations
+     WHERE funding_effect_id = NEW.funding_effect_id;
+  END IF;
   IF chain_record.effect_kind <> 'reward_refund'
+     OR chain_record.state <> 'nonce_reserved'
      OR chain_record.reserved_amount_atomic <> NEW.amount_atomic
-     OR chain_record.target_address <> NEW.destination_address
+     OR chain_record.chain_id <> leg_record.chain_id
+     OR chain_record.signer_address <> attestation_record.custody_address
+     OR chain_record.target_address <> leg_record.token_address
      OR funding_record.leg_id <> NEW.leg_id
      OR funding_record.funder_account_id <> NEW.funder_account_id
      OR funding_record.state <> 'confirmed'
-     OR NEW.amount_atomic > funding_record.confirmed_amount_atomic THEN
-    RAISE EXCEPTION 'reward refund does not match confirmed contribution';
+     OR funding_record.sender_address <> NEW.destination_address
+     OR leg_record.status NOT IN ('exhausted', 'ended')
+     OR leg_record.refund_policy <> 'refund_to_funders_pro_rata'
+     OR leg_record.funding_source <> 'leg_budget'
+     OR leg_record.reserved_atomic <> 0
+     OR offer_record.status NOT IN ('exhausted', 'expired', 'ended')
+     OR confirmed_total = 0 OR confirmed_total <> leg_record.funded_atomic
+     OR refundable_total <= 0 OR expected_amount IS NULL
+     OR NEW.amount_atomic <> expected_amount
+     OR NEW.pro_rata_numerator_atomic <> funding_record.confirmed_amount_atomic
+     OR NEW.pro_rata_denominator_atomic <> confirmed_total
+     OR attestation_record.status <> 'active'
+     OR attestation_record.chain_id <> leg_record.chain_id
+     OR attestation_record.usdc_address <> leg_record.token_address
+     OR solvency_record.attestation_id <> NEW.attestation_id
+     OR solvency_record.chain_id <> leg_record.chain_id
+     OR solvency_record.custody_address <> chain_record.signer_address
+     OR solvency_record.token_address <> leg_record.token_address
+     OR solvency_record.expires_at <= clock_timestamp()
+     OR NOT solvency_record.solvent
+     OR solvency_record.balance_atomic <> NEW.custody_balance_before_atomic
+     OR solvency_record.balance_atomic < live_reserved_purchase
+       + live_outstanding_credit + live_pending_refund + live_shared_sponsorship THEN
+    RAISE EXCEPTION 'reward refund does not match terminal pro-rata contribution';
   END IF;
   RETURN NEW;
 END

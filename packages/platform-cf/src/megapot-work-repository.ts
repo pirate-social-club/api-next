@@ -18,7 +18,8 @@ export type MegapotChainEffectKind =
   | "usdc_approval"
   | "ticket_purchase"
   | "winnings_claim"
-  | "reward_payout";
+  | "reward_payout"
+  | "reward_refund";
 
 export type MegapotDrawingWork = Readonly<{
   poolLegId: string;
@@ -43,6 +44,9 @@ export interface MegapotWorkStore {
     readonly limit: number;
   }) => Effect.Effect<readonly MegapotDrawingWork[], MegapotWorkStorageFailed>;
   readonly loadCredits: (
+    limit: number,
+  ) => Effect.Effect<readonly string[], MegapotWorkStorageFailed>;
+  readonly loadRefunds: (
     limit: number,
   ) => Effect.Effect<readonly string[], MegapotWorkStorageFailed>;
   readonly loadChainEffects: (
@@ -115,7 +119,8 @@ function chainEffect(row: Row): MegapotChainEffectWork {
     effectKind !== "usdc_approval" &&
     effectKind !== "ticket_purchase" &&
     effectKind !== "winnings_claim" &&
-    effectKind !== "reward_payout"
+    effectKind !== "reward_payout" &&
+    effectKind !== "reward_refund"
   ) {
     throw new Error("invalid effect kind");
   }
@@ -179,6 +184,69 @@ export function makeControlPlaneMegapotWorkRepository() {
         }),
       ),
 
+    loadRefunds: (limit: number) =>
+      mapped(
+        Effect.gen(function* () {
+          if (!validLimit(limit)) return yield* failed("invalid-row");
+          const db = yield* ControlPlaneDb;
+          const result = yield* db.execute<Row>({
+            label: "megapot-work.refunds.read",
+            text: `WITH allocation_basis AS (
+                    SELECT funding.funding_effect_id, funding.leg_id,
+                           leg.funded_atomic-leg.spent_atomic-leg.fulfilled_atomic
+                             AS refundable_total,
+                           floor(
+                             (leg.funded_atomic-leg.spent_atomic-leg.fulfilled_atomic)
+                               * funding.confirmed_amount_atomic / leg.funded_atomic
+                           ) AS base_amount,
+                           mod(
+                             (leg.funded_atomic-leg.spent_atomic-leg.fulfilled_atomic)
+                               * funding.confirmed_amount_atomic, leg.funded_atomic
+                           ) AS remainder_value
+                      FROM song_reward_leg_funding_effects funding
+                      JOIN song_reward_offer_legs leg ON leg.leg_id=funding.leg_id
+                      JOIN song_reward_offers offer ON offer.offer_id=leg.offer_id
+                     WHERE funding.state='confirmed' AND leg.funded_atomic > 0
+                       AND leg.status IN ('exhausted','ended')
+                       AND leg.funding_source='leg_budget' AND leg.reserved_atomic=0
+                       AND offer.status IN ('exhausted','expired','ended')
+                       AND leg.funded_atomic=(
+                         SELECT sum(confirmed.confirmed_amount_atomic)
+                           FROM song_reward_leg_funding_effects confirmed
+                          WHERE confirmed.leg_id=leg.leg_id AND confirmed.state='confirmed'
+                       )
+                  ), allocations AS (
+                    SELECT basis.*,
+                           row_number() OVER (
+                             PARTITION BY basis.leg_id
+                             ORDER BY basis.remainder_value DESC,basis.funding_effect_id
+                           ) AS remainder_rank,
+                           sum(basis.base_amount) OVER (PARTITION BY basis.leg_id) AS base_total
+                      FROM allocation_basis basis
+                  )
+                  SELECT allocation.funding_effect_id
+                    FROM allocations allocation
+                   WHERE allocation.refundable_total > 0
+                     AND allocation.base_amount + CASE
+                       WHEN allocation.remainder_rank <=
+                         allocation.refundable_total-allocation.base_total
+                       THEN 1 ELSE 0 END > 0
+                     AND NOT EXISTS (
+                       SELECT 1 FROM reward_refund_effects refund
+                        WHERE refund.leg_id=allocation.leg_id
+                          AND refund.funding_effect_id=allocation.funding_effect_id
+                     )
+                   ORDER BY allocation.leg_id,allocation.funding_effect_id LIMIT $1`,
+            values: [limit],
+            readonly: true,
+          });
+          return yield* Effect.try({
+            try: () => result.rows.map((row) => text(row, "funding_effect_id")),
+            catch: () => failed("invalid-row"),
+          });
+        }),
+      ),
+
     loadChainEffects: (limit: number) =>
       mapped(
         Effect.gen(function* () {
@@ -188,7 +256,8 @@ export function makeControlPlaneMegapotWorkRepository() {
             label: "megapot-work.chain-effects.read",
             text: `SELECT effect_id,effect_kind FROM reward_chain_effects
                     WHERE effect_kind IN (
-                      'usdc_approval','ticket_purchase','winnings_claim','reward_payout'
+                      'usdc_approval','ticket_purchase','winnings_claim','reward_payout',
+                      'reward_refund'
                     ) AND state IN (
                       'nonce_reserved','prepared','broadcast_pending','confirming',
                       'reconciliation_required'
@@ -215,6 +284,7 @@ export const makeControlPlaneMegapotWorkStore = (
   return {
     loadDrawings: (input) => provide(repository.loadDrawings(input)),
     loadCredits: (limit) => provide(repository.loadCredits(limit)),
+    loadRefunds: (limit) => provide(repository.loadRefunds(limit)),
     loadChainEffects: (limit) => provide(repository.loadChainEffects(limit)),
   };
 };

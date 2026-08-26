@@ -23,6 +23,8 @@ export interface MegapotRewardsRuntime {
   readonly sweep: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
   readonly claim: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
   readonly allocate: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
+  readonly closeExpiredOffers: (limit: number) => Effect.Effect<readonly unknown[], unknown>;
+  readonly refund: (fundingEffectId: string) => Effect.Effect<unknown, unknown>;
   readonly payout: (creditId: string) => Effect.Effect<unknown, unknown>;
 }
 
@@ -35,6 +37,8 @@ export type MegapotRewardsCycleSummary = Readonly<{
   swept: number;
   claimed: number;
   allocated: number;
+  terminalOffers: number;
+  refunded: number;
   paid: number;
   failures: readonly string[];
 }>;
@@ -115,9 +119,24 @@ export function runMegapotRewardsCycle(input: {
     );
     recordFailures(allocationFailures);
 
+    const terminalOffers = yield* input.runtime.closeExpiredOffers(limit);
+
+    const refunds = yield* input.work.loadRefunds(limit);
+    const [refundFailures, refunded] = yield* partition(refunds, (fundingEffectId) =>
+      Effect.gen(function* () {
+        yield* input.runtime.observeSolvency();
+        return yield* input.runtime.refund(fundingEffectId);
+      }),
+    );
+    recordFailures(refundFailures);
+
     const credits = yield* input.work.loadCredits(limit);
-    if (credits.length > 0) yield* input.runtime.observeSolvency();
-    const [payoutFailures, paid] = yield* partition(credits, input.runtime.payout);
+    const [payoutFailures, paid] = yield* partition(credits, (creditId) =>
+      Effect.gen(function* () {
+        yield* input.runtime.observeSolvency();
+        return yield* input.runtime.payout(creditId);
+      }),
+    );
     recordFailures(payoutFailures);
 
     return {
@@ -129,6 +148,8 @@ export function runMegapotRewardsCycle(input: {
       swept: swept.length,
       claimed: claimed.length,
       allocated: allocated.length,
+      terminalOffers: terminalOffers.length,
+      refunded: refunded.length,
       paid: paid.length,
       failures,
     };

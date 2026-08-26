@@ -227,8 +227,11 @@ export {
 } from "./queue-retry";
 export * from "./reward-funding-coordinator.ts";
 export * from "./reward-funding-repository.ts";
+export * from "./reward-offer-terminal-repository.ts";
 export * from "./reward-payout-coordinator.ts";
 export * from "./reward-payout-repository.ts";
+export * from "./reward-refund-coordinator.ts";
+export * from "./reward-refund-repository.ts";
 export {
   makeControlPlaneRouteRevalidationCompletionRepository,
   makeControlPlaneRouteRevalidationCompletionStore,

@@ -19,7 +19,9 @@ import { makeControlPlaneMegapotWorkStore } from "./megapot-work-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
+import { makeControlPlaneRewardOfferTerminalStore } from "./reward-offer-terminal-repository.ts";
 import { makeControlPlaneRewardPayoutStore } from "./reward-payout-repository.ts";
+import { makeControlPlaneRewardRefundStore } from "./reward-refund-repository.ts";
 import { makeControlPlaneSongRewardOfferStore } from "./song-reward-offer-repository.ts";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -182,7 +184,10 @@ async function seedMegapotAuthority(admin: Client): Promise<void> {
 async function seedActivePoolLeg(
   admin: Client,
   identity: SeedIdentity,
-  input: Readonly<{ fallback: boolean; suffix: string }> = { fallback: false, suffix: "pool" },
+  input: Readonly<{ fallback: boolean; suffix: string; expired?: boolean }> = {
+    fallback: false,
+    suffix: "pool",
+  },
 ): Promise<Readonly<{ legId: string; offerId: string }>> {
   const offerId = `offer-${input.suffix}`;
   const legId = `leg-${input.suffix}`;
@@ -227,7 +232,8 @@ async function seedActivePoolLeg(
        status, starts_at, ends_at, owner_policy_snapshot, terms_hash,
        reward_policy_version_id
      ) VALUES ($1, $2, $3, 3, $4, 'draft', clock_timestamp() - interval '1 day',
-       clock_timestamp() + interval '10 days', '{"third_party_legs":"allowed"}'::jsonb, $5, $6)`,
+       clock_timestamp() + CASE WHEN $7::boolean THEN interval '-1 hour' ELSE interval '10 days' END,
+       '{"third_party_legs":"allowed"}'::jsonb, $5, $6)`,
     [
       offerId,
       identity.communityId,
@@ -235,6 +241,7 @@ async function seedActivePoolLeg(
       identity.accountId,
       hash("c"),
       rewardPolicyVersionId,
+      input.expired ?? false,
     ],
   );
   await admin.query(
@@ -1477,6 +1484,245 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       ]);
     });
   });
+
+  test("expires a settled pool and returns every unspent USDC atom pro rata", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      const identity = await seedSong(admin, "terminal-refunds");
+      await seedMegapotAuthority(admin);
+      const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
+        fallback: false,
+        suffix: "terminal-refunds",
+        expired: true,
+      });
+      await admin.query(
+        `INSERT INTO song_reward_leg_funding_effects (
+           funding_effect_id, leg_id, funder_account_id, chain_id, token_address,
+           sender_address, recipient_address, expected_amount_atomic,
+           confirmed_amount_atomic, required_confirmations, state,
+           transaction_hash, log_index, block_number, block_hash,
+           observation_hash, confirmed_at
+         ) VALUES
+           ('funding-refund-a',$1,$2,84532,$3,$4,$5,33333,33333,3,'confirmed',
+             $6,1,190,$7,$8,clock_timestamp()),
+           ('funding-refund-b',$1,$2,84532,$3,$9,$5,66667,66667,3,'confirmed',
+             $10,2,191,$11,$12,clock_timestamp()),
+           ('funding-refund-unbound',$1,$2,84532,$3,$4,$5,123,NULL,3,'planned',
+             NULL,NULL,NULL,NULL,NULL,NULL)`,
+        [
+          legId,
+          identity.accountId,
+          address("1"),
+          address("b"),
+          address("4"),
+          bytes32("b"),
+          bytes32("c"),
+          hash("c"),
+          address("c"),
+          bytes32("d"),
+          bytes32("e"),
+          hash("e"),
+        ],
+      );
+      await admin.query(
+        `UPDATE song_reward_offer_legs
+            SET spent_atomic=10000,updated_at=clock_timestamp()
+          WHERE leg_id=$1`,
+        [legId],
+      );
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const terminalStore = makeControlPlaneRewardOfferTerminalStore(layer);
+      const closed = await Effect.runPromise(terminalStore.closeExpired(10));
+      expect(closed).toMatchObject([{ offerId, status: "expired", legIds: [legId] }]);
+      const unbound = await admin.query<{
+        readonly state: string;
+        readonly failure_reason: string;
+      }>(
+        `SELECT state,failure_reason FROM song_reward_leg_funding_effects
+          WHERE funding_effect_id='funding-refund-unbound'`,
+      );
+      expect(unbound.rows).toEqual([
+        { state: "reclaimable_failed", failure_reason: "offer_ended_unbound" },
+      ]);
+
+      const work = makeControlPlaneMegapotWorkStore(layer);
+      await expect(Effect.runPromise(work.loadRefunds(10))).resolves.toEqual([
+        "funding-refund-a",
+        "funding-refund-b",
+      ]);
+      const solvencyStore = makeControlPlaneCustodySolvencyStore(layer);
+      const refundStore = makeControlPlaneRewardRefundStore(layer);
+      const authority = await Effect.runPromise(
+        solvencyStore.loadCandidate("megapot-base-sepolia-v2"),
+      );
+
+      const settle = async (input: {
+        readonly fundingEffectId: string;
+        readonly effectId: string;
+        readonly amountAtomic: bigint;
+        readonly blockNumber: bigint;
+        readonly balanceBeforeAtomic: bigint;
+        readonly balanceAfterAtomic: bigint;
+        readonly hashByte: string;
+      }) => {
+        await Effect.runPromise(
+          solvencyStore.record({
+            candidate: authority,
+            observationId: `solvency-${input.effectId}`,
+            balanceAtomic: input.balanceBeforeAtomic,
+            blockNumber: input.blockNumber,
+            blockHash: bytes32(input.hashByte),
+            observedAt: new Date().toISOString(),
+            expiresAt: new Date(Date.now() + 15 * 60 * 1_000).toISOString(),
+          }),
+        );
+        const candidate = await Effect.runPromise(refundStore.loadCandidate(input.fundingEffectId));
+        expect(candidate.amountAtomic).toBe(input.amountAtomic);
+        if (input.fundingEffectId === "funding-refund-a") {
+          await expect(
+            Effect.runPromise(
+              refundStore.reserveNonce({
+                candidate: { ...candidate, destinationAddress: address("f") },
+                effectId: "refund-effect-tampered",
+                observedPendingNonce: input.blockNumber,
+                observedBlockNumber: input.blockNumber,
+                observedBlockHash: bytes32(input.hashByte),
+                observedAt: new Date().toISOString(),
+              }),
+            ),
+          ).rejects.toMatchObject({ _tag: "RewardRefundRejected", reason: "effect-conflict" });
+        }
+        const reservation = await Effect.runPromise(
+          refundStore.reserveNonce({
+            candidate,
+            effectId: input.effectId,
+            observedPendingNonce: input.blockNumber,
+            observedBlockNumber: input.blockNumber,
+            observedBlockHash: bytes32(input.hashByte),
+            observedAt: new Date().toISOString(),
+          }),
+        );
+        const transactionHash = bytes32(input.hashByte);
+        await Effect.runPromise(
+          refundStore.prepare({
+            reservation,
+            calldata: encodeMegapotUsdcTransfer(
+              candidate.destinationAddress,
+              candidate.amountAtomic,
+            ),
+            calldataHash: hash(input.hashByte),
+            signedTransaction: "0x090a",
+            signedTransactionHash: transactionHash,
+            preparedAt: new Date().toISOString(),
+          }),
+        );
+        await Effect.runPromise(
+          refundStore.recordSubmission({
+            effectId: reservation.effectId,
+            transactionHash,
+            submittedAt: new Date().toISOString(),
+            outcome: "accepted",
+          }),
+        );
+        await Effect.runPromise(
+          refundStore.confirm({
+            effectId: reservation.effectId,
+            transactionHash,
+            transferLogIndex: Number(input.blockNumber),
+            amountAtomic: input.amountAtomic,
+            custodyBalanceAfterAtomic: input.balanceAfterAtomic,
+            blockNumber: input.blockNumber + 1n,
+            blockHash: bytes32(input.hashByte),
+            receiptHash: hash(input.hashByte),
+            confirmations: 3,
+            confirmedAt: new Date().toISOString(),
+          }),
+        );
+      };
+
+      await settle({
+        fundingEffectId: "funding-refund-a",
+        effectId: "refund-effect-a",
+        amountAtomic: 30_000n,
+        blockNumber: 200n,
+        balanceBeforeAtomic: 200_000n,
+        balanceAfterAtomic: 170_000n,
+        hashByte: "1",
+      });
+      await settle({
+        fundingEffectId: "funding-refund-b",
+        effectId: "refund-effect-b",
+        amountAtomic: 60_000n,
+        blockNumber: 202n,
+        balanceBeforeAtomic: 170_000n,
+        balanceAfterAtomic: 110_000n,
+        hashByte: "2",
+      });
+
+      const refunds = await admin.query<{
+        readonly funding_effect_id: string;
+        readonly destination_address: string;
+        readonly amount_atomic: string;
+        readonly transfer_purpose: string;
+      }>(
+        `SELECT refund.funding_effect_id,refund.destination_address,
+                refund.amount_atomic::text,evidence.transfer_purpose
+           FROM reward_refund_effects refund
+           JOIN reward_erc20_transfer_receipt_evidence evidence
+             ON evidence.effect_id=refund.refund_effect_id
+          WHERE refund.leg_id=$1 ORDER BY refund.funding_effect_id`,
+        [legId],
+      );
+      expect(refunds.rows).toEqual([
+        {
+          funding_effect_id: "funding-refund-a",
+          destination_address: address("b"),
+          amount_atomic: "30000",
+          transfer_purpose: "reward_refund",
+        },
+        {
+          funding_effect_id: "funding-refund-b",
+          destination_address: address("c"),
+          amount_atomic: "60000",
+          transfer_purpose: "reward_refund",
+        },
+      ]);
+      const leg = await admin.query<{ readonly refunded_atomic: string }>(
+        "SELECT refunded_atomic::text FROM song_reward_offer_legs WHERE leg_id=$1",
+        [legId],
+      );
+      expect(leg.rows).toEqual([{ refunded_atomic: "90000" }]);
+      await expect(Effect.runPromise(work.loadRefunds(10))).resolves.toEqual([]);
+
+      const unsettledIdentity = await seedSong(admin, "terminal-unsettled");
+      const unsettled = await seedActivePoolLeg(admin, unsettledIdentity, {
+        fallback: false,
+        suffix: "terminal-unsettled",
+        expired: true,
+      });
+      await admin.query(
+        `INSERT INTO song_reward_leg_funding_effects (
+           funding_effect_id,leg_id,funder_account_id,chain_id,token_address,
+           sender_address,recipient_address,expected_amount_atomic,
+           required_confirmations,state,transaction_hash
+         ) VALUES ('funding-refund-confirming',$1,$2,84532,$3,$4,$5,500,3,
+           'confirming',$6)`,
+        [
+          unsettled.legId,
+          unsettledIdentity.accountId,
+          address("1"),
+          address("d"),
+          address("4"),
+          bytes32("9"),
+        ],
+      );
+      await expect(Effect.runPromise(terminalStore.closeExpired(10))).resolves.toEqual([]);
+      const stillOpen = await admin.query<{ readonly status: string }>(
+        "SELECT status FROM song_reward_offers WHERE offer_id=$1",
+        [unsettled.offerId],
+      );
+      expect(stillOpen.rows).toEqual([{ status: "active" }]);
+    });
+  }, 10_000);
 
   test("persists an attested drawing observation and opens each eligible pool once", async () => {
     await withSchema(async (admin, scopedConnection) => {

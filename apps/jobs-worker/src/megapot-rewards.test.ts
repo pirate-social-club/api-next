@@ -18,6 +18,7 @@ function fixture(approvalKind: "submitted" | "confirmed") {
       Effect.succeed([{ effectId: "effect-1", effectKind: "ticket_purchase" }]),
     loadDrawings: ({ statuses }) => Effect.succeed(statuses.map(drawing)),
     loadCredits: () => Effect.succeed(["credit-1"]),
+    loadRefunds: () => Effect.succeed(["funding-1"]),
   };
   const call = (name: string) =>
     Effect.sync(() => {
@@ -35,6 +36,8 @@ function fixture(approvalKind: "submitted" | "confirmed") {
     sweep: () => call("sweep"),
     claim: () => call("claim"),
     allocate: () => call("allocate"),
+    closeExpiredOffers: () => call("close-expired").pipe(Effect.as([{}])),
+    refund: () => call("refund"),
     payout: () => call("payout"),
   };
   return { calls, runtime, work };
@@ -56,6 +59,9 @@ describe("Megapot rewards scheduled cycle", () => {
       "sweep",
       "claim",
       "allocate",
+      "close-expired",
+      "observe-solvency",
+      "refund",
       "observe-solvency",
       "payout",
     ]);
@@ -67,6 +73,8 @@ describe("Megapot rewards scheduled cycle", () => {
       swept: 2,
       claimed: 1,
       allocated: 1,
+      terminalOffers: 1,
+      refunded: 1,
       paid: 1,
       failures: [],
     });

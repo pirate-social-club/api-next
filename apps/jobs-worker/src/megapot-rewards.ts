@@ -14,7 +14,9 @@ import {
   makeControlPlaneMegapotPurchaseStore,
   makeControlPlaneMegapotSweepStore,
   makeControlPlaneMegapotWorkStore,
+  makeControlPlaneRewardOfferTerminalStore,
   makeControlPlaneRewardPayoutStore,
+  makeControlPlaneRewardRefundStore,
   makeCustodySolvencyCoordinator,
   makeMegapotAllocationCoordinator,
   makeMegapotApprovalCoordinator,
@@ -27,6 +29,7 @@ import {
   makeMegapotV2RpcClient,
   makeR2MegapotCommitmentPublisher,
   makeRewardPayoutCoordinator,
+  makeRewardRefundCoordinator,
 } from "@pirate/platform-cf";
 import { Effect, Layer } from "effect";
 import {
@@ -59,6 +62,7 @@ const MEGAPOT_REWARDS_READS = [
   "postgres:megapot_drawing_observations",
   "postgres:song_reward_offers",
   "postgres:song_reward_offer_legs",
+  "postgres:song_reward_leg_funding_effects",
   "postgres:reward_activity_availability_observations",
   "postgres:sponsor_daily_ticket_totals",
   "postgres:megapot_pool_drawings",
@@ -84,6 +88,7 @@ const MEGAPOT_REWARDS_READS = [
   "postgres:reward_ledger_credits",
   "postgres:megapot_allocations",
   "postgres:reward_payout_effects",
+  "postgres:reward_refund_effects",
   "postgres:reward_erc20_transfer_receipt_evidence",
   "postgres:custody_solvency_observations",
   "postgres:platform_referral_revenue_ledger",
@@ -95,8 +100,6 @@ const MEGAPOT_REWARDS_READS = [
 const MEGAPOT_REWARDS_WRITES = MEGAPOT_REWARDS_READS.filter(
   (table) =>
     table !== "postgres:megapot_deployment_attestations" &&
-    table !== "postgres:song_reward_offers" &&
-    table !== "postgres:song_reward_offer_legs" &&
     table !== "postgres:reward_activity_availability_observations" &&
     table !== "postgres:megapot_pool_shares",
 ) satisfies readonly TableKey[];
@@ -130,6 +133,10 @@ const MEGAPOT_REWARDS_EXPECTED_FAILURES = [
   "RewardPayoutCoordinatorFailed",
   "RewardPayoutRejected",
   "RewardPayoutStorageFailed",
+  "RewardOfferTerminalStorageFailed",
+  "RewardRefundCoordinatorFailed",
+  "RewardRefundRejected",
+  "RewardRefundStorageFailed",
 ] as const;
 
 const MEGAPOT_REWARDS_SEVERITY: SeverityMapping = {
@@ -232,6 +239,15 @@ export function makeMegapotRewardsJob(
       gasLimitMultiplierBps: options.gasLimitMultiplierBps,
       nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
     });
+    const refund = makeRewardRefundCoordinator({
+      store: makeControlPlaneRewardRefundStore(controlPlane),
+      rpc,
+      signer: transactionSigner,
+      requiredConfirmations: options.requiredConfirmations,
+      gasLimitMultiplierBps: options.gasLimitMultiplierBps,
+      nativeGasReserveFloorWei: options.nativeGasReserveFloorWei,
+    });
+    const terminalOffers = makeControlPlaneRewardOfferTerminalStore(controlPlane);
     const observer = makeMegapotDrawingObserver({
       store: observationStore,
       rpc,
@@ -276,6 +292,8 @@ export function makeMegapotRewardsJob(
               return claim.reconcile(work.effectId);
             case "reward_payout":
               return payout.reconcile(work.effectId);
+            case "reward_refund":
+              return refund.reconcile(work.effectId);
           }
         },
         observeDrawing: () => observer.observe(options.attestationId),
@@ -295,6 +313,8 @@ export function makeMegapotRewardsJob(
         claim: (work) => claim.claim({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
         allocate: (work) =>
           allocation.allocate({ poolLegId: work.poolLegId, drawingId: work.drawingId }),
+        closeExpiredOffers: (limit) => terminalOffers.closeExpired(limit),
+        refund: (fundingEffectId) => refund.refund(fundingEffectId),
         payout: (creditId) => payout.payout(creditId),
       },
     });
