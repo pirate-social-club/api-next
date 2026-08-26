@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeControlPlaneFeedStore } from "./feed-repository.ts";
+import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
@@ -55,6 +56,7 @@ async function apply(connection: string): Promise<void> {
 
 async function seedCommunity(admin: Client): Promise<void> {
   await admin.query("INSERT INTO users (user_id) VALUES ('usr_member'), ('usr_other')");
+  await activatePendingPersonaFixtures(admin);
   await admin.query(
     `INSERT INTO communities
       (community_id, display_name, status, created_by_user_id, created_at, updated_at)

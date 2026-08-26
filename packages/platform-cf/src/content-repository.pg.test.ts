@@ -6,6 +6,7 @@ import { Cause, Effect, Exit, Result } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeControlPlaneContentStore } from "./content-repository";
+import { createActivePersonaFixture } from "./persona-wallet.pg-fixture";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
@@ -260,14 +261,8 @@ async function seedEffectiveRoute(admin: Client, state: RouteState): Promise<voi
 async function seed(admin: Client, routeState: RouteState = "active"): Promise<void> {
   await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor.userId]);
   await admin.query("INSERT INTO users (user_id) VALUES ('usr_bob')");
-  await admin.query(
-    "INSERT INTO personas (persona_id,account_id,status,is_first_persona) VALUES ($1,$2,'active',FALSE),($3,'usr_bob','active',FALSE)",
-    [actorPersonaId, actor.userId, bobPersonaId],
-  );
-  await admin.query("INSERT INTO persona_profiles (persona_id,revision) VALUES ($1,1),($2,1)", [
-    actorPersonaId,
-    bobPersonaId,
-  ]);
+  await createActivePersonaFixture(admin, { accountId: actor.userId, personaId: actorPersonaId });
+  await createActivePersonaFixture(admin, { accountId: "usr_bob", personaId: bobPersonaId });
   await seedEffectiveRoute(admin, routeState);
   await admin.query(
     `INSERT INTO community_memberships
@@ -807,13 +802,10 @@ suite("Postgres 17 content repository", () => {
       await apply(connection);
       const communityId = "community_123e4567-e89b-42d3-a456-426614174000";
       await admin.query("INSERT INTO users (user_id) VALUES ($1)", [actor.userId]);
-      await admin.query(
-        "INSERT INTO personas (persona_id,account_id,status,is_first_persona) VALUES ($1,$2,'active',FALSE)",
-        [actorPersonaId, actor.userId],
-      );
-      await admin.query("INSERT INTO persona_profiles (persona_id,revision) VALUES ($1,1)", [
-        actorPersonaId,
-      ]);
+      await createActivePersonaFixture(admin, {
+        accountId: actor.userId,
+        personaId: actorPersonaId,
+      });
       await admin.query(
         `INSERT INTO communities (
            community_id, display_name, status, created_by_user_id,

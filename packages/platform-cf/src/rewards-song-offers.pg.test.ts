@@ -16,6 +16,7 @@ import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-reposit
 import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
 import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
 import { makeControlPlaneMegapotWorkStore } from "./megapot-work-repository.ts";
+import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
@@ -85,7 +86,11 @@ type SeedIdentity = Readonly<{
   postId: string;
 }>;
 
-async function seedSong(admin: Client, suffix: string): Promise<SeedIdentity> {
+async function seedSong(
+  admin: Client,
+  suffix: string,
+  walletAddress?: string,
+): Promise<SeedIdentity> {
   const accountId = `account-${suffix}`;
   const communityId = `community-${suffix}`;
   const postId = `post-${suffix}`;
@@ -94,6 +99,7 @@ async function seedSong(admin: Client, suffix: string): Promise<SeedIdentity> {
      VALUES ($1, 'active', '{}'::jsonb, clock_timestamp() - interval '30 days')`,
     [accountId],
   );
+  await activatePendingPersonaFixtures(admin, undefined, walletAddress);
   const personas = await admin.query<{ readonly persona_id: string }>(
     `SELECT persona_id FROM personas WHERE account_id=$1 AND is_first_persona`,
     [accountId],
@@ -410,7 +416,7 @@ async function seedTicketReviewCandidate(
 suite("Postgres 17 Megapot rewards persistence", () => {
   test("opens an offer and one future-drawing pool leg with exact action replay", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const identity = await seedSong(admin, "offer-command");
+      const identity = await seedSong(admin, "offer-command", address("d"));
       await seedMegapotAuthority(admin);
       await admin.query(
         `INSERT INTO megapot_drawing_observations (
@@ -511,16 +517,6 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         },
       });
       expect(legReplay).toEqual({ ...added, replayed: true });
-      await admin.query(
-        `INSERT INTO persona_wallet_assignments (
-           assignment_id,persona_id,account_id,chain_account_kind,hd_wallet_index,
-           address,status,reservation_idempotency_key,assigned_at,created_at,updated_at
-         ) VALUES (
-           'wallet-offer-command',$1,$2,'evm',7,$3,'active','wallet-offer-command',
-           statement_timestamp(),statement_timestamp(),statement_timestamp()
-         )`,
-        [identity.personaId, identity.accountId, address("d")],
-      );
       const fundingStore = makeControlPlaneRewardFundingStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -924,7 +920,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
 
   test("persists nonce reserve through confirmed custody ticket without duplicate purchase", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const identity = await seedSong(admin, "purchase-repository");
+      const identity = await seedSong(admin, "purchase-repository", address("f"));
       await seedMegapotAuthority(admin);
       const { legId, offerId } = await seedActivePoolLeg(admin, identity, {
         fallback: false,
@@ -1421,18 +1417,6 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         ),
       ).rejects.toMatchObject({ _tag: "RewardProjectionRejected", reason: "invalid-cursor" });
 
-      await admin.query(
-        `INSERT INTO persona_wallet_assignments (
-           assignment_id, persona_id, account_id, chain_account_kind,
-           hd_wallet_index, address, status, reservation_idempotency_key,
-           assigned_at, created_at, updated_at
-         ) VALUES (
-           'wallet-payout-101', $2, $1, 'evm', 101, $3, 'active',
-           'wallet-payout-101', statement_timestamp(), statement_timestamp(),
-           statement_timestamp()
-         )`,
-        [identity.accountId, identity.personaId, address("f")],
-      );
       const solvencyStore = makeControlPlaneCustodySolvencyStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -1847,24 +1831,12 @@ suite("Postgres 17 Megapot rewards persistence", () => {
 
   test("confirms an exact user-authorized USDC top-up into the leg budget", async () => {
     await withSchema(async (admin, scopedConnection) => {
-      const identity = await seedSong(admin, "funding-repository");
+      const identity = await seedSong(admin, "funding-repository", address("d"));
       await seedMegapotAuthority(admin);
       const { legId } = await seedActivePoolLeg(admin, identity, {
         fallback: false,
         suffix: "funding-repository",
       });
-      await admin.query(
-        `INSERT INTO persona_wallet_assignments (
-           assignment_id, persona_id, account_id, chain_account_kind,
-           hd_wallet_index, address, status, reservation_idempotency_key,
-           assigned_at, created_at, updated_at
-         ) VALUES (
-           'wallet-funding-repository', $2, $1, 'evm', 201, $3, 'active',
-           'wallet-funding-repository', statement_timestamp(), statement_timestamp(),
-           statement_timestamp()
-         )`,
-        [identity.accountId, identity.personaId, address("d")],
-      );
       const store = makeControlPlaneRewardFundingStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );

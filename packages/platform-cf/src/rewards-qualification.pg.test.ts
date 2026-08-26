@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
@@ -68,6 +69,7 @@ async function seedAccountSong(
      VALUES ($1, 'active', '{}'::jsonb, clock_timestamp() - interval '30 days')`,
     [accountId],
   );
+  await activatePendingPersonaFixtures(admin);
   const firstPersona = await admin.query<{ readonly persona_id: string }>(
     `SELECT persona_id FROM personas
       WHERE account_id=$1 AND is_first_persona`,

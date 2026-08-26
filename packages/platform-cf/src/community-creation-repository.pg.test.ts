@@ -10,6 +10,7 @@ import { prepareCommitReadyCommunity } from "./community-creation-repository.pg-
 import { makeControlPlaneCommunityCreationStore } from "./community-creation-repository.ts";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "./namespace-ownership-completion-repository.ts";
 import { makeControlPlaneNamespaceOwnershipStartStore } from "./namespace-ownership-start-repository.ts";
+import { activatePendingPersonaFixtures } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlaneVerificationCompletionStore } from "./verification-completion-repository.ts";
 import { makeControlPlaneVerificationSessionStartStore } from "./verification-start-repository.ts";
@@ -66,6 +67,7 @@ async function withSchema<A>(use: (connection: string, admin: Client) => Promise
 }
 
 async function firstPersonaId(admin: Client, accountId: string): Promise<string> {
+  await activatePendingPersonaFixtures(admin);
   const result = await admin.query<{ persona_id: string }>(
     "SELECT persona_id FROM personas WHERE account_id = $1 AND is_first_persona",
     [accountId],

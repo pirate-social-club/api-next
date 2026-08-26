@@ -4,6 +4,7 @@ import { Effect } from "effect";
 import { Client } from "pg";
 import { runPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeControlPlaneIdentityStore } from "./identity-repository.ts";
+import { createWalletBackedAccountFixture } from "./persona-wallet.pg-fixture.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { makeControlPlanePublicProfileStore } from "./public-profile-repository.ts";
 
@@ -116,12 +117,10 @@ suite("Postgres 17 public profile by handle", () => {
       const identityStore = makeControlPlaneIdentityStore(runtime);
       const publicProfileStore = makeControlPlanePublicProfileStore(runtime, identityStore);
 
-      await Effect.runPromise(
-        identityStore.upsertAccount?.({
-          userId: "usr_public",
-          account: account("usr_public", "handle_old", "oldcaptain.pirate"),
-        }) ?? Effect.die("identity upsert is not installed"),
-      );
+      await createWalletBackedAccountFixture(admin, {
+        userId: "usr_public",
+        account: account("usr_public", "handle_old", "oldcaptain.pirate"),
+      });
       await Effect.runPromise(
         identityStore.upsertAccount?.({
           userId: "usr_public",
@@ -180,6 +179,10 @@ suite("Postgres 17 public profile by handle", () => {
 
       const upsertAccount = identityStore.upsertAccount;
       if (upsertAccount === undefined) throw new Error("identity upsert is not installed");
+      await createWalletBackedAccountFixture(admin, {
+        userId: "usr_collision",
+        account: account("usr_collision", "handle_collision_seed", "collisionseed.pirate"),
+      });
       await expect(
         Effect.runPromise(
           upsertAccount({
@@ -189,7 +192,8 @@ suite("Postgres 17 public profile by handle", () => {
         ),
       ).rejects.toMatchObject({ _tag: "ControlPlaneStatementFailed" });
       const rolledBack = await admin.query<{ readonly count: string }>(
-        "SELECT count(*)::text AS count FROM users WHERE user_id = 'usr_collision'",
+        `SELECT count(*)::text AS count FROM public_handle_index
+          WHERE owner_user_id='usr_collision' AND label_normalized='captainpublic'`,
       );
       expect(rolledBack.rows[0]?.count).toBe("0");
 
@@ -211,12 +215,10 @@ suite("Postgres 17 public profile by handle", () => {
       const runtime = makeDirectPostgresControlPlaneLayer(connection);
       const identityStore = makeControlPlaneIdentityStore(runtime);
       const publicProfileStore = makeControlPlanePublicProfileStore(runtime, identityStore);
-      await Effect.runPromise(
-        identityStore.upsertAccount?.({
-          userId: "usr_deleted",
-          account: account("usr_deleted", "handle_deleted", "deletedcaptain.pirate"),
-        }) ?? Effect.die("identity upsert is not installed"),
-      );
+      await createWalletBackedAccountFixture(admin, {
+        userId: "usr_deleted",
+        account: account("usr_deleted", "handle_deleted", "deletedcaptain.pirate"),
+      });
       await admin.query("UPDATE users SET status = 'deleted' WHERE user_id = 'usr_deleted'");
       await expect(
         Effect.runPromise(
@@ -235,12 +237,10 @@ suite("Postgres 17 public profile by handle", () => {
       const upsertAccount = identityStore.upsertAccount;
       if (upsertAccount === undefined) throw new Error("identity upsert is not installed");
 
-      await Effect.runPromise(
-        upsertAccount({
-          userId: "usr_owner",
-          account: account("usr_owner", "handle_owned", "ownedcaptain.pirate"),
-        }),
-      );
+      await createWalletBackedAccountFixture(admin, {
+        userId: "usr_owner",
+        account: account("usr_owner", "handle_owned", "ownedcaptain.pirate"),
+      });
       await Effect.runPromise(
         upsertAccount({
           userId: "usr_owner",
