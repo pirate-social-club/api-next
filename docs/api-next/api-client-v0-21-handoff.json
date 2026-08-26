@@ -5,7 +5,7 @@
   "version": "0.21.0",
   "releaseType": "hns-community-handle-host-runtime-v1",
   "wireContract": "wire-v3",
-  "sourceCommit": "35413cd",
+  "sourceCommit": "2ac98c7",
   "artifact": {
     "path": "artifacts/api-client/pirate-api-client-0.21.0.tgz",
     "sha256": "ca526dadb2d124f43595809b1df6b21f16246d3f7d929fb2366ab4b9212c0563",
