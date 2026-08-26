@@ -9,7 +9,11 @@ staging secrets, Workers, and Hyperdrive resources have been retired. A
 secret-free zone bridge remains temporarily for resolvers that cache the old
 delegation. The `pirate.sc` zone moved to the canonical account on 2026-08-23,
 and both staging custom domains are attached there. Infisical confidential
-values were not rendered in tool output.
+values were not rendered in tool output. The current contract also permits a
+reviewed, staging-only media-provider provisioning set at the api-next runtime
+path. Those names are not completeness-required or synchronized to a Worker
+until their disabled runtime compositions land. The disposable R2 seal proof
+and its operator credential contract are retired.
 
 Date of inventory: 2026-08-25.
 
@@ -200,8 +204,6 @@ classification below drove the migration. Both roots are now empty.
 | --- |
 | `CONTROL_PLANE_POSTGRES_ADMIN_URL` |
 | `CONTROL_PLANE_POSTGRES_RUNTIME_URL` |
-| `R2_SEAL_PROBE_ACCESS_KEY_ID` (staging provisionable) |
-| `R2_SEAL_PROBE_SECRET_ACCESS_KEY` (staging provisionable) |
 
 Neither name is referenced by api-next Worker source. The Worker reaches
 Postgres through the `CONTROL_PLANE` Hyperdrive binding, so database URLs stay
@@ -262,32 +264,50 @@ configuration must be reintroduced deliberately.
 /services/api-next/operator
   CONTROL_PLANE_POSTGRES_ADMIN_URL
   CONTROL_PLANE_POSTGRES_RUNTIME_URL
-  R2_SEAL_PROBE_ACCESS_KEY_ID
-  R2_SEAL_PROBE_SECRET_ACCESS_KEY
 ```
 
-### R2 seal-probe provisioning boundary — 2026-08-24
+### Staging media-provider provisioning boundary — 2026-08-26
 
-The R2 staging proof is an operator script, not a Worker. Its credential pair
-lives only in Infisical environment `staging` at
-`/services/api-next/operator`; it is never synchronized to Cloudflare Worker
-secrets. The environment selects staging, so the credential names remain
-environment-neutral. The previous runner-local `R2_STAGING_*` vocabulary is
-not an accepted Infisical contract.
+The following names are allowed only in Infisical environment `staging` at
+`/services/api-next`. They are not completeness-required while the reviewed
+adapters remain disabled and runtime composition is absent.
 
-The two names are allowed but not completeness-required by the name-only
-audit. Initial provisioning uses the workspace's explicit unusable sentinel
-`PENDING` for both values. Each sentinel independently fails the probe's shape
-validation before a provider transport is constructed, including when an
-operator replaces only one of the two values. This is a reviewed provisioning
-handoff, not evidence that the credential pair is usable.
+| Name | Credential role |
+| --- | --- |
+| `TRANSLOADIT_AUTH_KEY` | Transloadit assembly authentication key |
+| `TRANSLOADIT_AUTH_SECRET` | Transloadit assembly signing secret |
+| `ACRCLOUD_ACCESS_KEY` | ACRCloud identification access key |
+| `ACRCLOUD_ACCESS_SECRET` | ACRCloud identification signing secret |
+| `ELEVENLABS_API_KEY` | Shared platform-funded ASR and forced-alignment key |
+| `FILEBASE_IPFS_TOKEN` | Filebase bucket-scoped IPFS bearer token |
+| `MEDIA_CLASSIFIER_API_KEY` | Provider-neutral media-classifier credential |
 
-`R2_SEAL_PROBE_ACCESS_KEY_ID` and `R2_SEAL_PROBE_SECRET_ACCESS_KEY` are genuine
-confidential inputs consumed by the probe, so they satisfy the secret
-classification and zero-orphan rules. The canonical account identifier and
-disposable bucket name are public execution-target configuration and stay out
-of Infisical. The probe receives them as explicit command arguments. No local
-environment file is part of this procedure.
+Initial provisioning uses the deliberately invalid `PENDING` sentinel for
+each name. A stored name therefore records only the reviewed custody handoff;
+it is not evidence of a usable provider credential or enabled integration.
+Replacing a sentinel, validating provider-specific shape, and enabling an
+adapter remain separate reviewed actions.
+
+No current Worker receives these names. Future synchronization must select
+only the names consumed by the exact Worker whose reviewed composition enables
+that adapter; blanket synchronization of `/services/api-next` is forbidden.
+The HTTP and jobs Workers must not receive any of the seven names. The shared
+ElevenLabs name may be synchronized to each exact ASR or alignment consumer
+only when that consumer is enabled. The Filebase and classifier names likewise
+follow their owning role rather than a provider-named Worker. Any such change
+must update the destination Worker's binding contract and Wrangler declaration
+in the same reviewed tranche.
+
+`MEDIA_CLASSIFIER_API_KEY` is deliberately provider-neutral. The current
+OpenRouter scaffold does not own the credential name, and changing the selected
+classifier provider must not require renaming its role-based secret.
+
+### R2 seal-probe retirement — 2026-08-26
+
+The disposable proof Worker, bucket, and operator credential pair were torn
+down. The current staging operator allowlist no longer accepts the retired
+proof names. Dated proof evidence remains historical evidence and does not
+re-establish an active Infisical contract.
 
 ## Known drift
 

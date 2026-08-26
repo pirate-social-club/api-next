@@ -43,12 +43,15 @@ const STAGING_MEGAPOT_RUNTIME_SECRET_NAMES = [
   "MEGAPOT_CUSTODY_PRIVATE_KEY",
 ] as const;
 
-const STAGING_PROVISIONABLE_OPERATOR_SECRET_NAMES = [
-  "MEGAPOT_REFERRER_PRIVATE_KEY",
-  "R2_SEAL_PROBE_ACCESS_KEY_ID",
-  "R2_SEAL_PROBE_SECRET_ACCESS_KEY",
+const STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES = [
+  "TRANSLOADIT_AUTH_KEY",
+  "TRANSLOADIT_AUTH_SECRET",
+  "ACRCLOUD_ACCESS_KEY",
+  "ACRCLOUD_ACCESS_SECRET",
+  "ELEVENLABS_API_KEY",
+  "FILEBASE_IPFS_TOKEN",
+  "MEDIA_CLASSIFIER_API_KEY",
 ] as const;
-
 const requiredWhenRuntimeEnabled = (
   environment: InfisicalEnvironment,
   names: readonly string[],
@@ -73,13 +76,17 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
       ...RUNTIME_SECRET_NAMES,
       ...STAGING_MEGAPOT_RUNTIME_SECRET_NAMES,
     ]),
-    allowedNames: [...RUNTIME_SECRET_NAMES, ...STAGING_MEGAPOT_RUNTIME_SECRET_NAMES],
+    allowedNames: [
+      ...RUNTIME_SECRET_NAMES,
+      ...STAGING_MEGAPOT_RUNTIME_SECRET_NAMES,
+      ...STAGING_PROVISIONABLE_MEDIA_RUNTIME_SECRET_NAMES,
+    ],
   },
   {
     environment: "staging",
     path: "/services/api-next/operator",
     requiredNames: [...OPERATOR_SECRET_NAMES, "MEGAPOT_REFERRER_PRIVATE_KEY"],
-    allowedNames: [...OPERATOR_SECRET_NAMES, ...STAGING_PROVISIONABLE_OPERATOR_SECRET_NAMES],
+    allowedNames: [...OPERATOR_SECRET_NAMES, "MEGAPOT_REFERRER_PRIVATE_KEY"],
   },
   {
     environment: "prod",
