@@ -26,7 +26,7 @@ const TARGET = `0x${"2".repeat(40)}`;
 const failureOf = <A, E>(exit: Exit.Exit<A, E>): E => {
   if (!Exit.isFailure(exit)) throw new Error("expected failure");
   const failure = Cause.findError(exit.cause);
-  if (!Result.isSuccess(failure)) throw new Error("expected typed failure");
+  if (!Result.isSuccess(failure)) throw new Error(Cause.pretty(exit.cause));
   return failure.success;
 };
 
@@ -76,6 +76,7 @@ const run = async (options: {
   attempt?: DataRegistrationSigningAttempt | null;
   policy?: DataRegistrationSigningPolicy;
   calldata?: Uint8Array;
+  persistenceRaceWinner?: DataRegistrationSigningAttempt;
   signer?: (
     request: DataRegistrationSigningRequest,
   ) => Effect.Effect<DataRegistrationSigningResult, DataRegistrationSigningFailed>;
@@ -83,10 +84,14 @@ const run = async (options: {
   let calls = 0;
   let request: DataRegistrationSigningRequest | null = null;
   const persisted: (readonly unknown[])[] = [];
-  const current = options.attempt === undefined ? attempt() : options.attempt;
+  let current = options.attempt === undefined ? attempt() : options.attempt;
   const store = {
     persistPreparedTransaction: async (...values: readonly unknown[]) => {
       persisted.push(values);
+      if (options.persistenceRaceWinner !== undefined) {
+        current = options.persistenceRaceWinner;
+        throw new Error("concurrent preparation won");
+      }
       if (current === null) throw new Error("missing attempt");
       return {
         ...current,
@@ -127,7 +132,8 @@ const run = async (options: {
 describe("DATA registration signing coordinator", () => {
   test("signs only the exact PostgreSQL-authorized transaction envelope", async () => {
     const outcome = await run({});
-    expect(Exit.isSuccess(outcome.result) ? outcome.result.value : undefined).toMatchObject({
+    if (Exit.isFailure(outcome.result)) throw failureOf(outcome.result);
+    expect(outcome.result.value).toMatchObject({
       kind: "signed",
       submissionAttemptId: "registration-1:attempt:1",
       signedTransactionHash: SIGNED_HASH,
@@ -183,6 +189,28 @@ describe("DATA registration signing coordinator", () => {
     expect(outcome.calls).toBe(0);
     expect(outcome.persisted).toHaveLength(0);
     expect(JSON.stringify(outcome.result)).not.toContain("1,2,3");
+  });
+
+  test("converges on a concurrent sibling's prepared transaction", async () => {
+    const winnerHash = `0x${"b".repeat(64)}`;
+    const outcome = await run({
+      persistenceRaceWinner: attempt({
+        state: "prepared",
+        signedTransaction: new Uint8Array([9, 8, 7]),
+        signedTransactionHash: winnerHash,
+      }),
+    });
+
+    if (Exit.isFailure(outcome.result)) throw failureOf(outcome.result);
+    expect(outcome.result.value).toEqual({
+      kind: "replay",
+      submissionAttemptId: "registration-1:attempt:1",
+      signedTransactionHash: winnerHash,
+      state: "prepared",
+    });
+    expect(outcome.calls).toBe(1);
+    expect(outcome.persisted).toHaveLength(1);
+    expect(JSON.stringify(outcome.result)).not.toContain("9,8,7");
   });
 
   test("redacts signer failures and rejects malformed signer output", async () => {

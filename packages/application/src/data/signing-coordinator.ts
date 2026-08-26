@@ -221,7 +221,21 @@ export const makeDataRegistrationSigningCoordinator = <Requirements = never>(opt
             input.evidenceRef,
           ),
         catch: () => fail("persistence-failed"),
-      });
+      }).pipe(
+        Effect.catch(() =>
+          options.reader.getSigningAttempt(attempt.submissionAttemptId).pipe(
+            Effect.mapError(() => fail("persistence-failed")),
+            Effect.flatMap((concurrent) => {
+              if (concurrent === null) return Effect.fail(fail("persistence-failed"));
+              const concurrentReplay = replay(concurrent);
+              return concurrentReplay === null
+                ? Effect.fail(fail("persistence-failed"))
+                : Effect.succeed(concurrentReplay);
+            }),
+          ),
+        ),
+      );
+      if ("kind" in persisted) return persisted;
       if (
         persisted.state !== "prepared" ||
         persisted.signedTransactionHash !== signed.signedTransactionHash
