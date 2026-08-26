@@ -252,6 +252,98 @@ export const CommunityHandleOfferingV2 = Schema.Struct({
 });
 export type CommunityHandleOfferingV2 = Schema.Schema.Type<typeof CommunityHandleOfferingV2>;
 
+export const HandleSaleNamespaceCandidateV1 = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("ready_v1"),
+    family: Schema.Literal("hns"),
+    canonical_root: HnsRoot,
+    display_root: Schema.String,
+    namespace_authority_reference: BoundedIdentifier,
+    expected_namespace_authority_generation: PositiveInteger,
+    dns_zone_activation_id: BoundedIdentifier,
+    expected_dns_zone_activation_generation: PositiveInteger,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("unavailable_v1"),
+    family: Schema.Literal("hns"),
+    canonical_root: HnsRoot,
+    display_root: Schema.String,
+    reason: Schema.Literals([
+      "namespace_authority_unavailable",
+      "dns_zone_unavailable",
+      "dns_delegation_required",
+    ]),
+  }),
+]);
+export type HandleSaleNamespaceCandidateV1 = Schema.Schema.Type<
+  typeof HandleSaleNamespaceCandidateV1
+>;
+
+export const HandleOfferingAuthoringPresetV1 = Schema.Struct({
+  kind: Schema.Literal("hns_hosted_persona_free_v1"),
+  reserved_labels_id: BoundedIdentifier,
+  expected_reserved_labels_revision: PositiveInteger,
+  broad_qualification_policy_id: BoundedIdentifier,
+  expected_broad_qualification_policy_revision: PositiveInteger,
+  expected_account_directory_binding_version: BoundedIdentifier,
+  pricing_id: BoundedIdentifier,
+  expected_pricing_revision: PositiveInteger,
+  issuance_driver_id: BoundedIdentifier,
+  expected_issuance_driver_version: BoundedIdentifier,
+  quote_ttl_seconds: Schema.Int.check(Schema.isBetween({ minimum: 30, maximum: 900 })),
+  reservation_ttl_seconds: Schema.Int.check(Schema.isBetween({ minimum: 30, maximum: 300 })),
+});
+export type HandleOfferingAuthoringPresetV1 = Schema.Schema.Type<
+  typeof HandleOfferingAuthoringPresetV1
+>;
+
+export const HandleSalesManagementContextV1 = Schema.Struct({
+  community_id: BoundedIdentifier,
+  sale_namespace_candidates: Schema.Array(HandleSaleNamespaceCandidateV1),
+  offering_authoring_preset: HandleOfferingAuthoringPresetV1,
+  observed_at: CanonicalInstant,
+});
+export type HandleSalesManagementContextV1 = Schema.Schema.Type<
+  typeof HandleSalesManagementContextV1
+>;
+
+const SaleNamespaceManagementEffectivenessV1 = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("effective_v1") }),
+  Schema.Struct({
+    kind: Schema.Literal("ineffective_v1"),
+    reason: Schema.Literals([
+      "community_inactive",
+      "activation_inactive",
+      "namespace_authority_lost",
+      "dns_or_gateway_unhealthy",
+    ]),
+  }),
+]);
+
+export const HandleSaleNamespaceManagementItemV1 = Schema.Struct({
+  activation: SaleNamespaceActivationV1,
+  effectiveness: SaleNamespaceManagementEffectivenessV1,
+});
+export type HandleSaleNamespaceManagementItemV1 = Schema.Schema.Type<
+  typeof HandleSaleNamespaceManagementItemV1
+>;
+
+const HandleOfferingManagementEffectivenessV1 = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("effective_v1") }),
+  Schema.Struct({
+    kind: Schema.Literal("ineffective_v1"),
+    reason: Schema.Literals(["community_inactive", "offering_inactive", "sale_namespace_inactive"]),
+  }),
+]);
+
+export const CommunityHandleOfferingManagementItemV1 = Schema.Struct({
+  offering: CommunityHandleOfferingV2,
+  effectiveness: HandleOfferingManagementEffectivenessV1,
+});
+export type CommunityHandleOfferingManagementItemV1 = Schema.Schema.Type<
+  typeof CommunityHandleOfferingManagementItemV1
+>;
+
 const HandleOfferingTermsCommandV2 = Schema.Struct({
   sale_namespace_activation_id: BoundedIdentifier,
   expected_sale_namespace_activation_generation: PositiveInteger,
@@ -640,6 +732,35 @@ export const ListCommunityHandleOfferings = endpoint({
   errors: [BadRequest, InternalError],
 });
 
+const handleManagementReadErrors = [AuthError, BadRequest, NotFound, InternalError] as const;
+
+export const GetHandleSalesManagement = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/handle-sales-management",
+  auth: Auth.userOrAdmin(),
+  request: { path: CommunityPath },
+  response: HandleSalesManagementContextV1,
+  errors: handleManagementReadErrors,
+});
+
+export const ListHandleSaleNamespaceManagement = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/handle-sales-management/sale-namespaces",
+  auth: Auth.userOrAdmin(),
+  request: { path: CommunityPath, query: PageQuery },
+  response: page(HandleSaleNamespaceManagementItemV1),
+  errors: handleManagementReadErrors,
+});
+
+export const ListCommunityHandleOfferingManagement = endpoint({
+  method: "GET",
+  path: "/communities/:communityId/handle-sales-management/offerings",
+  auth: Auth.userOrAdmin(),
+  request: { path: CommunityPath, query: PageQuery },
+  response: page(CommunityHandleOfferingManagementItemV1),
+  errors: handleManagementReadErrors,
+});
+
 export const ConfirmHandlePersonaReuse = endpoint({
   method: "POST",
   path: "/handle-persona-link-confirmations",
@@ -770,6 +891,9 @@ export const handleSalesRegistry = {
   CreateCommunityHandleOffering,
   ReviseCommunityHandleOffering,
   ListCommunityHandleOfferings,
+  GetHandleSalesManagement,
+  ListHandleSaleNamespaceManagement,
+  ListCommunityHandleOfferingManagement,
   ConfirmHandlePersonaReuse,
   CreateHandleQuote,
   CreateHandleReservation,

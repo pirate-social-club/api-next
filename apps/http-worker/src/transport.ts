@@ -543,6 +543,13 @@ const requestId = (context: HttpContext): string => {
 // signing-key rotation propagates within the TTL instead of being defeated
 // by unbounded intermediary caching. Well under any sane rotation interval.
 const PUBLIC_CACHE_CONTROL = "public, max-age=3600, must-revalidate";
+const HANDLE_SALES_MANAGEMENT_PATH =
+  /^\/communities\/[^/]+\/handle-sales-management(?:\/(?:sale-namespaces|offerings))?$/u;
+const CANONICAL_ONLY_ENDPOINTS = new Set([
+  "GetHandleSalesManagement",
+  "ListHandleSaleNamespaceManagement",
+  "ListCommunityHandleOfferingManagement",
+]);
 
 const json = (
   context: HttpContext,
@@ -562,7 +569,15 @@ const json = (
     context.get("hnsCommunityAppApiVerified") === true
       ? stripHnsCommunityAppPrivateHeaders(headers)
       : headers;
-  responseHeadersForClient.set("cache-control", noStore ? "no-store" : PUBLIC_CACHE_CONTROL);
+  const requestedCacheControl = responseHeadersForClient.get("cache-control");
+  responseHeadersForClient.set(
+    "cache-control",
+    noStore && requestedCacheControl === "private, no-store"
+      ? requestedCacheControl
+      : noStore
+        ? "no-store"
+        : PUBLIC_CACHE_CONTROL,
+  );
   return new Response(JSON.stringify(body), { status, headers: responseHeadersForClient });
 };
 
@@ -841,6 +856,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     install(binding.path);
     if (
       hnsCommunityAppApi.enabled &&
+      !CANONICAL_ONLY_ENDPOINTS.has(binding.name) &&
       (binding.method === "GET" || binding.method === "POST" || binding.method === "PATCH")
     ) {
       install(`/api${binding.path}`, "/api");
@@ -849,7 +865,11 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
 
   app.onError((error, context) => {
     const serialized = toErrorBody(error, requestId(context));
-    return json(context, serialized.body, serialized.status, true, serialized.headers);
+    const response = json(context, serialized.body, serialized.status, true, serialized.headers);
+    if (HANDLE_SALES_MANAGEMENT_PATH.test(new URL(context.req.raw.url).pathname)) {
+      response.headers.set("cache-control", "private, no-store");
+    }
+    return response;
   });
 
   return app;
