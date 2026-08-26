@@ -77,6 +77,7 @@ const HNS_OWNER_VERIFIER_PLATFORM_SEAMS = new Set([
   "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres",
   "@pirate/platform-cf/namespace-ownership-hns-private-driver-transport",
 ]);
+const HNS_PLATFORM_GATEWAY_PLATFORM_SEAMS = new Set(["@pirate/platform-cf/hns-forwarder-v3"]);
 
 const VERIFICATION_EXPORTS = {
   "packages/domain": {
@@ -474,6 +475,9 @@ function isAllowedPackageDependency(pkg, spec) {
   }
   if (pkg === "@pirate/hns-owner-verifier" && spec.startsWith("@pirate/platform-cf")) {
     return HNS_OWNER_VERIFIER_PLATFORM_SEAMS.has(spec);
+  }
+  if (pkg === "@pirate/hns-platform-gateway" && spec.startsWith("@pirate/platform-cf")) {
+    return HNS_PLATFORM_GATEWAY_PLATFORM_SEAMS.has(spec);
   }
   return ALLOWED[pkg].some(
     (dependency) => spec === dependency || spec.startsWith(`${dependency}/`),

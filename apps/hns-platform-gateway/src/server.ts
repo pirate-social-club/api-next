@@ -1,7 +1,13 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isIP } from "node:net";
+import { HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE } from "@pirate/application/hns-community-app-gateway";
 import { HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE } from "@pirate/application/hns-static-platform-app-gateway";
+import type { HnsCommunityAppGatewayComposition } from "./community-composition.ts";
+import {
+  HnsCommunityAppGatewayCallerAbort,
+  type HnsCommunityAppGatewayService,
+} from "./community-service.ts";
 import type { HnsStaticPlatformGatewayComposition } from "./composition.ts";
 import { makeHnsStaticPlatformGatewayHealthService } from "./health.ts";
 import {
@@ -14,6 +20,10 @@ export type HnsStaticPlatformGatewayServer = Readonly<{
   health_address: Readonly<{ host: string; port: number }>;
   stop: () => Promise<void>;
 }>;
+
+export type HnsCommunityAppGatewayServer = HnsStaticPlatformGatewayServer;
+
+type HnsLoopbackGatewayService = HnsStaticPlatformGatewayService | HnsCommunityAppGatewayService;
 
 function validLoopbackAddress(host: string): boolean {
   const family = isIP(host);
@@ -52,6 +62,7 @@ async function writeResponse(response: ServerResponse, webResponse: Response): P
 function readBoundedRequestBody(
   request: IncomingMessage,
   signal: AbortSignal,
+  maximumBytes: number,
 ): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     const chunks: Uint8Array[] = [];
@@ -77,9 +88,9 @@ function readBoundedRequestBody(
     };
     const onData = (chunk: Buffer) => {
       total += chunk.byteLength;
-      if (total > HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[11]) {
+      if (total > maximumBytes) {
         request.pause();
-        finish(new Uint8Array(HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[11] + 1));
+        finish(new Uint8Array(maximumBytes + 1));
         return;
       }
       chunks.push(new Uint8Array(chunk));
@@ -107,7 +118,7 @@ function readBoundedRequestBody(
   });
 }
 
-function gatewayHandler(service: HnsStaticPlatformGatewayService) {
+function gatewayHandler(service: HnsLoopbackGatewayService, maximumRequestBodyBytes: number) {
   return async (request: IncomingMessage, response: ServerResponse): Promise<void> => {
     const abort = new AbortController();
     const clientClosed = () => {
@@ -115,7 +126,11 @@ function gatewayHandler(service: HnsStaticPlatformGatewayService) {
     };
     response.once("close", clientClosed);
     try {
-      const bodyBytes = await readBoundedRequestBody(request, abort.signal);
+      const bodyBytes = await readBoundedRequestBody(
+        request,
+        abort.signal,
+        maximumRequestBodyBytes,
+      );
       const result = await service.handle({
         method: request.method ?? "",
         target: request.url ?? "",
@@ -125,7 +140,11 @@ function gatewayHandler(service: HnsStaticPlatformGatewayService) {
       });
       if (!response.destroyed) await writeResponse(response, result);
     } catch (error) {
-      if (!(error instanceof HnsStaticPlatformGatewayCallerAbort) && !response.destroyed) {
+      if (
+        !(error instanceof HnsStaticPlatformGatewayCallerAbort) &&
+        !(error instanceof HnsCommunityAppGatewayCallerAbort) &&
+        !response.destroyed
+      ) {
         await writeResponse(response, new Response(null, { status: 503 }));
       }
     } finally {
@@ -177,8 +196,57 @@ export async function startHnsStaticPlatformGatewayServer(input: {
   health_port: number;
   ready: () => Promise<boolean> | boolean;
 }): Promise<HnsStaticPlatformGatewayServer> {
+  if (!input.composition.enabled) {
+    throw new Error("HNS static platform gateway server configuration is incomplete or invalid");
+  }
+  return startLoopbackGatewayServer({
+    service: input.composition.service,
+    gateway_host: input.gateway_host,
+    gateway_port: input.gateway_port,
+    health_host: input.health_host,
+    health_port: input.health_port,
+    ready: input.ready,
+    maximum_request_body_bytes: HNS_STATIC_PLATFORM_APP_GATEWAY_PROFILE[11],
+    invalid_configuration_message:
+      "HNS static platform gateway server configuration is incomplete or invalid",
+  });
+}
+
+export async function startHnsCommunityAppGatewayServer(input: {
+  composition: HnsCommunityAppGatewayComposition;
+  gateway_host: string;
+  gateway_port: number;
+  health_host: string;
+  health_port: number;
+  ready: () => Promise<boolean> | boolean;
+}): Promise<HnsCommunityAppGatewayServer> {
+  if (!input.composition.enabled) {
+    throw new Error("HNS community app gateway server configuration is incomplete or invalid");
+  }
+  return startLoopbackGatewayServer({
+    service: input.composition.service,
+    gateway_host: input.gateway_host,
+    gateway_port: input.gateway_port,
+    health_host: input.health_host,
+    health_port: input.health_port,
+    ready: input.ready,
+    maximum_request_body_bytes: HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE[11],
+    invalid_configuration_message:
+      "HNS community app gateway server configuration is incomplete or invalid",
+  });
+}
+
+async function startLoopbackGatewayServer(input: {
+  service: HnsLoopbackGatewayService;
+  gateway_host: string;
+  gateway_port: number;
+  health_host: string;
+  health_port: number;
+  ready: () => Promise<boolean> | boolean;
+  maximum_request_body_bytes: number;
+  invalid_configuration_message: string;
+}): Promise<HnsStaticPlatformGatewayServer> {
   if (
-    !input.composition.enabled ||
     !validLoopbackAddress(input.gateway_host) ||
     !validLoopbackAddress(input.health_host) ||
     !validPort(input.gateway_port) ||
@@ -187,10 +255,10 @@ export async function startHnsStaticPlatformGatewayServer(input: {
       input.gateway_port !== 0 &&
       input.gateway_port === input.health_port)
   ) {
-    throw new Error("HNS static platform gateway server configuration is incomplete or invalid");
+    throw new Error(input.invalid_configuration_message);
   }
 
-  const gateway = createServer(gatewayHandler(input.composition.service));
+  const gateway = createServer(gatewayHandler(input.service, input.maximum_request_body_bytes));
   const health = createServer(healthHandler(input.ready));
   let gatewayAddress: AddressInfo | null = null;
   try {
