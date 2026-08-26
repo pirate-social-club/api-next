@@ -4,12 +4,9 @@ import {
   type MediaTransformAttempt,
 } from "../media/transform.ts";
 import {
-  isMediaAsrResultBoundToInput,
   isMediaClassifierResultBoundToInputs,
   type MediaAcceptedLyrics,
-  type MediaAsrInput,
   type MediaExplicitnessClassifierInput,
-  type MediaProviderAttemptMetadata,
 } from "../media-provider-contracts.ts";
 import {
   decodeMediaProcessingWorkflowPayload,
@@ -27,10 +24,11 @@ import {
 } from "./processing-contracts.ts";
 
 export type MediaProcessingWorkflowResult =
-  | Readonly<{ readonly outcome: "waiting_for_terms" | "waiting_for_lyrics" }>
+  | Readonly<{ readonly outcome: "waiting_for_terms" }>
   | Readonly<{
       readonly outcome:
         | "published"
+        | "published_without_alignment"
         | "manual_review"
         | "blocked"
         | "action_required"
@@ -46,9 +44,7 @@ export type MediaProcessingWorkflowOptions = Readonly<{
   readonly policyRevision: string;
   readonly transformAdapterRevision: string;
   readonly metadataAdapterRevision: string;
-  readonly mediaSafetyAdapterRevision: string;
   readonly classifierTimeoutMs: number;
-  readonly asrTimeoutMs: number;
   readonly transformRuntimeMs: number;
   readonly maximumSampleBytes: number;
   readonly observe?: MediaProcessingObserver;
@@ -301,61 +297,13 @@ async function runAcr(
   }
 }
 
-async function runAsr(
-  authority: MediaProcessingAuthority,
-  providers: MediaProcessingProviders,
-  dependencies: MediaProcessingWorkflowDependencies,
-) {
-  if (authority.audio === null) throw new TypeError("ASR requires authoritative audio");
-  const started = await startAttempt(
-    authority,
-    "asr",
-    authority.audioRevision,
-    "asr-port-v1",
-    dependencies,
-  );
-  if (started.kind === "replay") return requireAttemptKind(started.result, "asr").value;
-  const abort = new AbortController();
-  const attempt: MediaProviderAttemptMetadata = {
-    version: "media-provider-attempt-v1",
-    attempt_id: started.lease.attemptId,
-    attempt_number: 1,
-    request_id: started.lease.attemptId,
-    timeout_ms: dependencies.options.asrTimeoutMs,
-  };
-  const input: MediaAsrInput = {
-    version: "media-asr-input-v1",
-    audio: {
-      version: "media-audio-revision-v1",
-      operation_id: authority.operationId,
-      audio_revision: authority.audioRevision,
-      analysis_revision: authority.analysisRevision,
-      canonical_audio_sha256: authority.audio.canonicalSha256,
-      audio_artifact_ref: authority.audio.immutableRef,
-    },
-    attempt,
-  };
-  try {
-    const value = await Effect.runPromise(providers.asr.recognize(input, { signal: abort.signal }));
-    if (!isMediaAsrResultBoundToInput(input, value)) {
-      throw new TypeError("ASR result crossed its immutable audio fence");
-    }
-    await completeAttempt(authority, started.lease, { kind: "asr", value }, dependencies);
-    return value;
-  } catch (error) {
-    abort.abort();
-    await failAttempt(authority, started.lease, dependencies);
-    throw error;
-  }
-}
-
 async function runClassifier(
   authority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
   dependencies: MediaProcessingWorkflowDependencies,
 ) {
-  if (authority.audio === null || authority.transcript === null || authority.lyrics === null) {
-    throw new TypeError("classifier requires separately persisted transcript and lyrics");
+  if (authority.audio === null || authority.lyrics === null) {
+    throw new TypeError("classifier requires current accepted lyrics");
   }
   const started = await startAttempt(
     authority,
@@ -374,12 +322,10 @@ async function runClassifier(
     audio_revision: authority.audioRevision,
     lyrics_revision: authority.lyrics.lyricsRevision,
     canonical_audio_sha256: authority.audio.canonicalSha256,
-    base_transcript_revision: authority.lyrics.baseTranscriptRevision,
     lyrics: authority.lyrics.text,
   };
   const input: MediaExplicitnessClassifierInput = {
     version: "media-explicitness-classifier-input-v1",
-    transcript: authority.transcript,
     accepted_lyrics: acceptedLyrics,
     attempt: {
       version: "media-provider-attempt-v1",
@@ -394,7 +340,7 @@ async function runClassifier(
       providers.classifier.classify(input, { signal: abort.signal }),
     );
     if (!isMediaClassifierResultBoundToInputs(input, value)) {
-      throw new TypeError("classifier result crossed transcript or lyrics lineage");
+      throw new TypeError("classifier result crossed accepted lyrics lineage");
     }
     await completeAttempt(authority, started.lease, { kind: "classifier", value }, dependencies);
     return value;
@@ -422,33 +368,6 @@ async function runMetadata(
   try {
     const value = await providers.metadata.extract(authority, abort.signal);
     await completeAttempt(authority, started.lease, { kind: "metadata", value }, dependencies);
-    return value;
-  } catch (error) {
-    abort.abort();
-    await failAttempt(authority, started.lease, dependencies);
-    throw error;
-  }
-}
-
-async function runMediaSafety(
-  authority: MediaProcessingAuthority,
-  providers: MediaProcessingProviders,
-  dependencies: MediaProcessingWorkflowDependencies,
-) {
-  const started = await startAttempt(
-    authority,
-    "media_safety",
-    authority.audioRevision,
-    dependencies.options.mediaSafetyAdapterRevision,
-    dependencies,
-  );
-  if (started.kind === "replay") {
-    return requireAttemptKind(started.result, "media_safety").value;
-  }
-  const abort = new AbortController();
-  try {
-    const value = await providers.safety.reviewAudio(authority, abort.signal);
-    await completeAttempt(authority, started.lease, { kind: "media_safety", value }, dependencies);
     return value;
   } catch (error) {
     abort.abort();
@@ -486,7 +405,7 @@ async function buildAnalysis(
   firstAuthority: MediaProcessingAuthority,
   providers: MediaProcessingProviders,
   dependencies: MediaProcessingWorkflowDependencies,
-): Promise<MediaProcessingAnalysis | "waiting_for_lyrics" | "processing_failed"> {
+): Promise<MediaProcessingAnalysis | "processing_failed"> {
   let authority = await authoritativeReload(firstAuthority, dependencies);
   if (authority.audio === null) return "processing_failed";
   const sealedHash = authority.audio.canonicalSha256;
@@ -553,53 +472,30 @@ async function buildAnalysis(
   authority = await authoritativeReload(authority, dependencies);
   const metadata = await runMetadata(authority, providers, dependencies);
   authority = await authoritativeReload(authority, dependencies);
-  const mediaSafety = await runMediaSafety(authority, providers, dependencies);
-  authority = await authoritativeReload(authority, dependencies);
-  let asrResult =
-    authority.transcript === null ? await runAsr(authority, providers, dependencies) : null;
-  if (asrResult?.status === "transcript") {
-    await dependencies.store.commitTranscript(authority, asrResult.transcript);
-  }
-  authority = await authoritativeReload(authority, dependencies);
+  const mediaSafety: MediaProcessingAnalysis["mediaSafety"] =
+    metadata.cover.status === "absent"
+      ? "not_applicable"
+      : metadata.cover.status === "rejected" && metadata.cover.reasonCode === "unsafe"
+        ? "blocked"
+        : "review_required";
   if (authority.audio?.canonicalSha256 !== sealedHash) return "processing_failed";
 
-  if (asrResult === null && authority.transcript !== null) {
-    const replay = await startAttempt(
-      authority,
-      "asr",
-      authority.audioRevision,
-      "asr-port-v1",
-      dependencies,
-    );
-    if (replay.kind === "replay") asrResult = requireAttemptKind(replay.result, "asr").value;
-  }
-  if (asrResult === null) throw new DeferredAttempt("ASR evidence unavailable");
-
-  let speech: MediaProcessingAnalysis["speech"];
+  let lyricsAnalysis: MediaProcessingAnalysis["lyricsAnalysis"];
   let lyricsSafety: MediaProcessingAnalysis["lyricsSafety"];
-  if (asrResult.status === "no_speech") {
-    speech = {
-      status: "no_speech",
-      evidenceRef: asrResult.evidence_ref,
-      policyRevision: dependencies.options.policyRevision,
-      adapterRevision: asrResult.adapter_revision,
-    };
-    lyricsSafety = authority.lyrics === null ? "skipped" : "review_required";
+  if (authority.lyrics === null) {
+    lyricsAnalysis = { status: "not_applicable" };
+    lyricsSafety = "not_applicable";
   } else {
     if (
-      authority.lyrics === null ||
-      authority.transcript === null ||
       authority.lyrics.audioRevision !== authority.audioRevision ||
       authority.lyrics.canonicalAudioSha256 !== sealedHash
     )
-      return "waiting_for_lyrics";
+      return "processing_failed";
     const classified = await runClassifier(authority, providers, dependencies);
     if (classified.status === "classified") {
-      speech = {
+      lyricsAnalysis = {
         status: "ready",
-        transcriptRevision: authority.transcript.analysis_revision,
         lyricsRevision: authority.lyrics.lyricsRevision,
-        materialDisagreement: classified.material_disagreement,
         explicitness: classified.explicitness,
         primaryLanguageBcp47: classified.primary_language_bcp47,
         secondaryLanguageBcp47: classified.secondary_language_bcp47,
@@ -607,14 +503,11 @@ async function buildAnalysis(
         policyRevision: classified.policy_revision,
         adapterRevision: classified.adapter_revision,
       };
-      lyricsSafety = classified.material_disagreement
-        ? "review_required"
-        : classified.explicitness === "uncertain"
-          ? "review_required"
-          : "allow";
+      lyricsSafety = classified.explicitness === "uncertain" ? "review_required" : "allow";
     } else {
-      speech = {
+      lyricsAnalysis = {
         status: "unavailable",
+        lyricsRevision: authority.lyrics.lyricsRevision,
         evidenceRef: `classifier-unavailable-${authority.operationId}`,
         policyRevision: classified.policy_revision,
         adapterRevision: classified.adapter_revision,
@@ -629,7 +522,7 @@ async function buildAnalysis(
     canonicalAudioSha256: sealedHash,
     probeEvidenceRef: `probe-evidence-${authority.operationId}-a${authority.analysisRevision}`,
     embeddedMetadata: metadata,
-    speech,
+    lyricsAnalysis,
     acr: acrDecision(authority, acrOutcome),
     lyricsSafety,
     mediaSafety,
@@ -638,12 +531,11 @@ async function buildAnalysis(
 
 export function decideMediaPublication(
   authority: MediaProcessingAuthority,
-): MediaProcessingDecision | "waiting_for_terms" | "waiting_for_lyrics" {
+): MediaProcessingDecision | "waiting_for_terms" {
   if (authority.audio === null || authority.analysis === null || authority.termsRevision === null) {
-    return authority.termsRevision === null ? "waiting_for_terms" : "waiting_for_lyrics";
+    return "waiting_for_terms";
   }
   const analysis = authority.analysis;
-  if (analysis.speech.status === "ready" && authority.lyrics === null) return "waiting_for_lyrics";
   const outcome =
     analysis.mediaSafety === "blocked" || analysis.lyricsSafety === "blocked"
       ? "block"
@@ -654,8 +546,9 @@ export function decideMediaPublication(
             analysis.mediaSafety === "draft" ||
             analysis.mediaSafety === "review_required" ||
             analysis.lyricsSafety === "review_required" ||
-            analysis.speech.status === "unavailable" ||
-            (analysis.speech.status === "ready" && analysis.speech.explicitness === "uncertain")
+            analysis.lyricsAnalysis.status === "unavailable" ||
+            (analysis.lyricsAnalysis.status === "ready" &&
+              analysis.lyricsAnalysis.explicitness === "uncertain")
           ? "manual_review"
           : "allow";
   return {
@@ -678,24 +571,20 @@ async function refreshLyricsClassification(
 ): Promise<MediaProcessingAnalysis | null> {
   const analysis = authority.analysis;
   const lyrics = authority.lyrics;
-  const transcript = authority.transcript;
   if (
     analysis === null ||
     lyrics === null ||
-    transcript === null ||
-    analysis.speech.status !== "ready" ||
-    analysis.speech.lyricsRevision === lyrics.lyricsRevision
+    (analysis.lyricsAnalysis.status !== "not_applicable" &&
+      analysis.lyricsAnalysis.lyricsRevision === lyrics.lyricsRevision)
   ) {
     return null;
   }
   const classified = await runClassifier(authority, providers, dependencies);
-  const speech: MediaProcessingAnalysis["speech"] =
+  const lyricsAnalysis: MediaProcessingAnalysis["lyricsAnalysis"] =
     classified.status === "classified"
       ? {
           status: "ready",
-          transcriptRevision: transcript.analysis_revision,
           lyricsRevision: lyrics.lyricsRevision,
-          materialDisagreement: classified.material_disagreement,
           explicitness: classified.explicitness,
           primaryLanguageBcp47: classified.primary_language_bcp47,
           secondaryLanguageBcp47: classified.secondary_language_bcp47,
@@ -705,17 +594,16 @@ async function refreshLyricsClassification(
         }
       : {
           status: "unavailable",
+          lyricsRevision: lyrics.lyricsRevision,
           evidenceRef: `classifier-unavailable-${authority.operationId}-l${lyrics.lyricsRevision}`,
           policyRevision: classified.policy_revision,
           adapterRevision: classified.adapter_revision,
         };
   const lyricsSafety =
-    classified.status !== "classified" ||
-    classified.material_disagreement ||
-    classified.explicitness === "uncertain"
+    classified.status !== "classified" || classified.explicitness === "uncertain"
       ? "review_required"
       : "allow";
-  return { ...analysis, speech, lyricsSafety };
+  return { ...analysis, lyricsAnalysis, lyricsSafety };
 }
 
 async function publish(
@@ -723,7 +611,12 @@ async function publish(
   dependencies: MediaProcessingWorkflowDependencies,
 ): Promise<MediaProcessingWorkflowResult> {
   const current = await authoritativeReload(authority, dependencies);
-  if (current.status === "published") return { outcome: "published" };
+  if (current.status === "published") {
+    return {
+      outcome:
+        current.publishedLyricsRevision === null ? "published_without_alignment" : "published",
+    };
+  }
   if (current.status !== "processing" || current.phase !== "publish" || current.audio === null) {
     return { outcome: "inert" };
   }
@@ -747,7 +640,9 @@ async function publish(
     { kind: "publication", postId: after.postId },
     dependencies,
   );
-  return { outcome: "published" };
+  return {
+    outcome: after.publishedLyricsRevision === null ? "published_without_alignment" : "published",
+  };
 }
 
 async function align(
@@ -833,7 +728,14 @@ export async function runMediaProcessingWorkflow(
   if (eventType === "alignment") return align(authority, dependencies);
   if (eventType === "publication") return publish(authority, dependencies);
   if (authority.status === "published") {
-    return { outcome: eventType === "analysis_launch" ? "published" : "inert" };
+    return {
+      outcome:
+        eventType !== "analysis_launch"
+          ? "inert"
+          : authority.publishedLyricsRevision === null
+            ? "published_without_alignment"
+            : "published",
+    };
   }
 
   if (!dependencies.options.enabled || dependencies.providers === null) {
@@ -846,10 +748,6 @@ export async function runMediaProcessingWorkflow(
 
   if (authority.analysis === null) {
     const built = await buildAnalysis(authority, dependencies.providers, dependencies);
-    if (built === "waiting_for_lyrics") {
-      dependencies.options.observe?.(observation(authority, "workflow_waiting"));
-      return { outcome: "waiting_for_lyrics" };
-    }
     if (built === "processing_failed") return { outcome: "processing_failed" };
     authority = await authoritativeReload(authority, dependencies);
     if (authority.analysis === null) {
@@ -876,10 +774,10 @@ export async function runMediaProcessingWorkflow(
     (authority.lyrics.audioRevision !== authority.audioRevision ||
       authority.lyrics.canonicalAudioSha256 !== authority.audio?.canonicalSha256)
   ) {
-    return { outcome: "waiting_for_lyrics" };
+    throw new TypeError("accepted lyrics crossed immutable audio lineage");
   }
   const decision = decideMediaPublication(authority);
-  if (decision === "waiting_for_terms" || decision === "waiting_for_lyrics") {
+  if (decision === "waiting_for_terms") {
     dependencies.options.observe?.(observation(authority, "workflow_waiting"));
     return { outcome: decision };
   }

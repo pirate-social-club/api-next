@@ -61,13 +61,14 @@ const nextEventType = (
 ): Exclude<MediaProcessingEventType, "analysis_launch" | "workflow_replacement"> | null => {
   switch (result.outcome) {
     case "waiting_for_terms":
-    case "waiting_for_lyrics":
     case "action_required":
       return "decision_wakeup";
     case "manual_review":
       return "publication";
     case "published":
       return "alignment";
+    case "published_without_alignment":
+      return null;
     default:
       return null;
   }

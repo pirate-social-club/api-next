@@ -8,11 +8,8 @@ import type {
   MediaIdentificationProviderService,
 } from "../media-identification-provider.ts";
 import type {
-  MediaAsrAdapter,
-  MediaAsrResult,
   MediaExplicitnessClassifierAdapter,
   MediaExplicitnessClassifierResult,
-  MediaTranscriptArtifact,
 } from "../media-provider-contracts.ts";
 
 const identifierPattern = /^\S(?:.*\S)?$/u;
@@ -100,7 +97,6 @@ export type MediaProcessingLyrics = Readonly<{
   readonly audioRevision: number;
   readonly canonicalAudioSha256: string;
   readonly text: string;
-  readonly baseTranscriptRevision: number | null;
 }>;
 
 export type MediaProcessingAuthority = Readonly<{
@@ -132,7 +128,6 @@ export type MediaProcessingAuthority = Readonly<{
   }> | null;
   readonly termsRevision: number | null;
   readonly lyrics: MediaProcessingLyrics | null;
-  readonly transcript: MediaTranscriptArtifact | null;
   readonly analysis: MediaProcessingAnalysis | null;
   readonly decision: MediaProcessingDecision | null;
   readonly boundReferenceAssetId: string | null;
@@ -168,12 +163,10 @@ export type MediaProcessingAnalysis = Readonly<{
   readonly canonicalAudioSha256: string;
   readonly probeEvidenceRef: string;
   readonly embeddedMetadata: MediaProcessingEmbeddedMetadata;
-  readonly speech:
+  readonly lyricsAnalysis:
     | Readonly<{
         readonly status: "ready";
-        readonly transcriptRevision: number;
         readonly lyricsRevision: number;
-        readonly materialDisagreement: boolean;
         readonly explicitness: "not_explicit" | "explicit" | "uncertain";
         readonly primaryLanguageBcp47: string;
         readonly secondaryLanguageBcp47: string | null;
@@ -182,13 +175,11 @@ export type MediaProcessingAnalysis = Readonly<{
         readonly adapterRevision: string;
       }>
     | Readonly<{
-        readonly status: "no_speech";
-        readonly evidenceRef: string;
-        readonly policyRevision: string;
-        readonly adapterRevision: string;
+        readonly status: "not_applicable";
       }>
     | Readonly<{
         readonly status: "unavailable";
+        readonly lyricsRevision: number;
         readonly evidenceRef: string;
         readonly policyRevision: string;
         readonly adapterRevision: string;
@@ -199,8 +190,8 @@ export type MediaProcessingAnalysis = Readonly<{
     readonly policyRevision: string;
     readonly adapterRevision: string;
   }>;
-  readonly lyricsSafety: "skipped" | "allow" | "review_required" | "blocked";
-  readonly mediaSafety: "allow" | "draft" | "review_required" | "blocked";
+  readonly lyricsSafety: "not_applicable" | "allow" | "review_required" | "blocked";
+  readonly mediaSafety: "not_applicable" | "allow" | "draft" | "review_required" | "blocked";
 }>;
 
 export type MediaProcessingDecision = Readonly<{
@@ -222,9 +213,7 @@ export type MediaProcessingAttemptStage =
   | "acr_primary"
   | "acr_alternate"
   | "metadata"
-  | "asr"
   | "classifier"
-  | "media_safety"
   | "publication"
   | "alignment";
 
@@ -232,16 +221,11 @@ export type MediaProcessingAttemptResult =
   | Readonly<{ readonly kind: "probe"; readonly value: MediaTransformProbeOutcome }>
   | Readonly<{ readonly kind: "sample"; readonly value: MediaTransformAudioSampleOutcome }>
   | Readonly<{ readonly kind: "acr"; readonly value: MediaIdentificationOutcome }>
-  | Readonly<{ readonly kind: "asr"; readonly value: MediaAsrResult }>
   | Readonly<{
       readonly kind: "classifier";
       readonly value: MediaExplicitnessClassifierResult;
     }>
   | Readonly<{ readonly kind: "metadata"; readonly value: MediaProcessingEmbeddedMetadata }>
-  | Readonly<{
-      readonly kind: "media_safety";
-      readonly value: "allow" | "draft" | "review_required" | "blocked";
-    }>
   | Readonly<{ readonly kind: "publication"; readonly postId: string }>
   | Readonly<{
       readonly kind: "alignment";
@@ -297,10 +281,6 @@ export interface MediaProcessingStore {
     failure: "provider_unavailable" | "provider_timeout" | "provider_invalid",
     retryable: boolean,
   ) => Promise<boolean>;
-  readonly commitTranscript: (
-    authority: MediaProcessingAuthority,
-    transcript: MediaTranscriptArtifact,
-  ) => Promise<MediaProcessingCommit>;
   readonly commitAnalysis: (
     authority: MediaProcessingAuthority,
     analysis: MediaProcessingAnalysis,
@@ -345,13 +325,6 @@ export interface MediaProcessingMetadataPort {
   ) => Promise<MediaProcessingEmbeddedMetadata>;
 }
 
-export interface MediaProcessingSafetyPort {
-  readonly reviewAudio: (
-    authority: MediaProcessingAuthority,
-    signal: AbortSignal,
-  ) => Promise<"allow" | "draft" | "review_required" | "blocked">;
-}
-
 export interface MediaProcessingAlignmentPort {
   readonly align: (
     input: Readonly<{
@@ -374,11 +347,9 @@ export interface MediaProcessingAlignmentPort {
 export type MediaProcessingProviders = Readonly<{
   readonly transform: MediaTransformService;
   readonly identification: MediaIdentificationProviderService;
-  readonly asr: MediaAsrAdapter;
   readonly classifier: MediaExplicitnessClassifierAdapter;
   readonly artifactReader: MediaProcessingArtifactReader;
   readonly metadata: MediaProcessingMetadataPort;
-  readonly safety: MediaProcessingSafetyPort;
   readonly alignment: MediaProcessingAlignmentPort;
 }>;
 

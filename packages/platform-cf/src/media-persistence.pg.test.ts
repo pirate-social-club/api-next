@@ -1,12 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ControlPlaneDb } from "@pirate/application";
-import {
-  SONG_TRANSCRIPT_MAX_DURATION_MS,
-  SONG_TRANSCRIPT_SEGMENT_MAX_COUNT,
-  SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH,
-  SONG_TRANSCRIPT_TEXT_MAX_LENGTH,
-} from "@pirate/contracts";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
@@ -72,13 +66,7 @@ const analysis: TrustedSongAnalysis = {
     trackTitle: null,
     cover: { status: "absent", reasonCode: "not_embedded" },
   },
-  speechLyrics: {
-    status: "no_speech",
-    explicitness: "no_lyrics",
-    evidenceRef: "speech_evidence_1",
-    policyRevision: "speech_policy_1",
-    adapterRevision: "speech_adapter_1",
-  },
+  lyricsAnalysis: { status: "not_applicable" },
   acr: {
     decision: "allow",
     evidenceRef: "acr_evidence_1",
@@ -86,7 +74,7 @@ const analysis: TrustedSongAnalysis = {
     adapterRevision: "acr_adapter_1",
   },
   mediaSafety: "allow",
-  lyricsSafety: "skipped",
+  lyricsSafety: "not_applicable",
   boundReference: null,
 };
 const decision: PublicationDecision = {
@@ -347,32 +335,12 @@ async function createThroughDecision(
     ),
   ).toMatchObject({ kind: "committed" });
   if (transcriptArtifact !== undefined) {
-    const transcriptSha256 = sha256(new TextEncoder().encode(transcriptArtifact.transcript));
-    expect(
-      await run(connection, (store) =>
-        store.acceptTranscript({
-          ...command(
-            connection,
-            "/media-post-submissions/:submissionId/transcript",
-            "transcript-key",
-          ),
-          expectedAudioRevision: 1,
-          expectedCanonicalAudioSha256: audioSha256,
-          transcriptRevision: 1,
-          transcriptArtifactRef: "media_pg_transcript_artifact",
-          transcriptSha256,
-          transcript: transcriptArtifact.transcript,
-          segments: transcriptArtifact.segments,
-        }),
-      ),
-    ).toEqual({ kind: "committed", submissionId: submission });
     expect(
       await run(connection, (store) =>
         store.bindLyrics({
           ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-key"),
           expectedCreationRevision: 2,
           expectedAudioRevision: 1,
-          baseTranscriptRevision: 1,
           lyrics: transcriptArtifact.transcript,
           outbox: {
             outboxEventId: "media_pg_lyrics_outbox",
@@ -399,7 +367,6 @@ async function createThroughDecision(
           ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-key"),
           expectedCreationRevision: 2,
           expectedAudioRevision: 1,
-          baseTranscriptRevision: null,
           lyrics: pastedLyrics,
           outbox: {
             outboxEventId: "media_pg_lyrics_outbox",
@@ -917,7 +884,6 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-key"),
             expectedCreationRevision: 1,
             expectedAudioRevision: 1,
-            baseTranscriptRevision: null,
             lyrics: authorReviewedLyrics,
             outbox: {
               outboxEventId: "media_pg_lyrics_outbox",
@@ -2539,149 +2505,17 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
-  test("keeps ready transcript persistence aligned with classifier invariants", async () => {
-    await withSchema(async (admin, connection) => {
-      await createThroughDecision(connection, decision, analysis, true);
-      const validSegment = { start_ms: 0, end_ms: 1, text: "valid" } as const;
-      const invalidTranscripts: ReadonlyArray<
-        readonly [
-          string,
-          string,
-          readonly Readonly<{ start_ms: number; end_ms: number; text: string }>[],
-        ]
-      > = [
-        ["empty-transcript", "", [validSegment]],
-        ["empty-segments", "invalid", []],
-        ["zero-duration", "invalid", [{ start_ms: 0, end_ms: 0, text: "invalid" }]],
-        ["empty-segment-text", "invalid", [{ start_ms: 0, end_ms: 1, text: "" }]],
-        [
-          "overlap",
-          "invalid",
-          [
-            { start_ms: 0, end_ms: 10, text: "first" },
-            { start_ms: 5, end_ms: 15, text: "overlap" },
-          ],
-        ],
-        [
-          "unordered",
-          "invalid",
-          [
-            { start_ms: 10, end_ms: 20, text: "first" },
-            { start_ms: 0, end_ms: 5, text: "unordered" },
-          ],
-        ],
-        [
-          "duration-overflow",
-          "invalid",
-          [{ start_ms: 0, end_ms: SONG_TRANSCRIPT_MAX_DURATION_MS + 1, text: "invalid" }],
-        ],
-        [
-          "segment-text-overflow",
-          "invalid",
-          [
-            {
-              start_ms: 0,
-              end_ms: 1,
-              text: "x".repeat(SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH + 1),
-            },
-          ],
-        ],
-        [
-          "segment-count-overflow",
-          "invalid",
-          Array.from({ length: SONG_TRANSCRIPT_SEGMENT_MAX_COUNT + 1 }, (_, index) => ({
-            start_ms: index,
-            end_ms: index + 1,
-            text: "x",
-          })),
-        ],
-        ["transcript-overflow", "x".repeat(SONG_TRANSCRIPT_TEXT_MAX_LENGTH + 1), [validSegment]],
-      ];
-      for (const [suffix, transcript, segments] of invalidTranscripts) {
-        await expect(
-          run(connection, (store) =>
-            store.acceptTranscript({
-              ...command(
-                connection,
-                "/media-post-submissions/:submissionId/transcript",
-                `invalid-transcript-${suffix}`,
-              ),
-              expectedAudioRevision: 1,
-              expectedCanonicalAudioSha256: audioSha256,
-              transcriptRevision: 2,
-              transcriptArtifactRef: `invalid-transcript-${suffix}`,
-              transcriptSha256: sha256(new TextEncoder().encode(transcript)),
-              transcript,
-              segments,
-            }),
-          ),
-        ).rejects.toMatchObject({ reason: "invalid-input" });
-      }
-
-      const boundaryTranscript = "x".repeat(SONG_TRANSCRIPT_TEXT_MAX_LENGTH);
-      const boundarySegments = Array.from(
-        { length: SONG_TRANSCRIPT_SEGMENT_MAX_COUNT },
-        (_, index) => ({
-          start_ms: index,
-          end_ms:
-            index === SONG_TRANSCRIPT_SEGMENT_MAX_COUNT - 1
-              ? SONG_TRANSCRIPT_MAX_DURATION_MS
-              : index + 1,
-          text: index === 0 ? "x".repeat(SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH) : "x",
-        }),
-      );
-      await expect(
-        run(connection, (store) =>
-          store.acceptTranscript({
-            ...command(
-              connection,
-              "/media-post-submissions/:submissionId/transcript",
-              "boundary-transcript",
-            ),
-            expectedAudioRevision: 1,
-            expectedCanonicalAudioSha256: audioSha256,
-            transcriptRevision: 2,
-            transcriptArtifactRef: "boundary-transcript",
-            transcriptSha256: sha256(new TextEncoder().encode(boundaryTranscript)),
-            transcript: boundaryTranscript,
-            segments: boundarySegments,
-          }),
-        ),
-      ).resolves.toEqual({ kind: "committed", submissionId: submission });
-
-      for (const [suffix, transcript, segments] of invalidTranscripts) {
-        await admin.query("BEGIN");
-        await expect(
-          admin.query(
-            "INSERT INTO media_transcript_artifacts (transcript_artifact_ref,community_id,actor_user_id,submission_id,operation_id,audio_revision,analysis_revision,canonical_audio_sha256,transcript_sha256,transcript_text,segments) VALUES ($1,$2,$3,$4,$5,1,3,$6,$7,$8,$9::jsonb)",
-            [
-              `hostile-transcript-${suffix}`,
-              community,
-              actor,
-              submission,
-              operation,
-              audioSha256,
-              sha256(new TextEncoder().encode(transcript)),
-              transcript,
-              JSON.stringify(segments),
-            ],
-          ),
-        ).rejects.toThrow();
-        await admin.query("ROLLBACK");
-      }
-    });
-    completedTestCount += 1;
-  }, 40_000);
-  test("accepts normalized unavailable, no-speech disagreement, and ready speech snapshots", async () => {
+  test("accepts normalized unavailable and ready lyrics-analysis snapshots", async () => {
     await withSchema(async (admin, connection) => {
       const unavailable: TrustedSongAnalysis = {
         ...analysis,
-        speechLyrics: {
+        lyricsAnalysis: {
           status: "unavailable",
+          lyricsRevision: 1,
           explicitness: "uncertain",
-          evidenceRef: "speech_unavailable_evidence",
-          policyRevision: "speech_unavailable_policy",
-          adapterRevision: "speech_unavailable_adapter",
+          evidenceRef: "lyrics_unavailable_evidence",
+          policyRevision: "lyrics_unavailable_policy",
+          adapterRevision: "lyrics_unavailable_adapter",
         },
         lyricsSafety: "review_required",
       };
@@ -2691,7 +2525,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         unavailable,
         false,
         undefined,
-        "Author supplied lyrics while ASR was unavailable",
+        "Author supplied lyrics while classification was unavailable",
       );
       expect(
         (
@@ -2708,15 +2542,13 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         (
           await admin.query(
-            "SELECT speech_status,lyrics_safety,analysis_snapshot->'speechLyrics'->'transcriptArtifactRef' AS transcript_artifact_ref,analysis_snapshot->'speechLyrics'->'transcriptSha256' AS transcript_sha256,analysis_snapshot->'speechLyrics'->'primaryLanguageBcp47' AS primary_language,analysis_snapshot->'speechLyrics'->'secondaryLanguageBcp47' AS secondary_language FROM media_analysis_evidence WHERE submission_id=$1",
+            "SELECT speech_status AS lyrics_analysis_status,lyrics_safety,analysis_snapshot->'lyricsAnalysis'->'primaryLanguageBcp47' AS primary_language,analysis_snapshot->'lyricsAnalysis'->'secondaryLanguageBcp47' AS secondary_language FROM media_analysis_evidence WHERE submission_id=$1",
             [submission],
           )
         ).rows[0],
       ).toEqual({
-        speech_status: "unavailable",
+        lyrics_analysis_status: "unavailable",
         lyrics_safety: "review_required",
-        transcript_artifact_ref: null,
-        transcript_sha256: null,
         primary_language: null,
         secondary_language: null,
       });
@@ -2731,7 +2563,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ? JSON.parse(storedSnapshotValue)
           : storedSnapshotValue
       ) as Record<string, unknown>;
-      const storedSpeech = storedSnapshot.speechLyrics as Record<string, unknown>;
+      const storedLyricsAnalysis = storedSnapshot.lyricsAnalysis as Record<string, unknown>;
       const rejectSnapshot = async (snapshot: Record<string, unknown>): Promise<void> => {
         await admin.query("BEGIN");
         await expect(insertAnalysisSnapshotVariant(admin, 2, snapshot)).rejects.toThrow();
@@ -2740,21 +2572,19 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       await rejectSnapshot({
         ...storedSnapshot,
         analysisRevision: 2,
-        speechLyrics: {
+        lyricsAnalysis: {
           status: "unavailable",
           explicitness: "uncertain",
-          evidenceRef: storedSpeech.evidenceRef,
-          policyRevision: storedSpeech.policyRevision,
-          adapterRevision: storedSpeech.adapterRevision,
+          evidenceRef: storedLyricsAnalysis.evidenceRef,
+          policyRevision: storedLyricsAnalysis.policyRevision,
+          adapterRevision: storedLyricsAnalysis.adapterRevision,
         },
       });
       await rejectSnapshot({
         ...storedSnapshot,
         analysisRevision: 2,
-        speechLyrics: {
-          ...storedSpeech,
-          transcriptArtifactRef: "forged-transcript",
-          transcriptSha256: "forged-transcript-hash",
+        lyricsAnalysis: {
+          ...storedLyricsAnalysis,
           primaryLanguageBcp47: "en",
           secondaryLanguageBcp47: "fr",
         },
@@ -2808,8 +2638,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       });
     });
     await withSchema(async (admin, connection) => {
-      const readyTranscript = "fixture lyrics";
-      const readyTranscriptSha256 = sha256(new TextEncoder().encode(readyTranscript));
+      const readyLyrics = "fixture lyrics";
       const ready: TrustedSongAnalysis = {
         ...analysis,
         embeddedMetadata: {
@@ -2825,25 +2654,21 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             safetyPolicyRevision: "cover_policy_1",
           },
         },
-        speechLyrics: {
+        lyricsAnalysis: {
           status: "ready",
-          transcriptArtifactRef: "media_pg_transcript_artifact",
-          transcriptSha256: readyTranscriptSha256,
-          transcriptRevision: 1,
           lyricsRevision: 1,
-          materialDisagreement: false,
           explicitness: "not_explicit",
           primaryLanguageBcp47: "en",
           secondaryLanguageBcp47: null,
-          evidenceRef: "speech_ready_evidence",
-          policyRevision: "speech_ready_policy",
-          adapterRevision: "speech_ready_adapter",
+          evidenceRef: "lyrics_ready_evidence",
+          policyRevision: "lyrics_ready_policy",
+          adapterRevision: "lyrics_ready_adapter",
         },
         lyricsSafety: "allow",
       };
       await createThroughDecision(connection, decision, ready, true, {
-        transcript: readyTranscript,
-        segments: [{ start_ms: 0, end_ms: 1_000, text: readyTranscript }],
+        transcript: readyLyrics,
+        segments: [],
       });
       const storedSnapshotValue = (
         await admin.query(
@@ -2858,7 +2683,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       ) as Record<string, unknown>;
       const storedEmbedded = storedSnapshot.embeddedMetadata as Record<string, unknown>;
       const storedCover = storedEmbedded.cover as Record<string, unknown>;
-      const storedSpeech = storedSnapshot.speechLyrics as Record<string, unknown>;
+      const storedLyricsAnalysis = storedSnapshot.lyricsAnalysis as Record<string, unknown>;
       const rejectSnapshot = async (snapshot: Record<string, unknown>): Promise<void> => {
         await admin.query("BEGIN");
         await expect(insertAnalysisSnapshotVariant(admin, 2, snapshot)).rejects.toThrow();
@@ -2878,19 +2703,16 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         ["evidenceRef", 7],
         ["policyRevision", 7],
         ["adapterRevision", 7],
-        ["transcriptArtifactRef", 7],
-        ["transcriptSha256", 7],
       ] as const)
         await rejectSnapshot({
           ...storedSnapshot,
           analysisRevision: 2,
-          speechLyrics: { ...storedSpeech, [path]: value },
+          lyricsAnalysis: { ...storedLyricsAnalysis, [path]: value },
         });
       const correctedInput = {
         ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-corrected"),
         expectedCreationRevision: 3,
         expectedAudioRevision: 1,
-        baseTranscriptRevision: 1,
         lyrics: "Corrected fixture lyrics",
         outbox: {
           outboxEventId: "media_pg_lyrics_corrected_outbox",
@@ -2917,19 +2739,17 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         (
           await admin.query(
-            "SELECT provenance,base_transcript_revision,lyrics_text FROM media_song_lyrics_revisions WHERE submission_id=$1 ORDER BY lyrics_revision",
+            "SELECT provenance,lyrics_text FROM media_song_lyrics_revisions WHERE submission_id=$1 ORDER BY lyrics_revision",
             [submission],
           )
         ).rows,
       ).toEqual([
         {
-          provenance: "asr_accepted",
-          base_transcript_revision: "1",
-          lyrics_text: readyTranscript,
+          provenance: "pasted",
+          lyrics_text: readyLyrics,
         },
         {
           provenance: "corrected",
-          base_transcript_revision: "1",
           lyrics_text: "Corrected fixture lyrics",
         },
       ]);
@@ -2951,10 +2771,9 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         run(connection, (store) =>
           store.bindLyrics({
             ...correctedInput,
-            idempotencyKey: "lyrics-foreign-transcript",
+            idempotencyKey: "lyrics-stale-revision",
             requestHash: "c".repeat(64),
             expectedCreationRevision: 4,
-            baseTranscriptRevision: 2,
             outbox: {
               outboxEventId: "media_pg_lyrics_foreign_outbox",
               effectIdentity: "media_pg_lyrics_foreign_effect",
@@ -2974,7 +2793,6 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             idempotencyKey: "lyrics-pasted",
             requestHash: "d".repeat(64),
             expectedCreationRevision: 4,
-            baseTranscriptRevision: null,
             lyrics: "Pasted lyrics",
             outbox: {
               outboxEventId: "media_pg_lyrics_pasted_outbox",
@@ -3001,23 +2819,18 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
   }, 40_000);
   test("publishes explicit classified lyrics with their truthful label", async () => {
     await withSchema(async (admin, connection) => {
-      const transcript = "explicit fixture lyrics";
-      const transcriptSha256 = sha256(new TextEncoder().encode(transcript));
+      const explicitLyrics = "explicit fixture lyrics";
       const explicitAnalysis: TrustedSongAnalysis = {
         ...analysis,
-        speechLyrics: {
+        lyricsAnalysis: {
           status: "ready",
-          transcriptArtifactRef: "media_pg_transcript_artifact",
-          transcriptSha256,
-          transcriptRevision: 1,
           lyricsRevision: 1,
-          materialDisagreement: false,
           explicitness: "explicit",
           primaryLanguageBcp47: "en",
           secondaryLanguageBcp47: null,
-          evidenceRef: "speech_explicit_evidence",
-          policyRevision: "speech_explicit_policy",
-          adapterRevision: "speech_explicit_adapter",
+          evidenceRef: "lyrics_explicit_evidence",
+          policyRevision: "lyrics_explicit_policy",
+          adapterRevision: "lyrics_explicit_adapter",
         },
         lyricsSafety: "allow",
       };
@@ -3027,8 +2840,8 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         lyricsRevision: 1,
       };
       await createThroughDecision(connection, explicitDecision, explicitAnalysis, false, {
-        transcript,
-        segments: [{ start_ms: 0, end_ms: 1_000, text: transcript }],
+        transcript: explicitLyrics,
+        segments: [],
       });
       const postId = `media-post-${operation}`;
       await run(connection, (store) =>

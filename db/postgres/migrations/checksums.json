@@ -55,6 +55,7 @@
     "0052_media_finalize_fence.sql": "2bb62ec5a5575457cace6abd4bbdbaac0a1ab6b7d508a3dafbb709382cd6d644",
     "0053_rewards_song_offers.sql": "5c6175c5e684f6adb0742cb75141e528810ab8b2cb44b1a90391dc72dc730cc0",
     "0054_community_handle_sales.sql": "869f13813fb28af2f850b17865057f532500a94a997c9b47587bbe499d6713bf",
-    "0055_megapot_claim_reconciliation.sql": "7080bc0156f8dfb36202c3e67321bf8bcc7fd4a6d5bd9ccf5710a26aabb7c552"
+    "0055_megapot_claim_reconciliation.sql": "7080bc0156f8dfb36202c3e67321bf8bcc7fd4a6d5bd9ccf5710a26aabb7c552",
+    "0056_media_processing_runtime_bridge.sql": "2b552a019f233bf391fbd328fe83ee5efe3666aa6facf94833455731a8dd99b2"
   }
 }

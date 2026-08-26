@@ -29,7 +29,6 @@ const candidate = (
   },
   termsRevision: 3,
   lyrics: null,
-  transcript: null,
   analysis: null,
   decision: null,
   boundReferenceAssetId: null,
