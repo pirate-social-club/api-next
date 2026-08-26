@@ -78,6 +78,10 @@ const alias = {
     "../../packages/platform-cf/src/hns-forwarder-v3.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/hns-forwarder-replay-store": new URL(
+    "../../packages/platform-cf/src/hns-forwarder-replay-store.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf/cloudflare-access-jwt": new URL(
     "../../packages/platform-cf/src/cloudflare-access-jwt.ts",
     import.meta.url,

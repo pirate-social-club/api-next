@@ -38,6 +38,8 @@ import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-reposi
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
 import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
 import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
+import type { HnsForwarderReplayStoreNamespace } from "@pirate/platform-cf/hns-forwarder-replay-store";
+import { makeControlPlaneHnsCommunityAppHostAuthoritySource } from "@pirate/platform-cf/hns-host-persistence-repository";
 import {
   makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityStore,
@@ -102,7 +104,7 @@ import {
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
-import { disabledProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
+import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
@@ -153,6 +155,17 @@ export interface HttpWorkerBindings {
   readonly HNS_OWNERSHIP_ENABLED?: string;
   readonly HNS_OWNERSHIP_CONFIGURATION_REFERENCE?: string;
   readonly HNS_OWNERSHIP_CONFIGURATION_VERSION?: string;
+  readonly HNS_COMMUNITY_APP_API_REPLAY?: HnsForwarderReplayStoreNamespace;
+  readonly HNS_COMMUNITY_APP_API_ENABLED?: string;
+  readonly HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN?: string;
+  readonly HNS_COMMUNITY_APP_API_ACCESS_ISSUER?: string;
+  readonly HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL?: string;
+  readonly HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE?: string;
+  readonly HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE?: string;
+  readonly HNS_FORWARDER_V3_KEY_REGISTRY_VERSION?: string;
+  readonly HNS_FORWARDER_V3_HMAC_KEY_REGISTRY?: string;
+  readonly HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS?: string;
+  readonly HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS?: string;
   readonly VERIFICATION_CALLBACK_CREDENTIAL_HEADERS?: string;
   readonly PIRATE_APP_JWT_PRIVATE_KEY?: string;
   readonly PIRATE_APP_JWT_PUBLIC_KEY?: string;
@@ -250,6 +263,16 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     HNS_OWNERSHIP_ENABLED: bindings.HNS_OWNERSHIP_ENABLED,
     HNS_OWNERSHIP_CONFIGURATION_REFERENCE: bindings.HNS_OWNERSHIP_CONFIGURATION_REFERENCE,
     HNS_OWNERSHIP_CONFIGURATION_VERSION: bindings.HNS_OWNERSHIP_CONFIGURATION_VERSION,
+    HNS_COMMUNITY_APP_API_ENABLED: bindings.HNS_COMMUNITY_APP_API_ENABLED,
+    HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: bindings.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN,
+    HNS_COMMUNITY_APP_API_ACCESS_ISSUER: bindings.HNS_COMMUNITY_APP_API_ACCESS_ISSUER,
+    HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL: bindings.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL,
+    HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE: bindings.HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE,
+    HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE: bindings.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE,
+    HNS_FORWARDER_V3_KEY_REGISTRY_VERSION: bindings.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION,
+    HNS_FORWARDER_V3_HMAC_KEY_REGISTRY: bindings.HNS_FORWARDER_V3_HMAC_KEY_REGISTRY,
+    HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS: bindings.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS,
+    HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS: bindings.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS,
     VERIFICATION_CALLBACK_CREDENTIAL_HEADERS: bindings.VERIFICATION_CALLBACK_CREDENTIAL_HEADERS,
     PIRATE_APP_JWT_PRIVATE_KEY: bindings.PIRATE_APP_JWT_PRIVATE_KEY,
     PIRATE_APP_JWT_PUBLIC_KEY: bindings.PIRATE_APP_JWT_PUBLIC_KEY,
@@ -450,6 +473,13 @@ export async function createProductionHttpWorker(
     throw new Error("HTTP worker configuration is incomplete or invalid");
   }
   const controlPlane = makeHyperdriveControlPlaneLayer(loadHyperdrive(bindings));
+  const hnsCommunityAppApi = makeProductionHnsCommunityAppApiComposition({
+    config,
+    authority_source: makeControlPlaneHnsCommunityAppHostAuthoritySource(controlPlane),
+    ...(bindings.HNS_COMMUNITY_APP_API_REPLAY === undefined
+      ? {}
+      : { replay_namespace: bindings.HNS_COMMUNITY_APP_API_REPLAY }),
+  });
   const identityStore = makeControlPlaneIdentityStore(controlPlane);
   const publicProfileStore = makeControlPlanePublicProfileStore(controlPlane, identityStore);
   const communityStore = makeControlPlaneCommunityStore(controlPlane);
@@ -759,7 +789,7 @@ export async function createProductionHttpWorker(
 
   return createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
-    hnsCommunityAppApi: disabledProductionHnsCommunityAppApiComposition,
+    hnsCommunityAppApi,
     handlers: {
       ...productHandlers,
       ...communityCreationHandlers,

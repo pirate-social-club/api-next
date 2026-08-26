@@ -604,13 +604,18 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
     await next();
   });
   app.use("*", async (context, next) => {
-    const pathname = new URL(context.req.raw.url).pathname;
+    const requestUrl = new URL(context.req.raw.url);
+    const pathname = requestUrl.pathname;
     const privateAuthorityRequest = pathname === "/internal/hns/solid-host-authority/v2/resolve";
     const hnsApiRequest = pathname === "/api" || pathname.startsWith("/api/");
     const hasReservedHeader = hasReservedHnsCommunityAppHeader(context.req.raw.headers);
+    const protectedHnsIngress =
+      hnsCommunityAppApi.enabled && requestUrl.origin === hnsCommunityAppApi.protected_origin;
 
     if (privateAuthorityRequest) {
-      if (!hnsCommunityAppApi.enabled) throw new AuthError({ message: "Authentication failed" });
+      if (!protectedHnsIngress || !hnsCommunityAppApi.enabled) {
+        throw new AuthError({ message: "Authentication failed" });
+      }
       const body = await resolveHnsSolidHostAuthorityRequest(context.req.raw, hnsCommunityAppApi);
       return new Response(body, {
         status: 200,
@@ -622,7 +627,7 @@ export function createHttpWorker(options: HttpWorkerOptions = {}): Hono<HttpWork
       });
     }
 
-    if (hnsApiRequest && hnsCommunityAppApi.enabled) {
+    if (hnsApiRequest && protectedHnsIngress && hnsCommunityAppApi.enabled) {
       const verified = await verifyHnsCommunityAppApiRequest(context.req.raw, hnsCommunityAppApi);
       context.set("hnsCommunityAppApiVerified", true);
       context.set("hnsDynamicCorsOrigin", verified.exact_origin);

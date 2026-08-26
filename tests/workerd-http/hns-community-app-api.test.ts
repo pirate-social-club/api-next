@@ -140,6 +140,7 @@ describe("interactive HNS API trust boundary in Workerd", () => {
     const worker = createHttpWorker({
       config: { corsOrigin: "https://pirate.sc" },
       hnsCommunityAppApi: makeHnsCommunityAppApiComposition(true, {
+        protected_origin: "https://worker.internal",
         access_validator: {
           verify: async (value) => {
             if (value !== "access-workerd") throw new Error("denied");
@@ -167,6 +168,7 @@ describe("interactive HNS API trust boundary in Workerd", () => {
       access_validator: null,
       forwarder_validator: null,
       authority_source: null,
+      protected_origin: null,
     });
     const bindings = env as unknown as Record<string, unknown>;
     expect("HNS_COMMUNITY_APP_API_ENABLED" in bindings).toBe(false);

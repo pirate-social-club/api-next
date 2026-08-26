@@ -138,6 +138,7 @@ function harness() {
     limits,
   });
   const composition = makeHnsCommunityAppApiComposition(true, {
+    protected_origin: "https://api-next.internal",
     access_validator: {
       verify: async (jwt) => {
         if (jwt !== "access-ok") throw new Error("denied");
@@ -205,6 +206,12 @@ describe("interactive HNS community API transport", () => {
     const accepted = await worker.request(acceptedRequest.url, acceptedRequest.init);
     expect(accepted.status).toBe(200);
     expect(accepted.headers.get("access-control-allow-origin")).toBe(origin);
+
+    const preview = await worker.request(
+      "https://pirate-http-worker-preview.workers.dev/api/health",
+      acceptedRequest.init,
+    );
+    expect(preview.status).toBe(401);
 
     const ordinary = await worker.request("https://api-next.internal/health", {
       headers: { origin },
@@ -312,6 +319,22 @@ describe("interactive HNS community API transport", () => {
             method: "POST",
             headers: { accept: "application/json", "content-type": "application/json" },
             body: `${body}\n`,
+          },
+        )
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await worker.request(
+          "https://pirate-http-worker-preview.workers.dev/internal/hns/solid-host-authority/v2/resolve",
+          {
+            method: "POST",
+            headers: {
+              accept: "application/json",
+              "content-type": "application/json",
+              "cf-access-jwt-assertion": "access-ok",
+            },
+            body,
           },
         )
       ).status,

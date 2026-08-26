@@ -70,6 +70,7 @@ import {
   VERY_WEB_RP_SCOPE,
 } from "../../packages/platform-cf/src/verification/providers/very-web.ts";
 
+export { HnsForwarderReplayStoreDO } from "../../packages/platform-cf/src/hns-forwarder-replay-store-do.ts";
 export {
   RegistrationApplicationRateLimiterDO,
   RegistrationIpRateLimiterDO,

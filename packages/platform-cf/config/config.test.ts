@@ -182,11 +182,77 @@ describe("config system (000 §9)", () => {
       HNS_OWNERSHIP_ENABLED: false,
       HNS_OWNERSHIP_CONFIGURATION_REFERENCE: "",
       HNS_OWNERSHIP_CONFIGURATION_VERSION: "",
+      HNS_COMMUNITY_APP_API_ENABLED: false,
+      HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN: "",
+      HNS_COMMUNITY_APP_API_ACCESS_ISSUER: "",
+      HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL: "",
+      HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE: "",
+      HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE: "",
+      HNS_FORWARDER_V3_KEY_REGISTRY_VERSION: "",
+      HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS: 0,
+      HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS: -1,
       PIRATE_API_PUBLIC_ORIGIN: "",
     });
     expect(Redacted.value(configured.VERY_OAUTH_CLIENT_SECRET)).toBe("");
     expect(Redacted.value(configured.VERY_OAUTH_SEALING_KEY)).toBe("");
     expect(Redacted.value(configured.VERY_WEB_SEALING_KEY)).toBe("");
+    expect(Redacted.value(configured.HNS_FORWARDER_V3_HMAC_KEY_REGISTRY)).toBe("");
+  });
+
+  test("declares the disabled HNS community API graph independently in every environment", async () => {
+    const config = BunRuntime.JSONC.parse(
+      await BunRuntime.file(
+        new URL("../../../apps/http-worker/wrangler.jsonc", import.meta.url),
+      ).text(),
+    ) as {
+      readonly vars?: Record<string, string>;
+      readonly secrets?: { readonly required?: readonly string[] };
+      readonly durable_objects?: {
+        readonly bindings?: readonly { readonly name?: string; readonly class_name?: string }[];
+      };
+      readonly migrations?: readonly {
+        readonly tag?: string;
+        readonly new_sqlite_classes?: readonly string[];
+      }[];
+      readonly env?: Readonly<
+        Record<
+          string,
+          {
+            readonly vars?: Record<string, string>;
+            readonly secrets?: { readonly required?: readonly string[] };
+            readonly durable_objects?: {
+              readonly bindings?: readonly {
+                readonly name?: string;
+                readonly class_name?: string;
+              }[];
+            };
+          }
+        >
+      >;
+    };
+
+    for (const environment of [config, config.env?.staging, config.env?.production]) {
+      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ENABLED).toBe("false");
+      expect(environment?.vars?.HNS_COMMUNITY_APP_API_PROTECTED_ORIGIN).toBe("");
+      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_ISSUER).toBe("");
+      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_JWKS_URL).toBe("");
+      expect(environment?.vars?.HNS_COMMUNITY_APP_API_ACCESS_AUDIENCE).toBe("");
+      expect(environment?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_REFERENCE).toBe("");
+      expect(environment?.vars?.HNS_FORWARDER_V3_KEY_REGISTRY_VERSION).toBe("");
+      expect(environment?.vars?.HNS_FORWARDER_V3_FRESHNESS_WINDOW_SECONDS).toBe("0");
+      expect(environment?.vars?.HNS_FORWARDER_V3_FUTURE_CLOCK_SKEW_SECONDS).toBe("-1");
+      expect(environment?.secrets?.required).toContain("HNS_FORWARDER_V3_HMAC_KEY_REGISTRY");
+      expect(environment?.durable_objects?.bindings).toContainEqual({
+        name: "HNS_COMMUNITY_APP_API_REPLAY",
+        class_name: "HnsForwarderReplayStoreDO",
+      });
+    }
+    expect(config.migrations).toContainEqual({
+      tag: "v4",
+      new_sqlite_classes: ["HnsForwarderReplayStoreDO"],
+    });
+    expect(JSON.stringify(config)).not.toContain("HNS_OWNER_VERIFIER");
+    expect(JSON.stringify(config)).not.toContain("HNS_OBSERVER_DRIVER");
   });
 
   test("Wrangler enables Very web only in staging and keeps other ownership providers disabled", async () => {
