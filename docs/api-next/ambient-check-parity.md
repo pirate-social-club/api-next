@@ -2,11 +2,12 @@
 
 Status: hosted `check`-job parity reached for every step except
 `check:breaking`, proven by a network-isolated workstation rehearsal on
-2026-08-26. The first live Ambient attempt acquired the runner and installed
-all 496 packages, then exposed a trusted pre-plan verifier defect before any
-candidate gate ran. The repaired executor passed its pinned-source tests and
-host drift verification; a replacement live run is pending. No required-check
-substitution has occurred.
+2026-08-26. Two live Ambient attempts acquired the runner and installed all
+496 packages, then exposed consecutive trusted pre-plan verifier defects
+before any candidate gate ran. Both defects now have exact regression tests;
+the second repaired executor passed its pinned-source tests and host drift
+verification. A successful replacement live run is still required. No
+required-check substitution has occurred.
 
 GitHub Actions with Blacksmith remains the preferred api-next executor. The
 Ambient plan is an independent fallback for executor outages. During the
@@ -86,9 +87,12 @@ Three differences from the guest remain, and each is why a successful live run
 is still required. The first live attempt proved that `bun_get` installed all
 496 api-next packages, including both GitHub-backed lock entries, but its
 post-install verifier incorrectly sent their `github:` sources through the
-registry semantic-version path. The repaired verifier keeps registry checksum
-handling unchanged and binds GitHub sources to a hexadecimal revision, the
-exact Bun cache tag, its `.bun-tag`, and the lockfile's SHA-512 integrity field.
+registry semantic-version path. After that repair, the second attempt passed
+both Git-backed entries and then rejected the legitimate registry package
+`https-proxy-agent@5.0.1` because its name starts with `http`. The verifier now
+binds GitHub sources to a hexadecimal revision, exact cache tag, `.bun-tag` and
+lockfile SHA-512 field; ordinary registry names remain valid while URL-shaped
+sources still fail closed. Registry tarball checksum handling is unchanged.
 The workstation kernel, filesystem and CPU model still differ from the
 Haswell-noTSX guest. And loopback was up in the namespace, whereas the guest
 has no network at all.
