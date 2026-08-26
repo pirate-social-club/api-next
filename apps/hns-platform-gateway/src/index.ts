@@ -26,6 +26,28 @@ export {
   makeHnsStaticPlatformGatewayComposition,
 } from "./composition.ts";
 export {
+  disabledProductionHnsCommunityHandleGatewayComposition,
+  type HnsCommunityHandleGatewayComposition,
+  type HnsCommunityHandleGatewayCompositionDependencies,
+  makeHnsCommunityHandleGatewayComposition,
+} from "./handle-composition.ts";
+export {
+  admitHnsCommunityHandleGatewayRequest,
+  type HnsCommunityHandleGatewayAdmission,
+  type HnsCommunityHandleGatewayRejection,
+} from "./handle-request.ts";
+export {
+  HnsCommunityHandleGatewayUpstreamError,
+  sanitizeHnsCommunityHandleGatewayResponse,
+} from "./handle-response.ts";
+export {
+  HnsCommunityHandleGatewayCallerAbort,
+  type HnsCommunityHandleGatewayFetch,
+  type HnsCommunityHandleGatewayService,
+  type HnsCommunityHandleGatewaySigner,
+  makeHnsCommunityHandleGatewayService,
+} from "./handle-service.ts";
+export {
   type HnsStaticPlatformGatewayHealthService,
   makeHnsStaticPlatformGatewayHealthService,
 } from "./health.ts";
@@ -40,8 +62,10 @@ export {
 } from "./request.ts";
 export {
   type HnsCommunityAppGatewayServer,
+  type HnsCommunityHandleGatewayServer,
   type HnsStaticPlatformGatewayServer,
   startHnsCommunityAppGatewayServer,
+  startHnsCommunityHandleGatewayServer,
   startHnsStaticPlatformGatewayServer,
 } from "./server.ts";
 export {

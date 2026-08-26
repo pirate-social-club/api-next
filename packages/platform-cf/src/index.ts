@@ -111,6 +111,7 @@ export {
   makeControlPlaneHandleSalesRepository,
   makeControlPlaneHandleSalesStore,
 } from "./handle-sales-repository";
+export { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "./hns-handle-host-authority-repository.ts";
 export {
   type HnsFirstPartyHostPersistenceRepositoryV1,
   makeControlPlaneHnsCommunityAppHostAuthoritySource,

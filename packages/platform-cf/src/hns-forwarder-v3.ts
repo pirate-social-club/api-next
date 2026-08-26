@@ -123,7 +123,7 @@ function validWholeNumber(value: unknown, allowZero: boolean): value is number {
 
 function validateLimits(limits: HnsForwarderRuntimeLimitsV1): void {
   if (
-    !validWholeNumber(limits.max_body_bytes, false) ||
+    !validWholeNumber(limits.max_body_bytes, true) ||
     limits.max_body_bytes > HNS_FORWARDER_BODY_LIMIT_MAX_BYTES ||
     !validWholeNumber(limits.freshness_window_seconds, false) ||
     !validWholeNumber(limits.future_clock_skew_seconds, true)

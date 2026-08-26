@@ -7,7 +7,8 @@ import type {
   HandleQuoteV2,
   HandleReservationV2,
   HandleSafeReasonV2,
-  PublicHandleGrantV2,
+  PublicHandleGrantV3,
+  PublicPersonaProfileV1,
   SaleNamespaceActivationV1,
 } from "@pirate/contracts";
 import { Context, Data, Effect } from "effect";
@@ -269,14 +270,17 @@ export interface HandleSalesStore {
   readonly listPersonaGrants: (
     input: Readonly<{ personaId: string }> & PageInput,
   ) => Effect.Effect<
-    PageResult<PublicHandleGrantV2>,
+    PageResult<PublicHandleGrantV3>,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
   readonly getPublicGrant: (input: {
     readonly family: "hns" | "spaces";
     readonly namespaceRoot: string;
     readonly handleLabel: string;
-  }) => Effect.Effect<PublicHandleGrantV2 | null, HandleSalesStorageFailed>;
+  }) => Effect.Effect<PublicHandleGrantV3 | null, HandleSalesStorageFailed>;
+  readonly getPublicPersona: (input: {
+    readonly personaId: string;
+  }) => Effect.Effect<PublicPersonaProfileV1 | null, HandleSalesStorageFailed>;
 }
 
 const nextId = (prefix: string): Effect.Effect<string, never, IdGen> =>
@@ -432,6 +436,7 @@ export function makeHandleSalesService(store: HandleSalesStore) {
     getClaim: store.getClaim,
     listPersonaGrants: store.listPersonaGrants,
     getPublicGrant: store.getPublicGrant,
+    getPublicPersona: store.getPublicPersona,
   } as const;
 }
 

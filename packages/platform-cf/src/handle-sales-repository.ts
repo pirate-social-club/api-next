@@ -16,7 +16,8 @@ import type {
   HandleQualificationPolicyRefV1,
   HandleQuoteV2,
   HandleReservationV2,
-  PublicHandleGrantV2,
+  PublicHandleGrantV3,
+  PublicPersonaProfileV1,
   SaleNamespaceActivationV1,
 } from "@pirate/contracts";
 import {
@@ -277,6 +278,42 @@ const activationFromRow = (row: Row): SaleNamespaceActivationV1 => ({
   suspended_at: row.suspended_at === null ? null : instant(row.suspended_at),
   revoked_at: row.revoked_at === null ? null : instant(row.revoked_at),
 });
+
+const publicGrantFromRow = (row: Row): PublicHandleGrantV3 => {
+  const persona = publicPersonaFromSql(row.owner_persona);
+  if (persona === undefined || persona === null) throw new Error("invalid public persona");
+  const grantGeneration = integer(row, "grant_generation");
+  const activationGeneration = integer(row, "sale_namespace_activation_generation");
+  const namespaceRoot = text(row, "namespace_root");
+  const handleLabel = text(row, "handle_label");
+  const activationEffective = boolean(row, "activation_effective");
+  return {
+    grant_id: text(row, "grant_id"),
+    grant_generation: grantGeneration,
+    community_id: text(row, "community_id"),
+    owner_persona: persona,
+    sale_namespace_activation_id: text(row, "sale_namespace_activation_id"),
+    sale_namespace_activation_generation: activationGeneration,
+    fulfillment: {
+      kind: text(row, "fulfillment_kind") as PublicHandleGrantV3["fulfillment"]["kind"],
+    },
+    handle: {
+      family: text(row, "family") as PublicHandleGrantV3["handle"]["family"],
+      namespace_root: namespaceRoot,
+      handle_label: handleLabel,
+    },
+    display_identifier: text(row, "display_identifier"),
+    host: activationEffective
+      ? {
+          kind: "available",
+          normalized_host: `${handleLabel}.${namespaceRoot}`,
+          sale_namespace_activation_generation: activationGeneration,
+          grant_generation: grantGeneration,
+        }
+      : { kind: "unavailable", reason: "sale_namespace_inactive" },
+    issued_at: instant(row.issued_at),
+  };
+};
 
 const offeringFromRow = (row: Row): CommunityHandleOfferingV2 => {
   const exactLabel = nullableText(row, "exact_label");
@@ -2993,6 +3030,25 @@ export function makeControlPlaneHandleSalesRepository() {
               "grant list clock",
             ).database_now,
           );
+        const cursorResult =
+          paging.cursor === null
+            ? null
+            : yield* mapped(
+                db.execute<Row>({
+                  label: "handle-sales.grant.list-cursor",
+                  text: `SELECT family,namespace_root,handle_label,grant_id
+                           FROM handle_grants
+                          WHERE grant_id=$1 AND owner_persona_id=$2
+                            AND issued_at=$3::timestamptz
+                            AND issued_at <= $4::timestamptz`,
+                  values: [paging.cursor.sortId, input.personaId, paging.cursor.sortTime, cutoff],
+                  readonly: true,
+                }),
+              );
+        if (cursorResult !== null && cursorResult.rows.length !== 1) {
+          return yield* pageRejected("invalid_cursor");
+        }
+        const cursorGrant = cursorResult?.rows[0] ?? null;
         const result = yield* mapped(
           db.execute<Row>({
             label: "handle-sales.grant.list-public-persona",
@@ -3000,7 +3056,9 @@ export function makeControlPlaneHandleSalesRepository() {
                           EXISTS (
                             SELECT 1 FROM effective_community_handle_sale_namespace_v1(
                               handle_grant.sale_namespace_activation_id,$2::timestamptz
-                            )
+                            ) AS effective
+                            WHERE effective.sale_namespace_activation_generation
+                                  = handle_grant.sale_namespace_activation_generation
                           ) AS activation_effective
                      FROM handle_grants AS handle_grant
                      JOIN personas AS persona ON persona.persona_id=handle_grant.owner_persona_id
@@ -3008,17 +3066,21 @@ export function makeControlPlaneHandleSalesRepository() {
                       AND persona.status='active'
                       AND handle_grant.issued_at <= $2::timestamptz
                       AND (
-                        $3::timestamptz IS NULL
-                        OR (handle_grant.issued_at,handle_grant.grant_id)
-                           < ($3::timestamptz,$4)
+                        $3::text IS NULL
+                        OR (handle_grant.family,handle_grant.namespace_root,
+                            handle_grant.handle_label,handle_grant.grant_id)
+                           > ($3::text,$4::text,$5::text,$6::text)
                       )
-                    ORDER BY handle_grant.issued_at DESC,handle_grant.grant_id DESC
-                    LIMIT $5`,
+                    ORDER BY handle_grant.family,handle_grant.namespace_root,
+                             handle_grant.handle_label,handle_grant.grant_id
+                    LIMIT $7`,
             values: [
               input.personaId,
               cutoff,
-              paging.cursor?.sortTime ?? null,
-              paging.cursor?.sortId ?? null,
+              cursorGrant === null ? null : text(cursorGrant, "family"),
+              cursorGrant === null ? null : text(cursorGrant, "namespace_root"),
+              cursorGrant === null ? null : text(cursorGrant, "handle_label"),
+              cursorGrant === null ? null : text(cursorGrant, "grant_id"),
               paging.limit + 1,
             ],
             readonly: true,
@@ -3027,27 +3089,7 @@ export function makeControlPlaneHandleSalesRepository() {
         return yield* Effect.try({
           try: () => {
             const selectedRows = result.rows.slice(0, paging.limit);
-            const selected = selectedRows.map((row): PublicHandleGrantV2 => {
-              const persona = publicPersonaFromSql(row.owner_persona);
-              if (persona === undefined || persona === null)
-                throw new Error("invalid public persona");
-              return {
-                grant_id: text(row, "grant_id"),
-                grant_generation: integer(row, "grant_generation"),
-                community_id: text(row, "community_id"),
-                owner_persona: persona,
-                handle: {
-                  family: "hns",
-                  namespace_root: text(row, "namespace_root"),
-                  handle_label: text(row, "handle_label"),
-                },
-                display_identifier: text(row, "display_identifier"),
-                host: boolean(row, "activation_effective")
-                  ? { kind: "unavailable", reason: "host_not_activated" }
-                  : { kind: "unavailable", reason: "sale_namespace_inactive" },
-                issued_at: instant(row.issued_at),
-              };
-            });
+            const selected = selectedRows.map(publicGrantFromRow);
             const last = selectedRows[selectedRows.length - 1];
             return {
               items: selected,
@@ -3076,7 +3118,9 @@ export function makeControlPlaneHandleSalesRepository() {
                           EXISTS (
                             SELECT 1 FROM effective_community_handle_sale_namespace_v1(
                               handle_grant.sale_namespace_activation_id,clock_timestamp()
-                            )
+                            ) AS effective
+                            WHERE effective.sale_namespace_activation_generation
+                                  = handle_grant.sale_namespace_activation_generation
                           ) AS activation_effective
                      FROM handle_grants AS handle_grant
                      JOIN personas AS persona ON persona.persona_id=handle_grant.owner_persona_id
@@ -3089,26 +3133,73 @@ export function makeControlPlaneHandleSalesRepository() {
         );
         if (result.rows[0] === undefined) return null;
         return yield* Effect.try({
-          try: (): PublicHandleGrantV2 => {
-            const row = one(result.rows, "public grant");
-            const persona = publicPersonaFromSql(row.owner_persona);
-            if (persona === undefined || persona === null)
+          try: (): PublicHandleGrantV3 => publicGrantFromRow(one(result.rows, "public grant")),
+          catch: () => storage("invalid-row"),
+        });
+      }),
+    getPublicPersona: (input: Parameters<HandleSalesStore["getPublicPersona"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        const result = yield* mapped(
+          db.execute<Row>({
+            label: "handle-sales.persona.read-public-profile",
+            text: `SELECT public_persona_projection(persona.persona_id) AS owner_persona,
+                          profile.revision AS profile_revision,
+                          profile.cover_ref,
+                          profile.bio,
+                          handle_grant.*
+                     FROM personas AS persona
+                     JOIN persona_profiles AS profile ON profile.persona_id=persona.persona_id
+                     LEFT JOIN LATERAL (
+                       SELECT persona_grant.*,
+                              EXISTS (
+                                SELECT 1 FROM effective_community_handle_sale_namespace_v1(
+                                  persona_grant.sale_namespace_activation_id,clock_timestamp()
+                                ) AS effective
+                                WHERE effective.sale_namespace_activation_generation
+                                      = persona_grant.sale_namespace_activation_generation
+                              ) AS activation_effective
+                         FROM handle_grants AS persona_grant
+                        WHERE persona_grant.owner_persona_id=persona.persona_id
+                          AND persona_grant.status='active'
+                        ORDER BY persona_grant.family,persona_grant.namespace_root,
+                                 persona_grant.handle_label,persona_grant.grant_id
+                     ) AS handle_grant ON TRUE
+                    WHERE persona.persona_id=$1 AND persona.status='active'
+                    ORDER BY handle_grant.family NULLS LAST,
+                             handle_grant.namespace_root NULLS LAST,
+                             handle_grant.handle_label NULLS LAST,
+                             handle_grant.grant_id NULLS LAST`,
+            values: [input.personaId],
+            readonly: true,
+          }),
+        );
+        if (result.rows.length === 0) return null;
+        return yield* Effect.try({
+          try: (): PublicPersonaProfileV1 => {
+            const first = result.rows[0] as Row;
+            const persona = publicPersonaFromSql(first.owner_persona);
+            if (persona === undefined || persona === null) {
               throw new Error("invalid public persona");
+            }
+            const grants = result.rows
+              .filter((row) => row.grant_id !== null)
+              .map(publicGrantFromRow);
+            if (
+              grants.some(
+                (grant) => JSON.stringify(grant.owner_persona) !== JSON.stringify(persona),
+              )
+            ) {
+              throw new Error("public persona grant owner mismatch");
+            }
             return {
-              grant_id: text(row, "grant_id"),
-              grant_generation: integer(row, "grant_generation"),
-              community_id: text(row, "community_id"),
-              owner_persona: persona,
-              handle: {
-                family: "hns",
-                namespace_root: text(row, "namespace_root"),
-                handle_label: text(row, "handle_label"),
+              persona,
+              profile: {
+                revision: integer(first, "profile_revision"),
+                cover_ref: nullableText(first, "cover_ref"),
+                bio: nullableText(first, "bio"),
               },
-              display_identifier: text(row, "display_identifier"),
-              host: boolean(row, "activation_effective")
-                ? { kind: "unavailable", reason: "host_not_activated" }
-                : { kind: "unavailable", reason: "sale_namespace_inactive" },
-              issued_at: instant(row.issued_at),
+              handle_grants: grants,
             };
           },
           catch: () => storage("invalid-row"),
@@ -3155,6 +3246,8 @@ export function makeControlPlaneHandleSalesStore(
       provide(repository.listPersonaGrants(input)),
     getPublicGrant: (input: Parameters<HandleSalesStore["getPublicGrant"]>[0]) =>
       provide(repository.getPublicGrant(input)),
+    getPublicPersona: (input: Parameters<HandleSalesStore["getPublicPersona"]>[0]) =>
+      provide(repository.getPublicPersona(input)),
   };
   // The repository maps every ControlPlaneError before this boundary. The
   // assertion hides only Effect's conservative union left by withTransaction.

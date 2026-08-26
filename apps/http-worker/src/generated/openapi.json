@@ -20787,6 +20787,35 @@
                             ],
                             "additionalProperties": false
                           },
+                          "sale_namespace_activation_id": {
+                            "type": "string"
+                          },
+                          "sale_namespace_activation_generation": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              }
+                            ]
+                          },
+                          "fulfillment": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "hosted_persona_v1",
+                                  "delegated_zone_v1",
+                                  "spaces_native_v1"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "additionalProperties": false
+                          },
                           "handle": {
                             "type": "object",
                             "properties": {
@@ -20907,6 +20936,9 @@
                           "grant_generation",
                           "community_id",
                           "owner_persona",
+                          "sale_namespace_activation_id",
+                          "sale_namespace_activation_generation",
+                          "fulfillment",
                           "handle",
                           "display_identifier",
                           "host",
@@ -21161,6 +21193,35 @@
                       ],
                       "additionalProperties": false
                     },
+                    "sale_namespace_activation_id": {
+                      "type": "string"
+                    },
+                    "sale_namespace_activation_generation": {
+                      "type": "integer",
+                      "allOf": [
+                        {
+                          "minimum": 1,
+                          "maximum": 9007199254740991
+                        }
+                      ]
+                    },
+                    "fulfillment": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "hosted_persona_v1",
+                            "delegated_zone_v1",
+                            "spaces_native_v1"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ],
+                      "additionalProperties": false
+                    },
                     "handle": {
                       "type": "object",
                       "properties": {
@@ -21281,12 +21342,499 @@
                     "grant_generation",
                     "community_id",
                     "owner_persona",
+                    "sale_namespace_activation_id",
+                    "sale_namespace_activation_generation",
+                    "fulfillment",
                     "handle",
                     "display_identifier",
                     "host",
                     "issued_at"
                   ],
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "bad_request"
+            ]
+          },
+          "404": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "not_found"
+            ]
+          },
+          "500": {
+            "description": "api-next error envelope v2",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string"
+                        },
+                        "message": {
+                          "type": "string"
+                        },
+                        "retryable": {
+                          "type": "boolean"
+                        },
+                        "details": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "additionalProperties": true
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "message",
+                        "retryable"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "x-error-codes": [
+              "internal_error"
+            ]
+          }
+        },
+        "x-auth": {
+          "policy": {
+            "kind": "public"
+          }
+        },
+        "x-errors": [
+          "BadRequest",
+          "NotFound",
+          "InternalError"
+        ]
+      }
+    },
+    "/public-personas/{personaId}": {
+      "get": {
+        "operationId": "get_publicPersonasPersonaId",
+        "parameters": [
+          {
+            "name": "personaId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "persona": {
+                      "$ref": "#/$defs/Objects_"
+                    },
+                    "profile": {
+                      "type": "object",
+                      "properties": {
+                        "revision": {
+                          "type": "integer",
+                          "allOf": [
+                            {
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          ]
+                        },
+                        "cover_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "bio": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "revision",
+                        "cover_ref",
+                        "bio"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "handle_grants": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "grant_id": {
+                            "type": "string"
+                          },
+                          "grant_generation": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              }
+                            ]
+                          },
+                          "community_id": {
+                            "type": "string"
+                          },
+                          "owner_persona": {
+                            "$ref": "#/$defs/Objects_"
+                          },
+                          "sale_namespace_activation_id": {
+                            "type": "string"
+                          },
+                          "sale_namespace_activation_generation": {
+                            "type": "integer",
+                            "allOf": [
+                              {
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              }
+                            ]
+                          },
+                          "fulfillment": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "hosted_persona_v1",
+                                  "delegated_zone_v1",
+                                  "spaces_native_v1"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "handle": {
+                            "type": "object",
+                            "properties": {
+                              "family": {
+                                "type": "string",
+                                "enum": [
+                                  "hns",
+                                  "spaces"
+                                ]
+                              },
+                              "namespace_root": {
+                                "type": "string"
+                              },
+                              "handle_label": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "family",
+                              "namespace_root",
+                              "handle_label"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "display_identifier": {
+                            "type": "string"
+                          },
+                          "host": {
+                            "anyOf": [
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "not_applicable"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "available"
+                                    ]
+                                  },
+                                  "normalized_host": {
+                                    "type": "string"
+                                  },
+                                  "sale_namespace_activation_generation": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  },
+                                  "grant_generation": {
+                                    "type": "integer",
+                                    "allOf": [
+                                      {
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      }
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "normalized_host",
+                                  "sale_namespace_activation_generation",
+                                  "grant_generation"
+                                ],
+                                "additionalProperties": false
+                              },
+                              {
+                                "type": "object",
+                                "properties": {
+                                  "kind": {
+                                    "type": "string",
+                                    "enum": [
+                                      "unavailable"
+                                    ]
+                                  },
+                                  "reason": {
+                                    "type": "string",
+                                    "enum": [
+                                      "namespace_suspended",
+                                      "namespace_authority_lost",
+                                      "sale_namespace_inactive",
+                                      "dns_or_gateway_unhealthy",
+                                      "host_not_activated"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "reason"
+                                ],
+                                "additionalProperties": false
+                              }
+                            ]
+                          },
+                          "issued_at": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "grant_id",
+                          "grant_generation",
+                          "community_id",
+                          "owner_persona",
+                          "sale_namespace_activation_id",
+                          "sale_namespace_activation_generation",
+                          "fulfillment",
+                          "handle",
+                          "display_identifier",
+                          "host",
+                          "issued_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "persona",
+                    "profile",
+                    "handle_grants"
+                  ],
+                  "additionalProperties": false,
+                  "$defs": {
+                    "Objects_": {
+                      "type": "object",
+                      "properties": {
+                        "persona_id": {
+                          "type": "string"
+                        },
+                        "object": {
+                          "type": "string",
+                          "enum": [
+                            "persona"
+                          ]
+                        },
+                        "display_name": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "avatar_ref": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "primary_public_handle": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "persona_id",
+                        "object",
+                        "display_name",
+                        "avatar_ref",
+                        "primary_public_handle"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
                 }
               }
             }

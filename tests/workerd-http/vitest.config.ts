@@ -10,6 +10,14 @@ const alias = {
     "../../packages/application/src/hns-forwarder-v3.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/application/hns-community-handle-gateway": new URL(
+    "../../packages/application/src/hns-community-handle-gateway.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/application/hns-handle-host-api": new URL(
+    "../../packages/application/src/hns-handle-host-api.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/application/hns-static-platform-app-gateway": new URL(
     "../../packages/application/src/hns-static-platform-app-gateway.ts",
     import.meta.url,
@@ -84,6 +92,10 @@ const alias = {
   ).pathname,
   "@pirate/platform-cf/hns-community-app-api": new URL(
     "../../packages/platform-cf/src/hns-community-app-api.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/hns-handle-host-api": new URL(
+    "../../packages/platform-cf/src/hns-handle-host-api.ts",
     import.meta.url,
   ).pathname,
   "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)

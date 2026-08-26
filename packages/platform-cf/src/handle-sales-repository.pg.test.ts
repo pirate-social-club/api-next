@@ -5,6 +5,7 @@ import {
   HandleSalesRejected,
   IdGen,
   makeHandleSalesService,
+  resolveActiveHnsHostAuthority,
 } from "@pirate/application";
 import { handleSaleNamespaceActivationHash } from "@pirate/domain";
 import { Effect } from "effect";
@@ -12,6 +13,7 @@ import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
 import { makeHandleRecipientTokenVault } from "./handle-recipient-token-vault.ts";
 import { makeControlPlaneHandleSalesStore } from "./handle-sales-repository.ts";
+import { makeControlPlaneHnsHandlePersonaHostAuthoritySource } from "./hns-handle-host-authority-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 
@@ -594,9 +596,24 @@ suite("community handle sales on PostgreSQL 17", () => {
           handleLabel: "longname",
         }),
       );
+      if (publicGrant === null) throw new Error("expected public grant");
       expect(publicGrant).toMatchObject({
         owner_persona: { persona_id: recipientPersona },
-        host: { kind: "unavailable", reason: "host_not_activated" },
+        sale_namespace_activation_id: activationId,
+        sale_namespace_activation_generation: 1,
+        fulfillment: { kind: "hosted_persona_v1" },
+        host: {
+          kind: "available",
+          normalized_host: "longname.charizard",
+          sale_namespace_activation_generation: 1,
+          grant_generation: 1,
+        },
+      });
+      await expect(
+        run(sales.getPublicPersona({ personaId: recipientPersona })),
+      ).resolves.toMatchObject({
+        persona: { persona_id: recipientPersona },
+        handle_grants: [{ grant_id: publicGrant.grant_id }],
       });
 
       const siblingPersona = "persona-recipient-sibling";
@@ -1036,13 +1053,44 @@ suite("community handle sales on PostgreSQL 17", () => {
         [offering.offering.offering_id],
       );
       expect(releasedCounter.rows[0]?.active_grant_count).toBe(0);
+      await expect(
+        run(
+          sales.getPublicGrant({
+            family: "hns",
+            namespaceRoot: "charizard",
+            handleLabel: "longname",
+          }),
+        ),
+      ).resolves.toBeNull();
+      const retainedFence = await admin.query<{
+        readonly permanent_grant_id: string | null;
+      }>(
+        `SELECT permanent_grant_id
+           FROM handle_key_fences
+          WHERE family='hns' AND namespace_root='charizard' AND handle_label='longname'`,
+      );
+      expect(retainedFence.rows[0]?.permanent_grant_id).toBe(publicGrant.grant_id);
+      await expect(
+        run(
+          sales.createQuote({
+            accountId: "recipient-account",
+            personaId: siblingPersona,
+            offeringId: offering.offering.offering_id,
+            desiredLabel: "longname",
+            idempotencyKey: "revoked-key-reclaim-quote",
+          }),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "HandleSalesRejected",
+        reason: "handle_unavailable",
+      });
     });
     completedTestCount += 1;
   }, 20_000);
 
   test("activates an unrouted HNS root and fails delegation drift and terminal revocation closed", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
-      await seedAccount(admin, "activation-seller");
+      const sellerPersona = await seedAccount(admin, "activation-seller");
       const communityId = "community_123e4567-e89b-42d3-a456-426614174054";
       const dependencies = await seedHealthySaleDependencies(
         admin,
@@ -1099,6 +1147,70 @@ suite("community handle sales on PostgreSQL 17", () => {
         items: [{ status: "active" }],
       });
 
+      const offering = await run(
+        sales.createOffering({
+          accountId: "activation-seller",
+          communityId,
+          idempotencyKey: "live-handle-offering-key",
+          terms: terms(activation.activation.sale_namespace_activation_id),
+        }),
+      );
+      await run(
+        sales.confirmPersonaReuse({
+          accountId: "activation-seller",
+          personaId: sellerPersona,
+          offeringId: offering.offering.offering_id,
+          idempotencyKey: "live-handle-link-key",
+        }),
+      );
+      const quote = await run(
+        sales.createQuote({
+          accountId: "activation-seller",
+          personaId: sellerPersona,
+          offeringId: offering.offering.offering_id,
+          desiredLabel: "livehost",
+          idempotencyKey: "live-handle-quote-key",
+        }),
+      );
+      if (quote.kind !== "quoted") throw new Error("expected a live handle quote");
+      const reservation = await run(
+        sales.createReservation({
+          accountId: "activation-seller",
+          personaId: sellerPersona,
+          quoteId: quote.quote.quote_id,
+          expectedQuoteHash: quote.quote.quote_hash,
+          idempotencyKey: "live-handle-reservation-key",
+        }),
+      );
+      const claim = await run(
+        sales.submitFreeClaim({
+          accountId: "activation-seller",
+          personaId: sellerPersona,
+          reservationId: reservation.reservation.reservation_id,
+          expectedReservationHash: reservation.reservation.reservation_hash,
+          idempotencyKey: "live-handle-claim-key",
+        }),
+      );
+      const authoritySource = makeControlPlaneHnsHandlePersonaHostAuthoritySource(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const activeAuthority = await Effect.runPromise(
+        authoritySource.resolve("livehost.charizard"),
+      );
+      expect(activeAuthority).toMatchObject({
+        variant: "handle_persona_v1",
+        handle_grant_id: claim.claim.grant?.grant_id,
+        owner_persona_id: sellerPersona,
+        namespace_authority_effective: true,
+        handle_grant_active: true,
+        owner_persona_public: true,
+        dns_zone: { gateway_health: "healthy" },
+      });
+      expect(resolveActiveHnsHostAuthority(activeAuthority)).not.toBeNull();
+      await expect(
+        Effect.runPromise(authoritySource.resolve("unknown.charizard")),
+      ).resolves.toBeNull();
+
       await admin.query("UPDATE communities SET status='archived' WHERE community_id=$1", [
         communityId,
       ]);
@@ -1106,6 +1218,15 @@ suite("community handle sales on PostgreSQL 17", () => {
         items: [],
         next_cursor: null,
       });
+      const archivedAuthority = await Effect.runPromise(
+        authoritySource.resolve("livehost.charizard"),
+      );
+      expect(archivedAuthority).toMatchObject({
+        variant: "handle_persona_v1",
+        namespace_authority_effective: false,
+        dns_zone: { stable_chain_delegation_matches: true },
+      });
+      expect(resolveActiveHnsHostAuthority(archivedAuthority)).toBeNull();
       await expect(
         run(
           sales.createOffering({
@@ -1143,6 +1264,14 @@ suite("community handle sales on PostgreSQL 17", () => {
         items: [],
         next_cursor: null,
       });
+      const driftedAuthority = await Effect.runPromise(
+        authoritySource.resolve("livehost.charizard"),
+      );
+      expect(driftedAuthority).toMatchObject({
+        variant: "handle_persona_v1",
+        dns_zone: { stable_chain_delegation_matches: false },
+      });
+      expect(resolveActiveHnsHostAuthority(driftedAuthority)).toBeNull();
       await expect(
         run(
           sales.createOffering({

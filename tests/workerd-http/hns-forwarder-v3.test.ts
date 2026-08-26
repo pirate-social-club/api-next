@@ -67,6 +67,7 @@ const handleState: HnsHandlePersonaHostAuthorityStateV1 = {
   handle_grant_id: "handle_grant_01",
   handle_grant_generation: 2,
   handle_grant_active: true,
+  fulfillment_kind: "hosted_persona_v1",
   owner_persona_id: "persona_public_01",
   owner_persona_public: true,
   dns_zone: state.dns_zone,

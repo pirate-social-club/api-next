@@ -31,6 +31,7 @@ const storeWith = (overrides: Partial<HandleSalesStore>): HandleSalesStore =>
     getClaim: unexpected,
     listPersonaGrants: unexpected,
     getPublicGrant: unexpected,
+    getPublicPersona: unexpected,
     ...overrides,
   }) as HandleSalesStore;
 
@@ -54,6 +55,58 @@ const workerWith = (store: HandleSalesStore) => {
 };
 
 describe("handle sales HTTP handlers", () => {
+  test("serves a persona-native public profile with V3 grants and no-store", async () => {
+    const persona = {
+      persona_id: "persona-public-http",
+      object: "persona" as const,
+      display_name: "Public Persona",
+      avatar_ref: null,
+      primary_public_handle: null,
+    };
+    const profile = {
+      persona,
+      profile: { revision: 2, cover_ref: null, bio: "Public bio" },
+      handle_grants: [
+        {
+          grant_id: "grant-public-http",
+          grant_generation: 1,
+          community_id: "community-public-http",
+          owner_persona: persona,
+          sale_namespace_activation_id: "activation-public-http",
+          sale_namespace_activation_generation: 3,
+          fulfillment: { kind: "hosted_persona_v1" as const },
+          handle: {
+            family: "hns" as const,
+            namespace_root: "charizard",
+            handle_label: "longname",
+          },
+          display_identifier: "longname.charizard",
+          host: {
+            kind: "available" as const,
+            normalized_host: "longname.charizard",
+            sale_namespace_activation_generation: 3,
+            grant_generation: 1,
+          },
+          issued_at: "2026-08-26T00:00:00.000Z",
+        },
+      ],
+    };
+    const response = await workerWith(
+      storeWith({ getPublicPersona: () => Effect.succeed(profile) }),
+    ).request(`/public-personas/${persona.persona_id}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual(profile);
+  });
+
+  test("keeps unknown public personas enumeration-safe", async () => {
+    const response = await workerWith(
+      storeWith({ getPublicPersona: () => Effect.succeed(null) }),
+    ).request("/public-personas/persona-unknown");
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: "not_found" } });
+  });
+
   test("returns the recipient token only to an authenticated no-store response", async () => {
     let persistedAccount: string | undefined;
     const worker = workerWith(

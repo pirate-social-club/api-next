@@ -8,6 +8,8 @@
     "./hns-community-app-gateway": "./src/hns-community-app-gateway.ts",
     "./hns-community-app-api": "./src/hns-community-app-api.ts",
     "./hns-forwarder-v3": "./src/hns-forwarder-v3.ts",
+    "./hns-handle-host-api": "./src/hns-handle-host-api.ts",
+    "./hns-community-handle-gateway": "./src/hns-community-handle-gateway.ts",
     "./hns-static-platform-app-gateway": "./src/hns-static-platform-app-gateway.ts",
     "./hns-host-persistence": "./src/hns-host-persistence.ts",
     "./hns-host-serving": "./src/hns-host-serving.ts",
