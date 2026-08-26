@@ -219,6 +219,14 @@
     {
       "operationId": "post_verificationSessions",
       "reason": "api-next clean-break v2 replaces the former top-level error envelope while retaining this route."
+    },
+    {
+      "operationId": "post_personas",
+      "reason": "2026-08-27 owner-ratified Spec 014 section 10 clean break: persona creation returns a private pending-wallet preparation and cannot expose an active persona before its indexed EVM wallet is confirmed."
+    },
+    {
+      "operationId": "post_authRegister",
+      "reason": "2026-08-27 owner-ratified Spec 014 section 10 clean break: registration returns wallet setup authority instead of an active walletless account presentation until the first indexed EVM wallet is confirmed."
     }
   ]
 }
