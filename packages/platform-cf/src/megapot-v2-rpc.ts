@@ -281,9 +281,11 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
   const waitForRequestStart = (): Promise<void> => {
     if (minimumRequestIntervalMs === 0) return Promise.resolve();
     const scheduled = previousRequestStart.then(async () => {
-      const remaining = lastRequestStartedAt + minimumRequestIntervalMs - performance.now();
-      if (remaining > 0) {
-        await new Promise<void>((resolve) => setTimeout(resolve, remaining));
+      const targetStart = lastRequestStartedAt + minimumRequestIntervalMs;
+      let remaining = targetStart - performance.now();
+      while (remaining > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, Math.ceil(remaining)));
+        remaining = targetStart - performance.now();
       }
       lastRequestStartedAt = performance.now();
     });
