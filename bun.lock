@@ -51,9 +51,13 @@
       "name": "@pirate/jobs-worker",
       "version": "0.0.0",
     },
+    "apps/media-processor-worker": {
+      "name": "@pirate/media-processor-worker",
+      "version": "0.0.0",
+    },
     "packages/api-client": {
       "name": "@pirate/api-client",
-      "version": "0.20.0",
+      "version": "0.22.0",
     },
     "packages/application": {
       "name": "@pirate/application",
@@ -522,6 +526,8 @@
     "@pirate/http-worker": ["@pirate/http-worker@workspace:apps/http-worker"],
 
     "@pirate/jobs-worker": ["@pirate/jobs-worker@workspace:apps/jobs-worker"],
+
+    "@pirate/media-processor-worker": ["@pirate/media-processor-worker@workspace:apps/media-processor-worker"],
 
     "@pirate/platform-cf": ["@pirate/platform-cf@workspace:packages/platform-cf"],
 

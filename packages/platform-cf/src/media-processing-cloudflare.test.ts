@@ -63,6 +63,19 @@ describe("Cloudflare media processing adapters", () => {
     );
   });
 
+  test("uses Workflow status rather than handle construction as presence proof", async () => {
+    const binding = {
+      create: async () => undefined,
+      get: async () => ({
+        status: async () => ({ status: "unknown" }),
+        sendEvent: async () => undefined,
+      }),
+    };
+    const launcher = makeCloudflareMediaProcessingWorkflowLauncher(binding, isMissing);
+
+    expect(await launcher.get("media-operation-1-r1")).toBe("missing");
+  });
+
   test("does not turn a transient get failure into retained-instance loss", async () => {
     const binding = {
       create: async () => undefined,

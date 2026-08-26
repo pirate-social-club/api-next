@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.23.0",
+  "releaseType": "handle-sales-seller-management-read-model-v1",
+  "wireContract": "handle-sales-management-v1",
+  "sourceCommit": "b61a55f",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.23.0.tgz",
+    "sha256": "baec0a65a8e02d640a5e3dc8a4edfaec2807a4f1ca840ce3c39ad206d6f2875d",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@32aa73eb76113c45877bee4b3086252fdd78ebb283be00e155e6fa64faef03c3",
+    "openapiSha256": "32aa73eb76113c45877bee4b3086252fdd78ebb283be00e155e6fa64faef03c3",
+    "clientSha256": "daa57106419eb502e37c7118695fb715a9740c3486ad0c541c0cc850e53548b3"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "6bb17e4",
+      "reason": "The seller-management read model adds authenticated private endpoints and leaves existing operations unchanged."
+    },
+    "focusedRuntimeTests": "19 passed",
+    "postgresHandleSalesSuite": "4 passed",
+    "postgresRequiredSuite": "215 passed, 3 skipped; 25 completion markers verified",
+    "postgresNamespaceOwnershipSuite": "33 passed",
+    "unitSuite": "1887 passed, 286 skipped",
+    "workerdSuites": "84 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

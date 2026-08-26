@@ -10,12 +10,16 @@ import {
   type HandleSalesStore,
 } from "@pirate/application";
 import type {
+  CommunityHandleOfferingManagementItemV1,
   CommunityHandleOfferingV2,
   HandleClaimV2,
   HandleGrantPrivateV2,
   HandleQualificationPolicyRefV1,
   HandleQuoteV2,
   HandleReservationV2,
+  HandleSaleNamespaceCandidateV1,
+  HandleSaleNamespaceManagementItemV1,
+  HandleSalesManagementContextV1,
   PublicHandleGrantV3,
   PublicPersonaProfileV1,
   SaleNamespaceActivationV1,
@@ -137,7 +141,12 @@ const sha256 = (value: unknown): string =>
 
 const requestHash = (domain: string, value: unknown): string => sha256([domain, value]);
 
-type HandlePageOperation = "activations" | "offerings" | "persona_grants";
+type HandlePageOperation =
+  | "activations"
+  | "offerings"
+  | "management_activations"
+  | "management_offerings"
+  | "persona_grants";
 type HandlePageCursor = Readonly<{
   snapshotCutoff: string;
   sortTime: string;
@@ -401,6 +410,76 @@ const offeringFromRow = (row: Row): CommunityHandleOfferingV2 => {
   };
 };
 
+const saleNamespaceCandidateFromRow = (row: Row): HandleSaleNamespaceCandidateV1 => {
+  const canonicalRoot = text(row, "canonical_root");
+  const displayRoot = text(row, "display_root");
+  const authorityAvailable = boolean(row, "namespace_authority_current");
+  const dnsAvailable = boolean(row, "dns_zone_current");
+  const delegationCurrent = boolean(row, "dns_delegation_current");
+  if (!authorityAvailable) {
+    return {
+      kind: "unavailable_v1",
+      family: "hns",
+      canonical_root: canonicalRoot,
+      display_root: displayRoot,
+      reason: "namespace_authority_unavailable",
+    };
+  }
+  if (!dnsAvailable) {
+    return {
+      kind: "unavailable_v1",
+      family: "hns",
+      canonical_root: canonicalRoot,
+      display_root: displayRoot,
+      reason: "dns_zone_unavailable",
+    };
+  }
+  if (!delegationCurrent) {
+    return {
+      kind: "unavailable_v1",
+      family: "hns",
+      canonical_root: canonicalRoot,
+      display_root: displayRoot,
+      reason: "dns_delegation_required",
+    };
+  }
+  return {
+    kind: "ready_v1",
+    family: "hns",
+    canonical_root: canonicalRoot,
+    display_root: displayRoot,
+    namespace_authority_reference: text(row, "namespace_authority_reference"),
+    expected_namespace_authority_generation: integer(row, "namespace_authority_generation"),
+    dns_zone_activation_id: text(row, "dns_zone_activation_id"),
+    expected_dns_zone_activation_generation: integer(row, "dns_zone_activation_generation"),
+  };
+};
+
+const saleNamespaceManagementItemFromRow = (row: Row): HandleSaleNamespaceManagementItemV1 => {
+  const reason = nullableText(row, "ineffective_reason") as
+    | "activation_inactive"
+    | "community_inactive"
+    | "dns_or_gateway_unhealthy"
+    | "namespace_authority_lost"
+    | null;
+  return {
+    activation: activationFromRow(row),
+    effectiveness: reason === null ? { kind: "effective_v1" } : { kind: "ineffective_v1", reason },
+  };
+};
+
+const offeringManagementItemFromRow = (row: Row): CommunityHandleOfferingManagementItemV1 => {
+  const reason = nullableText(row, "ineffective_reason") as
+    | "community_inactive"
+    | "offering_inactive"
+    | "sale_namespace_inactive"
+    | null;
+  return {
+    offering: offeringFromRow(row),
+    effectiveness: reason === null ? { kind: "effective_v1" } : { kind: "ineffective_v1", reason },
+  };
+};
+
 const quoteFromRow = (row: Row): HandleQuoteV2 => ({
   quote_id: text(row, "quote_id"),
   quote_hash: text(row, "quote_hash"),
@@ -590,6 +669,26 @@ const currentDatabaseTime = (transaction: ControlPlaneTransaction) =>
     label: "handle-sales.database-clock.read",
     text: "SELECT clock_timestamp() AS database_now",
     values: [],
+    readonly: false,
+  });
+
+const currentHandleSalesAuthority = (
+  transaction: ControlPlaneTransaction,
+  communityId: string,
+  accountId: string,
+) =>
+  transaction.execute<Row>({
+    label: "handle-sales.management.authority.read",
+    text: `SELECT authority_grant.grant_id
+             FROM communities AS community
+             JOIN community_handle_sales_authority_grants AS authority_grant
+               ON authority_grant.community_id=community.community_id
+              AND authority_grant.principal_account_id=$2
+              AND authority_grant.authority='manage_handle_sales'
+              AND authority_grant.status='active'
+            WHERE community.community_id=$1
+            FOR SHARE OF authority_grant`,
+    values: [communityId, accountId],
     readonly: false,
   });
 
@@ -1892,6 +1991,394 @@ export function makeControlPlaneHandleSalesRepository() {
           catch: (error) =>
             error instanceof HandleSalesPageRejected ? error : storage("invalid-row"),
         });
+      }),
+    getManagementContext: (input: Parameters<HandleSalesStore["getManagementContext"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* mapped(
+          db.withTransaction((transaction) =>
+            Effect.gen(function* () {
+              const authority = yield* currentHandleSalesAuthority(
+                transaction,
+                input.communityId,
+                input.accountId,
+              );
+              if (authority.rows[0] === undefined) return null;
+              const observedAt = instant(
+                one((yield* currentDatabaseTime(transaction)).rows, "management database clock")
+                  .database_now,
+              );
+              const candidates = yield* transaction.execute<Row>({
+                label: "handle-sales.management.candidates.read",
+                text: `WITH known_authority AS (
+                         SELECT evidence.*
+                           FROM community_route_ownership_evidence AS evidence
+                           LEFT JOIN community_canonical_route_bindings AS binding
+                             ON binding.verified_evidence_ref=evidence.evidence_ref
+                           LEFT JOIN community_route_attachment_ceremony_attempts AS ceremony
+                             ON ceremony.ceremony_intent_id=evidence.route_attachment_ceremony_intent_id
+                           LEFT JOIN community_route_attachment_intents AS attachment
+                             ON attachment.attachment_intent_id=ceremony.attachment_intent_id
+                          WHERE evidence.family='hns'
+                            AND (
+                              binding.community_id=$1
+                              OR (evidence.origin='route_attachment' AND attachment.community_id=$1)
+                            )
+                       ), ranked_authority AS (
+                         SELECT known_authority.*,
+                                row_number() OVER (
+                                  PARTITION BY root_label
+                                  ORDER BY
+                                    (expires_at IS NOT NULL AND expires_at > $2::timestamptz) DESC,
+                                    binding_generation DESC,
+                                    verified_at DESC,
+                                    evidence_ref COLLATE "C" DESC
+                                ) AS authority_rank
+                           FROM known_authority
+                       )
+                       SELECT authority.root_label AS canonical_root,
+                              authority.root_label_display AS display_root,
+                              authority.evidence_ref AS namespace_authority_reference,
+                              authority.binding_generation AS namespace_authority_generation,
+                              dns.dns_zone_activation_id,
+                              dns.dns_zone_activation_generation,
+                              COALESCE(dependency.namespace_authority_current,FALSE)
+                                AS namespace_authority_current,
+                              COALESCE(dependency.dns_zone_current,FALSE) AS dns_zone_current,
+                              COALESCE(dependency.dns_delegation_current,FALSE)
+                                AS dns_delegation_current
+                         FROM ranked_authority AS authority
+                         LEFT JOIN LATERAL (
+                           SELECT current_dns.dns_zone_activation_id,
+                                  current_dns.current_generation
+                                    AS dns_zone_activation_generation
+                             FROM hns_dns_zone_activation_current AS current_dns
+                            WHERE current_dns.canonical_root=authority.root_label
+                            ORDER BY current_dns.updated_at DESC,
+                                     current_dns.dns_zone_activation_id COLLATE "C" DESC
+                            LIMIT 1
+                         ) AS dns ON TRUE
+                         LEFT JOIN LATERAL current_hns_sale_namespace_dependency_v1(
+                           $1,
+                           authority.evidence_ref,
+                           authority.binding_generation,
+                           dns.dns_zone_activation_id,
+                           dns.dns_zone_activation_generation,
+                           $2::timestamptz
+                         ) AS dependency ON TRUE
+                        WHERE authority.authority_rank=1
+                        ORDER BY authority.root_label COLLATE "C"`,
+                values: [input.communityId, observedAt],
+                readonly: false,
+              });
+              const preset = yield* transaction.execute<Row>({
+                label: "handle-sales.management.preset.read",
+                text: `SELECT reserved.reserved_labels_id,
+                              reserved.reserved_labels_revision,
+                              policy.policy_id AS broad_qualification_policy_id,
+                              policy.policy_revision AS broad_qualification_policy_revision,
+                              directory.binding_version AS account_directory_binding_version,
+                              pricing.pricing_id,
+                              pricing.pricing_revision,
+                              driver.driver_id AS issuance_driver_id,
+                              driver.driver_version AS issuance_driver_version
+                         FROM LATERAL (
+                           SELECT * FROM handle_reserved_label_revisions
+                            WHERE family='hns' AND status='active'
+                            ORDER BY created_at DESC,reserved_labels_revision DESC,
+                                     reserved_labels_id COLLATE "C" DESC
+                            LIMIT 1
+                         ) AS reserved
+                         CROSS JOIN LATERAL (
+                           SELECT * FROM handle_qualification_policy_revisions
+                            WHERE policy_kind='none_v1' AND community_id IS NULL
+                              AND status='active'
+                            ORDER BY created_at DESC,policy_revision DESC,
+                                     policy_id COLLATE "C" DESC
+                            LIMIT 1
+                         ) AS policy
+                         CROSS JOIN LATERAL (
+                           SELECT * FROM handle_account_directory_bindings
+                            WHERE binding_kind='account_directory_v1' AND status='active'
+                            ORDER BY created_at DESC,binding_version COLLATE "C" DESC
+                            LIMIT 1
+                         ) AS directory
+                         CROSS JOIN LATERAL (
+                           SELECT * FROM handle_pricing_revisions
+                            WHERE pricing_kind='free_v1' AND atomic_amount=0 AND status='active'
+                            ORDER BY created_at DESC,pricing_revision DESC,
+                                     pricing_id COLLATE "C" DESC
+                            LIMIT 1
+                         ) AS pricing
+                         CROSS JOIN LATERAL (
+                           SELECT * FROM handle_issuance_driver_revisions
+                            WHERE family='hns' AND fulfillment_kind='hosted_persona_v1'
+                              AND status='enabled'
+                            ORDER BY created_at DESC,driver_version COLLATE "C" DESC,
+                                     driver_id COLLATE "C" DESC
+                            LIMIT 1
+                         ) AS driver`,
+                values: [],
+                readonly: false,
+              });
+              return yield* Effect.try({
+                try: (): HandleSalesManagementContextV1 => {
+                  const presetRow = one(preset.rows, "handle offering authoring preset");
+                  return {
+                    community_id: input.communityId,
+                    sale_namespace_candidates: candidates.rows.map(saleNamespaceCandidateFromRow),
+                    offering_authoring_preset: {
+                      kind: "hns_hosted_persona_free_v1",
+                      reserved_labels_id: text(presetRow, "reserved_labels_id"),
+                      expected_reserved_labels_revision: integer(
+                        presetRow,
+                        "reserved_labels_revision",
+                      ),
+                      broad_qualification_policy_id: text(
+                        presetRow,
+                        "broad_qualification_policy_id",
+                      ),
+                      expected_broad_qualification_policy_revision: integer(
+                        presetRow,
+                        "broad_qualification_policy_revision",
+                      ),
+                      expected_account_directory_binding_version: text(
+                        presetRow,
+                        "account_directory_binding_version",
+                      ),
+                      pricing_id: text(presetRow, "pricing_id"),
+                      expected_pricing_revision: integer(presetRow, "pricing_revision"),
+                      issuance_driver_id: text(presetRow, "issuance_driver_id"),
+                      expected_issuance_driver_version: text(presetRow, "issuance_driver_version"),
+                      quote_ttl_seconds: 120,
+                      reservation_ttl_seconds: 300,
+                    },
+                    observed_at: observedAt,
+                  };
+                },
+                catch: () => storage("invalid-row"),
+              });
+            }),
+          ),
+        );
+      }),
+    listManagementSaleNamespaces: (
+      input: Parameters<HandleSalesStore["listManagementSaleNamespaces"]>[0],
+    ) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* mapped(
+          db.withTransaction((transaction) =>
+            Effect.gen(function* () {
+              const authority = yield* currentHandleSalesAuthority(
+                transaction,
+                input.communityId,
+                input.accountId,
+              );
+              if (authority.rows[0] === undefined) return null;
+              const paging = yield* Effect.try({
+                try: () => ({
+                  limit: pageLimit(input.limit),
+                  cursor: decodePageCursor(
+                    input.cursor,
+                    "management_activations",
+                    input.communityId,
+                  ),
+                }),
+                catch: (error) =>
+                  error instanceof HandleSalesPageRejected ? error : pageRejected("invalid_cursor"),
+              });
+              const cutoff =
+                paging.cursor?.snapshotCutoff ??
+                instant(
+                  one((yield* currentDatabaseTime(transaction)).rows, "management activation clock")
+                    .database_now,
+                );
+              const result = yield* transaction.execute<Row>({
+                label: "handle-sales.management.activations.read",
+                text: `WITH latest AS (
+                         SELECT DISTINCT ON (revision.sale_namespace_activation_id COLLATE "C")
+                                revision.*
+                           FROM community_handle_sale_namespace_activation_revisions AS revision
+                          WHERE revision.community_id=$1
+                            AND revision.recorded_at <= $2::timestamptz
+                          ORDER BY revision.sale_namespace_activation_id COLLATE "C",
+                                   revision.sale_namespace_activation_generation DESC
+                       )
+                       SELECT latest.*,
+                              CASE
+                                WHEN community.status <> 'active' THEN 'community_inactive'
+                                WHEN latest.status <> 'active' THEN 'activation_inactive'
+                                WHEN dependency.canonical_root IS NULL
+                                  OR dependency.namespace_authority_current IS DISTINCT FROM TRUE
+                                  THEN 'namespace_authority_lost'
+                                WHEN dependency.dns_zone_current IS DISTINCT FROM TRUE
+                                  OR dependency.dns_delegation_current IS DISTINCT FROM TRUE
+                                  THEN 'dns_or_gateway_unhealthy'
+                                ELSE NULL
+                              END AS ineffective_reason
+                         FROM latest
+                         JOIN communities AS community ON community.community_id=latest.community_id
+                         LEFT JOIN LATERAL current_hns_sale_namespace_dependency_v1(
+                           latest.community_id,
+                           latest.namespace_authority_reference,
+                           latest.namespace_authority_generation,
+                           latest.dns_zone_activation_id,
+                           latest.dns_zone_activation_generation,
+                           $2::timestamptz
+                         ) AS dependency ON TRUE
+                        WHERE (
+                          $3::timestamptz IS NULL
+                          OR (latest.created_at,latest.sale_namespace_activation_id COLLATE "C")
+                             < ($3::timestamptz,$4::text COLLATE "C")
+                        )
+                        ORDER BY latest.created_at DESC,
+                                 latest.sale_namespace_activation_id COLLATE "C" DESC
+                        LIMIT $5`,
+                values: [
+                  input.communityId,
+                  cutoff,
+                  paging.cursor?.sortTime ?? null,
+                  paging.cursor?.sortId ?? null,
+                  paging.limit + 1,
+                ],
+                readonly: false,
+              });
+              return yield* Effect.try({
+                try: () => {
+                  const selectedRows = result.rows.slice(0, paging.limit);
+                  const last = selectedRows[selectedRows.length - 1];
+                  return {
+                    items: selectedRows.map(saleNamespaceManagementItemFromRow),
+                    next_cursor:
+                      result.rows.length > paging.limit && last !== undefined
+                        ? encodePageCursor("management_activations", input.communityId, {
+                            snapshotCutoff: cutoff,
+                            sortTime: instant(last.created_at),
+                            sortId: text(last, "sale_namespace_activation_id"),
+                          })
+                        : null,
+                  };
+                },
+                catch: (error) =>
+                  error instanceof HandleSalesPageRejected ? error : storage("invalid-row"),
+              });
+            }),
+          ),
+        );
+      }),
+    listManagementOfferings: (input: Parameters<HandleSalesStore["listManagementOfferings"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* mapped(
+          db.withTransaction((transaction) =>
+            Effect.gen(function* () {
+              const authority = yield* currentHandleSalesAuthority(
+                transaction,
+                input.communityId,
+                input.accountId,
+              );
+              if (authority.rows[0] === undefined) return null;
+              const paging = yield* Effect.try({
+                try: () => ({
+                  limit: pageLimit(input.limit),
+                  cursor: decodePageCursor(input.cursor, "management_offerings", input.communityId),
+                }),
+                catch: (error) =>
+                  error instanceof HandleSalesPageRejected ? error : pageRejected("invalid_cursor"),
+              });
+              const cutoff =
+                paging.cursor?.snapshotCutoff ??
+                instant(
+                  one((yield* currentDatabaseTime(transaction)).rows, "management offering clock")
+                    .database_now,
+                );
+              const result = yield* transaction.execute<Row>({
+                label: "handle-sales.management.offerings.read",
+                text: `WITH latest_offering AS (
+                         SELECT DISTINCT ON (revision.offering_id COLLATE "C") revision.*
+                           FROM community_handle_offering_revisions AS revision
+                          WHERE revision.community_id=$1
+                            AND revision.recorded_at <= $2::timestamptz
+                          ORDER BY revision.offering_id COLLATE "C",revision.offering_revision DESC
+                       ), latest_activation AS (
+                         SELECT DISTINCT ON (revision.sale_namespace_activation_id COLLATE "C") revision.*
+                           FROM community_handle_sale_namespace_activation_revisions AS revision
+                          WHERE revision.community_id=$1
+                            AND revision.recorded_at <= $2::timestamptz
+                          ORDER BY revision.sale_namespace_activation_id COLLATE "C",
+                                   revision.sale_namespace_activation_generation DESC
+                       )
+                       SELECT offering.*,
+                              policy.policy_kind,
+                              policy.subject_account_id,
+                              CASE
+                                WHEN community.status <> 'active' THEN 'community_inactive'
+                                WHEN offering.status <> 'active' THEN 'offering_inactive'
+                                WHEN activation.sale_namespace_activation_id IS NULL
+                                  OR activation.status <> 'active'
+                                  OR activation.sale_namespace_activation_generation
+                                     <> offering.sale_namespace_activation_generation
+                                  OR dependency.namespace_authority_current IS DISTINCT FROM TRUE
+                                  OR dependency.dns_zone_current IS DISTINCT FROM TRUE
+                                  OR dependency.dns_delegation_current IS DISTINCT FROM TRUE
+                                  THEN 'sale_namespace_inactive'
+                                ELSE NULL
+                              END AS ineffective_reason
+                         FROM latest_offering AS offering
+                         JOIN communities AS community ON community.community_id=offering.community_id
+                         JOIN handle_qualification_policy_revisions AS policy
+                           ON policy.policy_id=offering.qualification_policy_id
+                          AND policy.policy_revision=offering.qualification_policy_revision
+                         LEFT JOIN latest_activation AS activation
+                           ON activation.sale_namespace_activation_id
+                              =offering.sale_namespace_activation_id
+                         LEFT JOIN LATERAL current_hns_sale_namespace_dependency_v1(
+                           activation.community_id,
+                           activation.namespace_authority_reference,
+                           activation.namespace_authority_generation,
+                           activation.dns_zone_activation_id,
+                           activation.dns_zone_activation_generation,
+                           $2::timestamptz
+                         ) AS dependency ON TRUE
+                        WHERE (
+                          $3::timestamptz IS NULL
+                          OR (offering.created_at,offering.offering_id COLLATE "C")
+                             < ($3::timestamptz,$4::text COLLATE "C")
+                        )
+                        ORDER BY offering.created_at DESC,offering.offering_id COLLATE "C" DESC
+                        LIMIT $5`,
+                values: [
+                  input.communityId,
+                  cutoff,
+                  paging.cursor?.sortTime ?? null,
+                  paging.cursor?.sortId ?? null,
+                  paging.limit + 1,
+                ],
+                readonly: false,
+              });
+              return yield* Effect.try({
+                try: () => {
+                  const selectedRows = result.rows.slice(0, paging.limit);
+                  const last = selectedRows[selectedRows.length - 1];
+                  return {
+                    items: selectedRows.map(offeringManagementItemFromRow),
+                    next_cursor:
+                      result.rows.length > paging.limit && last !== undefined
+                        ? encodePageCursor("management_offerings", input.communityId, {
+                            snapshotCutoff: cutoff,
+                            sortTime: instant(last.created_at),
+                            sortId: text(last, "offering_id"),
+                          })
+                        : null,
+                  };
+                },
+                catch: (error) =>
+                  error instanceof HandleSalesPageRejected ? error : storage("invalid-row"),
+              });
+            }),
+          ),
+        );
       }),
     confirmPersonaReuse: (input: Parameters<HandleSalesStore["confirmPersonaReuse"]>[0]) =>
       Effect.gen(function* () {
@@ -3239,6 +3726,13 @@ export function makeControlPlaneHandleSalesStore(
       provide(repository.reviseOffering(input)),
     listOfferings: (input: Parameters<HandleSalesStore["listOfferings"]>[0]) =>
       provide(repository.listOfferings(input)),
+    getManagementContext: (input: Parameters<HandleSalesStore["getManagementContext"]>[0]) =>
+      provide(repository.getManagementContext(input)),
+    listManagementSaleNamespaces: (
+      input: Parameters<HandleSalesStore["listManagementSaleNamespaces"]>[0],
+    ) => provide(repository.listManagementSaleNamespaces(input)),
+    listManagementOfferings: (input: Parameters<HandleSalesStore["listManagementOfferings"]>[0]) =>
+      provide(repository.listManagementOfferings(input)),
     confirmPersonaReuse: (input: Parameters<HandleSalesStore["confirmPersonaReuse"]>[0]) =>
       provide(repository.confirmPersonaReuse(input)),
     createQuote: (input: Parameters<HandleSalesStore["createQuote"]>[0]) =>

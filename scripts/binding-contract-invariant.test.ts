@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as BunRuntime from "bun";
 import type { HttpWorkerBindings } from "../apps/http-worker/src/composition.ts";
 import type { JobsWorkerEnv } from "../apps/jobs-worker/src/index.ts";
+import type { MediaProcessorRuntimeEnv } from "../apps/media-processor-worker/src/composition.ts";
 import type { AlertSinkBindings } from "../packages/platform-cf/src/alert-config.ts";
 import type { RegistrationRateLimiterEnvironment } from "../packages/platform-cf/src/registration-rate-limiter-do.ts";
 
@@ -85,6 +86,13 @@ const HTTP_BINDING_KINDS = {
   MEGAPOT_V2_RPC_URL: "secret",
   MEGAPOT_ATTESTATION_ID: "var",
   MEGAPOT_REQUIRED_CONFIRMATIONS: "var",
+  MEDIA_UPLOADS_ENABLED: "var",
+  MEDIA_INGRESS_R2_ACCOUNT_ID: "var",
+  MEDIA_INGRESS_R2_BUCKET_NAME: "var",
+  MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID: "secret",
+  MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY: "secret",
+  MEDIA_INGRESS: "platform",
+  MEDIA_IMMUTABLE_ORIGINALS: "platform",
 } as const satisfies BindingManifest<HttpWorkerBindings>;
 
 const ALERT_BINDING_KINDS = {
@@ -127,7 +135,27 @@ const JOBS_BINDING_KINDS = {
   HNS_OWNERSHIP_CONFIGURATION_VERSION: "var",
   HNS_REVALIDATION_FORCE_ROUTE_BINDING_ID: "var",
   HNS_REVALIDATION_FORCE_EXPECTED_GENERATION: "var",
+  MEDIA_PROCESSING_ENABLED: "var",
+  MEDIA_PROCESSING_QUEUE: "platform",
+  MEDIA_PROCESSING_WORKFLOW: "platform",
 } as const satisfies BindingManifest<JobsWorkerEnv>;
+
+const MEDIA_BINDING_KINDS = {
+  CONTROL_PLANE: "platform",
+  MEDIA_PROCESSING_ENABLED: "var",
+  MEDIA_PROCESSING_WORKFLOW: "platform",
+  MEDIA_IMMUTABLE_ORIGINALS: "platform",
+  MEDIA_DERIVED_ARTIFACTS: "platform",
+  TRANSLOADIT_AUTH_KEY: "secret",
+  TRANSLOADIT_AUTH_SECRET: "secret",
+  TRANSLOADIT_PROBE_TEMPLATE_ID: "var",
+  TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID: "var",
+  TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID: "var",
+  ACRCLOUD_IDENTIFY_HOST: "var",
+  ACRCLOUD_ACCESS_KEY: "secret",
+  ACRCLOUD_ACCESS_SECRET: "secret",
+  ELEVENLABS_API_KEY: "secret",
+} as const satisfies BindingManifest<MediaProcessorRuntimeEnv>;
 
 const REGISTRATION_BINDING_KINDS = {
   REGISTRATION_IP_LIMIT: "var",
@@ -141,13 +169,14 @@ const HTTP_CONFIG_BINDING_KINDS = {
   ...REGISTRATION_BINDING_KINDS,
 } as const;
 
-type WorkerName = "http" | "jobs";
+type WorkerName = "http" | "jobs" | "media";
 type EnvironmentName = "development" | "staging" | "production";
 
 const ENVIRONMENTS: readonly EnvironmentName[] = ["development", "staging", "production"];
 
 const HTTP_CONFIG_PATH = new URL("../apps/http-worker/wrangler.jsonc", import.meta.url);
 const JOBS_CONFIG_PATH = new URL("../apps/jobs-worker/wrangler.jsonc", import.meta.url);
+const MEDIA_CONFIG_PATH = new URL("../apps/media-processor-worker/wrangler.jsonc", import.meta.url);
 
 interface RawWranglerEnvironment {
   readonly vars?: Record<string, unknown>;
@@ -169,10 +198,15 @@ const parseWranglerConfig = async (path: URL): Promise<RawWranglerConfig> =>
 const configs: Readonly<Record<WorkerName, RawWranglerConfig>> = {
   http: await parseWranglerConfig(HTTP_CONFIG_PATH),
   jobs: await parseWranglerConfig(JOBS_CONFIG_PATH),
+  media: await parseWranglerConfig(MEDIA_CONFIG_PATH),
 };
 
 const manifestFor = (worker: WorkerName): Readonly<Record<string, BindingKind>> =>
-  worker === "http" ? HTTP_CONFIG_BINDING_KINDS : JOBS_BINDING_KINDS;
+  worker === "http"
+    ? HTTP_CONFIG_BINDING_KINDS
+    : worker === "jobs"
+      ? JOBS_BINDING_KINDS
+      : MEDIA_BINDING_KINDS;
 
 const declaredEnvironment = (
   config: RawWranglerConfig,
@@ -326,6 +360,18 @@ const JOBS_PRODUCTION_ALERT_REQUIRED = [
   "API_NEXT_ALERT_WEBHOOK_TOKEN",
 ] as const;
 
+const MEDIA_ENABLED_REQUIRED = [
+  "TRANSLOADIT_AUTH_KEY",
+  "TRANSLOADIT_AUTH_SECRET",
+  "TRANSLOADIT_PROBE_TEMPLATE_ID",
+  "TRANSLOADIT_SAMPLE_PRIMARY_TEMPLATE_ID",
+  "TRANSLOADIT_SAMPLE_ALTERNATE_TEMPLATE_ID",
+  "ACRCLOUD_IDENTIFY_HOST",
+  "ACRCLOUD_ACCESS_KEY",
+  "ACRCLOUD_ACCESS_SECRET",
+  "ELEVENLABS_API_KEY",
+] as const;
+
 const LEGACY_JUNK_NAMES = [
   "AUTH_UPSTREAM_JWT_AUDIENCE",
   "AUTH_UPSTREAM_JWT_ISSUER",
@@ -346,6 +392,11 @@ const requiredNamesFor = (
   worker: WorkerName,
   environment: DeclaredEnvironment,
 ): readonly string[] => {
+  if (worker === "media") {
+    return environment.vars.MEDIA_PROCESSING_ENABLED === "true"
+      ? ["MEDIA_PROCESSING_ENABLED", ...MEDIA_ENABLED_REQUIRED]
+      : ["MEDIA_PROCESSING_ENABLED"];
+  }
   if (worker === "jobs") {
     const apiEnvironment = environment.vars.API_NEXT_ENV;
     const required: string[] = [...JOBS_ALWAYS_REQUIRED];
@@ -379,7 +430,7 @@ const requiredNamesFor = (
 const auditDeclaredBindings = (): readonly string[] => {
   const violations: string[] = [];
 
-  for (const worker of ["http", "jobs"] as const) {
+  for (const worker of ["http", "jobs", "media"] as const) {
     const manifest = manifestFor(worker);
     for (const environmentName of ENVIRONMENTS) {
       const environment = declaredEnvironment(configs[worker], environmentName);
@@ -419,7 +470,7 @@ const auditDeclaredBindings = (): readonly string[] => {
 const auditRequiredBindings = (): readonly string[] => {
   const violations: string[] = [];
 
-  for (const worker of ["http", "jobs"] as const) {
+  for (const worker of ["http", "jobs", "media"] as const) {
     const manifest = manifestFor(worker);
     for (const environmentName of ENVIRONMENTS) {
       const environment = declaredEnvironment(configs[worker], environmentName);
@@ -469,6 +520,7 @@ describe("source-to-Wrangler binding contract", () => {
   test("source interfaces are fully classified", () => {
     expect(Object.keys(HTTP_BINDING_KINDS).length).toBeGreaterThan(0);
     expect(Object.keys(JOBS_BINDING_KINDS).length).toBeGreaterThan(0);
+    expect(Object.keys(MEDIA_BINDING_KINDS).length).toBeGreaterThan(0);
     expect(Object.keys(ALERT_BINDING_KINDS).length).toBeGreaterThan(0);
     expect(Object.keys(REGISTRATION_BINDING_KINDS).length).toBeGreaterThan(0);
   });

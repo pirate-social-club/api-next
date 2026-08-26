@@ -303,9 +303,11 @@ adapters remain disabled and runtime composition is absent.
 | `TRANSLOADIT_AUTH_SECRET` | Transloadit assembly signing secret |
 | `ACRCLOUD_ACCESS_KEY` | ACRCloud identification access key |
 | `ACRCLOUD_ACCESS_SECRET` | ACRCloud identification signing secret |
-| `ELEVENLABS_API_KEY` | Shared platform-funded ASR and forced-alignment key |
+| `ELEVENLABS_API_KEY` | Platform-funded forced-alignment key; v1 has no ASR |
 | `FILEBASE_IPFS_TOKEN` | Filebase bucket-scoped IPFS bearer token |
 | `MEDIA_CLASSIFIER_API_KEY` | Provider-neutral media-classifier credential |
+| `MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID` | Ingress-bucket-only R2 S3 access-key identifier |
+| `MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY` | Ingress-bucket-only R2 S3 signing secret |
 
 Initial provisioning uses the deliberately invalid `PENDING` sentinel for
 each name. A stored name therefore records only the reviewed custody handoff;
@@ -313,10 +315,12 @@ it is not evidence of a usable provider credential or enabled integration.
 Replacing a sentinel, validating provider-specific shape, and enabling an
 adapter remain separate reviewed actions.
 
-No current Worker receives these names. Future synchronization must select
+No current Worker receives these names. The two ingress names remain invalid
+`PENDING` sentinels and are absent from every checked-in Worker secret
+declaration while media is disabled. Future synchronization must select
 only the names consumed by the exact Worker whose reviewed composition enables
 that adapter; blanket synchronization of `/services/api-next` is forbidden.
-The HTTP and jobs Workers must not receive any of the seven names. The shared
+The HTTP and jobs Workers must not receive the provider-runtime names. The shared
 ElevenLabs name may be synchronized to each exact ASR or alignment consumer
 only when that consumer is enabled. The Filebase and classifier names likewise
 follow their owning role rather than a provider-named Worker. Any such change
