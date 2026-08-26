@@ -8,6 +8,7 @@ import {
   SongRewardOfferStorageFailed,
   type SongRewardOfferStore,
 } from "@pirate/application";
+import { VERY_WEB_ISSUER, VERY_WEB_METHOD, VERY_WEB_RP_SCOPE } from "@pirate/domain";
 import { Effect, type Layer } from "effect";
 
 type Row = Readonly<Record<string, unknown>>;
@@ -241,14 +242,60 @@ export function makeControlPlaneSongRewardOfferRepository() {
               readonly: false,
             });
             if (authority.rows.length !== 1) return yield* rejected("song-unavailable");
+            const rewardPolicyVersionId = `reward_policy_${input.offerId}`;
+            const rewardPolicyKey = `song_reward_offer:${input.offerId}`;
+            yield* transaction.execute({
+              label: "song-reward-offer.open.uniqueness-authority",
+              text: `INSERT INTO reward_uniqueness_authorities (
+                       campaign_id,issuer,method,scope_kind,issuer_rp_scope,created_at
+                     ) VALUES ($1,$2,$3,'issuer_rp_scope',$4,$5::timestamptz)`,
+              values: [
+                input.offerId,
+                VERY_WEB_ISSUER,
+                VERY_WEB_METHOD,
+                VERY_WEB_RP_SCOPE,
+                input.createdAt,
+              ],
+              readonly: false,
+            });
+            yield* transaction.execute({
+              label: "song-reward-offer.open.reward-policy",
+              text: `INSERT INTO policy_versions (
+                       policy_version_id,community_id,policy_key,revision,policy_hash,
+                       policy,compiled_plan,compiler_version,uniqueness_model,
+                       created_by_user_id,published_at,policy_purpose,uniqueness_authority_id
+                     ) VALUES (
+                       $1,$2,$3,1,$4,$5::jsonb,$6::jsonb,'scarce_reward_policy_v1',
+                       $7::jsonb,$8,$9::timestamptz,'reward',$10
+                     )`,
+              values: [
+                rewardPolicyVersionId,
+                input.communityId,
+                rewardPolicyKey,
+                input.rewardPolicyHash,
+                JSON.stringify(input.rewardPolicy),
+                JSON.stringify({
+                  evaluator: "scarce_reward_eligibility_v1",
+                  provider: "very.web",
+                  evidence_scope: "issuer_rp_scope",
+                  legal_eligibility: "test_staging_empty_v1",
+                }),
+                JSON.stringify({ kind: "single_authority", authority_id: input.offerId }),
+                input.accountId,
+                input.createdAt,
+                input.offerId,
+              ],
+              readonly: false,
+            });
             yield* transaction.execute({
               label: "song-reward-offer.open.create",
               text: `INSERT INTO song_reward_offers (
                        offer_id,community_id,post_id,audio_revision,created_by_account_id,status,
-                       starts_at,ends_at,owner_policy_snapshot,terms_hash,created_at,updated_at
+                       starts_at,ends_at,owner_policy_snapshot,terms_hash,reward_policy_version_id,
+                       created_at,updated_at
                      ) VALUES ($1,$2,$3,$4,$5,'draft',$6,$7,
                        '{"third_party_legs":"allowed","source":"platform_default_v1"}'::jsonb,
-                       $8,$9,$9)`,
+                       $8,$9,$10,$10)`,
               values: [
                 input.offerId,
                 input.communityId,
@@ -258,6 +305,7 @@ export function makeControlPlaneSongRewardOfferRepository() {
                 input.startsAt,
                 input.endsAt,
                 input.termsHash,
+                rewardPolicyVersionId,
                 input.createdAt,
               ],
               readonly: false,

@@ -185,6 +185,7 @@ async function seedActivePoolLeg(
 ): Promise<Readonly<{ legId: string; offerId: string }>> {
   const offerId = `offer-${input.suffix}`;
   const legId = `leg-${input.suffix}`;
+  const rewardPolicyVersionId = `reward-policy-${input.suffix}`;
   await admin.query(
     `INSERT INTO reward_activity_availability_observations (
        availability_observation_id, community_id, post_id, audio_revision,
@@ -196,12 +197,44 @@ async function seedActivePoolLeg(
     [`availability-${input.suffix}`, identity.communityId, identity.postId, hash("b")],
   );
   await admin.query(
+    `INSERT INTO reward_uniqueness_authorities (
+       campaign_id, issuer, method, scope_kind, issuer_rp_scope
+     ) VALUES ($1, 'https://verify.very.org', 'palm_web', 'issuer_rp_scope', 'pirate-social')`,
+    [offerId],
+  );
+  await admin.query(
+    `INSERT INTO policy_versions (
+       policy_version_id, community_id, policy_key, revision, policy_hash,
+       policy, compiled_plan, compiler_version, uniqueness_model,
+       created_by_user_id, published_at, policy_purpose, uniqueness_authority_id
+     ) VALUES ($1,$2,$3,1,$4,'{"version":"scarce_reward_v1"}'::jsonb,
+       '{"evaluator":"scarce_reward_eligibility_v1"}'::jsonb,
+       'scarce_reward_policy_v1',$5::jsonb,$6,clock_timestamp(),'reward',$7)`,
+    [
+      rewardPolicyVersionId,
+      identity.communityId,
+      `song_reward_offer:${offerId}`,
+      hash("e"),
+      JSON.stringify({ kind: "single_authority", authority_id: offerId }),
+      identity.accountId,
+      offerId,
+    ],
+  );
+  await admin.query(
     `INSERT INTO song_reward_offers (
        offer_id, community_id, post_id, audio_revision, created_by_account_id,
-       status, starts_at, ends_at, owner_policy_snapshot, terms_hash
+       status, starts_at, ends_at, owner_policy_snapshot, terms_hash,
+       reward_policy_version_id
      ) VALUES ($1, $2, $3, 3, $4, 'draft', clock_timestamp() - interval '1 day',
-       clock_timestamp() + interval '10 days', '{"third_party_legs":"allowed"}'::jsonb, $5)`,
-    [offerId, identity.communityId, identity.postId, identity.accountId, hash("c")],
+       clock_timestamp() + interval '10 days', '{"third_party_legs":"allowed"}'::jsonb, $5, $6)`,
+    [
+      offerId,
+      identity.communityId,
+      identity.postId,
+      identity.accountId,
+      hash("c"),
+      rewardPolicyVersionId,
+    ],
   );
   await admin.query(
     `UPDATE song_reward_offers
@@ -283,6 +316,23 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         idempotencyKey: "open-command-1",
         requestHash: hash("5"),
         termsHash: hash("6"),
+        rewardPolicy: {
+          version: "scarce_reward_v1",
+          community_id: identity.communityId,
+          offer_id: "reward-offer-command",
+          requirements: ["human.personhood", "credential.subject_unique"],
+          uniqueness: {
+            kind: "single_authority",
+            authority_id: "reward-offer-command",
+          },
+          legal_eligibility: {
+            age: null,
+            geography: null,
+            disclosure: null,
+            environment: "test_staging_empty_v1",
+          },
+        },
+        rewardPolicyHash: hash("a"),
         startsAt: new Date().toISOString(),
         endsAt: new Date(Date.now() + 86_400_000).toISOString(),
         createdAt: new Date().toISOString(),
@@ -342,7 +392,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
            address,status,reservation_idempotency_key,assigned_at,created_at,updated_at
          ) VALUES (
            'wallet-offer-command',$1,$2,'evm',7,$3,'active','wallet-offer-command',
-           clock_timestamp(),clock_timestamp(),clock_timestamp()
+           statement_timestamp(),statement_timestamp(),statement_timestamp()
          )`,
         [identity.personaId, identity.accountId, address("d")],
       );
@@ -1078,7 +1128,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       );
       const allocationCoordinator = makeMegapotAllocationCoordinator({
         store: allocationStore,
-        now: () => Date.parse("2026-08-26T00:00:00.000Z"),
+        now: () => Date.now(),
       });
       const allocation = await Effect.runPromise(
         allocationCoordinator.allocate({ poolLegId: legId, drawingId: 101n }),

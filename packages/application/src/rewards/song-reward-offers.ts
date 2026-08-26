@@ -57,6 +57,20 @@ export type MegapotPoolLeg = Readonly<{
   legTermsHash: string;
 }>;
 
+export type ScarceRewardPolicyV1 = Readonly<{
+  version: "scarce_reward_v1";
+  community_id: string;
+  offer_id: string;
+  requirements: readonly ["human.personhood", "credential.subject_unique"];
+  uniqueness: Readonly<{ kind: "single_authority"; authority_id: string }>;
+  legal_eligibility: Readonly<{
+    age: null;
+    geography: null;
+    disclosure: null;
+    environment: "test_staging_empty_v1";
+  }>;
+}>;
+
 export interface SongRewardOfferStore {
   readonly openOffer: (input: {
     readonly actionId: string;
@@ -68,6 +82,8 @@ export interface SongRewardOfferStore {
     readonly idempotencyKey: string;
     readonly requestHash: string;
     readonly termsHash: string;
+    readonly rewardPolicy: ScarceRewardPolicyV1;
+    readonly rewardPolicyHash: string;
     readonly startsAt: string;
     readonly endsAt: string;
     readonly createdAt: string;
@@ -222,11 +238,27 @@ export function makeSongRewardOfferService(input: {
       nextId("reward_offer"),
       Clock,
     ]);
+    const rewardPolicy = {
+      version: "scarce_reward_v1",
+      community_id: request.communityId,
+      offer_id: offerId,
+      requirements: ["human.personhood", "credential.subject_unique"],
+      uniqueness: { kind: "single_authority", authority_id: offerId },
+      legal_eligibility: {
+        age: null,
+        geography: null,
+        disclosure: null,
+        environment: "test_staging_empty_v1",
+      },
+    } as const satisfies ScarceRewardPolicyV1;
+    const rewardPolicyHash = yield* hash(rewardPolicy);
     const createdAt = new Date(yield* clock.now).toISOString();
     return yield* input.store.openOffer({
       ...request,
       requestHash,
       termsHash,
+      rewardPolicy,
+      rewardPolicyHash,
       actionId,
       offerId,
       createdAt,

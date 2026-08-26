@@ -332,8 +332,8 @@ function creditIn(
       text: `INSERT INTO megapot_allocation_batches (
                allocation_batch_id, pool_leg_id, drawing_id, snapshot_id,
                claim_effect_id, algorithm_version, net_winnings_atomic,
-               allocation_count, allocation_hash, state
-             ) VALUES ($1,$2,$3,$4,$5,'equal_v1',$6,$7,$8,'prepared')`,
+               allocation_count, allocation_hash, state, created_at
+             ) VALUES ($1,$2,$3,$4,$5,'equal_v1',$6,$7,$8,'prepared',$9)`,
       values: [
         input.allocationBatchId,
         locked.poolLegId,
@@ -343,6 +343,7 @@ function creditIn(
         locked.netWinningsAtomic.toString(),
         input.allocations.length,
         input.allocationHash,
+        input.creditedAt,
       ],
       readonly: false,
     });

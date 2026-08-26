@@ -148,6 +148,22 @@ describe("song reward offer application service", () => {
     expect(opened.offer.offerId).toBe(offer.offerId);
     expect(added.funding.intent).toEqual(fundingIntent);
     expect(openCalls).toHaveLength(1);
+    expect(openCalls[0]).toMatchObject({
+      rewardPolicy: {
+        version: "scarce_reward_v1",
+        community_id: "community_1",
+        offer_id: "reward_offer_offer-open",
+        requirements: ["human.personhood", "credential.subject_unique"],
+        uniqueness: { kind: "single_authority", authority_id: "reward_offer_offer-open" },
+        legal_eligibility: {
+          age: null,
+          geography: null,
+          disclosure: null,
+          environment: "test_staging_empty_v1",
+        },
+      },
+      rewardPolicyHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
     expect(legCalls).toHaveLength(1);
     expect(fundingCalls).toEqual([
       {
