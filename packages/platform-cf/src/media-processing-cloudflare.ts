@@ -32,6 +32,8 @@ export interface CloudflareMediaQueueBatch {
   readonly messages: readonly CloudflareMediaQueueMessage[];
 }
 
+export type CloudflareMissingWorkflowErrorClassifier = (error: unknown) => boolean;
+
 /**
  * Wraps the Cloudflare Workflow binding without exposing platform types to the
  * application layer. A failed create is converged through get because create
@@ -39,14 +41,16 @@ export interface CloudflareMediaQueueBatch {
  */
 export function makeCloudflareMediaProcessingWorkflowLauncher(
   binding: CloudflareMediaWorkflowBinding,
+  isMissingInstanceError: CloudflareMissingWorkflowErrorClassifier,
 ): MediaProcessingWorkflowLauncher {
   return {
     get: async (instanceId) => {
       try {
         await binding.get(instanceId);
         return "present";
-      } catch {
-        return "missing";
+      } catch (error) {
+        if (isMissingInstanceError(error)) return "missing";
+        throw error;
       }
     },
     create: async (instanceId, payload) => {
@@ -57,7 +61,8 @@ export function makeCloudflareMediaProcessingWorkflowLauncher(
         try {
           await binding.get(instanceId);
           return "already_exists";
-        } catch {
+        } catch (getError) {
+          if (!isMissingInstanceError(getError)) throw getError;
           throw createError;
         }
       }

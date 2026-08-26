@@ -12,6 +12,9 @@ const payload: MediaProcessingWorkflowPayload = {
   workflowRevision: 1,
 };
 
+const isMissing = (error: unknown): boolean =>
+  error instanceof Error && error.message === "missing";
+
 describe("Cloudflare media processing adapters", () => {
   test("converges duplicate deterministic Workflow creation", async () => {
     const events: string[] = [];
@@ -38,7 +41,7 @@ describe("Cloudflare media processing adapters", () => {
       createBatch: async () => [],
       getBatch: async () => [],
     };
-    const launcher = makeCloudflareMediaProcessingWorkflowLauncher(binding);
+    const launcher = makeCloudflareMediaProcessingWorkflowLauncher(binding, isMissing);
 
     expect(await launcher.create(instance.id, payload)).toBe("already_exists");
     await launcher.notify(instance.id, "decision_wakeup", payload);
@@ -54,10 +57,21 @@ describe("Cloudflare media processing adapters", () => {
         throw new Error("missing");
       },
     };
-    const launcher = makeCloudflareMediaProcessingWorkflowLauncher(binding);
+    const launcher = makeCloudflareMediaProcessingWorkflowLauncher(binding, isMissing);
     await expect(launcher.create("media-operation-1-r1", payload)).rejects.toThrow(
       "transport unavailable",
     );
+  });
+
+  test("does not turn a transient get failure into retained-instance loss", async () => {
+    const binding = {
+      create: async () => undefined,
+      get: async () => {
+        throw new Error("control plane unavailable");
+      },
+    };
+    const launcher = makeCloudflareMediaProcessingWorkflowLauncher(binding, isMissing);
+    await expect(launcher.get("media-operation-1-r1")).rejects.toThrow("control plane unavailable");
   });
 
   test("maps every disposition to exactly one per-message action", () => {
