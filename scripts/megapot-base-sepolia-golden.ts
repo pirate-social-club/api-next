@@ -2,10 +2,15 @@ import {
   AddMegapotPoolLeg,
   GetMegapotPoolFunding,
   GetSongMegapotPool,
+  GetStudySession,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
+  SONG_TRANSCRIPT_TEXT_MAX_LENGTH,
+  StartStudySession,
+  SubmitStudyAnswer,
 } from "@pirate/contracts";
 import { Schema } from "effect";
+import { runStagingStudyParticipant } from "./staging-study-participant.ts";
 
 const Identifier = Schema.NonEmptyString.check(Schema.isMaxLength(128));
 const AtomicAmount = Schema.String.check(Schema.isPattern(/^[1-9][0-9]*$/u));
@@ -34,7 +39,12 @@ const GoldenInput = Schema.Struct({
   eligible_activities: Schema.NonEmptyArray(Schema.Literals(["study", "karaoke"])).check(
     Schema.isMaxLength(2),
   ),
-  qualification_fixture_acknowledged: Schema.Literal(true),
+  study_participant: Schema.Struct({
+    timezone: Identifier,
+    accepted_lyrics: Schema.NonEmptyString.check(
+      Schema.isMaxLength(SONG_TRANSCRIPT_TEXT_MAX_LENGTH),
+    ),
+  }),
   funding_transaction_hash: Schema.optional(Schema.NullOr(TransactionHash)),
 });
 
@@ -88,11 +98,12 @@ export function parseMegapotGoldenInput(value: unknown): GoldenInput {
   if (
     Date.parse(input.starts_at) >= Date.parse(input.ends_at) ||
     BigInt(input.funding_amount_atomic) < BigInt(input.max_ticket_price_atomic) ||
-    new Set(input.eligible_activities).size !== input.eligible_activities.length
+    new Set(input.eligible_activities).size !== input.eligible_activities.length ||
+    !input.eligible_activities.includes("study")
   ) {
     throw new MegapotBaseSepoliaGoldenFailed(
       "invalid-input",
-      "The golden flow requires an ordered window, enough funding, and distinct activities.",
+      "The golden flow requires an ordered window, enough funding, and Study eligibility.",
     );
   }
   return input;
@@ -200,7 +211,11 @@ function dryRun(input: GoldenInput) {
     chain_id: 84_532 as const,
     empty_pool_policy: "no_purchase" as const,
     min_score_bps: 7_000 as const,
-    qualification_fixture_acknowledged: input.qualification_fixture_acknowledged,
+    qualification: {
+      activity: "study" as const,
+      execution: "authenticated_participant_api" as const,
+      fixture_source: "accepted_lyrics" as const,
+    },
     funding_transaction_supplied: input.funding_transaction_hash != null,
     idempotency_keys: {
       offer: idempotencyKey(input, "offer"),
@@ -312,15 +327,79 @@ export async function runMegapotBaseSepoliaGolden(
       GetSongMegapotPool.response,
     ),
   ]);
+  const participant =
+    funding.funding.status === "confirmed"
+      ? await runStagingStudyParticipant(
+          {
+            runId: input.run_id,
+            communityId: input.community_id,
+            postId: input.post_id,
+            personaId: input.persona_id,
+            timezone: input.study_participant.timezone,
+            acceptedLyrics: input.study_participant.accepted_lyrics,
+          },
+          {
+            startSession: ({ communityId, postId, idempotencyKey, personaId, timezone }) =>
+              requestJson(
+                dependencies,
+                options,
+                `/communities/${encodeURIComponent(communityId)}/posts/${encodeURIComponent(postId)}/study/sessions`,
+                StartStudySession.response,
+                {
+                  method: "POST",
+                  body: {
+                    idempotency_key: idempotencyKey,
+                    persona_id: personaId,
+                    timezone,
+                  },
+                },
+              ),
+            submitAnswer: ({
+              communityId,
+              sessionId,
+              sessionItemId,
+              idempotencyKey,
+              attemptNumber,
+              answer,
+            }) =>
+              requestJson(
+                dependencies,
+                options,
+                `/communities/${encodeURIComponent(communityId)}/study/sessions/${encodeURIComponent(sessionId)}/items/${encodeURIComponent(sessionItemId)}/answers`,
+                SubmitStudyAnswer.response,
+                {
+                  method: "POST",
+                  body: {
+                    idempotency_key: idempotencyKey,
+                    attempt_number: attemptNumber,
+                    answer,
+                  },
+                },
+              ),
+            getSession: ({ communityId, sessionId }) =>
+              requestJson(
+                dependencies,
+                options,
+                `/communities/${encodeURIComponent(communityId)}/study/sessions/${encodeURIComponent(sessionId)}`,
+                GetStudySession.response,
+              ),
+          },
+        )
+      : null;
   return {
     ...plan,
     mode: "execute" as const,
     state:
-      funding.funding.status === "confirmed" ? ("funded" as const) : ("funding_pending" as const),
+      participant !== null
+        ? ("funded_and_qualified" as const)
+        : funding.funding.status === "confirmed"
+          ? ("funded" as const)
+          : ("funding_pending" as const),
     offer: opened.offer,
     leg: added.leg,
     funding: funding.funding,
     pool: pool.pool,
+    participant,
   };
 }
 
