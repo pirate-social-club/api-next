@@ -201,6 +201,22 @@ describe("provider dependency boundary", () => {
     expect(result.violations.some((violation) => violation.includes("allowed.ts"))).toBe(false);
   });
 
+  test("keeps the Node HNS gateway on the exact forwarder adapter seam", async () => {
+    const root = await fixtureRoot({
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts":
+        'import type { VerificationProviderAdapter } from "@pirate/application/verification";\nexport type Fixture = VerificationProviderAdapter;\n',
+      "apps/hns-platform-gateway/src/allowed.ts":
+        'import { makeHnsForwarderV3Gateway } from "@pirate/platform-cf/hns-forwarder-v3";\nexport const allowed = makeHnsForwarderV3Gateway;\n',
+      "apps/hns-platform-gateway/src/forbidden.ts":
+        'import { makeControlPlanePostgres } from "@pirate/platform-cf/postgres";\nexport const forbidden = makeControlPlanePostgres;\n',
+    });
+    const result = lintDependencies(root, { checkVerificationExportSurface: false });
+    expect(result.violations).toContain(
+      "apps/hns-platform-gateway/src/forbidden.ts: @pirate/hns-platform-gateway may not import @pirate/platform-cf/postgres",
+    );
+    expect(result.violations.some((violation) => violation.includes("allowed.ts"))).toBe(false);
+  });
+
   test("fails closed for unsupported workspace entries", async () => {
     const root = await fixtureRoot({
       "packages/platform-cf/src/verification/providers/contract-fixture.ts":
