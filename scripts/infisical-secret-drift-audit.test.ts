@@ -45,11 +45,14 @@ describe("Infisical secret drift audit", () => {
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
+          "MEGAPOT_CUSTODY_PRIVATE_KEY",
           "MEGAPOT_V2_RPC_URL",
         ],
         "/services/api-next/operator": [
           "CONTROL_PLANE_POSTGRES_ADMIN_URL",
           "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
+          "MEGAPOT_REFERRER_PRIVATE_KEY",
         ],
       },
     };
@@ -116,6 +119,8 @@ describe("Infisical secret drift audit", () => {
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
+          "MEGAPOT_CUSTODY_PRIVATE_KEY",
           "MEGAPOT_V2_RPC_URL",
           "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
@@ -124,6 +129,7 @@ describe("Infisical secret drift audit", () => {
         "/services/api-next/operator": [
           "CONTROL_PLANE_POSTGRES_ADMIN_URL",
           "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
+          "MEGAPOT_REFERRER_PRIVATE_KEY",
         ],
       },
     };
@@ -143,6 +149,8 @@ describe("Infisical secret drift audit", () => {
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
+          "MEGAPOT_CUSTODY_PRIVATE_KEY",
           "MEGAPOT_V2_RPC_URL",
           "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
@@ -151,6 +159,7 @@ describe("Infisical secret drift audit", () => {
         "/services/api-next/operator": [
           "CONTROL_PLANE_POSTGRES_ADMIN_URL",
           "CONTROL_PLANE_POSTGRES_RUNTIME_URL",
+          "MEGAPOT_REFERRER_PRIVATE_KEY",
           "R2_SEAL_PROBE_ACCESS_KEY_ID",
           "R2_SEAL_PROBE_SECRET_ACCESS_KEY",
         ],
