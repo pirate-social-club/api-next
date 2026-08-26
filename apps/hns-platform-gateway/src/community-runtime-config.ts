@@ -11,8 +11,12 @@ import { Schema } from "effect";
 
 export const HNS_COMMUNITY_APP_GATEWAY_DEPLOYMENT_SCHEMA =
   "pirate-hns-community-app-gateway-deployment-v1" as const;
+export const HNS_COMMUNITY_APP_GATEWAY_STAGING_DEPLOYMENT_SCHEMA =
+  "pirate-hns-community-app-gateway-staging-deployment-v1" as const;
 export const HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT =
   "pirate-hns-community-app-caddy-boundary-v1" as const;
+export const HNS_COMMUNITY_APP_GATEWAY_STAGING_INGRESS_CONTRACT =
+  "pirate-hns-community-app-loopback-preflight-v1" as const;
 export const HNS_COMMUNITY_APP_GATEWAY_AUTHORITY_SOURCE = "postgres-readonly-v1" as const;
 export const HNS_COMMUNITY_APP_GATEWAY_MANIFEST_MAX_BYTES = 65_536 as const;
 
@@ -39,6 +43,15 @@ export const HNS_COMMUNITY_APP_GATEWAY_SHADOW_LISTENERS = Object.freeze({
   health_port: 4171,
 });
 
+export const HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS = Object.freeze({
+  gateway_host: "127.0.0.1",
+  gateway_port: 4269,
+  health_host: "127.0.0.1",
+  health_port: 4271,
+});
+
+export type HnsCommunityAppGatewayDeploymentMode = "production" | "shadow" | "staging-shadow";
+
 const Identity = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(256),
@@ -61,16 +74,10 @@ const NonNegativeInteger = Schema.Int.check(
   Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
 );
 
-const DeploymentManifest = Schema.Struct({
-  schema: Schema.Literal(HNS_COMMUNITY_APP_GATEWAY_DEPLOYMENT_SCHEMA),
+const commonDeploymentManifestFields = {
   profile_version: Schema.Literal(HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_VERSION),
   profile_utf8_bytes: Schema.Literal(622),
   profile_sha256: Schema.Literal(HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_SHA256),
-  production_gateway_listener: Schema.Literal("127.0.0.1:4069"),
-  production_health_listener: Schema.Literal("127.0.0.1:4071"),
-  shadow_gateway_listener: Schema.Literal("127.0.0.1:4169"),
-  shadow_health_listener: Schema.Literal("127.0.0.1:4171"),
-  tls_terminator_contract: Schema.Literal(HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT),
   solid_origin: Schema.String,
   solid_ingress_composition_reference: Identity,
   solid_access_application_audience: Identity,
@@ -101,17 +108,46 @@ const DeploymentManifest = Schema.Struct({
   gateway_upstream_deadline_milliseconds: Schema.Literal(15_000),
   maximum_private_authority_bytes: Schema.Literal(4_096),
   private_authority_deadline_milliseconds: Schema.Literal(2_000),
-  gateway_certificate_spki_sha256: Sha256,
   api_next_source_commit: Commit,
   bundle_sha256: Sha256,
+} as const;
+
+const DeploymentManifestV1 = Schema.Struct({
+  schema: Schema.Literal(HNS_COMMUNITY_APP_GATEWAY_DEPLOYMENT_SCHEMA),
+  production_gateway_listener: Schema.Literal("127.0.0.1:4069"),
+  production_health_listener: Schema.Literal("127.0.0.1:4071"),
+  shadow_gateway_listener: Schema.Literal("127.0.0.1:4169"),
+  shadow_health_listener: Schema.Literal("127.0.0.1:4171"),
+  tls_terminator_contract: Schema.Literal(HNS_COMMUNITY_APP_GATEWAY_TLS_TERMINATOR_CONTRACT),
+  gateway_certificate_spki_sha256: Sha256,
+  ...commonDeploymentManifestFields,
+});
+
+const StagingDeploymentManifestV1 = Schema.Struct({
+  schema: Schema.Literal(HNS_COMMUNITY_APP_GATEWAY_STAGING_DEPLOYMENT_SCHEMA),
+  mode: Schema.Literal("staging-shadow"),
+  staging_shadow_gateway_listener: Schema.Literal("127.0.0.1:4269"),
+  staging_shadow_health_listener: Schema.Literal("127.0.0.1:4271"),
+  ingress_contract: Schema.Literal(HNS_COMMUNITY_APP_GATEWAY_STAGING_INGRESS_CONTRACT),
+  public_tls_termination: Schema.Literal(false),
+  synthetic_certificate_spki_sha256: Sha256,
+  ...commonDeploymentManifestFields,
 });
 
 export type HnsCommunityAppGatewayDeploymentManifestV1 = Schema.Schema.Type<
-  typeof DeploymentManifest
+  typeof DeploymentManifestV1
 >;
 
+export type HnsCommunityAppGatewayStagingDeploymentManifestV1 = Schema.Schema.Type<
+  typeof StagingDeploymentManifestV1
+>;
+
+export type HnsCommunityAppGatewayDeploymentManifest =
+  | HnsCommunityAppGatewayDeploymentManifestV1
+  | HnsCommunityAppGatewayStagingDeploymentManifestV1;
+
 export type HnsCommunityAppGatewayRuntimeConfigurationV1 = Readonly<{
-  manifest: HnsCommunityAppGatewayDeploymentManifestV1;
+  manifest: HnsCommunityAppGatewayDeploymentManifest;
   gateway_deployment_reference: string;
   authority_database_url: string;
   solid_access_client_id: string;
@@ -124,16 +160,10 @@ export type HnsCommunityAppGatewayRuntimeConfigurationV1 = Readonly<{
   }>;
 }>;
 
-const manifestKeys = Object.freeze([
-  "schema",
+const commonManifestKeys = Object.freeze([
   "profile_version",
   "profile_utf8_bytes",
   "profile_sha256",
-  "production_gateway_listener",
-  "production_health_listener",
-  "shadow_gateway_listener",
-  "shadow_health_listener",
-  "tls_terminator_contract",
   "solid_origin",
   "solid_ingress_composition_reference",
   "solid_access_application_audience",
@@ -156,9 +186,30 @@ const manifestKeys = Object.freeze([
   "gateway_upstream_deadline_milliseconds",
   "maximum_private_authority_bytes",
   "private_authority_deadline_milliseconds",
-  "gateway_certificate_spki_sha256",
   "api_next_source_commit",
   "bundle_sha256",
+] as const);
+
+const productionManifestKeys = Object.freeze([
+  "schema",
+  "production_gateway_listener",
+  "production_health_listener",
+  "shadow_gateway_listener",
+  "shadow_health_listener",
+  "tls_terminator_contract",
+  "gateway_certificate_spki_sha256",
+  ...commonManifestKeys,
+] as const);
+
+const stagingManifestKeys = Object.freeze([
+  "schema",
+  "mode",
+  "staging_shadow_gateway_listener",
+  "staging_shadow_health_listener",
+  "ingress_contract",
+  "public_tls_termination",
+  "synthetic_certificate_spki_sha256",
+  ...commonManifestKeys,
 ] as const);
 
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -261,17 +312,26 @@ async function sha256(bytes: Uint8Array): Promise<string> {
   return [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function decodeManifest(bytes: Uint8Array): HnsCommunityAppGatewayDeploymentManifestV1 {
+function decodeManifest(
+  bytes: Uint8Array,
+  mode: HnsCommunityAppGatewayDeploymentMode,
+): HnsCommunityAppGatewayDeploymentManifest {
   if (bytes.byteLength === 0 || bytes.byteLength > HNS_COMMUNITY_APP_GATEWAY_MANIFEST_MAX_BYTES) {
     throw new Error("HNS community app gateway configuration is incomplete or invalid");
   }
   try {
     const text = decoder.decode(bytes);
     const raw: unknown = JSON.parse(text);
-    if (!exactObjectKeys(raw, manifestKeys) || JSON.stringify(raw) !== text) {
+    const staging = mode === "staging-shadow";
+    if (
+      !exactObjectKeys(raw, staging ? stagingManifestKeys : productionManifestKeys) ||
+      JSON.stringify(raw) !== text
+    ) {
       throw new Error("noncanonical manifest");
     }
-    const manifest = Schema.decodeUnknownSync(DeploymentManifest)(raw);
+    const manifest = staging
+      ? Schema.decodeUnknownSync(StagingDeploymentManifestV1)(raw)
+      : Schema.decodeUnknownSync(DeploymentManifestV1)(raw);
     if (
       !exactHttpsOrigin(manifest.solid_origin) ||
       exactAuthorityDatabaseEndpoint(manifest.authority_database_endpoint) === null
@@ -285,12 +345,13 @@ function decodeManifest(bytes: Uint8Array): HnsCommunityAppGatewayDeploymentMani
 }
 
 export async function loadHnsCommunityAppGatewayRuntimeConfigurationV1(input: {
+  mode: HnsCommunityAppGatewayDeploymentMode;
   manifest_bytes: Uint8Array;
   bundle_bytes: Uint8Array;
   api_next_source_commit: string;
   read_credential: (name: string) => Promise<Uint8Array> | Uint8Array;
 }): Promise<HnsCommunityAppGatewayRuntimeConfigurationV1> {
-  const manifest = decodeManifest(input.manifest_bytes);
+  const manifest = decodeManifest(input.manifest_bytes, input.mode);
   if (
     manifest.api_next_source_commit !== input.api_next_source_commit ||
     manifest.bundle_sha256 !== (await sha256(input.bundle_bytes)) ||
