@@ -11,4 +11,7 @@ export {
   type HnsSolidHandleHostAuthorityResponseV1,
   resolveHnsSolidHandleHostAuthorityV1,
 } from "@pirate/application/hns-handle-host-api";
-export type { HnsHandlePersonaHostAuthorityStateV1 } from "@pirate/application/hns-host-serving";
+export type {
+  HnsForwarderWorkerAuthoritySourceV1,
+  HnsHandlePersonaHostAuthorityStateV1,
+} from "@pirate/application/hns-host-serving";
