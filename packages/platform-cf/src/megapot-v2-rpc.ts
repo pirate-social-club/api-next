@@ -3,16 +3,22 @@ import {
   decodeMegapotCurrentDrawingId,
   decodeMegapotDrawingState,
   decodeMegapotDrawingTierPayouts,
+  decodeMegapotJackpotTicketNft,
+  decodeMegapotJackpotUsdc,
   decodeMegapotReferralFees,
   decodeMegapotTicketOwner,
+  decodeMegapotTicketPurchasesAllowed,
   decodeMegapotTicketTierIds,
   decodeMegapotUsdcAllowance,
   decodeMegapotUsdcBalance,
   encodeMegapotCurrentDrawingId,
   encodeMegapotDrawingState,
   encodeMegapotDrawingTierPayouts,
+  encodeMegapotJackpotTicketNft,
+  encodeMegapotJackpotUsdc,
   encodeMegapotReferralFees,
   encodeMegapotTicketOwner,
+  encodeMegapotTicketPurchasesAllowed,
   encodeMegapotTicketTierIds,
   encodeMegapotUsdcAllowance,
   encodeMegapotUsdcBalance,
@@ -73,6 +79,7 @@ export interface MegapotV2RpcClient {
     readonly drawingId: bigint;
     readonly state: MegapotV2DrawingState;
   }>;
+  readonly readTicketPurchasesAllowed: () => Promise<boolean>;
   readonly readCurrentDrawingId: (blockNumber?: bigint) => Promise<bigint>;
   readonly readDrawing: (drawingId: bigint, blockNumber?: bigint) => Promise<MegapotV2DrawingState>;
   readonly readDrawingTierPayouts: (
@@ -285,15 +292,32 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
   return {
     deployment: attestation,
     attestDeployment: async () => {
-      const [jackpotCodeHash, ticketNftCodeHash, usdcCodeHash] = await Promise.all([
+      const [
+        chainId,
+        jackpotCodeHash,
+        ticketNftCodeHash,
+        usdcCodeHash,
+        configuredTicketNft,
+        configuredUsdc,
+      ] = await Promise.all([
+        rpc("eth_chainId", []).then(quantity),
         readCodeHash(attestation.jackpotAddress),
         readCodeHash(attestation.ticketNftAddress),
         readCodeHash(attestation.usdcAddress),
+        ethCall(attestation.jackpotAddress, encodeMegapotJackpotTicketNft()).then(
+          decodeMegapotJackpotTicketNft,
+        ),
+        ethCall(attestation.jackpotAddress, encodeMegapotJackpotUsdc()).then(
+          decodeMegapotJackpotUsdc,
+        ),
       ]);
       if (
+        chainId !== BigInt(attestation.chainId) ||
         jackpotCodeHash !== attestation.jackpotCodeHash ||
         ticketNftCodeHash !== attestation.ticketNftCodeHash ||
-        usdcCodeHash !== attestation.usdcCodeHash
+        usdcCodeHash !== attestation.usdcCodeHash ||
+        configuredTicketNft !== attestation.ticketNftAddress ||
+        configuredUsdc !== attestation.usdcAddress
       ) {
         throw new MegapotV2RpcFailed("invalid-response");
       }
@@ -308,6 +332,10 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       );
       return { drawingId, state };
     },
+    readTicketPurchasesAllowed: async () =>
+      decodeMegapotTicketPurchasesAllowed(
+        await ethCall(attestation.jackpotAddress, encodeMegapotTicketPurchasesAllowed()),
+      ),
     readCurrentDrawingId: async (blockNumber) =>
       decodeMegapotCurrentDrawingId(
         await ethCall(attestation.jackpotAddress, encodeMegapotCurrentDrawingId(), blockNumber),

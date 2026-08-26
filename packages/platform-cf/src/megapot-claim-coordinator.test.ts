@@ -238,6 +238,7 @@ function harness(options: { readonly uncertain?: boolean; readonly badBalance?: 
       ticketNftCodeHash: candidate.ticketNftCodeHash,
       usdcCodeHash: candidate.usdcCodeHash,
     }),
+    readTicketPurchasesAllowed: async () => true,
     readCurrentDrawing: async () => {
       throw new Error("unused");
     },

@@ -225,6 +225,7 @@ function harness(input: Readonly<{ allowance?: bigint; uncertainSend?: boolean }
       ticketNftCodeHash: candidate.ticketNftCodeHash,
       usdcCodeHash: candidate.usdcCodeHash,
     }),
+    readTicketPurchasesAllowed: async () => true,
     readCurrentDrawing: async () => ({
       drawingId: 101n,
       state: {

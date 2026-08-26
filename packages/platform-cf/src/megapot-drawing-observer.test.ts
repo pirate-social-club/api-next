@@ -52,6 +52,7 @@ function rpc(authority: MegapotDrawingObserverCandidate): MegapotV2RpcClient {
       ticketNftCodeHash: authority.ticketNftCodeHash,
       usdcCodeHash: authority.usdcCodeHash,
     }),
+    readTicketPurchasesAllowed: async () => true,
     readCurrentDrawing: async () => ({
       drawingId: 101n,
       state: await rpc(authority).readDrawing(101n),

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  encodeFunctionData,
   encodeFunctionResult,
   type Hex,
   keccak256,
@@ -29,9 +30,20 @@ const code = {
 };
 
 const readAbi = parseAbi([
+  "function allowTicketPurchases() view returns (bool)",
   "function currentDrawingId() view returns (uint256)",
+  "function jackpotNFT() view returns (address)",
+  "function usdc() view returns (address)",
   "function getDrawingState(uint256 _drawingId) view returns ((uint256 prizePool, uint256 ticketPrice, uint256 edgePerTicket, uint256 referralWinShare, uint256 referralFee, uint256 globalTicketsBought, uint256 lpEarnings, uint256 drawingTime, uint256 winningTicket, uint8 ballMax, uint8 bonusballMax, address payoutCalculator, bool jackpotLock))",
 ]);
+
+const currentDrawingData = encodeFunctionData({ abi: readAbi, functionName: "currentDrawingId" });
+const purchasesAllowedData = encodeFunctionData({
+  abi: readAbi,
+  functionName: "allowTicketPurchases",
+});
+const jackpotNftData = encodeFunctionData({ abi: readAbi, functionName: "jackpotNFT" });
+const usdcData = encodeFunctionData({ abi: readAbi, functionName: "usdc" });
 
 function attestation(): MegapotV2RpcClientOptions["attestation"] {
   return {
@@ -53,6 +65,55 @@ function rpcResponse(id: unknown, result: unknown): Response {
   return Response.json({ jsonrpc: "2.0", id, result });
 }
 
+function attestationFetcher(options?: {
+  readonly chainId?: bigint;
+  readonly jackpotCode?: Hex;
+  readonly ticketNftAddress?: string;
+}): (input: string, init?: RequestInit) => Promise<Response> {
+  return async (_input, init) => {
+    const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
+    const params = request.params as readonly unknown[];
+    if (request.method === "eth_chainId") {
+      return rpcResponse(request.id, quantity(options?.chainId ?? 84_532n));
+    }
+    if (request.method === "eth_getCode") {
+      const contract = params[0];
+      return rpcResponse(
+        request.id,
+        contract === address("1")
+          ? (options?.jackpotCode ?? code.jackpot)
+          : contract === address("2")
+            ? code.ticket
+            : code.usdc,
+      );
+    }
+    if (request.method === "eth_call") {
+      const call = params[0] as Readonly<Record<string, unknown>>;
+      if (call.data === jackpotNftData) {
+        return rpcResponse(
+          request.id,
+          encodeFunctionResult({
+            abi: readAbi,
+            functionName: "jackpotNFT",
+            result: (options?.ticketNftAddress ?? address("2")) as `0x${string}`,
+          }),
+        );
+      }
+      if (call.data === usdcData) {
+        return rpcResponse(
+          request.id,
+          encodeFunctionResult({
+            abi: readAbi,
+            functionName: "usdc",
+            result: address("3") as `0x${string}`,
+          }),
+        );
+      }
+    }
+    throw new Error("unexpected attestation RPC method");
+  };
+}
+
 describe("Megapot v2 Worker runtime adapters", () => {
   test("attests code and reads the live drawing through bounded JSON-RPC", async () => {
     const requests: Readonly<Record<string, unknown>>[] = [];
@@ -61,6 +122,7 @@ describe("Megapot v2 Worker runtime adapters", () => {
       requests.push(request);
       const id = request.id;
       const params = request.params as readonly unknown[];
+      if (request.method === "eth_chainId") return rpcResponse(id, quantity(84_532n));
       if (request.method === "eth_getCode") {
         const contract = params[0];
         return rpcResponse(
@@ -74,13 +136,43 @@ describe("Megapot v2 Worker runtime adapters", () => {
       }
       if (request.method === "eth_call") {
         const call = params[0] as Readonly<Record<string, unknown>>;
-        if (String(call.data).startsWith("0x9c010218")) {
+        if (call.data === jackpotNftData) {
+          return rpcResponse(
+            id,
+            encodeFunctionResult({
+              abi: readAbi,
+              functionName: "jackpotNFT",
+              result: address("2") as `0x${string}`,
+            }),
+          );
+        }
+        if (call.data === usdcData) {
+          return rpcResponse(
+            id,
+            encodeFunctionResult({
+              abi: readAbi,
+              functionName: "usdc",
+              result: address("3") as `0x${string}`,
+            }),
+          );
+        }
+        if (call.data === currentDrawingData) {
           return rpcResponse(
             id,
             encodeFunctionResult({
               abi: readAbi,
               functionName: "currentDrawingId",
               result: 8_328n,
+            }),
+          );
+        }
+        if (call.data === purchasesAllowedData) {
+          return rpcResponse(
+            id,
+            encodeFunctionResult({
+              abi: readAbi,
+              functionName: "allowTicketPurchases",
+              result: true,
             }),
           );
         }
@@ -123,26 +215,48 @@ describe("Megapot v2 Worker runtime adapters", () => {
       drawingId: 8_328n,
       state: { ticketPrice: 10_000n, ballMax: 25, bonusballMax: 13, jackpotLock: false },
     });
+    await expect(client.readTicketPurchasesAllowed()).resolves.toBe(true);
     expect(requests.map((request) => request.method)).toEqual([
+      "eth_chainId",
       "eth_getCode",
       "eth_getCode",
       "eth_getCode",
+      "eth_call",
+      "eth_call",
+      "eth_call",
       "eth_call",
       "eth_call",
     ]);
   });
 
-  test("fails closed on stale code and removed receipt logs", async () => {
+  test("fails closed on the wrong chain, stale code, or mismatched Jackpot wiring", async () => {
+    const wrongChainClient = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      fetcher: attestationFetcher({ chainId: 8_453n }),
+    });
+    await expect(wrongChainClient.attestDeployment()).rejects.toMatchObject({
+      reason: "invalid-response",
+    });
+
     const wrongCodeClient = makeMegapotV2RpcClient({
       rpcUrl: "https://base-sepolia.example.invalid",
       attestation: attestation(),
-      fetcher: async (_input, init) => {
-        const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
-        return rpcResponse(request.id, "0x6000");
-      },
+      fetcher: attestationFetcher({ jackpotCode: "0x6000" }),
     });
     await expect(wrongCodeClient.attestDeployment()).rejects.toBeInstanceOf(MegapotV2RpcFailed);
 
+    const wrongWiringClient = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      fetcher: attestationFetcher({ ticketNftAddress: address("9") }),
+    });
+    await expect(wrongWiringClient.attestDeployment()).rejects.toMatchObject({
+      reason: "invalid-response",
+    });
+  });
+
+  test("fails closed on removed receipt logs", async () => {
     const receiptClient = makeMegapotV2RpcClient({
       rpcUrl: "https://base-sepolia.example.invalid",
       attestation: attestation(),

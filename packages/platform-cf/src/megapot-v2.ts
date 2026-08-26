@@ -10,7 +10,10 @@ import {
 } from "viem";
 
 const jackpotReadAbi = parseAbi([
+  "function allowTicketPurchases() view returns (bool)",
   "function currentDrawingId() view returns (uint256)",
+  "function jackpotNFT() view returns (address)",
+  "function usdc() view returns (address)",
   "function getDrawingState(uint256 _drawingId) view returns ((uint256 prizePool, uint256 ticketPrice, uint256 edgePerTicket, uint256 referralWinShare, uint256 referralFee, uint256 globalTicketsBought, uint256 lpEarnings, uint256 drawingTime, uint256 winningTicket, uint8 ballMax, uint8 bonusballMax, address payoutCalculator, bool jackpotLock))",
   "function getDrawingTierPayouts(uint256 _drawingId) view returns (uint256[12])",
   "function getTicketTierIds(uint256[] _ticketIds) view returns (uint256[] tierIds)",
@@ -279,6 +282,34 @@ export function encodeMegapotCurrentDrawingId(): Hex {
 
 export function decodeMegapotCurrentDrawingId(data: Hex): bigint {
   return decodeFunctionResult({ abi: jackpotReadAbi, functionName: "currentDrawingId", data });
+}
+
+export function encodeMegapotTicketPurchasesAllowed(): Hex {
+  return encodeFunctionData({ abi: jackpotReadAbi, functionName: "allowTicketPurchases" });
+}
+
+export function decodeMegapotTicketPurchasesAllowed(data: Hex): boolean {
+  return decodeFunctionResult({
+    abi: jackpotReadAbi,
+    functionName: "allowTicketPurchases",
+    data,
+  });
+}
+
+export function encodeMegapotJackpotTicketNft(): Hex {
+  return encodeFunctionData({ abi: jackpotReadAbi, functionName: "jackpotNFT" });
+}
+
+export function decodeMegapotJackpotTicketNft(data: Hex): string {
+  return address(decodeFunctionResult({ abi: jackpotReadAbi, functionName: "jackpotNFT", data }));
+}
+
+export function encodeMegapotJackpotUsdc(): Hex {
+  return encodeFunctionData({ abi: jackpotReadAbi, functionName: "usdc" });
+}
+
+export function decodeMegapotJackpotUsdc(data: Hex): string {
+  return address(decodeFunctionResult({ abi: jackpotReadAbi, functionName: "usdc", data }));
 }
 
 export function encodeMegapotDrawingState(drawingId: bigint): Hex {

@@ -84,6 +84,7 @@ function harness(options: { readonly tierId: bigint; readonly settled?: boolean 
       ticketNftCodeHash: candidate.ticketNftCodeHash,
       usdcCodeHash: candidate.usdcCodeHash,
     }),
+    readTicketPurchasesAllowed: async () => true,
     readCurrentDrawing: async () => ({ drawingId: 102n, state: drawingState }),
     readCurrentDrawingId: async () => (options.settled === false ? 101n : 102n),
     readDrawing: async () =>
