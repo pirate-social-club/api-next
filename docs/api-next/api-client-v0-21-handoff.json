@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.21.0",
+  "releaseType": "hns-community-handle-host-runtime-v1",
+  "wireContract": "wire-v3",
+  "sourceCommit": "35413cd",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.21.0.tgz",
+    "sha256": "ca526dadb2d124f43595809b1df6b21f16246d3f7d929fb2366ab4b9212c0563",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@80d8dfabeada0216ae989537a7946b28bae5f60b6463c1af05f9848a1bbb0bcd",
+    "openapiSha256": "80d8dfabeada0216ae989537a7946b28bae5f60b6463c1af05f9848a1bbb0bcd",
+    "clientSha256": "eb86f5bb8d28bc2e1c5852fb7912c4b13328e8ef96293dc56259ee80d908d12b"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "c93cc0e",
+      "reason": "PublicHandleGrantV3 and the persona-native public projection are additive to the accepted v0.20.0 surface."
+    },
+    "focusedRuntimeTests": "29 passed",
+    "postgresHandleSalesSuite": "3 passed",
+    "unitSuite": "1823 passed",
+    "workerdSuites": "82 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}
