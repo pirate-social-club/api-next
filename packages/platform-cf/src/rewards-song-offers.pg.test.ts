@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
 import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
@@ -31,7 +31,13 @@ if (required && connectionString === undefined) {
   throw new Error("CONTROL_PLANE_POSTGRES_TEST_URL is required for the Postgres 17 suite");
 }
 const suite = connectionString === undefined ? describe.skip : describe;
+const sentinelPath =
+  process.env.CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL ??
+  "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete";
+const sentinelContents = "api-next-control-plane-postgres-rewards-song-offers-suite-complete\n";
 const migrations = await loadPostgresMigrations();
+const testCount = 12;
+let completedTestCount = 0;
 
 const address = (byte: string): string => `0x${byte.repeat(40)}`;
 const bytes32 = (byte: string): string => `0x${byte.repeat(64)}`;
@@ -584,6 +590,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         Effect.runPromise(store.openOffer({ ...openInput, requestHash: hash("9") })),
       ).rejects.toMatchObject({ reason: "idempotency-conflict" });
     });
+    completedTestCount += 1;
   });
 
   test("closes fallback score, availability, parallel-leg, and foreign-funder routes", async () => {
@@ -654,6 +661,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         ),
       ).rejects.toMatchObject({ message: expect.stringContaining("fallback_sponsor_mismatch") });
     });
+    completedTestCount += 1;
   });
 
   test("freezes one account share into a private/public commitment without identity leakage", async () => {
@@ -811,6 +819,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         ),
       ).rejects.toMatchObject({ message: expect.stringContaining("append-only") });
     });
+    completedTestCount += 1;
   });
 
   test("fences one active effect per signer nonce and freezes exact signed bytes", async () => {
@@ -910,6 +919,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       );
       expect(effect.rows).toEqual([{ state: "prepared", reserved_amount_atomic: "10000" }]);
     });
+    completedTestCount += 1;
   });
 
   test("persists nonce reserve through confirmed custody ticket without duplicate purchase", async () => {
@@ -1249,15 +1259,33 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         readonly ticket_state: string;
         readonly received_atomic: string;
         readonly win_share_atomic: string;
+        readonly evidence_transaction_hash: string;
+        readonly evidence_gross_atomic: string;
+        readonly evidence_referral_atomic: string;
+        readonly evidence_net_atomic: string;
+        readonly evidence_block_number: string;
+        readonly evidence_block_hash: string;
+        readonly evidence_receipt_hash: string;
+        readonly evidence_confirmations: number;
       }>(
         `SELECT effect.state AS effect_state, drawing.status AS drawing_state,
                 ticket.status AS ticket_state, claim.received_atomic::text,
-                revenue.amount_atomic::text AS win_share_atomic
+                revenue.amount_atomic::text AS win_share_atomic,
+                evidence.transaction_hash AS evidence_transaction_hash,
+                evidence.gross_winnings_atomic::text AS evidence_gross_atomic,
+                evidence.referral_accrual_atomic::text AS evidence_referral_atomic,
+                evidence.net_winnings_atomic::text AS evidence_net_atomic,
+                evidence.block_number::text AS evidence_block_number,
+                evidence.block_hash AS evidence_block_hash,
+                evidence.receipt_hash AS evidence_receipt_hash,
+                evidence.confirmations AS evidence_confirmations
            FROM reward_chain_effects effect
            JOIN megapot_claim_effects claim ON claim.claim_effect_id=effect.effect_id
            JOIN megapot_pool_drawings drawing ON drawing.claim_effect_id=effect.effect_id
            JOIN megapot_ticket_inventory ticket
              ON ticket.attestation_id=claim.attestation_id AND ticket.ticket_id=claim.ticket_id
+           JOIN megapot_claim_receipt_evidence evidence
+             ON evidence.claim_effect_id=effect.effect_id
            JOIN platform_referral_revenue_ledger revenue
              ON revenue.ticket_id=claim.ticket_id AND revenue.revenue_kind='win_share'
           WHERE effect.effect_id='claim-effect-101'`,
@@ -1269,6 +1297,14 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           ticket_state: "claimed",
           received_atomic: "901",
           win_share_atomic: "100",
+          evidence_transaction_hash: claimTransactionHash,
+          evidence_gross_atomic: "1001",
+          evidence_referral_atomic: "100",
+          evidence_net_atomic: "901",
+          evidence_block_number: "122",
+          evidence_block_hash: bytes32("e"),
+          evidence_receipt_hash: hash("e"),
+          evidence_confirmations: 3,
         },
       ]);
 
@@ -1509,6 +1545,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         items: [{ creditId, amountAtomic: 901n, paidAtomic: 901n, state: "sent" }],
       });
     });
+    completedTestCount += 1;
   }, 10_000);
 
   test("atomically holds custody-integrity failures and removes them from retry work", async () => {
@@ -1719,6 +1756,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         message: expect.stringContaining("review evidence is append-only"),
       });
     });
+    completedTestCount += 1;
   }, 10_000);
 
   test("persists exact USDC approval evidence through the shared signer nonce fence", async () => {
@@ -1804,6 +1842,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         },
       ]);
     });
+    completedTestCount += 1;
   });
 
   test("confirms an exact user-authorized USDC top-up into the leg budget", async () => {
@@ -1875,6 +1914,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         { state: "confirmed", confirmed_amount_atomic: "500", funded_atomic: "100500" },
       ]);
     });
+    completedTestCount += 1;
   });
 
   test("expires a settled pool and returns every unspent USDC atom pro rata", async () => {
@@ -2117,6 +2157,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       );
       expect(stillOpen.rows).toEqual([{ status: "active" }]);
     });
+    completedTestCount += 1;
   }, 10_000);
 
   test("persists an attested drawing observation and opens each eligible pool once", async () => {
@@ -2180,6 +2221,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         },
       ]);
     });
+    completedTestCount += 1;
   });
 
   test("closes a due no-entry drawing without reserving ticket budget", async () => {
@@ -2242,6 +2284,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       );
       expect(leg.rows).toEqual([{ reserved_atomic: "0" }]);
     });
+    completedTestCount += 1;
   });
 
   test("freezes the verified external sponsor only when a due drawing has no shares", async () => {
@@ -2408,5 +2451,12 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       });
       await expect(Effect.runPromise(coordinator.freezeDue())).resolves.toEqual([]);
     });
+    completedTestCount += 1;
   });
+});
+
+afterAll(async () => {
+  if (required && completedTestCount === testCount) {
+    await Bun.write(sentinelPath, sentinelContents);
+  }
 });

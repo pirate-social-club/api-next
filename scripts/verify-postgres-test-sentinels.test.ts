@@ -37,6 +37,7 @@ async function sentinelSet(): Promise<{
     "text-submission",
     "persona",
     "rewards-qualification",
+    "rewards-song-offers",
     "public-profile",
     "public-community-threads",
     "verification",
@@ -131,6 +132,22 @@ describe("Postgres suite sentinel verification", () => {
       workflow.match(
         /\/tmp\/api-next-control-plane-postgres-rewards-qualification-suite-complete/gu,
       ),
+    ).toHaveLength(2);
+  });
+
+  test("keeps Megapot rewards persistence fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain("packages/platform-cf/src/rewards-song-offers.pg.test.ts");
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_REWARDS_SONG_OFFERS_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-rewards-song-offers-suite-complete",
+    );
+    expect(
+      workflow.match(/\/tmp\/api-next-control-plane-postgres-rewards-song-offers-suite-complete/gu),
     ).toHaveLength(2);
   });
 
