@@ -37,6 +37,7 @@ import {
   MEGAPOT_REWARDS_CYCLE_LANE,
   MEGAPOT_REWARDS_CYCLE_SCHEDULE,
   MEGAPOT_REWARDS_CYCLE_TIMEOUT,
+  observeMegapotDrawingForCycle,
   runMegapotRewardsCycle,
 } from "./megapot-rewards-cycle.ts";
 import {
@@ -298,7 +299,8 @@ export function makeMegapotRewardsJob(
               return refund.reconcile(work.effectId);
           }
         },
-        observeDrawing: () => observer.observe(options.attestationId),
+        observeDrawing: () =>
+          observeMegapotDrawingForCycle(observer.observe(options.attestationId)),
         observeSolvency: () => solvency.observe(options.attestationId),
         freezeDue: (limit) => cutoff.freezeDue({ limit }),
         publishCommitment: (work) =>

@@ -1,3 +1,4 @@
+import type { MegapotDrawingObservationFailure } from "@pirate/application";
 import type {
   MegapotChainEffectWork,
   MegapotDrawingWork,
@@ -10,9 +11,20 @@ export const MEGAPOT_REWARDS_CYCLE_LANE = "megapot-rewards";
 export const MEGAPOT_REWARDS_CYCLE_SCHEDULE = "* * * * *";
 export const MEGAPOT_REWARDS_CYCLE_TIMEOUT = "50 seconds";
 
+export function observeMegapotDrawingForCycle<A>(
+  operation: Effect.Effect<A, MegapotDrawingObservationFailure>,
+): Effect.Effect<boolean, MegapotDrawingObservationFailure> {
+  return operation.pipe(
+    Effect.as(true),
+    Effect.catchTag("MegapotDrawingObservationRejected", (error) =>
+      error.reason === "drawing-closed" ? Effect.succeed(false) : Effect.fail(error),
+    ),
+  );
+}
+
 export interface MegapotRewardsRuntime {
   readonly reconcile: (work: MegapotChainEffectWork) => Effect.Effect<unknown, unknown>;
-  readonly observeDrawing: () => Effect.Effect<unknown, unknown>;
+  readonly observeDrawing: () => Effect.Effect<boolean, unknown>;
   readonly observeSolvency: () => Effect.Effect<unknown, unknown>;
   readonly freezeDue: (limit: number) => Effect.Effect<readonly unknown[], unknown>;
   readonly publishCommitment: (work: MegapotDrawingWork) => Effect.Effect<unknown, unknown>;
@@ -73,7 +85,7 @@ export function runMegapotRewardsCycle(input: {
     const [reconcileFailures, reconciled] = yield* partition(pending, input.runtime.reconcile);
     recordFailures(reconcileFailures);
 
-    yield* input.runtime.observeDrawing();
+    const drawingObserved = yield* input.runtime.observeDrawing();
     yield* input.runtime.observeSolvency();
     const frozen = yield* input.runtime.freezeDue(limit);
 
@@ -141,7 +153,7 @@ export function runMegapotRewardsCycle(input: {
 
     return {
       reconciled: reconciled.length,
-      observed: 1,
+      observed: drawingObserved ? 1 : 0,
       frozen: frozen.length,
       committed: committed.length,
       purchased: purchaseResults.filter(Boolean).length,
