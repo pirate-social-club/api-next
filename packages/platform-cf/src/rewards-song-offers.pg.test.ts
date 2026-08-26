@@ -1249,15 +1249,33 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         readonly ticket_state: string;
         readonly received_atomic: string;
         readonly win_share_atomic: string;
+        readonly evidence_transaction_hash: string;
+        readonly evidence_gross_atomic: string;
+        readonly evidence_referral_atomic: string;
+        readonly evidence_net_atomic: string;
+        readonly evidence_block_number: string;
+        readonly evidence_block_hash: string;
+        readonly evidence_receipt_hash: string;
+        readonly evidence_confirmations: number;
       }>(
         `SELECT effect.state AS effect_state, drawing.status AS drawing_state,
                 ticket.status AS ticket_state, claim.received_atomic::text,
-                revenue.amount_atomic::text AS win_share_atomic
+                revenue.amount_atomic::text AS win_share_atomic,
+                evidence.transaction_hash AS evidence_transaction_hash,
+                evidence.gross_winnings_atomic::text AS evidence_gross_atomic,
+                evidence.referral_accrual_atomic::text AS evidence_referral_atomic,
+                evidence.net_winnings_atomic::text AS evidence_net_atomic,
+                evidence.block_number::text AS evidence_block_number,
+                evidence.block_hash AS evidence_block_hash,
+                evidence.receipt_hash AS evidence_receipt_hash,
+                evidence.confirmations AS evidence_confirmations
            FROM reward_chain_effects effect
            JOIN megapot_claim_effects claim ON claim.claim_effect_id=effect.effect_id
            JOIN megapot_pool_drawings drawing ON drawing.claim_effect_id=effect.effect_id
            JOIN megapot_ticket_inventory ticket
              ON ticket.attestation_id=claim.attestation_id AND ticket.ticket_id=claim.ticket_id
+           JOIN megapot_claim_receipt_evidence evidence
+             ON evidence.claim_effect_id=effect.effect_id
            JOIN platform_referral_revenue_ledger revenue
              ON revenue.ticket_id=claim.ticket_id AND revenue.revenue_kind='win_share'
           WHERE effect.effect_id='claim-effect-101'`,
@@ -1269,6 +1287,14 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           ticket_state: "claimed",
           received_atomic: "901",
           win_share_atomic: "100",
+          evidence_transaction_hash: claimTransactionHash,
+          evidence_gross_atomic: "1001",
+          evidence_referral_atomic: "100",
+          evidence_net_atomic: "901",
+          evidence_block_number: "122",
+          evidence_block_hash: bytes32("e"),
+          evidence_receipt_hash: hash("e"),
+          evidence_confirmations: 3,
         },
       ]);
 
