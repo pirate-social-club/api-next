@@ -1,23 +1,42 @@
-# api-next Radicle CI plan — v2 advisory check slice.
+# api-next Radicle CI plan — v3 advisory check-job parity slice.
 #
 # GitHub Actions with Blacksmith remains the preferred required-check executor.
-# This plan begins the independent Ambient fallback by running `bun run check`
-# with the same pinned Bun and Node versions used by the proven Solid plan.
-# It is advisory during the recorded api-next GitHub-primary transition and is
-# not yet equivalent to the hosted `check` job: host and Workerd tests, the
-# separately repeated freshness check, base-SHA OpenAPI comparison, and both
-# Wrangler dry runs remain outside this first slice.
+# This plan is an independent Ambient fallback for the hosted `check` job and
+# runs with the same pinned Bun and Node versions as the proven Solid plan. It
+# is advisory during the recorded api-next GitHub-primary transition: no result
+# here satisfies a protected GitHub context.
 #
-# The deployed `bun_get` action now builds a lockfile-bound Bun cache that has
-# passed a positive network-isolated consumption proof. The earlier v1 comment
-# rejecting its output shape described the pre-fix implementation and is no
-# longer current.
+# The deployed `bun_get` action builds a lockfile-bound Bun cache that has
+# passed a positive network-isolated consumption proof. The v1 comment
+# rejecting its output shape described the pre-fix implementation and is not
+# current.
 #
 # Radicle supplies /ci/src as a committed source snapshot without Git metadata.
-# `bun run check` includes a guard for untracked migration SQL, so the plan
-# creates a synthetic Git commit containing the complete shipped snapshot. This
-# preserves that guard's relevant invariant for a commit archive. It does not
-# provide the real base history needed by `bun run check:breaking`.
+# `bun run check` includes a guard that invokes `git ls-files --others` for
+# untracked migration SQL, so the plan creates a synthetic Git commit holding
+# the complete shipped snapshot. That preserves the guard's invariant for a
+# commit archive. It is not real history, and it must never be used as an
+# OpenAPI baseline.
+#
+# Ambient 0.16 stops a plan at the first failed action, so each gate records
+# its status and a final summary action fails the job after every gate has had
+# a chance to run. This mirrors the Solid plan contract.
+#
+# Deliberately absent from the hosted `check` job:
+# - check:breaking. It needs the exact pull-request base commit, and the
+#   shipped snapshot has no parent: a rehearsal returned
+#   `Unable to resolve baseline commit "HEAD^1"`. Shipping and explicitly
+#   selecting the real baseline is owned by a later slice. Absence of the
+#   baseline is a failure, never a bootstrap shortcut.
+# The required `postgres17` job is a separate context with its own
+# checksum-bound distribution and budget; it is owned by
+# `api-next-ambient-postgres17-gate`.
+#
+# Gate 05 and 06 caveat: with Wrangler telemetry, error reporting and the
+# banner disabled, a traced route-less rehearsal of both dry runs still
+# attempted DNS for exactly one name, `api.github.com`, and still succeeded.
+# The absent guest network is therefore the control that makes these gates
+# offline, not a proof that the command is network-free.
 
 pre_plan:
   - action: http_get
@@ -51,6 +70,28 @@ plan:
       git -c user.name=ci_operator -c user.email=ci_operator@example.invalid \
         commit -q -m 'ci: materialize Ambient source snapshot'
       test -z "$(git status --porcelain)"
+      cat > /tmp/run-check-gate <<'EOF'
+      #!/bin/bash
+      set -uo pipefail
+      gate="$1"
+      shift
+      printf '\n=== check gate: %s ===\n' "$gate"
+      started_at="$(date +%s)"
+      set +e
+      "$@"
+      status="$?"
+      set -e
+      finished_at="$(date +%s)"
+      elapsed="$((finished_at - started_at))"
+      printf '%s %s\n' "$status" "$elapsed" > "/tmp/ambient-check-$gate.status"
+      if [ "$status" -eq 0 ]; then
+        printf 'PASS: %s (%ss)\n' "$gate" "$elapsed"
+      else
+        printf 'FAIL: %s (exit %s, %ss)\n' "$gate" "$status" "$elapsed"
+      fi
+      exit 0
+      EOF
+      chmod 0755 /tmp/run-check-gate
   - action: shell
     shell: |
       set -euo pipefail
@@ -60,14 +101,96 @@ plan:
       export HOME=/tmp/ambient-home
       export NODE_OPTIONS=--max-old-space-size=3072
       cd /ci/src
-      started_at="$(date +%s)"
-      set +e
-      bun run check
-      status="$?"
-      set -e
-      finished_at="$(date +%s)"
-      elapsed="$((finished_at - started_at))"
-      printf 'api-next Ambient check elapsed_seconds=%s status=%s\n' "$elapsed" "$status"
-      exit "$status"
+      /tmp/run-check-gate 01-check bun run check
+  - action: shell
+    shell: |
+      set -euo pipefail
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
+      export CI=1
+      export HOME=/tmp/ambient-home
+      export NODE_OPTIONS=--max-old-space-size=3072
+      cd /ci/src
+      /tmp/run-check-gate 02-test-host bun test packages apps scripts
+  - action: shell
+    shell: |
+      set -euo pipefail
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
+      export CI=1
+      export HOME=/tmp/ambient-home
+      export NODE_OPTIONS=--max-old-space-size=3072
+      cd /ci/src
+      /tmp/run-check-gate 03-test-workerd bun run test:workerd
+  - action: shell
+    shell: |
+      set -euo pipefail
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
+      export CI=1
+      export HOME=/tmp/ambient-home
+      export NODE_OPTIONS=--max-old-space-size=3072
+      cd /ci/src
+      # The hosted job repeats the freshness check after `bun run check`; the
+      # mirror keeps that repetition rather than assuming it is redundant.
+      /tmp/run-check-gate 04-check-fresh bun run check:fresh
+  - action: shell
+    shell: |
+      set -euo pipefail
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
+      export CI=1
+      export HOME=/tmp/ambient-home
+      export NODE_OPTIONS=--max-old-space-size=3072
+      export WRANGLER_HIDE_BANNER=true
+      export WRANGLER_SEND_ERROR_REPORTS=false
+      export WRANGLER_SEND_METRICS=false
+      cd /ci/src
+      # `bun run wrangler`, never `bunx`: the plan must not be able to fetch a
+      # replacement package.
+      /tmp/run-check-gate 05-wrangler-jobs \
+        bun run wrangler deploy --dry-run --env "" --config apps/jobs-worker/wrangler.jsonc
+  - action: shell
+    shell: |
+      set -euo pipefail
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
+      export CI=1
+      export HOME=/tmp/ambient-home
+      export NODE_OPTIONS=--max-old-space-size=3072
+      export WRANGLER_HIDE_BANNER=true
+      export WRANGLER_SEND_ERROR_REPORTS=false
+      export WRANGLER_SEND_METRICS=false
+      cd /ci/src
+      /tmp/run-check-gate 06-wrangler-http \
+        bun run wrangler deploy --dry-run --env "" --config apps/http-worker/wrangler.jsonc
+  - action: shell
+    shell: |
+      set -euo pipefail
+      failed=0
+      total=0
+      for gate in \
+        01-check \
+        02-test-host \
+        03-test-workerd \
+        04-check-fresh \
+        05-wrangler-jobs \
+        06-wrangler-http
+      do
+        read -r status elapsed < "/tmp/ambient-check-$gate.status"
+        total="$((total + elapsed))"
+        if [ "$status" -eq 0 ]; then
+          printf 'PASS: %s (%ss)\n' "$gate" "$elapsed"
+        else
+          printf 'FAIL: %s (exit %s, %ss)\n' "$gate" "$status" "$elapsed"
+          failed=1
+        fi
+      done
+      printf 'api-next Ambient check-parity gate_seconds=%s\n' "$total"
+      if [ "$failed" -ne 0 ]; then
+        echo 'one or more check gates failed'
+        exit 1
+      fi
+      echo 'all check gates passed'
 
 post_plan: []
