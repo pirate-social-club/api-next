@@ -26,6 +26,7 @@
     "./custody-solvency-repository": "./src/custody-solvency-repository.ts",
     "./activity-qualification-repository": "./src/activity-qualification-repository.ts",
     "./accepted-lyrics-study-item-source": "./src/accepted-lyrics-study-item-source.ts",
+    "./data-registration-repository": "./src/data-registration-repository.ts",
     "./content-repository": "./src/content-repository.ts",
     "./feed-repository": "./src/feed-repository.ts",
     "./public-community-threads-repository": "./src/public-community-threads-repository.ts",

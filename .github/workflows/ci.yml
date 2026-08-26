@@ -132,6 +132,7 @@ jobs:
           timeout 600s bun test --timeout 15000 \
             packages/platform-cf/src/postgres.pg.test.ts \
             packages/platform-cf/src/postgres-foundation.pg.test.ts \
+            packages/platform-cf/src/data-registration-repository.pg.test.ts \
             packages/platform-cf/src/media-persistence.pg.test.ts \
             packages/platform-cf/src/optional-route-v2-migration.pg.test.ts \
             packages/platform-cf/src/postgres-migrations-runner.pg.test.ts \
