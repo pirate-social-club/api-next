@@ -1,3 +1,4 @@
+import type { MediaSubmissionServices } from "@pirate/application/media/submission-service";
 import { makeCommunityPurchaseFundingInterpreter } from "@pirate/application/money/community-purchase-funding";
 import { makeCommunityPurchaseFundingObservationUseCase } from "@pirate/application/money/community-purchase-funding-observation";
 import {
@@ -44,6 +45,15 @@ import {
   makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityStore,
 } from "@pirate/platform-cf/identity-repository";
+import { makeR2MediaIngressPresigner } from "@pirate/platform-cf/media-ingress-presigner";
+import {
+  makeR2MediaSealer,
+  type MediaSealBuckets,
+} from "@pirate/platform-cf/media-sealing-adapter";
+import {
+  makeMediaUploadApplicationCommands,
+  makeMediaUploadStore,
+} from "@pirate/platform-cf/media-upload-store";
 import { makeControlPlaneMegapotDrawingObservationStore } from "@pirate/platform-cf/megapot-drawing-observation-repository";
 import { makeMegapotV2RpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
@@ -106,6 +116,7 @@ import {
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { makeProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-production-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
+import { makeMediaUploadHandlers } from "./media-upload-handlers.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
@@ -187,6 +198,13 @@ export interface HttpWorkerBindings {
   readonly MEGAPOT_V2_RPC_URL?: string;
   readonly MEGAPOT_ATTESTATION_ID?: string;
   readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
+  readonly MEDIA_UPLOADS_ENABLED?: string;
+  readonly MEDIA_INGRESS_R2_ACCOUNT_ID?: string;
+  readonly MEDIA_INGRESS_R2_BUCKET_NAME?: string;
+  readonly MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID?: string;
+  readonly MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY?: string;
+  readonly MEDIA_INGRESS?: MediaSealBuckets["ingress"];
+  readonly MEDIA_IMMUTABLE_ORIGINALS?: MediaSealBuckets["immutableOriginals"];
 }
 
 export interface HttpWorkerCompositionDependencies {
@@ -195,6 +213,8 @@ export interface HttpWorkerCompositionDependencies {
   }>;
   /** Server-owned producer supplied by the Study content-generation composition. */
   readonly study_item_source?: StudyItemSource["Service"];
+  /** Test/review injection. Production constructs this only when media is explicitly enabled. */
+  readonly media_services?: MediaSubmissionServices;
 }
 
 type WorkerConfig = HttpWorkerConfigValue;
@@ -487,6 +507,42 @@ export async function createProductionHttpWorker(
     namespace_provider_bindings: namespaceBindings,
   });
   const personaStore = makeControlPlanePersonaStore(controlPlane);
+  const mediaServices = (() => {
+    if (dependencies.media_services !== undefined) return dependencies.media_services;
+    if (bindings.MEDIA_UPLOADS_ENABLED !== "true") return null;
+    const accountId = bindings.MEDIA_INGRESS_R2_ACCOUNT_ID;
+    const bucket = bindings.MEDIA_INGRESS_R2_BUCKET_NAME;
+    const accessKeyId = bindings.MEDIA_INGRESS_R2_PRESIGN_ACCESS_KEY_ID;
+    const secretAccessKey = bindings.MEDIA_INGRESS_R2_PRESIGN_SECRET_ACCESS_KEY;
+    const ingress = bindings.MEDIA_INGRESS;
+    const immutableOriginals = bindings.MEDIA_IMMUTABLE_ORIGINALS;
+    if (
+      accountId === undefined ||
+      bucket === undefined ||
+      accessKeyId === undefined ||
+      secretAccessKey === undefined ||
+      ingress === undefined ||
+      immutableOriginals === undefined
+    ) {
+      throw new Error("HTTP worker configuration is incomplete or invalid");
+    }
+    return {
+      store: makeMediaUploadStore(controlPlane),
+      personaStore,
+      presigner: makeR2MediaIngressPresigner({
+        accountId,
+        bucket,
+        accessKeyId,
+        secretAccessKey,
+      }),
+      sealer: makeR2MediaSealer({ ingress, immutableOriginals }),
+      nowIso: () => new Date().toISOString(),
+    } satisfies MediaSubmissionServices;
+  })();
+  const mediaHandlers =
+    mediaServices === null
+      ? {}
+      : makeMediaUploadHandlers(makeMediaUploadApplicationCommands(mediaServices));
   const contentStore = makeControlPlaneContentStore(controlPlane);
   const textPostStore = makeControlPlaneTextSubmissionStore(controlPlane);
   // The runtime is installed even when no provider credentials are enabled.
@@ -801,6 +857,7 @@ export async function createProductionHttpWorker(
       ...activityQualificationHandlers,
       ...handleSalesHandlers,
       ...songRewardOfferHandlers,
+      ...mediaHandlers,
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },
