@@ -79,7 +79,10 @@ const HNS_OWNER_VERIFIER_PLATFORM_SEAMS = new Set([
   "@pirate/platform-cf/namespace-ownership-hns-control-observer-postgres",
   "@pirate/platform-cf/namespace-ownership-hns-private-driver-transport",
 ]);
-const HNS_PLATFORM_GATEWAY_PLATFORM_SEAMS = new Set(["@pirate/platform-cf/hns-forwarder-v3"]);
+const HNS_PLATFORM_GATEWAY_PLATFORM_SEAMS = new Set([
+  "@pirate/platform-cf/hns-community-app-gateway-authority-postgres",
+  "@pirate/platform-cf/hns-forwarder-v3",
+]);
 
 const VERIFICATION_EXPORTS = {
   "packages/domain": {

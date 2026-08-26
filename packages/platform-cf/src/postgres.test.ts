@@ -14,6 +14,7 @@ import {
   type ControlPlaneLogger,
   makeDirectPostgresControlPlaneLayer,
   makeHyperdriveControlPlaneLayer,
+  makeReadOnlyPostgresControlPlaneLayer,
   type PostgresClientLike,
   type PostgresQueryConfig,
   type PostgresQueryResult,
@@ -243,6 +244,54 @@ describe("Postgres control-plane adapter", () => {
       },
     ]);
     expect(client.queries.at(-1)).toEqual({ text: "COMMIT", values: [] });
+  });
+
+  test("fences the gateway authority layer to read-only transactions", async () => {
+    const client = new FakePostgresClient();
+    let receivedConfig: ClientConfig | undefined;
+    const layer = makeReadOnlyPostgresControlPlaneLayer(
+      "postgresql://gateway.invalid/control?sslmode=verify-full",
+      {
+        clientFactory: (_url, config) => {
+          receivedConfig = config;
+          return client;
+        },
+        logger: silentLogger,
+      },
+    );
+
+    const read = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          return yield* db.execute(statement);
+        }).pipe(Effect.provide(layer)),
+      ),
+    );
+    expect(read.rows).toEqual([{ id: "community_9" }]);
+    expect(receivedConfig?.options).toBe("-c default_transaction_read_only=on");
+    expect(client.queries.at(-2)).toEqual({ text: statement.text, values: statement.values });
+
+    await expect(
+      Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const db = yield* ControlPlaneDb;
+            return yield* db.execute({
+              label: "gateway.forbidden-write",
+              text: "DELETE FROM communities",
+              values: [],
+              readonly: false,
+            });
+          }).pipe(Effect.provide(layer)),
+        ),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "ControlPlaneStatementFailed",
+      label: "gateway.forbidden-write",
+      outcomeCertainty: "not-started",
+    });
+    expect(client.queries.some(({ text }) => text.startsWith("DELETE"))).toBe(false);
   });
 
   test("rolls back a failing standalone Hyperdrive statement", async () => {

@@ -3,7 +3,10 @@ import { ControlPlaneDb } from "@pirate/application";
 import { Effect, Fiber } from "effect";
 import { Client } from "pg";
 
-import { makeDirectPostgresControlPlaneLayer } from "./postgres";
+import {
+  makeDirectPostgresControlPlaneLayer,
+  makeReadOnlyPostgresControlPlaneLayer,
+} from "./postgres";
 
 const connectionString = process.env.CONTROL_PLANE_POSTGRES_TEST_URL;
 const required = process.env.CONTROL_PLANE_POSTGRES_TEST_REQUIRED === "1";
@@ -157,8 +160,58 @@ suite("Postgres 17 control-plane harness", () => {
     completedTestCount += 1;
   }, 20_000);
 
+  test("enforces the gateway authority adapter as read-only in PostgreSQL", async () => {
+    if (connectionString === undefined) throw new Error("test URL was not configured");
+    const admin = new Client({ connectionString });
+    const rejectedId = runId("gateway_readonly");
+    try {
+      await admin.connect();
+      await admin.query(`
+        CREATE TABLE IF NOT EXISTS api_next_pg17_abort_probe (
+          run_id TEXT PRIMARY KEY,
+          phase TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `);
+      const program = Effect.scoped(
+        Effect.gen(function* () {
+          const db = yield* ControlPlaneDb;
+          const mode = yield* db.execute<{ transaction_read_only: string }>({
+            label: "gateway.readonly-mode",
+            text: "SHOW transaction_read_only",
+            values: [],
+            readonly: true,
+          });
+          const insertion = yield* Effect.flip(
+            db.execute({
+              label: "gateway.mislabeled-write",
+              text: "INSERT INTO api_next_pg17_abort_probe (run_id, phase) VALUES ($1, $2)",
+              values: [rejectedId, "must-not-write"],
+              readonly: true,
+            }),
+          );
+          return { mode, insertion };
+        }).pipe(Effect.provide(makeReadOnlyPostgresControlPlaneLayer(connectionString))),
+      );
+      const result = await Effect.runPromise(program);
+      expect(result.mode.rows).toEqual([{ transaction_read_only: "on" }]);
+      expect(result.insertion).toMatchObject({
+        _tag: "ControlPlaneStatementFailed",
+        outcomeCertainty: "completed",
+      });
+      expect(await queryProbe(admin, rejectedId)).toEqual([]);
+    } finally {
+      await admin.query({
+        text: "DELETE FROM api_next_pg17_abort_probe WHERE run_id = $1",
+        values: [rejectedId],
+      });
+      await admin.end();
+    }
+    completedTestCount += 1;
+  });
+
   afterAll(async () => {
-    if (connectionString !== undefined && completedTestCount === 1) {
+    if (connectionString !== undefined && completedTestCount === 2) {
       await Bun.write(sentinelPath, sentinelContents);
     }
   });

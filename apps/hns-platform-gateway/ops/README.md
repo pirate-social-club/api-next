@@ -1,5 +1,9 @@
 # Static platform gateway VPS profile
 
+The separate interactive external-community executable and its isolated
+operations profile are documented in [COMMUNITY.md](COMMUNITY.md). Nothing in
+that profile changes the static `app.pirate` artifact or listeners below.
+
 This directory packages the deployment-facing pieces for the source-closed
 `pirate` and `app.pirate` gateway. It reuses the retained VPS, Caddy DANE
 terminator, certificate, and signed `pirate` zone without importing or calling

@@ -34,6 +34,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@pirate/application": "0.0.0",
+        "@pirate/platform-cf": "0.0.0",
       },
     },
     "apps/http-worker": {
@@ -52,7 +53,7 @@
     },
     "packages/api-client": {
       "name": "@pirate/api-client",
-      "version": "0.16.0",
+      "version": "0.20.0",
     },
     "packages/application": {
       "name": "@pirate/application",

@@ -177,6 +177,7 @@ class PostgresSession {
     private readonly logger: ControlPlaneLogger,
     private readonly now: () => number,
     private readonly transactionSearchPath?: string,
+    private readonly readOnly = false,
   ) {}
 
   get isFenced(): boolean {
@@ -232,6 +233,16 @@ class PostgresSession {
   execute<Row = unknown>(
     statement: ControlPlaneStatement,
   ): Effect.Effect<ControlPlaneResult<Row>, ControlPlaneError> {
+    if (this.readOnly && !statement.readonly) {
+      return Effect.fail(
+        new ControlPlaneStatementFailed({
+          label: statement.label,
+          sqlState: null,
+          constraint: null,
+          outcomeCertainty: "not-started",
+        }),
+      );
+    }
     if (this.transactionSearchPath !== undefined && !this.inTransaction) {
       return this.withTransaction((transaction) => transaction.execute<Row>(statement));
     }
@@ -477,12 +488,13 @@ class PostgresTransaction implements ControlPlaneTransaction {
   }
 }
 
-function makeClientConfig(connectionString: string): ClientConfig {
+function makeClientConfig(connectionString: string, readOnly: boolean): ClientConfig {
   return {
     connectionString,
     connectionTimeoutMillis: CONTROL_PLANE_CONNECT_TIMEOUT_MS,
     statement_timeout: CONTROL_PLANE_STATEMENT_TIMEOUT_MS,
     idle_in_transaction_session_timeout: CONTROL_PLANE_IDLE_TRANSACTION_TIMEOUT_MS,
+    ...(readOnly ? { options: "-c default_transaction_read_only=on" } : {}),
   };
 }
 
@@ -490,6 +502,7 @@ function makeControlPlaneLayer(
   connectionString: string,
   options: PostgresControlPlaneOptions = {},
   transactionSearchPath?: string,
+  readOnly = false,
 ) {
   const clientFactory = options.clientFactory ?? defaultClientFactory;
   const logger = options.logger ?? DEFAULT_LOGGER;
@@ -502,8 +515,10 @@ function makeControlPlaneLayer(
         Effect.tryPromise({
           try: () =>
             Promise.resolve(
-              clientFactory(connectionString, makeClientConfig(connectionString)),
-            ).then((client) => new PostgresSession(client, logger, now, transactionSearchPath)),
+              clientFactory(connectionString, makeClientConfig(connectionString, readOnly)),
+            ).then(
+              (client) => new PostgresSession(client, logger, now, transactionSearchPath, readOnly),
+            ),
           catch: () =>
             new ControlPlaneAcquireFailed({
               phase: "acquisition",
@@ -544,4 +559,22 @@ export function makeDirectPostgresControlPlaneLayer(
   options?: PostgresControlPlaneOptions,
 ) {
   return makeControlPlaneLayer(connectionString, options);
+}
+
+/**
+ * Source-closed VPS constructor for a separately credentialed read-only
+ * authority resolver. It selects the clean-break schema transactionally,
+ * requests server-side read-only transactions, and rejects any statement not
+ * declared read-only before it reaches the driver.
+ */
+export function makeReadOnlyPostgresControlPlaneLayer(
+  connectionString: string,
+  options?: PostgresControlPlaneOptions,
+) {
+  return makeControlPlaneLayer(
+    connectionString,
+    options,
+    CONTROL_PLANE_HYPERDRIVE_SEARCH_PATH,
+    true,
+  );
 }

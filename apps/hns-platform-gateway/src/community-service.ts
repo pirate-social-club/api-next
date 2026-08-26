@@ -1,3 +1,7 @@
+import {
+  CF_ACCESS_CLIENT_ID_HEADER,
+  CF_ACCESS_CLIENT_SECRET_HEADER,
+} from "@pirate/application/hns-community-app-api";
 import { HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE } from "@pirate/application/hns-community-app-gateway";
 import {
   HnsForwarderFailure,
@@ -72,6 +76,8 @@ export function makeHnsCommunityAppGatewayService(input: {
   signer: HnsCommunityAppGatewaySigner;
   gateway_deployment_reference: string;
   solid_origin: string;
+  solid_access_client_id: string;
+  solid_access_client_secret: string;
   upstream_fetch: HnsCommunityAppGatewayFetch;
   set_timeout?: GatewaySetTimeout;
   clear_timeout?: GatewayClearTimeout;
@@ -114,6 +120,7 @@ export function makeHnsCommunityAppGatewayService(input: {
               path_and_query: admitted.mapped_target,
               headers: admitted.upstream_headers,
               body_bytes: admitted.body_bytes,
+              signal: controller.signal,
             }),
             terminalPromise,
           ]);
@@ -130,6 +137,8 @@ export function makeHnsCommunityAppGatewayService(input: {
         try {
           const upstreamHeaders = new Headers(envelope.headers);
           upstreamHeaders.set("accept-encoding", "identity");
+          upstreamHeaders.set(CF_ACCESS_CLIENT_ID_HEADER, input.solid_access_client_id);
+          upstreamHeaders.set(CF_ACCESS_CLIENT_SECRET_HEADER, input.solid_access_client_secret);
           const upstreamBody = admitted.body_bytes.slice().buffer as ArrayBuffer;
           upstream = await Promise.race([
             Promise.resolve(

@@ -1,0 +1,32 @@
+[Unit]
+Description=Pirate interactive HNS community application gateway rollback release
+After=network-online.target
+Wants=network-online.target
+Conflicts=pirate-hns-community-app-gateway.service
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/srv/pirate-hns-community-app-gateway/rollback
+ExecStart=/usr/bin/env bun /srv/pirate-hns-community-app-gateway/rollback/bin/pirate-hns-community-app-gateway.mjs --mode production --manifest /srv/pirate-hns-community-app-gateway/rollback/deployment-manifest.json
+LoadCredential=hns-community-authority-database-url:/etc/pirate/hns-community-app-gateway/authority-database-url
+LoadCredential=hns-community-forwarder-key-registry:/etc/pirate/hns-community-app-gateway/forwarder-key-registry.json
+LoadCredential=hns-community-solid-access-client-id:/etc/pirate/hns-community-app-gateway/solid-access-client-id
+LoadCredential=hns-community-solid-access-client-secret:/etc/pirate/hns-community-app-gateway/solid-access-client-secret
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -23,12 +23,15 @@ import {
   hnsForwarderAuthorityMatchesState,
   resolveActiveHnsHostAuthority,
 } from "@pirate/application/hns-host-serving";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 
 export type { HnsForwarderWorkerAuthoritySourceV1 } from "@pirate/application/hns-host-serving";
 
 export const HNS_FORWARDER_KEY_MIN_BYTES = 32 as const;
 export const HNS_FORWARDER_BODY_LIMIT_MAX_BYTES = 16_777_216 as const;
+export const HNS_FORWARDER_V3_KEY_REGISTRY_SCHEMA =
+  "pirate-hns-forwarder-v3-key-registry-v1" as const;
+export const HNS_FORWARDER_V3_KEY_REGISTRY_MAX_BYTES = 65_536 as const;
 
 export type HnsForwarderKeyRecordV1 = Readonly<{
   key_id: string;
@@ -55,12 +58,136 @@ export type HnsForwarderRuntimeLimitsV1 = Readonly<{
   future_clock_skew_seconds: number;
 }>;
 
+const RegistryIdentity = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(256),
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/u),
+);
+const RegistryKeyId = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(128),
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/u),
+);
+const RegistryBase64Url = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(1_024),
+  Schema.isPattern(/^[A-Za-z0-9_-]+$/u),
+);
+const RegistryUnixSeconds = Schema.Int.check(
+  Schema.isBetween({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
+);
+const RegistryKey = Schema.Struct({
+  key_id: RegistryKeyId,
+  key_base64url: RegistryBase64Url,
+  signing_enabled: Schema.Boolean,
+  verify_not_before: RegistryUnixSeconds,
+  verify_not_after: RegistryUnixSeconds,
+});
+const RegistryDocument = Schema.Struct({
+  schema: Schema.Literal(HNS_FORWARDER_V3_KEY_REGISTRY_SCHEMA),
+  registry_reference: RegistryIdentity,
+  registry_version: RegistryIdentity,
+  keys: Schema.Array(RegistryKey).check(Schema.isMinLength(1), Schema.isMaxLength(8)),
+});
+
+type RegistryDocumentValue = Schema.Schema.Type<typeof RegistryDocument>;
+
+function hasExactRegistryKeys(value: unknown, expected: readonly string[]): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return (
+    actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index])
+  );
+}
+
+function decodeRegistryBase64Url(value: string): Uint8Array {
+  try {
+    const padded = value
+      .replaceAll("-", "+")
+      .replaceAll("_", "/")
+      .padEnd(Math.ceil(value.length / 4) * 4, "=");
+    const bytes = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+    let binary = "";
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    const canonical = btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+    if (
+      canonical !== value ||
+      bytes.byteLength < HNS_FORWARDER_KEY_MIN_BYTES ||
+      bytes.byteLength > 1_024
+    ) {
+      throw new Error("invalid key bytes");
+    }
+    return bytes;
+  } catch {
+    throw new Error("Invalid HNS forwarder key registry");
+  }
+}
+
+export function parseHnsForwarderV3KeyRegistry(
+  source: string,
+  expectedReference: string,
+  expectedVersion: string,
+): HnsForwarderKeyRegistryV1 {
+  if (new TextEncoder().encode(source).byteLength > HNS_FORWARDER_V3_KEY_REGISTRY_MAX_BYTES) {
+    throw new Error("Invalid HNS forwarder key registry");
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(source);
+  } catch {
+    throw new Error("Invalid HNS forwarder key registry");
+  }
+  if (
+    !hasExactRegistryKeys(raw, ["schema", "registry_reference", "registry_version", "keys"]) ||
+    typeof raw !== "object" ||
+    raw === null ||
+    Array.isArray(raw) ||
+    !("keys" in raw) ||
+    !Array.isArray(raw.keys) ||
+    !raw.keys.every((entry) =>
+      hasExactRegistryKeys(entry, [
+        "key_id",
+        "key_base64url",
+        "signing_enabled",
+        "verify_not_before",
+        "verify_not_after",
+      ]),
+    )
+  ) {
+    throw new Error("Invalid HNS forwarder key registry");
+  }
+  let document: RegistryDocumentValue;
+  try {
+    document = Schema.decodeUnknownSync(RegistryDocument)(raw);
+  } catch {
+    throw new Error("Invalid HNS forwarder key registry");
+  }
+  if (
+    document.registry_reference !== expectedReference ||
+    document.registry_version !== expectedVersion
+  ) {
+    throw new Error("Invalid HNS forwarder key registry");
+  }
+  return makeStaticHnsForwarderKeyRegistryV1(
+    document.keys.map((key) => ({
+      key_id: key.key_id,
+      key_bytes: decodeRegistryBase64Url(key.key_base64url),
+      signing_enabled: key.signing_enabled,
+      verify_not_before: key.verify_not_before,
+      verify_not_after: key.verify_not_after,
+    })),
+  );
+}
+
 export type HnsForwarderGatewayInputV1 = Readonly<{
   method: string;
   normalized_host: string;
   path_and_query: string;
   headers: Headers;
   body_bytes: Uint8Array;
+  signal?: AbortSignal;
 }>;
 
 export type HnsForwarderGatewayEnvelopeV1 = Readonly<{
@@ -227,9 +354,10 @@ function validateClock(clock: HnsForwarderClockV1): number {
 async function resolveAuthority(
   source: HnsForwarderGatewayAuthoritySourceV1 | HnsForwarderWorkerAuthoritySourceV1,
   normalizedHost: string,
+  signal?: AbortSignal,
 ): Promise<HnsHostAuthorityResolutionV1> {
   try {
-    const state = await Effect.runPromise(source.resolve(normalizedHost));
+    const state = await Effect.runPromise(source.resolve(normalizedHost), { signal });
     const resolution = resolveActiveHnsHostAuthority(state);
     if (resolution === null || resolution.normalized_host !== normalizedHost) {
       throw new HnsForwarderFailure("authority_unavailable");
@@ -285,7 +413,11 @@ export function makeHnsForwarderV3Gateway(
       if (nonce !== "" && !noncePattern.test(nonce)) {
         throw new HnsForwarderFailure("misconfigured");
       }
-      const authority = await resolveAuthority(options.authority_source, input.normalized_host);
+      const authority = await resolveAuthority(
+        options.authority_source,
+        input.normalized_host,
+        input.signal,
+      );
       const bodySha256 = await sha256(input.body_bytes);
       const timestamp = String(now);
       const preimageInput = buildInput(
