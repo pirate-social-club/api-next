@@ -1,6 +1,6 @@
 # Interactive community staging shadow preflight plan
 
-Status: populated discovery checkpoint, non-executable, 2026-08-26.
+Status: refreshed populated discovery checkpoint, non-executable, 2026-08-27.
 
 This plan proves the interactive `app.<root>` transport on staging Pirate
 Workers and isolated loopback listeners before the public Handshake ceremony.
@@ -60,27 +60,45 @@ read-only authenticated provider inventory.
 | health listener | `127.0.0.1:4271` |
 | gateway mode | `staging-shadow` |
 
-The earlier discovery rollback baselines were Solid version
-`f081e8a2-651e-4888-befb-d6abdd43e572` and api-next version
-`ba5c573b-015d-410d-a8a0-d6d5b0a12f7c`. They are inventory, not frozen
-rollback targets. A read-only Wrangler query at 2026-08-26T23:36+04:00 was
-blocked before provider access because the noninteractive process had no
-`CLOUDFLARE_API_TOKEN`. It performed no login and changed nothing. The current
-rollback versions therefore remain hard stops:
+Authenticated read-only Wrangler inventory at 2026-08-27T00:03+04:00 bound
+the current staging deployments and versions. The canonical OAuth profile was
+already authenticated to account `08a4c22cf52e2ecae883e36f80a33f4a`; no login
+or credential write was performed:
 
 ```text
 solid_source_commit = f34435451c19276faf24ef62234441de0d15d187
-api_next_source_commit = 2b8c726984a93ba23f65bd9b87007d305a3872ae
-solid_rollback_version = __UNRESOLVED_CURRENT_STAGING_SOLID_VERSION__
-api_next_rollback_version = __UNRESOLVED_CURRENT_STAGING_API_NEXT_VERSION__
-protected_origin_availability = both candidate hosts failed DNS resolution from the discovery runner at 2026-08-26T23:36+04:00
+api_next_source_commit = 94dcb875229e51b7d9838426de82a829eedae62d
+solid_current_deployment = 40961596-d119-4555-8e19-2a34f7833c51
+solid_rollback_version = f081e8a2-651e-4888-befb-d6abdd43e572
+api_next_current_deployment = c44dcb12-cc5c-4b05-96fe-d12628de959b
+api_next_rollback_version = cf907860-b066-4efd-bef9-e366602932da
+protected_origin_availability = absent from the account Worker Domain inventory and unresolved in public DNS
 ```
 
-The owner read-only provider ceremony injects a short-lived token scoped to
-the canonical Cloudflare account without printing it, reads the two current
-staging Worker deployments and versions, inventories Access state and
-secret-reference names, and then removes or revokes the token. It must not use
-interactive login, create a resource, or write a secret.
+The account has exactly four Worker Custom Domains: the canonical staging and
+production Solid and api-next hosts. Neither proposed protected hostname is
+present. api-next staging currently has seven secret-text bindings and Solid
+staging has none; no HNS community secret-reference name is installed in
+either Worker.
+
+```text
+web-next-staging.pirate.sc = 90fa14dfb8788c1fd14d051db88fac781471cd1e / c45c941a-38c9-4f4c-836c-70e742dad232
+api-next-staging.pirate.sc = f57c5abdac65124fe156b6954d542888607d584b / c2b70353-bd8a-4e8a-8392-9d9c3ff2afb1
+pirate.sc = 3da4eb163c455f98434b0491b04c2d7f7b515d79 / bedd2ef9-72f9-43fe-b0b9-49516dab02dc
+api-next.pirate.sc = 91471e7dc83c81964f3ca4365c5077fc14284bd7 / 10513e34-40a9-44b3-ab80-cbb198567373
+```
+
+Each value is `Worker Domain id / certificate id`. This is rollback and
+no-collision evidence only; none is a target of the staging preflight.
+
+The OAuth profile can read Workers but cannot read Access. The organization
+endpoint returned HTTP 403 / error 10000, while Access applications and
+service tokens returned HTTP 403 / error 9999. The remaining provider-read
+ceremony must supply `Access: Apps and Policies Read` and
+`Access: Service Tokens Read` for this exact account, retain only the team
+domain, application ids/domains/AUDs, policy shapes, and token metadata, and
+never print credential bytes. Until then, the team domain and all Access
+resource identifiers remain hard stops.
 
 The two protected origins are new Worker Custom Domains. Cloudflare creates
 DNS records and WebPKI certificates when a Custom Domain is attached. This
@@ -167,22 +185,23 @@ seconds. A client-supplied Access or forwarder field is never authority.
 
 ## Staging migration ceremony
 
-A read-only query at 2026-08-26T23:44:11+04:00 proved that staging is an exact
+A read-only query at 2026-08-27T00:07:56+04:00 proved that staging is an exact
 checksum prefix through `0055_megapot_claim_reconciliation.sql`. The selected
-api-next commit expects 57 migrations and staging has 55. The only missing
+api-next commit expects 58 migrations and staging has 55. The only missing
 ordered suffix is:
 
 ```text
 0056_media_processing_runtime_bridge.sql = 52b7e2075d87ff91274774bafd94270744847728ada07deb2ff7a6aa35f4f054
 0057_data_registration_persistence.sql = a11f28beba567660b4350ab6de117a3999c495e70ecc51a5897aa2638d1e1921
+0058_data_ipfs_and_signing_intent_repair.sql = 550be77e955da377a0de24df9496e0d1a37a0b1f4ad133d1ff309d34647aed07
 ```
 
 The frozen source and migration inputs are:
 
 ```text
-api_next_source_commit = 2b8c726984a93ba23f65bd9b87007d305a3872ae
-expected_latest_migration = 0057_data_registration_persistence.sql
-checksums_ledger_sha256 = 24dc8738c1e7c27228af905a1ef1ff6424e66d988bcd11097076e7c66a9db6a5
+api_next_source_commit = 94dcb875229e51b7d9838426de82a829eedae62d
+expected_latest_migration = 0058_data_ipfs_and_signing_intent_repair.sql
+checksums_ledger_sha256 = a745dddc147e75029488041c9383e8373a95b2529d7adaefb67e2c91c37028c0
 staging_backup_reference = __UNRESOLVED_VERIFIED_STAGING_BACKUP_REFERENCE__
 staging_migration_command = infisical run --env=staging --path=/services/api-next/operator -- bun run db:migrate
 ```
@@ -199,11 +218,12 @@ forward repair or database restoration, not a Worker rollback.
 
 Root custody is not a prerequisite for the isolated preflight. This plan uses
 the opaque synthetic HNS-valid label `hnsr-f49ac37b`, derived from the bound
-profile digest rather than an owned name. A read-only staging transaction at
-2026-08-26T23:43:37+04:00 found zero operator-route, DNS-zone-current, and
-app-host-revision rows for that label. The production absence check remains a
-hard stop before fixture creation. No index-to-name mapping is written to this
-repository.
+profile digest rather than an owned name. Read-only transactions found zero
+operator-route, DNS-zone-current, and app-host-revision rows in staging at
+2026-08-26T23:43:37+04:00 and production at
+2026-08-27T00:07:14+04:00. The production query used the documented Infisical
+slug `prod`; the earlier `production`-slug 404 was operator error and is
+superseded. No index-to-name mapping is written to this repository.
 
 The exact staging-only values remain unresolved:
 
@@ -276,8 +296,8 @@ populated deployment manifest is not created until the remaining provider and
 authority values exist, so its final digest remains a hard stop:
 
 ```text
-api_next_source_commit = 2b8c726984a93ba23f65bd9b87007d305a3872ae
-bundle_sha256 = 8806cc98201f9d85476e2e8424039e88381a08e70790f91c4b22e3af9bd7c43e
+api_next_source_commit = 94dcb875229e51b7d9838426de82a829eedae62d
+bundle_sha256 = 44a7df4b2393438e3ac0e308b0dccf2e39d4bf10296dec8bcb9f669776bfb0dc
 manifest_template_sha256 = 892fbb7a9fbb13c027bfea2c1f079951fdb22f7b8b06098b6b2e7da5da118937
 systemd_unit_source_sha256 = 1e8063a5b97e992264c99e742e9f8c7d55acc38451996dac508583fafbfe201d
 manifest_sha256 = __UNRESOLVED_STAGING_DEPLOYMENT_MANIFEST_SHA256__
@@ -333,9 +353,11 @@ independent public views required by the production rehearsal.
 ## Ordered execution after separate authorization
 
 1. Re-derive the selected repository refs and candidate bundle digest, then
-   complete the authenticated read-only Worker, Access, secret-reference, and
-   production synthetic-root-absence inventories. Recheck VPS state, listener
-   ownership, and the staging ledger immediately before execution.
+   complete the Access organization, application, policy, and service-token
+   inventory with the two missing read permissions. Recheck Worker versions,
+   secret-reference names, Custom Domains, VPS state, listener ownership,
+   synthetic-root absence, and both database ledgers immediately before
+   execution.
 2. Populate every unresolved marker and accept a new addendum. Stop if the
    selected tuple differs from this document.
 3. Enable the account Zero Trust organization with the owner-selected team
