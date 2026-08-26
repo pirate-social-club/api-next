@@ -548,6 +548,9 @@ CREATE FUNCTION current_hns_sale_namespace_dependency_v1(input_community_id text
            binding.community_id AS bound_community_id,
            attachment.community_id AS attachment_community_id
       FROM community_route_ownership_evidence AS evidence
+      JOIN communities AS community
+        ON community.community_id = input_community_id
+       AND community.status = 'active'
       LEFT JOIN community_canonical_route_bindings AS binding
         ON binding.verified_evidence_ref = evidence.evidence_ref
       LEFT JOIN community_route_attachment_ceremony_attempts AS ceremony

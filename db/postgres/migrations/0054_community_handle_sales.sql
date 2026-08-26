@@ -166,7 +166,6 @@ SELECT community_handle_sales_creator_grant_id_v1(
        community.created_at,
        community.created_by_user_id
   FROM communities AS community
- WHERE community.status IN ('active', 'hidden')
 ON CONFLICT (community_id, principal_account_id, authority) DO NOTHING;
 
 CREATE TABLE community_handle_sale_namespace_activation_revisions (
@@ -365,6 +364,9 @@ AS $$
            binding.community_id AS bound_community_id,
            attachment.community_id AS attachment_community_id
       FROM community_route_ownership_evidence AS evidence
+      JOIN communities AS community
+        ON community.community_id = input_community_id
+       AND community.status = 'active'
       LEFT JOIN community_canonical_route_bindings AS binding
         ON binding.verified_evidence_ref = evidence.evidence_ref
       LEFT JOIN community_route_attachment_ceremony_attempts AS ceremony

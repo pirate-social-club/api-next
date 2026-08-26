@@ -413,7 +413,16 @@ suite("community handle sales on PostgreSQL 17", () => {
           WHERE community_id=$1`,
         [archivedCommunityId],
       );
-      expect(archivedCount.rows[0]?.count).toBe(0);
+      expect(archivedCount.rows[0]?.count).toBe(1);
+      await admin.query("UPDATE communities SET status='active' WHERE community_id=$1", [
+        archivedCommunityId,
+      ]);
+      const restoredCount = await admin.query<{ readonly count: number }>(
+        `SELECT count(*)::int AS count FROM community_handle_sales_authority_grants
+          WHERE community_id=$1 AND status='active'`,
+        [archivedCommunityId],
+      );
+      expect(restoredCount.rows[0]?.count).toBe(1);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
@@ -1086,6 +1095,33 @@ suite("community handle sales on PostgreSQL 17", () => {
         [communityId],
       );
       expect(community.rows[0]?.canonical_route_binding_id).toBeNull();
+      await expect(run(sales.listSaleNamespaces({ communityId }))).resolves.toMatchObject({
+        items: [{ status: "active" }],
+      });
+
+      await admin.query("UPDATE communities SET status='archived' WHERE community_id=$1", [
+        communityId,
+      ]);
+      await expect(run(sales.listSaleNamespaces({ communityId }))).resolves.toEqual({
+        items: [],
+        next_cursor: null,
+      });
+      await expect(
+        run(
+          sales.createOffering({
+            accountId: "activation-seller",
+            communityId,
+            idempotencyKey: "archived-community-offering-key",
+            terms: terms(activation.activation.sale_namespace_activation_id),
+          }),
+        ),
+      ).rejects.toMatchObject({
+        _tag: "HandleSalesRejected",
+        reason: "sale_namespace_inactive",
+      });
+      await admin.query("UPDATE communities SET status='active' WHERE community_id=$1", [
+        communityId,
+      ]);
       await expect(run(sales.listSaleNamespaces({ communityId }))).resolves.toMatchObject({
         items: [{ status: "active" }],
       });
