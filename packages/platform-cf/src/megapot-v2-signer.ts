@@ -43,12 +43,19 @@ function canonicalAddress(value: string): `0x${string}` {
   return canonical as `0x${string}`;
 }
 
+/** Derives a public Base Sepolia signer identity without exposing key material. */
+export function deriveBaseSepoliaMegapotAddress(privateKeyValue: string): string {
+  const privateKey = privateKeyValue.toLowerCase();
+  if (!privateKeyPattern.test(privateKey)) throw new MegapotV2SignerFailed("invalid-config");
+  return privateKeyToAccount(privateKey as Hex).address.toLowerCase();
+}
+
 export function makeBaseSepoliaMegapotV2PrivateKeySigner(input: {
   readonly privateKey: string;
   readonly expectedAddress: string;
 }): MegapotV2TransactionSigner {
   const privateKey = input.privateKey.toLowerCase();
-  if (!privateKeyPattern.test(privateKey)) throw new MegapotV2SignerFailed("invalid-config");
+  deriveBaseSepoliaMegapotAddress(privateKey);
   const account = privateKeyToAccount(privateKey as Hex);
   const expectedAddress = canonicalAddress(input.expectedAddress);
   if (account.address.toLowerCase() !== expectedAddress) {
@@ -95,7 +102,7 @@ export function makeBaseSepoliaMegapotCommitmentSigner(input: {
   readonly expectedAddress: string;
 }): MegapotCommitmentSigner {
   const privateKey = input.privateKey.toLowerCase();
-  if (!privateKeyPattern.test(privateKey)) throw new MegapotV2SignerFailed("invalid-config");
+  deriveBaseSepoliaMegapotAddress(privateKey);
   const account = privateKeyToAccount(privateKey as Hex);
   const expectedAddress = canonicalAddress(input.expectedAddress);
   if (account.address.toLowerCase() !== expectedAddress) {

@@ -1,0 +1,14 @@
+{
+  "domain": "pirate.megapot-deployment-bootstrap.v1",
+  "attestation_id": "megapot-base-sepolia-v2",
+  "environment": "staging",
+  "chain_id": 84532,
+  "jackpot_address": "0x465da3c859f193a3807386387bee941b2a4c3279",
+  "usdc_address": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+  "ticket_nft_address": "0x45084829ac63f9dc6a3d4981a46fa896f9180ecd",
+  "source_tag": "0x74eda47e8ba6b24b3e5ab98bcc2ae712262b27b4842731eba98adf92b4eed6c0",
+  "jackpot_code_hash": "0x8d3104deb8a3fb663c67f8d4a2da43a15aaf5ad8b0e1d303ceed09f582dd4bc9",
+  "usdc_code_hash": "0xedc5281a85c0efecd49999a1ef668390c59b88702f2d4a07029d7f5d63059d6c",
+  "ticket_nft_code_hash": "0x01d40360e044308705eab6583bceda55707a959233cfe44d37a11cdcebada37a",
+  "abi_version": "megapot_v2"
+}

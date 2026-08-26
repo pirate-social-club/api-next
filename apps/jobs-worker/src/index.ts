@@ -45,6 +45,7 @@ import {
   makeHnsRouteRevalidationComposition,
   makeHnsRouteRevalidationJob,
 } from "./hns-route-revalidation";
+import { handleMegapotPublicCommitment } from "./megapot-commitment-public";
 import { type MegapotRewardsJobOptions, makeMegapotRewardsJob } from "./megapot-rewards";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
@@ -674,6 +675,9 @@ export function makeJobsWorkerDeclarations(
 }
 
 export default {
+  async fetch(request: Request, env: JobsWorkerEnv) {
+    return handleMegapotPublicCommitment(request, env.MEGAPOT_COMMITMENTS);
+  },
   async scheduled(event: ScheduledEvent, env: JobsWorkerEnv, ctx: ExecutionContext) {
     if (env.CONTROL_PLANE === undefined) {
       throw new Error("CONTROL_PLANE Hyperdrive binding is required for jobs-worker");

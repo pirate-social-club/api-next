@@ -38,7 +38,13 @@ const PRODUCTION_RUNTIME_SECRET_NAMES = [
   "MEGAPOT_V2_RPC_URL",
 ] as const;
 
+const STAGING_MEGAPOT_RUNTIME_SECRET_NAMES = [
+  "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN",
+  "MEGAPOT_CUSTODY_PRIVATE_KEY",
+] as const;
+
 const STAGING_PROVISIONABLE_OPERATOR_SECRET_NAMES = [
+  "MEGAPOT_REFERRER_PRIVATE_KEY",
   "R2_SEAL_PROBE_ACCESS_KEY_ID",
   "R2_SEAL_PROBE_SECRET_ACCESS_KEY",
 ] as const;
@@ -63,13 +69,16 @@ export const INFISICAL_POLICIES: readonly InfisicalPolicy[] = [
   {
     environment: "staging",
     path: "/services/api-next",
-    requiredNames: requiredWhenRuntimeEnabled("staging", RUNTIME_SECRET_NAMES),
-    allowedNames: [...RUNTIME_SECRET_NAMES],
+    requiredNames: requiredWhenRuntimeEnabled("staging", [
+      ...RUNTIME_SECRET_NAMES,
+      ...STAGING_MEGAPOT_RUNTIME_SECRET_NAMES,
+    ]),
+    allowedNames: [...RUNTIME_SECRET_NAMES, ...STAGING_MEGAPOT_RUNTIME_SECRET_NAMES],
   },
   {
     environment: "staging",
     path: "/services/api-next/operator",
-    requiredNames: [...OPERATOR_SECRET_NAMES],
+    requiredNames: [...OPERATOR_SECRET_NAMES, "MEGAPOT_REFERRER_PRIVATE_KEY"],
     allowedNames: [...OPERATOR_SECRET_NAMES, ...STAGING_PROVISIONABLE_OPERATOR_SECRET_NAMES],
   },
   {
