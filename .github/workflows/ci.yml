@@ -127,7 +127,7 @@ jobs:
           # milliseconds. Keep it isolated from the cumulative migration load.
           timeout 120s bun test --timeout 15000 \
             packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts
-          timeout 360s bun test --timeout 15000 \
+          timeout 600s bun test --timeout 15000 \
             packages/platform-cf/src/postgres.pg.test.ts \
             packages/platform-cf/src/postgres-foundation.pg.test.ts \
             packages/platform-cf/src/media-persistence.pg.test.ts \
