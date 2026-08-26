@@ -110,18 +110,36 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
   ): Promise<MediaProcessingWorkflowResult> => {
     const composition = applyRuntimePosture(env, resolve(env));
     let payload = event.payload;
-    let eventType = await step.do("reload-launch-outbox", workflowStepOptions, async () => {
-      const outbox = await composition.workflow.store.getOutbox(payload.outboxId);
-      return outbox?.eventType ?? "analysis_launch";
-    });
+    let eventType: MediaProcessingEventType | null = null;
     let sequence = 0;
 
     while (true) {
-      const result = await step.do(
-        `media-processing-${sequence}-${eventType}`,
+      const execution = await step.do(
+        `media-processing-${sequence}-${eventType ?? "launch"}`,
         workflowStepOptions,
-        async () => runMediaProcessingWorkflow(payload, eventType, composition.workflow),
+        async () => {
+          const resolvedEventType =
+            eventType ??
+            (await composition.workflow.store.getOutbox(payload.outboxId))?.eventType ??
+            null;
+          if (resolvedEventType === null) {
+            return {
+              eventType: "analysis_launch" as const,
+              result: { outcome: "inert" as const },
+            };
+          }
+          return {
+            eventType: resolvedEventType,
+            result: await runMediaProcessingWorkflow(
+              payload,
+              resolvedEventType,
+              composition.workflow,
+            ),
+          };
+        },
       );
+      eventType = execution.eventType;
+      const { result } = execution;
       const expectedEvent = nextEventType(result);
       if (expectedEvent === null) return result;
       const wakeup = await step.waitForEvent<MediaProcessingWorkflowPayload>(

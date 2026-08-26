@@ -85,6 +85,6 @@ describe("media processor Worker posture", () => {
         step,
       ),
     ).toEqual({ outcome: "blocked" });
-    expect(stepNames).toEqual(["reload-launch-outbox", "media-processing-0-analysis_launch"]);
+    expect(stepNames).toEqual(["media-processing-0-launch"]);
   });
 });
