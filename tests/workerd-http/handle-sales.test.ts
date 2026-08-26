@@ -76,9 +76,9 @@ describe("community handle sales in workerd", () => {
 
     expect(response.status).toBe(201);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    await expect(response.json()).resolves.toMatchObject({
+    await expect(response.json()).resolves.toEqual({
       recipient_token: rawToken,
-      replayed: false,
+      expires_at: "2026-08-26T12:10:00.000Z",
     });
   });
 

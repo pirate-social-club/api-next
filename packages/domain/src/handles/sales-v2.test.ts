@@ -382,6 +382,302 @@ describe("handle sales immutable hash vectors", () => {
       sha256: "7ff2f0b71abc0bf1513b2be8f8eb9ad5f2f46d8e79285a64821f2f9c0df7c49b",
     });
   });
+
+  test("pins the literal-null cap encoding", () => {
+    expect(
+      handleOfferingRevisionV2Hash({
+        offering_id: "offering_free_02",
+        offering_revision: 1,
+        community_id: "community_pokemon",
+        family: "hns",
+        namespace_root: "charizard",
+        sale_namespace_activation_id: "sale_namespace_activation_01",
+        sale_namespace_activation_generation: 3,
+        label_scope: broadScope,
+        allocation_kind: "first_come_v1",
+        max_active_grants_per_account: null,
+        fulfillment_kind: "hosted_persona_v1",
+        qualification_policy: curated,
+        pricing,
+        issuance_driver_id: "hosted_persona-local",
+        issuance_driver_version: "1",
+        quote_ttl_seconds: 120,
+        reservation_ttl_seconds: 300,
+      }),
+    ).toEqual({
+      bytes: 691,
+      preimage: `["pirate-handle-offering-revision-v2","offering_free_02",1,"community_pokemon","hns","charizard",["sale_namespace_activation_01",3],["label_rule_v2","hns_ascii_ldh_1_63_v1","reserved_labels_01",1,"${one}",["length_band_v1",8,32]],["first_come_v1"],["account_cap_v1",null],["hosted_persona_v1"],["curated_policy_v1","qualification_policy_01",7,"${two}","${three}"],["free_v1","platform_free_handles_v1",1,"${pricingHash}","0"],["hns","hosted_persona-local","1"],120,300]`,
+      sha256: "1d7063ea83313d7c7cbbe920534780afb902011300f07deb1d6ad89615fbe9ce",
+    });
+  });
+
+  test("separates hash domains and changes every representative mutation", () => {
+    const binding = handleAccountDirectoryBindingHash({ binding_version: "1" });
+    const requestV1 = handleAccountAllowlistPolicyRequestV1Hash({
+      actor_account_id: "account_private_seller_01",
+      community_id: "community_pokemon",
+      subject_account_id: "account_private_approved_01",
+      expected_account_directory_binding_version: "1",
+      idempotency_key: "policy-key-01",
+    });
+    const tokenRequest = handleDirectGrantRecipientTokenRequestHash({
+      actor_account_id: "account_private_approved_01",
+      community_id: "community_pokemon",
+      idempotency_key: "token-key-01",
+    });
+    const requestV2 = handleAccountAllowlistPolicyRequestV2Hash({
+      actor_account_id: "account_private_seller_01",
+      community_id: "community_pokemon",
+      resolved_subject_account_id: "account_private_approved_01",
+      expected_account_directory_binding_version: "1",
+      idempotency_key: "policy-key-01",
+    });
+    const policy = handleAccountAllowlistPolicyHash({
+      policy_id: "qualification_policy_direct_01",
+      policy_revision: 1,
+      requirement_id: "requirement_allowlist_01",
+      requirement_revision: 1,
+      subject_account_id: "account_private_approved_01",
+      binding_version: "1",
+      binding_hash: binding.sha256,
+    });
+    const qualification = handleDirectGrantQualificationHash({
+      policy_id: "qualification_policy_direct_01",
+      policy_revision: 1,
+      policy_hash: policy.sha256,
+      provider_binding_hash: binding.sha256,
+    });
+    const activation = handleSaleNamespaceActivationHash({
+      sale_namespace_activation_id: "sale_namespace_activation_01",
+      sale_namespace_activation_generation: 3,
+      community_id: "community_pokemon",
+      family: "hns",
+      canonical_root: "charizard",
+      namespace_authority_reference: "namespace_authority_01",
+      namespace_authority_generation: 7,
+      dns_zone_activation_id: "dns_zone_activation_01",
+      dns_zone_activation_generation: 5,
+    });
+    const offering = handleOfferingRevisionV2Hash({
+      offering_id: "offering_free_02",
+      offering_revision: 1,
+      community_id: "community_pokemon",
+      family: "hns",
+      namespace_root: "charizard",
+      sale_namespace_activation_id: "sale_namespace_activation_01",
+      sale_namespace_activation_generation: 3,
+      label_scope: broadScope,
+      allocation_kind: "first_come_v1",
+      max_active_grants_per_account: 1,
+      fulfillment_kind: "hosted_persona_v1",
+      qualification_policy: curated,
+      pricing,
+      issuance_driver_id: "hosted_persona-local",
+      issuance_driver_version: "1",
+      quote_ttl_seconds: 120,
+      reservation_ttl_seconds: 300,
+    });
+    const quote = handleQuoteV2Hash({
+      quote_id: "quote_01",
+      offering_id: "offering_free_02",
+      offering_revision: 1,
+      offering_hash: offering.sha256,
+      sale_namespace_activation_id: "sale_namespace_activation_01",
+      sale_namespace_activation_generation: 3,
+      fulfillment_kind: "hosted_persona_v1",
+      owner_persona_id: "persona_public_01",
+      family: "hns",
+      namespace_root: "charizard",
+      handle_label: "longname",
+      pricing,
+      eligibility: {
+        decision: "passed",
+        policy_revision: 7,
+        policy_hash: two,
+        evidence_use_ids: ["evidence_use_01"],
+        evaluated_at: "2026-08-25T16:00:00.000Z",
+      },
+      quoted_at: "2026-08-25T16:00:00.000Z",
+      expires_at: "2026-08-25T16:02:00.000Z",
+    });
+    const reservation = handleReservationV2Hash({
+      reservation_id: "reservation_01",
+      quote_id: "quote_01",
+      quote_hash: quote.sha256,
+      offering_id: "offering_free_02",
+      offering_hash: offering.sha256,
+      sale_namespace_activation_id: "sale_namespace_activation_01",
+      sale_namespace_activation_generation: 3,
+      fulfillment_kind: "hosted_persona_v1",
+      owner_persona_id: "persona_public_01",
+      family: "hns",
+      namespace_root: "charizard",
+      handle_label: "longname",
+      reserved_at: "2026-08-25T16:00:30.000Z",
+      expires_at: "2026-08-25T16:05:30.000Z",
+    });
+    const grant = handleGrantFinalizeV2Hash({
+      claim_id: "claim_01",
+      reservation_id: "reservation_01",
+      reservation_hash: reservation.sha256,
+      offering_id: "offering_free_02",
+      offering_hash: offering.sha256,
+      sale_namespace_activation_id: "sale_namespace_activation_01",
+      sale_namespace_activation_generation: 3,
+      fulfillment_kind: "hosted_persona_v1",
+      family: "hns",
+      namespace_root: "charizard",
+      handle_label: "longname",
+      owner_persona_id: "persona_public_01",
+      issuance_operation_id: "issuance:hns-hosted:01",
+      claim_request_hash: four,
+    });
+
+    const domainHashes = [
+      binding,
+      requestV1,
+      tokenRequest,
+      requestV2,
+      policy,
+      qualification,
+      activation,
+      offering,
+      quote,
+      reservation,
+      grant,
+    ];
+    expect(new Set(domainHashes.map(({ sha256 }) => sha256)).size).toBe(domainHashes.length);
+    expect(
+      new Set(domainHashes.map(({ preimage }) => (JSON.parse(preimage) as readonly unknown[])[0]))
+        .size,
+    ).toBe(domainHashes.length);
+
+    const mutations = [
+      handleAccountDirectoryBindingHash({ binding_version: "2" }),
+      handleAccountAllowlistPolicyRequestV1Hash({
+        actor_account_id: "account_private_seller_01",
+        community_id: "community_other",
+        subject_account_id: "account_private_approved_01",
+        expected_account_directory_binding_version: "1",
+        idempotency_key: "policy-key-01",
+      }),
+      handleDirectGrantRecipientTokenRequestHash({
+        actor_account_id: "account_private_approved_01",
+        community_id: "community_other",
+        idempotency_key: "token-key-01",
+      }),
+      handleAccountAllowlistPolicyRequestV2Hash({
+        actor_account_id: "account_private_seller_01",
+        community_id: "community_pokemon",
+        resolved_subject_account_id: "account_private_other_01",
+        expected_account_directory_binding_version: "1",
+        idempotency_key: "policy-key-01",
+      }),
+      handleAccountAllowlistPolicyHash({
+        policy_id: "qualification_policy_direct_01",
+        policy_revision: 1,
+        requirement_id: "requirement_allowlist_01",
+        requirement_revision: 1,
+        subject_account_id: "account_private_other_01",
+        binding_version: "1",
+        binding_hash: binding.sha256,
+      }),
+      handleDirectGrantQualificationHash({
+        policy_id: "qualification_policy_direct_02",
+        policy_revision: 1,
+        policy_hash: policy.sha256,
+        provider_binding_hash: binding.sha256,
+      }),
+      handleSaleNamespaceActivationHash({
+        sale_namespace_activation_id: "sale_namespace_activation_01",
+        sale_namespace_activation_generation: 4,
+        community_id: "community_pokemon",
+        family: "hns",
+        canonical_root: "charizard",
+        namespace_authority_reference: "namespace_authority_01",
+        namespace_authority_generation: 7,
+        dns_zone_activation_id: "dns_zone_activation_01",
+        dns_zone_activation_generation: 5,
+      }),
+      handleOfferingRevisionV2Hash({
+        offering_id: "offering_free_02",
+        offering_revision: 1,
+        community_id: "community_pokemon",
+        family: "hns",
+        namespace_root: "charizard",
+        sale_namespace_activation_id: "sale_namespace_activation_01",
+        sale_namespace_activation_generation: 3,
+        label_scope: broadScope,
+        allocation_kind: "first_come_v1",
+        max_active_grants_per_account: null,
+        fulfillment_kind: "hosted_persona_v1",
+        qualification_policy: curated,
+        pricing,
+        issuance_driver_id: "hosted_persona-local",
+        issuance_driver_version: "1",
+        quote_ttl_seconds: 120,
+        reservation_ttl_seconds: 300,
+      }),
+      handleQuoteV2Hash({
+        quote_id: "quote_01",
+        offering_id: "offering_free_02",
+        offering_revision: 1,
+        offering_hash: offering.sha256,
+        sale_namespace_activation_id: "sale_namespace_activation_01",
+        sale_namespace_activation_generation: 3,
+        fulfillment_kind: "hosted_persona_v1",
+        owner_persona_id: "persona_public_02",
+        family: "hns",
+        namespace_root: "charizard",
+        handle_label: "longname",
+        pricing,
+        eligibility: {
+          decision: "passed",
+          policy_revision: 7,
+          policy_hash: two,
+          evidence_use_ids: ["evidence_use_01"],
+          evaluated_at: "2026-08-25T16:00:00.000Z",
+        },
+        quoted_at: "2026-08-25T16:00:00.000Z",
+        expires_at: "2026-08-25T16:02:00.000Z",
+      }),
+      handleReservationV2Hash({
+        reservation_id: "reservation_01",
+        quote_id: "quote_01",
+        quote_hash: quote.sha256,
+        offering_id: "offering_free_02",
+        offering_hash: offering.sha256,
+        sale_namespace_activation_id: "sale_namespace_activation_01",
+        sale_namespace_activation_generation: 3,
+        fulfillment_kind: "hosted_persona_v1",
+        owner_persona_id: "persona_public_01",
+        family: "hns",
+        namespace_root: "charizard",
+        handle_label: "othername",
+        reserved_at: "2026-08-25T16:00:30.000Z",
+        expires_at: "2026-08-25T16:05:30.000Z",
+      }),
+      handleGrantFinalizeV2Hash({
+        claim_id: "claim_02",
+        reservation_id: "reservation_01",
+        reservation_hash: reservation.sha256,
+        offering_id: "offering_free_02",
+        offering_hash: offering.sha256,
+        sale_namespace_activation_id: "sale_namespace_activation_01",
+        sale_namespace_activation_generation: 3,
+        fulfillment_kind: "hosted_persona_v1",
+        family: "hns",
+        namespace_root: "charizard",
+        handle_label: "longname",
+        owner_persona_id: "persona_public_01",
+        issuance_operation_id: "issuance:hns-hosted:01",
+        claim_request_hash: four,
+      }),
+    ];
+    for (const [index, mutation] of mutations.entries()) {
+      expect(mutation.sha256).not.toBe(domainHashes[index]?.sha256);
+    }
+  });
 });
 
 describe("handle sales policy", () => {

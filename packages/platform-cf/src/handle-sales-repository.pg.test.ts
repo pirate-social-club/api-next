@@ -363,6 +363,7 @@ suite("community handle sales on PostgreSQL 17", () => {
         "INSERT INTO users (user_id,status) VALUES ('legacy-handle-owner','active')",
       );
       const communityId = "community_123e4567-e89b-42d3-a456-426614174052";
+      const archivedCommunityId = "community_123e4567-e89b-42d3-a456-426614174062";
       await admin.query(
         `INSERT INTO communities (
            community_id,display_name,status,created_by_user_id,created_at,updated_at,
@@ -370,6 +371,14 @@ suite("community handle sales on PostgreSQL 17", () => {
          ) VALUES ($1,'Legacy Handle Community','active','legacy-handle-owner',
                    clock_timestamp(),clock_timestamp(),NULL,'optional_route_v2')`,
         [communityId],
+      );
+      await admin.query(
+        `INSERT INTO communities (
+           community_id,display_name,status,created_by_user_id,created_at,updated_at,
+           route_slug,route_authority_version
+         ) VALUES ($1,'Archived Handle Community','archived','legacy-handle-owner',
+                   clock_timestamp(),clock_timestamp(),NULL,'optional_route_v2')`,
+        [archivedCommunityId],
       );
       await Effect.runPromise(
         Effect.scoped(applyPostgresMigrations(migrations).pipe(Effect.provide(layer))),
@@ -399,6 +408,12 @@ suite("community handle sales on PostgreSQL 17", () => {
         [communityId],
       );
       expect(count.rows[0]?.count).toBe(1);
+      const archivedCount = await admin.query<{ readonly count: number }>(
+        `SELECT count(*)::int AS count FROM community_handle_sales_authority_grants
+          WHERE community_id=$1`,
+        [archivedCommunityId],
+      );
+      expect(archivedCount.rows[0]?.count).toBe(0);
     } finally {
       await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
       await admin.end();
@@ -473,14 +488,17 @@ suite("community handle sales on PostgreSQL 17", () => {
       expect(JSON.stringify(policy)).not.toContain("recipient-account");
       expect(JSON.stringify(policy)).not.toContain(token.recipient_token);
       const consumedToken = await admin.query<{
-        readonly status: string;
-        readonly ciphertext_dropped: boolean;
+        readonly token_rows: number;
+        readonly token_actions: number;
       }>(
-        `SELECT status,token_ciphertext IS NULL AS ciphertext_dropped
-           FROM handle_direct_grant_recipient_tokens
-          WHERE recipient_account_id='recipient-account'`,
+        `SELECT
+           (SELECT count(*)::int FROM handle_direct_grant_recipient_tokens
+             WHERE recipient_account_id='recipient-account') AS token_rows,
+           (SELECT count(*)::int FROM handle_direct_grant_recipient_token_actions
+             WHERE actor_account_id='recipient-account'
+               AND idempotency_key='recipient-token-key') AS token_actions`,
       );
-      expect(consumedToken.rows[0]).toEqual({ status: "consumed", ciphertext_dropped: true });
+      expect(consumedToken.rows[0]).toEqual({ token_rows: 0, token_actions: 0 });
       await expect(
         run(
           sales.createQualificationPolicy({
@@ -856,6 +874,32 @@ suite("community handle sales on PostgreSQL 17", () => {
                    'seller-account')`,
         [communityId],
       );
+      await admin.query(
+        `WITH timing AS (
+           SELECT clock_timestamp() - interval '700 seconds' AS created_at
+         )
+         INSERT INTO handle_direct_grant_recipient_tokens (
+           token_id,recipient_account_id,community_id,token_lookup_digest,
+           token_hmac_key_version,token_ciphertext,token_envelope_key_version,
+           status,created_at,expires_at
+         )
+         SELECT 'expired-direct-token','direct-target',$1,$2,'h1',
+                decode(repeat('00',29),'hex'),'e1','current',created_at,
+                created_at + interval '600 seconds'
+           FROM timing`,
+        [communityId, "e".repeat(64)],
+      );
+      await admin.query(
+        `INSERT INTO handle_direct_grant_recipient_token_actions (
+           action_id,actor_account_id,community_id,endpoint_template,idempotency_key,
+           request_hash,token_id,token_lookup_digest,committed_at
+         ) VALUES (
+           'expired-direct-token-action','direct-target',$1,
+           '/communities/:communityId/handle-direct-grant-recipient-tokens',
+           'expired-direct-token-key',$2,'expired-direct-token',$3,clock_timestamp()
+         )`,
+        [communityId, "d".repeat(64), "e".repeat(64)],
+      );
       const supersededToken = await run(
         sales.createRecipientToken({
           accountId: "direct-target",
@@ -863,6 +907,17 @@ suite("community handle sales on PostgreSQL 17", () => {
           idempotencyKey: "superseded-token-key",
         }),
       );
+      const expiredCleanup = await admin.query<{
+        readonly token_rows: number;
+        readonly token_actions: number;
+      }>(
+        `SELECT
+           (SELECT count(*)::int FROM handle_direct_grant_recipient_tokens
+             WHERE token_id='expired-direct-token') AS token_rows,
+           (SELECT count(*)::int FROM handle_direct_grant_recipient_token_actions
+             WHERE token_id='expired-direct-token') AS token_actions`,
+      );
+      expect(expiredCleanup.rows[0]).toEqual({ token_rows: 0, token_actions: 0 });
       const currentToken = await run(
         sales.createRecipientToken({
           accountId: "direct-target",
@@ -870,6 +925,15 @@ suite("community handle sales on PostgreSQL 17", () => {
           idempotencyKey: "current-token-key",
         }),
       );
+      await expect(
+        run(
+          sales.createRecipientToken({
+            accountId: "direct-target",
+            communityId,
+            idempotencyKey: "superseded-token-key",
+          }),
+        ),
+      ).resolves.toEqual({ ...supersededToken, replayed: true });
       await expect(
         run(
           sales.createQualificationPolicy({
@@ -942,6 +1006,27 @@ suite("community handle sales on PostgreSQL 17", () => {
           }),
         ),
       ).resolves.toMatchObject({ kind: "account_allowlist_policy_authored_v2" });
+
+      const activeCounter = await admin.query<{ readonly active_grant_count: number }>(
+        `SELECT active_grant_count::int AS active_grant_count
+           FROM handle_account_offering_grant_counters
+          WHERE account_id='recipient-account' AND offering_id=$1`,
+        [offering.offering.offering_id],
+      );
+      expect(activeCounter.rows[0]?.active_grant_count).toBe(1);
+      await admin.query(
+        `UPDATE handle_grants
+            SET status='revoked',updated_at=clock_timestamp()
+          WHERE claim_id=$1`,
+        [claim.claim.claim_id],
+      );
+      const releasedCounter = await admin.query<{ readonly active_grant_count: number }>(
+        `SELECT active_grant_count::int AS active_grant_count
+           FROM handle_account_offering_grant_counters
+          WHERE account_id='recipient-account' AND offering_id=$1`,
+        [offering.offering.offering_id],
+      );
+      expect(releasedCounter.rows[0]?.active_grant_count).toBe(0);
     });
     completedTestCount += 1;
   }, 20_000);

@@ -53,6 +53,6 @@
     "0050_song_lyrics_foundation.sql": "09318fe6ba64eb98d7d98a85d3dd22c631af907f62aedc01ba2448a8cbc61b57",
     "0051_activity_qualification.sql": "6358017bcdfbe50b2707d5a2677d5b4ede4e80a00953c3b262fe299af00a70e7",
     "0052_media_finalize_fence.sql": "2bb62ec5a5575457cace6abd4bbdbaac0a1ab6b7d508a3dafbb709382cd6d644",
-    "0053_community_handle_sales.sql": "16a1fb0ad819832ab1ef836dc2588be1a4dae722521cae19327a14906ed5dd6e"
+    "0053_community_handle_sales.sql": "4da51cbf46eae5d4df272803f28db1c896e152883effef483186193e056ebaf7"
   }
 }

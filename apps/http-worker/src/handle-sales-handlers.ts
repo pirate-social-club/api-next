@@ -154,7 +154,8 @@ export function makeHandleSalesHandlers(
           idempotencyKey: body.idempotency_key,
         }),
       );
-      return withEndpointResult(result, result.replayed ? 200 : 201);
+      const { replayed, ...response } = result;
+      return withEndpointResult(response, replayed ? 200 : 201);
     },
     CreateHandleQualificationPolicy: async (request) => {
       const path = request.params as { readonly communityId: string };

@@ -506,7 +506,6 @@ export const CreateHandleDirectGrantRecipientToken = endpoint({
       ),
     ),
     expires_at: CanonicalInstant,
-    replayed: Schema.Boolean,
   }),
   successStatus: [200, 201],
   errors: [

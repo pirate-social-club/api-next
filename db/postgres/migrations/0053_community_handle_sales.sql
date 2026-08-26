@@ -166,6 +166,7 @@ SELECT community_handle_sales_creator_grant_id_v1(
        community.created_at,
        community.created_by_user_id
   FROM communities AS community
+ WHERE community.status IN ('active', 'hidden')
 ON CONFLICT (community_id, principal_account_id, authority) DO NOTHING;
 
 CREATE TABLE community_handle_sale_namespace_activation_revisions (
@@ -1007,6 +1008,10 @@ CREATE UNIQUE INDEX handle_recipient_token_current_unique
   ON handle_direct_grant_recipient_tokens (recipient_account_id, community_id)
   WHERE status = 'current';
 
+CREATE INDEX handle_recipient_token_expiry_cleanup_idx
+  ON handle_direct_grant_recipient_tokens (expires_at, token_id)
+  WHERE status IN ('current', 'superseded');
+
 CREATE TABLE handle_direct_grant_recipient_token_actions (
   action_id TEXT PRIMARY KEY,
   actor_account_id TEXT NOT NULL REFERENCES users (user_id),
@@ -1016,7 +1021,8 @@ CREATE TABLE handle_direct_grant_recipient_token_actions (
   ),
   idempotency_key TEXT NOT NULL,
   request_hash TEXT NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
-  token_id TEXT NOT NULL REFERENCES handle_direct_grant_recipient_tokens (token_id),
+  token_id TEXT NOT NULL REFERENCES handle_direct_grant_recipient_tokens (token_id)
+    ON DELETE CASCADE,
   token_lookup_digest TEXT NOT NULL CHECK (token_lookup_digest ~ '^[0-9a-f]{64}$'),
   committed_at TIMESTAMPTZ NOT NULL,
   CONSTRAINT handle_recipient_token_action_replay_unique UNIQUE (
@@ -2008,6 +2014,30 @@ CREATE TRIGGER handle_grant_change_guard
 BEFORE UPDATE OR DELETE ON handle_grants
 FOR EACH ROW EXECUTE FUNCTION guard_handle_grant_change_v2();
 
+CREATE FUNCTION decrement_handle_account_offering_grant_counter_v1()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  UPDATE handle_account_offering_grant_counters
+     SET active_grant_count = active_grant_count - 1,
+         updated_at = NEW.updated_at
+   WHERE account_id = OLD.owner_account_id
+     AND offering_id = OLD.offering_id
+     AND active_grant_count > 0;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'active handle grant counter is missing';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER handle_grant_counter_decrement
+AFTER UPDATE OF status ON handle_grants
+FOR EACH ROW
+WHEN (OLD.status = 'active' AND NEW.status IN ('revoked', 'tombstoned'))
+EXECUTE FUNCTION decrement_handle_account_offering_grant_counter_v1();
+
 CREATE FUNCTION guard_handle_recipient_token_update_v1()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -2033,6 +2063,24 @@ $$;
 CREATE TRIGGER handle_recipient_token_update_guard
 BEFORE UPDATE ON handle_direct_grant_recipient_tokens
 FOR EACH ROW EXECUTE FUNCTION guard_handle_recipient_token_update_v1();
+
+CREATE FUNCTION guard_handle_recipient_token_action_change_v1()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  IF TG_OP = 'DELETE'
+    AND pg_trigger_depth() > 1
+    AND NOT EXISTS (
+      SELECT 1
+        FROM handle_direct_grant_recipient_tokens AS token
+       WHERE token.token_id = OLD.token_id
+    ) THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION 'handle recipient-token action is append-only';
+END;
+$$;
 
 CREATE FUNCTION guard_handle_persona_link_confirmation_change_v1()
 RETURNS trigger
@@ -2102,7 +2150,7 @@ FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
 
 CREATE TRIGGER handle_direct_grant_recipient_token_actions_append_only
 BEFORE UPDATE OR DELETE ON handle_direct_grant_recipient_token_actions
-FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+FOR EACH ROW EXECUTE FUNCTION guard_handle_recipient_token_action_change_v1();
 
 CREATE TRIGGER handle_qualification_policy_actions_append_only
 BEFORE UPDATE OR DELETE ON handle_qualification_policy_actions

@@ -624,6 +624,23 @@ CREATE FUNCTION current_hns_sale_namespace_dependency_v1(input_community_id text
    WHERE database_now IS NOT NULL
 $$;
 
+CREATE FUNCTION decrement_handle_account_offering_grant_counter_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  UPDATE handle_account_offering_grant_counters
+     SET active_grant_count = active_grant_count - 1,
+         updated_at = NEW.updated_at
+   WHERE account_id = OLD.owner_account_id
+     AND offering_id = OLD.offering_id
+     AND active_grant_count > 0;
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'active handle grant counter is missing';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
 CREATE FUNCTION default_public_handle_persona() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -2778,6 +2795,23 @@ BEGIN
     RAISE EXCEPTION 'handle quote transition is invalid';
   END IF;
   RETURN NEW;
+END;
+$$;
+
+CREATE FUNCTION guard_handle_recipient_token_action_change_v1() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+BEGIN
+  IF TG_OP = 'DELETE'
+    AND pg_trigger_depth() > 1
+    AND NOT EXISTS (
+      SELECT 1
+        FROM handle_direct_grant_recipient_tokens AS token
+       WHERE token.token_id = OLD.token_id
+    ) THEN
+    RETURN OLD;
+  END IF;
+  RAISE EXCEPTION 'handle recipient-token action is append-only';
 END;
 $$;
 
@@ -14630,6 +14664,8 @@ CREATE UNIQUE INDEX handle_recipient_token_current_unique ON handle_direct_grant
 
 CREATE UNIQUE INDEX handle_recipient_token_digest_unique ON handle_direct_grant_recipient_tokens USING btree (token_hmac_key_version, token_lookup_digest);
 
+CREATE INDEX handle_recipient_token_expiry_cleanup_idx ON handle_direct_grant_recipient_tokens USING btree (expires_at, token_id) WHERE (status = ANY (ARRAY['current'::text, 'superseded'::text]));
+
 CREATE INDEX handle_sale_activation_current_community_idx ON community_handle_sale_namespace_activation_current USING btree (community_id, updated_at DESC);
 
 CREATE INDEX hns_authority_inventories_current_idx ON hns_authority_inventories USING btree (registry_reference, published_at DESC, expires_at);
@@ -14952,9 +14988,11 @@ CREATE TRIGGER handle_claim_insert_guard BEFORE INSERT ON handle_claims FOR EACH
 
 CREATE TRIGGER handle_comment_author_footprint AFTER INSERT ON comments FOR EACH ROW EXECUTE FUNCTION track_handle_authored_content_footprint_v1();
 
-CREATE TRIGGER handle_direct_grant_recipient_token_actions_append_only BEFORE DELETE OR UPDATE ON handle_direct_grant_recipient_token_actions FOR EACH ROW EXECUTE FUNCTION reject_handle_sales_append_only_change_v1();
+CREATE TRIGGER handle_direct_grant_recipient_token_actions_append_only BEFORE DELETE OR UPDATE ON handle_direct_grant_recipient_token_actions FOR EACH ROW EXECUTE FUNCTION guard_handle_recipient_token_action_change_v1();
 
 CREATE TRIGGER handle_grant_change_guard BEFORE DELETE OR UPDATE ON handle_grants FOR EACH ROW EXECUTE FUNCTION guard_handle_grant_change_v2();
+
+CREATE TRIGGER handle_grant_counter_decrement AFTER UPDATE OF status ON handle_grants FOR EACH ROW WHEN (((old.status = 'active'::text) AND (new.status = ANY (ARRAY['revoked'::text, 'tombstoned'::text])))) EXECUTE FUNCTION decrement_handle_account_offering_grant_counter_v1();
 
 CREATE TRIGGER handle_grant_insert_guard BEFORE INSERT ON handle_grants FOR EACH ROW EXECUTE FUNCTION validate_handle_grant_insert_v2();
 
@@ -15965,7 +16003,7 @@ ALTER TABLE ONLY handle_direct_grant_recipient_token_actions
     ADD CONSTRAINT handle_direct_grant_recipient_token_actions_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);
 
 ALTER TABLE ONLY handle_direct_grant_recipient_token_actions
-    ADD CONSTRAINT handle_direct_grant_recipient_token_actions_token_id_fkey FOREIGN KEY (token_id) REFERENCES handle_direct_grant_recipient_tokens(token_id);
+    ADD CONSTRAINT handle_direct_grant_recipient_token_actions_token_id_fkey FOREIGN KEY (token_id) REFERENCES handle_direct_grant_recipient_tokens(token_id) ON DELETE CASCADE;
 
 ALTER TABLE ONLY handle_direct_grant_recipient_tokens
     ADD CONSTRAINT handle_direct_grant_recipient_tokens_community_id_fkey FOREIGN KEY (community_id) REFERENCES communities(community_id);

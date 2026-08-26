@@ -12254,15 +12254,11 @@
                     },
                     "expires_at": {
                       "type": "string"
-                    },
-                    "replayed": {
-                      "type": "boolean"
                     }
                   },
                   "required": [
                     "recipient_token",
-                    "expires_at",
-                    "replayed"
+                    "expires_at"
                   ],
                   "additionalProperties": false
                 }
@@ -12281,15 +12277,11 @@
                     },
                     "expires_at": {
                       "type": "string"
-                    },
-                    "replayed": {
-                      "type": "boolean"
                     }
                   },
                   "required": [
                     "recipient_token",
-                    "expires_at",
-                    "replayed"
+                    "expires_at"
                   ],
                   "additionalProperties": false
                 }

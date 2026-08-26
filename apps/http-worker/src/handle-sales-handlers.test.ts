@@ -85,7 +85,10 @@ describe("handle sales HTTP handlers", () => {
     );
     expect(response.status).toBe(201);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toMatchObject({ recipient_token: rawToken, replayed: false });
+    expect(await response.json()).toEqual({
+      recipient_token: rawToken,
+      expires_at: "2026-08-26T00:10:00.000Z",
+    });
     expect(persistedAccount).toBe("account-http");
   });
 

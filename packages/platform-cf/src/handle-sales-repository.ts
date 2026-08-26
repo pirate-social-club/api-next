@@ -556,6 +556,24 @@ const currentDatabaseTime = (transaction: ControlPlaneTransaction) =>
     readonly: false,
   });
 
+const purgeExpiredRecipientTokens = (transaction: ControlPlaneTransaction) =>
+  transaction.execute({
+    label: "handle-sales.recipient-token.expired.purge",
+    text: `DELETE FROM handle_direct_grant_recipient_tokens AS token
+            USING (
+              SELECT expired.token_id
+                FROM handle_direct_grant_recipient_tokens AS expired
+               WHERE expired.status IN ('current','superseded')
+                 AND expired.expires_at <= clock_timestamp()
+               ORDER BY expired.expires_at,expired.token_id
+               LIMIT 256
+               FOR UPDATE SKIP LOCKED
+            ) AS expired
+            WHERE token.token_id=expired.token_id`,
+    values: [],
+    readonly: false,
+  });
+
 const mutationReplay = (
   transaction: ControlPlaneTransaction,
   table: "community_handle_sale_namespace_activation_actions" | "community_handle_offering_actions",
@@ -1410,6 +1428,7 @@ export function makeControlPlaneHandleSalesRepository() {
           db.withTransaction((transaction) =>
             Effect.gen(function* () {
               const endpoint = "/communities/:communityId/handle-direct-grant-recipient-tokens";
+              yield* purgeExpiredRecipientTokens(transaction);
               const hash = handleDirectGrantRecipientTokenRequestHash({
                 actor_account_id: input.accountId,
                 community_id: input.communityId,
@@ -1488,8 +1507,7 @@ export function makeControlPlaneHandleSalesRepository() {
               yield* transaction.execute({
                 label: "handle-sales.recipient-token.supersede",
                 text: `UPDATE handle_direct_grant_recipient_tokens
-                          SET status='superseded',superseded_at=$3::timestamptz,
-                              token_ciphertext=NULL,token_envelope_key_version=NULL
+                          SET status='superseded',superseded_at=$3::timestamptz
                         WHERE recipient_account_id=$1 AND community_id=$2 AND status='current'`,
                 values: [input.accountId, input.communityId, now],
                 readonly: false,
@@ -1612,6 +1630,7 @@ export function makeControlPlaneHandleSalesRepository() {
                   replayed: true,
                 };
               }
+              yield* purgeExpiredRecipientTokens(transaction);
               const binding = yield* transaction.execute<Row>({
                 label: "handle-sales.policy.binding.read",
                 text: `SELECT binding_version,binding_hash
@@ -1713,20 +1732,9 @@ export function makeControlPlaneHandleSalesRepository() {
               });
               yield* transaction.execute({
                 label: "handle-sales.policy.recipient-token.consume",
-                text: `UPDATE handle_direct_grant_recipient_tokens
-                          SET status='consumed',consumed_at=$2::timestamptz,
-                              consumed_by_seller_account_id=$3,consuming_idempotency_key=$4,
-                              qualification_policy_id=$5,policy_request_hash=$6,
-                              token_ciphertext=NULL,token_envelope_key_version=NULL
+                text: `DELETE FROM handle_direct_grant_recipient_tokens
                         WHERE token_id=$1 AND status='current'`,
-                values: [
-                  text(token, "token_id"),
-                  now,
-                  input.accountId,
-                  input.idempotencyKey,
-                  input.policyId,
-                  request,
-                ],
+                values: [text(token, "token_id")],
                 readonly: false,
               });
               return {
