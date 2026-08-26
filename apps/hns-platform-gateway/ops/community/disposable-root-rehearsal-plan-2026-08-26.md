@@ -137,10 +137,18 @@ The private authority capability is
 `POST /internal/hns/solid-host-authority/v2/resolve`. The protected application
 branch is `/api` and `/api/*`. Unsafe requests require the exact dynamic Origin
 `https://app.<normalized-root>`. Current authority comes from the selected
-control-plane database. Both branches share the one exact protected api-next
-origin, Access validator, and pinned api-next audience; their downstream wire
-validation is different. The Durable Object migration tag is `v4`, the class
-is `HnsForwarderReplayStoreDO`, and the consumer scope is
+control-plane database. Both branches are intended to share one exact
+protected api-next origin, Access validator, and pinned api-next audience;
+their downstream wire validation is different. Current Solid source
+nevertheless rejects equal `HNS_COMMUNITY_APP_API_ORIGIN` and
+`HNS_COMMUNITY_APP_AUTHORITY_ORIGIN` values. The proposed two-application
+topology cannot assemble until
+`solid-hns-community-app-shared-protected-api-origin` is reviewed and merged.
+This source defect is a hard stop for both the staging preflight and this
+production plan; it may not be worked around by inventing a third Access
+application or api-next deployment in an operations addendum. The Durable
+Object migration tag is `v4`, the class is
+`HnsForwarderReplayStoreDO`, and the consumer scope is
 `pirate:hns-forwarder-v3:api-next-community-app-api:v1`.
 
 Solid compares the request origin with
@@ -171,8 +179,10 @@ HNS_COMMUNITY_APP_AUTHORITY_ACCESS_CLIENT_SECRET
 HNS_COMMUNITY_APP_REPLAY
 ```
 
-The two Solid service-token pairs must be different. The Solid replay Durable
-Object migration tag is `v1`, its class is
+The two Solid service-token pairs must be different. After the shared-origin
+correction, equality of the two protected api-next origins is allowed only
+when those credentials remain distinct. The Solid replay Durable Object
+migration tag is `v1`, its class is
 `HnsCommunityAppReplayStoreDO`, and its consumer scope is
 `pirate:hns-forwarder-v3:pirate-web-solid-community-app:v1`.
 
@@ -210,6 +220,12 @@ hns-community-forwarder-key-registry
 hns-community-solid-access-client-id
 hns-community-solid-access-client-secret
 ```
+
+The optional staging engineering preflight is specified separately in
+`staging-shadow-preflight-plan-2026-08-26.md`. It requires a source-closed
+`staging-shadow` mode on 4269/4271 and may not consume the production shadow
+listeners 4169/4171. That staging-only executable mode does not change the
+production listener plan above.
 
 ### Cloudflare account and Worker estate
 
