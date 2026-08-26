@@ -1133,6 +1133,9 @@ export async function finalizeMediaSubmission(
     if (!(error instanceof MediaSealFailure)) {
       throw new InternalError({ message: "Media upload seal failed" });
     }
+    if (error.code === "sibling_convergence_unavailable") {
+      throw new InternalError({ message: "Media upload convergence is not yet verifiable" });
+    }
     const evidenceRef = sealEvidence(error.retainedDestination, `media-seal-failure:${error.code}`);
     const failure = {
       code: "hash_failed" as const,
@@ -1254,7 +1257,10 @@ export async function finalizeMediaSubmission(
     }
   }
   if (attempt.result.outcome === "destination_conflict") {
-    const evidenceRef = `media-seal-conflict:${mediaImmutableObjectKey(finalizeState.operationId)}`;
+    const evidenceRef = sealEvidence(
+      attempt.retainedDestination,
+      `media-seal-conflict:${mediaImmutableObjectKey(finalizeState.operationId)}`,
+    );
     const failure = {
       code: "upload_seal_conflict" as const,
       retryable: false as const,

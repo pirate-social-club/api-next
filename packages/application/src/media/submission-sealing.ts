@@ -52,7 +52,8 @@ export type MediaSealFailureCode =
   | "source_stream_failed"
   | "destination_put_uncertain"
   | "destination_head_failed"
-  | "destination_verification_failed";
+  | "destination_verification_failed"
+  | "sibling_convergence_unavailable";
 
 export class MediaSealFailure extends Error {
   readonly code: MediaSealFailureCode;

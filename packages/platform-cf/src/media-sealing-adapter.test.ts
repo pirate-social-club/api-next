@@ -242,6 +242,174 @@ describe("Workers R2 media sealing adapter", () => {
     expect(puts).toBe(0);
   });
 
+  test("converges an occupied destination owned by the same operation to sealed", async () => {
+    const bytes = new Uint8Array([2, 3, 4]);
+    const sourceObject = object({
+      key: "reservations/media_reservation/source",
+      version: "source-version",
+      etag: "source-etag",
+      bytes,
+      contentType: "audio/mpeg",
+    });
+    const siblingObject = object({
+      key: "immutable/media_operation/audio/1",
+      version: "sibling-version",
+      etag: "sibling-etag",
+      bytes,
+      contentType: "audio/mpeg",
+      owner: "media_operation",
+      sourceVersion: sourceObject.version,
+    });
+    let putCalls = 0;
+    const attempt = await sealMediaUpload(
+      {
+        head: async () => siblingObject,
+        get: async () => body(sourceObject, bytes),
+        put: async () => {
+          // A conditional miss need not consume this branch. The independent
+          // digest branch must still establish the canonical hash.
+          putCalls += 1;
+          return null;
+        },
+      },
+      {
+        source: {
+          key: sourceObject.key,
+          version: sourceObject.version,
+          etag: sourceObject.etag,
+          size: sourceObject.size,
+          contentType: "audio/mpeg",
+          ownerMarker: null,
+          sourceVersion: null,
+          checksums: {},
+        },
+        destinationKey: siblingObject.key,
+        immutableRef: "media://immutable/media_operation/audio/1",
+        expectedSizeBytes: bytes.byteLength,
+        expectedContentType: "audio/mpeg",
+        ownershipMarker: "media_operation",
+      },
+    );
+
+    expect(putCalls).toBe(1);
+    expect(attempt).toMatchObject({
+      result: {
+        outcome: "sealed",
+        version: siblingObject.version,
+        etag: siblingObject.etag,
+        size_bytes: bytes.byteLength,
+      },
+    });
+    expect(attempt.result).toHaveProperty(
+      "canonical_sha256",
+      expect.stringMatching(/^[0-9a-f]{64}$/u),
+    );
+  });
+
+  test("keeps a genuinely foreign destination as a terminal conflict with exact evidence", async () => {
+    const bytes = new Uint8Array([4]);
+    const sourceObject = object({
+      key: "reservations/media_reservation/source",
+      version: "source-version",
+      etag: "source-etag",
+      bytes,
+      contentType: "audio/mpeg",
+    });
+    const foreignObject = object({
+      key: "immutable/media_operation/audio/1",
+      version: "foreign-version",
+      etag: "foreign-etag",
+      bytes,
+      contentType: "audio/mpeg",
+      owner: "different_operation",
+      sourceVersion: sourceObject.version,
+    });
+
+    const attempt = await sealMediaUpload(
+      {
+        head: async () => foreignObject,
+        get: async () => body(sourceObject, bytes),
+        put: async () => null,
+      },
+      {
+        source: {
+          key: sourceObject.key,
+          version: sourceObject.version,
+          etag: sourceObject.etag,
+          size: sourceObject.size,
+          contentType: "audio/mpeg",
+          ownerMarker: null,
+          sourceVersion: null,
+          checksums: {},
+        },
+        destinationKey: foreignObject.key,
+        immutableRef: "media://immutable/media_operation/audio/1",
+        expectedSizeBytes: 1,
+        expectedContentType: "audio/mpeg",
+        ownershipMarker: "media_operation",
+      },
+    );
+
+    expect(attempt.result).toEqual({ outcome: "destination_conflict" });
+    expect(attempt.retainedDestination).toMatchObject({
+      key: foreignObject.key,
+      version: foreignObject.version,
+      etag: foreignObject.etag,
+      ownerMarker: "different_operation",
+    });
+  });
+
+  test("does not mutate product state when an own sibling cannot be verified", async () => {
+    const bytes = new Uint8Array([5]);
+    const sourceObject = object({
+      key: "reservations/media_reservation/source",
+      version: "source-version",
+      etag: "source-etag",
+      bytes,
+      contentType: "audio/mpeg",
+    });
+    failDigest = true;
+    try {
+      await expect(
+        sealMediaUpload(
+          {
+            head: async () =>
+              object({
+                key: "immutable/media_operation/audio/1",
+                version: "sibling-version",
+                etag: "sibling-etag",
+                bytes,
+                contentType: "audio/mpeg",
+                owner: "media_operation",
+                sourceVersion: sourceObject.version,
+              }),
+            get: async () => body(sourceObject, bytes),
+            put: async () => null,
+          },
+          {
+            source: {
+              key: sourceObject.key,
+              version: sourceObject.version,
+              etag: sourceObject.etag,
+              size: sourceObject.size,
+              contentType: "audio/mpeg",
+              ownerMarker: null,
+              sourceVersion: null,
+              checksums: {},
+            },
+            destinationKey: "immutable/media_operation/audio/1",
+            immutableRef: "media://immutable/media_operation/audio/1",
+            expectedSizeBytes: 1,
+            expectedContentType: "audio/mpeg",
+            ownershipMarker: "media_operation",
+          },
+        ),
+      ).rejects.toMatchObject({ code: "sibling_convergence_unavailable" });
+    } finally {
+      failDigest = false;
+    }
+  });
+
   test("retains the exact destination identity on author digest mismatch", async () => {
     const bytes = new Uint8Array([5, 6]);
     const sourceObject = object({

@@ -87,6 +87,57 @@ function destinationMatches(
   );
 }
 
+function sameOperationDestination(
+  observed: MediaSealObjectIdentity,
+  input: MediaSealInput,
+): boolean {
+  return (
+    observed.key === input.destinationKey &&
+    observed.ownerMarker === input.ownershipMarker &&
+    observed.sourceVersion === input.source.version
+  );
+}
+
+function siblingDestinationMatches(
+  observed: MediaSealObjectIdentity,
+  input: MediaSealInput,
+  canonicalSha256: string,
+  bytesWritten: number | bigint,
+): boolean {
+  const sourceSha256 = input.source.checksums.sha256;
+  const storedSha256 = observed.checksums.sha256;
+  return (
+    observed.version.length > 0 &&
+    observed.etag.length > 0 &&
+    observed.size === input.expectedSizeBytes &&
+    BigInt(bytesWritten) === BigInt(observed.size) &&
+    observed.contentType === input.expectedContentType &&
+    (sourceSha256 === undefined || sourceSha256 === canonicalSha256) &&
+    (storedSha256 === undefined
+      ? sourceSha256 === undefined
+      : storedSha256 === canonicalSha256 &&
+        (sourceSha256 === undefined || storedSha256 === sourceSha256))
+  );
+}
+
+function sealedAttempt(
+  identity: MediaSealObjectIdentity,
+  input: MediaSealInput,
+  canonicalSha256: string,
+): Awaited<ReturnType<MediaUploadSealer["seal"]>> {
+  return {
+    result: {
+      outcome: "sealed",
+      immutable_ref: input.immutableRef,
+      destination_ref: `r2://${input.destinationKey}`,
+      etag: identity.etag,
+      version: identity.version,
+      size_bytes: identity.size,
+      canonical_sha256: canonicalSha256,
+    },
+  };
+}
+
 export async function inspectMediaUpload(
   bucket: SealBucket,
   input: MediaSealInspectInput,
@@ -147,7 +198,39 @@ export async function sealMediaUpload(
     throw new MediaSealFailure("destination_put_uncertain");
   }
   const writtenObject = putSettled.value;
-  if (writtenObject === null) return { result: { outcome: "destination_conflict" } };
+  if (writtenObject === null) {
+    if (!putBody.locked) await putBody.cancel().catch(() => undefined);
+    let occupiedObject: R2Object | null;
+    try {
+      occupiedObject = await bucket.head(input.destinationKey);
+    } catch {
+      throw new MediaSealFailure("sibling_convergence_unavailable");
+    }
+    if (occupiedObject === null) {
+      throw new MediaSealFailure("sibling_convergence_unavailable");
+    }
+    const occupied = objectIdentity(occupiedObject);
+    if (!sameOperationDestination(occupied, input)) {
+      return {
+        result: { outcome: "destination_conflict" },
+        retainedDestination: occupied,
+      };
+    }
+    if (digestSettled.status === "rejected") {
+      throw new MediaSealFailure("sibling_convergence_unavailable", occupied);
+    }
+    const { sha256: canonicalSha256, bytesWritten } = digestSettled.value;
+    if (!siblingDestinationMatches(occupied, input, canonicalSha256, bytesWritten)) {
+      throw new MediaSealFailure("destination_verification_failed", occupied);
+    }
+    if (input.expectedSha256 !== undefined && input.expectedSha256 !== canonicalSha256) {
+      return {
+        result: { outcome: "expectation_mismatch" },
+        retainedDestination: occupied,
+      };
+    }
+    return sealedAttempt(occupied, input, canonicalSha256);
+  }
   const written = objectIdentity(writtenObject);
   if (digestSettled.status === "rejected") {
     throw new MediaSealFailure("source_stream_failed", written);
@@ -178,17 +261,7 @@ export async function sealMediaUpload(
   ) {
     throw new MediaSealFailure("destination_verification_failed", written);
   }
-  return {
-    result: {
-      outcome: "sealed",
-      immutable_ref: input.immutableRef,
-      destination_ref: `r2://${input.destinationKey}`,
-      etag: written.etag,
-      version: written.version,
-      size_bytes: written.size,
-      canonical_sha256: canonicalSha256,
-    },
-  };
+  return sealedAttempt(written, input, canonicalSha256);
 }
 
 export function makeR2MediaSealer(bucket: SealBucket): MediaUploadSealer {

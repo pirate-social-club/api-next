@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { MediaIngressUploadPresigner } from "@pirate/application";
-import { UploadObjectMissing } from "@pirate/contracts";
+import { InternalError, UploadObjectMissing } from "@pirate/contracts";
 import { Effect } from "effect";
 import {
   createMediaSubmissionState,
@@ -608,5 +608,101 @@ describe("media submission service upload orchestration", () => {
       failure: { code: "upload_seal_conflict", retryable: false, lastSafePhase: "finalize" },
     });
     expect(conflict).not.toHaveProperty("outbox");
+  });
+
+  test("does not persist a terminal failure when sibling convergence is temporarily unverifiable", async () => {
+    let writes = 0;
+    const services = servicesWith({
+      store: storeWith({
+        getFinalizeContext: async () => finalizeContext(),
+        replay: async () => ({ kind: "none" }),
+        beginFinalize: async () => ({
+          kind: "begun",
+          submissionId: awaitingUpload.submissionId,
+          operationId: awaitingUpload.operationId,
+        }),
+        recordMediaFailure: async () => {
+          writes += 1;
+          return { kind: "committed", submissionId: awaitingUpload.submissionId };
+        },
+        recordSealConflict: async () => {
+          writes += 1;
+          return { kind: "committed", submissionId: awaitingUpload.submissionId };
+        },
+      }),
+      sealer: {
+        inspect: async () => ({ outcome: "ready", source }),
+        seal: async () => {
+          throw new MediaSealFailure("sibling_convergence_unavailable");
+        },
+      },
+    });
+
+    await expect(
+      finalizeMediaSubmission(
+        { submissionId: awaitingUpload.submissionId, actor, body: finalizeBody },
+        services,
+      ),
+    ).rejects.toBeInstanceOf(InternalError);
+    expect(writes).toBe(0);
+  });
+
+  test("concurrent same-key sealed outcomes converge on one persisted response", async () => {
+    let persisted: Readonly<{ bytes: Uint8Array; sha256: string }> | null = null;
+    let commits = 0;
+    const services = servicesWith({
+      store: storeWith({
+        getFinalizeContext: async () => finalizeContext(),
+        replay: async () => ({ kind: "none" }),
+        beginFinalize: async () => ({
+          kind: commits === 0 ? "begun" : "resumed",
+          submissionId: awaitingUpload.submissionId,
+          operationId: awaitingUpload.operationId,
+        }),
+        finalizeSealed: async (input) => {
+          commits += 1;
+          if (persisted === null) {
+            persisted = { bytes: input.responseBytes, sha256: input.responseSha256 };
+            return { kind: "committed", submissionId: input.submissionId };
+          }
+          return {
+            kind: "replay",
+            submissionId: input.submissionId,
+            operationId: awaitingUpload.operationId,
+            bytes: persisted.bytes,
+            sha256: persisted.sha256,
+          };
+        },
+      }),
+      sealer: {
+        inspect: async () => ({ outcome: "ready", source }),
+        seal: async (input) => ({
+          result: {
+            outcome: "sealed",
+            immutable_ref: input.immutableRef,
+            destination_ref: `r2://${input.destinationKey}`,
+            etag: "shared-etag",
+            version: "shared-version",
+            size_bytes: 4,
+            canonical_sha256: "a".repeat(64),
+          },
+        }),
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      finalizeMediaSubmission(
+        { submissionId: awaitingUpload.submissionId, actor, body: finalizeBody },
+        services,
+      ),
+      finalizeMediaSubmission(
+        { submissionId: awaitingUpload.submissionId, actor, body: finalizeBody },
+        services,
+      ),
+    ]);
+
+    expect(first).toEqual(second);
+    expect(first).toMatchObject({ status: "processing", phase: "analysis", audio_revision: 1 });
+    expect(commits).toBe(2);
   });
 });
