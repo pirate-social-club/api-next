@@ -18,6 +18,7 @@ export * from "./community/creation-requirement.ts";
 export * from "./community/creation-requirements.ts";
 export * from "./community/gate-policy-compiler.ts";
 export * from "./community/join-intent-binding.ts";
+export * from "./content/community-moderation-policy.ts";
 export * from "./content/text-moderation.ts";
 export * from "./gates/country-codes.ts";
 export * from "./gates/erc721.ts";

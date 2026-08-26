@@ -293,6 +293,12 @@ const dataIpfsAndSigningIntentRepairMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const communityModerationAuthorityPolicyMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0059_community_moderation_authority_policy.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -590,6 +596,11 @@ const dataIpfsAndSigningIntentRepairMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0058_data_ipfs_and_signing_intent_repair.sql"] ?? "",
   sql: dataIpfsAndSigningIntentRepairMigrationSql,
 };
+const communityModerationAuthorityPolicyMigration: PostgresMigration = {
+  version: "0059_community_moderation_authority_policy.sql",
+  checksum: checksumManifest.migrations["0059_community_moderation_authority_policy.sql"] ?? "",
+  sql: communityModerationAuthorityPolicyMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -649,6 +660,7 @@ const migrations: readonly PostgresMigration[] = [
   mediaProcessingRuntimeBridgeMigration,
   dataRegistrationPersistenceMigration,
   dataIpfsAndSigningIntentRepairMigration,
+  communityModerationAuthorityPolicyMigration,
 ];
 
 function checksum(value: string): string {
@@ -926,6 +938,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       expect(checksum(dataIpfsAndSigningIntentRepairMigrationSql)).toBe(
         dataIpfsAndSigningIntentRepairMigration.checksum,
       );
+      expect(checksum(communityModerationAuthorityPolicyMigrationSql)).toBe(
+        communityModerationAuthorityPolicyMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -992,6 +1007,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_handle_sale_namespace_activation_revisions",
         "community_handle_sales_authority_grants",
         "community_memberships",
+        "community_moderation_policy_category_decisions",
+        "community_moderation_policy_current",
+        "community_moderation_policy_revisions",
         "community_policy_current",
         "community_policy_provider_bindings",
         "community_purchase_allocation_snapshots",
@@ -1013,6 +1031,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_purchase_route_snapshots",
         "community_purchase_settlement_snapshots",
         "community_purchase_verification_snapshots",
+        "community_role_assignments",
         "community_route_app_host_health",
         "community_route_attachment_ceremony_attempts",
         "community_route_attachment_ceremony_results",
@@ -1122,6 +1141,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "megapot_usdc_approval_effects",
         "megapot_usdc_approval_receipt_evidence",
         "moderation_actions",
+        "moderation_platform_floor_category_decisions",
+        "moderation_platform_floor_current",
+        "moderation_platform_floor_revisions",
         "moderation_reports",
         "namespace_ownership_completion_attempts",
         "namespace_ownership_evidence_snapshots",
@@ -1291,6 +1313,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_creation_subject_claim_append_only",
         "community_handle_offering_actions_append_only",
         "community_handle_offering_revisions_append_only",
+        "community_moderation_policy_categories_append_only",
+        "community_moderation_policy_revisions_append_only",
         "community_policy_provider_binding_append_only",
         "community_purchase_allocation_snapshot_append_only",
         "community_purchase_correction_event_append_only",
@@ -1366,6 +1390,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "megapot_purchase_receipt_evidence_append_only",
         "megapot_sweep_ticket_evidence_append_only",
         "megapot_ticket_review_evidence_append_only",
+        "moderation_platform_floor_categories_append_only",
+        "moderation_platform_floor_revisions_append_only",
         "namespace_ownership_evidence_snapshot_append_only",
         "observations_append_only",
         "persona_activity_presentation_actions_append_only",
