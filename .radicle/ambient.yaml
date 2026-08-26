@@ -1,31 +1,73 @@
-# api-next Radicle CI plan — v1 dependency-free smoke gate.
+# api-next Radicle CI plan — v2 advisory check slice.
 #
-# Intentionally minimal: it proves the new-RID path end-to-end (broker filter
-# -> Ambient guest -> Run/Finished COB) without waiting on the signed
-# dependency artifact lane. Real checks land as a later commit to this file.
+# GitHub Actions with Blacksmith remains the preferred required-check executor.
+# This plan begins the independent Ambient fallback by running `bun run check`
+# with the same pinned Bun and Node versions used by the proven Solid plan.
+# It is advisory during the recorded api-next GitHub-primary transition and is
+# not yet equivalent to the hosted `check` job: host and Workerd tests, the
+# separately repeated freshness check, base-SHA OpenAPI comparison, and both
+# Wrangler dry runs remain outside this first slice.
 #
-# Deliberately absent from v1:
-# - pre_plan / bun_get: the deployed bun_get output shape (registry tarballs
-#   plus a manifest.tsv) was rejected by the project's own probe — Bun 1.4.0
-#   cannot consume it as an install cache (docs/ci/ambient-bun-dependency-
-#   artifact.md). Dependency acquisition waits on the signed artifact lane.
-# - check:breaking: it is a bun script and needs node_modules, so it is blocked
-#   on the same dependency lane as every other real check. Whether its base
-#   SHA is reachable from the shipped git history is a separate question to
-#   test later, not the reason for exclusion.
-# - test:workerd: it needs node_modules and pulls a workerd binary; the binary
-#   would additionally need a pre-plan action or an explicit exclusion.
+# The deployed `bun_get` action now builds a lockfile-bound Bun cache that has
+# passed a positive network-isolated consumption proof. The earlier v1 comment
+# rejecting its output shape described the pre-fix implementation and is no
+# longer current.
+#
+# Radicle supplies /ci/src as a committed source snapshot without Git metadata.
+# `bun run check` includes a guard for untracked migration SQL, so the plan
+# creates a synthetic Git commit containing the complete shipped snapshot. This
+# preserves that guard's relevant invariant for a commit archive. It does not
+# provide the real base history needed by `bun run check:breaking`.
 
-pre_plan: []
+pre_plan:
+  - action: http_get
+    items:
+      - url: https://github.com/oven-sh/bun/releases/download/bun-v1.4.0/bun-linux-x64.zip
+        filename: bun-linux-x64.zip
+        checksum: sha256:2d03fb5fb83ac8b567aca0a281b2ce1a1a19d488f56c2968d88c3f25e92fe452
+      - url: https://nodejs.org/dist/v24.14.0/node-v24.14.0-linux-x64.tar.gz
+        filename: node-v24.14.0-linux-x64.tar.gz
+        checksum: sha256:dbf5b8665dec15e59e6359a517fefb47b23fdb9152d8def975b9bca3dfc6d355
+  - action: bun_get
+    bun_zip: bun-linux-x64.zip
 
 plan:
   - action: shell
     shell: |
       set -euo pipefail
-      test -d /ci/src
-      test -f /ci/src/package.json
-      test -f /ci/src/bun.lock
-      grep -Fq '"name": "api-next"' /ci/src/package.json
-      echo 'api-next source snapshot verified at /ci/src'
+      tar -xzf /ci/deps/node-v24.14.0-linux-x64.tar.gz -C /tmp
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
+      export CI=1
+      export HOME=/tmp/ambient-home
+      export NODE_OPTIONS=--max-old-space-size=3072
+      mkdir -p "$HOME"
+      cd /ci/src
+      test "$(node --version)" = v24.14.0
+      test "$(bun --version)" = 1.4.0
+      bun install --frozen-lockfile --offline
+      git init -q -b ambient-snapshot
+      git add -- .
+      git -c user.name=ci_operator -c user.email=ci_operator@example.invalid \
+        commit -q -m 'ci: materialize Ambient source snapshot'
+      test -z "$(git status --porcelain)"
+  - action: shell
+    shell: |
+      set -euo pipefail
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
+      export CI=1
+      export HOME=/tmp/ambient-home
+      export NODE_OPTIONS=--max-old-space-size=3072
+      cd /ci/src
+      started_at="$(date +%s)"
+      set +e
+      bun run check
+      status="$?"
+      set -e
+      finished_at="$(date +%s)"
+      elapsed="$((finished_at - started_at))"
+      printf 'api-next Ambient check elapsed_seconds=%s status=%s\n' "$elapsed" "$status"
+      exit "$status"
 
 post_plan: []
