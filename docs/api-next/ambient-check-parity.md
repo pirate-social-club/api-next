@@ -2,8 +2,11 @@
 
 Status: hosted `check`-job parity reached for every step except
 `check:breaking`, proven by a network-isolated workstation rehearsal on
-2026-08-26. No live Ambient run and no required-check substitution has
-occurred.
+2026-08-26. The first live Ambient attempt acquired the runner and installed
+all 496 packages, then exposed a trusted pre-plan verifier defect before any
+candidate gate ran. The repaired executor passed its pinned-source tests and
+host drift verification; a replacement live run is pending. No required-check
+substitution has occurred.
 
 GitHub Actions with Blacksmith remains the preferred api-next executor. The
 Ambient plan is an independent fallback for executor outages. During the
@@ -79,12 +82,16 @@ groups total 84 tests across 25 files.
 The checksum-sealed corrective harness, candidate plan and complete log are at
 `/home/t42/Documents/agents/archive/api-next-ambient-real-checkout-rehearsal-2026-08-26/`.
 
-Three differences from the guest remain, and each is why a live run is still
-required. The cache was populated by workstation Bun from this lockfile rather
-than by the deployed `bun_get` action, so `bun_get`'s output shape is proven
-for Solid but not yet for api-next. The workstation kernel, filesystem and CPU
-model differ from the Haswell-noTSX guest. And loopback was up in the
-namespace, whereas the guest has no network at all.
+Three differences from the guest remain, and each is why a successful live run
+is still required. The first live attempt proved that `bun_get` installed all
+496 api-next packages, including both GitHub-backed lock entries, but its
+post-install verifier incorrectly sent their `github:` sources through the
+registry semantic-version path. The repaired verifier keeps registry checksum
+handling unchanged and binds GitHub sources to a hexadecimal revision, the
+exact Bun cache tag, its `.bun-tag`, and the lockfile's SHA-512 integrity field.
+The workstation kernel, filesystem and CPU model still differ from the
+Haswell-noTSX guest. And loopback was up in the namespace, whereas the guest
+has no network at all.
 
 The Wrangler gates carry one further caveat. With telemetry, error reporting
 and the version banner disabled, a `strace -f` route-less rehearsal of both dry
@@ -108,5 +115,7 @@ documented break-glass ceremony. Later fallback decisions must use a
 base-protected or host-pinned gate-contract digest and bind exact repository,
 head SHA, base SHA, executor, attempt and terminal proof.
 
-No ruleset, GitHub App, broker, credential, provider, database, deployment or
-runtime state is changed by this slice.
+No ruleset, GitHub App, credential, provider, database, product deployment or
+runtime state is changed by this slice. The trusted Ambient executor was
+rebuilt and redeployed under its separate control-plane task after the first
+live attempt exposed the verifier defect.

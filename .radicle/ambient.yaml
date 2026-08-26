@@ -7,9 +7,11 @@
 # here satisfies a protected GitHub context.
 #
 # The deployed `bun_get` action builds a lockfile-bound Bun cache that has
-# passed a positive network-isolated consumption proof. The v1 comment
-# rejecting its output shape described the pre-fix implementation and is not
-# current.
+# passed a positive network-isolated consumption proof. Registry packages keep
+# their tarball checksum path; GitHub-backed packages require a pinned revision,
+# the exact Bun cache tag and a SHA-512 integrity field. The v1 comment
+# rejecting `bun_get`'s output shape described the pre-fix implementation and
+# is not current.
 #
 # The deployed adapter clones the Radicle repository and checks out the trigger
 # commit before Ambient archives `/ci/src`. Its source and a retained `src.tar`
