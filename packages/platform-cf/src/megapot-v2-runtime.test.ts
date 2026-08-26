@@ -15,6 +15,7 @@ import {
   makeMegapotV2RpcClient,
 } from "./megapot-v2-rpc.ts";
 import {
+  deriveBaseSepoliaMegapotAddress,
   MegapotV2SignerFailed,
   makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
@@ -115,6 +116,14 @@ function attestationFetcher(options?: {
 }
 
 describe("Megapot v2 Worker runtime adapters", () => {
+  test("derives a public address while rejecting malformed private keys", () => {
+    const privateKey = generatePrivateKey();
+    expect(deriveBaseSepoliaMegapotAddress(privateKey)).toBe(
+      privateKeyToAccount(privateKey).address.toLowerCase(),
+    );
+    expect(() => deriveBaseSepoliaMegapotAddress("0x1234")).toThrow(MegapotV2SignerFailed);
+  });
+
   test("attests code and reads the live drawing through bounded JSON-RPC", async () => {
     const requests: Readonly<Record<string, unknown>>[] = [];
     const fetcher = async (_input: string, init?: RequestInit): Promise<Response> => {
