@@ -1,0 +1,31 @@
+[Unit]
+Description=Pirate interactive HNS community application gateway staging shadow
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+WorkingDirectory=/srv/pirate-hns-community-app-gateway-staging-shadow/current
+ExecStart=/usr/bin/env bun /srv/pirate-hns-community-app-gateway-staging-shadow/current/bin/pirate-hns-community-app-gateway.mjs --mode staging-shadow --manifest /srv/pirate-hns-community-app-gateway-staging-shadow/current/deployment-manifest.json
+LoadCredential=hns-community-authority-database-url:/etc/pirate/hns-community-app-gateway-staging-shadow/authority-database-url
+LoadCredential=hns-community-forwarder-key-registry:/etc/pirate/hns-community-app-gateway-staging-shadow/forwarder-key-registry.json
+LoadCredential=hns-community-solid-access-client-id:/etc/pirate/hns-community-app-gateway-staging-shadow/solid-access-client-id
+LoadCredential=hns-community-solid-access-client-secret:/etc/pirate/hns-community-app-gateway-staging-shadow/solid-access-client-secret
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

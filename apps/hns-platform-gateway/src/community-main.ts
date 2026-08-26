@@ -13,6 +13,8 @@ import {
   HNS_COMMUNITY_APP_GATEWAY_MANIFEST_MAX_BYTES,
   HNS_COMMUNITY_APP_GATEWAY_PRODUCTION_LISTENERS,
   HNS_COMMUNITY_APP_GATEWAY_SHADOW_LISTENERS,
+  HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS,
+  type HnsCommunityAppGatewayDeploymentMode,
   type HnsCommunityAppGatewayRuntimeConfigurationV1,
   loadHnsCommunityAppGatewayRuntimeConfigurationV1,
 } from "./community-runtime-config.ts";
@@ -20,7 +22,7 @@ import { startHnsCommunityAppGatewayServer } from "./server.ts";
 
 declare const __PIRATE_API_NEXT_SOURCE_COMMIT__: string;
 
-export type HnsCommunityAppGatewayMode = "production" | "shadow";
+export type HnsCommunityAppGatewayMode = HnsCommunityAppGatewayDeploymentMode;
 
 export type HnsCommunityAppGatewayArguments = Readonly<{
   mode: HnsCommunityAppGatewayMode;
@@ -48,7 +50,9 @@ export function parseHnsCommunityAppGatewayArguments(
   if (
     arguments_.length !== 4 ||
     arguments_[0] !== "--mode" ||
-    (arguments_[1] !== "production" && arguments_[1] !== "shadow") ||
+    (arguments_[1] !== "production" &&
+      arguments_[1] !== "shadow" &&
+      arguments_[1] !== "staging-shadow") ||
     arguments_[2] !== "--manifest" ||
     arguments_[3] === undefined ||
     !isAbsolute(arguments_[3]) ||
@@ -70,10 +74,10 @@ export function embeddedApiNextSourceCommit(): string {
   return __PIRATE_API_NEXT_SOURCE_COMMIT__;
 }
 
-function listenersForMode(mode: HnsCommunityAppGatewayMode) {
-  return mode === "production"
-    ? HNS_COMMUNITY_APP_GATEWAY_PRODUCTION_LISTENERS
-    : HNS_COMMUNITY_APP_GATEWAY_SHADOW_LISTENERS;
+export function listenersForMode(mode: HnsCommunityAppGatewayMode) {
+  if (mode === "production") return HNS_COMMUNITY_APP_GATEWAY_PRODUCTION_LISTENERS;
+  if (mode === "shadow") return HNS_COMMUNITY_APP_GATEWAY_SHADOW_LISTENERS;
+  return HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS;
 }
 
 function cryptographicNonceSource() {
@@ -195,6 +199,7 @@ export async function runHnsCommunityAppGateway(arguments_: readonly string[]): 
     throw new Error("HNS community app gateway configuration is incomplete or invalid");
   }
   const configuration = await loadHnsCommunityAppGatewayRuntimeConfigurationV1({
+    mode: argumentsValue.mode,
     manifest_bytes: await readBoundedFile(
       argumentsValue.manifest_path,
       HNS_COMMUNITY_APP_GATEWAY_MANIFEST_MAX_BYTES,
