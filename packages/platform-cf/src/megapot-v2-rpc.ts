@@ -11,6 +11,7 @@ import {
   decodeMegapotTicketTierIds,
   decodeMegapotUsdcAllowance,
   decodeMegapotUsdcBalance,
+  decodeMegapotV2ClaimRevert,
   encodeMegapotCurrentDrawingId,
   encodeMegapotDrawingState,
   encodeMegapotDrawingTierPayouts,
@@ -23,6 +24,7 @@ import {
   encodeMegapotUsdcAllowance,
   encodeMegapotUsdcBalance,
   type MegapotTransactionReceipt,
+  type MegapotV2ClaimRevert,
   type MegapotV2DeploymentAttestation,
   type MegapotV2DrawingState,
   validateMegapotV2DeploymentAttestation,
@@ -46,9 +48,37 @@ export class MegapotV2RpcFailed extends Error {
       | "reorg"
       | "timeout"
       | "unavailable",
+    readonly claimRevert: MegapotV2ClaimRevert | null = null,
   ) {
     super(reason);
   }
+}
+
+export function findMegapotV2ClaimRevert(value: unknown): MegapotV2ClaimRevert | null {
+  const pending: Array<Readonly<{ value: unknown; depth: number }>> = [{ value, depth: 0 }];
+  const seen = new Set<object>();
+  let visited = 0;
+  while (pending.length > 0 && visited < 64) {
+    const next = pending.shift();
+    if (next === undefined) break;
+    visited += 1;
+    const decoded = decodeMegapotV2ClaimRevert(next.value);
+    if (decoded !== null) return decoded;
+    if (typeof next.value !== "object" || next.value === null || seen.has(next.value)) continue;
+    seen.add(next.value);
+    if (next.value instanceof MegapotV2RpcFailed && next.value.claimRevert !== null) {
+      return next.value.claimRevert;
+    }
+    if ("errorName" in next.value) {
+      if (next.value.errorName === "NoTicketsToClaim") return "no_tickets_to_claim";
+      if (next.value.errorName === "NotTicketOwner") return "not_ticket_owner";
+    }
+    if (next.depth >= 4) continue;
+    for (const nested of Object.values(next.value)) {
+      pending.push({ value: nested, depth: next.depth + 1 });
+    }
+  }
+  return null;
 }
 
 export type MegapotV2RpcClientOptions = Readonly<{
@@ -265,7 +295,9 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
       if (envelope.jsonrpc !== "2.0" || envelope.id !== id) {
         throw new MegapotV2RpcFailed("invalid-response");
       }
-      if (envelope.error !== undefined) throw new MegapotV2RpcFailed("provider-error");
+      if (envelope.error !== undefined) {
+        throw new MegapotV2RpcFailed("provider-error", findMegapotV2ClaimRevert(envelope.error));
+      }
       if (!("result" in envelope)) throw new MegapotV2RpcFailed("invalid-response");
       return envelope.result;
     } finally {

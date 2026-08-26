@@ -10,6 +10,8 @@ export class MegapotSweepRejected extends Data.TaggedError("MegapotSweepRejected
 
 export type MegapotSweepFailure = MegapotSweepRejected | MegapotSweepStorageFailed;
 
+export type MegapotSweepReviewReason = "ticket_owner_mismatch";
+
 export type MegapotSweepCandidate = Readonly<{
   poolLegId: string;
   drawingId: bigint;
@@ -54,6 +56,15 @@ export interface MegapotSweepStore {
   readonly markDrawingPending: (
     candidate: MegapotSweepCandidate,
   ) => Effect.Effect<void, MegapotSweepFailure>;
+  readonly requireReview: (input: {
+    readonly candidate: MegapotSweepCandidate;
+    readonly sweepId: string;
+    readonly reason: MegapotSweepReviewReason;
+    readonly observationBlockNumber: bigint;
+    readonly observationBlockHash: string;
+    readonly observedOwnerAddress: string;
+    readonly observedAt: string;
+  }) => Effect.Effect<void, MegapotSweepFailure>;
   readonly complete: (input: {
     readonly candidate: MegapotSweepCandidate;
     readonly sweepId: string;

@@ -14,6 +14,8 @@ export class MegapotClaimRejected extends Data.TaggedError("MegapotClaimRejected
 
 export type MegapotClaimFailure = MegapotClaimRejected | MegapotClaimStorageFailed;
 
+export type MegapotClaimReviewReason = "no_tickets_to_claim" | "ticket_owner_mismatch";
+
 export type MegapotClaimCandidate = Readonly<{
   poolLegId: string;
   drawingId: bigint;
@@ -87,6 +89,16 @@ export interface MegapotClaimStore {
     readonly poolLegId: string;
     readonly drawingId: bigint;
   }) => Effect.Effect<MegapotClaimCandidate, MegapotClaimFailure>;
+  readonly requireReview: (input: {
+    readonly candidate: MegapotClaimCandidate;
+    readonly reviewId: string;
+    readonly claimEffectId: string | null;
+    readonly reason: MegapotClaimReviewReason;
+    readonly observationBlockNumber: bigint;
+    readonly observationBlockHash: string;
+    readonly observedOwnerAddress: string;
+    readonly observedAt: string;
+  }) => Effect.Effect<void, MegapotClaimFailure>;
   readonly reserveNonce: (input: {
     readonly candidate: MegapotClaimCandidate;
     readonly effectId: string;

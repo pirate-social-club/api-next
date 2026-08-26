@@ -47,15 +47,24 @@ const drawingState: MegapotV2DrawingState = {
   jackpotLock: false,
 };
 
-function harness(options: { readonly tierId: bigint; readonly settled?: boolean }) {
+function harness(options: {
+  readonly tierId: bigint;
+  readonly settled?: boolean;
+  readonly owner?: string;
+}) {
   let stored: MegapotSweepResult | null = null;
   let pendingCalls = 0;
   let completeCalls = 0;
+  let reviewCalls = 0;
   const store = {
     loadCandidate: () => Effect.succeed(candidate),
     findResult: () => Effect.succeed(stored),
     markDrawingPending: () => {
       pendingCalls += 1;
+      return Effect.void;
+    },
+    requireReview: () => {
+      reviewCalls += 1;
       return Effect.void;
     },
     complete: (input) => {
@@ -95,7 +104,7 @@ function harness(options: { readonly tierId: bigint; readonly settled?: boolean 
     readUsdcBalance: async () => 0n,
     readNativeBalance: async () => 0n,
     readUsdcAllowance: async () => 0n,
-    readTicketOwner: async () => candidate.custodyAddress,
+    readTicketOwner: async () => options.owner ?? candidate.custodyAddress,
     readPendingNonce: async () => 0n,
     estimateGas: async () => 0n,
     readFeeQuote: async () => ({
@@ -119,6 +128,7 @@ function harness(options: { readonly tierId: bigint; readonly settled?: boolean 
     }),
     pendingCalls: () => pendingCalls,
     completeCalls: () => completeCalls,
+    reviewCalls: () => reviewCalls,
   };
 }
 
@@ -161,5 +171,20 @@ describe("Megapot sweep coordinator", () => {
     ).resolves.toMatchObject({ kind: "drawing_pending", observationBlockNumber: 100n });
     expect(pendingHarness.pendingCalls()).toBe(1);
     expect(pendingHarness.completeCalls()).toBe(0);
+  });
+
+  test("places an owner mismatch on an operational hold without completing the sweep", async () => {
+    const testHarness = harness({ tierId: 7n, owner: address("f") });
+    await expect(
+      Effect.runPromise(
+        testHarness.coordinator.sweep({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "operational_hold",
+      ticketId: candidate.ticketId,
+      reason: "ticket_owner_mismatch",
+    });
+    expect(testHarness.reviewCalls()).toBe(1);
+    expect(testHarness.completeCalls()).toBe(0);
   });
 });

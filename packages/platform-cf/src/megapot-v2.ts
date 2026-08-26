@@ -1,7 +1,9 @@
 import type { Digest32, MegapotTicket } from "@pirate/domain";
 import {
+  decodeErrorResult,
   decodeEventLog,
   decodeFunctionResult,
+  encodeErrorResult,
   encodeFunctionData,
   type Hex,
   keccak256,
@@ -24,6 +26,35 @@ const jackpotWriteAbi = parseAbi([
   "function buyTickets((uint8[] normals, uint8 bonusball)[] _tickets, address _recipient, address[] _referrers, uint256[] _referralSplit, bytes32 _source) returns (uint256[] ticketIds)",
   "function claimWinnings(uint256[] _userTicketIds)",
 ]);
+
+export const MEGAPOT_V2_CLAIM_ERRORS_ABI = parseAbi([
+  "error NoTicketsToClaim()",
+  "error NotTicketOwner()",
+]);
+
+export type MegapotV2ClaimRevert = "no_tickets_to_claim" | "not_ticket_owner";
+
+export function encodeMegapotV2ClaimRevert(reason: MegapotV2ClaimRevert): Hex {
+  return encodeErrorResult({
+    abi: MEGAPOT_V2_CLAIM_ERRORS_ABI,
+    errorName: reason === "no_tickets_to_claim" ? "NoTicketsToClaim" : "NotTicketOwner",
+  });
+}
+
+export function decodeMegapotV2ClaimRevert(data: unknown): MegapotV2ClaimRevert | null {
+  if (typeof data !== "string" || !/^0x(?:[0-9a-f]{2})+$/iu.test(data)) return null;
+  try {
+    const decoded = decodeErrorResult({
+      abi: MEGAPOT_V2_CLAIM_ERRORS_ABI,
+      data: data.toLowerCase() as Hex,
+    });
+    if (decoded.errorName === "NoTicketsToClaim") return "no_tickets_to_claim";
+    if (decoded.errorName === "NotTicketOwner") return "not_ticket_owner";
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 const ticketPurchasedAbi = parseAbi([
   "event TicketPurchased(address indexed recipient, uint256 indexed currentDrawingId, bytes32 indexed source, uint256 userTicketId, uint8[] normals, uint8 bonusball, bytes32 referralScheme)",

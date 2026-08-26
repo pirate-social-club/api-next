@@ -79,6 +79,10 @@ function instantMillis(row: Row, field: string): number {
   return millis;
 }
 
+function sameAddress(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
 function candidateFromRow(row: Row): MegapotClaimCandidate {
   const environment = text(row, "environment");
   if (environment !== "test" && environment !== "staging" && environment !== "production") {
@@ -265,6 +269,196 @@ function sameCandidate(left: MegapotClaimCandidate, right: MegapotClaimCandidate
     left.chainId === right.chainId &&
     left.custodyAddress === right.custodyAddress
   );
+}
+
+function requireReviewIn(
+  transaction: ControlPlaneTransaction,
+  input: Parameters<MegapotClaimStore["requireReview"]>[0],
+): Effect.Effect<void, MegapotClaimFailure | ControlPlaneError> {
+  return Effect.gen(function* () {
+    const stateResult = yield* transaction.execute<Row>({
+      label: "megapot-claim.review-state.read",
+      text: `SELECT drawing.status AS drawing_status, drawing.version AS drawing_version,
+                    drawing.claim_effect_id, ticket.status AS ticket_status,
+                    ticket.pool_leg_id, ticket.drawing_id, ticket.custody_address
+               FROM megapot_pool_drawings drawing
+               JOIN megapot_ticket_inventory ticket
+                 ON ticket.pool_leg_id=drawing.pool_leg_id
+                AND ticket.drawing_id=drawing.drawing_id
+              WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=$2
+                AND ticket.attestation_id=$3 AND ticket.ticket_id=$4
+              FOR UPDATE OF drawing, ticket`,
+      values: [
+        input.candidate.poolLegId,
+        input.candidate.drawingId.toString(),
+        input.candidate.attestationId,
+        input.candidate.ticketId.toString(),
+      ],
+      readonly: false,
+    });
+    if (stateResult.rows.length !== 1) return yield* rejected("ticket-not-claimable");
+    const state = stateResult.rows[0] as Row;
+    if (
+      text(state, "pool_leg_id") !== input.candidate.poolLegId ||
+      bigint(state, "drawing_id") !== input.candidate.drawingId ||
+      !sameAddress(text(state, "custody_address"), input.candidate.custodyAddress)
+    ) {
+      return yield* rejected("effect-conflict");
+    }
+    const drawingStatus = text(state, "drawing_status");
+    const ticketStatus = text(state, "ticket_status");
+    const drawingVersion = integer(state, "drawing_version");
+    if (input.claimEffectId === null) {
+      if (
+        drawingStatus !== "winnings_detected" ||
+        drawingVersion !== input.candidate.drawingVersion ||
+        ticketStatus !== "custodied" ||
+        nullableText(state, "claim_effect_id") !== null
+      ) {
+        return yield* rejected("effect-conflict");
+      }
+    } else {
+      if (
+        drawingStatus !== "claim_pending" ||
+        ticketStatus !== "claim_pending" ||
+        nullableText(state, "claim_effect_id") !== input.claimEffectId
+      ) {
+        return yield* rejected("effect-conflict");
+      }
+      const effectResult = yield* transaction.execute<Row>({
+        label: "megapot-claim.review-effect.read",
+        text: `SELECT effect.state, effect.version, claim.attestation_id,
+                      claim.ticket_id, claim.pool_leg_id, claim.drawing_id
+                 FROM reward_chain_effects effect
+                 JOIN megapot_claim_effects claim ON claim.claim_effect_id=effect.effect_id
+                WHERE effect.effect_id=$1 FOR UPDATE OF effect, claim`,
+        values: [input.claimEffectId],
+        readonly: false,
+      });
+      if (effectResult.rows.length !== 1) return yield* rejected("effect-conflict");
+      const effectRow = effectResult.rows[0] as Row;
+      if (
+        text(effectRow, "state") !== "nonce_reserved" ||
+        text(effectRow, "attestation_id") !== input.candidate.attestationId ||
+        bigint(effectRow, "ticket_id") !== input.candidate.ticketId ||
+        text(effectRow, "pool_leg_id") !== input.candidate.poolLegId ||
+        bigint(effectRow, "drawing_id") !== input.candidate.drawingId
+      ) {
+        return yield* rejected("effect-conflict");
+      }
+      const effectVersion = integer(effectRow, "version") + 1;
+      yield* transaction.execute({
+        label: "megapot-claim.review-effect-transition.create",
+        text: `INSERT INTO reward_chain_effect_transitions (
+                 effect_id, target_version, event_type, event
+               ) VALUES ($1,$2,'preflight_integrity_hold',jsonb_build_object(
+                 'reason',$3::text,'review_id',$4::text,
+                 'observation_block_number',$5::text,
+                 'observation_block_hash',$6::text,'observed_owner_address',$7::text
+               ))`,
+        values: [
+          input.claimEffectId,
+          effectVersion,
+          input.reason,
+          input.reviewId,
+          input.observationBlockNumber.toString(),
+          input.observationBlockHash,
+          input.observedOwnerAddress,
+        ],
+        readonly: false,
+      });
+      const effect = yield* transaction.execute({
+        label: "megapot-claim.review-effect.fail",
+        text: `UPDATE reward_chain_effects
+                  SET state='terminal_failed', version=$2,
+                      failure_class='claim_preflight_integrity', failure_reason=$3,
+                      updated_at=clock_timestamp()
+                WHERE effect_id=$1 AND state='nonce_reserved' AND version=$4`,
+        values: [input.claimEffectId, effectVersion, input.reason, effectVersion - 1],
+        readonly: false,
+      });
+      if (effect.rowCount !== 1) return yield* rejected("effect-conflict");
+    }
+    const ticket = yield* transaction.execute({
+      label: "megapot-claim.review-ticket.record",
+      text: `UPDATE megapot_ticket_inventory
+                SET status='needs_review', terminal_at=$3, updated_at=clock_timestamp()
+              WHERE attestation_id=$1 AND ticket_id=$2 AND status=$4`,
+      values: [
+        input.candidate.attestationId,
+        input.candidate.ticketId.toString(),
+        input.observedAt,
+        ticketStatus,
+      ],
+      readonly: false,
+    });
+    if (ticket.rowCount !== 1) return yield* rejected("ticket-not-claimable");
+    const nextDrawingVersion = drawingVersion + 1;
+    yield* transaction.execute({
+      label: "megapot-claim.review-drawing-transition.create",
+      text: `INSERT INTO megapot_pool_drawing_transitions (
+               pool_leg_id, drawing_id, target_version, event_type, event
+             ) VALUES ($1,$2,$3,'operational_hold',jsonb_build_object(
+               'reason',$4::text,'review_id',$5::text,'ticket_id',$6::text,
+               'claim_effect_id',$7::text,'observation_block_number',$8::text,
+               'observation_block_hash',$9::text,'observed_owner_address',$10::text
+             ))`,
+      values: [
+        input.candidate.poolLegId,
+        input.candidate.drawingId.toString(),
+        nextDrawingVersion,
+        input.reason,
+        input.reviewId,
+        input.candidate.ticketId.toString(),
+        input.claimEffectId,
+        input.observationBlockNumber.toString(),
+        input.observationBlockHash,
+        input.observedOwnerAddress,
+      ],
+      readonly: false,
+    });
+    const drawing = yield* transaction.execute({
+      label: "megapot-claim.review-drawing.hold",
+      text: `UPDATE megapot_pool_drawings
+                SET status='operational_hold', version=$3, terminal_reason=$4,
+                    terminal_at=$5, updated_at=clock_timestamp()
+              WHERE pool_leg_id=$1 AND drawing_id=$2 AND status=$6 AND version=$7`,
+      values: [
+        input.candidate.poolLegId,
+        input.candidate.drawingId.toString(),
+        nextDrawingVersion,
+        input.reason,
+        input.observedAt,
+        drawingStatus,
+        drawingVersion,
+      ],
+      readonly: false,
+    });
+    if (drawing.rowCount !== 1) return yield* rejected("effect-conflict");
+    yield* transaction.execute({
+      label: "megapot-claim.review-evidence.create",
+      text: `INSERT INTO megapot_ticket_review_evidence (
+               review_id, attestation_id, ticket_id, pool_leg_id, drawing_id,
+               source_kind, source_operation_id, claim_effect_id, reason,
+               observation_block_number, observation_block_hash,
+               observed_owner_address, observed_at
+             ) VALUES ($1,$2,$3,$4,$5,'claim',$1,$6,$7,$8,$9,$10,$11)`,
+      values: [
+        input.reviewId,
+        input.candidate.attestationId,
+        input.candidate.ticketId.toString(),
+        input.candidate.poolLegId,
+        input.candidate.drawingId.toString(),
+        input.claimEffectId,
+        input.reason,
+        input.observationBlockNumber.toString(),
+        input.observationBlockHash,
+        input.observedOwnerAddress,
+        input.observedAt,
+      ],
+      readonly: false,
+    });
+  });
 }
 
 function reserveNonceIn(
@@ -473,6 +667,11 @@ export function makeControlPlaneMegapotClaimRepository() {
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
         return yield* loadCandidateIn(db, { ...input, lock: false });
+      }).pipe(mapped),
+    requireReview: (input: Parameters<MegapotClaimStore["requireReview"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        yield* db.withTransaction((transaction) => requireReviewIn(transaction, input));
       }).pipe(mapped),
     reserveNonce: (input: Parameters<MegapotClaimStore["reserveNonce"]>[0]) =>
       Effect.gen(function* () {
@@ -864,6 +1063,7 @@ export const makeControlPlaneMegapotClaimStore = (
   return {
     findProgress: (effectId) => provide(repository.findProgress(effectId)),
     loadCandidate: (input) => provide(repository.loadCandidate(input)),
+    requireReview: (input) => provide(repository.requireReview(input)),
     reserveNonce: (input) => provide(repository.reserveNonce(input)),
     prepare: (input) => provide(repository.prepare(input)),
     recordSubmission: (input) => provide(repository.recordSubmission(input)),

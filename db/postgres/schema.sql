@@ -3970,10 +3970,52 @@ BEGIN
     RAISE EXCEPTION 'Megapot ticket inventory identity is immutable';
   END IF;
   IF NOT (
-    (OLD.status = 'custodied' AND NEW.status IN ('claim_pending', 'no_win'))
-    OR (OLD.status = 'claim_pending' AND NEW.status = 'claimed')
+    (OLD.status = 'custodied' AND NEW.status IN ('claim_pending', 'no_win', 'needs_review'))
+    OR (OLD.status = 'claim_pending' AND NEW.status IN ('claimed', 'needs_review'))
   ) THEN
     RAISE EXCEPTION 'invalid Megapot ticket inventory transition';
+  END IF;
+  RETURN NEW;
+END
+$$;
+
+CREATE FUNCTION guard_megapot_ticket_review_evidence() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  ticket_record megapot_ticket_inventory%ROWTYPE;
+  drawing_record megapot_pool_drawings%ROWTYPE;
+  claim_record megapot_claim_effects%ROWTYPE;
+  chain_record reward_chain_effects%ROWTYPE;
+BEGIN
+  IF TG_OP <> 'INSERT' THEN
+    RAISE EXCEPTION 'Megapot ticket review evidence is append-only';
+  END IF;
+  SELECT * INTO ticket_record FROM megapot_ticket_inventory
+   WHERE attestation_id=NEW.attestation_id AND ticket_id=NEW.ticket_id FOR SHARE;
+  SELECT * INTO drawing_record FROM megapot_pool_drawings
+   WHERE pool_leg_id=NEW.pool_leg_id AND drawing_id=NEW.drawing_id FOR SHARE;
+  IF ticket_record.attestation_id IS NULL
+     OR ticket_record.pool_leg_id <> NEW.pool_leg_id
+     OR ticket_record.drawing_id <> NEW.drawing_id
+     OR ticket_record.status <> 'needs_review'
+     OR drawing_record.status <> 'operational_hold'
+     OR drawing_record.terminal_reason <> NEW.reason THEN
+    RAISE EXCEPTION 'Megapot ticket review evidence identity mismatch';
+  END IF;
+  IF NEW.claim_effect_id IS NOT NULL THEN
+    SELECT * INTO claim_record FROM megapot_claim_effects
+     WHERE claim_effect_id=NEW.claim_effect_id FOR SHARE;
+    SELECT * INTO chain_record FROM reward_chain_effects
+     WHERE effect_id=NEW.claim_effect_id FOR SHARE;
+    IF claim_record.claim_effect_id IS NULL
+       OR claim_record.attestation_id <> NEW.attestation_id
+       OR claim_record.ticket_id <> NEW.ticket_id
+       OR claim_record.pool_leg_id <> NEW.pool_leg_id
+       OR claim_record.drawing_id <> NEW.drawing_id
+       OR chain_record.state <> 'terminal_failed' THEN
+      RAISE EXCEPTION 'Megapot ticket review claim evidence mismatch';
+    END IF;
   END IF;
   RETURN NEW;
 END
@@ -14780,8 +14822,8 @@ CREATE TABLE megapot_ticket_inventory (
     CONSTRAINT megapot_ticket_inventory_minted_transaction_hash_check CHECK ((minted_transaction_hash ~ '^0x[0-9a-f]{64}$'::text)),
     CONSTRAINT megapot_ticket_inventory_owner_observation_block_hash_check CHECK ((owner_observation_block_hash ~ '^0x[0-9a-f]{64}$'::text)),
     CONSTRAINT megapot_ticket_inventory_owner_observation_block_number_check CHECK ((owner_observation_block_number >= 0)),
-    CONSTRAINT megapot_ticket_inventory_status_check CHECK ((status = ANY (ARRAY['custodied'::text, 'claim_pending'::text, 'claimed'::text, 'no_win'::text]))),
-    CONSTRAINT megapot_ticket_inventory_terminal_shape CHECK ((((status = ANY (ARRAY['custodied'::text, 'claim_pending'::text])) AND (claimed_transaction_hash IS NULL) AND (terminal_at IS NULL)) OR ((status = 'claimed'::text) AND (claimed_transaction_hash IS NOT NULL) AND (terminal_at IS NOT NULL)) OR ((status = 'no_win'::text) AND (claimed_transaction_hash IS NULL) AND (terminal_at IS NOT NULL)))),
+    CONSTRAINT megapot_ticket_inventory_status_check CHECK ((status = ANY (ARRAY['custodied'::text, 'claim_pending'::text, 'claimed'::text, 'no_win'::text, 'needs_review'::text]))),
+    CONSTRAINT megapot_ticket_inventory_terminal_shape CHECK ((((status = ANY (ARRAY['custodied'::text, 'claim_pending'::text])) AND (claimed_transaction_hash IS NULL) AND (terminal_at IS NULL)) OR ((status = 'claimed'::text) AND (claimed_transaction_hash IS NOT NULL) AND (terminal_at IS NOT NULL)) OR ((status = ANY (ARRAY['no_win'::text, 'needs_review'::text])) AND (claimed_transaction_hash IS NULL) AND (terminal_at IS NOT NULL)))),
     CONSTRAINT megapot_ticket_inventory_ticket_id_check CHECK ((ticket_id >= (0)::numeric))
 );
 
@@ -14807,6 +14849,32 @@ CREATE TABLE megapot_ticket_purchase_effects (
     CONSTRAINT megapot_ticket_purchase_effects_recipient_address_check CHECK ((recipient_address ~ '^0x[0-9a-f]{40}$'::text)),
     CONSTRAINT megapot_ticket_purchase_effects_source_tag_check CHECK ((source_tag ~ '^0x[0-9a-f]{64}$'::text)),
     CONSTRAINT megapot_ticket_purchase_effects_ticket_price_atomic_check CHECK ((ticket_price_atomic > (0)::numeric))
+);
+
+CREATE TABLE megapot_ticket_review_evidence (
+    review_id text NOT NULL,
+    attestation_id text NOT NULL,
+    ticket_id numeric(78,0) NOT NULL,
+    pool_leg_id text NOT NULL,
+    drawing_id numeric(78,0) NOT NULL,
+    source_kind text NOT NULL,
+    source_operation_id text NOT NULL,
+    claim_effect_id text,
+    reason text NOT NULL,
+    observation_block_number bigint NOT NULL,
+    observation_block_hash text NOT NULL,
+    observed_owner_address text NOT NULL,
+    observed_at timestamp with time zone NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT megapot_ticket_review_evidence_drawing_id_check CHECK ((drawing_id >= (0)::numeric)),
+    CONSTRAINT megapot_ticket_review_evidence_observation_block_hash_check CHECK ((observation_block_hash ~ '^0x[0-9a-f]{64}$'::text)),
+    CONSTRAINT megapot_ticket_review_evidence_observation_block_number_check CHECK ((observation_block_number >= 0)),
+    CONSTRAINT megapot_ticket_review_evidence_observed_owner_address_check CHECK ((observed_owner_address ~ '^0x[0-9a-f]{40}$'::text)),
+    CONSTRAINT megapot_ticket_review_evidence_reason_check CHECK ((reason = ANY (ARRAY['ticket_owner_mismatch'::text, 'no_tickets_to_claim'::text]))),
+    CONSTRAINT megapot_ticket_review_evidence_review_id_check CHECK (((btrim(review_id) <> ''::text) AND (review_id = btrim(review_id)) AND (octet_length(review_id) <= 128))),
+    CONSTRAINT megapot_ticket_review_evidence_source_kind_check CHECK ((source_kind = ANY (ARRAY['sweep'::text, 'claim'::text]))),
+    CONSTRAINT megapot_ticket_review_evidence_source_operation_id_check CHECK (((btrim(source_operation_id) <> ''::text) AND (source_operation_id = btrim(source_operation_id)) AND (octet_length(source_operation_id) <= 128))),
+    CONSTRAINT megapot_ticket_review_source_shape CHECK ((((source_kind = 'sweep'::text) AND (reason = 'ticket_owner_mismatch'::text) AND (claim_effect_id IS NULL)) OR (source_kind = 'claim'::text)))
 );
 
 CREATE TABLE megapot_usdc_approval_effects (
@@ -15627,7 +15695,7 @@ CREATE TABLE reward_chain_effects (
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT reward_chain_effect_failure_shape CHECK ((((state <> ALL (ARRAY['reclaimable_failed'::text, 'reconciliation_required'::text, 'terminal_failed'::text])) AND (failure_class IS NULL) AND (failure_reason IS NULL)) OR ((state = ANY (ARRAY['reclaimable_failed'::text, 'reconciliation_required'::text, 'terminal_failed'::text])) AND (btrim(failure_class) <> ''::text) AND (btrim(failure_reason) <> ''::text)))),
     CONSTRAINT reward_chain_effect_lease_shape CHECK ((((lease_owner IS NULL) AND (lease_expires_at IS NULL)) OR ((btrim(lease_owner) <> ''::text) AND (lease_expires_at IS NOT NULL)))),
-    CONSTRAINT reward_chain_effect_prepared_shape CHECK ((((state = 'planned'::text) AND (nonce IS NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((state = 'nonce_reserved'::text) AND (nonce IS NOT NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((state = ANY (ARRAY['prepared'::text, 'broadcast_pending'::text, 'confirming'::text, 'confirmed'::text, 'reverted'::text, 'replaced'::text, 'reconciliation_required'::text])) AND (nonce IS NOT NULL) AND (calldata ~ '^0x([0-9a-f]{2})*$'::text) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (signed_transaction ~ '^0x([0-9a-f]{2})+$'::text) AND (signed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL)) OR ((state = ANY (ARRAY['reclaimable_failed'::text, 'terminal_failed'::text])) AND (((nonce IS NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((nonce IS NOT NULL) AND (calldata ~ '^0x([0-9a-f]{2})*$'::text) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (signed_transaction ~ '^0x([0-9a-f]{2})+$'::text) AND (signed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL)))))),
+    CONSTRAINT reward_chain_effect_prepared_shape CHECK ((((state = 'planned'::text) AND (nonce IS NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((state = 'nonce_reserved'::text) AND (nonce IS NOT NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((state = ANY (ARRAY['prepared'::text, 'broadcast_pending'::text, 'confirming'::text, 'confirmed'::text, 'reverted'::text, 'replaced'::text, 'reconciliation_required'::text])) AND (nonce IS NOT NULL) AND (calldata ~ '^0x([0-9a-f]{2})*$'::text) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (signed_transaction ~ '^0x([0-9a-f]{2})+$'::text) AND (signed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL)) OR ((state = ANY (ARRAY['reclaimable_failed'::text, 'terminal_failed'::text])) AND (((nonce IS NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((nonce IS NOT NULL) AND (calldata IS NULL) AND (calldata_hash IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (prepared_at IS NULL)) OR ((nonce IS NOT NULL) AND (calldata ~ '^0x([0-9a-f]{2})*$'::text) AND (calldata_hash ~ '^[0-9a-f]{64}$'::text) AND (signed_transaction ~ '^0x([0-9a-f]{2})+$'::text) AND (signed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text) AND (prepared_at IS NOT NULL)))))),
     CONSTRAINT reward_chain_effect_receipt_shape CHECK ((((state <> ALL (ARRAY['confirmed'::text, 'reverted'::text])) AND (receipt_status IS NULL) AND (receipt_block_number IS NULL) AND (receipt_block_hash IS NULL) AND (receipt_hash IS NULL) AND (confirmations IS NULL) AND (confirmed_at IS NULL)) OR ((state = 'confirmed'::text) AND (receipt_status = 'success'::text) AND (receipt_block_number IS NOT NULL) AND (receipt_block_hash IS NOT NULL) AND (receipt_hash IS NOT NULL) AND (confirmations IS NOT NULL) AND (confirmed_at IS NOT NULL) AND (settled_amount_atomic IS NOT NULL)) OR ((state = 'reverted'::text) AND (receipt_status = 'reverted'::text) AND (receipt_block_number IS NOT NULL) AND (receipt_block_hash IS NOT NULL) AND (receipt_hash IS NOT NULL) AND (confirmations IS NOT NULL) AND (confirmed_at IS NOT NULL) AND (settled_amount_atomic IS NULL)))),
     CONSTRAINT reward_chain_effect_replacement_shape CHECK ((((state = 'replaced'::text) AND (replaced_by_effect_id IS NOT NULL)) OR (state <> 'replaced'::text))),
     CONSTRAINT reward_chain_effect_time_order CHECK (((updated_at >= created_at) AND ((prepared_at IS NULL) OR (prepared_at >= created_at)) AND ((broadcast_at IS NULL) OR (broadcast_at >= prepared_at)) AND ((confirmed_at IS NULL) OR (confirmed_at >= broadcast_at)))),
@@ -17346,6 +17414,12 @@ ALTER TABLE ONLY megapot_ticket_purchase_effects
 ALTER TABLE ONLY megapot_ticket_purchase_effects
     ADD CONSTRAINT megapot_ticket_purchase_effects_pool_leg_id_drawing_id_key UNIQUE (pool_leg_id, drawing_id);
 
+ALTER TABLE ONLY megapot_ticket_review_evidence
+    ADD CONSTRAINT megapot_ticket_review_evidence_attestation_id_ticket_id_key UNIQUE (attestation_id, ticket_id);
+
+ALTER TABLE ONLY megapot_ticket_review_evidence
+    ADD CONSTRAINT megapot_ticket_review_evidence_pkey PRIMARY KEY (review_id);
+
 ALTER TABLE ONLY megapot_usdc_approval_effects
     ADD CONSTRAINT megapot_usdc_approval_effects_pkey PRIMARY KEY (approval_effect_id);
 
@@ -18572,6 +18646,8 @@ CREATE CONSTRAINT TRIGGER megapot_sweep_ticket_evidence_exact AFTER INSERT ON me
 CREATE TRIGGER megapot_ticket_inventory_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_ticket_inventory FOR EACH ROW EXECUTE FUNCTION guard_megapot_ticket_inventory();
 
 CREATE TRIGGER megapot_ticket_purchase_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_ticket_purchase_effects FOR EACH ROW EXECUTE FUNCTION guard_megapot_purchase_effect();
+
+CREATE TRIGGER megapot_ticket_review_evidence_append_only BEFORE INSERT OR DELETE OR UPDATE ON megapot_ticket_review_evidence FOR EACH ROW EXECUTE FUNCTION guard_megapot_ticket_review_evidence();
 
 CREATE TRIGGER megapot_usdc_approval_effects_change_guard BEFORE INSERT OR DELETE OR UPDATE ON megapot_usdc_approval_effects FOR EACH ROW EXECUTE FUNCTION guard_megapot_usdc_approval_effect();
 
@@ -19964,6 +20040,15 @@ ALTER TABLE ONLY megapot_ticket_purchase_effects
 
 ALTER TABLE ONLY megapot_ticket_purchase_effects
     ADD CONSTRAINT megapot_ticket_purchase_effects_snapshot_id_fkey FOREIGN KEY (snapshot_id) REFERENCES megapot_pool_beneficiary_snapshots(snapshot_id);
+
+ALTER TABLE ONLY megapot_ticket_review_evidence
+    ADD CONSTRAINT megapot_ticket_review_evidence_attestation_id_ticket_id_fkey FOREIGN KEY (attestation_id, ticket_id) REFERENCES megapot_ticket_inventory(attestation_id, ticket_id);
+
+ALTER TABLE ONLY megapot_ticket_review_evidence
+    ADD CONSTRAINT megapot_ticket_review_evidence_claim_effect_id_fkey FOREIGN KEY (claim_effect_id) REFERENCES reward_chain_effects(effect_id);
+
+ALTER TABLE ONLY megapot_ticket_review_evidence
+    ADD CONSTRAINT megapot_ticket_review_evidence_pool_leg_id_drawing_id_fkey FOREIGN KEY (pool_leg_id, drawing_id) REFERENCES megapot_pool_drawings(pool_leg_id, drawing_id);
 
 ALTER TABLE ONLY megapot_usdc_approval_effects
     ADD CONSTRAINT megapot_usdc_approval_effects_approval_effect_id_fkey FOREIGN KEY (approval_effect_id) REFERENCES reward_chain_effects(effect_id);

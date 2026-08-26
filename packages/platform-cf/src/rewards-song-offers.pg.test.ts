@@ -291,6 +291,116 @@ async function seedActivePoolLeg(
   return { legId, offerId };
 }
 
+async function seedTicketReviewCandidate(
+  admin: Client,
+  input: Readonly<{
+    legId: string;
+    suffix: string;
+    drawingId: number;
+    stage: "claim" | "sweep";
+  }>,
+): Promise<void> {
+  const observationId = `drawing-observation-${input.suffix}`;
+  const purchaseEffectId = `purchase-effect-${input.suffix}`;
+  const snapshotId = `snapshot-${input.suffix}`;
+  const sweepId = `sweep-${input.suffix}`;
+  const ticketId = input.drawingId + 500;
+  const mintedTransactionHash = `0x${input.drawingId.toString(16).padStart(64, "0")}`;
+  await admin.query(
+    `INSERT INTO megapot_drawing_observations (
+       observation_id, attestation_id, chain_id, drawing_id,
+       ticket_price_atomic, drawing_time, ball_max, bonusball_max,
+       drawing_locked, referral_fee_wei, referral_win_share_wei,
+       block_number, block_hash, block_timestamp, confirmations,
+       observed_at, expires_at, raw_state_hash
+     ) VALUES (
+       $1, 'megapot-base-sepolia-v2', 84532, $2, 10000,
+       clock_timestamp() - interval '1 hour', 25, 13, false,
+       100000000000000000, 100000000000000000, 200, $3,
+       clock_timestamp() - interval '1 hour', 3, clock_timestamp(),
+       clock_timestamp() + interval '30 minutes', $4
+     )`,
+    [observationId, input.drawingId, bytes32("1"), hash("1")],
+  );
+  await admin.query("SET session_replication_role = replica");
+  try {
+    await admin.query(
+      `INSERT INTO megapot_pool_drawings (
+         pool_leg_id, drawing_id, observation_id, status, version,
+         entry_cutoff_at, ticket_price_ceiling_atomic,
+         reserved_ticket_cost_atomic, actual_ticket_cost_atomic,
+         gross_winnings_atomic, net_winnings_atomic, frozen_share_count,
+         fallback_beneficiary, snapshot_id, commitment_effect_id,
+         purchase_effect_id, cutoff_frozen_at, created_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, clock_timestamp() - interval '2 hours',
+         10000, 10000, 10000, $6, $7, 1, false, $8,
+         $9, $10, clock_timestamp() - interval '2 hours',
+         clock_timestamp() - interval '3 hours'
+       )`,
+      [
+        input.legId,
+        input.drawingId,
+        observationId,
+        input.stage === "claim" ? "winnings_detected" : "tickets_confirmed",
+        input.stage === "claim" ? 7 : 5,
+        input.stage === "claim" ? 1_001 : 0,
+        input.stage === "claim" ? 901 : 0,
+        snapshotId,
+        `commitment-${input.suffix}`,
+        purchaseEffectId,
+      ],
+    );
+    await admin.query(
+      `INSERT INTO megapot_ticket_inventory (
+         attestation_id, ticket_id, purchase_effect_id, pool_leg_id, drawing_id,
+         custody_address, owner_observation_block_number,
+         owner_observation_block_hash, minted_transaction_hash,
+         minted_log_index, status, acquired_at
+       ) VALUES (
+         'megapot-base-sepolia-v2', $1, $2, $3, $4, $5, 201, $6, $7, 4,
+         'custodied', clock_timestamp() - interval '1 hour'
+       )`,
+      [
+        ticketId,
+        purchaseEffectId,
+        input.legId,
+        input.drawingId,
+        address("4"),
+        bytes32("2"),
+        mintedTransactionHash,
+      ],
+    );
+    if (input.stage === "claim") {
+      await admin.query(
+        `INSERT INTO megapot_drawing_sweeps (
+           sweep_id, pool_leg_id, attestation_id, drawing_id,
+           observation_block_number, observation_block_hash, drawing_state_hash,
+           ticket_count, winning_ticket_count, state, observed_at, completed_at
+         ) VALUES (
+           $1, $2, 'megapot-base-sepolia-v2', $3, 202, $4, $5,
+           1, 1, 'complete', clock_timestamp() - interval '30 minutes',
+           clock_timestamp() - interval '29 minutes'
+         )`,
+        [sweepId, input.legId, input.drawingId, bytes32("4"), hash("4")],
+      );
+      await admin.query(
+        `INSERT INTO megapot_sweep_ticket_evidence (
+           sweep_id, attestation_id, ticket_id, tier_id, custody_owner_address,
+           gross_winnings_atomic, referral_win_share_atomic,
+           referral_accrual_atomic, net_winnings_atomic
+         ) VALUES (
+           $1, 'megapot-base-sepolia-v2', $2, 7, $3, 1001,
+           100000000000000000, 100, 901
+         )`,
+        [sweepId, ticketId, address("4")],
+      );
+    }
+  } finally {
+    await admin.query("SET session_replication_role = origin");
+  }
+}
+
 suite("Postgres 17 Megapot rewards persistence", () => {
   test("opens an offer and one future-drawing pool leg with exact action replay", async () => {
     await withSchema(async (admin, scopedConnection) => {
@@ -1397,6 +1507,216 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         ),
       ).resolves.toMatchObject({
         items: [{ creditId, amountAtomic: 901n, paidAtomic: 901n, state: "sent" }],
+      });
+    });
+  }, 10_000);
+
+  test("atomically holds custody-integrity failures and removes them from retry work", async () => {
+    await withSchema(async (admin, scopedConnection) => {
+      await seedMegapotAuthority(admin);
+      const sweepIdentity = await seedSong(admin, "sweep-review");
+      const sweepLeg = await seedActivePoolLeg(admin, sweepIdentity, {
+        fallback: false,
+        suffix: "sweep-review",
+      });
+      await seedTicketReviewCandidate(admin, {
+        legId: sweepLeg.legId,
+        suffix: "sweep-review",
+        drawingId: 201,
+        stage: "sweep",
+      });
+      const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
+      const sweepStore = makeControlPlaneMegapotSweepStore(layer);
+      const sweepCandidate = await Effect.runPromise(
+        sweepStore.loadCandidate({ poolLegId: sweepLeg.legId, drawingId: 201n }),
+      );
+      await Effect.runPromise(
+        sweepStore.requireReview({
+          candidate: sweepCandidate,
+          sweepId: "sweep-review-201",
+          reason: "ticket_owner_mismatch",
+          observationBlockNumber: 203n,
+          observationBlockHash: bytes32("5"),
+          observedOwnerAddress: address("f"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
+      const sweepHeld = await admin.query<{
+        readonly drawing_state: string;
+        readonly terminal_reason: string;
+        readonly ticket_state: string;
+        readonly source_kind: string;
+        readonly observed_owner_address: string;
+      }>(
+        `SELECT drawing.status AS drawing_state, drawing.terminal_reason,
+                ticket.status AS ticket_state, review.source_kind,
+                review.observed_owner_address
+           FROM megapot_pool_drawings drawing
+           JOIN megapot_ticket_inventory ticket
+             ON ticket.pool_leg_id=drawing.pool_leg_id
+            AND ticket.drawing_id=drawing.drawing_id
+           JOIN megapot_ticket_review_evidence review
+             ON review.attestation_id=ticket.attestation_id
+            AND review.ticket_id=ticket.ticket_id
+          WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=201`,
+        [sweepLeg.legId],
+      );
+      expect(sweepHeld.rows).toEqual([
+        {
+          drawing_state: "operational_hold",
+          terminal_reason: "ticket_owner_mismatch",
+          ticket_state: "needs_review",
+          source_kind: "sweep",
+          observed_owner_address: address("f"),
+        },
+      ]);
+      await expect(
+        Effect.runPromise(sweepStore.loadCandidate({ poolLegId: sweepLeg.legId, drawingId: 201n })),
+      ).rejects.toMatchObject({ reason: "not-found" });
+
+      const claimStore = makeControlPlaneMegapotClaimStore(layer);
+      const preflightIdentity = await seedSong(admin, "claim-preflight-review");
+      const preflightLeg = await seedActivePoolLeg(admin, preflightIdentity, {
+        fallback: false,
+        suffix: "claim-preflight-review",
+      });
+      await seedTicketReviewCandidate(admin, {
+        legId: preflightLeg.legId,
+        suffix: "claim-preflight-review",
+        drawingId: 203,
+        stage: "claim",
+      });
+      const preflightCandidate = await Effect.runPromise(
+        claimStore.loadCandidate({ poolLegId: preflightLeg.legId, drawingId: 203n }),
+      );
+      await Effect.runPromise(
+        claimStore.requireReview({
+          candidate: preflightCandidate,
+          reviewId: "claim-preflight-review-203",
+          claimEffectId: null,
+          reason: "ticket_owner_mismatch",
+          observationBlockNumber: 204n,
+          observationBlockHash: bytes32("6"),
+          observedOwnerAddress: address("e"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
+      const preflightHeld = await admin.query<{
+        readonly drawing_state: string;
+        readonly ticket_state: string;
+        readonly source_kind: string;
+        readonly claim_effect_id: string | null;
+      }>(
+        `SELECT drawing.status AS drawing_state, ticket.status AS ticket_state,
+                review.source_kind, review.claim_effect_id
+           FROM megapot_pool_drawings drawing
+           JOIN megapot_ticket_inventory ticket
+             ON ticket.pool_leg_id=drawing.pool_leg_id
+            AND ticket.drawing_id=drawing.drawing_id
+           JOIN megapot_ticket_review_evidence review
+             ON review.attestation_id=ticket.attestation_id
+            AND review.ticket_id=ticket.ticket_id
+          WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=203`,
+        [preflightLeg.legId],
+      );
+      expect(preflightHeld.rows).toEqual([
+        {
+          drawing_state: "operational_hold",
+          ticket_state: "needs_review",
+          source_kind: "claim",
+          claim_effect_id: null,
+        },
+      ]);
+
+      const claimIdentity = await seedSong(admin, "claim-review");
+      const claimLeg = await seedActivePoolLeg(admin, claimIdentity, {
+        fallback: false,
+        suffix: "claim-review",
+      });
+      await seedTicketReviewCandidate(admin, {
+        legId: claimLeg.legId,
+        suffix: "claim-review",
+        drawingId: 202,
+        stage: "claim",
+      });
+      const claimCandidate = await Effect.runPromise(
+        claimStore.loadCandidate({ poolLegId: claimLeg.legId, drawingId: 202n }),
+      );
+      const reservation = await Effect.runPromise(
+        claimStore.reserveNonce({
+          candidate: claimCandidate,
+          effectId: "claim-review-202",
+          custodyBalanceBeforeAtomic: 20_000n,
+          referralBalanceBeforeAtomic: 1_000n,
+          observedPendingNonce: 14n,
+          observedBlockNumber: 204n,
+          observedBlockHash: bytes32("6"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
+      await Effect.runPromise(
+        claimStore.requireReview({
+          candidate: reservation,
+          reviewId: reservation.effectId,
+          claimEffectId: reservation.effectId,
+          reason: "no_tickets_to_claim",
+          observationBlockNumber: 205n,
+          observationBlockHash: bytes32("7"),
+          observedOwnerAddress: address("4"),
+          observedAt: new Date().toISOString(),
+        }),
+      );
+      const claimHeld = await admin.query<{
+        readonly drawing_state: string;
+        readonly terminal_reason: string;
+        readonly ticket_state: string;
+        readonly effect_state: string;
+        readonly failure_class: string;
+        readonly failure_reason: string;
+        readonly claim_effect_id: string;
+      }>(
+        `SELECT drawing.status AS drawing_state, drawing.terminal_reason,
+                ticket.status AS ticket_state, effect.state AS effect_state,
+                effect.failure_class, effect.failure_reason, review.claim_effect_id
+           FROM megapot_pool_drawings drawing
+           JOIN megapot_ticket_inventory ticket
+             ON ticket.pool_leg_id=drawing.pool_leg_id
+            AND ticket.drawing_id=drawing.drawing_id
+           JOIN megapot_ticket_review_evidence review
+             ON review.attestation_id=ticket.attestation_id
+            AND review.ticket_id=ticket.ticket_id
+           JOIN reward_chain_effects effect ON effect.effect_id=review.claim_effect_id
+          WHERE drawing.pool_leg_id=$1 AND drawing.drawing_id=202`,
+        [claimLeg.legId],
+      );
+      expect(claimHeld.rows).toEqual([
+        {
+          drawing_state: "operational_hold",
+          terminal_reason: "no_tickets_to_claim",
+          ticket_state: "needs_review",
+          effect_state: "terminal_failed",
+          failure_class: "claim_preflight_integrity",
+          failure_reason: "no_tickets_to_claim",
+          claim_effect_id: "claim-review-202",
+        },
+      ]);
+      const work = makeControlPlaneMegapotWorkStore(layer);
+      await expect(Effect.runPromise(work.loadChainEffects(50))).resolves.not.toContainEqual({
+        effectId: "claim-review-202",
+        effectKind: "winnings_claim",
+      });
+      await expect(
+        Effect.runPromise(
+          work.loadDrawings({ statuses: ["winnings_detected", "claim_pending"], limit: 50 }),
+        ),
+      ).resolves.toEqual([]);
+      await expect(
+        admin.query(
+          `UPDATE megapot_ticket_review_evidence SET reason='ticket_owner_mismatch'
+            WHERE review_id='claim-review-202'`,
+        ),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining("review evidence is append-only"),
       });
     });
   }, 10_000);
