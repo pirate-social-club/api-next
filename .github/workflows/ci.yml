@@ -127,6 +127,11 @@ jobs:
           # milliseconds. Keep it isolated from the cumulative migration load.
           timeout 120s bun test --timeout 15000 \
             packages/platform-cf/src/namespace-ownership-persistence.pg.test.ts
+          # Handle-sales fixtures exercise their own database-time and
+          # pagination boundaries. Keep them outside the cumulative suite so
+          # growth here cannot consume the unrelated 360-second budget.
+          timeout 120s bun test --timeout 15000 \
+            packages/platform-cf/src/handle-sales-repository.pg.test.ts
           timeout 360s bun test --timeout 15000 \
             packages/platform-cf/src/postgres.pg.test.ts \
             packages/platform-cf/src/postgres-foundation.pg.test.ts \
@@ -151,7 +156,6 @@ jobs:
             packages/platform-cf/src/verification-start-repository.pg.test.ts \
             packages/platform-cf/src/community-purchase-funding-repository.pg.test.ts \
             packages/platform-cf/src/hns-control-observer-repository.pg.test.ts \
-            packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts \
-            packages/platform-cf/src/handle-sales-repository.pg.test.ts
+            packages/platform-cf/src/hns-host-persistence-repository.pg.test.ts
       - name: Verify Postgres 17 completion sentinel
         run: bun run verify:postgres-sentinels
