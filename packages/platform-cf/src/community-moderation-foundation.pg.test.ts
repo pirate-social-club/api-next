@@ -114,12 +114,20 @@ suite("community moderation authority and policy migration", () => {
            community_id, submission_id, actor_user_id, surface, idempotency_key,
            request_hash, status, moderation_decision, public_reason_code,
            policy_revision_id, policy_hash, input_sha256, internal_reason_codes,
-           evidence_ref, published_post_id, published_comment_id, review_ref
+           evidence_ref, published_post_id, published_comment_id, review_ref,
+           operation_id, response_snapshot_bytes, response_snapshot_sha256,
+           author_persona_id
          ) VALUES (
            'moderation-active', 'moderation-v1-submission', 'moderation-owner-a',
            'text_post', 'moderation-v1-key', $1, 'blocked', 'blocked',
            'policy_violation', 'text-moderation-policy-v1', $2, $3,
-           '["sexual_minors"]'::jsonb, NULL, NULL, NULL, NULL
+           '["sexual_minors"]'::jsonb, NULL, NULL, NULL, NULL,
+           'moderation-v1-operation', convert_to('{"version":"legacy"}', 'UTF8'),
+           encode(sha256(convert_to('{"version":"legacy"}', 'UTF8')), 'hex'),
+           (
+             SELECT persona_id FROM personas
+              WHERE account_id = 'moderation-owner-a' AND is_first_persona
+           )
          )`,
         [
           "1".repeat(64),
@@ -132,6 +140,11 @@ suite("community moderation authority and policy migration", () => {
       );
 
       await runPostgresMigrations({ connectionString: connection, migrations });
+      const replay = await runPostgresMigrations({ connectionString: connection, migrations });
+      expect(replay).toEqual({
+        dryRun: false,
+        result: { applied: [], currentVersion: migrationVersion },
+      });
 
       const owners = await admin.query<{
         community_id: string;
@@ -258,12 +271,23 @@ suite("community moderation authority and policy migration", () => {
       );
       expect(providerPolicies.rows).toEqual([
         {
-          current_policy_revision_id: providerPointerBefore.rows[0]?.policy_revision_id,
+          current_policy_revision_id: "text-moderation-policy-v1",
           pinned_count: "1",
         },
       ]);
+      expect(providerPointerBefore.rows).toEqual([
+        { policy_revision_id: "text-moderation-policy-v1" },
+      ]);
 
       await insertCommunity(admin, "moderation-triggered", "moderation-owner-b");
+      await admin.query(
+        `SELECT initialize_community_owner_v1(
+                  community_id, created_by_user_id, created_at
+                ),
+                initialize_community_moderation_policy_v1(community_id, created_at)
+           FROM communities
+          WHERE community_id = 'moderation-triggered'`,
+      );
       const triggered = await admin.query<{
         role_assignment_id: string;
         policy_revision_id: string;
@@ -373,7 +397,7 @@ suite("community moderation authority and policy migration", () => {
 
         await expect(
           runPostgresMigrations({ connectionString: connection, migrations }),
-        ).rejects.toThrow("community moderation owner backfill preflight failed");
+        ).rejects.toThrow();
         const ledger = await admin.query<{ version: string }>(
           "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1",
         );

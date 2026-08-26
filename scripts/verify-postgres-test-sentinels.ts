@@ -182,6 +182,13 @@ export const POSTGRES_TEST_SENTINELS: readonly PostgresSentinel[] = [
       "/tmp/api-next-control-plane-postgres-handle-sales-suite-complete",
     contents: "api-next-control-plane-postgres-handle-sales-suite-complete\n",
   },
+  {
+    name: "postgres community moderation foundation",
+    path:
+      process.env.CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL ??
+      "/tmp/api-next-control-plane-postgres-community-moderation-suite-complete",
+    contents: "api-next-control-plane-postgres-community-moderation-suite-complete\n",
+  },
 ];
 
 export async function verifyPostgresTestSentinels(

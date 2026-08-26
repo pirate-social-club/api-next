@@ -46,6 +46,7 @@ async function sentinelSet(): Promise<{
     "hns-observer",
     "hns-host-persistence",
     "handle-sales",
+    "community-moderation",
   ].map((name) => ({
     name,
     path: join(directory, `${name}.complete`),
@@ -228,6 +229,26 @@ describe("Postgres suite sentinel verification", () => {
     );
     expect(
       workflow.match(/\/tmp\/api-next-control-plane-postgres-handle-sales-suite-complete/gu),
+    ).toHaveLength(2);
+  });
+
+  test("keeps community moderation foundation fail-closed in Postgres CI", async () => {
+    const workflow = await readFile(
+      new URL("../.github/workflows/ci.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain(
+      "packages/platform-cf/src/community-moderation-foundation.pg.test.ts",
+    );
+    expect(workflow).toContain(
+      "CONTROL_PLANE_POSTGRES_COMMUNITY_MODERATION_TEST_SENTINEL: " +
+        "/tmp/api-next-control-plane-postgres-community-moderation-suite-complete",
+    );
+    expect(
+      workflow.match(
+        /\/tmp\/api-next-control-plane-postgres-community-moderation-suite-complete/gu,
+      ),
     ).toHaveLength(2);
   });
 
