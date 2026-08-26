@@ -24,6 +24,7 @@ const dependencyRoots = [
   "packages/verifier-response-contract",
   "apps/http-worker",
   "apps/jobs-worker",
+  "apps/media-processor-worker",
   "apps/hns-owner-verifier",
   "apps/hns-observer-driver",
   "apps/hns-platform-gateway",
@@ -113,6 +114,28 @@ describe("provider dependency boundary", () => {
       "packages/platform-cf/src/verification/provider-registry.ts",
     );
     expect(result.checkedFiles).toContain("packages/domain/src/gates-v2/index.ts");
+    expect(result.checkedFiles).toContain("apps/media-processor-worker/src/index.ts");
+  });
+
+  test("keeps the media processor Worker on application and platform seams", async () => {
+    const allowedRoot = await fixtureRoot({
+      "apps/media-processor-worker/src/index.ts":
+        'import "@pirate/application"; import "@pirate/platform-cf";',
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts": "",
+    });
+    expect(
+      lintDependencies(allowedRoot, { checkVerificationExportSurface: false }).violations,
+    ).toEqual([]);
+
+    const forbiddenRoot = await fixtureRoot({
+      "apps/media-processor-worker/src/index.ts": 'import "@pirate/domain";',
+      "packages/platform-cf/src/verification/providers/contract-fixture.ts": "",
+    });
+    expect(
+      lintDependencies(forbiddenRoot, { checkVerificationExportSurface: false }).violations,
+    ).toContain(
+      "apps/media-processor-worker/src/index.ts: @pirate/media-processor-worker may not import @pirate/domain",
+    );
   });
 
   test("recognizes re-exported boundary symbols and local export-surface widening", () => {
