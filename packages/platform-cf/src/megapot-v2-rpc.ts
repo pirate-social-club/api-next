@@ -87,6 +87,8 @@ export type MegapotV2RpcClientOptions = Readonly<{
   fetcher?: Fetcher;
   timeoutMs?: number;
   maxResponseBytes?: number;
+  /** Safe only when the client is scoped to one bounded operation or job attempt. */
+  reuseSuccessfulAttestation?: boolean;
 }>;
 
 export type MegapotV2FeeQuote = Readonly<{
@@ -321,40 +323,53 @@ export function makeMegapotV2RpcClient(options: MegapotV2RpcClientOptions): Mega
 
   const readHead = async () => blockIdentity(await rpc("eth_getBlockByNumber", ["latest", false]));
 
+  const performDeploymentAttestation = async () => {
+    const [
+      chainId,
+      jackpotCodeHash,
+      ticketNftCodeHash,
+      usdcCodeHash,
+      configuredTicketNft,
+      configuredUsdc,
+    ] = await Promise.all([
+      rpc("eth_chainId", []).then(quantity),
+      readCodeHash(attestation.jackpotAddress),
+      readCodeHash(attestation.ticketNftAddress),
+      readCodeHash(attestation.usdcAddress),
+      ethCall(attestation.jackpotAddress, encodeMegapotJackpotTicketNft()).then(
+        decodeMegapotJackpotTicketNft,
+      ),
+      ethCall(attestation.jackpotAddress, encodeMegapotJackpotUsdc()).then(
+        decodeMegapotJackpotUsdc,
+      ),
+    ]);
+    if (
+      chainId !== BigInt(attestation.chainId) ||
+      jackpotCodeHash !== attestation.jackpotCodeHash ||
+      ticketNftCodeHash !== attestation.ticketNftCodeHash ||
+      usdcCodeHash !== attestation.usdcCodeHash ||
+      configuredTicketNft !== attestation.ticketNftAddress ||
+      configuredUsdc !== attestation.usdcAddress
+    ) {
+      throw new MegapotV2RpcFailed("invalid-response");
+    }
+    return { jackpotCodeHash, ticketNftCodeHash, usdcCodeHash };
+  };
+
+  let deploymentAttestation: ReturnType<MegapotV2RpcClient["attestDeployment"]> | undefined;
+  const attestDeployment = () => {
+    if (options.reuseSuccessfulAttestation !== true) return performDeploymentAttestation();
+    if (deploymentAttestation !== undefined) return deploymentAttestation;
+    deploymentAttestation = performDeploymentAttestation().catch((error: unknown) => {
+      deploymentAttestation = undefined;
+      throw error;
+    });
+    return deploymentAttestation;
+  };
+
   return {
     deployment: attestation,
-    attestDeployment: async () => {
-      const [
-        chainId,
-        jackpotCodeHash,
-        ticketNftCodeHash,
-        usdcCodeHash,
-        configuredTicketNft,
-        configuredUsdc,
-      ] = await Promise.all([
-        rpc("eth_chainId", []).then(quantity),
-        readCodeHash(attestation.jackpotAddress),
-        readCodeHash(attestation.ticketNftAddress),
-        readCodeHash(attestation.usdcAddress),
-        ethCall(attestation.jackpotAddress, encodeMegapotJackpotTicketNft()).then(
-          decodeMegapotJackpotTicketNft,
-        ),
-        ethCall(attestation.jackpotAddress, encodeMegapotJackpotUsdc()).then(
-          decodeMegapotJackpotUsdc,
-        ),
-      ]);
-      if (
-        chainId !== BigInt(attestation.chainId) ||
-        jackpotCodeHash !== attestation.jackpotCodeHash ||
-        ticketNftCodeHash !== attestation.ticketNftCodeHash ||
-        usdcCodeHash !== attestation.usdcCodeHash ||
-        configuredTicketNft !== attestation.ticketNftAddress ||
-        configuredUsdc !== attestation.usdcAddress
-      ) {
-        throw new MegapotV2RpcFailed("invalid-response");
-      }
-      return { jackpotCodeHash, ticketNftCodeHash, usdcCodeHash };
-    },
+    attestDeployment,
     readCurrentDrawing: async () => {
       const drawingId = decodeMegapotCurrentDrawingId(
         await ethCall(attestation.jackpotAddress, encodeMegapotCurrentDrawingId()),

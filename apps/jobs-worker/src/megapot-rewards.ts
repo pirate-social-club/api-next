@@ -178,6 +178,7 @@ export function makeMegapotRewardsJob(
     const deployment = yield* observationStore.loadCandidate(options.attestationId);
     const rpc = makeMegapotV2RpcClient({
       rpcUrl: options.rpcUrl,
+      reuseSuccessfulAttestation: true,
       attestation: {
         attestationId: deployment.attestationId,
         environment: deployment.environment,

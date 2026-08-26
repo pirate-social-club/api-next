@@ -271,6 +271,79 @@ describe("Megapot v2 Worker runtime adapters", () => {
     ]);
   });
 
+  test("reuses one successful deployment attestation per RPC client", async () => {
+    let requestCount = 0;
+    const fetchAttestation = attestationFetcher();
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      reuseSuccessfulAttestation: true,
+      fetcher: async (input, init) => {
+        requestCount += 1;
+        return fetchAttestation(input, init);
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      client.attestDeployment(),
+      client.attestDeployment(),
+    ]);
+    expect(first).toEqual(second);
+    expect(requestCount).toBe(6);
+
+    await expect(client.attestDeployment()).resolves.toEqual(first);
+    expect(requestCount).toBe(6);
+  });
+
+  test("does not cache a failed deployment attestation", async () => {
+    let requestCount = 0;
+    let failNextChainRead = true;
+    const fetchAttestation = attestationFetcher();
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      reuseSuccessfulAttestation: true,
+      fetcher: async (input, init) => {
+        requestCount += 1;
+        const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
+        if (request.method === "eth_chainId" && failNextChainRead) {
+          failNextChainRead = false;
+          return rpcResponse(request.id, quantity(8_453n));
+        }
+        return fetchAttestation(input, init);
+      },
+    });
+
+    await expect(client.attestDeployment()).rejects.toMatchObject({
+      reason: "invalid-response",
+    });
+    expect(requestCount).toBe(6);
+
+    await expect(client.attestDeployment()).resolves.toEqual({
+      jackpotCodeHash: keccak256(code.jackpot),
+      ticketNftCodeHash: keccak256(code.ticket),
+      usdcCodeHash: keccak256(code.usdc),
+    });
+    expect(requestCount).toBe(12);
+  });
+
+  test("reattests by default for long-lived RPC clients", async () => {
+    let requestCount = 0;
+    const fetchAttestation = attestationFetcher();
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      fetcher: async (input, init) => {
+        requestCount += 1;
+        return fetchAttestation(input, init);
+      },
+    });
+
+    await client.attestDeployment();
+    await client.attestDeployment();
+    expect(requestCount).toBe(12);
+  });
+
   test("fails closed on the wrong chain, stale code, or mismatched Jackpot wiring", async () => {
     const wrongChainClient = makeMegapotV2RpcClient({
       rpcUrl: "https://base-sepolia.example.invalid",
