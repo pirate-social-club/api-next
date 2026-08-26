@@ -1,6 +1,6 @@
 # Interactive community staging shadow preflight plan
 
-Status: draft discovery checkpoint, non-executable, 2026-08-26.
+Status: populated discovery checkpoint, non-executable, 2026-08-26.
 
 This plan proves the interactive `app.<root>` transport on staging Pirate
 Workers and isolated loopback listeners before the public Handshake ceremony.
@@ -24,35 +24,26 @@ the browser-visible HNS origin, production identity continuity, production
 Privy, or the canonical `pirate.sc` route. Those remain in the production
 disposable-root plan.
 
-## Source-closure stops
+## Source closure
 
-The staging plan is not populatable until two bounded repository tasks are
-reviewed and merged.
+The two repository blockers are merged and their task records are complete.
+api-next PR 75 landed as `aa32b0f43438bf939b2bb3f7e8e7465abd854048`
+after review of head `6848c2f`; it supplies the source-closed
+`staging-shadow` mode, literal listener pair 4269/4271, separate release and
+credential roots, manifest schema, and systemd unit. Solid correction
+`c7aee1c` permits one exact protected api-next origin while retaining distinct
+API and authority credentials. It is present in selected Solid source
+`f34435451c19276faf24ef62234441de0d15d187`.
 
-`hns-community-app-gateway-staging-shadow-profile` must add a source-closed
-`staging-shadow` executable mode. The current gateway accepts only
-`production` and `shadow`; its manifest and listener selection hard-code
-4069/4071 and 4169/4171. Reusing 4169/4171 would prevent the production
-rehearsal from starting its own shadow and would share release and credential
-paths across environments.
-
-`solid-hns-community-app-shared-protected-api-origin` must correct the Solid
-production composition so the API and private-authority clients may use the
-same exact api-next protected origin while retaining distinct service-token
-credentials. Current Solid source rejects
-`HNS_COMMUNITY_APP_API_ORIGIN === HNS_COMMUNITY_APP_AUTHORITY_ORIGIN`, while
-the api-next composition exposes both paths behind one exact protected origin
-and one pinned Access audience. The accepted two-application topology cannot
-assemble until that contradiction is removed and covered by tests.
-
-No third api-next deployment or third Access application is introduced as an
-operations workaround. If review chooses a different topology, this plan must
-be rewritten against the merged source before population.
+No third api-next deployment or third Access application is introduced. Any
+change to either selected source commit invalidates its derived bytes and
+requires a new reviewed population addendum before execution.
 
 ## Selected staging tuple
 
 The application and database tuple is fixed as follows. Provider-generated
-identifiers and the exact source commits are re-derived at population time.
+identifiers remain hard stops until their separately authorized creation or a
+read-only authenticated provider inventory.
 
 | Member | Exact staging selection |
 | --- | --- |
@@ -69,17 +60,27 @@ identifiers and the exact source commits are re-derived at population time.
 | health listener | `127.0.0.1:4271` |
 | gateway mode | `staging-shadow` |
 
-The discovery rollback baselines were Solid version
+The earlier discovery rollback baselines were Solid version
 `f081e8a2-651e-4888-befb-d6abdd43e572` and api-next version
 `ba5c573b-015d-410d-a8a0-d6d5b0a12f7c`. They are inventory, not frozen
-rollback targets. Population must re-read both and bind:
+rollback targets. A read-only Wrangler query at 2026-08-26T23:36+04:00 was
+blocked before provider access because the noninteractive process had no
+`CLOUDFLARE_API_TOKEN`. It performed no login and changed nothing. The current
+rollback versions therefore remain hard stops:
 
 ```text
-solid_source_commit = __UNRESOLVED_MERGED_SOLID_SHARED_ORIGIN_COMMIT__
+solid_source_commit = f34435451c19276faf24ef62234441de0d15d187
+api_next_source_commit = 2b8c726984a93ba23f65bd9b87007d305a3872ae
 solid_rollback_version = __UNRESOLVED_CURRENT_STAGING_SOLID_VERSION__
 api_next_rollback_version = __UNRESOLVED_CURRENT_STAGING_API_NEXT_VERSION__
-protected_origin_availability = __UNRESOLVED_EXACT_HOST_AVAILABILITY_EVIDENCE__
+protected_origin_availability = both candidate hosts failed DNS resolution from the discovery runner at 2026-08-26T23:36+04:00
 ```
+
+The owner read-only provider ceremony injects a short-lived token scoped to
+the canonical Cloudflare account without printing it, reads the two current
+staging Worker deployments and versions, inventories Access state and
+secret-reference names, and then removes or revokes the token. It must not use
+interactive login, create a resource, or write a secret.
 
 The two protected origins are new Worker Custom Domains. Cloudflare creates
 DNS records and WebPKI certificates when a Custom Domain is attached. This
@@ -166,18 +167,24 @@ seconds. A client-supplied Access or forwarder field is never authority.
 
 ## Staging migration ceremony
 
-The staging database ledger is unresolved. The production 0048 observation
-does not establish staging state, and the source tree's latest filename at
-discovery is not a permanent migration ceiling.
-
-At population time, select one clean api-next commit and freeze:
+A read-only query at 2026-08-26T23:44:11+04:00 proved that staging is an exact
+checksum prefix through `0055_megapot_claim_reconciliation.sql`. The selected
+api-next commit expects 57 migrations and staging has 55. The only missing
+ordered suffix is:
 
 ```text
-api_next_source_commit = __UNRESOLVED_EXACT_STAGING_DEPLOYMENT_COMMIT__
-expected_latest_migration = __UNRESOLVED_LATEST_MIGRATION_AT_SELECTED_COMMIT__
-checksums_ledger_sha256 = __UNRESOLVED_CHECKSUMS_JSON_SHA256__
+0056_media_processing_runtime_bridge.sql = 52b7e2075d87ff91274774bafd94270744847728ada07deb2ff7a6aa35f4f054
+0057_data_registration_persistence.sql = a11f28beba567660b4350ab6de117a3999c495e70ecc51a5897aa2638d1e1921
+```
+
+The frozen source and migration inputs are:
+
+```text
+api_next_source_commit = 2b8c726984a93ba23f65bd9b87007d305a3872ae
+expected_latest_migration = 0057_data_registration_persistence.sql
+checksums_ledger_sha256 = 24dc8738c1e7c27228af905a1ef1ff6424e66d988bcd11097076e7c66a9db6a5
 staging_backup_reference = __UNRESOLVED_VERIFIED_STAGING_BACKUP_REFERENCE__
-staging_migration_command = __UNRESOLVED_ACCEPTED_STAGING_MIGRATION_COMMAND__
+staging_migration_command = infisical run --env=staging --path=/services/api-next/operator -- bun run db:migrate
 ```
 
 A read-only credential must compare every applied migration from 0001 through
@@ -190,16 +197,18 @@ forward repair or database restoration, not a Worker rollback.
 
 ## Staging authority fixture
 
-Root custody is not a prerequisite for the isolated preflight. The staging
-operator may use candidate-05 for continuity only after the owner supplies its
-label out of band, or may generate an opaque synthetic HNS-valid root label
-that is proved absent from production and staging. No index-to-name mapping is
-written to this repository.
+Root custody is not a prerequisite for the isolated preflight. This plan uses
+the opaque synthetic HNS-valid label `hnsr-f49ac37b`, derived from the bound
+profile digest rather than an owned name. A read-only staging transaction at
+2026-08-26T23:43:37+04:00 found zero operator-route, DNS-zone-current, and
+app-host-revision rows for that label. The production absence check remains a
+hard stop before fixture creation. No index-to-name mapping is written to this
+repository.
 
 The exact staging-only values remain unresolved:
 
 ```text
-test_root = __UNRESOLVED_OPAQUE_STAGING_TEST_ROOT__
+test_root = hnsr-f49ac37b
 community_id = __UNRESOLVED_STAGING_COMMUNITY_ID__
 route_activation_id = __UNRESOLVED_STAGING_OPERATOR_ROUTE_ACTIVATION_ID__
 route_activation_generation = __UNRESOLVED_STAGING_OPERATOR_ROUTE_GENERATION__
@@ -248,7 +257,7 @@ retention or deletion ceremony.
 
 ## Gateway isolation
 
-The staging source task must freeze this exact isolated profile:
+The merged source freezes this exact isolated profile:
 
 ```text
 mode = staging-shadow
@@ -260,14 +269,24 @@ credential_root = /etc/pirate/hns-community-app-gateway-staging-shadow
 ```
 
 The source-closed artifact remains
-`dist/pirate-hns-community-app-gateway.mjs`, but its source commit and bytes
-are derived together only after both code blockers land:
+`dist/pirate-hns-community-app-gateway.mjs`. A clean build using the
+repository-pinned Bun 1.4.0 at the selected commit produced the following
+candidate digest. The generated artifact was removed after hashing. The
+populated deployment manifest is not created until the remaining provider and
+authority values exist, so its final digest remains a hard stop:
 
 ```text
-api_next_source_commit = __UNRESOLVED_EXACT_STAGING_DEPLOYMENT_COMMIT__
-bundle_sha256 = __UNRESOLVED_STAGING_COMMUNITY_GATEWAY_BUNDLE_SHA256__
+api_next_source_commit = 2b8c726984a93ba23f65bd9b87007d305a3872ae
+bundle_sha256 = 8806cc98201f9d85476e2e8424039e88381a08e70790f91c4b22e3af9bd7c43e
+manifest_template_sha256 = 892fbb7a9fbb13c027bfea2c1f079951fdb22f7b8b06098b6b2e7da5da118937
+systemd_unit_source_sha256 = 1e8063a5b97e992264c99e742e9f8c7d55acc38451996dac508583fafbfe201d
 manifest_sha256 = __UNRESOLVED_STAGING_DEPLOYMENT_MANIFEST_SHA256__
 ```
+
+The retained VPS runs Bun 1.3.14. Execution must prove the selected bundle
+starts and passes its focused checks under that runtime before installation;
+changing the source commit, lockfile, Bun build version, or bundle bytes
+invalidates this digest.
 
 The staging unit may write only its staging release and credential roots and
 own only 4269/4271. It may not read or write the production community paths,
@@ -282,11 +301,41 @@ digest, and the synthetic nonpublic SPKI assertion. The assertion is only an
 authority-tuple equality fixture; it is not evidence that a TLS certificate or
 TLSA exists.
 
+## Read-only retained-estate baseline
+
+The primary inventory at 2026-08-26T19:36Z found the live `app.pirate`
+release at
+`/srv/pirate-hns-platform-gateway/releases/e7b0b247613691c27aedfd80da63d8a79615f10d`
+with installed bundle SHA-256
+`619c035de3b8588cd9a429d03df1e997febaf27ebfe5e55ac325e33b00548120`.
+Its 4049/4051 service was active and enabled, and both health probes returned
+204. Ports 4069/4071, 4169/4171, and 4269/4271 were unowned. The active Caddy
+configuration SHA-256 was
+`4e9f56608383a66771ac27510f1aca25bef8a908784ee8b601840b89fd5b294f`;
+the retained pre-target file SHA-256 was
+`2e450f1ebee39a0f33bf2a0fcf17de093088c47fdd6b1bc9fe5df7177608c8db`.
+No Caddy change is part of this preflight.
+
+The daily state-backup service and deployment-verifier units were failed at
+inventory time. Their repair or baseline refresh is not included in this
+plan: a separately authorized preflight must produce a verified staging
+database backup reference, and every retained-estate verifier needed as a
+promotion gate must be healthy or explicitly dispositioned before execution.
+
+At 2026-08-26T19:44Z, local queries on both retained authorities returned the
+same signed `pirate` SOA serial `2026072002`, `app.pirate` A record
+`94.103.168.161`, and TLSA `3 1 1`
+`5c8ddd3dbf63dbab698c726708b06177adda4a21416c675197f97e3b27ab20d8`.
+Both direct public port-53 queries from the discovery runner were refused.
+These authority-local results are regression diagnostics only, not the two
+independent public views required by the production rehearsal.
+
 ## Ordered execution after separate authorization
 
-1. Merge both source blockers, then re-derive repository refs, configuration,
-   Worker versions, protected-host availability, VPS state, listener
-   ownership, and the staging ledger.
+1. Re-derive the selected repository refs and candidate bundle digest, then
+   complete the authenticated read-only Worker, Access, secret-reference, and
+   production synthetic-root-absence inventories. Recheck VPS state, listener
+   ownership, and the staging ledger immediately before execution.
 2. Populate every unresolved marker and accept a new addendum. Stop if the
    selected tuple differs from this document.
 3. Enable the account Zero Trust organization with the owner-selected team
