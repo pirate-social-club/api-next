@@ -8,6 +8,7 @@ import {
   PersonaStoreConflict,
   type PersonaStoreService,
   PersonaUnavailable,
+  PersonaWalletProofRejected,
   type PersonaWalletStoreService,
   preparePersonaEvmWallet,
   requireActiveOwnedPersona,
@@ -331,6 +332,35 @@ describe("account-owned persona use cases", () => {
         {
           ...walletServicesWith(store),
           accounts: { canonicalAccountId: () => Effect.succeed("account_other") },
+        },
+      ),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(confirmCount).toBe(0);
+  });
+
+  test("retains pending setup when the provider proof boundary is unavailable", async () => {
+    let confirmCount = 0;
+    const exit = await Effect.runPromiseExit(
+      confirmPersonaEvmWallet(
+        {
+          accountId: "account_owner",
+          personaId: activePersona.persona_id,
+          body: { proof: { type: "privy_access_token", privy_access_token: "access-token" } },
+        },
+        {
+          ...walletServicesWith(
+            walletStoreWith({
+              confirmEvm: () => {
+                confirmCount += 1;
+                return Effect.succeed(assignment);
+              },
+            }),
+          ),
+          verifier: {
+            verifyPrivyEmbeddedEvmWallet: () =>
+              Effect.fail(new PersonaWalletProofRejected({ reason: "unavailable" })),
+          },
         },
       ),
     );

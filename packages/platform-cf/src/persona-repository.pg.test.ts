@@ -305,6 +305,57 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       expect(failureOf(reusedPreparationKey)).toEqual(
         new PersonaWalletStoreConflict({ reason: "idempotency-mismatch" }),
       );
+      const concurrentPersonas = [
+        personaRecord("persona_wallet_concurrent_a", "2020-02-01T00:00:00.000Z"),
+        personaRecord("persona_wallet_concurrent_b", "2020-02-01T00:00:01.000Z"),
+      ];
+      const concurrentPreparations = await Promise.all(
+        concurrentPersonas.map((candidate, index) =>
+          run(
+            connection,
+            personas.create({
+              accountId: "account-wallet-a",
+              idempotencyKey: `persona-wallet-concurrent-${index}`,
+              intent: { displayName: "Concurrent Persona", bio: null, preferredLocale: "en" },
+              personaId: candidate.persona_id,
+              createdAt: candidate.created_at,
+            }),
+          ),
+        ),
+      );
+      expect(concurrentPreparations.map((entry) => entry.hd_wallet_index).sort()).toEqual([2, 3]);
+      const concurrentPreparation = concurrentPreparations[0];
+      if (concurrentPreparation === undefined) throw new Error("concurrent preparation missing");
+      const concurrentAttestation = {
+        sourceUserId: "privy-wallet-a",
+        privyWalletId: "privy-wallet-concurrent",
+        hdWalletIndex: concurrentPreparation.hd_wallet_index,
+        address: "0x4444444444444444444444444444444444444444",
+      };
+      const concurrentAssignments = await Promise.all([
+        run(
+          connection,
+          wallets.confirmEvm({
+            accountId: "account-wallet-a",
+            personaId: concurrentPreparation.persona_id,
+            attestation: concurrentAttestation,
+          }),
+        ),
+        run(
+          connection,
+          wallets.confirmEvm({
+            accountId: "account-wallet-a",
+            personaId: concurrentPreparation.persona_id,
+            attestation: concurrentAttestation,
+          }),
+        ),
+      ]);
+      expect(concurrentAssignments[1]).toEqual(concurrentAssignments[0]);
+      const activated = await admin.query<{ readonly count: string }>(
+        `SELECT count(*)::text AS count FROM persona_profiles WHERE persona_id=$1`,
+        [concurrentPreparation.persona_id],
+      );
+      expect(activated.rows[0]?.count).toBe("1");
       const firstAddress = "0x1111111111111111111111111111111111111111";
       await run(
         connection,

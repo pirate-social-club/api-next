@@ -154,6 +154,9 @@ describe("persona HTTP handlers", () => {
         body: { proof: { privy_access_token: "privy-access-handler" } },
       }),
     );
+    await handlers.RetirePersona(
+      request({ params, body: { idempotency_key: "persona-handler-retire" } }),
+    );
     expect(observed).toContainEqual({
       reserve: {
         accountId: "account_handler",
@@ -166,6 +169,13 @@ describe("persona HTTP handlers", () => {
         accountId: "account_handler",
         personaId: persona.persona_id,
       }),
+    });
+    expect(observed).toContainEqual({
+      retire: {
+        accountId: "account_handler",
+        personaId: persona.persona_id,
+        idempotencyKey: "persona-handler-retire",
+      },
     });
   });
 

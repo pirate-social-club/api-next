@@ -200,7 +200,7 @@ export function makeControlPlanePersonaRepository() {
               yield* transaction.execute({
                 label: "personas.create.lock",
                 text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 14000046))",
-                values: [JSON.stringify([accountId, "/personas", idempotencyKey])],
+                values: [JSON.stringify([accountId, "evm"])],
                 readonly: false,
               });
               const replay = yield* transaction.execute<PersonaRow>({
