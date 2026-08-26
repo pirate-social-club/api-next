@@ -33,10 +33,11 @@ export interface MegapotRewardRuntimePosture {
   readonly MEGAPOT_REQUIRED_CONFIRMATIONS: number;
 }
 
-/** Proves the staging-only Base Sepolia reward path is inert in production. */
+/** Proves each environment uses its admitted chain and keeps mainnet activation disabled. */
 export function assertMegapotRewardRuntimePosture(config: MegapotRewardRuntimePosture): number {
+  const expectedChainId = config.API_NEXT_ENV === "production" ? 8_453 : 84_532;
   if (
-    config.MEGAPOT_CHAIN_ID !== 84_532 ||
+    config.MEGAPOT_CHAIN_ID !== expectedChainId ||
     config.MEGAPOT_REQUIRED_CONFIRMATIONS <= 0 ||
     (config.MEGAPOT_REWARDS_ENABLED && config.API_NEXT_ENV === "production")
   ) {

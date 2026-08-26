@@ -212,7 +212,7 @@
       "vars": {
         "API_NEXT_ENV": "production",
         "MEGAPOT_REWARDS_ENABLED": "false",
-        "MEGAPOT_CHAIN_ID": "84532",
+        "MEGAPOT_CHAIN_ID": "8453",
         "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
         "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
         "REGISTRATION_IP_LIMIT": "5",

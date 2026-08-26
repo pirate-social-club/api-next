@@ -3,6 +3,7 @@ import * as BunRuntime from "bun";
 import { Config, Redacted } from "effect";
 import {
   AppEnv,
+  assertMegapotRewardRuntimePosture,
   HttpWorkerConfig,
   JobsWorkerConfig,
   loadConfig,
@@ -81,6 +82,63 @@ describe("config system (000 §9)", () => {
       MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: 120,
     });
     expect(Redacted.value(configured.MEGAPOT_CUSTODY_PRIVATE_KEY)).toBe(`0x${"1".repeat(64)}`);
+  });
+
+  test("Megapot runtime admits Base Sepolia only outside production", () => {
+    expect(
+      assertMegapotRewardRuntimePosture({
+        API_NEXT_ENV: "staging",
+        MEGAPOT_REWARDS_ENABLED: true,
+        MEGAPOT_CHAIN_ID: 84_532,
+        MEGAPOT_REQUIRED_CONFIRMATIONS: 3,
+      }),
+    ).toBe(84_532);
+    expect(
+      assertMegapotRewardRuntimePosture({
+        API_NEXT_ENV: "production",
+        MEGAPOT_REWARDS_ENABLED: false,
+        MEGAPOT_CHAIN_ID: 8_453,
+        MEGAPOT_REQUIRED_CONFIRMATIONS: 3,
+      }),
+    ).toBe(8_453);
+    expect(() =>
+      assertMegapotRewardRuntimePosture({
+        API_NEXT_ENV: "production",
+        MEGAPOT_REWARDS_ENABLED: false,
+        MEGAPOT_CHAIN_ID: 84_532,
+        MEGAPOT_REQUIRED_CONFIRMATIONS: 3,
+      }),
+    ).toThrow("invalid Megapot reward runtime posture");
+    expect(() =>
+      assertMegapotRewardRuntimePosture({
+        API_NEXT_ENV: "production",
+        MEGAPOT_REWARDS_ENABLED: true,
+        MEGAPOT_CHAIN_ID: 8_453,
+        MEGAPOT_REQUIRED_CONFIRMATIONS: 3,
+      }),
+    ).toThrow("invalid Megapot reward runtime posture");
+  });
+
+  test("deployable Worker overlays keep Base Sepolia out of production", async () => {
+    const paths = [
+      "../../../apps/http-worker/wrangler.jsonc",
+      "../../../apps/jobs-worker/wrangler.jsonc",
+    ] as const;
+
+    for (const path of paths) {
+      const config = BunRuntime.JSONC.parse(
+        await BunRuntime.file(new URL(path, import.meta.url)).text(),
+      ) as {
+        readonly env?: Readonly<
+          Record<string, { readonly vars?: Readonly<Record<string, string>> }>
+        >;
+      };
+
+      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
+      expect(config.env?.staging?.vars?.MEGAPOT_CHAIN_ID).toBe("84532");
+      expect(config.env?.production?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
+      expect(config.env?.production?.vars?.MEGAPOT_CHAIN_ID).toBe("8453");
+    }
   });
 
   test("Self stays disabled unless explicitly configured", () => {

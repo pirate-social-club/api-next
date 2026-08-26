@@ -42,15 +42,7 @@ const MONEY_PATHS: MoneyPath[] = [
   {
     chainIdVar: "MEGAPOT_CHAIN_ID",
     label: "Megapot pooled rewards",
-    posture: "guarded_testnet_exception",
-    reason: "Spec 015 limits the first operational money path to Base Sepolia staging.",
-    assertFailsClosed: (env) =>
-      assertMegapotRewardRuntimePosture({
-        API_NEXT_ENV: "production",
-        MEGAPOT_REWARDS_ENABLED: true,
-        MEGAPOT_CHAIN_ID: Number(env.MEGAPOT_CHAIN_ID),
-        MEGAPOT_REQUIRED_CONFIRMATIONS: Number(env.MEGAPOT_REQUIRED_CONFIRMATIONS),
-      }),
+    posture: "mainnet_required",
   },
 ];
 
@@ -127,5 +119,20 @@ describe("production money-path invariant", () => {
       const usdc = productionVars[`${prefix}_USDC_TOKEN_ADDRESS`];
       if (usdc) expect(usdc.toLowerCase(), `${path.label} USDC`).not.toBe(SEPOLIA_USDC);
     }
+  });
+
+  test("production Megapot stays disabled until mainnet activation is reviewed", () => {
+    const posture = {
+      API_NEXT_ENV: "production" as const,
+      MEGAPOT_REWARDS_ENABLED: productionVars.MEGAPOT_REWARDS_ENABLED === "true",
+      MEGAPOT_CHAIN_ID: Number(productionVars.MEGAPOT_CHAIN_ID),
+      MEGAPOT_REQUIRED_CONFIRMATIONS: Number(productionVars.MEGAPOT_REQUIRED_CONFIRMATIONS),
+    };
+
+    expect(productionVars.MEGAPOT_REWARDS_ENABLED).toBe("false");
+    expect(assertMegapotRewardRuntimePosture(posture)).toBe(BASE_MAINNET_CHAIN_ID);
+    expect(() =>
+      assertMegapotRewardRuntimePosture({ ...posture, MEGAPOT_REWARDS_ENABLED: true }),
+    ).toThrow("invalid Megapot reward runtime posture");
   });
 });
