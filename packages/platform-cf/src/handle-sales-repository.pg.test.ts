@@ -345,8 +345,8 @@ suite("community handle sales on PostgreSQL 17", () => {
   test("backfills one deterministic sales authority for an existing community", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
     const finalMigration = migrations[migrations.length - 1];
-    if (finalMigration?.version !== "0053_community_handle_sales.sql") {
-      throw new Error("0053 must be the final migration in this exclusive lane");
+    if (finalMigration?.version !== "0054_community_handle_sales.sql") {
+      throw new Error("0054 must be the final migration in this exclusive lane");
     }
     const schema = schemaIdentifier();
     const admin = new Client({ connectionString });

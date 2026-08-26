@@ -21,6 +21,12 @@ export {
   type HttpWorkerCompositionDependencies,
 } from "./composition.ts";
 export {
+  disabledProductionHnsCommunityAppApiComposition,
+  type HnsCommunityAppApiComposition,
+  type HnsCommunityAppApiCompositionDependencies,
+  makeHnsCommunityAppApiComposition,
+} from "./hns-community-app-api-composition.ts";
+export {
   disabledProductionHnsHostServingComposition,
   makeHnsHostServingComposition,
 } from "./hns-host-serving-composition.ts";

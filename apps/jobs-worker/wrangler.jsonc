@@ -5,7 +5,7 @@
   "compatibility_date": "2026-08-01",
   "compatibility_flags": ["nodejs_compat"],
   "triggers": {
-    "crons": ["*/5 * * * *"]
+    "crons": ["* * * * *"]
   },
   "hyperdrive": [
     {
@@ -18,10 +18,23 @@
   ],
   "vars": {
     "API_NEXT_ENV": "development",
-    "HNS_OWNERSHIP_ENABLED": "false"
+    "HNS_OWNERSHIP_ENABLED": "false",
+    "MEGAPOT_REWARDS_ENABLED": "false",
+    "MEGAPOT_CHAIN_ID": "84532",
+    "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
+    "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+    "MEGAPOT_OBSERVATION_TTL_SECONDS": "300",
+    "MEGAPOT_APPROVED_ALLOWANCE_ATOMIC": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+    "MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS": "120",
+    "MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS": "12000",
+    "MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI": "1000000000000000",
+    "MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING": "5",
+    "MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "50000000",
+    "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
+    "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
   },
   "secrets": {
-    "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
+    "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL", "MEGAPOT_V2_RPC_URL"]
   },
   "env": {
     "staging": {
@@ -35,7 +48,7 @@
         ]
       },
       "triggers": {
-        "crons": ["*/5 * * * *"]
+        "crons": ["* * * * *"]
       },
       "hyperdrive": [
         {
@@ -49,12 +62,37 @@
         "API_NEXT_ENV": "staging",
         "HNS_OWNERSHIP_ENABLED": "false",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
-        "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1"
+        "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
+        "MEGAPOT_REWARDS_ENABLED": "true",
+        "MEGAPOT_CHAIN_ID": "84532",
+        "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
+        "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+        "MEGAPOT_OBSERVATION_TTL_SECONDS": "300",
+        "MEGAPOT_APPROVED_ALLOWANCE_ATOMIC": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS": "120",
+        "MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS": "12000",
+        "MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI": "1000000000000000",
+        "MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING": "5",
+        "MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "50000000",
+        "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
+        "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
         // Staging uses the local alert sink. If external delivery is enabled,
         // inject endpoint URLs and tokens from the staging secret environment.
       },
+      "r2_buckets": [
+        {
+          "binding": "MEGAPOT_COMMITMENTS",
+          "bucket_name": "pirate-megapot-commitments-staging",
+          "preview_bucket_name": "pirate-megapot-commitments-staging"
+        }
+      ],
       "secrets": {
-        "required": ["COMMUNITY_PURCHASE_FUNDING_RPC_URL"]
+        "required": [
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEGAPOT_V2_RPC_URL",
+          "MEGAPOT_CUSTODY_PRIVATE_KEY",
+          "MEGAPOT_COMMITMENT_PUBLIC_ORIGIN"
+        ]
       }
     },
     "production": {
@@ -68,7 +106,7 @@
         ]
       },
       "triggers": {
-        "crons": ["*/5 * * * *"]
+        "crons": ["* * * * *"]
       },
       "hyperdrive": [
         {
@@ -81,11 +119,25 @@
       ],
       "vars": {
         "API_NEXT_ENV": "production",
-        "HNS_OWNERSHIP_ENABLED": "false"
+        "HNS_OWNERSHIP_ENABLED": "false",
+        "MEGAPOT_REWARDS_ENABLED": "false",
+        "MEGAPOT_CHAIN_ID": "8453",
+        "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
+        "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
+        "MEGAPOT_OBSERVATION_TTL_SECONDS": "300",
+        "MEGAPOT_APPROVED_ALLOWANCE_ATOMIC": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+        "MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS": "120",
+        "MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS": "12000",
+        "MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI": "1000000000000000",
+        "MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING": "5",
+        "MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "50000000",
+        "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING": "50",
+        "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC": "500000000"
       },
       "secrets": {
         "required": [
           "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEGAPOT_V2_RPC_URL",
           "API_NEXT_ALERT_EMAIL_TOKEN",
           "API_NEXT_ALERT_WEBHOOK_TOKEN"
         ]

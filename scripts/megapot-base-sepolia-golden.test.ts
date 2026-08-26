@@ -1,0 +1,203 @@
+import { describe, expect, test } from "bun:test";
+
+import {
+  parseMegapotGoldenInput,
+  runMegapotBaseSepoliaGolden,
+} from "./megapot-base-sepolia-golden.ts";
+
+const address = (byte: string): string => `0x${byte.repeat(40)}`;
+const hash = (byte: string): string => `0x${byte.repeat(64)}`;
+const startsAt = "2026-08-26T10:00:00.000Z";
+const endsAt = "2026-08-27T10:00:00.000Z";
+
+const input = parseMegapotGoldenInput({
+  run_id: "flow-001",
+  community_id: "community_1",
+  post_id: "song_1",
+  persona_id: "persona_1",
+  starts_at: startsAt,
+  ends_at: endsAt,
+  funding_amount_atomic: "20000",
+  max_ticket_price_atomic: "10000",
+  entry_cutoff_seconds: 300,
+  eligible_activities: ["study"],
+  qualification_fixture_acknowledged: true,
+});
+
+const offer = {
+  object: "song_reward_offer",
+  offer_id: "offer_1",
+  community_id: input.community_id,
+  post_id: input.post_id,
+  audio_revision: 1,
+  status: "draft",
+  starts_at: startsAt,
+  ends_at: endsAt,
+  terms_hash: "a".repeat(64),
+} as const;
+
+const leg = {
+  object: "megapot_pool_leg",
+  leg_id: "leg_1",
+  offer_id: offer.offer_id,
+  status: "funding",
+  chain_id: 84_532,
+  token_address: address("1"),
+  token_decimals: 6,
+  custody_address: address("2"),
+  max_ticket_price_atomic: input.max_ticket_price_atomic,
+  entry_cutoff_seconds: input.entry_cutoff_seconds,
+  participation_starts_drawing_id: "8342",
+  eligible_activities: input.eligible_activities,
+  min_score_bps: 7_000,
+  empty_pool_policy: "no_purchase",
+  fallback_payout_persona_id: null,
+  funded_atomic: "0",
+  leg_terms_hash: hash("3"),
+} as const;
+
+const funding = {
+  object: "megapot_pool_funding",
+  action: "fund_with_usdc",
+  funding_effect_id: "funding_1",
+  leg_id: leg.leg_id,
+  status: "planned",
+  chain_id: 84_532,
+  token_address: leg.token_address,
+  token_decimals: 6,
+  sender_address: address("4"),
+  recipient_address: leg.custody_address,
+  expected_amount_atomic: input.funding_amount_atomic,
+  confirmed_amount_atomic: null,
+  required_confirmations: 3,
+  transaction_hash: null,
+} as const;
+
+const options = {
+  execute: true,
+  apiOrigin: "https://api-next-staging.pirate.sc",
+  authorization: "Bearer staging-test-token",
+} as const;
+
+function json(value: unknown, status = 200): Response {
+  return Response.json(value, { status });
+}
+
+describe("Base Sepolia Megapot golden flow", () => {
+  test("dry-run fixes no-purchase semantics without requiring credentials", async () => {
+    let fetched = false;
+    const result = await runMegapotBaseSepoliaGolden(
+      input,
+      { execute: false, apiOrigin: options.apiOrigin },
+      {
+        fetcher: async () => {
+          fetched = true;
+          return json({});
+        },
+        sleep: async () => {},
+      },
+    );
+
+    expect(fetched).toBe(false);
+    expect(result).toMatchObject({
+      mode: "dry-run",
+      chain_id: 84_532,
+      empty_pool_policy: "no_purchase",
+      min_score_bps: 7_000,
+      funding_transaction_supplied: false,
+    });
+  });
+
+  test("opens the offer and returns exact user-authorized funding instructions", async () => {
+    const requests: Array<{ readonly url: string; readonly init?: RequestInit }> = [];
+    const responses = [
+      json({ offer, replayed: false }, 201),
+      json({ leg, funding, replayed: false }, 201),
+    ];
+    const result = await runMegapotBaseSepoliaGolden(input, options, {
+      fetcher: async (url, init) => {
+        requests.push({ url, init });
+        const response = responses.shift();
+        if (response === undefined) throw new Error("unexpected request");
+        return response;
+      },
+      sleep: async () => {},
+    });
+
+    expect(result).toMatchObject({
+      mode: "execute",
+      state: "awaiting_funder_transfer",
+      funding: {
+        action: "fund_with_usdc",
+        recipient_address: leg.custody_address,
+        expected_amount_atomic: input.funding_amount_atomic,
+      },
+    });
+    expect(requests).toHaveLength(2);
+    const legRequest = JSON.parse(String(requests[1]?.init?.body)) as Readonly<
+      Record<string, unknown>
+    >;
+    expect(legRequest).toMatchObject({
+      min_score_bps: 7_000,
+      empty_pool_policy: "no_purchase",
+      fallback_payout_persona_id: null,
+      fallback_disclosure_acknowledged: false,
+    });
+  });
+
+  test("replays funding observation until confirmed, then reads backend projections", async () => {
+    const transactionHash = hash("5");
+    const withTransaction = parseMegapotGoldenInput({
+      ...input,
+      funding_transaction_hash: transactionHash,
+    });
+    const methods: string[] = [];
+    const paths: string[] = [];
+    let observations = 0;
+    let sleeps = 0;
+    const confirmed = {
+      ...funding,
+      status: "confirmed",
+      confirmed_amount_atomic: funding.expected_amount_atomic,
+      transaction_hash: transactionHash,
+    } as const;
+    const result = await runMegapotBaseSepoliaGolden(withTransaction, options, {
+      fetcher: async (url, init) => {
+        methods.push(init?.method ?? "GET");
+        paths.push(new URL(url).pathname);
+        const path = new URL(url).pathname;
+        if (path.endsWith("/reward-offers")) return json({ offer, replayed: true });
+        if (path.endsWith("/megapot-pool-legs")) return json({ leg, funding, replayed: true });
+        if (path.endsWith("/observations")) {
+          observations += 1;
+          return json({
+            funding:
+              observations === 1
+                ? { ...funding, status: "confirming", transaction_hash: transactionHash }
+                : confirmed,
+            replayed: observations > 1,
+          });
+        }
+        if (path.endsWith(`/funding/${funding.funding_effect_id}`)) {
+          return json({ funding: confirmed });
+        }
+        if (path.endsWith("/rewards/megapot-pool")) return json({ pool: null });
+        throw new Error(`unexpected path: ${path}`);
+      },
+      sleep: async () => {
+        sleeps += 1;
+      },
+    });
+
+    expect(observations).toBe(2);
+    expect(sleeps).toBe(1);
+    expect(methods).toEqual(["POST", "POST", "POST", "POST", "GET", "GET"]);
+    expect(paths.at(-1)).toEndWith("/rewards/megapot-pool");
+    expect(result).toMatchObject({
+      mode: "execute",
+      state: "funded",
+      funding: { status: "confirmed", transaction_hash: transactionHash },
+      pool: null,
+    });
+  });
+});

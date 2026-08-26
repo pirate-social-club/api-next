@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./hns-community-app-api": "./src/hns-community-app-api.ts",
     "./hns-forwarder-v3": "./src/hns-forwarder-v3.ts",
     "./hns-static-platform-app-gateway": "./src/hns-static-platform-app-gateway.ts",
     "./hns-host-persistence": "./src/hns-host-persistence.ts",
@@ -24,6 +25,8 @@
     "./money/community-purchase-funding-observation": "./src/money/community-purchase-funding-observation.ts",
     "./money/community-purchase-funding-producer": "./src/money/community-purchase-funding-producer.ts",
     "./money/community-purchase-funding-query": "./src/money/community-purchase-funding-query.ts",
+    "./rewards/song-reward-offers": "./src/rewards/song-reward-offers.ts",
+    "./rewards/reward-projections": "./src/rewards/reward-projections.ts",
     "./verification": "./src/verification/index.ts",
     "./use-cases/community/creation-intents": "./src/use-cases/community/creation-intents.ts",
     "./use-cases/community/follow-community": "./src/use-cases/community/follow-community.ts",

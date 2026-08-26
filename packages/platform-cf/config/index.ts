@@ -26,6 +26,26 @@ export interface AppEnvValue {
 
 export const isProduction = (env: AppEnvValue): boolean => env.API_NEXT_ENV === "production";
 
+export interface MegapotRewardRuntimePosture {
+  readonly API_NEXT_ENV: AppEnvValue["API_NEXT_ENV"];
+  readonly MEGAPOT_REWARDS_ENABLED: boolean;
+  readonly MEGAPOT_CHAIN_ID: number;
+  readonly MEGAPOT_REQUIRED_CONFIRMATIONS: number;
+}
+
+/** Proves each environment uses its admitted chain and keeps mainnet activation disabled. */
+export function assertMegapotRewardRuntimePosture(config: MegapotRewardRuntimePosture): number {
+  const expectedChainId = config.API_NEXT_ENV === "production" ? 8_453 : 84_532;
+  if (
+    config.MEGAPOT_CHAIN_ID !== expectedChainId ||
+    config.MEGAPOT_REQUIRED_CONFIRMATIONS <= 0 ||
+    (config.MEGAPOT_REWARDS_ENABLED && config.API_NEXT_ENV === "production")
+  ) {
+    throw new Error("invalid Megapot reward runtime posture");
+  }
+  return config.MEGAPOT_CHAIN_ID;
+}
+
 /**
  * Fail-closed loader for process-backed configuration. A binding-based Worker
  * uses {@link loadConfigFrom} from its first-request composition boundary
@@ -50,14 +70,49 @@ export const secret = (name: string): Config.Config<RedactedType<string>> =>
   // wrap explicitly until the pinned Effect bump fixes it.
   Config.string(name).pipe(Config.map((value: string) => Redacted.make(value)));
 
-/** The fail-closed money-path variables required by M3. */
+const MegapotRewardConfigFields = {
+  MEGAPOT_REWARDS_ENABLED: Config.boolean("MEGAPOT_REWARDS_ENABLED"),
+  MEGAPOT_CHAIN_ID: Config.int("MEGAPOT_CHAIN_ID"),
+  MEGAPOT_V2_RPC_URL: secret("MEGAPOT_V2_RPC_URL"),
+  MEGAPOT_ATTESTATION_ID: Config.nonEmptyString("MEGAPOT_ATTESTATION_ID"),
+  MEGAPOT_REQUIRED_CONFIRMATIONS: Config.int("MEGAPOT_REQUIRED_CONFIRMATIONS"),
+} as const;
+
+/** The fail-closed money-path variables required by M3 and M5. */
 export const MoneyPathConfig = Config.all({
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
+  ...MegapotRewardConfigFields,
 });
 
 export const JobsWorkerConfig = Config.all({
   API_NEXT_ENV: AppEnv,
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
+  ...MegapotRewardConfigFields,
+  MEGAPOT_CUSTODY_PRIVATE_KEY: secret("MEGAPOT_CUSTODY_PRIVATE_KEY").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
+  MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: secret("MEGAPOT_COMMITMENT_PUBLIC_ORIGIN").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
+  MEGAPOT_OBSERVATION_TTL_SECONDS: Config.int("MEGAPOT_OBSERVATION_TTL_SECONDS"),
+  MEGAPOT_APPROVED_ALLOWANCE_ATOMIC: Config.nonEmptyString("MEGAPOT_APPROVED_ALLOWANCE_ATOMIC"),
+  MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: Config.int("MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS"),
+  MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS: Config.int("MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS"),
+  MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI: Config.nonEmptyString(
+    "MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI",
+  ),
+  MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING: Config.int(
+    "MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING",
+  ),
+  MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: Config.nonEmptyString(
+    "MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC",
+  ),
+  MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING: Config.int(
+    "MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING",
+  ),
+  MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: Config.nonEmptyString(
+    "MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC",
+  ),
 });
 
 /**
@@ -155,6 +210,7 @@ export const HttpWorkerConfig = Config.all({
   HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS: secret("HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS").pipe(
     Config.withDefault(Redacted.make("")),
   ),
+  ...MegapotRewardConfigFields,
 });
 
 export type HttpWorkerConfigValue = Config.Success<typeof HttpWorkerConfig>;

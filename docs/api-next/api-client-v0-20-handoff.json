@@ -2,13 +2,13 @@
   "schemaVersion": 1,
   "kind": "api-client-release-handoff",
   "package": "@pirate/api-client",
-  "version": "0.17.0",
+  "version": "0.20.0",
   "releaseType": "community-handle-free-claim-v1",
   "wireContract": "wire-v2",
-  "sourceCommit": "fec8116",
+  "sourceCommit": "6d0b1ff",
   "artifact": {
-    "path": "artifacts/api-client/pirate-api-client-0.17.0.tgz",
-    "sha256": "e560a7542cf3ab98e2858148c11a75140d6e2d2388f3ab01703f7a5fa42cd9e6",
+    "path": "artifacts/api-client/pirate-api-client-0.20.0.tgz",
+    "sha256": "18c089266d1751fe45ee173c22857ec8f8eebd11ffbca5b4448df8b56e0ee0e3",
     "contents": [
       "package/package.json",
       "package/src/generated/client.ts",
@@ -17,16 +17,16 @@
     ]
   },
   "provenance": {
-    "sourceIdentifier": "api-next-contracts@dec047e1a4c4ca70eeb339338d81274a42fab5a2b67ffc92ec8746a5dd69f322",
-    "openapiSha256": "dec047e1a4c4ca70eeb339338d81274a42fab5a2b67ffc92ec8746a5dd69f322",
-    "clientSha256": "5f23db638c535c1cff06ed2d84fa44fecd10d82a0cabba938e5ac8c4853ac4d1"
+    "sourceIdentifier": "api-next-contracts@75a2ac40b4acdcae5745195b754a518efb4b2fe119ae9e8349d041904f77c4a8",
+    "openapiSha256": "75a2ac40b4acdcae5745195b754a518efb4b2fe119ae9e8349d041904f77c4a8",
+    "clientSha256": "fc2401d89a45c58198c9c7a5f0f5c6ecb0e8ff8032ab0220bf5a9e98abd596c4"
   },
-  "publicationNote": "The earlier branch-local artifact was never pushed or published and was replaced before publication because it exposed a response member absent from the ratified wire.",
+  "publicationNote": "The branch-local 0.17.0 artifact was never pushed or published. It was corrected before publication, then superseded by 0.20.0 when the accepted baseline advanced through 0.19.0 during review.",
   "verification": {
     "checkFresh": "passed",
     "checkBreaking": {
       "status": "passed",
-      "baselineCommit": "3626924",
+      "baselineCommit": "c650b76",
       "reason": "The free community-handle surface is additive to the accepted base, and the recipient-token response was corrected before any generated client was published."
     },
     "focusedContractTests": "12 passed",

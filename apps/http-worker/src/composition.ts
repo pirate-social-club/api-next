@@ -31,6 +31,7 @@ import {
 import { makeControlPlaneCommunityStore } from "@pirate/platform-cf/community-repository";
 import { makeControlPlaneCanonicalCommunityRouteStore } from "@pirate/platform-cf/community-route-repository";
 import {
+  assertMegapotRewardRuntimePosture,
   HttpWorkerConfig,
   type HttpWorkerConfigValue,
   loadConfigFrom,
@@ -43,6 +44,8 @@ import {
   makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityStore,
 } from "@pirate/platform-cf/identity-repository";
+import { makeControlPlaneMegapotDrawingObservationStore } from "@pirate/platform-cf/megapot-drawing-observation-repository";
+import { makeMegapotV2RpcClient } from "@pirate/platform-cf/megapot-v2-rpc";
 import { makeControlPlaneNamespaceOwnershipCompletionStore } from "@pirate/platform-cf/namespace-ownership-completion-repository";
 import {
   type HnsOwnerServiceBinding,
@@ -67,12 +70,16 @@ import {
   makeDurableObjectIdentityRegistrationRateLimiter,
   type RegistrationRateLimiterNamespaces,
 } from "@pirate/platform-cf/registration-rate-limiter";
+import { makeRewardFundingCoordinator } from "@pirate/platform-cf/reward-funding-coordinator";
+import { makeControlPlaneRewardFundingStore } from "@pirate/platform-cf/reward-funding-repository";
+import { makeControlPlaneRewardProjectionStore } from "@pirate/platform-cf/reward-projection-repository";
 import { makeSessionCrypto } from "@pirate/platform-cf/session-crypto";
 import { makeJwksSessionProofVerifier } from "@pirate/platform-cf/session-proof";
 import {
   makeRs256SessionTokenMinter,
   makeRs256SessionTokenVerifier,
 } from "@pirate/platform-cf/session-tokens";
+import { makeControlPlaneSongRewardOfferStore } from "@pirate/platform-cf/song-reward-offer-repository";
 import { makeControlPlaneTextSubmissionStore } from "@pirate/platform-cf/text-submission-repository";
 import {
   makeControlPlaneVerificationCompletionStore,
@@ -97,10 +104,12 @@ import {
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
 import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
+import { disabledProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
 import { makePersonaHandlers } from "./persona-handlers.ts";
 import { makeProductHandlers } from "./product-handlers.ts";
+import { makeSongRewardOfferHandlers } from "./rewards-song-offer-handlers.ts";
 import { createHttpWorker, type EndpointHandler, type Principal } from "./transport.ts";
 import { makeVerificationHandlers } from "./verification-handlers.ts";
 
@@ -162,6 +171,11 @@ export interface HttpWorkerBindings {
   readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
   readonly HANDLE_RECIPIENT_TOKEN_HMAC_KEYS?: string;
   readonly HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS?: string;
+  readonly MEGAPOT_REWARDS_ENABLED?: string;
+  readonly MEGAPOT_CHAIN_ID?: string;
+  readonly MEGAPOT_V2_RPC_URL?: string;
+  readonly MEGAPOT_ATTESTATION_ID?: string;
+  readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
 }
 
 export interface HttpWorkerCompositionDependencies {
@@ -254,6 +268,11 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     COMMUNITY_PURCHASE_FUNDING_RPC_URL: bindings.COMMUNITY_PURCHASE_FUNDING_RPC_URL,
     HANDLE_RECIPIENT_TOKEN_HMAC_KEYS: bindings.HANDLE_RECIPIENT_TOKEN_HMAC_KEYS,
     HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS: bindings.HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS,
+    MEGAPOT_REWARDS_ENABLED: bindings.MEGAPOT_REWARDS_ENABLED,
+    MEGAPOT_CHAIN_ID: bindings.MEGAPOT_CHAIN_ID,
+    MEGAPOT_V2_RPC_URL: bindings.MEGAPOT_V2_RPC_URL,
+    MEGAPOT_ATTESTATION_ID: bindings.MEGAPOT_ATTESTATION_ID,
+    MEGAPOT_REQUIRED_CONFIRMATIONS: bindings.MEGAPOT_REQUIRED_CONFIRMATIONS,
   };
 }
 
@@ -264,7 +283,10 @@ const HyperdriveBinding = Schema.Struct({
 function loadWorkerConfig(bindings: HttpWorkerBindings): WorkerConfig {
   try {
     const config = loadConfigFrom(HttpWorkerConfig, configSource(bindings));
-    if (config.PIRATE_APP_JWT_TTL_SECONDS <= 0) throw new Error("invalid TTL");
+    assertMegapotRewardRuntimePosture(config);
+    if (config.PIRATE_APP_JWT_TTL_SECONDS <= 0) {
+      throw new Error("invalid money-path configuration");
+    }
     if (bindings.CONTROL_PLANE === undefined) throw new Error("CONTROL_PLANE is missing");
     return config;
   } catch {
@@ -660,6 +682,46 @@ export async function createProductionHttpWorker(
       envelopeKeys: Redacted.value(config.HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS),
     }),
   });
+  const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
+    config.MEGAPOT_REWARDS_ENABLED
+      ? await (async () => {
+          try {
+            const observationStore = makeControlPlaneMegapotDrawingObservationStore(controlPlane);
+            const candidate = await Effect.runPromise(
+              observationStore.loadCandidate(config.MEGAPOT_ATTESTATION_ID),
+            );
+            const rpc = makeMegapotV2RpcClient({
+              rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
+              attestation: {
+                attestationId: candidate.attestationId,
+                environment: candidate.environment,
+                chainId: candidate.chainId,
+                jackpotAddress: candidate.jackpotAddress,
+                ticketNftAddress: candidate.ticketNftAddress,
+                usdcAddress: candidate.usdcAddress,
+                custodyAddress: candidate.custodyAddress,
+                referrerAddress: candidate.referrerAddress,
+                jackpotCodeHash: candidate.jackpotCodeHash,
+                ticketNftCodeHash: candidate.ticketNftCodeHash,
+                usdcCodeHash: candidate.usdcCodeHash,
+              },
+            });
+            const rewardFundingStore = makeControlPlaneRewardFundingStore(controlPlane);
+            return makeSongRewardOfferHandlers({
+              clock: { now: Effect.sync(() => Date.now()) },
+              ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+              store: makeControlPlaneSongRewardOfferStore(controlPlane),
+              fundingStore: rewardFundingStore,
+              projections: makeControlPlaneRewardProjectionStore(controlPlane),
+              funding: makeRewardFundingCoordinator({ store: rewardFundingStore, rpc }),
+              requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
+              externalFallbackPolicy: null,
+            });
+          } catch {
+            throw new Error("HTTP worker configuration is incomplete or invalid");
+          }
+        })()
+      : {};
   const tokenMinter = makeRs256SessionTokenMinter(sessionCrypto);
   const sessionExchange = {
     proofVerifier,
@@ -701,6 +763,7 @@ export async function createProductionHttpWorker(
 
   return createHttpWorker({
     config: { corsOrigin: config.CORS_ORIGIN },
+    hnsCommunityAppApi: disabledProductionHnsCommunityAppApiComposition,
     handlers: {
       ...productHandlers,
       ...communityCreationHandlers,
@@ -711,6 +774,7 @@ export async function createProductionHttpWorker(
       ...personaHandlers,
       ...activityQualificationHandlers,
       ...handleSalesHandlers,
+      ...songRewardOfferHandlers,
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,
     },

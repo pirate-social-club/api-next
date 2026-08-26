@@ -11,6 +11,7 @@ const canonicalApplicationImports = new Set([
   "@pirate/application/money/community-purchase-funding-query",
   "@pirate/application/namespace-ownership",
   "@pirate/application/route-revalidation",
+  "@pirate/application/rewards/song-reward-offers",
   "@pirate/application/verification",
 ]);
 

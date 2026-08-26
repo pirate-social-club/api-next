@@ -53,6 +53,11 @@ async function bindings(): Promise<HttpWorkerBindings> {
     PRIVY_JWT_ISSUER: "privy-test",
     PRIVY_JWT_AUDIENCE: "privy-test",
     COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.test",
+    MEGAPOT_REWARDS_ENABLED: "false",
+    MEGAPOT_CHAIN_ID: "84532",
+    MEGAPOT_V2_RPC_URL: "https://base-sepolia-rpc.test",
+    MEGAPOT_ATTESTATION_ID: "megapot-base-sepolia-v2",
+    MEGAPOT_REQUIRED_CONFIRMATIONS: "3",
   };
 }
 
@@ -124,6 +129,11 @@ describe("HTTP production composition", () => {
     const response = await worker.request("https://worker.test/health");
     expect(response.status).toBe(200);
     expect((await response.json()) as unknown).toEqual({ status: "ok" });
+
+    const hnsAlias = await worker.request("https://worker.test/api/health", {
+      headers: { "cf-access-jwt-assertion": "not-authority" },
+    });
+    expect(hnsAlias.status).toBe(401);
 
     const jwks = await worker.request("https://worker.test/.well-known/jwks.json");
     expect(jwks.status).toBe(200);

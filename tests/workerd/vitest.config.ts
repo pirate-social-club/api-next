@@ -50,5 +50,10 @@ export default defineConfig({
   ],
   test: {
     include: ["tests/workerd/**/*.test.ts"],
+    // Each file imports the complete scheduled-worker graph. Serial workers
+    // keep module transforms bounded now that the custody orchestration is
+    // part of that graph, instead of starting seven identical bundles.
+    fileParallelism: false,
+    maxWorkers: 1,
   },
 });

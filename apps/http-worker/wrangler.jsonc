@@ -46,6 +46,10 @@
   ],
   "vars": {
     "API_NEXT_ENV": "development",
+    "MEGAPOT_REWARDS_ENABLED": "false",
+    "MEGAPOT_CHAIN_ID": "84532",
+    "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
+    "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
     "REGISTRATION_IP_LIMIT": "5",
     "REGISTRATION_IP_WINDOW_SECONDS": "900",
     "REGISTRATION_APPLICATION_LIMIT": "100",
@@ -71,7 +75,8 @@
       "PIRATE_APP_JWT_PUBLIC_KEY",
       "PRIVY_APP_ID",
       "PRIVY_APP_SECRET",
-      "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
+      "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+      "MEGAPOT_V2_RPC_URL"
     ]
   },
   "env": {
@@ -109,6 +114,10 @@
       ],
       "vars": {
         "API_NEXT_ENV": "staging",
+        "MEGAPOT_REWARDS_ENABLED": "true",
+        "MEGAPOT_CHAIN_ID": "84532",
+        "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
+        "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
         "REGISTRATION_IP_LIMIT": "5",
         "REGISTRATION_IP_WINDOW_SECONDS": "900",
         "REGISTRATION_APPLICATION_LIMIT": "100",
@@ -162,7 +171,8 @@
           "VERY_WEB_SEALING_KEY",
           "ZKPASSPORT_VERIFIER_SHARED_SECRET",
           "ZKPASSPORT_VERIFIER_RESPONSE_SIGNING_SECRET",
-          "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEGAPOT_V2_RPC_URL"
         ]
       }
     },
@@ -201,6 +211,10 @@
       ],
       "vars": {
         "API_NEXT_ENV": "production",
+        "MEGAPOT_REWARDS_ENABLED": "false",
+        "MEGAPOT_CHAIN_ID": "8453",
+        "MEGAPOT_ATTESTATION_ID": "megapot-base-sepolia-v2",
+        "MEGAPOT_REQUIRED_CONFIRMATIONS": "3",
         "REGISTRATION_IP_LIMIT": "5",
         "REGISTRATION_IP_WINDOW_SECONDS": "900",
         "REGISTRATION_APPLICATION_LIMIT": "100",
@@ -229,7 +243,8 @@
         "required": [
           "PIRATE_APP_JWT_PRIVATE_KEY",
           "PRIVY_APP_SECRET",
-          "COMMUNITY_PURCHASE_FUNDING_RPC_URL"
+          "COMMUNITY_PURCHASE_FUNDING_RPC_URL",
+          "MEGAPOT_V2_RPC_URL"
         ]
       }
     }
