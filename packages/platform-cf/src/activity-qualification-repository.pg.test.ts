@@ -18,6 +18,7 @@ import {
 import { Effect } from "effect";
 import { Client } from "pg";
 import { loadPostgresMigrations } from "../../../scripts/postgres-migrations.ts";
+import { makeControlPlaneAcceptedLyricsStudyItemSource } from "./accepted-lyrics-study-item-source.ts";
 import { makeControlPlaneActivityQualificationStore } from "./activity-qualification-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
@@ -500,6 +501,64 @@ const provideServices =
     );
 
 suite("Postgres 17 activity qualification repository", () => {
+  test("derives Study items only from the exact public accepted lyrics revision", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      const identity = await seedAccountSong(admin, "accepted-lyrics-source");
+      const source = makeControlPlaneAcceptedLyricsStudyItemSource(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const exact = await Effect.runPromise(
+        source.getForAcceptedSongRevision({
+          communityId: identity.communityId,
+          postId: identity.postId,
+          audioRevision: 3,
+          lyricsRevision: 2,
+        }),
+      );
+      expect(exact).toMatchObject({
+        song_revision: {
+          community_id: identity.communityId,
+          post_id: identity.postId,
+          audio_revision: 3,
+          lyrics_revision: 2,
+        },
+        items: [
+          {
+            prompt: { text: "Complete the accepted lyric: Sail ____" },
+            answer_key: { accepted_answers: ["away"] },
+          },
+        ],
+      });
+
+      await expect(
+        Effect.runPromise(
+          source.getForAcceptedSongRevision({
+            communityId: identity.communityId,
+            postId: identity.postId,
+            audioRevision: 3,
+            lyricsRevision: 3,
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "StudyItemSourceError", reason: "unavailable" });
+
+      await admin.query(
+        `UPDATE posts SET visibility='members_only'
+          WHERE community_id=$1 AND post_id=$2`,
+        [identity.communityId, identity.postId],
+      );
+      await expect(
+        Effect.runPromise(
+          source.getForAcceptedSongRevision({
+            communityId: identity.communityId,
+            postId: identity.postId,
+            audioRevision: 3,
+            lyricsRevision: 2,
+          }),
+        ),
+      ).rejects.toMatchObject({ _tag: "StudyItemSourceError", reason: "unavailable" });
+    });
+  });
+
   test("freezes Study evidence, replays commands, and emits one account day", async () => {
     await withSchema(async ({ admin, scopedConnection }) => {
       const identity = await seedAccountSong(admin, "repository");
