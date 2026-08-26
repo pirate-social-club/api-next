@@ -287,6 +287,12 @@ const dataRegistrationPersistenceMigrationSql = await Bun.file(
     import.meta.url,
   ),
 ).text();
+const dataIpfsAndSigningIntentRepairMigrationSql = await Bun.file(
+  new URL(
+    "../../../db/postgres/migrations/0058_data_ipfs_and_signing_intent_repair.sql",
+    import.meta.url,
+  ),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -579,6 +585,11 @@ const dataRegistrationPersistenceMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0057_data_registration_persistence.sql"] ?? "",
   sql: dataRegistrationPersistenceMigrationSql,
 };
+const dataIpfsAndSigningIntentRepairMigration: PostgresMigration = {
+  version: "0058_data_ipfs_and_signing_intent_repair.sql",
+  checksum: checksumManifest.migrations["0058_data_ipfs_and_signing_intent_repair.sql"] ?? "",
+  sql: dataIpfsAndSigningIntentRepairMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -637,6 +648,7 @@ const migrations: readonly PostgresMigration[] = [
   megapotClaimReconciliationMigration,
   mediaProcessingRuntimeBridgeMigration,
   dataRegistrationPersistenceMigration,
+  dataIpfsAndSigningIntentRepairMigration,
 ];
 
 function checksum(value: string): string {
@@ -910,6 +922,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(dataRegistrationPersistenceMigrationSql)).toBe(
         dataRegistrationPersistenceMigration.checksum,
+      );
+      expect(checksum(dataIpfsAndSigningIntentRepairMigrationSql)).toBe(
+        dataIpfsAndSigningIntentRepairMigration.checksum,
       );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
