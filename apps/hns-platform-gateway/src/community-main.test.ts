@@ -1,18 +1,22 @@
 import { describe, expect, test } from "bun:test";
+import { createServer, type Server } from "node:net";
 import type { HnsCommunityAppHostAuthorityStateV1 } from "@pirate/application/hns-host-serving";
 import { makeStaticHnsForwarderKeyRegistryV1 } from "@pirate/platform-cf/hns-forwarder-v3";
 import { Effect } from "effect";
 import {
   assembleHnsCommunityAppGatewayRuntime,
   embeddedApiNextSourceCommit,
+  listenersForMode,
   parseHnsCommunityAppGatewayArguments,
 } from "./community-main.ts";
 import {
   HNS_COMMUNITY_APP_GATEWAY_PRODUCTION_LISTENERS,
   HNS_COMMUNITY_APP_GATEWAY_SHADOW_LISTENERS,
+  HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS,
   type HnsCommunityAppGatewayRuntimeConfigurationV1,
 } from "./community-runtime-config.ts";
 import { HNS_GATEWAY_EXTERNAL_SCHEME_HEADER, HNS_GATEWAY_TLS_SNI_HEADER } from "./request.ts";
+import { startHnsCommunityAppGatewayServer } from "./server.ts";
 
 const host = "app.community-root";
 const deploymentReference = `hns-community-app-gateway-sha256:${"a".repeat(64)}`;
@@ -96,6 +100,23 @@ function gatewayRequest(method: "GET" | "POST", body = new Uint8Array()) {
   };
 }
 
+function listenOnLoopback(port: number): Promise<Server> {
+  const server = createServer();
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve(server);
+    });
+  });
+}
+
+function closeServer(server: Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error === undefined ? resolve() : reject(error)));
+  });
+}
+
 describe("community gateway executable assembly", () => {
   test("accepts only the exact mode and absolute manifest arguments", () => {
     expect(
@@ -108,6 +129,18 @@ describe("community gateway executable assembly", () => {
     ).toEqual({
       mode: "production",
       manifest_path: "/srv/pirate-hns-community-app-gateway/current/deployment-manifest.json",
+    });
+    expect(
+      parseHnsCommunityAppGatewayArguments([
+        "--mode",
+        "staging-shadow",
+        "--manifest",
+        "/srv/pirate-hns-community-app-gateway-staging-shadow/current/deployment-manifest.json",
+      ]),
+    ).toEqual({
+      mode: "staging-shadow",
+      manifest_path:
+        "/srv/pirate-hns-community-app-gateway-staging-shadow/current/deployment-manifest.json",
     });
     for (const arguments_ of [
       [],
@@ -131,6 +164,44 @@ describe("community gateway executable assembly", () => {
       health_host: "127.0.0.1",
       health_port: 4171,
     });
+    expect(HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS).toEqual({
+      gateway_host: "127.0.0.1",
+      gateway_port: 4269,
+      health_host: "127.0.0.1",
+      health_port: 4271,
+    });
+    expect(listenersForMode("staging-shadow")).toBe(
+      HNS_COMMUNITY_APP_GATEWAY_STAGING_SHADOW_LISTENERS,
+    );
+  });
+
+  test("binds the staging pair while every production pair remains independently owned", async () => {
+    const productionPorts = [4069, 4071, 4169, 4171];
+    const productionServers: Server[] = [];
+    let stagingServer: Awaited<ReturnType<typeof startHnsCommunityAppGatewayServer>> | undefined;
+    try {
+      for (const port of productionPorts) productionServers.push(await listenOnLoopback(port));
+      const runtime = assembleHnsCommunityAppGatewayRuntime({
+        configuration: configuration(),
+        authority_factory: () => ({
+          authority_source: { resolve: () => Effect.succeed(null) },
+          ready: async () => true,
+        }),
+        fetch_impl: async () => new Response(null, { status: 421 }),
+      });
+      stagingServer = await startHnsCommunityAppGatewayServer({
+        composition: runtime.composition,
+        ...listenersForMode("staging-shadow"),
+        ready: runtime.ready,
+      });
+      expect(stagingServer.gateway_address).toEqual({ host: "127.0.0.1", port: 4269 });
+      expect(stagingServer.health_address).toEqual({ host: "127.0.0.1", port: 4271 });
+    } finally {
+      await Promise.all([
+        ...(stagingServer === undefined ? [] : [stagingServer.stop()]),
+        ...productionServers.map(closeServer),
+      ]);
+    }
   });
 
   test("refuses source execution without build-injected commit provenance", () => {
