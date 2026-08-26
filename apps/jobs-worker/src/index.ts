@@ -45,6 +45,7 @@ import {
   makeHnsRouteRevalidationComposition,
   makeHnsRouteRevalidationJob,
 } from "./hns-route-revalidation";
+import { type MediaJobsBindings, makeMediaMaintenance } from "./media-runtime";
 import { handleMegapotPublicCommitment } from "./megapot-commitment-public";
 import { type MegapotRewardsJobOptions, makeMegapotRewardsJob } from "./megapot-rewards";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
@@ -106,7 +107,10 @@ export {
   makeCommunityCatalogIntegrityJob,
 } from "./routing-integrity";
 
-export interface JobsWorkerEnv extends AlertSinkBindings, HnsRouteRevalidationBindings {
+export interface JobsWorkerEnv
+  extends AlertSinkBindings,
+    HnsRouteRevalidationBindings,
+    MediaJobsBindings {
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly CONTROL_PLANE?: HyperdriveConnection;
   readonly MEGAPOT_COMMITMENTS?: R2Bucket;
@@ -701,12 +705,11 @@ export default {
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);
-    await ctx.waitUntil(
-      Promise.all(
-        Array.from(dueByLane, ([lane, laneJobs]) =>
-          handleScheduled(env, lane, laneJobs, event.scheduledTime, { runtime }),
-        ),
-      ),
+    const mediaMaintenance = makeMediaMaintenance(env, runtime);
+    const scheduledWork: Promise<unknown>[] = Array.from(dueByLane, ([lane, laneJobs]) =>
+      handleScheduled(env, lane, laneJobs, event.scheduledTime, { runtime }),
     );
+    if (mediaMaintenance !== null) scheduledWork.push(mediaMaintenance());
+    await ctx.waitUntil(Promise.all(scheduledWork));
   },
 };

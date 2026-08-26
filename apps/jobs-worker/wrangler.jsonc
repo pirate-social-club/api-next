@@ -16,8 +16,25 @@
       "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
     }
   ],
+  "workflows": [
+    {
+      "binding": "MEDIA_PROCESSING_WORKFLOW",
+      "name": "pirate-media-processing",
+      "class_name": "MediaProcessingWorkflow",
+      "script_name": "pirate-media-processor-worker"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "MEDIA_PROCESSING_QUEUE",
+        "queue": "pirate-media-processing-development"
+      }
+    ]
+  },
   "vars": {
     "API_NEXT_ENV": "development",
+    "MEDIA_PROCESSING_ENABLED": "false",
     "HNS_OWNERSHIP_ENABLED": "false",
     "MEGAPOT_REWARDS_ENABLED": "false",
     "MEGAPOT_CHAIN_ID": "84532",
@@ -58,8 +75,25 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
+      "workflows": [
+        {
+          "binding": "MEDIA_PROCESSING_WORKFLOW",
+          "name": "pirate-media-processing-staging",
+          "class_name": "MediaProcessingWorkflow",
+          "script_name": "pirate-media-processor-worker-staging"
+        }
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "MEDIA_PROCESSING_QUEUE",
+            "queue": "pirate-media-processing-staging"
+          }
+        ]
+      },
       "vars": {
         "API_NEXT_ENV": "staging",
+        "MEDIA_PROCESSING_ENABLED": "false",
         "HNS_OWNERSHIP_ENABLED": "false",
         "HNS_OWNERSHIP_CONFIGURATION_REFERENCE": "hns-owner-staging",
         "HNS_OWNERSHIP_CONFIGURATION_VERSION": "hns-owner-config-v1",
@@ -117,8 +151,25 @@
           "localConnectionString": "postgres://postgres:postgres@127.0.0.1:5432/postgres"
         }
       ],
+      "workflows": [
+        {
+          "binding": "MEDIA_PROCESSING_WORKFLOW",
+          "name": "pirate-media-processing-production",
+          "class_name": "MediaProcessingWorkflow",
+          "script_name": "pirate-media-processor-worker-production"
+        }
+      ],
+      "queues": {
+        "producers": [
+          {
+            "binding": "MEDIA_PROCESSING_QUEUE",
+            "queue": "pirate-media-processing-production"
+          }
+        ]
+      },
       "vars": {
         "API_NEXT_ENV": "production",
+        "MEDIA_PROCESSING_ENABLED": "false",
         "HNS_OWNERSHIP_ENABLED": "false",
         "MEGAPOT_REWARDS_ENABLED": "false",
         "MEGAPOT_CHAIN_ID": "8453",

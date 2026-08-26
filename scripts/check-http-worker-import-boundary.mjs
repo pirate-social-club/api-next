@@ -9,6 +9,7 @@ const canonicalApplicationImports = new Set([
   "@pirate/application/money/community-purchase-funding-observation",
   "@pirate/application/money/community-purchase-funding-producer",
   "@pirate/application/money/community-purchase-funding-query",
+  "@pirate/application/media/submission-service",
   "@pirate/application/namespace-ownership",
   "@pirate/application/route-revalidation",
   "@pirate/application/rewards/song-reward-offers",

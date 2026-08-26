@@ -66,7 +66,9 @@ const nextEventType = (
     case "manual_review":
       return "publication";
     case "published":
-      return "alignment";
+      // Publication persists alignment under the next Workflow revision.
+      // Queue delivery launches that deterministic instance; this one is done.
+      return null;
     case "published_without_alignment":
       return null;
     default:

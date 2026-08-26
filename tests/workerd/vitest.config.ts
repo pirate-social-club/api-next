@@ -32,6 +32,18 @@ const alias = {
     "../../packages/platform-cf/config/index.ts",
     import.meta.url,
   ).pathname,
+  "@pirate/platform-cf/media-processing-cloudflare": new URL(
+    "../../packages/platform-cf/src/media-processing-cloudflare.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/media-processing-store": new URL(
+    "../../packages/platform-cf/src/media-processing-store.ts",
+    import.meta.url,
+  ).pathname,
+  "@pirate/platform-cf/media-workflow-entrypoint": new URL(
+    "../../packages/platform-cf/src/media-workflow-entrypoint.ts",
+    import.meta.url,
+  ).pathname,
   "@pirate/platform-cf": new URL("../../packages/platform-cf/src/index.ts", import.meta.url)
     .pathname,
   "@pirate/verifier-response-contract": new URL(
@@ -45,7 +57,22 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./apps/jobs-worker/wrangler.jsonc" },
-      miniflare: { alias },
+      miniflare: {
+        alias,
+        workers: [
+          {
+            name: "pirate-media-processor-worker",
+            modules: true,
+            compatibilityDate: "2026-08-01",
+            script: `
+              import { WorkflowEntrypoint } from "cloudflare:workers";
+              export class MediaProcessingWorkflow extends WorkflowEntrypoint {
+                async run() { return { outcome: "inert" }; }
+              }
+            `,
+          },
+        ],
+      },
     }),
   ],
   test: {

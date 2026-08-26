@@ -13,21 +13,42 @@ const SOURCE_VERSION_METADATA_KEY = "media-seal-source-version";
 
 type R2PutValue = ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob;
 
+type SealChecksumFields = Readonly<Partial<Record<(typeof CHECKSUM_FIELDS)[number], ArrayBuffer>>>;
+
+type SealObject = Readonly<{
+  key: string;
+  version: string;
+  etag: string;
+  size: number;
+  checksums: SealChecksumFields;
+  httpMetadata?: Readonly<{ contentType?: string }>;
+  customMetadata?: Readonly<Record<string, string>>;
+}>;
+
+type SealObjectBody = SealObject & Readonly<{ body: ReadableStream }>;
+
+type SealConditional = Readonly<{ etagMatches?: string }> | Headers;
+
 type SealSourceBucket = Readonly<{
-  head: (key: string) => Promise<R2Object | null>;
+  head: (key: string) => Promise<SealObject | null>;
   get: (
     key: string,
-    options: R2GetOptions & { readonly onlyIf: R2Conditional | Headers },
-  ) => Promise<R2ObjectBody | R2Object | null>;
+    options: Readonly<{ onlyIf: SealConditional }>,
+  ) => Promise<SealObjectBody | SealObject | null>;
 }>;
 
 type SealDestinationBucket = Readonly<{
-  head: (key: string) => Promise<R2Object | null>;
+  head: (key: string) => Promise<SealObject | null>;
   put: (
     key: string,
     value: R2PutValue,
-    options: R2PutOptions & { readonly onlyIf: R2Conditional | Headers },
-  ) => Promise<R2Object | null>;
+    options: Readonly<{
+      onlyIf: SealConditional;
+      httpMetadata: Readonly<{ contentType: string }>;
+      customMetadata: Readonly<Record<string, string>>;
+      sha256?: string;
+    }>,
+  ) => Promise<SealObject | null>;
 }>;
 
 export type MediaSealBuckets = Readonly<{
@@ -35,11 +56,23 @@ export type MediaSealBuckets = Readonly<{
   readonly immutableOriginals: SealDestinationBucket;
 }>;
 
+type SealDigestStream = WritableStream &
+  Readonly<{ digest: Promise<ArrayBuffer>; bytesWritten: number | bigint }>;
+
+const digestStream = (algorithm: "SHA-256"): SealDigestStream => {
+  const DigestStreamConstructor = (
+    globalThis as typeof globalThis & {
+      readonly DigestStream: new (algorithm: "SHA-256") => SealDigestStream;
+    }
+  ).DigestStream;
+  return new DigestStreamConstructor(algorithm);
+};
+
 function bytesToHex(bytes: ArrayBuffer): string {
   return Array.from(new Uint8Array(bytes), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-function objectIdentity(object: R2Object): MediaSealObjectIdentity {
+function objectIdentity(object: SealObject): MediaSealObjectIdentity {
   const checksums = Object.fromEntries(
     CHECKSUM_FIELDS.flatMap((field) => {
       const checksum = object.checksums[field];
@@ -71,7 +104,7 @@ function identityEqual(left: MediaSealObjectIdentity, right: MediaSealObjectIden
   );
 }
 
-function hasBody(object: R2Object | R2ObjectBody): object is R2ObjectBody {
+function hasBody(object: SealObject | SealObjectBody): object is SealObjectBody {
   return "body" in object && object.body instanceof ReadableStream;
 }
 
@@ -151,7 +184,7 @@ export async function inspectMediaUpload(
   ingress: SealSourceBucket,
   input: MediaSealInspectInput,
 ): Promise<MediaSealInspection> {
-  let observed: R2Object | null;
+  let observed: SealObject | null;
   try {
     observed = await ingress.head(input.sourceKey);
   } catch {
@@ -169,7 +202,7 @@ export async function sealMediaUpload(
   buckets: MediaSealBuckets,
   input: MediaSealInput,
 ): Promise<Awaited<ReturnType<MediaUploadSealer["seal"]>>> {
-  let selected: R2Object | R2ObjectBody | null;
+  let selected: SealObject | SealObjectBody | null;
   try {
     selected = await buckets.ingress.get(input.source.key, {
       onlyIf: { etagMatches: input.source.etag },
@@ -185,7 +218,7 @@ export async function sealMediaUpload(
     return { result: { outcome: "source_precondition_failed" } };
   }
 
-  const digest = new DigestStream("SHA-256");
+  const digest = digestStream("SHA-256");
   const [putBody, digestBody] = selected.body.tee();
   const digestTask = digestBody.pipeTo(digest).then(async () => ({
     sha256: bytesToHex(await digest.digest),
@@ -209,7 +242,7 @@ export async function sealMediaUpload(
   const writtenObject = putSettled.value;
   if (writtenObject === null) {
     if (!putBody.locked) await putBody.cancel().catch(() => undefined);
-    let occupiedObject: R2Object | null;
+    let occupiedObject: SealObject | null;
     try {
       occupiedObject = await buckets.immutableOriginals.head(input.destinationKey);
     } catch {
@@ -252,7 +285,7 @@ export async function sealMediaUpload(
     };
   }
 
-  let verifiedObject: R2Object | null;
+  let verifiedObject: SealObject | null;
   try {
     verifiedObject = await buckets.immutableOriginals.head(input.destinationKey);
   } catch {
