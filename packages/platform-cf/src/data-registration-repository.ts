@@ -69,6 +69,7 @@ const ATTEMPT_FAILURE_CODES = new Set<DataRegistrationAttemptFailureCode>([
 const HASH = /^[0-9a-f]{64}$/u;
 const TRANSACTION_HASH = /^0x[0-9a-f]{64}$/u;
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/u;
+const METHOD_SELECTOR = /^0x[0-9a-f]{8}$/u;
 
 export class DataRegistrationRepositoryError extends Data.TaggedError(
   "DataRegistrationRepositoryError",
@@ -261,7 +262,14 @@ const attemptFromRow = (row: Row): DataRegistrationSigningAttempt => {
     signerNamespace: text(row, "signer_namespace"),
     signerAddress: text(row, "signer_address"),
     signingIntentId: text(row, "signing_intent_id"),
+    targetAddress: text(row, "target_address"),
+    methodSelector: text(row, "method_selector"),
     calldataHash: text(row, "calldata_hash"),
+    signingDeadline: instant(row, "signing_deadline"),
+    valueWei: bigint(row, "value_wei"),
+    gasLimit: bigint(row, "gas_limit"),
+    maxFeePerGas: bigint(row, "max_fee_per_gas"),
+    maxPriorityFeePerGas: bigint(row, "max_priority_fee_per_gas"),
     nonce: nullableBigint(row, "nonce"),
     signedTransaction: bytes(row, "signed_transaction"),
     signedTransactionHash: nullableText(row, "signed_transaction_hash"),
@@ -330,7 +338,9 @@ const PIN_SELECT = `
     FROM data_registration_pin_verifications`;
 const ATTEMPT_SELECT = `
   SELECT submission_attempt_id,registration_operation_id,chain_id,attempt_number,
-         signer_namespace,signer_address,signing_intent_id,calldata_hash,nonce,
+         signer_namespace,signer_address,signing_intent_id,target_address,
+         method_selector,calldata_hash,signing_deadline,value_wei,gas_limit,
+         max_fee_per_gas,max_priority_fee_per_gas,nonce,
          signed_transaction,signed_transaction_hash,transaction_hash,
          supersedes_submission_attempt_id,state,failure_code,failure_evidence_ref
     FROM data_registration_signing_attempts`;
@@ -461,7 +471,14 @@ const attemptIdentityMatches = (
   left.signerNamespace === right.signerNamespace &&
   left.signerAddress.toLowerCase() === right.signerAddress.toLowerCase() &&
   left.signingIntentId === right.signingIntentId &&
+  left.targetAddress.toLowerCase() === right.targetAddress.toLowerCase() &&
+  left.methodSelector === right.methodSelector &&
   left.calldataHash === right.calldataHash &&
+  left.signingDeadline === new Date(right.signingDeadline).toISOString() &&
+  left.valueWei === right.valueWei &&
+  left.gasLimit === right.gasLimit &&
+  left.maxFeePerGas === right.maxFeePerGas &&
+  left.maxPriorityFeePerGas === right.maxPriorityFeePerGas &&
   left.supersedesSubmissionAttemptId === right.supersedesSubmissionAttemptId;
 
 const receiptMatches = (
@@ -878,8 +895,16 @@ export function makeDataRegistrationStore(
         input.evidenceRef,
       ].every((value) => validId(value)) ||
       !validAddress(input.signerAddress) ||
+      !validAddress(input.targetAddress) ||
+      !METHOD_SELECTOR.test(input.methodSelector) ||
       !validHash(input.calldataHash) ||
+      !validInstant(input.signingDeadline) ||
       !positive(input.chainId) ||
+      input.valueWei < 0n ||
+      !positive(input.gasLimit) ||
+      !positive(input.maxFeePerGas) ||
+      input.maxPriorityFeePerGas < 0n ||
+      input.maxPriorityFeePerGas > input.maxFeePerGas ||
       input.attemptNumber < 1 ||
       input.attemptNumber > 20
     ) {
@@ -912,7 +937,7 @@ export function makeDataRegistrationStore(
             }
             yield* transaction.execute({
               label: "data-registration.attempt.insert",
-              text: "INSERT INTO data_registration_signing_attempts (submission_attempt_id,registration_operation_id,chain_id,attempt_number,signer_namespace,signer_address,signing_intent_id,calldata_hash,supersedes_submission_attempt_id,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'signing_intent')",
+              text: "INSERT INTO data_registration_signing_attempts (submission_attempt_id,registration_operation_id,chain_id,attempt_number,signer_namespace,signer_address,signing_intent_id,target_address,method_selector,calldata_hash,signing_deadline,value_wei,gas_limit,max_fee_per_gas,max_priority_fee_per_gas,supersedes_submission_attempt_id,state) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'signing_intent')",
               values: [
                 input.submissionAttemptId,
                 input.registrationOperationId,
@@ -921,7 +946,14 @@ export function makeDataRegistrationStore(
                 input.signerNamespace,
                 input.signerAddress,
                 input.signingIntentId,
+                input.targetAddress,
+                input.methodSelector,
                 input.calldataHash,
+                input.signingDeadline,
+                input.valueWei.toString(),
+                input.gasLimit.toString(),
+                input.maxFeePerGas.toString(),
+                input.maxPriorityFeePerGas.toString(),
                 input.supersedesSubmissionAttemptId,
               ],
               readonly: false,
@@ -1329,14 +1361,6 @@ export function makeDataRegistrationStore(
                           AND primary_pin.role='primary' AND primary_pin.outcome='verified'
                           AND primary_pin.canonical_sha256=artifact.canonical_sha256
                           AND primary_pin.byte_length=artifact.byte_length
-                         JOIN data_registration_pin_verifications redundant_pin
-                           ON redundant_pin.registration_operation_id=primary_pin.registration_operation_id
-                          AND redundant_pin.artifact_id=primary_pin.artifact_id
-                          AND redundant_pin.role='redundant' AND redundant_pin.outcome='verified'
-                          AND redundant_pin.cid=primary_pin.cid
-                          AND redundant_pin.canonical_sha256=primary_pin.canonical_sha256
-                          AND redundant_pin.byte_length=primary_pin.byte_length
-                          AND redundant_pin.provider_id<>primary_pin.provider_id
                          JOIN data_registration_pin_verifications gateway
                            ON gateway.registration_operation_id=primary_pin.registration_operation_id
                           AND gateway.artifact_id=primary_pin.artifact_id
@@ -1344,9 +1368,7 @@ export function makeDataRegistrationStore(
                           AND gateway.cid=primary_pin.cid
                           AND gateway.canonical_sha256=primary_pin.canonical_sha256
                           AND gateway.byte_length=primary_pin.byte_length
-                          AND gateway.provider_id NOT IN (
-                            primary_pin.provider_id,redundant_pin.provider_id
-                          )
+                          AND gateway.provider_id<>primary_pin.provider_id
                          WHERE artifact.registration_operation_id=$1
                            AND artifact.artifact_kind='ip_metadata'
                            AND 'ipfs://'||primary_pin.cid=$2
@@ -1359,14 +1381,6 @@ export function makeDataRegistrationStore(
                           AND primary_pin.role='primary' AND primary_pin.outcome='verified'
                           AND primary_pin.canonical_sha256=artifact.canonical_sha256
                           AND primary_pin.byte_length=artifact.byte_length
-                         JOIN data_registration_pin_verifications redundant_pin
-                           ON redundant_pin.registration_operation_id=primary_pin.registration_operation_id
-                          AND redundant_pin.artifact_id=primary_pin.artifact_id
-                          AND redundant_pin.role='redundant' AND redundant_pin.outcome='verified'
-                          AND redundant_pin.cid=primary_pin.cid
-                          AND redundant_pin.canonical_sha256=primary_pin.canonical_sha256
-                          AND redundant_pin.byte_length=primary_pin.byte_length
-                          AND redundant_pin.provider_id<>primary_pin.provider_id
                          JOIN data_registration_pin_verifications gateway
                            ON gateway.registration_operation_id=primary_pin.registration_operation_id
                           AND gateway.artifact_id=primary_pin.artifact_id
@@ -1374,9 +1388,7 @@ export function makeDataRegistrationStore(
                           AND gateway.cid=primary_pin.cid
                           AND gateway.canonical_sha256=primary_pin.canonical_sha256
                           AND gateway.byte_length=primary_pin.byte_length
-                          AND gateway.provider_id NOT IN (
-                            primary_pin.provider_id,redundant_pin.provider_id
-                          )
+                          AND gateway.provider_id<>primary_pin.provider_id
                          WHERE artifact.registration_operation_id=$1
                            AND artifact.artifact_kind='nft_metadata'
                            AND 'ipfs://'||primary_pin.cid=$4

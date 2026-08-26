@@ -137,11 +137,11 @@ async function seedPublishedSong(admin: Client): Promise<{
 
 suite("DATA registration persistence", () => {
   test("upgrades a populated pre-DATA foundation without changing the published song", async () => {
-    const beforeDataPersistence = migrations.slice(0, -1);
-    const dataPersistenceMigration = migrations.at(-1);
-    if (dataPersistenceMigration?.version !== "0057_data_registration_persistence.sql") {
-      throw new Error("0057 must be the final migration in this fixture");
-    }
+    const dataPersistenceIndex = migrations.findIndex(
+      (migration) => migration.version === "0057_data_registration_persistence.sql",
+    );
+    if (dataPersistenceIndex < 1) throw new Error("0057 must follow the pre-DATA foundation");
+    const beforeDataPersistence = migrations.slice(0, dataPersistenceIndex);
     await withSchema(async (admin, scopedConnection) => {
       const media = await seedPublishedSong(admin);
       await Effect.runPromise(
@@ -233,7 +233,14 @@ suite("DATA registration persistence", () => {
         signerNamespace: "data-registration-staging",
         signerAddress: address("1"),
         signingIntentId: deterministicDataRegistrationSigningIntentId(firstAttemptId),
+        targetAddress: address("2"),
+        methodSelector: "0x12345678",
         calldataHash: hash("3"),
+        signingDeadline: "2030-08-26T12:00:00.000Z",
+        valueWei: 0n,
+        gasLimit: 1_500_000n,
+        maxFeePerGas: 5_000_000_000n,
+        maxPriorityFeePerGas: 2_000_000_000n,
         supersedesSubmissionAttemptId: null,
         evidenceRef: "evidence://attempt/1",
       } as const;
@@ -297,8 +304,7 @@ suite("DATA registration persistence", () => {
         ).toBe("created");
         for (const [role, providerId] of [
           ["primary", "filebase"],
-          ["redundant", "owned-node"],
-          ["independent_gateway", "independent-gateway"],
+          ["independent_gateway", "ipfs.io"],
         ] as const) {
           expect(
             await store.recordPinVerification({
