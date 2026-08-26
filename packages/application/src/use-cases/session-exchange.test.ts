@@ -68,6 +68,7 @@ const servicesFor = (
     verifyPrivy: () => Effect.succeed({ sourceUserId: "source-user", classification: "user" }),
   },
   identityStore: { resolve: () => Effect.succeed(account) },
+  productReadiness: { isReady: () => Effect.succeed(true) },
   tokenMinter: {
     scope: "api-next-browser-session-test",
     mint: () => Effect.succeed("session-token"),

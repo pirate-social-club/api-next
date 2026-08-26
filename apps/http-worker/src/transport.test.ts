@@ -121,6 +121,7 @@ const sessionServices: SessionExchangeServices = {
         wallet_attachments: [],
       }),
   },
+  productReadiness: { isReady: () => Effect.succeed(true) },
   tokenMinter: {
     scope: "api-next-browser-session-test",
     mint: ({ subject }) => Effect.succeed(`token-for-${subject}`),
@@ -155,6 +156,7 @@ const registrationServices: IdentityRegistrationHandlerServices = {
         }),
     },
     store: {
+      getFirstPersonaWalletPreparation: () => Effect.succeed(null),
       registerCredential: () =>
         Effect.succeed({
           kind: "created",

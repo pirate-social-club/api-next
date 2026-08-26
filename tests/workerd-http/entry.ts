@@ -298,6 +298,7 @@ const sessionExchange: SessionExchangeServices = {
       }),
   },
   identityStore: makeSessionIdentityStore(identityStore),
+  productReadiness: { isReady: () => Effect.succeed(true) },
   tokenMinter: {
     scope: browserTokenMinter.scope,
     ...(browserTokenMinter.ttlSeconds === undefined

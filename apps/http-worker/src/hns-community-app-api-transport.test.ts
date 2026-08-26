@@ -117,6 +117,7 @@ const sessionServices: SessionExchangeServices = {
         ],
       }),
   },
+  productReadiness: { isReady: () => Effect.succeed(true) },
   tokenMinter: {
     scope: "api-next-browser-session-test",
     mint: ({ subject }) => Effect.succeed(`token-for-${subject}`),

@@ -97,6 +97,7 @@ describe("registration Durable Object limiters", () => {
             }),
         },
         store: {
+          getFirstPersonaWalletPreparation: () => Effect.succeed(null),
           registerCredential: () =>
             Effect.succeed({
               kind: "created" as const,

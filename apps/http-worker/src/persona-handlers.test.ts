@@ -84,6 +84,14 @@ function services(observed: unknown[]): PersonaHandlerServices {
         assigned_at: "2026-08-24T12:01:00.000Z",
       });
     },
+    retire: (input) => {
+      observed.push({ retire: input });
+      return Effect.succeed({
+        persona_id: input.personaId,
+        status: "retired",
+        retired_at: "2026-08-24T12:02:00.000Z",
+      });
+    },
   };
   return {
     personas: {

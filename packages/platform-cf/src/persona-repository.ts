@@ -427,6 +427,7 @@ export function makeControlPlanePersonaWalletRepository() {
     reserveEvm: ({
       accountId,
       personaId,
+      idempotencyKey,
     }: Parameters<PersonaWalletStoreService["reserveEvm"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -451,6 +452,17 @@ export function makeControlPlanePersonaWalletRepository() {
               if (owned.rows.length !== 1) {
                 return yield* new PersonaWalletStoreConflict({ reason: "reservation-mismatch" });
               }
+              const replay = yield* transaction.execute<{ persona_id: string }>({
+                label: "persona-wallets.reserve.replay-key",
+                text: `SELECT persona_id FROM persona_wallet_preparation_replays
+                        WHERE account_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+                values: [accountId, idempotencyKey],
+                readonly: false,
+              });
+              if (replay.rows.length === 1 && replay.rows[0]?.persona_id !== personaId) {
+                return yield* new PersonaWalletStoreConflict({ reason: "idempotency-mismatch" });
+              }
+              if (replay.rows.length > 1) return yield* Effect.die("duplicate wallet replay");
               const existing = yield* transaction.execute<WalletRow>({
                 label: "persona-wallets.reserve.replay",
                 text: `${walletSelect} FOR UPDATE`,
@@ -459,14 +471,119 @@ export function makeControlPlanePersonaWalletRepository() {
               });
               if (existing.rows.length === 1) {
                 const row = existing.rows[0] as WalletRow;
-                if (row.status === "active") {
-                  return yield* Effect.sync(() => preparationFromRow(row));
+                if (replay.rows.length === 0) {
+                  yield* transaction.execute({
+                    label: "persona-wallets.reserve.record-replay",
+                    text: `INSERT INTO persona_wallet_preparation_replays (
+                             account_id,idempotency_key,persona_id
+                           ) VALUES ($1,$2,$3)`,
+                    values: [accountId, idempotencyKey, personaId],
+                    readonly: false,
+                  });
                 }
                 return yield* Effect.sync(() => preparationFromRow(row));
               }
               if (existing.rows.length !== 0)
                 return yield* Effect.die("duplicate live persona wallet");
               return yield* new PersonaWalletStoreConflict({ reason: "reservation-mismatch" });
+            }),
+          )
+          .pipe(Effect.mapError(walletConflict));
+      }),
+
+    retire: ({
+      accountId,
+      personaId,
+      idempotencyKey,
+    }: Parameters<PersonaWalletStoreService["retire"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        return yield* db
+          .withTransaction((transaction) =>
+            Effect.gen(function* () {
+              yield* transaction.execute({
+                label: "personas.retire.lock",
+                text: "SELECT pg_advisory_xact_lock(hashtextextended($1, 14000046))",
+                values: [JSON.stringify([accountId, "evm"])],
+                readonly: false,
+              });
+              const replay = yield* transaction.execute<{
+                persona_id: string;
+                retired_at: Date | string;
+              }>({
+                label: "personas.retire.replay",
+                text: `SELECT persona_id,retired_at FROM persona_retirement_replays
+                        WHERE account_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+                values: [accountId, idempotencyKey],
+                readonly: false,
+              });
+              if (replay.rows.length === 1) {
+                const row = replay.rows[0];
+                if (row?.persona_id !== personaId) {
+                  return yield* new PersonaWalletStoreConflict({ reason: "idempotency-mismatch" });
+                }
+                return {
+                  persona_id: personaId,
+                  status: "retired" as const,
+                  retired_at: iso(row.retired_at),
+                };
+              }
+              if (replay.rows.length !== 0) return yield* Effect.die("duplicate retirement replay");
+
+              const owned = yield* transaction.execute<{
+                status: string;
+                retired_at: Date | string | null;
+              }>({
+                label: "personas.retire.authority",
+                text: `SELECT status,retired_at FROM personas
+                        WHERE account_id=$1 AND persona_id=$2 FOR UPDATE`,
+                values: [accountId, personaId],
+                readonly: false,
+              });
+              if (owned.rows.length === 0) return null;
+              if (owned.rows.length !== 1) return yield* Effect.die("duplicate owned persona");
+              const existing = owned.rows[0];
+              let retiredAt = existing?.retired_at;
+              if (existing?.status !== "retired") {
+                const tombstoned = yield* transaction.execute({
+                  label: "personas.retire.tombstone-wallet",
+                  text: `UPDATE persona_wallet_assignments
+                            SET status='tombstoned',tombstoned_at=clock_timestamp(),
+                                updated_at=clock_timestamp()
+                          WHERE account_id=$1 AND persona_id=$2
+                            AND chain_account_kind='evm' AND status IN ('pending','active')`,
+                  values: [accountId, personaId],
+                  readonly: false,
+                });
+                if (tombstoned.rowCount !== 1) {
+                  return yield* new PersonaWalletStoreConflict({ reason: "reservation-mismatch" });
+                }
+                const retired = yield* transaction.execute<{ retired_at: Date | string }>({
+                  label: "personas.retire.commit",
+                  text: `UPDATE personas SET status='retired',retired_at=clock_timestamp()
+                          WHERE account_id=$1 AND persona_id=$2
+                          RETURNING retired_at`,
+                  values: [accountId, personaId],
+                  readonly: false,
+                });
+                retiredAt = retired.rows[0]?.retired_at ?? null;
+              }
+              if (retiredAt === null || retiredAt === undefined) {
+                return yield* Effect.die("retired persona timestamp missing");
+              }
+              yield* transaction.execute({
+                label: "personas.retire.record-replay",
+                text: `INSERT INTO persona_retirement_replays (
+                         account_id,idempotency_key,persona_id,retired_at
+                       ) VALUES ($1,$2,$3,$4::timestamptz)`,
+                values: [accountId, idempotencyKey, personaId, iso(retiredAt)],
+                readonly: false,
+              });
+              return {
+                persona_id: personaId,
+                status: "retired" as const,
+                retired_at: iso(retiredAt),
+              };
             }),
           )
           .pipe(Effect.mapError(walletConflict));
@@ -617,5 +734,6 @@ export function makeControlPlanePersonaWalletStore(
     reserveEvm: (input) => bind(runtime, repository.reserveEvm(input)),
     getEvmPreparation: (input) => bind(runtime, repository.getEvmPreparation(input)),
     confirmEvm: (input) => bind(runtime, repository.confirmEvm(input)),
+    retire: (input) => bind(runtime, repository.retire(input)),
   };
 }

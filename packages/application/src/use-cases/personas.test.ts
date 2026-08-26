@@ -11,6 +11,7 @@ import {
   type PersonaWalletStoreService,
   preparePersonaEvmWallet,
   requireActiveOwnedPersona,
+  retirePersona,
 } from "./personas.ts";
 
 const activePersona: PersonaRecord = {
@@ -74,6 +75,12 @@ const walletStoreWith = (
   reserveEvm: () => Effect.succeed(pendingPreparation),
   getEvmPreparation: () => Effect.succeed(pendingPreparation),
   confirmEvm: () => Effect.succeed(assignment),
+  retire: ({ personaId }) =>
+    Effect.succeed({
+      persona_id: personaId,
+      status: "retired",
+      retired_at: "2026-08-23T23:00:00.000Z",
+    }),
   ...overrides,
 });
 
@@ -363,5 +370,32 @@ describe("account-owned persona use cases", () => {
     );
     expect(result).toEqual(assignment);
     expect(verifierCount).toBe(0);
+  });
+
+  test("retires through the authenticated account without exposing store conflicts", async () => {
+    let capturedKey = "";
+    const result = await Effect.runPromise(
+      retirePersona(
+        {
+          accountId: "account_owner",
+          personaId: activePersona.persona_id,
+          body: { idempotency_key: "persona-retire-1" },
+        },
+        {
+          store: walletStoreWith({
+            retire: ({ idempotencyKey, personaId }) => {
+              capturedKey = idempotencyKey;
+              return Effect.succeed({
+                persona_id: personaId,
+                status: "retired",
+                retired_at: "2026-08-23T23:00:00.000Z",
+              });
+            },
+          }),
+        },
+      ),
+    );
+    expect(capturedKey).toBe("persona-retire-1");
+    expect(result.status).toBe("retired");
   });
 });

@@ -42,6 +42,7 @@ function services(
     registration: {
       candidates: { next: () => Effect.succeed(candidate) },
       store: {
+        getFirstPersonaWalletPreparation: () => Effect.succeed(null),
         registerCredential: () =>
           Effect.succeed({
             kind: "created",
@@ -129,6 +130,7 @@ describe("identity registration HTTP use case", () => {
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
             store: {
+              getFirstPersonaWalletPreparation: () => Effect.succeed(null),
               registerCredential: () =>
                 Effect.succeed({
                   kind: "already_registered",
@@ -150,7 +152,10 @@ describe("identity registration HTTP use case", () => {
         services({
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
-            store: { registerCredential: () => Effect.succeed({ kind: "tombstoned" }) },
+            store: {
+              getFirstPersonaWalletPreparation: () => Effect.succeed(null),
+              registerCredential: () => Effect.succeed({ kind: "tombstoned" }),
+            },
           },
         }),
       ),
@@ -166,6 +171,7 @@ describe("identity registration HTTP use case", () => {
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
             store: {
+              getFirstPersonaWalletPreparation: () => Effect.succeed(null),
               registerCredential: () =>
                 Effect.fail(new IdentityRegistrationStoreFailure({ reason: "identity-conflict" })),
             },
@@ -186,6 +192,7 @@ describe("identity registration HTTP use case", () => {
           registration: {
             candidates: { next: () => Effect.succeed(candidate) },
             store: {
+              getFirstPersonaWalletPreparation: () => Effect.succeed(null),
               registerCredential: () => {
                 registrationCalls += 1;
                 return Effect.succeed({

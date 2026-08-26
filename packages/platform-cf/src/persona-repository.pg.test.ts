@@ -27,7 +27,7 @@ const sentinelPath =
   "/tmp/api-next-control-plane-postgres-persona-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-persona-suite-complete\n";
 const migrations = await loadPostgresMigrations();
-const testCount = 4;
+const testCount = 5;
 let completedTestCount = 0;
 
 const schemaIdentifier = (): string =>
@@ -99,6 +99,62 @@ const failureOf = <E>(exit: Exit.Exit<unknown, E>): E | undefined => {
 };
 
 suite("Postgres 17 account persona and EVM wallet persistence", () => {
+  test("fails the wallet activation migration before changing a retained walletless schema", async () => {
+    if (connectionString === undefined) throw new Error("test URL was not configured");
+    const schema = schemaIdentifier();
+    const admin = new Client({ connectionString });
+    await admin.connect();
+    await admin.query(`CREATE SCHEMA ${quoteIdentifier(schema)}`);
+    const scopedConnection = connectionForSchema(connectionString, schema);
+    const migration = migrations.at(-1);
+    if (migration?.version !== "0060_persona_wallet_provisioning.sql") {
+      throw new Error("persona wallet migration must remain the latest migration for this fixture");
+    }
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          applyPostgresMigrations(migrations.slice(0, -1)).pipe(
+            Effect.provide(makeDirectPostgresControlPlaneLayer(scopedConnection)),
+          ),
+        ),
+      );
+      await admin.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      await admin.query(
+        `INSERT INTO users (user_id, status, account)
+         VALUES ('retained-walletless-account', 'active', '{}'::jsonb)`,
+      );
+
+      const migrationExit = await Effect.runPromiseExit(
+        Effect.scoped(
+          applyPostgresMigrations(migrations).pipe(
+            Effect.provide(makeDirectPostgresControlPlaneLayer(scopedConnection)),
+          ),
+        ),
+      );
+      expect(Exit.isFailure(migrationExit)).toBe(true);
+      const retained = await admin.query<{ readonly count: string }>(
+        `SELECT count(*)::text AS count
+           FROM personas
+          WHERE status='active' AND account_id='retained-walletless-account'`,
+      );
+      expect(retained.rows[0]?.count).toBe("1");
+      const pendingProfiles = await admin.query<{ readonly relation: string | null }>(
+        "SELECT to_regclass('persona_pending_profiles')::text AS relation",
+      );
+      expect(pendingProfiles.rows[0]?.relation).toBeNull();
+      const ledger = await admin.query<{ readonly count: string }>(
+        "SELECT count(*)::text AS count FROM schema_migrations WHERE version=$1",
+        [migration.version],
+      );
+      expect(ledger.rows[0]?.count).toBe("0");
+    } finally {
+      await admin.query("ROLLBACK");
+      await admin.query(`DROP SCHEMA ${quoteIdentifier(schema)} CASCADE`);
+      await admin.end();
+    }
+    completedTestCount += 1;
+  });
+
   test("enforces the lifetime slot ceiling and rolling additional-persona rate", async () => {
     await withSchema(async (admin, connection) => {
       await admin.query("INSERT INTO users (user_id) VALUES ('account-slot'),('account-rate')");
@@ -238,6 +294,17 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       );
       expect(firstPreparation.hd_wallet_index).toBe(0);
       expect(siblingPreparation.hd_wallet_index).toBe(1);
+      const reusedPreparationKey = await runExit(
+        connection,
+        wallets.reserveEvm({
+          accountId: "account-wallet-a",
+          personaId: sibling.persona_id,
+          idempotencyKey: "wallet-first",
+        }),
+      );
+      expect(failureOf(reusedPreparationKey)).toEqual(
+        new PersonaWalletStoreConflict({ reason: "idempotency-mismatch" }),
+      );
       const firstAddress = "0x1111111111111111111111111111111111111111";
       await run(
         connection,
@@ -360,16 +427,25 @@ suite("Postgres 17 account persona and EVM wallet persistence", () => {
       ]) {
         await expect(admin.query(statement, [personaA])).rejects.toThrow();
       }
-      await admin.query(
-        "UPDATE personas SET status='retired', retired_at=clock_timestamp() WHERE persona_id=$1",
-        [personaA],
+      const retirement = await run(
+        connection,
+        wallets.retire({
+          accountId: "account-fence-a",
+          personaId: personaA,
+          idempotencyKey: "retire-persona-a",
+        }),
       );
-      await admin.query(
-        `UPDATE persona_wallet_assignments
-            SET status='tombstoned', tombstoned_at=clock_timestamp(), updated_at=clock_timestamp()
-          WHERE persona_id=$1`,
-        [personaA],
-      );
+      expect(retirement).toMatchObject({ persona_id: personaA, status: "retired" });
+      expect(
+        await run(
+          connection,
+          wallets.retire({
+            accountId: "account-fence-a",
+            personaId: personaA,
+            idempotencyKey: "retire-persona-a",
+          }),
+        ),
+      ).toEqual(retirement);
       await expect(
         admin.query(
           `UPDATE persona_wallet_assignments

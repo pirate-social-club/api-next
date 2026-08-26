@@ -884,7 +884,8 @@ export async function createProductionHttpWorker(
             const setupPath =
               endpoint.method === "POST" &&
               (endpoint.path === "/personas/:personaId/wallets/evm/prepare" ||
-                endpoint.path === "/personas/:personaId/wallets/evm/confirm");
+                endpoint.path === "/personas/:personaId/wallets/evm/confirm" ||
+                endpoint.path === "/personas/:personaId/retire");
             if (!setupPath) return yield* new AuthError({ message: "Authorization failed" });
           }
         }),

@@ -26,6 +26,7 @@ import {
   CreatePersona,
   ListMyPersonas,
   PreparePersonaEvmWallet,
+  RetirePersona,
 } from "./personas.ts";
 import {
   GetCommunityActivityLeaderboard,
@@ -63,6 +64,7 @@ export const registry = {
   CreatePersona,
   PreparePersonaEvmWallet,
   ConfirmPersonaEvmWallet,
+  RetirePersona,
   ...v1Registry,
   ...verification,
   ...money,

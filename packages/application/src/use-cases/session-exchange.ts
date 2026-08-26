@@ -72,7 +72,7 @@ export interface SessionExchangeServices {
   readonly proofVerifier: SessionProofVerifier;
   readonly identityStore: SessionIdentityStore;
   readonly tokenMinter: SessionTokenMinter;
-  readonly productReadiness?: {
+  readonly productReadiness: {
     readonly isReady: (accountId: string) => Effect.Effect<boolean, unknown>;
   };
 }
@@ -186,12 +186,9 @@ export const exchangeSession = Effect.fn("exchangeSession")(function* (
   if (account === null || !validCanonicalUserId(account.canonicalUserId)) {
     return yield* Effect.fail(new AuthError({ message: "Authentication failed" }));
   }
-  const productReady =
-    services.productReadiness === undefined
-      ? true
-      : yield* services.productReadiness
-          .isReady(account.canonicalUserId)
-          .pipe(Effect.mapError(safeFailure));
+  const productReady = yield* services.productReadiness
+    .isReady(account.canonicalUserId)
+    .pipe(Effect.mapError(safeFailure));
   if (!productReady) {
     return yield* Effect.fail(new AuthError({ message: "Wallet activation required" }));
   }

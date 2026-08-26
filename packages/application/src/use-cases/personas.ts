@@ -7,9 +7,11 @@ import {
   NotFound,
   type PersonaEvmWalletAssignmentV1,
   type PersonaEvmWalletPreparationV1,
+  type PersonaRetirementV1,
   type PreparePersonaEvmWallet,
   type PrivatePersonaV1,
   RateLimited,
+  type RetirePersona,
 } from "@pirate/contracts";
 import { Data, Effect, type Schema } from "effect";
 
@@ -26,6 +28,9 @@ export type PreparePersonaEvmWalletBody = Schema.Schema.Type<
 >;
 export type ConfirmPersonaEvmWalletBody = Schema.Schema.Type<
   NonNullable<(typeof ConfirmPersonaEvmWallet.request)["body"]>
+>;
+export type RetirePersonaBody = Schema.Schema.Type<
+  NonNullable<(typeof RetirePersona.request)["body"]>
 >;
 
 export type PersonaCreateIntent = Readonly<{
@@ -117,6 +122,12 @@ export interface PersonaWalletStoreService extends Pick<PersonaStoreService, "fi
     readonly personaId: string;
     readonly attestation: EmbeddedEvmWalletAttestation;
   }) => Effect.Effect<PersonaWalletAssignment, PersonaWalletStoreConflict | unknown>;
+  /** Atomically retires a public persona or cancels a pending one and tombstones its index. */
+  readonly retire: (input: {
+    readonly accountId: string;
+    readonly personaId: string;
+    readonly idempotencyKey: string;
+  }) => Effect.Effect<PersonaRetirementV1 | null, PersonaWalletStoreConflict | unknown>;
 }
 
 export interface PersonaWalletServices {
@@ -295,4 +306,26 @@ export const confirmPersonaEvmWallet = Effect.fn("confirmPersonaEvmWallet")(func
       attestation,
     })
     .pipe(Effect.mapError(walletStoreFailure));
+});
+
+export const retirePersona = Effect.fn("retirePersona")(function* (
+  input: Readonly<{
+    accountId: string;
+    personaId: string;
+    body: RetirePersonaBody;
+  }>,
+  services: Pick<PersonaWalletServices, "store">,
+): Effect.fn.Return<PersonaRetirementV1, AuthError | Conflict | InternalError | NotFound> {
+  if (!usableId(input.accountId) || !usableId(input.personaId)) {
+    return yield* new AuthError({ message: "Authentication failed" });
+  }
+  const result = yield* services.store
+    .retire({
+      accountId: input.accountId,
+      personaId: input.personaId,
+      idempotencyKey: input.body.idempotency_key,
+    })
+    .pipe(Effect.mapError(walletStoreFailure));
+  if (result === null) return yield* new NotFound({ message: "Persona not found" });
+  return result;
 });

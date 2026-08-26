@@ -50,6 +50,7 @@ describe("identity registration use case", () => {
     const services: IdentityRegistrationServices = {
       candidates: { next: () => Effect.succeed(candidate("one")) },
       store: {
+        getFirstPersonaWalletPreparation: () => Effect.succeed(null),
         registerCredential: (input) => {
           seenAccounts.push(input.account);
           return Effect.succeed({
@@ -96,6 +97,7 @@ describe("identity registration use case", () => {
             },
           },
           store: {
+            getFirstPersonaWalletPreparation: () => Effect.succeed(null),
             registerCredential: () => {
               storeCalls += 1;
               return Effect.succeed({ kind: "candidate_collision", field: "handle" });
@@ -119,6 +121,7 @@ describe("identity registration use case", () => {
         {
           candidates: { next: () => Effect.succeed(candidate("tombstone")) },
           store: {
+            getFirstPersonaWalletPreparation: () => Effect.succeed(null),
             registerCredential: () => {
               tombstoneCalls += 1;
               return Effect.succeed({ kind: "tombstoned" });
@@ -139,6 +142,7 @@ describe("identity registration use case", () => {
             next: () => Effect.succeed({ ...candidate("invalid"), handleLabel: "admin.pirate" }),
           },
           store: {
+            getFirstPersonaWalletPreparation: () => Effect.succeed(null),
             registerCredential: () => {
               invalidStoreCalls += 1;
               return Effect.succeed({
@@ -165,6 +169,7 @@ describe("identity registration use case", () => {
         {
           candidates: { next: () => Effect.succeed(candidate("inconsistent")) },
           store: {
+            getFirstPersonaWalletPreparation: () => Effect.succeed(null),
             registerCredential: () => {
               storeCalls += 1;
               return Effect.fail(

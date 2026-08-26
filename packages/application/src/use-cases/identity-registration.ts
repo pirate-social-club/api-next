@@ -44,7 +44,7 @@ export interface IdentityRegistrationStore {
     readonly userId: string;
     readonly account: IdentityAccountDocument;
   }) => Effect.Effect<IdentityRegistrationStoreOutcome, IdentityRegistrationStoreFailure>;
-  readonly getFirstPersonaWalletPreparation?: (
+  readonly getFirstPersonaWalletPreparation: (
     accountId: string,
   ) => Effect.Effect<PersonaWalletPreparation | null, IdentityRegistrationStoreFailure>;
 }
@@ -214,12 +214,9 @@ export const registerIdentity = Effect.fn("registerIdentity")(function* (
       .pipe(Effect.mapError((error) => new IdentityRegistrationFailed({ reason: error.reason })));
 
     if (outcome.kind === "created" || outcome.kind === "already_registered") {
-      const walletSetup =
-        services.store.getFirstPersonaWalletPreparation === undefined
-          ? null
-          : yield* services.store
-              .getFirstPersonaWalletPreparation(outcome.canonicalUserId)
-              .pipe(Effect.mapError(() => new IdentityRegistrationFailed({ reason: "storage" })));
+      const walletSetup = yield* services.store
+        .getFirstPersonaWalletPreparation(outcome.canonicalUserId)
+        .pipe(Effect.mapError(() => new IdentityRegistrationFailed({ reason: "storage" })));
       return {
         status: outcome.kind,
         canonicalUserId: outcome.canonicalUserId,

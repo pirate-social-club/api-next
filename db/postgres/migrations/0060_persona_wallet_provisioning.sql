@@ -54,6 +54,22 @@ CREATE TABLE persona_pending_first_handles (
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
+CREATE TABLE persona_wallet_preparation_replays (
+  account_id TEXT NOT NULL REFERENCES users (user_id),
+  idempotency_key TEXT NOT NULL,
+  persona_id TEXT NOT NULL REFERENCES personas (persona_id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (account_id, idempotency_key)
+);
+
+CREATE TABLE persona_retirement_replays (
+  account_id TEXT NOT NULL REFERENCES users (user_id),
+  idempotency_key TEXT NOT NULL,
+  persona_id TEXT NOT NULL REFERENCES personas (persona_id),
+  retired_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (account_id, idempotency_key)
+);
+
 CREATE FUNCTION validate_persona_wallet_activation() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -61,14 +77,16 @@ DECLARE
   target_status TEXT;
   active_wallets BIGINT;
   pending_wallets BIGINT;
+  tombstoned_wallets BIGINT;
   profiles BIGINT;
   pending_profiles BIGINT;
 BEGIN
   SELECT status INTO target_status FROM personas WHERE persona_id = target_persona_id;
   IF target_status IS NULL THEN RETURN NULL; END IF;
   SELECT count(*) FILTER (WHERE status = 'active'),
-         count(*) FILTER (WHERE status = 'pending')
-    INTO active_wallets, pending_wallets
+         count(*) FILTER (WHERE status = 'pending'),
+         count(*) FILTER (WHERE status = 'tombstoned')
+    INTO active_wallets, pending_wallets, tombstoned_wallets
     FROM persona_wallet_assignments
    WHERE persona_id = target_persona_id AND chain_account_kind = 'evm';
   SELECT count(*) INTO profiles FROM persona_profiles WHERE persona_id = target_persona_id;
@@ -83,6 +101,11 @@ BEGIN
   IF target_status = 'pending_wallet'
      AND (pending_wallets <> 1 OR active_wallets <> 0 OR profiles <> 0 OR pending_profiles <> 1) THEN
     RAISE EXCEPTION 'pending persona requires one reserved wallet and private profile draft'
+      USING ERRCODE = '23514', CONSTRAINT = 'persona_wallet_activation_invariant';
+  END IF;
+  IF target_status = 'retired'
+     AND (active_wallets <> 0 OR pending_wallets <> 0 OR tombstoned_wallets <> 1) THEN
+    RAISE EXCEPTION 'retired persona requires one tombstoned wallet assignment'
       USING ERRCODE = '23514', CONSTRAINT = 'persona_wallet_activation_invariant';
   END IF;
   RETURN NULL;

@@ -11974,14 +11974,16 @@ DECLARE
   target_status TEXT;
   active_wallets BIGINT;
   pending_wallets BIGINT;
+  tombstoned_wallets BIGINT;
   profiles BIGINT;
   pending_profiles BIGINT;
 BEGIN
   SELECT status INTO target_status FROM personas WHERE persona_id = target_persona_id;
   IF target_status IS NULL THEN RETURN NULL; END IF;
   SELECT count(*) FILTER (WHERE status = 'active'),
-         count(*) FILTER (WHERE status = 'pending')
-    INTO active_wallets, pending_wallets
+         count(*) FILTER (WHERE status = 'pending'),
+         count(*) FILTER (WHERE status = 'tombstoned')
+    INTO active_wallets, pending_wallets, tombstoned_wallets
     FROM persona_wallet_assignments
    WHERE persona_id = target_persona_id AND chain_account_kind = 'evm';
   SELECT count(*) INTO profiles FROM persona_profiles WHERE persona_id = target_persona_id;
@@ -11996,6 +11998,11 @@ BEGIN
   IF target_status = 'pending_wallet'
      AND (pending_wallets <> 1 OR active_wallets <> 0 OR profiles <> 0 OR pending_profiles <> 1) THEN
     RAISE EXCEPTION 'pending persona requires one reserved wallet and private profile draft'
+      USING ERRCODE = '23514', CONSTRAINT = 'persona_wallet_activation_invariant';
+  END IF;
+  IF target_status = 'retired'
+     AND (active_wallets <> 0 OR pending_wallets <> 0 OR tombstoned_wallets <> 1) THEN
+    RAISE EXCEPTION 'retired persona requires one tombstoned wallet assignment'
       USING ERRCODE = '23514', CONSTRAINT = 'persona_wallet_activation_invariant';
   END IF;
   RETURN NULL;
@@ -16772,6 +16779,13 @@ CREATE TABLE persona_profiles (
     CONSTRAINT persona_profiles_time_order CHECK ((updated_at >= created_at))
 );
 
+CREATE TABLE persona_retirement_replays (
+    account_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    persona_id text NOT NULL,
+    retired_at timestamp with time zone NOT NULL
+);
+
 CREATE TABLE persona_role_presentations (
     community_id text NOT NULL,
     account_id text NOT NULL,
@@ -16804,6 +16818,13 @@ CREATE TABLE persona_wallet_assignments (
     CONSTRAINT persona_wallet_assignments_state_shape CHECK ((((status = 'pending'::text) AND (address IS NULL) AND (assigned_at IS NULL) AND (tombstoned_at IS NULL)) OR ((status = 'active'::text) AND (address IS NOT NULL) AND (assigned_at IS NOT NULL) AND (tombstoned_at IS NULL)) OR ((status = 'tombstoned'::text) AND (tombstoned_at IS NOT NULL)))),
     CONSTRAINT persona_wallet_assignments_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'active'::text, 'tombstoned'::text]))),
     CONSTRAINT persona_wallet_assignments_time_order CHECK (((updated_at >= created_at) AND ((assigned_at IS NULL) OR (assigned_at >= created_at)) AND ((tombstoned_at IS NULL) OR (tombstoned_at >= created_at))))
+);
+
+CREATE TABLE persona_wallet_preparation_replays (
+    account_id text NOT NULL,
+    idempotency_key text NOT NULL,
+    persona_id text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
 );
 
 CREATE TABLE personas (
@@ -19122,6 +19143,9 @@ ALTER TABLE ONLY persona_pending_profiles
 ALTER TABLE ONLY persona_profiles
     ADD CONSTRAINT persona_profiles_pkey PRIMARY KEY (persona_id);
 
+ALTER TABLE ONLY persona_retirement_replays
+    ADD CONSTRAINT persona_retirement_replays_pkey PRIMARY KEY (account_id, idempotency_key);
+
 ALTER TABLE ONLY persona_role_presentations
     ADD CONSTRAINT persona_role_presentations_pkey PRIMARY KEY (community_id, account_id);
 
@@ -19133,6 +19157,9 @@ ALTER TABLE ONLY persona_wallet_assignments
 
 ALTER TABLE ONLY persona_wallet_assignments
     ADD CONSTRAINT persona_wallet_assignments_reservation_replay_unique UNIQUE (account_id, persona_id, chain_account_kind, reservation_idempotency_key);
+
+ALTER TABLE ONLY persona_wallet_preparation_replays
+    ADD CONSTRAINT persona_wallet_preparation_replays_pkey PRIMARY KEY (account_id, idempotency_key);
 
 ALTER TABLE ONLY personas
     ADD CONSTRAINT personas_account_identity_unique UNIQUE (account_id, persona_id);
@@ -21890,6 +21917,12 @@ ALTER TABLE ONLY persona_pending_profiles
 ALTER TABLE ONLY persona_profiles
     ADD CONSTRAINT persona_profiles_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
 
+ALTER TABLE ONLY persona_retirement_replays
+    ADD CONSTRAINT persona_retirement_replays_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY persona_retirement_replays
+    ADD CONSTRAINT persona_retirement_replays_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
+
 ALTER TABLE ONLY persona_role_presentations
     ADD CONSTRAINT persona_role_presentations_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
 
@@ -21901,6 +21934,12 @@ ALTER TABLE ONLY persona_role_presentations
 
 ALTER TABLE ONLY persona_wallet_assignments
     ADD CONSTRAINT persona_wallet_assignments_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY persona_wallet_preparation_replays
+    ADD CONSTRAINT persona_wallet_preparation_replays_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);
+
+ALTER TABLE ONLY persona_wallet_preparation_replays
+    ADD CONSTRAINT persona_wallet_preparation_replays_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
 
 ALTER TABLE ONLY personas
     ADD CONSTRAINT personas_account_id_fkey FOREIGN KEY (account_id) REFERENCES users(user_id);

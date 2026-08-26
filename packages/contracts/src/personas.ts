@@ -130,6 +130,17 @@ const PreparePersonaEvmWalletRequestV1 = Schema.Struct({
   idempotency_key: boundedIdentifier("idempotency key"),
 });
 
+const RetirePersonaRequestV1 = Schema.Struct({
+  idempotency_key: boundedIdentifier("idempotency key"),
+});
+
+export const PersonaRetirementV1 = Schema.Struct({
+  persona_id: PersonaIdV1,
+  status: Schema.Literal("retired"),
+  retired_at: Schema.String,
+});
+export type PersonaRetirementV1 = Schema.Schema.Type<typeof PersonaRetirementV1>;
+
 const proofToken = (label: string) =>
   Schema.String.check(
     Schema.makeFilter((value) =>
@@ -166,13 +177,24 @@ export const CreatePersona = endpoint({
   errors: [AuthError, BadRequest, Conflict, InternalError, RateLimited],
 });
 
-/** Reserve one append-only provider HD index before the client creates it. */
+/** Retrieve the append-only provider HD index reserved by persona creation. */
 export const PreparePersonaEvmWallet = endpoint({
   method: "POST",
   path: "/personas/:personaId/wallets/evm/prepare",
   auth: Auth.userOrAdmin(),
   request: { path: PersonaPathV1, body: PreparePersonaEvmWalletRequestV1 },
   response: PersonaEvmWalletPreparationV1,
+  successStatus: 200,
+  errors: [AuthError, BadRequest, Conflict, InternalError, NotFound],
+});
+
+/** Retire an active persona or cancel a private pending persona without recycling its index. */
+export const RetirePersona = endpoint({
+  method: "POST",
+  path: "/personas/:personaId/retire",
+  auth: Auth.userOrAdmin(),
+  request: { path: PersonaPathV1, body: RetirePersonaRequestV1 },
+  response: PersonaRetirementV1,
   successStatus: 200,
   errors: [AuthError, BadRequest, Conflict, InternalError, NotFound],
 });

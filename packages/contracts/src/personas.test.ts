@@ -10,6 +10,7 @@ import {
   PreparePersonaEvmWallet,
   PrivatePersonaV1,
   PublicPersonaV1,
+  RetirePersona,
   schemaToOpenApi,
 } from "./index.ts";
 
@@ -126,5 +127,13 @@ describe("account-owned persona contracts", () => {
     expect(Object.keys(request.properties ?? {})).toEqual(["proof"]);
     expect(JSON.stringify(request)).not.toContain("wallet_address");
     expect(JSON.stringify(request)).not.toContain("hd_wallet_index");
+  });
+
+  test("retires or cancels a persona through an owner-private idempotent action", () => {
+    expect(RetirePersona.path).toBe("/personas/:personaId/retire");
+    expect(RetirePersona.auth).toEqual({ policy: { kind: "userOrAdmin" } });
+    const request = schemaToOpenApi(RetirePersona.request?.body);
+    expect(request.required).toEqual(["idempotency_key"]);
+    expect(Object.keys(request.properties ?? {})).toEqual(["idempotency_key"]);
   });
 });
