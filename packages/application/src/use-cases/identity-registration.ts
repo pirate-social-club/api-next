@@ -1,5 +1,6 @@
 import { Data, Effect } from "effect";
 import type { IdentityAccountDocument } from "./identity-account.ts";
+import type { PersonaWalletPreparation } from "./personas.ts";
 
 export const MAX_IDENTITY_REGISTRATION_ATTEMPTS = 5;
 
@@ -43,6 +44,9 @@ export interface IdentityRegistrationStore {
     readonly userId: string;
     readonly account: IdentityAccountDocument;
   }) => Effect.Effect<IdentityRegistrationStoreOutcome, IdentityRegistrationStoreFailure>;
+  readonly getFirstPersonaWalletPreparation?: (
+    accountId: string,
+  ) => Effect.Effect<PersonaWalletPreparation | null, IdentityRegistrationStoreFailure>;
 }
 
 export interface IdentityRegistrationCandidateSource {
@@ -183,6 +187,7 @@ export const registerIdentity = Effect.fn("registerIdentity")(function* (
     readonly canonicalUserId: string;
     /** The account document returned by the same transactional registration seam. */
     readonly account: IdentityAccountDocument;
+    readonly walletSetup?: PersonaWalletPreparation | null;
   },
   IdentityRegistrationFailed | IdentityRegistrationExhausted | IdentityCredentialTombstoned
 > {
@@ -209,10 +214,17 @@ export const registerIdentity = Effect.fn("registerIdentity")(function* (
       .pipe(Effect.mapError((error) => new IdentityRegistrationFailed({ reason: error.reason })));
 
     if (outcome.kind === "created" || outcome.kind === "already_registered") {
+      const walletSetup =
+        services.store.getFirstPersonaWalletPreparation === undefined
+          ? null
+          : yield* services.store
+              .getFirstPersonaWalletPreparation(outcome.canonicalUserId)
+              .pipe(Effect.mapError(() => new IdentityRegistrationFailed({ reason: "storage" })));
       return {
         status: outcome.kind,
         canonicalUserId: outcome.canonicalUserId,
         account: outcome.account,
+        walletSetup,
       };
     }
     if (outcome.kind === "tombstoned") return yield* new IdentityCredentialTombstoned();

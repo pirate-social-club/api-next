@@ -70,6 +70,7 @@ describe("identity registration use case", () => {
       status: "created",
       canonicalUserId: "user-one",
       account: makeUnverifiedIdentityAccount(candidate("one")),
+      walletSetup: null,
     });
     expect(seenAccounts).toEqual([makeUnverifiedIdentityAccount(candidate("one"))]);
     expect(seenAccounts[0]).toMatchObject({

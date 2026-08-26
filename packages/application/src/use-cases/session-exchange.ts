@@ -72,6 +72,9 @@ export interface SessionExchangeServices {
   readonly proofVerifier: SessionProofVerifier;
   readonly identityStore: SessionIdentityStore;
   readonly tokenMinter: SessionTokenMinter;
+  readonly productReadiness?: {
+    readonly isReady: (accountId: string) => Effect.Effect<boolean, unknown>;
+  };
 }
 
 export function makeSessionIdentityStore(
@@ -99,8 +102,8 @@ export function makeSessionIdentityStore(
 export type SessionExchangeResponse = Schema.Schema.Type<typeof SessionExchange.response>;
 
 /** Internal handoff: the token is consumed only by the HTTP cookie writer. */
-export type SessionExchangeHandlerResult = {
-  readonly response: SessionExchangeResponse;
+export type SessionExchangeHandlerResult<Response = SessionExchangeResponse> = {
+  readonly response: Response;
   readonly sessionToken: string;
   readonly sessionTtlSeconds: number;
 };
@@ -182,6 +185,15 @@ export const exchangeSession = Effect.fn("exchangeSession")(function* (
     .pipe(Effect.mapError(safeFailure));
   if (account === null || !validCanonicalUserId(account.canonicalUserId)) {
     return yield* Effect.fail(new AuthError({ message: "Authentication failed" }));
+  }
+  const productReady =
+    services.productReadiness === undefined
+      ? true
+      : yield* services.productReadiness
+          .isReady(account.canonicalUserId)
+          .pipe(Effect.mapError(safeFailure));
+  if (!productReady) {
+    return yield* Effect.fail(new AuthError({ message: "Wallet activation required" }));
   }
 
   const sessionTtlSeconds = services.tokenMinter.ttlSeconds ?? 3_600;

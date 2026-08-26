@@ -44,7 +44,13 @@ function services(observed: unknown[]): PersonaHandlerServices {
     },
     create: (input: Parameters<PersonaHandlerServices["personas"]["store"]["create"]>[0]) => {
       observed.push({ create: input });
-      return Effect.succeed(input.persona);
+      return Effect.succeed({
+        persona_id: input.personaId,
+        chain_account_kind: "evm",
+        hd_wallet_index: 2,
+        status: "pending",
+        assignment: null,
+      } as const);
     },
   };
   const walletStore: PersonaWalletServices["store"] = {
@@ -114,7 +120,10 @@ describe("persona HTTP handlers", () => {
         },
       }),
     );
-    expect(created).toMatchObject({ body: persona, status: 201 });
+    expect(created).toMatchObject({
+      body: { persona_id: persona.persona_id, status: "pending", hd_wallet_index: 2 },
+      status: 201,
+    });
     expect(observed).toContainEqual({ list: "account_handler" });
     expect(observed).toContainEqual({
       create: expect.objectContaining({

@@ -41,7 +41,14 @@ const storeWith = (overrides: Partial<PersonaStoreService> = {}): PersonaStoreSe
         ? activePersona
         : null,
     ),
-  create: ({ persona }) => Effect.succeed(persona),
+  create: ({ personaId }) =>
+    Effect.succeed({
+      persona_id: personaId,
+      chain_account_kind: "evm",
+      hd_wallet_index: 2,
+      status: "pending",
+      assignment: null,
+    }),
   ...overrides,
 });
 
@@ -87,7 +94,7 @@ const walletServicesWith = (store: PersonaWalletStoreService) => ({
 });
 
 describe("account-owned persona use cases", () => {
-  test("creates an active profile without eagerly inventing a wallet", async () => {
+  test("creates a private pending persona with its reserved wallet index", async () => {
     let capturedAccountId = "";
     let capturedKey = "";
     let capturedIntent: unknown;
@@ -103,11 +110,17 @@ describe("account-owned persona use cases", () => {
         },
         {
           store: storeWith({
-            create: ({ accountId, idempotencyKey, intent, persona }) => {
+            create: ({ accountId, idempotencyKey, intent, personaId }) => {
               capturedAccountId = accountId;
               capturedKey = idempotencyKey;
               capturedIntent = intent;
-              return Effect.succeed(persona);
+              return Effect.succeed({
+                persona_id: personaId,
+                chain_account_kind: "evm",
+                hd_wallet_index: 2,
+                status: "pending",
+                assignment: null,
+              });
             },
           }),
           nextPersonaId: () => Effect.succeed("persona_squirtle"),
@@ -125,9 +138,9 @@ describe("account-owned persona use cases", () => {
     });
     expect(persona).toMatchObject({
       persona_id: "persona_squirtle",
-      status: "active",
-      wallet_set: { evm: null },
-      profile: { display_name: "Squirtle", revision: 1 },
+      status: "pending",
+      hd_wallet_index: 2,
+      assignment: null,
     });
   });
 
@@ -226,6 +239,7 @@ describe("account-owned persona use cases", () => {
 
     const foreign = walletStoreWith({
       findOwned: () => Effect.succeed(null),
+      getEvmPreparation: () => Effect.succeed(null),
       reserveEvm: () => {
         reservationCount += 1;
         return Effect.succeed(pendingPreparation);

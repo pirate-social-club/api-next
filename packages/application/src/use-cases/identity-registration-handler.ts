@@ -54,6 +54,9 @@ type RegistrationRequest = {
   readonly privy_access_token: string;
 };
 
+type RegistrationResponse = Schema.Schema.Type<typeof RegisterIdentity.response>;
+export const PERSONA_WALLET_SETUP_SESSION_SCOPE = "persona-wallet-setup-v1";
+
 const requestBodySchema = (() => {
   const request = RegisterIdentity.request;
   if (request === undefined || request.body === undefined) {
@@ -120,7 +123,7 @@ const accountResponse = (account: SessionAccount): SessionExchangeHandlerResult[
 export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(function* (
   input: { readonly body: unknown; readonly edgeClientIp?: string },
   services: IdentityRegistrationHandlerServices,
-): Effect.fn.Return<SessionExchangeHandlerResult, RegistrationFailure> {
+): Effect.fn.Return<SessionExchangeHandlerResult<RegistrationResponse>, RegistrationFailure> {
   if (input.edgeClientIp === undefined || input.edgeClientIp.trim() === "") {
     return yield* new BadRequest({ message: "Registration requires trusted edge metadata" });
   }
@@ -187,10 +190,11 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
   if (!validSessionTtl(ttlSeconds) || !validScope(services.tokenMinter.scope)) {
     return yield* new InternalError({ message: "Registration failed" });
   }
+  const walletSetup = registration.walletSetup ?? null;
   const sessionToken = yield* services.tokenMinter
     .mint({
       subject: account.canonicalUserId,
-      scope: services.tokenMinter.scope,
+      scope: walletSetup === null ? services.tokenMinter.scope : PERSONA_WALLET_SETUP_SESSION_SCOPE,
       ...(verified.walletAddress === undefined || verified.walletAddress === null
         ? {}
         : { walletAddress: verified.walletAddress }),
@@ -201,7 +205,12 @@ export const registerIdentityRequest = Effect.fn("registerIdentityRequest")(func
   }
 
   return {
-    response: accountResponse(account),
+    response: (walletSetup === null
+      ? accountResponse(account)
+      : {
+          status: "wallet_setup_required",
+          wallet: walletSetup,
+        }) as RegistrationResponse,
     sessionToken,
     sessionTtlSeconds: ttlSeconds,
   };

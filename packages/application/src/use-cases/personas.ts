@@ -9,6 +9,7 @@ import {
   type PersonaEvmWalletPreparationV1,
   type PreparePersonaEvmWallet,
   type PrivatePersonaV1,
+  RateLimited,
 } from "@pirate/contracts";
 import { Data, Effect, type Schema } from "effect";
 
@@ -34,7 +35,11 @@ export type PersonaCreateIntent = Readonly<{
 }>;
 
 export class PersonaStoreConflict extends Data.TaggedError("PersonaStoreConflict")<{
-  readonly reason: "idempotency-mismatch" | "identifier-collision";
+  readonly reason: "idempotency-mismatch" | "identifier-collision" | "slot-limit";
+}> {}
+
+export class PersonaStoreRateLimited extends Data.TaggedError("PersonaStoreRateLimited")<{
+  readonly retryAfterSeconds: number;
 }> {}
 
 export interface PersonaStoreService {
@@ -49,8 +54,12 @@ export interface PersonaStoreService {
     readonly idempotencyKey: string;
     /** Replay comparison excludes generated ids and timestamps. */
     readonly intent: PersonaCreateIntent;
-    readonly persona: PersonaRecord;
-  }) => Effect.Effect<PersonaRecord, PersonaStoreConflict | unknown>;
+    readonly personaId: string;
+    readonly createdAt: string;
+  }) => Effect.Effect<
+    PersonaWalletPreparation,
+    PersonaStoreConflict | PersonaStoreRateLimited | unknown
+  >;
 }
 
 export interface PersonaServices {
@@ -160,7 +169,7 @@ export const listMyPersonas = Effect.fn("listMyPersonas")(function* (
 export const createPersona = Effect.fn("createPersona")(function* (
   input: Readonly<{ accountId: string; body: PersonaCreateBody }>,
   services: PersonaServices,
-): Effect.fn.Return<PersonaRecord, AuthError | Conflict | InternalError> {
+): Effect.fn.Return<PersonaWalletPreparation, AuthError | Conflict | InternalError | RateLimited> {
   if (!usableId(input.accountId)) {
     return yield* new AuthError({ message: "Authentication failed" });
   }
@@ -175,25 +184,6 @@ export const createPersona = Effect.fn("createPersona")(function* (
     return yield* new InternalError({ message: "Persona creation failed" });
   }
 
-  const persona: PersonaRecord = {
-    persona_id: personaId,
-    object: "persona",
-    status: "active",
-    profile: {
-      persona_id: personaId,
-      object: "persona_profile",
-      revision: 1,
-      display_name: input.body.display_name ?? null,
-      avatar_ref: null,
-      cover_ref: null,
-      bio: input.body.bio ?? null,
-      preferred_locale: input.body.preferred_locale ?? null,
-      primary_public_handle: null,
-    },
-    wallet_set: { evm: null },
-    created_at: createdAt,
-    retired_at: null,
-  };
   const intent: PersonaCreateIntent = {
     displayName: input.body.display_name ?? null,
     bio: input.body.bio ?? null,
@@ -205,19 +195,22 @@ export const createPersona = Effect.fn("createPersona")(function* (
       accountId: input.accountId,
       idempotencyKey: input.body.idempotency_key,
       intent,
-      persona,
+      personaId,
+      createdAt,
     })
     .pipe(
       Effect.mapError((error) =>
-        error instanceof PersonaStoreConflict
-          ? new Conflict({ message: "Persona creation conflicts with an existing request" })
-          : new InternalError({ message: "Persona creation failed" }),
+        error instanceof PersonaStoreRateLimited
+          ? new RateLimited({
+              message: "Persona creation rate limit exceeded",
+              retry_after_seconds: error.retryAfterSeconds,
+            })
+          : error instanceof PersonaStoreConflict
+            ? new Conflict({ message: "Persona creation conflicts with an existing request" })
+            : new InternalError({ message: "Persona creation failed" }),
       ),
     );
 });
-
-const personaNotFound = (error: PersonaUnavailable | InternalError): NotFound | InternalError =>
-  error instanceof PersonaUnavailable ? new NotFound({ message: "Persona not found" }) : error;
 
 const walletStoreFailure = (error: unknown): Conflict | InternalError =>
   error instanceof PersonaWalletStoreConflict
@@ -232,7 +225,10 @@ export const preparePersonaEvmWallet = Effect.fn("preparePersonaEvmWallet")(func
   }>,
   services: PersonaWalletServices,
 ): Effect.fn.Return<PersonaWalletPreparation, Conflict | InternalError | NotFound> {
-  yield* requireActiveOwnedPersona(input, services.store).pipe(Effect.mapError(personaNotFound));
+  const existing = yield* services.store
+    .getEvmPreparation(input)
+    .pipe(Effect.mapError(() => new InternalError({ message: "Persona wallet lookup failed" })));
+  if (existing === null) return yield* new NotFound({ message: "Persona not found" });
   return yield* services.store
     .reserveEvm({
       accountId: input.accountId,
@@ -260,7 +256,6 @@ export const confirmPersonaEvmWallet = Effect.fn("confirmPersonaEvmWallet")(func
   }>,
   services: PersonaWalletServices,
 ): Effect.fn.Return<PersonaWalletAssignment, AuthError | Conflict | InternalError | NotFound> {
-  yield* requireActiveOwnedPersona(input, services.store).pipe(Effect.mapError(personaNotFound));
   const preparation = yield* services.store
     .getEvmPreparation(input)
     .pipe(Effect.mapError(() => new InternalError({ message: "Persona wallet lookup failed" })));

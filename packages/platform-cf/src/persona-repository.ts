@@ -4,6 +4,7 @@ import {
   type ControlPlaneError,
   type ControlPlaneTransaction,
   PersonaStoreConflict,
+  PersonaStoreRateLimited,
   type PersonaStoreService,
   PersonaWalletStoreConflict,
   type PersonaWalletStoreService,
@@ -148,13 +149,15 @@ const readPersona = (db: ControlPlaneTransaction, accountId: string, personaId: 
   });
 
 const mapStorageConflict = (
-  error: ControlPlaneError | PersonaStoreConflict,
-): PersonaStoreConflict | ControlPlaneError =>
+  error: ControlPlaneError | PersonaStoreConflict | PersonaStoreRateLimited,
+): PersonaStoreConflict | PersonaStoreRateLimited | ControlPlaneError =>
   error instanceof PersonaStoreConflict
     ? error
-    : error._tag === "ControlPlaneStatementFailed" && error.sqlState === "23505"
-      ? new PersonaStoreConflict({ reason: "identifier-collision" })
-      : error;
+    : error instanceof PersonaStoreRateLimited
+      ? error
+      : error._tag === "ControlPlaneStatementFailed" && error.sqlState === "23505"
+        ? new PersonaStoreConflict({ reason: "identifier-collision" })
+        : error;
 
 export function makeControlPlanePersonaRepository() {
   return {
@@ -185,7 +188,8 @@ export function makeControlPlanePersonaRepository() {
       accountId,
       idempotencyKey,
       intent,
-      persona,
+      personaId,
+      createdAt,
     }: Parameters<PersonaStoreService["create"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -214,34 +218,108 @@ export function makeControlPlanePersonaRepository() {
                 if (row.request_hash !== requestHash || typeof row.persona_id !== "string") {
                   return yield* new PersonaStoreConflict({ reason: "idempotency-mismatch" });
                 }
-                const existing = yield* readPersona(transaction, accountId, row.persona_id);
+                const existing = yield* transaction.execute<WalletRow>({
+                  label: "personas.create.replay-wallet",
+                  text: `${walletSelect} FOR UPDATE`,
+                  values: [accountId, row.persona_id],
+                  readonly: false,
+                });
                 if (existing.rows.length !== 1)
-                  return yield* Effect.die("persona replay is missing");
-                return yield* Effect.sync(() => personaFromRow(existing.rows[0] as PersonaRow));
+                  return yield* Effect.die("persona replay wallet is missing");
+                return yield* Effect.sync(() => preparationFromRow(existing.rows[0] as WalletRow));
               }
               if (replay.rows.length !== 0) return yield* Effect.die("duplicate persona replay");
+
+              const capacity = yield* transaction.execute<{
+                slot_count: string;
+                recent_count: string;
+                retry_after_seconds: string | null;
+              }>({
+                label: "personas.create.capacity",
+                text: `SELECT count(*)::text AS slot_count,
+                              count(*) FILTER (
+                                WHERE NOT persona.is_first_persona
+                                  AND assignment.created_at > clock_timestamp() - interval '86400 seconds'
+                              )::text AS recent_count,
+                              CASE WHEN count(*) FILTER (
+                                WHERE NOT persona.is_first_persona
+                                  AND assignment.created_at > clock_timestamp() - interval '86400 seconds'
+                              ) >= 3 THEN ceil(extract(epoch FROM (
+                                min(assignment.created_at) FILTER (
+                                  WHERE NOT persona.is_first_persona
+                                    AND assignment.created_at > clock_timestamp() - interval '86400 seconds'
+                                ) + interval '86400 seconds' - clock_timestamp()
+                              )))::bigint::text ELSE NULL END AS retry_after_seconds
+                         FROM persona_wallet_assignments AS assignment
+                         JOIN personas AS persona USING (persona_id)
+                        WHERE assignment.account_id=$1
+                          AND assignment.chain_account_kind='evm'`,
+                values: [accountId],
+                readonly: false,
+              });
+              const capacityRow = capacity.rows[0];
+              if (numberValue(capacityRow?.slot_count) >= 10) {
+                return yield* new PersonaStoreConflict({ reason: "slot-limit" });
+              }
+              if (numberValue(capacityRow?.recent_count) >= 3) {
+                const retryAfterSeconds = Math.max(
+                  1,
+                  numberValue(capacityRow?.retry_after_seconds),
+                );
+                return yield* new PersonaStoreRateLimited({ retryAfterSeconds });
+              }
+
+              const next = yield* transaction.execute<{ hd_wallet_index: string }>({
+                label: "personas.create.allocate-index",
+                text: `SELECT (COALESCE(max(hd_wallet_index), -1) + 1)::text AS hd_wallet_index
+                         FROM persona_wallet_assignments
+                        WHERE account_id=$1 AND chain_account_kind='evm'`,
+                values: [accountId],
+                readonly: false,
+              });
+              const hdWalletIndex = numberValue(next.rows[0]?.hd_wallet_index);
 
               yield* transaction.execute({
                 label: "personas.create.persona",
                 text: `INSERT INTO personas (
                        persona_id, account_id, status, is_first_persona,
                        created_at, retired_at
-                     ) VALUES ($1,$2,'active',false,$3::timestamptz,NULL)`,
-                values: [persona.persona_id, accountId, persona.created_at],
+                     ) VALUES ($1,$2,'pending_wallet',false,$3::timestamptz,NULL)`,
+                values: [personaId, accountId, createdAt],
                 readonly: false,
               });
               yield* transaction.execute({
-                label: "personas.create.profile",
-                text: `INSERT INTO persona_profiles (
-                       persona_id,revision,display_name,avatar_ref,cover_ref,bio,
-                       preferred_locale,created_at,updated_at
-                     ) VALUES ($1,1,$2,NULL,NULL,$3,$4,$5::timestamptz,$5::timestamptz)`,
+                label: "personas.create.pending-profile",
+                text: `INSERT INTO persona_pending_profiles (
+                       persona_id,display_name,avatar_ref,cover_ref,bio,
+                       preferred_locale,created_at
+                     ) VALUES ($1,$2,NULL,NULL,$3,$4,$5::timestamptz)`,
                 values: [
-                  persona.persona_id,
+                  personaId,
                   intent.displayName,
                   intent.bio,
                   intent.preferredLocale,
-                  persona.created_at,
+                  createdAt,
+                ],
+                readonly: false,
+              });
+              const assignmentId = `persona_wallet_${crypto.randomUUID().replaceAll("-", "")}`;
+              yield* transaction.execute({
+                label: "personas.create.wallet-reservation",
+                text: `INSERT INTO persona_wallet_assignments (
+                         assignment_id,persona_id,account_id,chain_account_kind,
+                         privy_wallet_id,hd_wallet_index,address,status,
+                         reservation_idempotency_key,assigned_at,tombstoned_at,
+                         created_at,updated_at
+                       ) VALUES ($1,$2,$3,'evm',NULL,$4,NULL,'pending',$5,NULL,NULL,
+                                 $6::timestamptz,$6::timestamptz)`,
+                values: [
+                  assignmentId,
+                  personaId,
+                  accountId,
+                  hdWalletIndex,
+                  idempotencyKey,
+                  createdAt,
                 ],
                 readonly: false,
               });
@@ -251,16 +329,16 @@ export function makeControlPlanePersonaRepository() {
                        account_id,endpoint_template,idempotency_key,request_hash,
                        persona_id,created_at
                      ) VALUES ($1,'/personas',$2,$3,$4,$5::timestamptz)`,
-                values: [
-                  accountId,
-                  idempotencyKey,
-                  requestHash,
-                  persona.persona_id,
-                  persona.created_at,
-                ],
+                values: [accountId, idempotencyKey, requestHash, personaId, createdAt],
                 readonly: false,
               });
-              return persona;
+              return {
+                persona_id: personaId,
+                chain_account_kind: "evm" as const,
+                hd_wallet_index: hdWalletIndex,
+                status: "pending" as const,
+                assignment: null,
+              };
             }),
           )
           .pipe(Effect.mapError(mapStorageConflict));
@@ -349,7 +427,6 @@ export function makeControlPlanePersonaWalletRepository() {
     reserveEvm: ({
       accountId,
       personaId,
-      idempotencyKey,
     }: Parameters<PersonaWalletStoreService["reserveEvm"]>[0]) =>
       Effect.gen(function* () {
         const db = yield* ControlPlaneDb;
@@ -365,7 +442,8 @@ export function makeControlPlanePersonaWalletRepository() {
               const owned = yield* transaction.execute({
                 label: "persona-wallets.reserve.authority",
                 text: `SELECT 1 FROM personas
-                      WHERE account_id=$1 AND persona_id=$2 AND status='active'
+                      WHERE account_id=$1 AND persona_id=$2
+                        AND status IN ('pending_wallet','active')
                       FOR UPDATE`,
                 values: [accountId, personaId],
                 readonly: false,
@@ -384,41 +462,11 @@ export function makeControlPlanePersonaWalletRepository() {
                 if (row.status === "active") {
                   return yield* Effect.sync(() => preparationFromRow(row));
                 }
-                if (row.reservation_idempotency_key !== idempotencyKey) {
-                  return yield* new PersonaWalletStoreConflict({ reason: "idempotency-mismatch" });
-                }
                 return yield* Effect.sync(() => preparationFromRow(row));
               }
               if (existing.rows.length !== 0)
                 return yield* Effect.die("duplicate live persona wallet");
-              const next = yield* transaction.execute<{ hd_wallet_index: string }>({
-                label: "persona-wallets.reserve.allocate-index",
-                text: `SELECT (COALESCE(max(hd_wallet_index), -1) + 1)::text AS hd_wallet_index
-                       FROM persona_wallet_assignments
-                      WHERE account_id=$1 AND chain_account_kind='evm'`,
-                values: [accountId],
-                readonly: false,
-              });
-              const hdWalletIndex = numberValue(next.rows[0]?.hd_wallet_index);
-              const inserted = yield* transaction.execute<WalletRow>({
-                label: "persona-wallets.reserve.insert",
-                text: `INSERT INTO persona_wallet_assignments (
-                       assignment_id,persona_id,account_id,chain_account_kind,
-                       privy_wallet_id,hd_wallet_index,address,status,
-                       reservation_idempotency_key,assigned_at,tombstoned_at
-                     ) VALUES ($1,$2,$3,'evm',NULL,$4,NULL,'pending',$5,NULL,NULL)
-                     RETURNING persona_id,status,hd_wallet_index,address,assigned_at,
-                               privy_wallet_id,reservation_idempotency_key`,
-                values: [
-                  `persona_wallet_${crypto.randomUUID().replaceAll("-", "")}`,
-                  personaId,
-                  accountId,
-                  hdWalletIndex,
-                  idempotencyKey,
-                ],
-                readonly: false,
-              });
-              return yield* Effect.sync(() => preparationFromRow(inserted.rows[0] as WalletRow));
+              return yield* new PersonaWalletStoreConflict({ reason: "reservation-mismatch" });
             }),
           )
           .pipe(Effect.mapError(walletConflict));
@@ -434,10 +482,14 @@ export function makeControlPlanePersonaWalletRepository() {
         return yield* db
           .withTransaction((transaction) =>
             Effect.gen(function* () {
-              const owned = yield* transaction.execute({
+              const owned = yield* transaction.execute<{
+                status: string;
+                is_first_persona: boolean;
+              }>({
                 label: "persona-wallets.confirm.authority",
-                text: `SELECT 1 FROM personas
-                      WHERE account_id=$1 AND persona_id=$2 AND status='active'
+                text: `SELECT status,is_first_persona FROM personas
+                      WHERE account_id=$1 AND persona_id=$2
+                        AND status IN ('pending_wallet','active')
                       FOR UPDATE`,
                 values: [accountId, personaId],
                 readonly: false,
@@ -488,6 +540,50 @@ export function makeControlPlanePersonaWalletRepository() {
               const preparation = preparationFromRow(confirmed.rows[0] as WalletRow);
               if (preparation.assignment === null)
                 return yield* Effect.die("confirmed wallet assignment is missing");
+              const personaState = owned.rows[0];
+              if (personaState?.status === "pending_wallet") {
+                yield* transaction.execute({
+                  label: "persona-wallets.confirm.profile",
+                  text: `INSERT INTO persona_profiles (
+                           persona_id,revision,display_name,avatar_ref,cover_ref,bio,
+                           preferred_locale,created_at,updated_at
+                         ) SELECT persona_id,1,display_name,avatar_ref,cover_ref,bio,
+                                  preferred_locale,created_at,clock_timestamp()
+                             FROM persona_pending_profiles WHERE persona_id=$1`,
+                  values: [personaId],
+                  readonly: false,
+                });
+                if (personaState.is_first_persona) {
+                  yield* transaction.execute({
+                    label: "persona-wallets.confirm.first-handle",
+                    text: `INSERT INTO public_handle_index (
+                             handle_id,label_normalized,label_display,status,
+                             owner_user_id,owner_persona_id,redirect_target_handle_id
+                           ) SELECT handle_id,label_normalized,label_display,'active',$2,$1,NULL
+                               FROM persona_pending_first_handles WHERE persona_id=$1`,
+                    values: [personaId, accountId],
+                    readonly: false,
+                  });
+                }
+                yield* transaction.execute({
+                  label: "persona-wallets.confirm.activate",
+                  text: "UPDATE personas SET status='active' WHERE persona_id=$1 AND account_id=$2 AND status='pending_wallet'",
+                  values: [personaId, accountId],
+                  readonly: false,
+                });
+                yield* transaction.execute({
+                  label: "persona-wallets.confirm.clear-handle-draft",
+                  text: "DELETE FROM persona_pending_first_handles WHERE persona_id=$1",
+                  values: [personaId],
+                  readonly: false,
+                });
+                yield* transaction.execute({
+                  label: "persona-wallets.confirm.clear-profile-draft",
+                  text: "DELETE FROM persona_pending_profiles WHERE persona_id=$1",
+                  values: [personaId],
+                  readonly: false,
+                });
+              }
               return preparation.assignment;
             }),
           )

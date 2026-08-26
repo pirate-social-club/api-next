@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { Auth } from "./auth.ts";
 import { endpoint } from "./endpoint.ts";
-import { AuthError, BadRequest, Conflict, InternalError, NotFound } from "./errors.ts";
+import { AuthError, BadRequest, Conflict, InternalError, NotFound, RateLimited } from "./errors.ts";
 
 const boundedIdentifier = (label: string) =>
   Schema.String.check(
@@ -161,9 +161,9 @@ export const CreatePersona = endpoint({
   path: "/personas",
   auth: Auth.userOrAdmin(),
   request: { body: CreatePersonaRequestV1 },
-  response: PrivatePersonaV1,
+  response: PersonaEvmWalletPreparationV1,
   successStatus: 201,
-  errors: [AuthError, BadRequest, Conflict, InternalError],
+  errors: [AuthError, BadRequest, Conflict, InternalError, RateLimited],
 });
 
 /** Reserve one append-only provider HD index before the client creates it. */
