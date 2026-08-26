@@ -271,6 +271,74 @@ export class NotFound extends Data.TaggedError("NotFound")<WireArgs> {
   readonly retryable = false as const;
 }
 
+export const HandleSafeReasonV2 = Schema.Literals([
+  "persona_unavailable",
+  "public_linking_confirmation_required",
+  "offering_unavailable",
+  "platform_namespace_reserved",
+  "paid_offerings_disabled",
+  "invalid_handle",
+  "handle_unavailable",
+  "evidence_required",
+  "qualification_unsatisfied",
+  "quote_expired",
+  "reservation_expired",
+  "idempotency_conflict",
+  "claim_blocked",
+  "issuance_pending",
+  "issuance_failed",
+  "service_unavailable",
+  "not_found",
+  "not_offered",
+  "offering_not_applicable",
+  "account_grant_limit_reached",
+  "sale_namespace_inactive",
+  "dns_delegation_required",
+]);
+export type HandleSafeReasonV2 = Schema.Schema.Type<typeof HandleSafeReasonV2>;
+
+const HandleProblemDetailsV2 = Schema.Struct({
+  reason: HandleSafeReasonV2,
+  effective_offering_id: Schema.optional(Schema.String),
+});
+
+/** Closed non-retryable rejection for the handle commerce state machine. */
+export class HandleRequestRejected extends Data.TaggedError("HandleRequestRejected")<{
+  readonly message: string;
+  readonly details: Schema.Schema.Type<typeof HandleProblemDetailsV2>;
+}> {
+  static readonly detailsSchema = HandleProblemDetailsV2;
+  static readonly detailsRequired = true;
+
+  readonly status = 409 as const;
+  readonly code = "handle_request_rejected" as const;
+  readonly retryable = false as const;
+}
+
+/** Retryable conflicts whose resolution depends on current offering/authority state. */
+export class RetryableHandleRequestRejected extends Data.TaggedError(
+  "RetryableHandleRequestRejected",
+)<{
+  readonly message: string;
+  readonly details: Schema.Schema.Type<typeof HandleProblemDetailsV2>;
+}> {
+  static readonly detailsSchema = HandleProblemDetailsV2;
+  static readonly detailsRequired = true;
+
+  readonly status = 409 as const;
+  readonly code = "handle_request_rejected" as const;
+  readonly retryable = true as const;
+}
+
+/** Deliberately non-disclosing direct-grant recipient-token failure. */
+export class DirectGrantRecipientUnavailable extends Data.TaggedError(
+  "DirectGrantRecipientUnavailable",
+)<WireArgs> {
+  readonly status = 404 as const;
+  readonly code = "direct_grant_recipient_unavailable" as const;
+  readonly retryable = false as const;
+}
+
 export class NamespaceUnavailable extends Data.TaggedError("NamespaceUnavailable")<WireArgs> {
   readonly status = 503 as const;
   readonly code = "namespace_unavailable" as const;
@@ -363,6 +431,9 @@ export type ApiError =
   | AnalysisBlocked
   | CommentMediaRejected
   | NotFound
+  | HandleRequestRejected
+  | RetryableHandleRequestRejected
+  | DirectGrantRecipientUnavailable
   | NamespaceUnavailable
   | StructuredSurfaceDisabled
   | VerifierContractIncompatible

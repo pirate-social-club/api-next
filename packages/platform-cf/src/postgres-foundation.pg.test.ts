@@ -269,6 +269,9 @@ const mediaFinalizeFenceMigrationSql = await Bun.file(
 const rewardsSongOffersMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0053_rewards_song_offers.sql", import.meta.url),
 ).text();
+const communityHandleSalesMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0054_community_handle_sales.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -541,6 +544,11 @@ const rewardsSongOffersMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0053_rewards_song_offers.sql"] ?? "",
   sql: rewardsSongOffersMigrationSql,
 };
+const communityHandleSalesMigration: PostgresMigration = {
+  version: "0054_community_handle_sales.sql",
+  checksum: checksumManifest.migrations["0054_community_handle_sales.sql"] ?? "",
+  sql: communityHandleSalesMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -595,6 +603,7 @@ const migrations: readonly PostgresMigration[] = [
   activityQualificationMigration,
   mediaFinalizeFenceMigration,
   rewardsSongOffersMigration,
+  communityHandleSalesMigration,
 ];
 
 function checksum(value: string): string {
@@ -857,6 +866,9 @@ suite("Postgres 17 product and gates v2 foundation", () => {
       );
       expect(checksum(mediaFinalizeFenceMigrationSql)).toBe(mediaFinalizeFenceMigration.checksum);
       expect(checksum(rewardsSongOffersMigrationSql)).toBe(rewardsSongOffersMigration.checksum);
+      expect(checksum(communityHandleSalesMigrationSql)).toBe(
+        communityHandleSalesMigration.checksum,
+      );
       const version = await admin.query<{ server_version_num: string }>("SHOW server_version_num");
       expect(Number(version.rows[0]?.server_version_num)).toBeGreaterThanOrEqual(170000);
 
@@ -915,6 +927,13 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_creation_subject_claims",
         "community_feed_projection",
         "community_follows",
+        "community_handle_offering_actions",
+        "community_handle_offering_current",
+        "community_handle_offering_revisions",
+        "community_handle_sale_namespace_activation_actions",
+        "community_handle_sale_namespace_activation_current",
+        "community_handle_sale_namespace_activation_revisions",
+        "community_handle_sales_authority_grants",
         "community_memberships",
         "community_policy_current",
         "community_policy_provider_bindings",
@@ -957,6 +976,26 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "custody_solvency_observations",
         "decision_records",
         "evidence_receipts",
+        "handle_account_directory_bindings",
+        "handle_account_offering_grant_counters",
+        "handle_claim_actions",
+        "handle_claims",
+        "handle_direct_grant_recipient_token_actions",
+        "handle_direct_grant_recipient_tokens",
+        "handle_grants",
+        "handle_issuance_driver_revisions",
+        "handle_key_fences",
+        "handle_persona_link_confirmation_actions",
+        "handle_persona_link_confirmations",
+        "handle_persona_public_linkage_states",
+        "handle_pricing_revisions",
+        "handle_qualification_policy_actions",
+        "handle_qualification_policy_revisions",
+        "handle_quote_actions",
+        "handle_quotes",
+        "handle_reservation_actions",
+        "handle_reservations",
+        "handle_reserved_label_revisions",
         "hns_authority_inventories",
         "hns_community_app_host_activation_current",
         "hns_community_app_host_activation_revisions",
@@ -1184,6 +1223,8 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "community_creation_intent_revision_append_only",
         "community_creation_quota_approval_append_only",
         "community_creation_subject_claim_append_only",
+        "community_handle_offering_actions_append_only",
+        "community_handle_offering_revisions_append_only",
         "community_policy_provider_binding_append_only",
         "community_purchase_allocation_snapshot_append_only",
         "community_purchase_correction_event_append_only",
@@ -1209,6 +1250,19 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "evidence_receipts_validate_metadata",
         "fallback_cutoff_activity_evidence_append_only",
         "fallback_cutoff_evidence_append_only",
+        "handle_account_directory_bindings_append_only",
+        "handle_claim_actions_append_only",
+        "handle_direct_grant_recipient_token_actions_append_only",
+        "handle_issuance_driver_revisions_append_only",
+        "handle_persona_link_confirmation_actions_append_only",
+        "handle_pricing_revisions_append_only",
+        "handle_qualification_policy_actions_append_only",
+        "handle_qualification_policy_revisions_append_only",
+        "handle_quote_actions_append_only",
+        "handle_reservation_actions_append_only",
+        "handle_reserved_label_revisions_append_only",
+        "handle_sale_activation_actions_append_only",
+        "handle_sale_activation_revisions_append_only",
         "hns_authority_inventories_append_only",
         "hns_community_app_host_activation_revisions_append_only",
         "hns_community_app_host_operations_append_only",

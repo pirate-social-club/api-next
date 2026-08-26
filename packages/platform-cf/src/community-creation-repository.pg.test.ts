@@ -392,7 +392,11 @@ suite("Postgres 17 community creation repository", () => {
                 (SELECT COUNT(*)::integer FROM community_route_authority_grants
                   WHERE community_id = community.community_id
                     AND principal_user_id = $2 AND authority = 'manage_routes'
-                    AND status = 'active') AS route_grants
+                    AND status = 'active') AS route_grants,
+                (SELECT COUNT(*)::integer FROM community_handle_sales_authority_grants
+                  WHERE community_id = community.community_id
+                    AND principal_account_id = $2 AND authority = 'manage_handle_sales'
+                    AND status = 'active') AS handle_sales_grants
            FROM communities AS community
           WHERE community.community_id = $3`,
         [document.intent_id, actor.userId, resource.community_id],
@@ -405,6 +409,7 @@ suite("Postgres 17 community creation repository", () => {
           namespace_rows: 0,
           memberships: 1,
           route_grants: 1,
+          handle_sales_grants: 1,
         },
       ]);
     });

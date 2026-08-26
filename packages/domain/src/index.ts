@@ -68,6 +68,7 @@ export {
 } from "./gates-v2/index.ts";
 export * from "./handles/label-claim-rules.ts";
 export * from "./handles/policy.ts";
+export * from "./handles/sales-v2.ts";
 export * from "./money/community-purchase-funding.ts";
 export * from "./money/failure-fence.ts";
 export * from "./money/interpreter-contract.ts";

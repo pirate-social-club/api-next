@@ -38,6 +38,8 @@ import {
 } from "@pirate/platform-cf/config";
 import { makeControlPlaneContentStore } from "@pirate/platform-cf/content-repository";
 import { makeControlPlaneFeedStore } from "@pirate/platform-cf/feed-repository";
+import { makeHandleRecipientTokenVault } from "@pirate/platform-cf/handle-recipient-token-vault";
+import { makeControlPlaneHandleSalesStore } from "@pirate/platform-cf/handle-sales-repository";
 import {
   makeControlPlaneIdentityRegistrationStore,
   makeControlPlaneIdentityStore,
@@ -101,6 +103,7 @@ import {
   makeCommunityPurchaseFundingObservationHandlers,
   makeCommunityPurchaseFundingQuoteHandlers,
 } from "./community-purchase-funding-handlers.ts";
+import { makeHandleSalesHandlers } from "./handle-sales-handlers.ts";
 import { disabledProductionHnsCommunityAppApiComposition } from "./hns-community-app-api-composition.ts";
 import { makeHnsOwnershipComposition } from "./hns-ownership-composition.ts";
 import { makeNamespaceOwnershipHandlers } from "./namespace-ownership-handlers.ts";
@@ -166,6 +169,8 @@ export interface HttpWorkerBindings {
   readonly PRIVY_JWT_ISSUER?: string;
   readonly PRIVY_JWT_AUDIENCE?: string;
   readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
+  readonly HANDLE_RECIPIENT_TOKEN_HMAC_KEYS?: string;
+  readonly HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS?: string;
   readonly MEGAPOT_REWARDS_ENABLED?: string;
   readonly MEGAPOT_CHAIN_ID?: string;
   readonly MEGAPOT_V2_RPC_URL?: string;
@@ -261,6 +266,8 @@ function configSource(bindings: HttpWorkerBindings): Record<string, string | und
     PRIVY_JWT_ISSUER: bindings.PRIVY_JWT_ISSUER,
     PRIVY_JWT_AUDIENCE: bindings.PRIVY_JWT_AUDIENCE,
     COMMUNITY_PURCHASE_FUNDING_RPC_URL: bindings.COMMUNITY_PURCHASE_FUNDING_RPC_URL,
+    HANDLE_RECIPIENT_TOKEN_HMAC_KEYS: bindings.HANDLE_RECIPIENT_TOKEN_HMAC_KEYS,
+    HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS: bindings.HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS,
     MEGAPOT_REWARDS_ENABLED: bindings.MEGAPOT_REWARDS_ENABLED,
     MEGAPOT_CHAIN_ID: bindings.MEGAPOT_CHAIN_ID,
     MEGAPOT_V2_RPC_URL: bindings.MEGAPOT_V2_RPC_URL,
@@ -667,6 +674,14 @@ export async function createProductionHttpWorker(
         Effect.fail(new StudyItemSourceError({ reason: "unavailable" })),
     },
   });
+  const handleSalesHandlers = makeHandleSalesHandlers({
+    store: makeControlPlaneHandleSalesStore(controlPlane),
+    ids: { next: Effect.sync(() => crypto.randomUUID().replaceAll("-", "")) },
+    tokenVault: makeHandleRecipientTokenVault({
+      hmacKeys: Redacted.value(config.HANDLE_RECIPIENT_TOKEN_HMAC_KEYS),
+      envelopeKeys: Redacted.value(config.HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS),
+    }),
+  });
   const songRewardOfferHandlers: Readonly<Record<string, EndpointHandler>> =
     config.MEGAPOT_REWARDS_ENABLED
       ? await (async () => {
@@ -758,6 +773,7 @@ export async function createProductionHttpWorker(
       ...fundingHandlers,
       ...personaHandlers,
       ...activityQualificationHandlers,
+      ...handleSalesHandlers,
       ...songRewardOfferHandlers,
       GetJwks: () => sessionCrypto.jwks(),
       GetPublicProfileByHandle: publicProfile,

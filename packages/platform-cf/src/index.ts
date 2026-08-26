@@ -104,6 +104,14 @@ export {
   makeControlPlaneFeedStore,
 } from "./feed-repository";
 export {
+  type HandleRecipientTokenVaultOptions,
+  makeHandleRecipientTokenVault,
+} from "./handle-recipient-token-vault";
+export {
+  makeControlPlaneHandleSalesRepository,
+  makeControlPlaneHandleSalesStore,
+} from "./handle-sales-repository";
+export {
   type HnsFirstPartyHostPersistenceRepositoryV1,
   makeControlPlaneHnsCommunityAppHostAuthoritySource,
   makeControlPlaneHnsFirstPartyHostPersistenceRepository,

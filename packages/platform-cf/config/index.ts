@@ -204,6 +204,12 @@ export const HttpWorkerConfig = Config.all({
   PRIVY_JWT_ISSUER: Config.nonEmptyString("PRIVY_JWT_ISSUER"),
   PRIVY_JWT_AUDIENCE: Config.nonEmptyString("PRIVY_JWT_AUDIENCE"),
   COMMUNITY_PURCHASE_FUNDING_RPC_URL: secret("COMMUNITY_PURCHASE_FUNDING_RPC_URL"),
+  HANDLE_RECIPIENT_TOKEN_HMAC_KEYS: secret("HANDLE_RECIPIENT_TOKEN_HMAC_KEYS").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
+  HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS: secret("HANDLE_RECIPIENT_TOKEN_ENVELOPE_KEYS").pipe(
+    Config.withDefault(Redacted.make("")),
+  ),
   ...MegapotRewardConfigFields,
 });
 
