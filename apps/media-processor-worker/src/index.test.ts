@@ -49,9 +49,7 @@ describe("media processor Worker posture", () => {
         policyRevision: "policy-v1",
         transformAdapterRevision: "transform-v1",
         metadataAdapterRevision: "metadata-v1",
-        mediaSafetyAdapterRevision: "safety-v1",
         classifierTimeoutMs: 1_000,
-        asrTimeoutMs: 1_000,
         transformRuntimeMs: 1_000,
         maximumSampleBytes: 1_000,
       },
@@ -68,6 +66,7 @@ describe("media processor Worker posture", () => {
       waitForEvent: async () => {
         throw new Error("terminal workflows do not wait");
       },
+      sleep: async () => undefined,
     } as MediaProcessingWorkflowStep;
 
     expect(

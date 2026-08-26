@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.22.0",
+  "releaseType": "song-media-no-asr-v1",
+  "wireContract": "wire-v3",
+  "sourceCommit": "505bd56",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.22.0.tgz",
+    "sha256": "91a335f4f953c3afbff6c4c4d754a9dff21298087455f7bbfc815ec5634be5af",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@431a26a6cdae43a44dbf6e3528520f0a9e2daf47dc525cb7a6f95a3e8d78fb87",
+    "openapiSha256": "431a26a6cdae43a44dbf6e3528520f0a9e2daf47dc525cb7a6f95a3e8d78fb87",
+    "clientSha256": "ba2d6dc04cdcdf122fd79e5a520d509d9e1e10379e6ecfb0cc3dcdf6a886ed27"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "b5c807e",
+      "reason": "The owner-ratified no-ASR clean break removes base_transcript_revision from the lyrics command while retaining optional author-supplied lyrics."
+    },
+    "focusedRuntimeTests": "33 passed",
+    "postgresMediaSuite": "28 passed",
+    "postgresRequiredSuite": "233 passed, 3 skipped; 24 completion markers verified",
+    "migrationLedgerTests": "7 passed",
+    "unitSuite": "1872 passed, 283 skipped",
+    "workerdSuites": "84 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

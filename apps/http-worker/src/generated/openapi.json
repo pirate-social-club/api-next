@@ -35153,92 +35153,6 @@
                     "Objects_1": {
                       "type": "object",
                       "properties": {
-                        "asr_suggestion": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "pending"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "ready"
-                                  ]
-                                },
-                                "transcript_revision": {
-                                  "type": "integer",
-                                  "allOf": [
-                                    {
-                                      "minimum": 1,
-                                      "maximum": 9007199254740991
-                                    }
-                                  ]
-                                },
-                                "text": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "maxLength": 200000
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status",
-                                "transcript_revision",
-                                "text"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "no_speech"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "unavailable"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
                         "current": {
                           "anyOf": [
                             {
@@ -35293,30 +35207,13 @@
                                       "maximum": 9007199254740991
                                     }
                                   ]
-                                },
-                                "base_transcript_revision": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "allOf": [
-                                        {
-                                          "minimum": 1,
-                                          "maximum": 9007199254740991
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 }
                               },
                               "required": [
                                 "status",
                                 "text",
                                 "lyrics_revision",
-                                "audio_revision",
-                                "base_transcript_revision"
+                                "audio_revision"
                               ],
                               "additionalProperties": false
                             },
@@ -35339,7 +35236,6 @@
                         }
                       },
                       "required": [
-                        "asr_suggestion",
                         "current"
                       ],
                       "additionalProperties": false
@@ -36603,92 +36499,6 @@
                     "Objects_1": {
                       "type": "object",
                       "properties": {
-                        "asr_suggestion": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "pending"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "ready"
-                                  ]
-                                },
-                                "transcript_revision": {
-                                  "type": "integer",
-                                  "allOf": [
-                                    {
-                                      "minimum": 1,
-                                      "maximum": 9007199254740991
-                                    }
-                                  ]
-                                },
-                                "text": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "maxLength": 200000
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status",
-                                "transcript_revision",
-                                "text"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "no_speech"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "unavailable"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
                         "current": {
                           "anyOf": [
                             {
@@ -36743,30 +36553,13 @@
                                       "maximum": 9007199254740991
                                     }
                                   ]
-                                },
-                                "base_transcript_revision": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "allOf": [
-                                        {
-                                          "minimum": 1,
-                                          "maximum": 9007199254740991
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 }
                               },
                               "required": [
                                 "status",
                                 "text",
                                 "lyrics_revision",
-                                "audio_revision",
-                                "base_transcript_revision"
+                                "audio_revision"
                               ],
                               "additionalProperties": false
                             },
@@ -36789,7 +36582,6 @@
                         }
                       },
                       "required": [
-                        "asr_suggestion",
                         "current"
                       ],
                       "additionalProperties": false
@@ -37154,22 +36946,6 @@
                         "maxLength": 200000
                       }
                     ]
-                  },
-                  "base_transcript_revision": {
-                    "anyOf": [
-                      {
-                        "type": "integer",
-                        "allOf": [
-                          {
-                            "minimum": 1,
-                            "maximum": 9007199254740991
-                          }
-                        ]
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
                   }
                 },
                 "required": [
@@ -37178,8 +36954,7 @@
                   "idempotency_key",
                   "expected_creation_revision",
                   "expected_audio_revision",
-                  "lyrics",
-                  "base_transcript_revision"
+                  "lyrics"
                 ],
                 "additionalProperties": false
               }
@@ -37924,92 +37699,6 @@
                     "Objects_1": {
                       "type": "object",
                       "properties": {
-                        "asr_suggestion": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "pending"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "ready"
-                                  ]
-                                },
-                                "transcript_revision": {
-                                  "type": "integer",
-                                  "allOf": [
-                                    {
-                                      "minimum": 1,
-                                      "maximum": 9007199254740991
-                                    }
-                                  ]
-                                },
-                                "text": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "maxLength": 200000
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status",
-                                "transcript_revision",
-                                "text"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "no_speech"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "unavailable"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
                         "current": {
                           "anyOf": [
                             {
@@ -38064,30 +37753,13 @@
                                       "maximum": 9007199254740991
                                     }
                                   ]
-                                },
-                                "base_transcript_revision": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "allOf": [
-                                        {
-                                          "minimum": 1,
-                                          "maximum": 9007199254740991
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 }
                               },
                               "required": [
                                 "status",
                                 "text",
                                 "lyrics_revision",
-                                "audio_revision",
-                                "base_transcript_revision"
+                                "audio_revision"
                               ],
                               "additionalProperties": false
                             },
@@ -38110,7 +37782,6 @@
                         }
                       },
                       "required": [
-                        "asr_suggestion",
                         "current"
                       ],
                       "additionalProperties": false
@@ -39208,92 +38879,6 @@
                     "Objects_1": {
                       "type": "object",
                       "properties": {
-                        "asr_suggestion": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "pending"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "ready"
-                                  ]
-                                },
-                                "transcript_revision": {
-                                  "type": "integer",
-                                  "allOf": [
-                                    {
-                                      "minimum": 1,
-                                      "maximum": 9007199254740991
-                                    }
-                                  ]
-                                },
-                                "text": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "maxLength": 200000
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status",
-                                "transcript_revision",
-                                "text"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "no_speech"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "unavailable"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
                         "current": {
                           "anyOf": [
                             {
@@ -39348,30 +38933,13 @@
                                       "maximum": 9007199254740991
                                     }
                                   ]
-                                },
-                                "base_transcript_revision": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "allOf": [
-                                        {
-                                          "minimum": 1,
-                                          "maximum": 9007199254740991
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 }
                               },
                               "required": [
                                 "status",
                                 "text",
                                 "lyrics_revision",
-                                "audio_revision",
-                                "base_transcript_revision"
+                                "audio_revision"
                               ],
                               "additionalProperties": false
                             },
@@ -39394,7 +38962,6 @@
                         }
                       },
                       "required": [
-                        "asr_suggestion",
                         "current"
                       ],
                       "additionalProperties": false
@@ -40474,92 +40041,6 @@
                     "Objects_1": {
                       "type": "object",
                       "properties": {
-                        "asr_suggestion": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "pending"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "ready"
-                                  ]
-                                },
-                                "transcript_revision": {
-                                  "type": "integer",
-                                  "allOf": [
-                                    {
-                                      "minimum": 1,
-                                      "maximum": 9007199254740991
-                                    }
-                                  ]
-                                },
-                                "text": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "maxLength": 200000
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status",
-                                "transcript_revision",
-                                "text"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "no_speech"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "unavailable"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
                         "current": {
                           "anyOf": [
                             {
@@ -40614,30 +40095,13 @@
                                       "maximum": 9007199254740991
                                     }
                                   ]
-                                },
-                                "base_transcript_revision": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "allOf": [
-                                        {
-                                          "minimum": 1,
-                                          "maximum": 9007199254740991
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 }
                               },
                               "required": [
                                 "status",
                                 "text",
                                 "lyrics_revision",
-                                "audio_revision",
-                                "base_transcript_revision"
+                                "audio_revision"
                               ],
                               "additionalProperties": false
                             },
@@ -40660,7 +40124,6 @@
                         }
                       },
                       "required": [
-                        "asr_suggestion",
                         "current"
                       ],
                       "additionalProperties": false
@@ -41649,92 +41112,6 @@
                     "Objects_1": {
                       "type": "object",
                       "properties": {
-                        "asr_suggestion": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "pending"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "ready"
-                                  ]
-                                },
-                                "transcript_revision": {
-                                  "type": "integer",
-                                  "allOf": [
-                                    {
-                                      "minimum": 1,
-                                      "maximum": 9007199254740991
-                                    }
-                                  ]
-                                },
-                                "text": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "maxLength": 200000
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status",
-                                "transcript_revision",
-                                "text"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "no_speech"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "unavailable"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
                         "current": {
                           "anyOf": [
                             {
@@ -41789,30 +41166,13 @@
                                       "maximum": 9007199254740991
                                     }
                                   ]
-                                },
-                                "base_transcript_revision": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "allOf": [
-                                        {
-                                          "minimum": 1,
-                                          "maximum": 9007199254740991
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 }
                               },
                               "required": [
                                 "status",
                                 "text",
                                 "lyrics_revision",
-                                "audio_revision",
-                                "base_transcript_revision"
+                                "audio_revision"
                               ],
                               "additionalProperties": false
                             },
@@ -41835,7 +41195,6 @@
                         }
                       },
                       "required": [
-                        "asr_suggestion",
                         "current"
                       ],
                       "additionalProperties": false
@@ -42924,92 +42283,6 @@
                     "Objects_1": {
                       "type": "object",
                       "properties": {
-                        "asr_suggestion": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "pending"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "ready"
-                                  ]
-                                },
-                                "transcript_revision": {
-                                  "type": "integer",
-                                  "allOf": [
-                                    {
-                                      "minimum": 1,
-                                      "maximum": 9007199254740991
-                                    }
-                                  ]
-                                },
-                                "text": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "maxLength": 200000
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status",
-                                "transcript_revision",
-                                "text"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "no_speech"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "unavailable"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
                         "current": {
                           "anyOf": [
                             {
@@ -43064,30 +42337,13 @@
                                       "maximum": 9007199254740991
                                     }
                                   ]
-                                },
-                                "base_transcript_revision": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "allOf": [
-                                        {
-                                          "minimum": 1,
-                                          "maximum": 9007199254740991
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 }
                               },
                               "required": [
                                 "status",
                                 "text",
                                 "lyrics_revision",
-                                "audio_revision",
-                                "base_transcript_revision"
+                                "audio_revision"
                               ],
                               "additionalProperties": false
                             },
@@ -43110,7 +42366,6 @@
                         }
                       },
                       "required": [
-                        "asr_suggestion",
                         "current"
                       ],
                       "additionalProperties": false
@@ -44199,92 +43454,6 @@
                     "Objects_1": {
                       "type": "object",
                       "properties": {
-                        "asr_suggestion": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "pending"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "ready"
-                                  ]
-                                },
-                                "transcript_revision": {
-                                  "type": "integer",
-                                  "allOf": [
-                                    {
-                                      "minimum": 1,
-                                      "maximum": 9007199254740991
-                                    }
-                                  ]
-                                },
-                                "text": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "maxLength": 200000
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status",
-                                "transcript_revision",
-                                "text"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "no_speech"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "unavailable"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
                         "current": {
                           "anyOf": [
                             {
@@ -44339,30 +43508,13 @@
                                       "maximum": 9007199254740991
                                     }
                                   ]
-                                },
-                                "base_transcript_revision": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "allOf": [
-                                        {
-                                          "minimum": 1,
-                                          "maximum": 9007199254740991
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 }
                               },
                               "required": [
                                 "status",
                                 "text",
                                 "lyrics_revision",
-                                "audio_revision",
-                                "base_transcript_revision"
+                                "audio_revision"
                               ],
                               "additionalProperties": false
                             },
@@ -44385,7 +43537,6 @@
                         }
                       },
                       "required": [
-                        "asr_suggestion",
                         "current"
                       ],
                       "additionalProperties": false
@@ -45597,92 +44748,6 @@
                     "Objects_1": {
                       "type": "object",
                       "properties": {
-                        "asr_suggestion": {
-                          "anyOf": [
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "pending"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "ready"
-                                  ]
-                                },
-                                "transcript_revision": {
-                                  "type": "integer",
-                                  "allOf": [
-                                    {
-                                      "minimum": 1,
-                                      "maximum": 9007199254740991
-                                    }
-                                  ]
-                                },
-                                "text": {
-                                  "type": "string",
-                                  "allOf": [
-                                    {
-                                      "minLength": 1
-                                    },
-                                    {
-                                      "maxLength": 200000
-                                    }
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status",
-                                "transcript_revision",
-                                "text"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "no_speech"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            },
-                            {
-                              "type": "object",
-                              "properties": {
-                                "status": {
-                                  "type": "string",
-                                  "enum": [
-                                    "unavailable"
-                                  ]
-                                }
-                              },
-                              "required": [
-                                "status"
-                              ],
-                              "additionalProperties": false
-                            }
-                          ]
-                        },
                         "current": {
                           "anyOf": [
                             {
@@ -45737,30 +44802,13 @@
                                       "maximum": 9007199254740991
                                     }
                                   ]
-                                },
-                                "base_transcript_revision": {
-                                  "anyOf": [
-                                    {
-                                      "type": "integer",
-                                      "allOf": [
-                                        {
-                                          "minimum": 1,
-                                          "maximum": 9007199254740991
-                                        }
-                                      ]
-                                    },
-                                    {
-                                      "type": "null"
-                                    }
-                                  ]
                                 }
                               },
                               "required": [
                                 "status",
                                 "text",
                                 "lyrics_revision",
-                                "audio_revision",
-                                "base_transcript_revision"
+                                "audio_revision"
                               ],
                               "additionalProperties": false
                             },
@@ -45783,7 +44831,6 @@
                         }
                       },
                       "required": [
-                        "asr_suggestion",
                         "current"
                       ],
                       "additionalProperties": false

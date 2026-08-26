@@ -5,7 +5,7 @@ import {
   GetStudySession,
   ObserveMegapotPoolFunding,
   OpenSongRewardOffer,
-  SONG_TRANSCRIPT_TEXT_MAX_LENGTH,
+  SONG_LYRICS_TEXT_MAX_LENGTH,
   StartStudySession,
   SubmitStudyAnswer,
 } from "@pirate/contracts";
@@ -41,9 +41,7 @@ const GoldenInput = Schema.Struct({
   ),
   study_participant: Schema.Struct({
     timezone: Identifier,
-    accepted_lyrics: Schema.NonEmptyString.check(
-      Schema.isMaxLength(SONG_TRANSCRIPT_TEXT_MAX_LENGTH),
-    ),
+    accepted_lyrics: Schema.NonEmptyString.check(Schema.isMaxLength(SONG_LYRICS_TEXT_MAX_LENGTH)),
   }),
   funding_transaction_hash: Schema.optional(Schema.NullOr(TransactionHash)),
 });

@@ -61,13 +61,14 @@ const nextEventType = (
 ): Exclude<MediaProcessingEventType, "analysis_launch" | "workflow_replacement"> | null => {
   switch (result.outcome) {
     case "waiting_for_terms":
-    case "waiting_for_lyrics":
     case "action_required":
       return "decision_wakeup";
     case "manual_review":
       return "publication";
     case "published":
       return "alignment";
+    case "published_without_alignment":
+      return null;
     default:
       return null;
   }
@@ -93,6 +94,7 @@ export interface MediaProcessingWorkflowStep {
     name: string,
     options: Readonly<{ readonly type: string; readonly timeout: string }>,
   ) => Promise<Readonly<{ readonly payload: Readonly<T>; readonly type: string }>>;
+  readonly sleep: (name: string, duration: "10 seconds") => Promise<void>;
 }
 
 /**
@@ -114,7 +116,10 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
     let sequence = 0;
 
     while (true) {
-      const execution = await step.do(
+      const execution: Readonly<{
+        eventType: MediaProcessingEventType;
+        result: MediaProcessingWorkflowResult;
+      }> = await step.do(
         `media-processing-${sequence}-${eventType ?? "launch"}`,
         workflowStepOptions,
         async () => {
@@ -140,6 +145,11 @@ export function makeMediaProcessingWorkflowRunner<Env extends MediaProcessorWork
       );
       eventType = execution.eventType;
       const { result } = execution;
+      if (result.outcome === "waiting_for_provider") {
+        await step.sleep(`media-processing-poll-${sequence}`, "10 seconds");
+        sequence += 1;
+        continue;
+      }
       const expectedEvent = nextEventType(result);
       if (expectedEvent === null) return result;
       const wakeup = await step.waitForEvent<MediaProcessingWorkflowPayload>(

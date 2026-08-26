@@ -1,18 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { Effect } from "effect";
-import {
-  hostileCorrectedLyrics,
-  hostileTranscript,
-} from "../../../../tests/fixtures/media-processing/hostile-classifier-inputs.ts";
+import { hostileCorrectedLyrics } from "../../../../tests/fixtures/media-processing/hostile-classifier-inputs.ts";
 import type {
   MediaTransformAudioSampleInput,
   MediaTransformProbeInput,
 } from "../media/transform.ts";
 import type { MediaIdentificationRequest } from "../media-identification-provider.ts";
-import type {
-  MediaAsrInput,
-  MediaExplicitnessClassifierInput,
-} from "../media-provider-contracts.ts";
+import type { MediaExplicitnessClassifierInput } from "../media-provider-contracts.ts";
 import type {
   MediaProcessingAnalysis,
   MediaProcessingAttemptLease,
@@ -26,7 +20,6 @@ import type {
 import { runMediaProcessingWorkflow } from "./processing-workflow.ts";
 
 const hash = "a".repeat(64);
-const transcriptHash = "b".repeat(64);
 
 function authority(overrides: Partial<MediaProcessingAuthority> = {}): MediaProcessingAuthority {
   return {
@@ -41,6 +34,7 @@ function authority(overrides: Partial<MediaProcessingAuthority> = {}): MediaProc
     analysisRevision: 1,
     decisionRevision: 0,
     workflowRevision: 1,
+    retryCount: 0,
     status: "processing",
     phase: "analysis",
     audio: {
@@ -55,9 +49,7 @@ function authority(overrides: Partial<MediaProcessingAuthority> = {}): MediaProc
       audioRevision: 1,
       canonicalAudioSha256: hash,
       text: "accepted lyrics",
-      baseTranscriptRevision: 1,
     },
-    transcript: null,
     analysis: null,
     decision: null,
     boundReferenceAssetId: null,
@@ -75,6 +67,7 @@ class FakeStore implements MediaProcessingStore {
       lease: MediaProcessingAttemptLease;
       result?: MediaProcessingAttemptResult;
       failed?: boolean;
+      deferred?: boolean;
     }>
   >();
   readonly outboxes = new Map<string, MediaProcessingOutboxRecord>();
@@ -82,6 +75,10 @@ class FakeStore implements MediaProcessingStore {
   publications = 0;
   alignmentLaunches = 0;
   alignments = 0;
+  readonly alignmentResults: Extract<
+    MediaProcessingAttemptResult,
+    { readonly kind: "alignment" }
+  >[] = [];
   providerReviews = 0;
 
   constructor(
@@ -150,17 +147,37 @@ class FakeStore implements MediaProcessingStore {
 
   startAttempt: MediaProcessingStore["startAttempt"] = async (input) => {
     const prior = this.attempts.get(input.attemptId);
-    if (prior?.result !== undefined) return { kind: "replay", result: prior.result };
-    if (prior !== undefined && prior.failed !== true) return { kind: "busy" };
+    if (prior?.result !== undefined && prior.deferred !== true) {
+      return { kind: "replay", result: prior.result };
+    }
+    if (prior !== undefined && prior.failed !== true && prior.deferred !== true) {
+      return { kind: "busy" };
+    }
     const lease = {
       attemptId: input.attemptId,
+      attemptNumber: prior?.lease.attemptNumber ?? 1,
       stage: input.stage,
       claimOwner: input.workerId,
       claimFence: (prior?.lease.claimFence ?? 0) + 1,
+      ...(prior?.deferred === true && prior.result !== undefined
+        ? { priorResult: prior.result }
+        : {}),
     };
     this.events.push(`persist:${input.stage}:${input.inputHash}`);
     this.attempts.set(input.attemptId, { lease });
     return { kind: "run", lease };
+  };
+
+  deferAttempt = async (
+    lease: MediaProcessingAttemptLease,
+    result: MediaProcessingAttemptResult,
+  ) => {
+    const prior = this.attempts.get(lease.attemptId);
+    if (prior?.lease.claimFence !== lease.claimFence || prior.lease.claimOwner !== lease.claimOwner)
+      return false;
+    this.events.push(`defer:${lease.stage}`);
+    this.attempts.set(lease.attemptId, { lease, result, deferred: true });
+    return true;
   };
 
   completeAttempt = async (
@@ -183,27 +200,15 @@ class FakeStore implements MediaProcessingStore {
     return true;
   };
 
-  commitTranscript = async (
-    expected: MediaProcessingAuthority,
-    transcript: NonNullable<MediaProcessingAuthority["transcript"]>,
-  ): Promise<MediaProcessingCommit> => {
-    if (this.current.transcript?.transcript_artifact_ref === transcript.transcript_artifact_ref)
-      return "replay";
-    if (expected.audioRevision !== this.current.audioRevision) return "stale";
-    this.events.push("commit:transcript");
-    this.current = { ...this.current, transcript };
-    return "committed";
-  };
-
   commitAnalysis = async (
     expected: MediaProcessingAuthority,
     analysis: MediaProcessingAnalysis,
   ): Promise<MediaProcessingCommit> => {
     if (
       this.current.analysis !== null &&
-      this.current.analysis.speech.status === "ready" &&
-      analysis.speech.status === "ready" &&
-      this.current.analysis.speech.lyricsRevision === analysis.speech.lyricsRevision
+      this.current.analysis.lyricsAnalysis.status === "ready" &&
+      analysis.lyricsAnalysis.status === "ready" &&
+      this.current.analysis.lyricsAnalysis.lyricsRevision === analysis.lyricsAnalysis.lyricsRevision
     )
       return "replay";
     if (
@@ -253,7 +258,7 @@ class FakeStore implements MediaProcessingStore {
       return "stale";
     this.events.push("commit:publication+alignment");
     this.publications += 1;
-    this.alignmentLaunches += 1;
+    if (this.current.lyrics !== null) this.alignmentLaunches += 1;
     this.current = {
       ...this.current,
       status: "published",
@@ -264,7 +269,7 @@ class FakeStore implements MediaProcessingStore {
     return "committed";
   };
 
-  commitAlignment: MediaProcessingStore["commitAlignment"] = async (expected) => {
+  commitAlignment: MediaProcessingStore["commitAlignment"] = async (expected, result) => {
     if (
       expected.publishedLyricsRevision !== this.current.publishedLyricsRevision ||
       expected.postId !== this.current.postId
@@ -273,6 +278,7 @@ class FakeStore implements MediaProcessingStore {
     if (this.alignments > 0) return "replay";
     this.events.push(`commit:alignment:l${String(expected.publishedLyricsRevision)}`);
     this.alignments += 1;
+    this.alignmentResults.push(result);
     return "committed";
   };
 
@@ -308,11 +314,8 @@ class FakeStore implements MediaProcessingStore {
 
 type ProviderControls = {
   durationMs: number;
-  asr: "transcript" | "no_speech";
   acr: ("no_match" | "fingerprint" | "match" | "failure")[];
   explicitness: "not_explicit" | "explicit" | "uncertain";
-  materialDisagreement: boolean;
-  mediaSafety: "allow" | "draft" | "review_required" | "blocked";
   onClassifierInput?: (input: MediaExplicitnessClassifierInput) => void;
 };
 
@@ -322,11 +325,8 @@ function providers(
 ): MediaProcessingProviders {
   const controls: ProviderControls = {
     durationMs: 180_000,
-    asr: "transcript",
     acr: ["no_match", "no_match"],
     explicitness: "not_explicit",
-    materialDisagreement: false,
-    mediaSafety: "allow",
     ...overrides,
   };
   let acrIndex = 0;
@@ -453,49 +453,6 @@ function providers(
         };
       },
     },
-    safety: {
-      reviewAudio: async (input) => {
-        events.push(`effect:safety:${input.operationId}`);
-        return controls.mediaSafety;
-      },
-    },
-    asr: {
-      recognize: (input: MediaAsrInput) => {
-        events.push(`effect:asr:${input.audio.canonical_audio_sha256}`);
-        if (controls.asr === "no_speech") {
-          return Effect.succeed({
-            version: "media-asr-result-v1",
-            status: "no_speech",
-            audio: input.audio,
-            attempt: input.attempt,
-            transcript: null,
-            detected_languages: [],
-            evidence_ref: "no-speech-evidence-1",
-            adapter_revision: "asr-v1",
-          });
-        }
-        return Effect.succeed({
-          version: "media-asr-result-v1",
-          status: "transcript",
-          audio: input.audio,
-          attempt: input.attempt,
-          transcript: {
-            version: "media-transcript-artifact-v1",
-            operation_id: input.audio.operation_id,
-            audio_revision: input.audio.audio_revision,
-            analysis_revision: input.audio.analysis_revision,
-            canonical_audio_sha256: input.audio.canonical_audio_sha256,
-            transcript_artifact_ref: "transcript-artifact-1",
-            transcript_sha256: transcriptHash,
-            audio_artifact_ref: input.audio.audio_artifact_ref,
-            transcript: hostileTranscript,
-            segments: [{ start_ms: 0, end_ms: 1000, text: "hostile transcript" }],
-          },
-          detected_languages: [{ language_bcp47: "en", confidence: 0.99 }],
-          adapter_revision: "asr-v1",
-        });
-      },
-    },
     classifier: {
       classify: (input: MediaExplicitnessClassifierInput) => {
         controls.onClassifierInput?.(input);
@@ -504,35 +461,18 @@ function providers(
           version: "media-explicitness-classifier-result-v1",
           status: "classified",
           explicitness: controls.explicitness,
-          transcript_explicitness: controls.explicitness,
-          lyrics_explicitness: controls.explicitness,
-          material_disagreement: controls.materialDisagreement,
           primary_language_bcp47: "en",
           secondary_language_bcp47: null,
           confidence: { explicitness: 0.98, primary_language: 0.97, secondary_language: null },
           evidence: [
-            { kind: "explicitness", source: "transcript", segment_index: 0, confidence: 0.98 },
-            {
-              kind: "primary_language",
-              source: "lyrics",
-              segment_index: 0,
-              confidence: 0.97,
-            },
+            { kind: "explicitness", confidence: 0.98 },
+            { kind: "primary_language", confidence: 0.97 },
           ],
-          transcript_identity: {
-            operation_id: input.transcript.operation_id,
-            audio_revision: input.transcript.audio_revision,
-            analysis_revision: input.transcript.analysis_revision,
-            canonical_audio_sha256: input.transcript.canonical_audio_sha256,
-            transcript_artifact_ref: input.transcript.transcript_artifact_ref,
-            transcript_sha256: input.transcript.transcript_sha256,
-          },
           lyrics_identity: {
             operation_id: input.accepted_lyrics.operation_id,
             audio_revision: input.accepted_lyrics.audio_revision,
             lyrics_revision: input.accepted_lyrics.lyrics_revision,
             canonical_audio_sha256: input.accepted_lyrics.canonical_audio_sha256,
-            base_transcript_revision: input.accepted_lyrics.base_transcript_revision,
           },
           attempt_id: input.attempt.attempt_id,
           policy_revision: "classifier-policy-v1",
@@ -545,7 +485,12 @@ function providers(
     alignment: {
       align: async (input) => {
         events.push(`effect:alignment:l${input.lyricsRevision}:${input.lyrics}`);
-        return { status: "ready", artifactRef: `alignment-l${input.lyricsRevision}` };
+        return {
+          status: "ready",
+          artifactRef: `alignment-l${input.lyricsRevision}`,
+          artifactSha256: "b".repeat(64),
+          artifact: { version: "timed-lyrics-v1", timings: [] },
+        };
       },
     },
   };
@@ -562,9 +507,7 @@ function dependencies(store: FakeStore, provider: MediaProcessingProviders | nul
       policyRevision: "processor-policy-v1",
       transformAdapterRevision: "transform-v1",
       metadataAdapterRevision: "metadata-v1",
-      mediaSafetyAdapterRevision: "safety-v1",
       classifierTimeoutMs: 10_000,
-      asrTimeoutMs: 10_000,
       transformRuntimeMs: 60_000,
       maximumSampleBytes: 1_000_000,
     },
@@ -579,6 +522,51 @@ const workflowPayload = (store: FakeStore) => ({
 });
 
 describe("media processing workflow", () => {
+  test("persists and resumes a submitted Transloadit assembly before downstream effects", async () => {
+    const store = new FakeStore(authority({ lyrics: null }));
+    const providerEvents: string[] = [];
+    const base = providers(providerEvents);
+    let polls = 0;
+    const provider: MediaProcessingProviders = {
+      ...base,
+      transform: {
+        ...base.transform,
+        probe: (input) => {
+          polls += 1;
+          if (polls === 1) {
+            return Effect.succeed({
+              status: "submitted",
+              attempt: {
+                version: "media-transform-attempt-v1",
+                runtimeFence: input.attempt.runtimeFence,
+                providerJobId: "durable-probe-assembly",
+              },
+            });
+          }
+          expect(input.attempt.providerJobId).toBe("durable-probe-assembly");
+          return base.transform.probe(input);
+        },
+      },
+    };
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "analysis_launch",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.events).toContain("defer:probe");
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "analysis_launch",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "published_without_alignment" });
+    expect(polls).toBe(2);
+  });
+
   test("runs the terms-first fake-transport golden vertical and consumes the sealed hash", async () => {
     const store = new FakeStore();
     const providerEvents = store.events;
@@ -600,22 +588,19 @@ describe("media processing workflow", () => {
     expect(store.events.indexOf(`persist:probe:${hash}`)).toBeLessThan(
       providerEvents.indexOf(`effect:probe:${hash}`),
     );
-    for (const stage of ["probe", "sample_primary", "acr_primary", "asr", "classifier"] as const) {
+    for (const stage of ["probe", "sample_primary", "acr_primary", "classifier"] as const) {
       expect(store.events).toContain(`persist:${stage}:${hash}`);
     }
-    expect(providerEvents.join("\n")).not.toContain(hostileTranscript);
     expect(classifierInputs).toHaveLength(1);
     expect(Object.keys(classifierInputs[0] ?? {}).sort()).toEqual([
       "accepted_lyrics",
       "attempt",
-      "transcript",
       "version",
     ]);
-    expect(classifierInputs[0]?.transcript.transcript).toBe(hostileTranscript);
     expect(classifierInputs[0]?.accepted_lyrics.lyrics).toBe("accepted lyrics");
   });
 
-  test("analysis-first waits for accepted lyrics and a wakeup converges once", async () => {
+  test("analysis-first waits only for terms and publishes without lyrics", async () => {
     const store = new FakeStore(authority({ termsRevision: null, lyrics: null }));
     const providerEvents: string[] = [];
     const provider = providers(providerEvents);
@@ -624,7 +609,7 @@ describe("media processing workflow", () => {
       "analysis_launch",
       dependencies(store, provider),
     );
-    expect(first).toEqual({ outcome: "waiting_for_lyrics" });
+    expect(first).toEqual({ outcome: "waiting_for_terms" });
     expect(providerEvents.filter((event) => event.startsWith("effect:classifier"))).toHaveLength(0);
 
     store.current = {
@@ -636,7 +621,6 @@ describe("media processing workflow", () => {
         audioRevision: 1,
         canonicalAudioSha256: hash,
         text: "later accepted lyrics",
-        baseTranscriptRevision: 1,
       },
     };
     const decisionOutbox = store.outboxes.get("outbox-1");
@@ -681,7 +665,6 @@ describe("media processing workflow", () => {
         audioRevision: 1,
         canonicalAudioSha256: hash,
         text: hostileCorrectedLyrics,
-        baseTranscriptRevision: 1,
       },
       decision: null,
     };
@@ -694,7 +677,10 @@ describe("media processing workflow", () => {
       "decision_wakeup",
       dependencies(store, provider),
     );
-    expect(store.current.analysis?.speech).toMatchObject({ status: "ready", lyricsRevision: 2 });
+    expect(store.current.analysis?.lyricsAnalysis).toMatchObject({
+      status: "ready",
+      lyricsRevision: 2,
+    });
     expect([...store.attempts.keys()]).toContain("media-attempt-operation-1-a1-n1-classifier-l2");
     expect(providerEvents.filter((event) => event === "effect:classifier:l2")).toHaveLength(1);
   });
@@ -707,7 +693,6 @@ describe("media processing workflow", () => {
           audioRevision: 1,
           canonicalAudioSha256: "b".repeat(64),
           text: "stale pasted lyrics",
-          baseTranscriptRevision: null,
         },
       }),
     );
@@ -718,25 +703,27 @@ describe("media processing workflow", () => {
         "analysis_launch",
         dependencies(store, providers(providerEvents)),
       ),
-    ).toEqual({ outcome: "waiting_for_lyrics" });
+    ).toEqual({ outcome: "processing_failed" });
     expect(providerEvents.some((event) => event.startsWith("effect:classifier"))).toBe(false);
     expect(store.current.decision).toBeNull();
   });
 
-  test("proven no_speech bypasses classification and publishes without lyrics", async () => {
+  test("missing lyrics bypass classification and alignment but still publishes", async () => {
     const store = new FakeStore(authority({ lyrics: null }));
     const providerEvents: string[] = [];
     const result = await runMediaProcessingWorkflow(
       workflowPayload(store),
       "analysis_launch",
-      dependencies(store, providers(providerEvents, { asr: "no_speech" })),
+      dependencies(store, providers(providerEvents)),
     );
-    expect(result).toEqual({ outcome: "published" });
+    expect(result).toEqual({ outcome: "published_without_alignment" });
     expect(providerEvents.some((event) => event.startsWith("effect:classifier"))).toBe(false);
     expect(store.current.publishedLyricsRevision).toBeNull();
+    expect(store.alignmentLaunches).toBe(0);
+    expect(store.current.analysis?.lyricsAnalysis).toEqual({ status: "not_applicable" });
   });
 
-  test("duration rejection stops before sample, ACR, ASR, and publication", async () => {
+  test("duration rejection stops before sample, ACR, classification, and publication", async () => {
     const store = new FakeStore();
     const providerEvents: string[] = [];
     const result = await runMediaProcessingWorkflow(
@@ -781,7 +768,7 @@ describe("media processing workflow", () => {
     }
   });
 
-  test("explicit lyrics publish truthfully while disagreement enters review", async () => {
+  test("explicit lyrics publish truthfully while uncertain classification enters review", async () => {
     const explicitStore = new FakeStore();
     expect(
       await runMediaProcessingWorkflow(
@@ -790,9 +777,9 @@ describe("media processing workflow", () => {
         dependencies(explicitStore, providers([], { explicitness: "explicit" })),
       ),
     ).toEqual({ outcome: "published" });
-    expect(explicitStore.current.analysis?.speech.status).toBe("ready");
-    if (explicitStore.current.analysis?.speech.status === "ready") {
-      expect(explicitStore.current.analysis.speech.explicitness).toBe("explicit");
+    expect(explicitStore.current.analysis?.lyricsAnalysis.status).toBe("ready");
+    if (explicitStore.current.analysis?.lyricsAnalysis.status === "ready") {
+      expect(explicitStore.current.analysis.lyricsAnalysis.explicitness).toBe("explicit");
     }
 
     const mismatchStore = new FakeStore();
@@ -800,10 +787,7 @@ describe("media processing workflow", () => {
       await runMediaProcessingWorkflow(
         workflowPayload(mismatchStore),
         "analysis_launch",
-        dependencies(
-          mismatchStore,
-          providers([], { explicitness: "uncertain", materialDisagreement: true }),
-        ),
+        dependencies(mismatchStore, providers([], { explicitness: "uncertain" })),
       ),
     ).toEqual({ outcome: "manual_review" });
     expect(mismatchStore.publications).toBe(0);
@@ -811,7 +795,7 @@ describe("media processing workflow", () => {
 
   test("moderator approval produces one publication and one alignment launch", async () => {
     const store = new FakeStore();
-    const provider = providers([], { materialDisagreement: true });
+    const provider = providers([], { explicitness: "uncertain" });
     expect(
       await runMediaProcessingWorkflow(
         workflowPayload(store),
@@ -913,6 +897,96 @@ describe("media processing workflow", () => {
     expect(providerEvents.filter((event) => event.startsWith("effect:alignment"))).toEqual([
       "effect:alignment:l1:accepted lyrics",
     ]);
+  });
+
+  test("alignment provider failures retry without changing published product state", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+      }),
+      "alignment",
+    );
+    const base = providers([]);
+    const provider: MediaProcessingProviders = {
+      ...base,
+      alignment: { align: async () => Promise.reject(new Error("provider unavailable")) },
+    };
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "alignment",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.events).toContain("fail:alignment");
+    expect(store.current.status).toBe("published");
+    expect(store.providerReviews).toBe(0);
+    expect(store.alignments).toBe(0);
+  });
+
+  test("transient alignment outcomes enter the durable retry ledger", async () => {
+    const store = new FakeStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+      }),
+      "alignment",
+    );
+    const base = providers([]);
+    const provider: MediaProcessingProviders = {
+      ...base,
+      alignment: {
+        align: async () => ({ status: "unavailable", failureCode: "provider_unavailable" }),
+      },
+    };
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "alignment",
+        dependencies(store, provider),
+      ),
+    ).toEqual({ outcome: "waiting_for_provider" });
+    expect(store.events).toContain("fail:alignment");
+    expect(store.current.status).toBe("published");
+    expect(store.providerReviews).toBe(0);
+    expect(store.alignments).toBe(0);
+  });
+
+  test("alignment exhaustion records unavailable without reopening published moderation", async () => {
+    class AlignmentExhaustedStore extends FakeStore {
+      override startAttempt: MediaProcessingStore["startAttempt"] = async () => ({
+        kind: "exhausted",
+      });
+    }
+    const store = new AlignmentExhaustedStore(
+      authority({
+        status: "published",
+        phase: null,
+        postId: "media-post-operation-1",
+        publishedLyricsRevision: 1,
+      }),
+      "alignment",
+    );
+
+    expect(
+      await runMediaProcessingWorkflow(
+        workflowPayload(store),
+        "alignment",
+        dependencies(store, providers([])),
+      ),
+    ).toEqual({ outcome: "alignment_recorded" });
+    expect(store.alignmentResults).toEqual([
+      { kind: "alignment", status: "unavailable", failureCode: "provider_unavailable" },
+    ]);
+    expect(store.current.status).toBe("published");
+    expect(store.providerReviews).toBe(0);
   });
 
   test("stale attempt completion is fenced", async () => {

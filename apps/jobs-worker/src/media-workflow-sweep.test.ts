@@ -19,6 +19,7 @@ const candidate = (
   analysisRevision: 1,
   decisionRevision: 0,
   workflowRevision: 1,
+  retryCount: 0,
   status: "processing",
   phase: "analysis",
   audio: {
@@ -29,7 +30,6 @@ const candidate = (
   },
   termsRevision: 3,
   lyrics: null,
-  transcript: null,
   analysis: null,
   decision: null,
   boundReferenceAssetId: null,

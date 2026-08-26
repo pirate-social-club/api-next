@@ -1,5 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { inspectMediaUpload, sealMediaUpload } from "./media-sealing-adapter.ts";
+import {
+  inspectMediaUpload,
+  type MediaSealBuckets,
+  sealMediaUpload,
+} from "./media-sealing-adapter.ts";
 
 const originalDigestStream = Object.getOwnPropertyDescriptor(globalThis, "DigestStream");
 let failDigest = false;
@@ -119,6 +123,12 @@ function body(base: R2Object, bytes: Uint8Array): R2ObjectBody {
   };
 }
 
+function sameTestBucket(
+  bucket: MediaSealBuckets["ingress"] & MediaSealBuckets["immutableOriginals"],
+): MediaSealBuckets {
+  return { ingress: bucket, immutableOriginals: bucket };
+}
+
 describe("Workers R2 media sealing adapter", () => {
   test("inspects once, conditionally selects, hashes, writes absent-only, and verifies", async () => {
     const bytes = new Uint8Array([1, 2, 3, 4]);
@@ -141,25 +151,38 @@ describe("Workers R2 media sealing adapter", () => {
       sourceVersion: sourceObject.version,
       sha256,
     });
-    const calls: string[] = [];
-    const bucket = {
+    const ingressCalls: string[] = [];
+    const immutableCalls: string[] = [];
+    const ingress = {
       head: async (key: string) => {
-        calls.push(`head:${key}`);
-        return key === sourceObject.key ? sourceObject : destinationObject;
+        ingressCalls.push(`head:${key}`);
+        return key === sourceObject.key ? sourceObject : null;
       },
       get: async (
         _key: string,
         options: R2GetOptions & { readonly onlyIf: R2Conditional | Headers },
       ) => {
-        calls.push(`get:${JSON.stringify(options.onlyIf)}`);
+        ingressCalls.push(`get:${JSON.stringify(options.onlyIf)}`);
         return body(sourceObject, bytes);
+      },
+      put: async () => {
+        throw new Error("ingress bucket must never receive immutable writes");
+      },
+    };
+    const immutableOriginals = {
+      head: async (key: string) => {
+        immutableCalls.push(`head:${key}`);
+        return key === destinationObject.key ? destinationObject : null;
+      },
+      get: async () => {
+        throw new Error("immutable bucket must never supply ingress bytes");
       },
       put: async (
         _key: string,
         stream: ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob,
         options: R2PutOptions & { readonly onlyIf: R2Conditional | Headers },
       ) => {
-        calls.push(
+        immutableCalls.push(
           `put:${options.onlyIf instanceof Headers ? options.onlyIf.get("if-none-match") : ""}`,
         );
         if (!(stream instanceof ReadableStream)) throw new Error("expected a stream body");
@@ -168,24 +191,27 @@ describe("Workers R2 media sealing adapter", () => {
       },
     };
 
-    const inspection = await inspectMediaUpload(bucket, {
+    const inspection = await inspectMediaUpload(ingress, {
       sourceKey: sourceObject.key,
       expectedSizeBytes: bytes.byteLength,
       expectedContentType: "audio/mpeg",
     });
     expect(inspection.outcome).toBe("ready");
     if (inspection.outcome !== "ready") throw new Error("inspection was not ready");
-    const attempt = await sealMediaUpload(bucket, {
-      source: inspection.source,
-      destinationKey: destinationObject.key,
-      immutableRef: "media://immutable/media_operation/audio/1",
-      expectedSizeBytes: bytes.byteLength,
-      expectedContentType: "audio/mpeg",
-      expectedSha256: Array.from(new Uint8Array(sha256), (value) =>
-        value.toString(16).padStart(2, "0"),
-      ).join(""),
-      ownershipMarker: "media_operation",
-    });
+    const attempt = await sealMediaUpload(
+      { ingress, immutableOriginals },
+      {
+        source: inspection.source,
+        destinationKey: destinationObject.key,
+        immutableRef: "media://immutable/media_operation/audio/1",
+        expectedSizeBytes: bytes.byteLength,
+        expectedContentType: "audio/mpeg",
+        expectedSha256: Array.from(new Uint8Array(sha256), (value) =>
+          value.toString(16).padStart(2, "0"),
+        ).join(""),
+        ownershipMarker: "media_operation",
+      },
+    );
 
     expect(attempt.result).toMatchObject({
       outcome: "sealed",
@@ -193,12 +219,8 @@ describe("Workers R2 media sealing adapter", () => {
       etag: "destination-etag",
       size_bytes: 4,
     });
-    expect(calls).toEqual([
-      `head:${sourceObject.key}`,
-      'get:{"etagMatches":"source-etag"}',
-      "put:*",
-      `head:${destinationObject.key}`,
-    ]);
+    expect(ingressCalls).toEqual([`head:${sourceObject.key}`, 'get:{"etagMatches":"source-etag"}']);
+    expect(immutableCalls).toEqual(["put:*", `head:${destinationObject.key}`]);
   });
 
   test("does not write after a source precondition failure", async () => {
@@ -212,14 +234,14 @@ describe("Workers R2 media sealing adapter", () => {
     });
     let puts = 0;
     const attempt = await sealMediaUpload(
-      {
+      sameTestBucket({
         head: async () => null,
         get: async () => sourceObject,
         put: async () => {
           puts += 1;
           return null;
         },
-      },
+      }),
       {
         source: {
           key: sourceObject.key,
@@ -262,7 +284,7 @@ describe("Workers R2 media sealing adapter", () => {
     });
     let putCalls = 0;
     const attempt = await sealMediaUpload(
-      {
+      sameTestBucket({
         head: async () => siblingObject,
         get: async () => body(sourceObject, bytes),
         put: async () => {
@@ -271,7 +293,7 @@ describe("Workers R2 media sealing adapter", () => {
           putCalls += 1;
           return null;
         },
-      },
+      }),
       {
         source: {
           key: sourceObject.key,
@@ -326,11 +348,11 @@ describe("Workers R2 media sealing adapter", () => {
     });
 
     const attempt = await sealMediaUpload(
-      {
+      sameTestBucket({
         head: async () => foreignObject,
         get: async () => body(sourceObject, bytes),
         put: async () => null,
-      },
+      }),
       {
         source: {
           key: sourceObject.key,
@@ -372,7 +394,7 @@ describe("Workers R2 media sealing adapter", () => {
     try {
       await expect(
         sealMediaUpload(
-          {
+          sameTestBucket({
             head: async () =>
               object({
                 key: "immutable/media_operation/audio/1",
@@ -385,7 +407,7 @@ describe("Workers R2 media sealing adapter", () => {
               }),
             get: async () => body(sourceObject, bytes),
             put: async () => null,
-          },
+          }),
           {
             source: {
               key: sourceObject.key,
@@ -429,11 +451,11 @@ describe("Workers R2 media sealing adapter", () => {
       sourceVersion: sourceObject.version,
     });
     const attempt = await sealMediaUpload(
-      {
+      sameTestBucket({
         head: async () => destinationObject,
         get: async () => body(sourceObject, bytes),
         put: async () => destinationObject,
-      },
+      }),
       {
         source: {
           key: sourceObject.key,
@@ -473,13 +495,13 @@ describe("Workers R2 media sealing adapter", () => {
     });
     await expect(
       sealMediaUpload(
-        {
+        sameTestBucket({
           head: async () => null,
           get: async () => body(sourceObject, bytes),
           put: async () => {
             throw new Error("uncertain");
           },
-        },
+        }),
         {
           source: {
             key: sourceObject.key,
@@ -523,14 +545,14 @@ describe("Workers R2 media sealing adapter", () => {
     try {
       await expect(
         sealMediaUpload(
-          {
+          sameTestBucket({
             head: async () => destinationObject,
             get: async () => body(sourceObject, bytes),
             put: async (_key, value) => {
               if (value instanceof ReadableStream) await new Response(value).arrayBuffer();
               return destinationObject;
             },
-          },
+          }),
           {
             source: {
               key: sourceObject.key,
@@ -592,11 +614,11 @@ describe("Workers R2 media sealing adapter", () => {
 
     await expect(
       sealMediaUpload(
-        {
+        sameTestBucket({
           head: async () => replaced,
           get: async () => body(sourceObject, bytes),
           put: async () => written,
-        },
+        }),
         {
           source: {
             key: sourceObject.key,

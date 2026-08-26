@@ -126,7 +126,7 @@ const payloadMatchesInput = (
             payload.lyrics_revision === input.lyricsRevision);
 
 export class MediaOutboxRepositoryError extends Data.TaggedError("MediaOutboxRepositoryError")<{
-  readonly operation: "enqueue" | "get" | "claim" | "deliver" | "fail";
+  readonly operation: "enqueue" | "get" | "list" | "claim" | "deliver" | "fail";
   readonly reason:
     | "invalid-input"
     | "not-found"
@@ -204,6 +204,9 @@ export type MediaOutboxStore = {
   get(
     outboxEventId: string,
   ): Effect.Effect<MediaOutboxRecord | null, MediaOutboxRepositoryFailure, ControlPlaneDb>;
+  listEligible(
+    limit: number,
+  ): Effect.Effect<readonly MediaOutboxRecord[], MediaOutboxRepositoryFailure, ControlPlaneDb>;
   claim(
     input: MediaOutboxClaimInput,
   ): Effect.Effect<MediaOutboxRecord | null, MediaOutboxRepositoryFailure, ControlPlaneDb>;
@@ -432,6 +435,20 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       if (result.rows.length !== 1) return yield* Effect.fail(fail("get", "invalid-row", id));
       return yield* decode(result.rows[0] as Row, "get", id);
     });
+  const listEligible: MediaOutboxStore["listEligible"] = (limit) =>
+    Effect.gen(function* () {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+        return yield* Effect.fail(fail("list", "invalid-input"));
+      }
+      const db = yield* ControlPlaneDb;
+      const result = yield* db.execute<Row>({
+        label: "media-outbox.list-eligible",
+        text: "SELECT * FROM media_submission_outbox WHERE delivery_attempts < 3 AND (state='pending' OR (state='failed' AND next_eligible_at<=clock_timestamp()) OR (state='running' AND lease_expires_at<=clock_timestamp())) ORDER BY created_at,outbox_event_id LIMIT $1",
+        values: [limit],
+        readonly: true,
+      });
+      return yield* Effect.forEach(result.rows, (row) => decode(row, "list"));
+    });
   const claim: MediaOutboxStore["claim"] = (input) =>
     Effect.gen(function* () {
       if (
@@ -514,5 +531,5 @@ export function makeControlPlaneMediaOutboxRepository(): MediaOutboxStore {
       });
       return result.rowCount === 1;
     });
-  return { enqueue, get, claim, markDelivered, markFailed };
+  return { enqueue, get, listEligible, claim, markDelivered, markFailed };
 }

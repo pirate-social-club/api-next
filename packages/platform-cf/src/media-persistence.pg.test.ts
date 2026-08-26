@@ -1,12 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import type { ControlPlaneDb } from "@pirate/application";
-import {
-  SONG_TRANSCRIPT_MAX_DURATION_MS,
-  SONG_TRANSCRIPT_SEGMENT_MAX_COUNT,
-  SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH,
-  SONG_TRANSCRIPT_TEXT_MAX_LENGTH,
-} from "@pirate/contracts";
 import { Effect } from "effect";
 import { Client } from "pg";
 import {
@@ -19,6 +13,7 @@ import type {
   TrustedSongAnalysis,
 } from "../../domain/src/media-submission.ts";
 import { makeControlPlaneMediaOutboxRepository } from "./media-outbox-repository";
+import { makeMediaProcessingStore } from "./media-processing-store";
 import { makeControlPlaneMediaSubmissionRepository } from "./media-submission-repository";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres";
 
@@ -31,7 +26,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_MEDIA_PERSISTENCE_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-media-persistence-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-media-persistence-suite-complete\n";
-const testCount = 27;
+const testCount = 28;
 let completedTestCount = 0;
 const actor = "media_pg_actor",
   moderator = "media_pg_moderator",
@@ -72,13 +67,7 @@ const analysis: TrustedSongAnalysis = {
     trackTitle: null,
     cover: { status: "absent", reasonCode: "not_embedded" },
   },
-  speechLyrics: {
-    status: "no_speech",
-    explicitness: "no_lyrics",
-    evidenceRef: "speech_evidence_1",
-    policyRevision: "speech_policy_1",
-    adapterRevision: "speech_adapter_1",
-  },
+  lyricsAnalysis: { status: "not_applicable" },
   acr: {
     decision: "allow",
     evidenceRef: "acr_evidence_1",
@@ -86,7 +75,7 @@ const analysis: TrustedSongAnalysis = {
     adapterRevision: "acr_adapter_1",
   },
   mediaSafety: "allow",
-  lyricsSafety: "skipped",
+  lyricsSafety: "not_applicable",
   boundReference: null,
 };
 const decision: PublicationDecision = {
@@ -256,11 +245,7 @@ async function createThroughDecision(
   selectedDecision: PublicationDecision = decision,
   selectedAnalysis: TrustedSongAnalysis = analysis,
   skipDecision = false,
-  transcriptArtifact?: Readonly<{
-    transcript: string;
-    segments: readonly Readonly<{ start_ms: number; end_ms: number; text: string }>[];
-  }>,
-  pastedLyrics?: string,
+  initialLyrics?: string,
 ): Promise<void> {
   expect(
     await run(connection, (store) =>
@@ -346,61 +331,14 @@ async function createThroughDecision(
       }),
     ),
   ).toMatchObject({ kind: "committed" });
-  if (transcriptArtifact !== undefined) {
-    const transcriptSha256 = sha256(new TextEncoder().encode(transcriptArtifact.transcript));
-    expect(
-      await run(connection, (store) =>
-        store.acceptTranscript({
-          ...command(
-            connection,
-            "/media-post-submissions/:submissionId/transcript",
-            "transcript-key",
-          ),
-          expectedAudioRevision: 1,
-          expectedCanonicalAudioSha256: audioSha256,
-          transcriptRevision: 1,
-          transcriptArtifactRef: "media_pg_transcript_artifact",
-          transcriptSha256,
-          transcript: transcriptArtifact.transcript,
-          segments: transcriptArtifact.segments,
-        }),
-      ),
-    ).toEqual({ kind: "committed", submissionId: submission });
+  if (initialLyrics !== undefined) {
     expect(
       await run(connection, (store) =>
         store.bindLyrics({
           ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-key"),
           expectedCreationRevision: 2,
           expectedAudioRevision: 1,
-          baseTranscriptRevision: 1,
-          lyrics: transcriptArtifact.transcript,
-          outbox: {
-            outboxEventId: "media_pg_lyrics_outbox",
-            effectIdentity: "media_pg_lyrics_effect",
-            payload: {
-              kind: "decision_wakeup",
-              submission_id: submission,
-              operation_id: operation,
-              creation_revision: 3,
-              lyrics_revision: 1,
-              trigger: "lyrics",
-              workflow_revision: 1,
-              workflow_instance_id: `media-${operation}-r1`,
-            },
-          },
-        }),
-      ),
-    ).toEqual({ kind: "committed", submissionId: submission });
-  }
-  if (pastedLyrics !== undefined) {
-    expect(
-      await run(connection, (store) =>
-        store.bindLyrics({
-          ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-key"),
-          expectedCreationRevision: 2,
-          expectedAudioRevision: 1,
-          baseTranscriptRevision: null,
-          lyrics: pastedLyrics,
+          lyrics: initialLyrics,
           outbox: {
             outboxEventId: "media_pg_lyrics_outbox",
             effectIdentity: "media_pg_lyrics_effect",
@@ -481,6 +419,143 @@ async function expectHostileLyricsProjectionLeakRejected(
 }
 
 suite("song media persistence PostgreSQL 17 race suite", () => {
+  test("persists provider unavailability as a review hold without a publication decision", async () => {
+    await withSchema(async (admin, connection) => {
+      await createThroughDecision(connection, decision, analysis, true);
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const store = makeMediaProcessingStore(layer);
+      const authority = await store.loadAuthority(submission, operation);
+      expect(authority).not.toBeNull();
+      if (authority === null) return;
+      expect(await store.commitProviderUnavailableReview(authority, "provider_exhausted")).toBe(
+        "committed",
+      );
+      const held = await admin.query<{
+        status: string;
+        review_reason_code: string | null;
+        review_exhaustion_code: string | null;
+        current_decision_revision: number | null;
+        event_kind: string;
+      }>(
+        `SELECT submission.status, submission.review_reason_code,
+                submission.review_exhaustion_code, submission.current_decision_revision,
+                event.event_kind
+         FROM media_post_submissions submission
+         JOIN media_submission_events event
+           ON event.submission_id=submission.submission_id
+          AND event.event_sequence=submission.event_sequence
+         WHERE submission.submission_id=$1`,
+        [submission],
+      );
+      expect(held.rows).toEqual([
+        {
+          status: "manual_review",
+          review_reason_code: "moderation_unavailable",
+          review_exhaustion_code: null,
+          current_decision_revision: null,
+          event_kind: "provider_unavailable_review_recorded",
+        },
+      ]);
+      expect(
+        await admin.query("SELECT 1 FROM media_publication_decisions WHERE submission_id=$1", [
+          submission,
+        ]),
+      ).toMatchObject({ rowCount: 0 });
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
+  test("reloads authority and durably resumes provider polling and numbered retries", async () => {
+    await withSchema(async (_admin, connection) => {
+      await createThroughDecision(connection);
+      const layer = makeDirectPostgresControlPlaneLayer(connection);
+      const store = makeMediaProcessingStore(layer, { retryBaseMs: 1 });
+      const authority = await store.loadAuthority(submission, operation);
+      expect(authority).not.toBeNull();
+      if (authority === null) return;
+      expect(authority).toMatchObject({ analysisRevision: 1, retryCount: 0 });
+
+      const startInput = {
+        authority,
+        stage: "probe" as const,
+        attemptId: "media-pg-runtime-probe",
+        workerId: "media-pg-worker",
+        inputRevision: 1,
+        inputHash: audioSha256,
+        policyRevision: "media-pg-policy-v1",
+        adapterRevision: "media-pg-adapter-v1",
+      };
+      const first = await store.startAttempt(startInput);
+      expect(first).toMatchObject({ kind: "run", lease: { attemptNumber: 1 } });
+      if (first.kind !== "run") return;
+      const progress = {
+        kind: "probe" as const,
+        value: {
+          status: "submitted" as const,
+          attempt: {
+            version: "media-transform-attempt-v1" as const,
+            runtimeFence: { submittedAtMs: 1, runtimeDeadlineMs: 60_001 },
+            providerJobId: "media-pg-assembly-1",
+          },
+        },
+      };
+      expect(await store.deferAttempt(first.lease, progress, 1)).toBe(true);
+      await Bun.sleep(5);
+      const resumed = await store.startAttempt(startInput);
+      expect(resumed).toMatchObject({
+        kind: "run",
+        lease: {
+          attemptNumber: 1,
+          priorResult: { value: { attempt: { providerJobId: "media-pg-assembly-1" } } },
+        },
+      });
+      if (resumed.kind !== "run") return;
+      expect(
+        await store.completeAttempt(resumed.lease, {
+          kind: "probe",
+          value: {
+            status: "rejected",
+            reason: "unsupported_codec",
+            attempt: progress.value.attempt,
+          },
+        }),
+      ).toBe(true);
+      expect(await store.startAttempt(startInput)).toMatchObject({
+        kind: "replay",
+        result: { kind: "probe", value: { reason: "unsupported_codec" } },
+      });
+
+      const retryInput = {
+        ...startInput,
+        stage: "sample_primary" as const,
+        attemptId: "media-pg-runtime-sample",
+      };
+      const retryOne = await store.startAttempt(retryInput);
+      if (retryOne.kind !== "run") return;
+      expect(await store.failAttempt(retryOne.lease, "provider_timeout", true)).toBe(true);
+      await Bun.sleep(5);
+      const retryTwo = await store.startAttempt(retryInput);
+      expect(retryTwo).toMatchObject({ kind: "run", lease: { attemptNumber: 2 } });
+      if (retryTwo.kind !== "run") return;
+      expect(await store.failAttempt(retryTwo.lease, "provider_timeout", true)).toBe(true);
+      await Bun.sleep(5);
+      const retryThree = await store.startAttempt(retryInput);
+      expect(retryThree).toMatchObject({ kind: "run", lease: { attemptNumber: 3 } });
+      if (retryThree.kind !== "run") return;
+      expect(await store.failAttempt(retryThree.lease, "provider_timeout", true)).toBe(true);
+      expect(await store.startAttempt(retryInput)).toEqual({ kind: "exhausted" });
+
+      expect(
+        await run(connection, (_submissionStore, outboxStore) => outboxStore.listEligible(10)),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ outboxEventId: "media_pg_analysis_outbox" }),
+        ]),
+      );
+    });
+    completedTestCount += 1;
+  }, 40_000);
+
   test("applies 0043 over populated 0042 and atomically publishes owned lineage", async () => {
     await withSchema(async (admin, connection) => {
       const appendOnlyTriggers = await admin.query<{ trigger_name: string }>(
@@ -539,73 +614,9 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             expectedAnalysisRevision: 1,
             expectedDecisionRevision: 1,
             postId,
-            outbox: {
-              outboxEventId: "media_pg_publication_outbox",
-              effectIdentity: "media_pg_publication_effect",
-              payload: {
-                kind: "alignment",
-                submission_id: submission,
-                operation_id: operation,
-                post_id: postId,
-                lyrics_revision: null,
-                workflow_revision: 2,
-                workflow_instance_id: `media-${operation}-r2`,
-              },
-            },
           }),
         ),
       ).toMatchObject({ kind: "committed", postId });
-      expect(
-        await run(connection, (store) =>
-          store.recordAlignment({
-            communityId: community,
-            submissionId: submission,
-            actorUserId: actor,
-            personaId: personaFor(connection),
-            postId,
-            audioRevision: 1,
-            analysisRevision: 1,
-            lyricsRevision: null,
-            canonicalAudioSha256: audioSha256,
-            outcome: "unavailable",
-            failureCode: "lyrics_missing",
-          }),
-        ),
-      ).toBeUndefined();
-      expect(
-        await run(connection, (store) =>
-          store.recordAlignment({
-            communityId: community,
-            submissionId: submission,
-            actorUserId: actor,
-            personaId: personaFor(connection),
-            postId,
-            audioRevision: 1,
-            analysisRevision: 1,
-            lyricsRevision: null,
-            canonicalAudioSha256: audioSha256,
-            outcome: "unavailable",
-            failureCode: "lyrics_missing",
-          }),
-        ),
-      ).toBeUndefined();
-      expect(
-        await run(connection, (store) =>
-          store.recordAlignment({
-            communityId: community,
-            submissionId: submission,
-            actorUserId: actor,
-            personaId: personaFor(connection),
-            postId,
-            audioRevision: 1,
-            analysisRevision: 1,
-            lyricsRevision: null,
-            canonicalAudioSha256: audioSha256,
-            outcome: "unavailable",
-            failureCode: "alignment_failed",
-          }),
-        ),
-      ).toBeUndefined();
       const counts = await admin.query<{
         events: string;
         effects: string;
@@ -618,9 +629,9 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       });
       expect(counts.rows[0]).toEqual({
         events: "8",
-        effects: "2",
+        effects: "1",
         publications: "1",
-        alignment: "unavailable",
+        alignment: "not_applicable",
         hns: "1",
       });
       expect(
@@ -917,7 +928,6 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-key"),
             expectedCreationRevision: 1,
             expectedAudioRevision: 1,
-            baseTranscriptRevision: null,
             lyrics: authorReviewedLyrics,
             outbox: {
               outboxEventId: "media_pg_lyrics_outbox",
@@ -2309,11 +2319,12 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       const admin = new Client({ connectionString: connection });
       await admin.connect();
       await createThroughDecision(connection, decision, analysis, true);
-      const normalizedNoSpeech = await admin.query(
-        "SELECT analysis_snapshot->'speechLyrics'->'transcriptArtifactRef' AS transcript_artifact_ref,analysis_snapshot->'speechLyrics'->'transcriptSha256' AS transcript_sha256,analysis_snapshot->'speechLyrics'->'primaryLanguageBcp47' AS primary_language,analysis_snapshot->'speechLyrics'->'secondaryLanguageBcp47' AS secondary_language FROM media_analysis_evidence WHERE submission_id=$1 AND analysis_revision=1",
+      const normalizedNoLyrics = await admin.query(
+        "SELECT analysis_snapshot->'lyricsAnalysis'->>'status' AS lyrics_analysis_status,transcript_artifact_ref,transcript_sha256,primary_language_bcp47 AS primary_language,secondary_language_bcp47 AS secondary_language FROM media_analysis_evidence WHERE submission_id=$1 AND analysis_revision=1",
         [submission],
       );
-      expect(normalizedNoSpeech.rows[0]).toEqual({
+      expect(normalizedNoLyrics.rows[0]).toEqual({
+        lyrics_analysis_status: "not_applicable",
         transcript_artifact_ref: null,
         transcript_sha256: null,
         primary_language: null,
@@ -2330,7 +2341,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ? JSON.parse(storedSnapshotValue)
           : storedSnapshotValue
       ) as Record<string, unknown>;
-      const storedSpeech = storedSnapshot.speechLyrics as Record<string, unknown>;
+      const storedLyricsAnalysis = storedSnapshot.lyricsAnalysis as Record<string, unknown>;
       const rejectSnapshot = async (snapshot: Record<string, unknown>): Promise<void> => {
         await admin.query("BEGIN");
         await expect(insertAnalysisSnapshotVariant(admin, 2, snapshot)).rejects.toThrow();
@@ -2339,36 +2350,30 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       await rejectSnapshot({
         ...storedSnapshot,
         analysisRevision: 2,
-        speechLyrics: {
-          status: "no_speech",
-          explicitness: "no_lyrics",
-          evidenceRef: storedSpeech.evidenceRef,
-          policyRevision: storedSpeech.policyRevision,
-          adapterRevision: storedSpeech.adapterRevision,
+        lyricsAnalysis: {
+          ...storedLyricsAnalysis,
+          evidenceRef: "forged-lyrics-evidence",
         },
       });
       await rejectSnapshot({
         ...storedSnapshot,
         analysisRevision: 2,
-        speechLyrics: {
-          ...storedSpeech,
-          transcriptArtifactRef: "forged-transcript",
-          transcriptSha256: "forged-transcript-hash",
+        lyricsAnalysis: {
+          status: "ready",
+          lyricsRevision: 1,
+          explicitness: "not_explicit",
           primaryLanguageBcp47: "en",
-          secondaryLanguageBcp47: "fr",
+          secondaryLanguageBcp47: null,
+          evidenceRef: "forged-lyrics-evidence",
+          policyRevision: "forged-lyrics-policy",
+          adapterRevision: "forged-lyrics-adapter",
         },
       });
       for (const key of ["evidenceRef", "policyRevision", "adapterRevision"] as const)
         await rejectSnapshot({
           ...storedSnapshot,
           analysisRevision: 2,
-          speechLyrics: { ...storedSpeech, [key]: 7 },
-        });
-      for (const key of ["transcriptArtifactRef", "transcriptSha256"] as const)
-        await rejectSnapshot({
-          ...storedSnapshot,
-          analysisRevision: 2,
-          speechLyrics: { ...storedSpeech, [key]: 7 },
+          lyricsAnalysis: { ...storedLyricsAnalysis, [key]: 7 },
         });
       await admin.query("BEGIN");
       await admin.query(
@@ -2539,149 +2544,17 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     });
     completedTestCount += 1;
   }, 40_000);
-  test("keeps ready transcript persistence aligned with classifier invariants", async () => {
-    await withSchema(async (admin, connection) => {
-      await createThroughDecision(connection, decision, analysis, true);
-      const validSegment = { start_ms: 0, end_ms: 1, text: "valid" } as const;
-      const invalidTranscripts: ReadonlyArray<
-        readonly [
-          string,
-          string,
-          readonly Readonly<{ start_ms: number; end_ms: number; text: string }>[],
-        ]
-      > = [
-        ["empty-transcript", "", [validSegment]],
-        ["empty-segments", "invalid", []],
-        ["zero-duration", "invalid", [{ start_ms: 0, end_ms: 0, text: "invalid" }]],
-        ["empty-segment-text", "invalid", [{ start_ms: 0, end_ms: 1, text: "" }]],
-        [
-          "overlap",
-          "invalid",
-          [
-            { start_ms: 0, end_ms: 10, text: "first" },
-            { start_ms: 5, end_ms: 15, text: "overlap" },
-          ],
-        ],
-        [
-          "unordered",
-          "invalid",
-          [
-            { start_ms: 10, end_ms: 20, text: "first" },
-            { start_ms: 0, end_ms: 5, text: "unordered" },
-          ],
-        ],
-        [
-          "duration-overflow",
-          "invalid",
-          [{ start_ms: 0, end_ms: SONG_TRANSCRIPT_MAX_DURATION_MS + 1, text: "invalid" }],
-        ],
-        [
-          "segment-text-overflow",
-          "invalid",
-          [
-            {
-              start_ms: 0,
-              end_ms: 1,
-              text: "x".repeat(SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH + 1),
-            },
-          ],
-        ],
-        [
-          "segment-count-overflow",
-          "invalid",
-          Array.from({ length: SONG_TRANSCRIPT_SEGMENT_MAX_COUNT + 1 }, (_, index) => ({
-            start_ms: index,
-            end_ms: index + 1,
-            text: "x",
-          })),
-        ],
-        ["transcript-overflow", "x".repeat(SONG_TRANSCRIPT_TEXT_MAX_LENGTH + 1), [validSegment]],
-      ];
-      for (const [suffix, transcript, segments] of invalidTranscripts) {
-        await expect(
-          run(connection, (store) =>
-            store.acceptTranscript({
-              ...command(
-                connection,
-                "/media-post-submissions/:submissionId/transcript",
-                `invalid-transcript-${suffix}`,
-              ),
-              expectedAudioRevision: 1,
-              expectedCanonicalAudioSha256: audioSha256,
-              transcriptRevision: 2,
-              transcriptArtifactRef: `invalid-transcript-${suffix}`,
-              transcriptSha256: sha256(new TextEncoder().encode(transcript)),
-              transcript,
-              segments,
-            }),
-          ),
-        ).rejects.toMatchObject({ reason: "invalid-input" });
-      }
-
-      const boundaryTranscript = "x".repeat(SONG_TRANSCRIPT_TEXT_MAX_LENGTH);
-      const boundarySegments = Array.from(
-        { length: SONG_TRANSCRIPT_SEGMENT_MAX_COUNT },
-        (_, index) => ({
-          start_ms: index,
-          end_ms:
-            index === SONG_TRANSCRIPT_SEGMENT_MAX_COUNT - 1
-              ? SONG_TRANSCRIPT_MAX_DURATION_MS
-              : index + 1,
-          text: index === 0 ? "x".repeat(SONG_TRANSCRIPT_SEGMENT_TEXT_MAX_LENGTH) : "x",
-        }),
-      );
-      await expect(
-        run(connection, (store) =>
-          store.acceptTranscript({
-            ...command(
-              connection,
-              "/media-post-submissions/:submissionId/transcript",
-              "boundary-transcript",
-            ),
-            expectedAudioRevision: 1,
-            expectedCanonicalAudioSha256: audioSha256,
-            transcriptRevision: 2,
-            transcriptArtifactRef: "boundary-transcript",
-            transcriptSha256: sha256(new TextEncoder().encode(boundaryTranscript)),
-            transcript: boundaryTranscript,
-            segments: boundarySegments,
-          }),
-        ),
-      ).resolves.toEqual({ kind: "committed", submissionId: submission });
-
-      for (const [suffix, transcript, segments] of invalidTranscripts) {
-        await admin.query("BEGIN");
-        await expect(
-          admin.query(
-            "INSERT INTO media_transcript_artifacts (transcript_artifact_ref,community_id,actor_user_id,submission_id,operation_id,audio_revision,analysis_revision,canonical_audio_sha256,transcript_sha256,transcript_text,segments) VALUES ($1,$2,$3,$4,$5,1,3,$6,$7,$8,$9::jsonb)",
-            [
-              `hostile-transcript-${suffix}`,
-              community,
-              actor,
-              submission,
-              operation,
-              audioSha256,
-              sha256(new TextEncoder().encode(transcript)),
-              transcript,
-              JSON.stringify(segments),
-            ],
-          ),
-        ).rejects.toThrow();
-        await admin.query("ROLLBACK");
-      }
-    });
-    completedTestCount += 1;
-  }, 40_000);
-  test("accepts normalized unavailable, no-speech disagreement, and ready speech snapshots", async () => {
+  test("accepts normalized unavailable and ready lyrics-analysis snapshots", async () => {
     await withSchema(async (admin, connection) => {
       const unavailable: TrustedSongAnalysis = {
         ...analysis,
-        speechLyrics: {
+        lyricsAnalysis: {
           status: "unavailable",
+          lyricsRevision: 1,
           explicitness: "uncertain",
-          evidenceRef: "speech_unavailable_evidence",
-          policyRevision: "speech_unavailable_policy",
-          adapterRevision: "speech_unavailable_adapter",
+          evidenceRef: "lyrics_unavailable_evidence",
+          policyRevision: "lyrics_unavailable_policy",
+          adapterRevision: "lyrics_unavailable_adapter",
         },
         lyricsSafety: "review_required",
       };
@@ -2690,8 +2563,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         { ...reviewDecision, creationRevision: 3, lyricsRevision: 1 },
         unavailable,
         false,
-        undefined,
-        "Author supplied lyrics while ASR was unavailable",
+        "Author supplied lyrics while classification was unavailable",
       );
       expect(
         (
@@ -2708,15 +2580,13 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         (
           await admin.query(
-            "SELECT speech_status,lyrics_safety,analysis_snapshot->'speechLyrics'->'transcriptArtifactRef' AS transcript_artifact_ref,analysis_snapshot->'speechLyrics'->'transcriptSha256' AS transcript_sha256,analysis_snapshot->'speechLyrics'->'primaryLanguageBcp47' AS primary_language,analysis_snapshot->'speechLyrics'->'secondaryLanguageBcp47' AS secondary_language FROM media_analysis_evidence WHERE submission_id=$1",
+            "SELECT speech_status AS lyrics_analysis_status,lyrics_safety,analysis_snapshot->'lyricsAnalysis'->'primaryLanguageBcp47' AS primary_language,analysis_snapshot->'lyricsAnalysis'->'secondaryLanguageBcp47' AS secondary_language FROM media_analysis_evidence WHERE submission_id=$1",
             [submission],
           )
         ).rows[0],
       ).toEqual({
-        speech_status: "unavailable",
+        lyrics_analysis_status: "unavailable",
         lyrics_safety: "review_required",
-        transcript_artifact_ref: null,
-        transcript_sha256: null,
         primary_language: null,
         secondary_language: null,
       });
@@ -2731,7 +2601,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
           ? JSON.parse(storedSnapshotValue)
           : storedSnapshotValue
       ) as Record<string, unknown>;
-      const storedSpeech = storedSnapshot.speechLyrics as Record<string, unknown>;
+      const storedLyricsAnalysis = storedSnapshot.lyricsAnalysis as Record<string, unknown>;
       const rejectSnapshot = async (snapshot: Record<string, unknown>): Promise<void> => {
         await admin.query("BEGIN");
         await expect(insertAnalysisSnapshotVariant(admin, 2, snapshot)).rejects.toThrow();
@@ -2740,76 +2610,26 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       await rejectSnapshot({
         ...storedSnapshot,
         analysisRevision: 2,
-        speechLyrics: {
+        lyricsAnalysis: {
           status: "unavailable",
           explicitness: "uncertain",
-          evidenceRef: storedSpeech.evidenceRef,
-          policyRevision: storedSpeech.policyRevision,
-          adapterRevision: storedSpeech.adapterRevision,
+          evidenceRef: storedLyricsAnalysis.evidenceRef,
+          policyRevision: storedLyricsAnalysis.policyRevision,
+          adapterRevision: storedLyricsAnalysis.adapterRevision,
         },
       });
       await rejectSnapshot({
         ...storedSnapshot,
         analysisRevision: 2,
-        speechLyrics: {
-          ...storedSpeech,
-          transcriptArtifactRef: "forged-transcript",
-          transcriptSha256: "forged-transcript-hash",
+        lyricsAnalysis: {
+          ...storedLyricsAnalysis,
           primaryLanguageBcp47: "en",
           secondaryLanguageBcp47: "fr",
         },
       });
     });
     await withSchema(async (admin, connection) => {
-      const noSpeechDisagreement: TrustedSongAnalysis = {
-        ...analysis,
-        lyricsSafety: "review_required",
-      };
-      await createThroughDecision(
-        connection,
-        { ...reviewDecision, creationRevision: 3, lyricsRevision: 1 },
-        noSpeechDisagreement,
-        false,
-        undefined,
-        "Author lyrics retained after no-speech evidence",
-      );
-      expect(
-        (
-          await admin.query(
-            "SELECT s.status,s.review_reason_code,s.current_lyrics_revision,a.speech_status,a.lyrics_revision,a.material_disagreement,a.lyrics_safety FROM media_post_submissions s JOIN media_analysis_evidence a ON a.submission_id=s.submission_id AND a.analysis_revision=s.current_analysis_revision WHERE s.submission_id=$1",
-            [submission],
-          )
-        ).rows[0],
-      ).toEqual({
-        status: "manual_review",
-        review_reason_code: "review_required",
-        current_lyrics_revision: "1",
-        speech_status: "no_speech",
-        lyrics_revision: "1",
-        material_disagreement: true,
-        lyrics_safety: "review_required",
-      });
-      expect(
-        await run(connection, (store) =>
-          store.getForAuthor({
-            communityId: community,
-            submissionId: submission,
-            actorUserId: actor,
-            personaId: personaFor(connection),
-          }),
-        ),
-      ).toMatchObject({
-        status: "manual_review",
-        lyrics: { text: "Author lyrics retained after no-speech evidence" },
-        analysis: {
-          speechLyrics: { status: "no_speech" },
-          lyricsSafety: "review_required",
-        },
-      });
-    });
-    await withSchema(async (admin, connection) => {
-      const readyTranscript = "fixture lyrics";
-      const readyTranscriptSha256 = sha256(new TextEncoder().encode(readyTranscript));
+      const readyLyrics = "fixture lyrics";
       const ready: TrustedSongAnalysis = {
         ...analysis,
         embeddedMetadata: {
@@ -2825,26 +2645,19 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             safetyPolicyRevision: "cover_policy_1",
           },
         },
-        speechLyrics: {
+        lyricsAnalysis: {
           status: "ready",
-          transcriptArtifactRef: "media_pg_transcript_artifact",
-          transcriptSha256: readyTranscriptSha256,
-          transcriptRevision: 1,
           lyricsRevision: 1,
-          materialDisagreement: false,
           explicitness: "not_explicit",
           primaryLanguageBcp47: "en",
           secondaryLanguageBcp47: null,
-          evidenceRef: "speech_ready_evidence",
-          policyRevision: "speech_ready_policy",
-          adapterRevision: "speech_ready_adapter",
+          evidenceRef: "lyrics_ready_evidence",
+          policyRevision: "lyrics_ready_policy",
+          adapterRevision: "lyrics_ready_adapter",
         },
         lyricsSafety: "allow",
       };
-      await createThroughDecision(connection, decision, ready, true, {
-        transcript: readyTranscript,
-        segments: [{ start_ms: 0, end_ms: 1_000, text: readyTranscript }],
-      });
+      await createThroughDecision(connection, decision, ready, true, readyLyrics);
       const storedSnapshotValue = (
         await admin.query(
           "SELECT analysis_snapshot FROM media_analysis_evidence WHERE submission_id=$1",
@@ -2858,7 +2671,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       ) as Record<string, unknown>;
       const storedEmbedded = storedSnapshot.embeddedMetadata as Record<string, unknown>;
       const storedCover = storedEmbedded.cover as Record<string, unknown>;
-      const storedSpeech = storedSnapshot.speechLyrics as Record<string, unknown>;
+      const storedLyricsAnalysis = storedSnapshot.lyricsAnalysis as Record<string, unknown>;
       const rejectSnapshot = async (snapshot: Record<string, unknown>): Promise<void> => {
         await admin.query("BEGIN");
         await expect(insertAnalysisSnapshotVariant(admin, 2, snapshot)).rejects.toThrow();
@@ -2878,19 +2691,16 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         ["evidenceRef", 7],
         ["policyRevision", 7],
         ["adapterRevision", 7],
-        ["transcriptArtifactRef", 7],
-        ["transcriptSha256", 7],
       ] as const)
         await rejectSnapshot({
           ...storedSnapshot,
           analysisRevision: 2,
-          speechLyrics: { ...storedSpeech, [path]: value },
+          lyricsAnalysis: { ...storedLyricsAnalysis, [path]: value },
         });
       const correctedInput = {
         ...command(connection, "/media-post-submissions/:submissionId/lyrics", "lyrics-corrected"),
         expectedCreationRevision: 3,
         expectedAudioRevision: 1,
-        baseTranscriptRevision: 1,
         lyrics: "Corrected fixture lyrics",
         outbox: {
           outboxEventId: "media_pg_lyrics_corrected_outbox",
@@ -2917,19 +2727,17 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
       expect(
         (
           await admin.query(
-            "SELECT provenance,base_transcript_revision,lyrics_text FROM media_song_lyrics_revisions WHERE submission_id=$1 ORDER BY lyrics_revision",
+            "SELECT provenance,lyrics_text FROM media_song_lyrics_revisions WHERE submission_id=$1 ORDER BY lyrics_revision",
             [submission],
           )
         ).rows,
       ).toEqual([
         {
-          provenance: "asr_accepted",
-          base_transcript_revision: "1",
-          lyrics_text: readyTranscript,
+          provenance: "pasted",
+          lyrics_text: readyLyrics,
         },
         {
           provenance: "corrected",
-          base_transcript_revision: "1",
           lyrics_text: "Corrected fixture lyrics",
         },
       ]);
@@ -2951,34 +2759,40 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         run(connection, (store) =>
           store.bindLyrics({
             ...correctedInput,
-            idempotencyKey: "lyrics-foreign-transcript",
+            idempotencyKey: "lyrics-stale-revision",
             requestHash: "c".repeat(64),
             expectedCreationRevision: 4,
-            baseTranscriptRevision: 2,
             outbox: {
               outboxEventId: "media_pg_lyrics_foreign_outbox",
               effectIdentity: "media_pg_lyrics_foreign_effect",
               payload: {
                 ...correctedInput.outbox.payload,
-                creation_revision: 5,
-                lyrics_revision: 3,
+                creation_revision: 6,
+                lyrics_revision: 4,
               },
             },
           }),
         ),
-      ).rejects.toMatchObject({ reason: "stale-fence" });
+      ).rejects.toThrow();
+      expect(
+        (
+          await admin.query(
+            "SELECT creation_revision,lyrics_revision FROM media_post_submissions WHERE submission_id=$1",
+            [submission],
+          )
+        ).rows[0],
+      ).toEqual({ creation_revision: "4", lyrics_revision: "2" });
       expect(
         await run(connection, (store) =>
           store.bindLyrics({
             ...correctedInput,
-            idempotencyKey: "lyrics-pasted",
+            idempotencyKey: "lyrics-corrected-later",
             requestHash: "d".repeat(64),
             expectedCreationRevision: 4,
-            baseTranscriptRevision: null,
             lyrics: "Pasted lyrics",
             outbox: {
-              outboxEventId: "media_pg_lyrics_pasted_outbox",
-              effectIdentity: "media_pg_lyrics_pasted_effect",
+              outboxEventId: "media_pg_lyrics_corrected_later_outbox",
+              effectIdentity: "media_pg_lyrics_corrected_later_effect",
               payload: {
                 ...correctedInput.outbox.payload,
                 creation_revision: 5,
@@ -2995,29 +2809,24 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             [submission],
           )
         ).rows[0],
-      ).toEqual({ provenance: "pasted" });
+      ).toEqual({ provenance: "corrected" });
     });
     completedTestCount += 1;
   }, 40_000);
   test("publishes explicit classified lyrics with their truthful label", async () => {
     await withSchema(async (admin, connection) => {
-      const transcript = "explicit fixture lyrics";
-      const transcriptSha256 = sha256(new TextEncoder().encode(transcript));
+      const explicitLyrics = "explicit fixture lyrics";
       const explicitAnalysis: TrustedSongAnalysis = {
         ...analysis,
-        speechLyrics: {
+        lyricsAnalysis: {
           status: "ready",
-          transcriptArtifactRef: "media_pg_transcript_artifact",
-          transcriptSha256,
-          transcriptRevision: 1,
           lyricsRevision: 1,
-          materialDisagreement: false,
           explicitness: "explicit",
           primaryLanguageBcp47: "en",
           secondaryLanguageBcp47: null,
-          evidenceRef: "speech_explicit_evidence",
-          policyRevision: "speech_explicit_policy",
-          adapterRevision: "speech_explicit_adapter",
+          evidenceRef: "lyrics_explicit_evidence",
+          policyRevision: "lyrics_explicit_policy",
+          adapterRevision: "lyrics_explicit_adapter",
         },
         lyricsSafety: "allow",
       };
@@ -3026,10 +2835,13 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
         creationRevision: 3,
         lyricsRevision: 1,
       };
-      await createThroughDecision(connection, explicitDecision, explicitAnalysis, false, {
-        transcript,
-        segments: [{ start_ms: 0, end_ms: 1_000, text: transcript }],
-      });
+      await createThroughDecision(
+        connection,
+        explicitDecision,
+        explicitAnalysis,
+        false,
+        explicitLyrics,
+      );
       const postId = `media-post-${operation}`;
       await run(connection, (store) =>
         store.publish({
@@ -3144,7 +2956,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
             operationId: operation,
             audioRevision: 1,
             analysisRevision: 1,
-            stage: "acr",
+            stage: "acr_primary",
             inputKind: "audio",
             inputRevision: 1,
             policyRevision: "acr-policy-1",
@@ -3385,7 +3197,7 @@ suite("song media persistence PostgreSQL 17 race suite", () => {
     await withSchema(async (admin, connection) => {
       await createThroughDecision(connection);
       await admin.query(
-        "INSERT INTO media_processing_attempts (attempt_id,submission_id,community_id,actor_user_id,operation_id,audio_revision,analysis_revision,stage,attempt_number,input_hash,provider_idempotency_key,input_kind,input_revision,policy_revision,adapter_revision,state) VALUES ('media_pg_third_attempt',$1,$2,$3,$4,1,1,'acr',3,$5,'media-pg-third-provider','audio',1,'acr-policy','acr-adapter','pending')",
+        "INSERT INTO media_processing_attempts (attempt_id,submission_id,community_id,actor_user_id,operation_id,audio_revision,analysis_revision,stage,attempt_number,input_hash,provider_idempotency_key,input_kind,input_revision,policy_revision,adapter_revision,state) VALUES ('media_pg_third_attempt',$1,$2,$3,$4,1,1,'acr_primary',3,$5,'media-pg-third-provider','audio',1,'acr-policy','acr-adapter','pending')",
         [submission, community, actor, operation, audioSha256],
       );
       await admin.query(

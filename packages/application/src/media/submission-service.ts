@@ -101,11 +101,6 @@ export type MediaFinalizeContext = Readonly<{
 }>;
 
 export type MediaLyricsSnapshot = Readonly<{
-  asrSuggestion:
-    | { readonly status: "pending" }
-    | { readonly status: "ready"; readonly transcriptRevision: number; readonly text: string }
-    | { readonly status: "no_speech" }
-    | { readonly status: "unavailable" };
   current:
     | { readonly status: "not_bound" }
     | Readonly<{
@@ -114,8 +109,7 @@ export type MediaLyricsSnapshot = Readonly<{
         readonly audioRevision: number;
         readonly canonicalAudioSha256: string;
         readonly text: string;
-        readonly baseTranscriptRevision: number | null;
-        readonly provenance: "asr_accepted" | "pasted" | "corrected";
+        readonly provenance: "pasted" | "corrected";
       }>
     | { readonly status: "no_lyrics" };
 }>;
@@ -267,7 +261,6 @@ export interface MediaUploadStore {
         expectedCreationRevision: number;
         expectedAudioRevision: number;
         lyrics: string;
-        baseTranscriptRevision: number | null;
         outbox: MediaOutboxWrite;
       }>,
   ) => Promise<CommitOutcome>;
@@ -535,14 +528,6 @@ export function projectMediaSubmission(
     creation_revision: state.creationRevision,
     audio_revision: state.audioRevision,
     lyrics_state: {
-      asr_suggestion:
-        view.lyrics.asrSuggestion.status === "ready"
-          ? {
-              status: "ready" as const,
-              transcript_revision: view.lyrics.asrSuggestion.transcriptRevision,
-              text: view.lyrics.asrSuggestion.text,
-            }
-          : view.lyrics.asrSuggestion,
       current:
         view.lyrics.current.status === "ready"
           ? {
@@ -550,7 +535,6 @@ export function projectMediaSubmission(
               text: view.lyrics.current.text,
               lyrics_revision: view.lyrics.current.lyricsRevision,
               audio_revision: view.lyrics.current.audioRevision,
-              base_transcript_revision: view.lyrics.current.baseTranscriptRevision,
             }
           : view.lyrics.current,
     },
@@ -664,15 +648,11 @@ export function applyMediaTransition(
   return result.state;
 }
 
-function lyricsFromState(
-  state: MediaSubmissionState,
-  prior: MediaLyricsSnapshot["asrSuggestion"] = { status: "pending" },
-): MediaLyricsSnapshot {
+function lyricsFromState(state: MediaSubmissionState): MediaLyricsSnapshot {
   return {
-    asrSuggestion: prior,
     current:
       state.lyrics === null
-        ? prior.status === "no_speech"
+        ? state.status === "published"
           ? { status: "no_lyrics" }
           : { status: "not_bound" }
         : { status: "ready", ...state.lyrics },
@@ -1504,19 +1484,10 @@ export async function bindMediaLyrics(
       audioRevision: body.expected_audio_revision,
       canonicalAudioSha256,
       text: body.lyrics,
-      baseTranscriptRevision: body.base_transcript_revision,
-      provenance:
-        body.base_transcript_revision === null
-          ? "pasted"
-          : context.view.lyrics.asrSuggestion.status === "ready" &&
-              context.view.lyrics.asrSuggestion.transcriptRevision ===
-                body.base_transcript_revision &&
-              context.view.lyrics.asrSuggestion.text === body.lyrics
-            ? "asr_accepted"
-            : "corrected",
+      provenance: prior.lyrics === null ? "pasted" : "corrected",
     },
   });
-  const lyrics = lyricsFromState(state, context.view.lyrics.asrSuggestion);
+  const lyrics = lyricsFromState(state);
   const response = await mediaResponseSnapshot(
     projectMediaSubmission({ state, lyrics, updatedAt: services.nowIso() }, context.persona),
   );
@@ -1545,7 +1516,6 @@ export async function bindMediaLyrics(
         expectedCreationRevision: body.expected_creation_revision,
         expectedAudioRevision: body.expected_audio_revision,
         lyrics: body.lyrics,
-        baseTranscriptRevision: body.base_transcript_revision,
         outbox: wakeup,
       }),
       response,
@@ -1735,8 +1705,7 @@ export async function moderateMediaSubmission(
       analysisRevision: current.analysisRevision,
       lyricsRevision: current.lyrics?.lyricsRevision ?? null,
       canonicalAudioSha256: current.audio.canonicalSha256,
-      policyRevision:
-        current.decision?.policyRevision ?? current.analysis.speechLyrics.policyRevision,
+      policyRevision: current.decision?.policyRevision ?? "song-publication-decision-v1",
       evidenceRef,
     };
     state = applyMediaTransition(current, {

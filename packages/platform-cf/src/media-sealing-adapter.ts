@@ -13,17 +13,26 @@ const SOURCE_VERSION_METADATA_KEY = "media-seal-source-version";
 
 type R2PutValue = ReadableStream | ArrayBuffer | ArrayBufferView | string | null | Blob;
 
-type SealBucket = Readonly<{
+type SealSourceBucket = Readonly<{
   head: (key: string) => Promise<R2Object | null>;
   get: (
     key: string,
     options: R2GetOptions & { readonly onlyIf: R2Conditional | Headers },
   ) => Promise<R2ObjectBody | R2Object | null>;
+}>;
+
+type SealDestinationBucket = Readonly<{
+  head: (key: string) => Promise<R2Object | null>;
   put: (
     key: string,
     value: R2PutValue,
     options: R2PutOptions & { readonly onlyIf: R2Conditional | Headers },
   ) => Promise<R2Object | null>;
+}>;
+
+export type MediaSealBuckets = Readonly<{
+  readonly ingress: SealSourceBucket;
+  readonly immutableOriginals: SealDestinationBucket;
 }>;
 
 function bytesToHex(bytes: ArrayBuffer): string {
@@ -139,12 +148,12 @@ function sealedAttempt(
 }
 
 export async function inspectMediaUpload(
-  bucket: SealBucket,
+  ingress: SealSourceBucket,
   input: MediaSealInspectInput,
 ): Promise<MediaSealInspection> {
   let observed: R2Object | null;
   try {
-    observed = await bucket.head(input.sourceKey);
+    observed = await ingress.head(input.sourceKey);
   } catch {
     throw new MediaSealFailure("source_head_failed");
   }
@@ -157,12 +166,12 @@ export async function inspectMediaUpload(
 }
 
 export async function sealMediaUpload(
-  bucket: SealBucket,
+  buckets: MediaSealBuckets,
   input: MediaSealInput,
 ): Promise<Awaited<ReturnType<MediaUploadSealer["seal"]>>> {
   let selected: R2Object | R2ObjectBody | null;
   try {
-    selected = await bucket.get(input.source.key, {
+    selected = await buckets.ingress.get(input.source.key, {
       onlyIf: { etagMatches: input.source.etag },
     });
   } catch {
@@ -182,7 +191,7 @@ export async function sealMediaUpload(
     sha256: bytesToHex(await digest.digest),
     bytesWritten: digest.bytesWritten,
   }));
-  const putTask = bucket.put(input.destinationKey, putBody, {
+  const putTask = buckets.immutableOriginals.put(input.destinationKey, putBody, {
     onlyIf: new Headers({ "if-none-match": "*" }),
     httpMetadata: { contentType: input.expectedContentType },
     customMetadata: {
@@ -202,7 +211,7 @@ export async function sealMediaUpload(
     if (!putBody.locked) await putBody.cancel().catch(() => undefined);
     let occupiedObject: R2Object | null;
     try {
-      occupiedObject = await bucket.head(input.destinationKey);
+      occupiedObject = await buckets.immutableOriginals.head(input.destinationKey);
     } catch {
       throw new MediaSealFailure("sibling_convergence_unavailable");
     }
@@ -245,7 +254,7 @@ export async function sealMediaUpload(
 
   let verifiedObject: R2Object | null;
   try {
-    verifiedObject = await bucket.head(input.destinationKey);
+    verifiedObject = await buckets.immutableOriginals.head(input.destinationKey);
   } catch {
     throw new MediaSealFailure("destination_head_failed", written);
   }
@@ -264,9 +273,9 @@ export async function sealMediaUpload(
   return sealedAttempt(written, input, canonicalSha256);
 }
 
-export function makeR2MediaSealer(bucket: SealBucket): MediaUploadSealer {
+export function makeR2MediaSealer(buckets: MediaSealBuckets): MediaUploadSealer {
   return {
-    inspect: (input) => inspectMediaUpload(bucket, input),
-    seal: (input) => sealMediaUpload(bucket, input),
+    inspect: (input) => inspectMediaUpload(buckets.ingress, input),
+    seal: (input) => sealMediaUpload(buckets, input),
   };
 }

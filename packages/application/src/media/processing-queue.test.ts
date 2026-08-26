@@ -66,6 +66,7 @@ function queueHarness(options: { create?: "created" | "already_exists" | "throw"
       analysisRevision: 1,
       decisionRevision: 0,
       workflowRevision: 1,
+      retryCount: 0,
       status: "processing",
       phase: "analysis",
       audio: {
@@ -76,7 +77,6 @@ function queueHarness(options: { create?: "created" | "already_exists" | "throw"
       },
       termsRevision: null,
       lyrics: null,
-      transcript: null,
       analysis: null,
       decision: null,
       boundReferenceAssetId: null,
