@@ -7125,76 +7125,45 @@ $$;
 
 CREATE FUNCTION provision_first_persona_for_new_account() RETURNS trigger
     LANGUAGE plpgsql
-    AS $_$
+    AS $$
 DECLARE
   first_persona_id TEXT := 'persona_' || replace(gen_random_uuid()::text, '-', '');
-  primary_wallet JSONB;
+  first_assignment_id TEXT := 'persona_wallet_' || replace(gen_random_uuid()::text, '-', '');
+  handle_label TEXT := lower(NEW.account #>> '{global_handle,label_display}');
 BEGIN
+  IF NEW.status <> 'active' THEN RETURN NEW; END IF;
   INSERT INTO personas (
     persona_id, account_id, status, is_first_persona, created_at, retired_at
+  ) VALUES (first_persona_id, NEW.user_id, 'pending_wallet', true, NEW.created_at, NULL);
+  INSERT INTO persona_pending_profiles (
+    persona_id, display_name, avatar_ref, cover_ref, bio, preferred_locale, created_at
   ) VALUES (
     first_persona_id,
-    NEW.user_id,
-    CASE WHEN NEW.status = 'active' THEN 'active' ELSE 'retired' END,
-    true,
-    NEW.created_at,
-    CASE WHEN NEW.status = 'active' THEN NULL ELSE clock_timestamp() END
+    NEW.account #>> '{profile,display_name}', NEW.account #>> '{profile,avatar_ref}',
+    NEW.account #>> '{profile,cover_ref}', NEW.account #>> '{profile,bio}',
+    NEW.account #>> '{profile,preferred_locale}', NEW.created_at
   );
-
-  INSERT INTO persona_profiles (
-    persona_id, revision, display_name, avatar_ref, cover_ref, bio,
-    preferred_locale, created_at, updated_at
+  INSERT INTO persona_wallet_assignments (
+    assignment_id, persona_id, account_id, chain_account_kind, privy_wallet_id,
+    hd_wallet_index, address, status, reservation_idempotency_key,
+    assigned_at, tombstoned_at, created_at, updated_at
   ) VALUES (
-    first_persona_id,
-    1,
-    NEW.account #>> '{profile,display_name}',
-    NEW.account #>> '{profile,avatar_ref}',
-    NEW.account #>> '{profile,cover_ref}',
-    NEW.account #>> '{profile,bio}',
-    NEW.account #>> '{profile,preferred_locale}',
-    NEW.created_at,
-    NEW.created_at
+    first_assignment_id, first_persona_id, NEW.user_id, 'evm', NULL,
+    0, NULL, 'pending', 'first-persona-wallet-onboarding',
+    NULL, NULL, NEW.created_at, NEW.created_at
   );
-
-  SELECT attachment
-    INTO primary_wallet
-    FROM jsonb_array_elements(
-      CASE
-        WHEN jsonb_typeof(NEW.account -> 'wallet_attachments') = 'array'
-          THEN NEW.account -> 'wallet_attachments'
-        ELSE '[]'::jsonb
-      END
-    ) AS attachment
-   WHERE attachment ->> 'is_primary' = '1'
-     AND lower(attachment ->> 'wallet_address_display') ~ '^0x[0-9a-f]{40}$'
-   ORDER BY attachment ->> 'wallet_attachment_id'
-   LIMIT 1;
-
-  IF primary_wallet IS NOT NULL THEN
-    INSERT INTO persona_wallet_assignments (
-      assignment_id, persona_id, account_id, chain_account_kind,
-      privy_wallet_id, hd_wallet_index, address, status,
-      reservation_idempotency_key, assigned_at, tombstoned_at,
-      created_at, updated_at
+  IF handle_label IS NOT NULL
+     AND NEW.account #>> '{global_handle,global_handle_id}' IS NOT NULL THEN
+    INSERT INTO persona_pending_first_handles (
+      persona_id, handle_id, label_normalized, label_display, created_at
     ) VALUES (
-      'persona_wallet_' || replace(gen_random_uuid()::text, '-', ''),
-      first_persona_id,
-      NEW.user_id,
-      'evm',
-      NULL,
-      0,
-      lower(primary_wallet ->> 'wallet_address_display'),
-      CASE WHEN NEW.status = 'active' THEN 'active' ELSE 'tombstoned' END,
-      'first-persona-wallet-onboarding',
-      NEW.created_at,
-      CASE WHEN NEW.status = 'active' THEN NULL ELSE clock_timestamp() END,
-      NEW.created_at,
-      NEW.created_at
+      first_persona_id, NEW.account #>> '{global_handle,global_handle_id}',
+      left(handle_label, -length('.pirate')), handle_label, NEW.created_at
     );
   END IF;
   RETURN NEW;
 END
-$_$;
+$$;
 
 CREATE FUNCTION public_handle_index_validate_redirects() RETURNS trigger
     LANGUAGE plpgsql
@@ -7255,6 +7224,7 @@ CREATE FUNCTION public_persona_projection(expected_persona_id text) RETURNS json
        LIMIT 1
     ) AS handle ON true
    WHERE persona.persona_id = expected_persona_id
+     AND persona.status = 'active'
 $$;
 
 CREATE FUNCTION record_hns_dns_zone_health_v1(input_operation_id text, input_idempotency_key text, input_request_hash text, input_dns_zone_activation_id text, input_activation_generation bigint, input_expected_health_generation bigint, input_delegation_snapshot_reference text, input_delegation_snapshot_digest text, input_observed_zone_bytes_digest text, input_observed_dnssec_keyset_reference text, input_observed_dnssec_keyset_version text, input_observed_gateway_deployment_reference text, input_observed_gateway_certificate_spki_sha256 text, input_delegation_matches boolean, input_ds_authenticates_zone boolean, input_retained_zone_digest_matches boolean, input_gateway_healthy boolean, input_valid_for_seconds integer) RETURNS TABLE(outcome text, dns_zone_activation_id text, activation_generation bigint, health_generation bigint)
@@ -11996,6 +11966,42 @@ BEGIN
 END;
 $$;
 
+CREATE FUNCTION validate_persona_wallet_activation() RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+DECLARE
+  target_persona_id TEXT := COALESCE(NEW.persona_id, OLD.persona_id);
+  target_status TEXT;
+  active_wallets BIGINT;
+  pending_wallets BIGINT;
+  profiles BIGINT;
+  pending_profiles BIGINT;
+BEGIN
+  SELECT status INTO target_status FROM personas WHERE persona_id = target_persona_id;
+  IF target_status IS NULL THEN RETURN NULL; END IF;
+  SELECT count(*) FILTER (WHERE status = 'active'),
+         count(*) FILTER (WHERE status = 'pending')
+    INTO active_wallets, pending_wallets
+    FROM persona_wallet_assignments
+   WHERE persona_id = target_persona_id AND chain_account_kind = 'evm';
+  SELECT count(*) INTO profiles FROM persona_profiles WHERE persona_id = target_persona_id;
+  SELECT count(*) INTO pending_profiles
+    FROM persona_pending_profiles WHERE persona_id = target_persona_id;
+
+  IF target_status IN ('active', 'suspended')
+     AND (active_wallets <> 1 OR profiles <> 1 OR pending_profiles <> 0) THEN
+    RAISE EXCEPTION 'public persona requires one confirmed wallet and profile'
+      USING ERRCODE = '23514', CONSTRAINT = 'persona_wallet_activation_invariant';
+  END IF;
+  IF target_status = 'pending_wallet'
+     AND (pending_wallets <> 1 OR active_wallets <> 0 OR profiles <> 0 OR pending_profiles <> 1) THEN
+    RAISE EXCEPTION 'pending persona requires one reserved wallet and private profile draft'
+      USING ERRCODE = '23514', CONSTRAINT = 'persona_wallet_activation_invariant';
+  END IF;
+  RETURN NULL;
+END
+$$;
+
 CREATE FUNCTION validate_reward_chain_effect_transition() RETURNS trigger
     LANGUAGE plpgsql
     AS $$
@@ -16724,6 +16730,29 @@ CREATE TABLE persona_create_actions (
     CONSTRAINT persona_create_actions_request_hash_check CHECK ((request_hash ~ '^[0-9a-f]{64}$'::text))
 );
 
+CREATE TABLE persona_pending_first_handles (
+    persona_id text NOT NULL,
+    handle_id text NOT NULL,
+    label_normalized text NOT NULL,
+    label_display text NOT NULL,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL
+);
+
+CREATE TABLE persona_pending_profiles (
+    persona_id text NOT NULL,
+    display_name text,
+    avatar_ref text,
+    cover_ref text,
+    bio text,
+    preferred_locale text,
+    created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    CONSTRAINT persona_pending_profiles_avatar_ref_check CHECK (((avatar_ref IS NULL) OR (char_length(avatar_ref) <= 2048))),
+    CONSTRAINT persona_pending_profiles_bio_check CHECK (((bio IS NULL) OR (char_length(bio) <= 2000))),
+    CONSTRAINT persona_pending_profiles_cover_ref_check CHECK (((cover_ref IS NULL) OR (char_length(cover_ref) <= 2048))),
+    CONSTRAINT persona_pending_profiles_display_name_check CHECK (((display_name IS NULL) OR (char_length(display_name) <= 80))),
+    CONSTRAINT persona_pending_profiles_preferred_locale_check CHECK (((preferred_locale IS NULL) OR (char_length(preferred_locale) <= 64)))
+);
+
 CREATE TABLE persona_profiles (
     persona_id text NOT NULL,
     revision bigint DEFAULT 1 NOT NULL,
@@ -16786,7 +16815,7 @@ CREATE TABLE personas (
     retired_at timestamp with time zone,
     CONSTRAINT personas_persona_id_check CHECK (((btrim(persona_id) <> ''::text) AND (persona_id = btrim(persona_id)) AND (octet_length(persona_id) <= 128))),
     CONSTRAINT personas_retirement_shape CHECK ((((status = 'retired'::text) AND (retired_at IS NOT NULL)) OR ((status <> 'retired'::text) AND (retired_at IS NULL)))),
-    CONSTRAINT personas_status_check CHECK ((status = ANY (ARRAY['active'::text, 'suspended'::text, 'retired'::text])))
+    CONSTRAINT personas_status_check CHECK ((status = ANY (ARRAY['pending_wallet'::text, 'active'::text, 'suspended'::text, 'retired'::text])))
 );
 
 CREATE TABLE platform_operator_route_authority_grants (
@@ -19078,6 +19107,18 @@ ALTER TABLE ONLY persona_create_actions
 ALTER TABLE ONLY persona_create_actions
     ADD CONSTRAINT persona_create_actions_pkey PRIMARY KEY (account_id, endpoint_template, idempotency_key);
 
+ALTER TABLE ONLY persona_pending_first_handles
+    ADD CONSTRAINT persona_pending_first_handles_handle_id_key UNIQUE (handle_id);
+
+ALTER TABLE ONLY persona_pending_first_handles
+    ADD CONSTRAINT persona_pending_first_handles_label_normalized_key UNIQUE (label_normalized);
+
+ALTER TABLE ONLY persona_pending_first_handles
+    ADD CONSTRAINT persona_pending_first_handles_pkey PRIMARY KEY (persona_id);
+
+ALTER TABLE ONLY persona_pending_profiles
+    ADD CONSTRAINT persona_pending_profiles_pkey PRIMARY KEY (persona_id);
+
 ALTER TABLE ONLY persona_profiles
     ADD CONSTRAINT persona_profiles_pkey PRIMARY KEY (persona_id);
 
@@ -20310,13 +20351,21 @@ CREATE TRIGGER persona_activity_presentations_change_guard BEFORE DELETE OR UPDA
 
 CREATE TRIGGER persona_create_actions_append_only BEFORE DELETE OR UPDATE ON persona_create_actions FOR EACH ROW EXECUTE FUNCTION prevent_persona_create_action_change();
 
+CREATE CONSTRAINT TRIGGER persona_pending_profiles_activation_invariant AFTER INSERT OR DELETE ON persona_pending_profiles DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_persona_wallet_activation();
+
+CREATE CONSTRAINT TRIGGER persona_profiles_activation_invariant AFTER INSERT OR DELETE ON persona_profiles DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_persona_wallet_activation();
+
 CREATE TRIGGER persona_profiles_delete_guard BEFORE DELETE ON persona_profiles FOR EACH ROW EXECUTE FUNCTION prevent_persona_profile_delete();
 
 CREATE TRIGGER persona_role_presentations_active_persona BEFORE INSERT OR UPDATE OF account_id, persona_id ON persona_role_presentations FOR EACH ROW EXECUTE FUNCTION require_active_role_persona();
 
 CREATE TRIGGER persona_wallet_assignments_state_guard BEFORE DELETE OR UPDATE ON persona_wallet_assignments FOR EACH ROW EXECUTE FUNCTION guard_persona_wallet_assignment();
 
+CREATE CONSTRAINT TRIGGER persona_wallets_activation_invariant AFTER INSERT OR UPDATE OF status ON persona_wallet_assignments DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_persona_wallet_activation();
+
 CREATE TRIGGER personas_identity_immutable BEFORE DELETE OR UPDATE ON personas FOR EACH ROW EXECUTE FUNCTION prevent_persona_identity_rewrite();
+
+CREATE CONSTRAINT TRIGGER personas_wallet_activation_invariant AFTER INSERT OR UPDATE OF status ON personas DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION validate_persona_wallet_activation();
 
 CREATE TRIGGER platform_operator_route_authority_grants_change_guard BEFORE UPDATE ON platform_operator_route_authority_grants FOR EACH ROW EXECUTE FUNCTION guard_platform_operator_route_authority_grant_change();
 
@@ -21831,6 +21880,12 @@ ALTER TABLE ONLY persona_create_actions
 
 ALTER TABLE ONLY persona_create_actions
     ADD CONSTRAINT persona_create_actions_account_id_persona_id_fkey FOREIGN KEY (account_id, persona_id) REFERENCES personas(account_id, persona_id);
+
+ALTER TABLE ONLY persona_pending_first_handles
+    ADD CONSTRAINT persona_pending_first_handles_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
+
+ALTER TABLE ONLY persona_pending_profiles
+    ADD CONSTRAINT persona_pending_profiles_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
 
 ALTER TABLE ONLY persona_profiles
     ADD CONSTRAINT persona_profiles_persona_id_fkey FOREIGN KEY (persona_id) REFERENCES personas(persona_id);
