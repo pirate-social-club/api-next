@@ -17,7 +17,11 @@ import {
   deriveMegapotClaimEffectId,
   makeMegapotClaimCoordinator,
 } from "./megapot-claim-coordinator.ts";
-import { EVM_ZERO_ADDRESS, type MegapotTransactionReceipt } from "./megapot-v2.ts";
+import {
+  EVM_ZERO_ADDRESS,
+  encodeMegapotV2ClaimRevert,
+  type MegapotTransactionReceipt,
+} from "./megapot-v2.ts";
 import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import type { MegapotV2TransactionSigner } from "./megapot-v2-signer.ts";
 
@@ -150,13 +154,29 @@ function receipt(): MegapotTransactionReceipt {
   };
 }
 
-function harness(options: { readonly uncertain?: boolean; readonly badBalance?: boolean } = {}) {
+function harness(
+  options: {
+    readonly uncertain?: boolean;
+    readonly badBalance?: boolean;
+    readonly owner?: string;
+    readonly estimateFailureAt?: number;
+    readonly estimateRevert?: "no_tickets_to_claim" | "not_ticket_owner";
+  } = {},
+) {
   let progress: MegapotClaimProgress | null = null;
   let prepared = false;
   let sendCalls = 0;
+  let signCalls = 0;
+  let estimateCalls = 0;
+  const reviews: Parameters<MegapotClaimStore["requireReview"]>[0][] = [];
   const store = {
     findProgress: () => Effect.succeed(progress),
     loadCandidate: () => Effect.succeed(candidate),
+    requireReview: (request) => {
+      reviews.push(request);
+      progress = null;
+      return Effect.void;
+    },
     reserveNonce: (request) => {
       const reservation = {
         ...request.candidate,
@@ -257,9 +277,18 @@ function harness(options: { readonly uncertain?: boolean; readonly badBalance?: 
       blockNumber === 200n ? (options.badBalance ? 1_902n : 1_901n) : 1_000n,
     readNativeBalance: async () => 1_000_000_000_000_000n,
     readUsdcAllowance: async () => 0n,
-    readTicketOwner: async () => CUSTODY,
+    readTicketOwner: async () => options.owner ?? CUSTODY,
     readPendingNonce: async () => 7n,
-    estimateGas: async () => 100_000n,
+    estimateGas: async () => {
+      estimateCalls += 1;
+      if (estimateCalls === options.estimateFailureAt) {
+        if (options.estimateRevert !== undefined) {
+          throw { cause: { data: encodeMegapotV2ClaimRevert(options.estimateRevert) } };
+        }
+        throw new Error("provider unavailable");
+      }
+      return 100_000n;
+    },
     readFeeQuote: async () => ({
       baseFeePerGas: 10n,
       maxPriorityFeePerGas: 2n,
@@ -281,10 +310,13 @@ function harness(options: { readonly uncertain?: boolean; readonly badBalance?: 
   } satisfies MegapotV2RpcClient;
   const signer = {
     address: CUSTODY,
-    sign: async () => ({
-      signedTransaction: SIGNED_TRANSACTION,
-      signedTransactionHash: SIGNED_TRANSACTION_HASH,
-    }),
+    sign: async () => {
+      signCalls += 1;
+      return {
+        signedTransaction: SIGNED_TRANSACTION,
+        signedTransactionHash: SIGNED_TRANSACTION_HASH,
+      };
+    },
   } satisfies MegapotV2TransactionSigner;
   return {
     coordinator: makeMegapotClaimCoordinator({
@@ -297,6 +329,8 @@ function harness(options: { readonly uncertain?: boolean; readonly badBalance?: 
       now: () => Date.parse("2026-08-26T00:00:00.000Z"),
     }),
     sendCalls: () => sendCalls,
+    signCalls: () => signCalls,
+    reviews: () => reviews,
   };
 }
 
@@ -340,5 +374,65 @@ describe("Megapot claim coordinator", () => {
         drift.coordinator.claim({ poolLegId: candidate.poolLegId, drawingId: 101n }),
       ),
     ).resolves.toMatchObject({ kind: "reconciliation_required" });
+  });
+
+  test("persists custody mismatch before reserving a nonce", async () => {
+    const testHarness = harness({ owner: address("f") });
+    await expect(
+      Effect.runPromise(
+        testHarness.coordinator.claim({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "operational_hold",
+      reason: "ticket_owner_mismatch",
+      ticketId: candidate.ticketId,
+    });
+    expect(testHarness.reviews()).toHaveLength(1);
+    expect(testHarness.reviews()[0]).toMatchObject({
+      claimEffectId: null,
+      observedOwnerAddress: address("f"),
+    });
+    expect(testHarness.signCalls()).toBe(0);
+    expect(testHarness.sendCalls()).toBe(0);
+  });
+
+  test("persists NoTicketsToClaim after nonce reservation and stops before signing", async () => {
+    const testHarness = harness({
+      estimateFailureAt: 2,
+      estimateRevert: "no_tickets_to_claim",
+    });
+    const effectId = deriveMegapotClaimEffectId(candidate.poolLegId, candidate.drawingId);
+    await expect(
+      Effect.runPromise(
+        testHarness.coordinator.claim({
+          poolLegId: candidate.poolLegId,
+          drawingId: candidate.drawingId,
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "operational_hold",
+      effectId,
+      reason: "no_tickets_to_claim",
+    });
+    expect(testHarness.reviews()).toHaveLength(1);
+    expect(testHarness.reviews()[0]).toMatchObject({
+      reviewId: effectId,
+      claimEffectId: effectId,
+      reason: "no_tickets_to_claim",
+    });
+    expect(testHarness.signCalls()).toBe(0);
+    expect(testHarness.sendCalls()).toBe(0);
+  });
+
+  test("keeps unclassified gas-estimation failures retryable", async () => {
+    const testHarness = harness({ estimateFailureAt: 1 });
+    await expect(
+      Effect.runPromise(
+        testHarness.coordinator.claim({ poolLegId: candidate.poolLegId, drawingId: 101n }),
+      ),
+    ).rejects.toMatchObject({ reason: "gas_estimate_failed", phase: "preflight" });
+    expect(testHarness.reviews()).toHaveLength(0);
+    expect(testHarness.signCalls()).toBe(0);
+    expect(testHarness.sendCalls()).toBe(0);
   });
 });

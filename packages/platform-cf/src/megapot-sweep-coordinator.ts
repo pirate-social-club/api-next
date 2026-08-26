@@ -26,6 +26,14 @@ export type MegapotSweepCoordinatorResult =
       drawingId: bigint;
       observationBlockNumber: bigint | null;
     }>
+  | Readonly<{
+      kind: "operational_hold";
+      sweepId: string;
+      poolLegId: string;
+      drawingId: bigint;
+      ticketId: bigint;
+      reason: "ticket_owner_mismatch";
+    }>
   | (MegapotSweepResult & Readonly<{ kind: "complete" }>);
 
 export interface MegapotSweepCoordinator {
@@ -130,17 +138,27 @@ export function makeMegapotSweepCoordinator(input: {
       ]),
     );
     const tierIdBig = tierIds[0];
-    if (
-      tierIdBig === undefined ||
-      tierIdBig > 11n ||
-      tierPayouts.length !== 12 ||
-      !sameAddress(owner, candidate.custodyAddress)
-    ) {
-      return yield* failed(
-        !sameAddress(owner, candidate.custodyAddress)
-          ? "ticket_owner_mismatch"
-          : "drawing_evidence_invalid",
-      );
+    if (!sameAddress(owner, candidate.custodyAddress)) {
+      yield* input.store.requireReview({
+        candidate,
+        sweepId,
+        reason: "ticket_owner_mismatch",
+        observationBlockNumber,
+        observationBlockHash: block.blockHash,
+        observedOwnerAddress: owner.toLowerCase(),
+        observedAt: new Date(now()).toISOString(),
+      });
+      return {
+        kind: "operational_hold",
+        sweepId,
+        poolLegId: candidate.poolLegId,
+        drawingId: candidate.drawingId,
+        ticketId: candidate.ticketId,
+        reason: "ticket_owner_mismatch",
+      } as const;
+    }
+    if (tierIdBig === undefined || tierIdBig > 11n || tierPayouts.length !== 12) {
+      return yield* failed("drawing_evidence_invalid");
     }
     const tierId = Number(tierIdBig);
     const grossWinningsAtomic = tierPayouts[tierId];

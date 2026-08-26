@@ -15,7 +15,7 @@ import {
   type MegapotV2DeploymentAttestation,
   validateMegapotClaimReceipt,
 } from "./megapot-v2.ts";
-import type { MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
+import { findMegapotV2ClaimRevert, type MegapotV2RpcClient } from "./megapot-v2-rpc.ts";
 import type { MegapotV2TransactionSigner } from "./megapot-v2-signer.ts";
 
 export class MegapotClaimCoordinatorFailed extends Data.TaggedError(
@@ -24,6 +24,7 @@ export class MegapotClaimCoordinatorFailed extends Data.TaggedError(
   readonly reason:
     | "deployment_attestation_mismatch"
     | "drawing_not_settled"
+    | "gas_estimate_failed"
     | "gas_floor_insufficient"
     | "invalid_config"
     | "production_disabled"
@@ -36,6 +37,12 @@ export class MegapotClaimCoordinatorFailed extends Data.TaggedError(
 export type MegapotClaimCoordinatorResult =
   | Readonly<{ kind: "submitted"; effectId: string; transactionHash: string }>
   | Readonly<{ kind: "reconciliation_required"; effectId: string; transactionHash: string }>
+  | Readonly<{
+      kind: "operational_hold";
+      effectId: string;
+      ticketId: bigint;
+      reason: "no_tickets_to_claim" | "ticket_owner_mismatch";
+    }>
   | Readonly<{
       kind: "confirmed";
       effectId: string;
@@ -195,6 +202,47 @@ export function makeMegapotClaimCoordinator(input: {
         effectId: claim.effectId,
         transactionHash,
       } as const;
+    },
+  );
+
+  const requireOperationalHold = Effect.fn("MegapotClaimCoordinator.requireOperationalHold")(
+    function* (request: {
+      readonly candidate: MegapotClaimCandidate;
+      readonly effectId: string;
+      readonly claimEffectId: string | null;
+      readonly reason: "no_tickets_to_claim" | "ticket_owner_mismatch";
+      readonly observationBlockNumber: bigint;
+      readonly observationBlockHash: string;
+      readonly observedOwnerAddress: string;
+    }) {
+      yield* input.store.requireReview({
+        candidate: request.candidate,
+        reviewId: request.effectId,
+        claimEffectId: request.claimEffectId,
+        reason: request.reason,
+        observationBlockNumber: request.observationBlockNumber,
+        observationBlockHash: request.observationBlockHash,
+        observedOwnerAddress: request.observedOwnerAddress.toLowerCase(),
+        observedAt: new Date(now()).toISOString(),
+      });
+      return {
+        kind: "operational_hold",
+        effectId: request.effectId,
+        ticketId: request.candidate.ticketId,
+        reason: request.reason,
+      } as const;
+    },
+  );
+
+  const estimateClaimGas = Effect.fn("MegapotClaimCoordinator.estimateClaimGas")(
+    function* (request: { readonly from: string; readonly to: string; readonly data: Hex }) {
+      return yield* Effect.tryPromise({
+        try: () => input.rpc.estimateGas({ ...request, value: 0n }),
+        catch: (cause) => findMegapotV2ClaimRevert(cause),
+      }).pipe(
+        Effect.map((gas) => ({ kind: "estimated", gas }) as const),
+        Effect.catch((claimRevert) => Effect.succeed({ kind: "failed", claimRevert } as const)),
+      );
     },
   );
 
@@ -370,35 +418,61 @@ export function makeMegapotClaimCoordinator(input: {
     reservation: MegapotReservedClaim,
   ) {
     yield* attest(reservation);
-    const [currentDrawingId, owner] = yield* rpcEffect("preflight", "drawing_not_settled", () =>
-      Promise.all([
-        input.rpc.readCurrentDrawingId(reservation.preflightBlockNumber),
-        input.rpc.readTicketOwner(reservation.ticketId, reservation.preflightBlockNumber),
-      ]),
+    const feeQuote = yield* rpcEffect("preflight", "gas_floor_insufficient", () =>
+      input.rpc.readFeeQuote(),
     );
+    const [block, currentDrawingId, owner, nativeBalance] = yield* rpcEffect(
+      "preflight",
+      "drawing_not_settled",
+      () =>
+        Promise.all([
+          input.rpc.readBlock(feeQuote.observedBlockNumber),
+          input.rpc.readCurrentDrawingId(feeQuote.observedBlockNumber),
+          input.rpc.readTicketOwner(reservation.ticketId, feeQuote.observedBlockNumber),
+          input.rpc.readNativeBalance(reservation.custodyAddress),
+        ]),
+    );
+    if (block.blockHash.toLowerCase() !== feeQuote.observedBlockHash.toLowerCase()) {
+      return yield* failed("receipt_evidence_invalid", "preflight");
+    }
     if (currentDrawingId <= reservation.drawingId) {
       return yield* failed("drawing_not_settled", "preflight");
     }
     if (!sameAddress(owner, reservation.custodyAddress)) {
-      return yield* failed("ticket_owner_mismatch", "preflight");
+      return yield* requireOperationalHold({
+        candidate: reservation,
+        effectId: reservation.effectId,
+        claimEffectId: reservation.effectId,
+        reason: "ticket_owner_mismatch",
+        observationBlockNumber: feeQuote.observedBlockNumber,
+        observationBlockHash: feeQuote.observedBlockHash,
+        observedOwnerAddress: owner,
+      });
     }
     const calldata = encodeMegapotClaimWinnings([reservation.ticketId]);
-    const [gasEstimate, feeQuote, nativeBalance] = yield* rpcEffect(
-      "preflight",
-      "gas_floor_insufficient",
-      () =>
-        Promise.all([
-          input.rpc.estimateGas({
-            from: reservation.custodyAddress,
-            to: reservation.jackpotAddress,
-            data: calldata,
-            value: 0n,
-          }),
-          input.rpc.readFeeQuote(),
-          input.rpc.readNativeBalance(reservation.custodyAddress),
-        ]),
-    );
-    const gas = (gasEstimate * BigInt(input.gasLimitMultiplierBps) + 9_999n) / 10_000n;
+    const gasAttempt = yield* estimateClaimGas({
+      from: reservation.custodyAddress,
+      to: reservation.jackpotAddress,
+      data: calldata,
+    });
+    if (gasAttempt.kind === "failed") {
+      if (gasAttempt.claimRevert === null) {
+        return yield* failed("gas_estimate_failed", "preflight");
+      }
+      return yield* requireOperationalHold({
+        candidate: reservation,
+        effectId: reservation.effectId,
+        claimEffectId: reservation.effectId,
+        reason:
+          gasAttempt.claimRevert === "not_ticket_owner"
+            ? "ticket_owner_mismatch"
+            : "no_tickets_to_claim",
+        observationBlockNumber: feeQuote.observedBlockNumber,
+        observationBlockHash: feeQuote.observedBlockHash,
+        observedOwnerAddress: owner,
+      });
+    }
+    const gas = (gasAttempt.gas * BigInt(input.gasLimitMultiplierBps) + 9_999n) / 10_000n;
     if (nativeBalance < gas * feeQuote.maxFeePerGas + input.nativeGasReserveFloorWei) {
       return yield* failed("gas_floor_insufficient", "preflight");
     }
@@ -469,7 +543,6 @@ export function makeMegapotClaimCoordinator(input: {
       custodyBalance,
       referralBalance,
       pendingNonce,
-      gasEstimate,
       nativeBalance,
     ] = yield* rpcEffect("preflight", "drawing_not_settled", () =>
       Promise.all([
@@ -479,12 +552,6 @@ export function makeMegapotClaimCoordinator(input: {
         input.rpc.readUsdcBalance(candidate.custodyAddress, feeQuote.observedBlockNumber),
         input.rpc.readReferralFees(candidate.referrerAddress, feeQuote.observedBlockNumber),
         input.rpc.readPendingNonce(candidate.custodyAddress),
-        input.rpc.estimateGas({
-          from: candidate.custodyAddress,
-          to: candidate.jackpotAddress,
-          data: calldata,
-          value: 0n,
-        }),
         input.rpc.readNativeBalance(candidate.custodyAddress),
       ]),
     );
@@ -495,9 +562,39 @@ export function makeMegapotClaimCoordinator(input: {
       return yield* failed("drawing_not_settled", "preflight");
     }
     if (!sameAddress(owner, candidate.custodyAddress)) {
-      return yield* failed("ticket_owner_mismatch", "preflight");
+      return yield* requireOperationalHold({
+        candidate,
+        effectId,
+        claimEffectId: null,
+        reason: "ticket_owner_mismatch",
+        observationBlockNumber: feeQuote.observedBlockNumber,
+        observationBlockHash: feeQuote.observedBlockHash,
+        observedOwnerAddress: owner,
+      });
     }
-    const gas = (gasEstimate * BigInt(input.gasLimitMultiplierBps) + 9_999n) / 10_000n;
+    const gasAttempt = yield* estimateClaimGas({
+      from: candidate.custodyAddress,
+      to: candidate.jackpotAddress,
+      data: calldata,
+    });
+    if (gasAttempt.kind === "failed") {
+      if (gasAttempt.claimRevert === null) {
+        return yield* failed("gas_estimate_failed", "preflight");
+      }
+      return yield* requireOperationalHold({
+        candidate,
+        effectId,
+        claimEffectId: null,
+        reason:
+          gasAttempt.claimRevert === "not_ticket_owner"
+            ? "ticket_owner_mismatch"
+            : "no_tickets_to_claim",
+        observationBlockNumber: feeQuote.observedBlockNumber,
+        observationBlockHash: feeQuote.observedBlockHash,
+        observedOwnerAddress: owner,
+      });
+    }
+    const gas = (gasAttempt.gas * BigInt(input.gasLimitMultiplierBps) + 9_999n) / 10_000n;
     if (nativeBalance < gas * feeQuote.maxFeePerGas + input.nativeGasReserveFloorWei) {
       return yield* failed("gas_floor_insufficient", "preflight");
     }

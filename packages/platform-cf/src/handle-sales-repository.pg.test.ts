@@ -346,9 +346,11 @@ const directGrantTerms = (
 suite("community handle sales on PostgreSQL 17", () => {
   test("backfills one deterministic sales authority for an existing community", async () => {
     if (connectionString === undefined) throw new Error("test URL was not configured");
-    const finalMigration = migrations[migrations.length - 1];
-    if (finalMigration?.version !== "0054_community_handle_sales.sql") {
-      throw new Error("0054 must be the final migration in this exclusive lane");
+    const handleSalesMigrationIndex = migrations.findIndex(
+      (migration) => migration.version === "0054_community_handle_sales.sql",
+    );
+    if (handleSalesMigrationIndex < 1) {
+      throw new Error("0054 must follow the retained migration prefix");
     }
     const schema = schemaIdentifier();
     const admin = new Client({ connectionString });
@@ -359,7 +361,11 @@ suite("community handle sales on PostgreSQL 17", () => {
     const layer = makeDirectPostgresControlPlaneLayer(scopedConnection);
     try {
       await Effect.runPromise(
-        Effect.scoped(applyPostgresMigrations(migrations.slice(0, -1)).pipe(Effect.provide(layer))),
+        Effect.scoped(
+          applyPostgresMigrations(migrations.slice(0, handleSalesMigrationIndex)).pipe(
+            Effect.provide(layer),
+          ),
+        ),
       );
       await admin.query(
         "INSERT INTO users (user_id,status) VALUES ('legacy-handle-owner','active')",

@@ -9,7 +9,9 @@ import {
   recoverMessageAddress,
 } from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { encodeMegapotV2ClaimRevert } from "./megapot-v2.ts";
 import {
+  findMegapotV2ClaimRevert,
   type MegapotV2RpcClientOptions,
   MegapotV2RpcFailed,
   makeMegapotV2RpcClient,
@@ -116,6 +118,37 @@ function attestationFetcher(options?: {
 }
 
 describe("Megapot v2 Worker runtime adapters", () => {
+  test("derives and decodes typed v2 claim reverts through nested provider errors", async () => {
+    const noTickets = encodeMegapotV2ClaimRevert("no_tickets_to_claim");
+    const notOwner = encodeMegapotV2ClaimRevert("not_ticket_owner");
+    expect(noTickets).toBe("0x2da2704e");
+    expect(notOwner).toBe("0xe18d39ad");
+    expect(
+      findMegapotV2ClaimRevert({
+        cause: { details: { error: { data: noTickets } } },
+      }),
+    ).toBe("no_tickets_to_claim");
+    expect(findMegapotV2ClaimRevert({ errorName: "NotTicketOwner" })).toBe("not_ticket_owner");
+    expect(findMegapotV2ClaimRevert({ data: "0xdeadbeef" })).toBeNull();
+
+    const client = makeMegapotV2RpcClient({
+      rpcUrl: "https://base-sepolia.example.invalid",
+      attestation: attestation(),
+      fetcher: async (_input, init) => {
+        const request = JSON.parse(String(init?.body)) as Readonly<Record<string, unknown>>;
+        return Response.json({
+          jsonrpc: "2.0",
+          id: request.id,
+          error: { code: -32_000, data: { originalError: { data: notOwner } } },
+        });
+      },
+    });
+    await expect(client.readCurrentDrawingId()).rejects.toMatchObject({
+      reason: "provider-error",
+      claimRevert: "not_ticket_owner",
+    });
+  });
+
   test("derives a public address while rejecting malformed private keys", () => {
     const privateKey = generatePrivateKey();
     expect(deriveBaseSepoliaMegapotAddress(privateKey)).toBe(

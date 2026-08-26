@@ -272,6 +272,9 @@ const rewardsSongOffersMigrationSql = await Bun.file(
 const communityHandleSalesMigrationSql = await Bun.file(
   new URL("../../../db/postgres/migrations/0054_community_handle_sales.sql", import.meta.url),
 ).text();
+const megapotClaimReconciliationMigrationSql = await Bun.file(
+  new URL("../../../db/postgres/migrations/0055_megapot_claim_reconciliation.sql", import.meta.url),
+).text();
 const checksumManifest = (await Bun.file(
   new URL("../../../db/postgres/migrations/checksums.json", import.meta.url),
 ).json()) as { readonly migrations: Readonly<Record<string, string>> };
@@ -549,6 +552,11 @@ const communityHandleSalesMigration: PostgresMigration = {
   checksum: checksumManifest.migrations["0054_community_handle_sales.sql"] ?? "",
   sql: communityHandleSalesMigrationSql,
 };
+const megapotClaimReconciliationMigration: PostgresMigration = {
+  version: "0055_megapot_claim_reconciliation.sql",
+  checksum: checksumManifest.migrations["0055_megapot_claim_reconciliation.sql"] ?? "",
+  sql: megapotClaimReconciliationMigrationSql,
+};
 const migrations: readonly PostgresMigration[] = [
   migration,
   identityMigration,
@@ -604,6 +612,7 @@ const migrations: readonly PostgresMigration[] = [
   mediaFinalizeFenceMigration,
   rewardsSongOffersMigration,
   communityHandleSalesMigration,
+  megapotClaimReconciliationMigration,
 ];
 
 function checksum(value: string): string {
@@ -1053,6 +1062,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "megapot_sweep_ticket_evidence",
         "megapot_ticket_inventory",
         "megapot_ticket_purchase_effects",
+        "megapot_ticket_review_evidence",
         "megapot_usdc_approval_effects",
         "megapot_usdc_approval_receipt_evidence",
         "moderation_actions",
@@ -1294,6 +1304,7 @@ suite("Postgres 17 product and gates v2 foundation", () => {
         "megapot_drawing_transitions_append_only",
         "megapot_purchase_receipt_evidence_append_only",
         "megapot_sweep_ticket_evidence_append_only",
+        "megapot_ticket_review_evidence_append_only",
         "namespace_ownership_evidence_snapshot_append_only",
         "observations_append_only",
         "persona_activity_presentation_actions_append_only",

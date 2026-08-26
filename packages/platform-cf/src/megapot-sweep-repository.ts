@@ -202,6 +202,99 @@ function moveDrawingPending(
   });
 }
 
+function requireReviewIn(
+  transaction: ControlPlaneTransaction,
+  input: Parameters<MegapotSweepStore["requireReview"]>[0],
+): Effect.Effect<void, MegapotSweepFailure | ControlPlaneError> {
+  return Effect.gen(function* () {
+    const candidate = yield* loadCandidateIn(transaction, {
+      poolLegId: input.candidate.poolLegId,
+      drawingId: input.candidate.drawingId,
+      lock: true,
+    });
+    if (!sameCandidate(candidate, input.candidate)) return yield* rejected("effect-conflict");
+    const ticket = yield* transaction.execute({
+      label: "megapot-sweep.ticket-review.record",
+      text: `UPDATE megapot_ticket_inventory
+                SET status='needs_review', terminal_at=$4, updated_at=clock_timestamp()
+              WHERE attestation_id=$1 AND ticket_id=$2
+                AND pool_leg_id=$3 AND status='custodied'`,
+      values: [
+        candidate.attestationId,
+        candidate.ticketId.toString(),
+        candidate.poolLegId,
+        input.observedAt,
+      ],
+      readonly: false,
+    });
+    if (ticket.rowCount !== 1) return yield* rejected("ticket-not-custodied");
+    const nextVersion = candidate.drawingVersion + 1;
+    yield* transaction.execute({
+      label: "megapot-sweep.review-transition.create",
+      text: `INSERT INTO megapot_pool_drawing_transitions (
+               pool_leg_id, drawing_id, target_version, event_type, event
+             ) VALUES ($1,$2,$3,'operational_hold',jsonb_build_object(
+               'reason',$4::text,'sweep_id',$5::text,'ticket_id',$6::text,
+               'observation_block_number',$7::text,
+               'observation_block_hash',$8::text,'observed_owner_address',$9::text
+             ))`,
+      values: [
+        candidate.poolLegId,
+        candidate.drawingId.toString(),
+        nextVersion,
+        input.reason,
+        input.sweepId,
+        candidate.ticketId.toString(),
+        input.observationBlockNumber.toString(),
+        input.observationBlockHash,
+        input.observedOwnerAddress,
+      ],
+      readonly: false,
+    });
+    const drawing = yield* transaction.execute({
+      label: "megapot-sweep.review-hold.record",
+      text: `UPDATE megapot_pool_drawings
+                SET status='operational_hold', version=$3, terminal_reason=$4,
+                    terminal_at=$5, updated_at=clock_timestamp()
+              WHERE pool_leg_id=$1 AND drawing_id=$2
+                AND status=$6 AND version=$7`,
+      values: [
+        candidate.poolLegId,
+        candidate.drawingId.toString(),
+        nextVersion,
+        input.reason,
+        input.observedAt,
+        candidate.drawingStatus,
+        candidate.drawingVersion,
+      ],
+      readonly: false,
+    });
+    if (drawing.rowCount !== 1) return yield* rejected("effect-conflict");
+    yield* transaction.execute({
+      label: "megapot-sweep.review-evidence.create",
+      text: `INSERT INTO megapot_ticket_review_evidence (
+               review_id, attestation_id, ticket_id, pool_leg_id, drawing_id,
+               source_kind, source_operation_id, reason,
+               observation_block_number, observation_block_hash,
+               observed_owner_address, observed_at
+             ) VALUES ($1,$2,$3,$4,$5,'sweep',$1,$6,$7,$8,$9,$10)`,
+      values: [
+        input.sweepId,
+        candidate.attestationId,
+        candidate.ticketId.toString(),
+        candidate.poolLegId,
+        candidate.drawingId.toString(),
+        input.reason,
+        input.observationBlockNumber.toString(),
+        input.observationBlockHash,
+        input.observedOwnerAddress,
+        input.observedAt,
+      ],
+      readonly: false,
+    });
+  });
+}
+
 export function makeControlPlaneMegapotSweepRepository() {
   return {
     loadCandidate: (input: Parameters<MegapotSweepStore["loadCandidate"]>[0]) =>
@@ -249,6 +342,11 @@ export function makeControlPlaneMegapotSweepRepository() {
             yield* moveDrawingPending(transaction, current);
           }),
         );
+      }).pipe(mapped),
+    requireReview: (input: Parameters<MegapotSweepStore["requireReview"]>[0]) =>
+      Effect.gen(function* () {
+        const db = yield* ControlPlaneDb;
+        yield* db.withTransaction((transaction) => requireReviewIn(transaction, input));
       }).pipe(mapped),
     complete: (input: Parameters<MegapotSweepStore["complete"]>[0]) =>
       Effect.gen(function* () {
@@ -394,6 +492,7 @@ export const makeControlPlaneMegapotSweepStore = (
     loadCandidate: (input) => provide(repository.loadCandidate(input)),
     findResult: (sweepId) => provide(repository.findResult(sweepId)),
     markDrawingPending: (candidate) => provide(repository.markDrawingPending(candidate)),
+    requireReview: (input) => provide(repository.requireReview(input)),
     complete: (input) => provide(repository.complete(input)),
   };
 };
