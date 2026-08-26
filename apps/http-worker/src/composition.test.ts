@@ -53,6 +53,11 @@ async function bindings(): Promise<HttpWorkerBindings> {
     PRIVY_JWT_ISSUER: "privy-test",
     PRIVY_JWT_AUDIENCE: "privy-test",
     COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.test",
+    MEGAPOT_REWARDS_ENABLED: "false",
+    MEGAPOT_CHAIN_ID: "84532",
+    MEGAPOT_V2_RPC_URL: "https://base-sepolia-rpc.test",
+    MEGAPOT_ATTESTATION_ID: "megapot-base-sepolia-v2",
+    MEGAPOT_REQUIRED_CONFIRMATIONS: "3",
   };
 }
 

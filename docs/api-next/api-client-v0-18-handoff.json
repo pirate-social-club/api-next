@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "kind": "api-client-release-handoff",
+  "package": "@pirate/api-client",
+  "version": "0.18.0",
+  "releaseType": "megapot-song-pool-funding-v1",
+  "wireContract": "wire-v2",
+  "sourceCommit": "2ed63da",
+  "artifact": {
+    "path": "artifacts/api-client/pirate-api-client-0.18.0.tgz",
+    "sha256": "8c213cb8be44e8fb7b5aa87759563a1737c157e18adb80322213205cd1361872",
+    "contents": [
+      "package/package.json",
+      "package/src/generated/client.ts",
+      "package/src/generated/provenance.json",
+      "package/src/index.ts"
+    ]
+  },
+  "provenance": {
+    "sourceIdentifier": "api-next-contracts@53b8150558428003bfe178ea25eff3afbbc88223c100e9d44a54395fd1d48f40",
+    "openapiSha256": "53b8150558428003bfe178ea25eff3afbbc88223c100e9d44a54395fd1d48f40",
+    "clientSha256": "c7684810832a26e9cc49acd92eed514daad833431a94f9aad69db9853b540fdb"
+  },
+  "verification": {
+    "checkFresh": "passed",
+    "checkBreaking": {
+      "status": "passed",
+      "baselineCommit": "2ed63da",
+      "reason": "The release changes only package identity after the additive song-offer and Megapot funding operations landed in the source commit."
+    },
+    "focusedContractTests": "7 passed",
+    "packageVerifier": "passed",
+    "repositoryCheck": "passed"
+  }
+}

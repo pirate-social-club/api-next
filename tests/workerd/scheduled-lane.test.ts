@@ -11,12 +11,14 @@ import {
   COMMUNITY_PURCHASE_FUNDING_WRITES,
 } from "../../apps/jobs-worker/src/community-purchase-funding";
 import {
+  buildJobRegistry,
   defaultRetrySchedule,
   HNS_ROUTE_REVALIDATION_JOB,
   handleScheduled,
   type JobDefinition,
   type JobsWorkerEnv,
   default as jobsWorker,
+  MEGAPOT_REWARDS_CYCLE_JOB,
   makeCommunityCatalogIntegrityJob,
   makeHnsRouteRevalidationComposition,
   makeJobsWorkerDeclarations,
@@ -38,6 +40,20 @@ function scheduledWorkerEnv(hns: Partial<JobsWorkerEnv> = {}): JobsWorkerEnv {
     },
     API_NEXT_ENV: "development",
     COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.invalid/",
+    MEGAPOT_REWARDS_ENABLED: "false",
+    MEGAPOT_CHAIN_ID: "84532",
+    MEGAPOT_V2_RPC_URL: "https://megapot-rpc.invalid/",
+    MEGAPOT_ATTESTATION_ID: "megapot-base-sepolia-v2",
+    MEGAPOT_REQUIRED_CONFIRMATIONS: "3",
+    MEGAPOT_OBSERVATION_TTL_SECONDS: "300",
+    MEGAPOT_APPROVED_ALLOWANCE_ATOMIC: "1000000000",
+    MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: "120",
+    MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS: "12000",
+    MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI: "1000000000000000",
+    MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING: "5",
+    MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "50000000",
+    MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING: "50",
+    MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "500000000",
     ...hns,
   };
 }
@@ -69,6 +85,43 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
     ).toEqual([funding]);
   });
 
+  it("registers the Megapot custody machine as one exclusive writer lane", async () => {
+    const sink = { email: () => Effect.void, webhook: () => Effect.void };
+    const declarations = makeJobsWorkerDeclarations(
+      sink,
+      "https://rpc.test/",
+      { enabled: false },
+      "development",
+      {
+        attestationId: "megapot-base-sepolia-v2",
+        rpcUrl: "https://megapot-rpc.test/",
+        custodyPrivateKey: `0x${"1".repeat(64)}`,
+        commitmentBucket: {
+          get: async () => null,
+          put: async () => ({ uploaded: new Date() }),
+        },
+        commitmentPublicOrigin: "https://commitments.test",
+        requiredConfirmations: 3,
+        observationTtlMs: 300_000,
+        approvedAllowanceAtomic: 1_000_000_000n,
+        purchaseSafetyMarginSeconds: 120,
+        gasLimitMultiplierBps: 12_000,
+        nativeGasReserveFloorWei: 1_000_000_000_000_000n,
+        externalSponsorDailyTicketCeiling: 5,
+        externalSponsorDailySpendCeilingAtomic: 50_000_000n,
+        sharedSponsorDailyTicketCeiling: 50,
+        sharedSponsorDailySpendCeilingAtomic: 500_000_000n,
+      },
+    );
+    const registry = await Effect.runPromise(buildJobRegistry(declarations));
+    expect(registry.byName.get(MEGAPOT_REWARDS_CYCLE_JOB)?.lane).toBe("megapot-rewards");
+    expect(
+      declarations.filter((declaration) =>
+        declaration.writes.includes("postgres:reward_chain_effects"),
+      ),
+    ).toEqual([registry.byName.get(MEGAPOT_REWARDS_CYCLE_JOB)]);
+  });
+
   it("fails closed before registry or database work when funding RPC config is invalid", async () => {
     const scheduledEvent = {
       scheduledTime: Date.UTC(2026, 7, 19),
@@ -88,10 +141,10 @@ describe("scheduled lane holding a DO lease (workerd)", () => {
       jobsWorker.scheduled(
         scheduledEvent,
         {
+          ...scheduledWorkerEnv(),
           CONTROL_PLANE: controlPlane,
-          API_NEXT_ENV: "staging",
           COMMUNITY_PURCHASE_FUNDING_RPC_URL: "http://rpc.test",
-        } as JobsWorkerEnv,
+        },
         context,
       ),
     ).rejects.toThrow("Jobs worker configuration is incomplete or invalid");

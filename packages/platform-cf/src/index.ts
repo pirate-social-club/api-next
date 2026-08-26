@@ -95,6 +95,8 @@ export {
   type LeaseRecord,
 } from "./cron-lock";
 export { ScheduledCronLockDO } from "./cron-lock-do";
+export * from "./custody-solvency-coordinator.ts";
+export * from "./custody-solvency-repository.ts";
 export {
   type FeedRepository,
   type FeedRepositoryOptions,
@@ -114,6 +116,27 @@ export {
   makeControlPlaneIdentityRepository,
   makeControlPlaneIdentityStore,
 } from "./identity-repository";
+export * from "./megapot-allocation-coordinator.ts";
+export * from "./megapot-allocation-repository.ts";
+export * from "./megapot-approval-coordinator.ts";
+export * from "./megapot-approval-repository.ts";
+export * from "./megapot-claim-coordinator.ts";
+export * from "./megapot-claim-repository.ts";
+export * from "./megapot-commitment-coordinator.ts";
+export * from "./megapot-commitment-r2.ts";
+export * from "./megapot-commitment-repository.ts";
+export * from "./megapot-cutoff-coordinator.ts";
+export * from "./megapot-cutoff-repository.ts";
+export * from "./megapot-drawing-observation-repository.ts";
+export * from "./megapot-drawing-observer.ts";
+export * from "./megapot-purchase-coordinator.ts";
+export * from "./megapot-purchase-repository.ts";
+export * from "./megapot-sweep-coordinator.ts";
+export * from "./megapot-sweep-repository.ts";
+export * from "./megapot-v2.ts";
+export * from "./megapot-v2-rpc.ts";
+export * from "./megapot-v2-signer.ts";
+export * from "./megapot-work-repository.ts";
 export {
   HnsControlObserverPostgresError,
   makeControlPlaneHnsControlObserverConfigurationResolver,
@@ -202,6 +225,14 @@ export {
   queueRetryBackoffSeconds,
   queueRetryDelaySeconds,
 } from "./queue-retry";
+export * from "./reward-funding-coordinator.ts";
+export * from "./reward-funding-repository.ts";
+export * from "./reward-offer-terminal-repository.ts";
+export * from "./reward-payout-coordinator.ts";
+export * from "./reward-payout-repository.ts";
+export * from "./reward-projection-repository.ts";
+export * from "./reward-refund-coordinator.ts";
+export * from "./reward-refund-repository.ts";
 export {
   makeControlPlaneRouteRevalidationCompletionRepository,
   makeControlPlaneRouteRevalidationCompletionStore,
@@ -244,6 +275,7 @@ export {
   SessionTokenVerificationError,
   type SessionTokenVerifier,
 } from "./session-tokens";
+export * from "./song-reward-offer-repository.ts";
 export {
   makeControlPlaneTextPostRepository,
   makeControlPlaneTextSubmissionRepository,

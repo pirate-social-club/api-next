@@ -1,7 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import * as BunRuntime from "bun";
 import { Config, Redacted } from "effect";
-import { AppEnv, HttpWorkerConfig, loadConfig, loadConfigFrom, secret } from "./index.ts";
+import {
+  AppEnv,
+  assertMegapotRewardRuntimePosture,
+  HttpWorkerConfig,
+  JobsWorkerConfig,
+  loadConfig,
+  loadConfigFrom,
+  secret,
+} from "./index.ts";
 
 describe("config system (000 §9)", () => {
   test("fail-at-startup: a missing required variable throws at load", () => {
@@ -45,6 +53,94 @@ describe("config system (000 §9)", () => {
     ).toThrow();
   });
 
+  test("jobs composition parses the complete staging-only Megapot posture", () => {
+    const configured = loadConfigFrom(JobsWorkerConfig, {
+      API_NEXT_ENV: "staging",
+      COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://funding-rpc.test",
+      MEGAPOT_REWARDS_ENABLED: "true",
+      MEGAPOT_CHAIN_ID: "84532",
+      MEGAPOT_V2_RPC_URL: "https://base-sepolia-rpc.test",
+      MEGAPOT_ATTESTATION_ID: "megapot-base-sepolia-v2",
+      MEGAPOT_REQUIRED_CONFIRMATIONS: "3",
+      MEGAPOT_CUSTODY_PRIVATE_KEY: `0x${"1".repeat(64)}`,
+      MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: "https://commitments.test",
+      MEGAPOT_OBSERVATION_TTL_SECONDS: "300",
+      MEGAPOT_APPROVED_ALLOWANCE_ATOMIC: "1000000000",
+      MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: "120",
+      MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS: "12000",
+      MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI: "1000000000000000",
+      MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING: "5",
+      MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "50000000",
+      MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING: "50",
+      MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC: "500000000",
+    });
+    expect(configured).toMatchObject({
+      API_NEXT_ENV: "staging",
+      MEGAPOT_REWARDS_ENABLED: true,
+      MEGAPOT_CHAIN_ID: 84_532,
+      MEGAPOT_REQUIRED_CONFIRMATIONS: 3,
+      MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: 120,
+    });
+    expect(Redacted.value(configured.MEGAPOT_CUSTODY_PRIVATE_KEY)).toBe(`0x${"1".repeat(64)}`);
+  });
+
+  test("Megapot runtime admits Base Sepolia only outside production", () => {
+    expect(
+      assertMegapotRewardRuntimePosture({
+        API_NEXT_ENV: "staging",
+        MEGAPOT_REWARDS_ENABLED: true,
+        MEGAPOT_CHAIN_ID: 84_532,
+        MEGAPOT_REQUIRED_CONFIRMATIONS: 3,
+      }),
+    ).toBe(84_532);
+    expect(
+      assertMegapotRewardRuntimePosture({
+        API_NEXT_ENV: "production",
+        MEGAPOT_REWARDS_ENABLED: false,
+        MEGAPOT_CHAIN_ID: 8_453,
+        MEGAPOT_REQUIRED_CONFIRMATIONS: 3,
+      }),
+    ).toBe(8_453);
+    expect(() =>
+      assertMegapotRewardRuntimePosture({
+        API_NEXT_ENV: "production",
+        MEGAPOT_REWARDS_ENABLED: false,
+        MEGAPOT_CHAIN_ID: 84_532,
+        MEGAPOT_REQUIRED_CONFIRMATIONS: 3,
+      }),
+    ).toThrow("invalid Megapot reward runtime posture");
+    expect(() =>
+      assertMegapotRewardRuntimePosture({
+        API_NEXT_ENV: "production",
+        MEGAPOT_REWARDS_ENABLED: true,
+        MEGAPOT_CHAIN_ID: 8_453,
+        MEGAPOT_REQUIRED_CONFIRMATIONS: 3,
+      }),
+    ).toThrow("invalid Megapot reward runtime posture");
+  });
+
+  test("deployable Worker overlays keep Base Sepolia out of production", async () => {
+    const paths = [
+      "../../../apps/http-worker/wrangler.jsonc",
+      "../../../apps/jobs-worker/wrangler.jsonc",
+    ] as const;
+
+    for (const path of paths) {
+      const config = BunRuntime.JSONC.parse(
+        await BunRuntime.file(new URL(path, import.meta.url)).text(),
+      ) as {
+        readonly env?: Readonly<
+          Record<string, { readonly vars?: Readonly<Record<string, string>> }>
+        >;
+      };
+
+      expect(config.env?.staging?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("true");
+      expect(config.env?.staging?.vars?.MEGAPOT_CHAIN_ID).toBe("84532");
+      expect(config.env?.production?.vars?.MEGAPOT_REWARDS_ENABLED).toBe("false");
+      expect(config.env?.production?.vars?.MEGAPOT_CHAIN_ID).toBe("8453");
+    }
+  });
+
   test("Self stays disabled unless explicitly configured", () => {
     const configured = loadConfigFrom(HttpWorkerConfig, {
       API_NEXT_ENV: "development",
@@ -60,6 +156,11 @@ describe("config system (000 §9)", () => {
       PRIVY_JWT_ISSUER: "privy",
       PRIVY_JWT_AUDIENCE: "pirate",
       COMMUNITY_PURCHASE_FUNDING_RPC_URL: "https://rpc.test",
+      MEGAPOT_REWARDS_ENABLED: "false",
+      MEGAPOT_CHAIN_ID: "84532",
+      MEGAPOT_V2_RPC_URL: "https://base-sepolia-rpc.test",
+      MEGAPOT_ATTESTATION_ID: "megapot-base-sepolia-v2",
+      MEGAPOT_REQUIRED_CONFIRMATIONS: "3",
     });
     expect(configured).toMatchObject({
       SELF_PASS_ENABLED: false,

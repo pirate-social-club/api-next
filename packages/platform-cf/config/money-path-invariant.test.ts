@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as BunRuntime from "bun";
+import { assertMegapotRewardRuntimePosture } from "./index.ts";
 
 // Port of the old API's tests/production-money-path-invariant.test.ts
 // (read-only source: api/services/api). The incident history that motivates
@@ -37,9 +38,13 @@ type MoneyPath =
       assertFailsClosed: (env: Record<string, string>) => unknown;
     };
 
-// Empty until M3. Entries take the old shapes verbatim; when the first
-// money flow lands, its chain id joins here with posture mainnet_required.
-const MONEY_PATHS: MoneyPath[] = [];
+const MONEY_PATHS: MoneyPath[] = [
+  {
+    chainIdVar: "MEGAPOT_CHAIN_ID",
+    label: "Megapot pooled rewards",
+    posture: "mainnet_required",
+  },
+];
 
 const productionVars = await (async (): Promise<Record<string, string>> => {
   const config = BunRuntime.JSONC.parse(await BunRuntime.file(WRANGLER_CONFIG_PATH).text()) as {
@@ -114,5 +119,20 @@ describe("production money-path invariant", () => {
       const usdc = productionVars[`${prefix}_USDC_TOKEN_ADDRESS`];
       if (usdc) expect(usdc.toLowerCase(), `${path.label} USDC`).not.toBe(SEPOLIA_USDC);
     }
+  });
+
+  test("production Megapot stays disabled until mainnet activation is reviewed", () => {
+    const posture = {
+      API_NEXT_ENV: "production" as const,
+      MEGAPOT_REWARDS_ENABLED: productionVars.MEGAPOT_REWARDS_ENABLED === "true",
+      MEGAPOT_CHAIN_ID: Number(productionVars.MEGAPOT_CHAIN_ID),
+      MEGAPOT_REQUIRED_CONFIRMATIONS: Number(productionVars.MEGAPOT_REQUIRED_CONFIRMATIONS),
+    };
+
+    expect(productionVars.MEGAPOT_REWARDS_ENABLED).toBe("false");
+    expect(assertMegapotRewardRuntimePosture(posture)).toBe(BASE_MAINNET_CHAIN_ID);
+    expect(() =>
+      assertMegapotRewardRuntimePosture({ ...posture, MEGAPOT_REWARDS_ENABLED: true }),
+    ).toThrow("invalid Megapot reward runtime posture");
   });
 });
