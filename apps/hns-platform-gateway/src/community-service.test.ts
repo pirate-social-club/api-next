@@ -107,6 +107,8 @@ function composition(input: {
     profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV2(),
     gateway_deployment_reference: input.deployment_reference ?? deploymentReference,
     solid_origin: "https://solid.example",
+    solid_access_client_id: "gateway-access-client-id",
+    solid_access_client_secret: "gateway-access-client-secret",
     authority_source: {
       resolve: (normalizedHost) =>
         Effect.succeed(current?.normalized_host === normalizedHost ? current : null),
@@ -139,6 +141,8 @@ describe("interactive HNS community application gateway", () => {
       profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV2(),
       gateway_deployment_reference: deploymentReference,
       solid_origin: "https://solid.example",
+      solid_access_client_id: "gateway-access-client-id",
+      solid_access_client_secret: "gateway-access-client-secret",
       authority_source: { resolve: () => Effect.succeed(activeState) },
       key_registry: keyRegistry(),
       clock: { nowUnixSeconds: () => now },
@@ -200,6 +204,8 @@ describe("interactive HNS community application gateway", () => {
     expect(calls[0]?.headers.get(HNS_FORWARDER_HOST_HEADER)).toBe(host);
     expect(calls[0]?.headers.get(HNS_FORWARDER_PATH_HEADER)).toBe("/c/xn--pokmon-dva?q=%2Bvalue");
     expect(calls[0]?.headers.get(HNS_FORWARDER_NONCE_HEADER)).toBe("");
+    expect(calls[0]?.headers.get("cf-access-client-id")).toBe("gateway-access-client-id");
+    expect(calls[0]?.headers.get("cf-access-client-secret")).toBe("gateway-access-client-secret");
     expect(calls[0]?.headers.get(HNS_FORWARDER_SIGNATURE_HEADER)).toMatch(/^v3=[0-9a-f]{64}$/u);
     expect(calls[0]?.redirect).toBe("manual");
   });
@@ -256,6 +262,10 @@ describe("interactive HNS community application gateway", () => {
       "__Host-pirate_session=session; __Host-pirate_csrf=csrf",
     );
     expect(observed?.request.headers.get("cf-access-jwt-assertion")).toBeNull();
+    expect(observed?.request.headers.get("cf-access-client-id")).toBe("gateway-access-client-id");
+    expect(observed?.request.headers.get("cf-access-client-secret")).toBe(
+      "gateway-access-client-secret",
+    );
     expect(observed?.request.headers.get(HNS_FORWARDER_NONCE_HEADER)).toBe("nonce-01");
     expect(observed?.body).toEqual(body);
     expect(response.headers.getSetCookie()).toHaveLength(2);
@@ -405,6 +415,8 @@ describe("interactive HNS community application gateway", () => {
       signer,
       gateway_deployment_reference: deploymentReference,
       solid_origin: "https://solid.example",
+      solid_access_client_id: "gateway-access-client-id",
+      solid_access_client_secret: "gateway-access-client-secret",
       upstream_fetch: () => new Response(),
       set_timeout: (callback: () => void) => {
         fireDeadline = callback;
@@ -424,6 +436,37 @@ describe("interactive HNS community application gateway", () => {
     fireDeadline();
     deadlineFirst.abort();
     expect((await deadlineResult).status).toBe(504);
+  });
+
+  test("interrupts the current-authority lookup when the caller disconnects", async () => {
+    let interrupted = false;
+    const enabled = makeHnsCommunityAppGatewayComposition(true, {
+      profile_bytes: encodeHnsCommunityAppInteractiveGatewayProfileV2(),
+      gateway_deployment_reference: deploymentReference,
+      solid_origin: "https://solid.example",
+      solid_access_client_id: "gateway-access-client-id",
+      solid_access_client_secret: "gateway-access-client-secret",
+      authority_source: {
+        resolve: () => Effect.never.pipe(Effect.ensuring(Effect.sync(() => (interrupted = true)))),
+      },
+      key_registry: keyRegistry(),
+      clock: { nowUnixSeconds: () => now },
+      nonce_source: { next: () => "nonce-01" },
+      forwarder_limits: {
+        max_body_bytes: 1_048_576,
+        freshness_window_seconds: 300,
+        future_clock_skew_seconds: 5,
+      },
+      upstream_fetch: () => new Response(),
+    });
+    if (!enabled.enabled) throw new Error("test composition is disabled");
+    const caller = new AbortController();
+    const response = enabled.service.handle(request({ signal: caller.signal }));
+    await Promise.resolve();
+    caller.abort();
+    await expect(response).rejects.toBeInstanceOf(HnsCommunityAppGatewayCallerAbort);
+    await Bun.sleep(0);
+    expect(interrupted).toBe(true);
   });
 
   test("runs only on loopback with a separate health listener and bounded body", async () => {

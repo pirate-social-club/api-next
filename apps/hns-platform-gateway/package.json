@@ -8,9 +8,11 @@
     "./server": "./src/server.ts"
   },
   "scripts": {
-    "build:vps-bundle": "bun build --target=bun --outfile dist/pirate-hns-platform-gateway.mjs src/main.ts"
+    "build:vps-bundle": "bun build --target=bun --outfile dist/pirate-hns-platform-gateway.mjs src/main.ts",
+    "build:community-vps-bundle": "bun scripts/build-community-vps-bundle.ts"
   },
   "dependencies": {
-    "@pirate/application": "0.0.0"
+    "@pirate/application": "0.0.0",
+    "@pirate/platform-cf": "0.0.0"
   }
 }

@@ -7,6 +7,7 @@
     ".": "./src/index.ts",
     "./cloudflare-access-jwt": "./src/cloudflare-access-jwt.ts",
     "./hns-community-app-api": "./src/hns-community-app-api.ts",
+    "./hns-community-app-gateway-authority-postgres": "./src/hns-community-app-gateway-authority-postgres.ts",
     "./hns-handle-host-api": "./src/hns-handle-host-api.ts",
     "./hns-forwarder-v3": "./src/hns-forwarder-v3.ts",
     "./hns-forwarder-replay-store": "./src/hns-forwarder-replay-store.ts",

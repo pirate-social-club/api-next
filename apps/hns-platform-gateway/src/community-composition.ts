@@ -25,6 +25,8 @@ export type HnsCommunityAppGatewayCompositionDependencies = Readonly<{
   profile_bytes?: Uint8Array;
   gateway_deployment_reference?: string;
   solid_origin?: string;
+  solid_access_client_id?: string;
+  solid_access_client_secret?: string;
   authority_source?: HnsForwarderGatewayAuthoritySourceV1;
   key_registry?: HnsForwarderKeyRegistryV1;
   clock?: HnsForwarderClockV1;
@@ -38,6 +40,25 @@ const disabledComposition: HnsCommunityAppGatewayComposition = Object.freeze({
   service: null,
 });
 const deploymentReferencePattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u;
+const accessCredentialMaximumBytes = 4_096;
+const encoder = new TextEncoder();
+
+function containsControlCharacter(value: string): boolean {
+  for (const character of value) {
+    const point = character.codePointAt(0) ?? 0;
+    if (point < 0x20 || point === 0x7f) return true;
+  }
+  return false;
+}
+
+function validAccessCredential(value: string): boolean {
+  return (
+    value.length > 0 &&
+    value === value.trim() &&
+    encoder.encode(value).byteLength <= accessCredentialMaximumBytes &&
+    !containsControlCharacter(value)
+  );
+}
 
 function exactHttpsOrigin(value: string): string | null {
   try {
@@ -68,6 +89,8 @@ export function makeHnsCommunityAppGatewayComposition(
     profile_bytes: profileBytes,
     gateway_deployment_reference: deploymentReference,
     solid_origin: solidOriginValue,
+    solid_access_client_id: solidAccessClientId,
+    solid_access_client_secret: solidAccessClientSecret,
     authority_source: authoritySource,
     key_registry: keyRegistry,
     clock,
@@ -79,6 +102,8 @@ export function makeHnsCommunityAppGatewayComposition(
     profileBytes === undefined ||
     deploymentReference === undefined ||
     solidOriginValue === undefined ||
+    solidAccessClientId === undefined ||
+    solidAccessClientSecret === undefined ||
     authoritySource === undefined ||
     keyRegistry === undefined ||
     clock === undefined ||
@@ -86,6 +111,8 @@ export function makeHnsCommunityAppGatewayComposition(
     forwarderLimits === undefined ||
     upstreamFetch === undefined ||
     !deploymentReferencePattern.test(deploymentReference) ||
+    !validAccessCredential(solidAccessClientId) ||
+    !validAccessCredential(solidAccessClientSecret) ||
     forwarderLimits.max_body_bytes !== HNS_COMMUNITY_APP_INTERACTIVE_GATEWAY_PROFILE[11]
   ) {
     throw new Error("HNS community app gateway composition is incomplete or invalid");
@@ -129,6 +156,8 @@ export function makeHnsCommunityAppGatewayComposition(
       signer,
       gateway_deployment_reference: deploymentReference,
       solid_origin: solidOrigin,
+      solid_access_client_id: solidAccessClientId,
+      solid_access_client_secret: solidAccessClientSecret,
       upstream_fetch: upstreamFetch,
     }),
   });
