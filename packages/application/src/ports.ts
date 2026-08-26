@@ -207,6 +207,49 @@ export class MediaIngressUploadPresigner extends Context.Service<
   }
 >()("MediaIngressUploadPresigner") {}
 
+export const DATA_REGISTRATION_SIGNING_PORT_VERSION = "data-registration-signing-v1" as const;
+
+export type DataRegistrationSigningRequest = Readonly<{
+  version: typeof DATA_REGISTRATION_SIGNING_PORT_VERSION;
+  registrationOperationId: string;
+  submissionAttemptId: string;
+  signingIntentId: string;
+  chainId: bigint;
+  signerNamespace: string;
+  signerAddress: string;
+  targetAddress: string;
+  methodSelector: string;
+  calldata: Uint8Array;
+  calldataHash: string;
+  signingDeadline: string;
+  nonce: bigint;
+  valueWei: bigint;
+  gasLimit: bigint;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+}>;
+
+export type DataRegistrationSigningResult = Readonly<{
+  signedTransaction: Uint8Array;
+  signedTransactionHash: string;
+}>;
+
+export class DataRegistrationSigningFailed extends Data.TaggedError(
+  "DataRegistrationSigningFailed",
+)<{
+  readonly reason: "unavailable" | "rejected" | "invalid-result";
+}> {}
+
+/** Signs one PostgreSQL-authorized DATA transaction and never broadcasts it. */
+export class DataRegistrationTransactionSigner extends Context.Service<
+  DataRegistrationTransactionSigner,
+  {
+    readonly sign: (
+      request: DataRegistrationSigningRequest,
+    ) => Effect.Effect<DataRegistrationSigningResult, DataRegistrationSigningFailed>;
+  }
+>()("DataRegistrationTransactionSigner") {}
+
 /** Per-chain clients resolved by chain id; one tag, no provider if-chains. */
 export class ChainClient extends Context.Service<
   ChainClient,
