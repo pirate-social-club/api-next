@@ -652,15 +652,6 @@ CREATE FUNCTION data_registration_pins_are_ready(operation_id text) RETURNS bool
       AND NOT EXISTS (
         SELECT 1
         FROM data_registration_pin_verifications primary_pin
-        JOIN data_registration_pin_verifications redundant_pin
-          ON redundant_pin.registration_operation_id = primary_pin.registration_operation_id
-         AND redundant_pin.artifact_id = primary_pin.artifact_id
-         AND redundant_pin.role = 'redundant'
-         AND redundant_pin.outcome = 'verified'
-         AND redundant_pin.cid = primary_pin.cid
-         AND redundant_pin.canonical_sha256 = primary_pin.canonical_sha256
-         AND redundant_pin.byte_length = primary_pin.byte_length
-         AND redundant_pin.provider_id <> primary_pin.provider_id
         JOIN data_registration_pin_verifications gateway
           ON gateway.registration_operation_id = primary_pin.registration_operation_id
          AND gateway.artifact_id = primary_pin.artifact_id
@@ -669,10 +660,11 @@ CREATE FUNCTION data_registration_pins_are_ready(operation_id text) RETURNS bool
          AND gateway.cid = primary_pin.cid
          AND gateway.canonical_sha256 = primary_pin.canonical_sha256
          AND gateway.byte_length = primary_pin.byte_length
-         AND gateway.provider_id NOT IN (primary_pin.provider_id, redundant_pin.provider_id)
+         AND gateway.provider_id <> primary_pin.provider_id
         WHERE primary_pin.registration_operation_id = operation_id
           AND primary_pin.artifact_id = artifact.artifact_id
           AND primary_pin.role = 'primary'
+          AND primary_pin.provider_id = 'filebase'
           AND primary_pin.outcome = 'verified'
           AND primary_pin.canonical_sha256 = artifact.canonical_sha256
           AND primary_pin.byte_length = artifact.byte_length
@@ -2830,7 +2822,7 @@ BEGIN
   IF TG_OP = 'INSERT' THEN
     IF NEW.state <> 'signing_intent'
        OR NOT data_registration_pins_are_ready(NEW.registration_operation_id) THEN
-      RAISE EXCEPTION 'DATA registration attempt requires verified redundant pins';
+      RAISE EXCEPTION 'DATA registration attempt requires a verified Filebase pin and independent retrieval';
     END IF;
     IF NEW.supersedes_submission_attempt_id IS NOT NULL THEN
       SELECT * INTO prior FROM data_registration_signing_attempts
@@ -2846,12 +2838,16 @@ BEGIN
   IF ROW(
     NEW.submission_attempt_id, NEW.registration_operation_id, NEW.chain_id,
     NEW.attempt_number, NEW.signer_namespace, NEW.signer_address,
-    NEW.signing_intent_id, NEW.calldata_hash,
+    NEW.signing_intent_id, NEW.target_address, NEW.method_selector,
+    NEW.calldata_hash, NEW.signing_deadline, NEW.value_wei, NEW.gas_limit,
+    NEW.max_fee_per_gas, NEW.max_priority_fee_per_gas,
     NEW.supersedes_submission_attempt_id, NEW.created_at
   ) IS DISTINCT FROM ROW(
     OLD.submission_attempt_id, OLD.registration_operation_id, OLD.chain_id,
     OLD.attempt_number, OLD.signer_namespace, OLD.signer_address,
-    OLD.signing_intent_id, OLD.calldata_hash,
+    OLD.signing_intent_id, OLD.target_address, OLD.method_selector,
+    OLD.calldata_hash, OLD.signing_deadline, OLD.value_wei, OLD.gas_limit,
+    OLD.max_fee_per_gas, OLD.max_priority_fee_per_gas,
     OLD.supersedes_submission_attempt_id, OLD.created_at
   ) THEN
     RAISE EXCEPTION 'DATA registration attempt identity is immutable';
@@ -13621,19 +13617,33 @@ CREATE TABLE data_registration_signing_attempts (
     terminal_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
     updated_at timestamp with time zone DEFAULT clock_timestamp() NOT NULL,
+    target_address text NOT NULL,
+    method_selector text NOT NULL,
+    signing_deadline timestamp with time zone NOT NULL,
+    value_wei numeric(78,0) NOT NULL,
+    gas_limit numeric(78,0) NOT NULL,
+    max_fee_per_gas numeric(78,0) NOT NULL,
+    max_priority_fee_per_gas numeric(78,0) NOT NULL,
+    CONSTRAINT data_registration_attempt_fee_shape CHECK ((max_priority_fee_per_gas <= max_fee_per_gas)),
     CONSTRAINT data_registration_attempt_identity CHECK (((submission_attempt_id = ((registration_operation_id || ':attempt:'::text) || (attempt_number)::text)) AND (signing_intent_id = (submission_attempt_id || ':signing-intent'::text)))),
     CONSTRAINT data_registration_attempt_shape CHECK ((((state = 'signing_intent'::text) AND (nonce IS NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL) AND (broadcast_at IS NULL) AND (terminal_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = 'nonce_reserved'::text) AND (nonce IS NOT NULL) AND (signed_transaction IS NULL) AND (signed_transaction_hash IS NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NULL) AND (broadcast_at IS NULL) AND (terminal_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = 'prepared'::text) AND (nonce IS NOT NULL) AND (octet_length(signed_transaction) > 0) AND (signed_transaction_hash IS NOT NULL) AND (transaction_hash IS NULL) AND (prepared_at IS NOT NULL) AND (broadcast_at IS NULL) AND (terminal_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = ANY (ARRAY['broadcast'::text, 'mined'::text])) AND (nonce IS NOT NULL) AND (octet_length(signed_transaction) > 0) AND (signed_transaction_hash IS NOT NULL) AND (transaction_hash = signed_transaction_hash) AND (prepared_at IS NOT NULL) AND (broadcast_at IS NOT NULL) AND (terminal_at IS NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = ANY (ARRAY['confirmed'::text, 'replaced'::text])) AND (nonce IS NOT NULL) AND (octet_length(signed_transaction) > 0) AND (signed_transaction_hash IS NOT NULL) AND (transaction_hash = signed_transaction_hash) AND (prepared_at IS NOT NULL) AND (broadcast_at IS NOT NULL) AND (terminal_at IS NOT NULL) AND (failure_code IS NULL) AND (failure_evidence_ref IS NULL)) OR ((state = ANY (ARRAY['reverted'::text, 'failed'::text, 'reconciliation_required'::text])) AND (failure_code IS NOT NULL) AND (failure_evidence_ref IS NOT NULL) AND (terminal_at IS NOT NULL)))),
+    CONSTRAINT data_registration_signing_attemp_max_priority_fee_per_gas_check CHECK ((max_priority_fee_per_gas >= (0)::numeric)),
     CONSTRAINT data_registration_signing_attempt_signed_transaction_hash_check CHECK (((signed_transaction_hash IS NULL) OR (signed_transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
     CONSTRAINT data_registration_signing_attempts_attempt_number_check CHECK (((attempt_number >= 1) AND (attempt_number <= 20))),
     CONSTRAINT data_registration_signing_attempts_calldata_hash_check CHECK ((calldata_hash ~ '^[0-9a-f]{64}$'::text)),
     CONSTRAINT data_registration_signing_attempts_failure_code_check CHECK (((failure_code IS NULL) OR (failure_code = ANY (ARRAY['signing_failed'::text, 'broadcast_failed'::text, 'receipt_reverted'::text, 'confirmation_timeout'::text, 'chain_reorganization'::text, 'invalid_receipt'::text])))),
     CONSTRAINT data_registration_signing_attempts_failure_evidence_ref_check CHECK (((failure_evidence_ref IS NULL) OR ((btrim(failure_evidence_ref) <> ''::text) AND (failure_evidence_ref = btrim(failure_evidence_ref))))),
+    CONSTRAINT data_registration_signing_attempts_gas_limit_check CHECK ((gas_limit > (0)::numeric)),
+    CONSTRAINT data_registration_signing_attempts_max_fee_per_gas_check CHECK ((max_fee_per_gas > (0)::numeric)),
+    CONSTRAINT data_registration_signing_attempts_method_selector_check CHECK ((method_selector ~ '^0x[0-9a-f]{8}$'::text)),
     CONSTRAINT data_registration_signing_attempts_signer_address_check CHECK ((signer_address ~ '^0x[0-9a-fA-F]{40}$'::text)),
     CONSTRAINT data_registration_signing_attempts_signer_namespace_check CHECK (((btrim(signer_namespace) <> ''::text) AND (signer_namespace = btrim(signer_namespace)))),
     CONSTRAINT data_registration_signing_attempts_signing_intent_id_check CHECK (((btrim(signing_intent_id) <> ''::text) AND (signing_intent_id = btrim(signing_intent_id)))),
     CONSTRAINT data_registration_signing_attempts_state_check CHECK ((state = ANY (ARRAY['signing_intent'::text, 'nonce_reserved'::text, 'prepared'::text, 'broadcast'::text, 'mined'::text, 'confirmed'::text, 'replaced'::text, 'reverted'::text, 'failed'::text, 'reconciliation_required'::text]))),
     CONSTRAINT data_registration_signing_attempts_submission_attempt_id_check CHECK (((btrim(submission_attempt_id) <> ''::text) AND (submission_attempt_id = btrim(submission_attempt_id)) AND (octet_length(submission_attempt_id) <= 512))),
-    CONSTRAINT data_registration_signing_attempts_transaction_hash_check CHECK (((transaction_hash IS NULL) OR (transaction_hash ~ '^0x[0-9a-f]{64}$'::text)))
+    CONSTRAINT data_registration_signing_attempts_target_address_check CHECK ((target_address ~ '^0x[0-9a-fA-F]{40}$'::text)),
+    CONSTRAINT data_registration_signing_attempts_transaction_hash_check CHECK (((transaction_hash IS NULL) OR (transaction_hash ~ '^0x[0-9a-f]{64}$'::text))),
+    CONSTRAINT data_registration_signing_attempts_value_wei_check CHECK ((value_wei >= (0)::numeric))
 );
 
 CREATE TABLE decision_records (

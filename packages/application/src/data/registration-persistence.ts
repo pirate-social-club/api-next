@@ -27,7 +27,7 @@ export type DataRegistrationArtifactKind =
   | "ip_metadata"
   | "nft_metadata";
 
-export type DataRegistrationPinRole = "primary" | "redundant" | "independent_gateway";
+export type DataRegistrationPinRole = "primary" | "independent_gateway";
 
 export type DataRegistrationFailureCode =
   | "pin_verification_failed"
@@ -108,7 +108,14 @@ export type DataRegistrationSigningAttempt = Readonly<{
   signerNamespace: string;
   signerAddress: string;
   signingIntentId: string;
+  targetAddress: string;
+  methodSelector: string;
   calldataHash: string;
+  signingDeadline: string;
+  valueWei: bigint;
+  gasLimit: bigint;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
   nonce: bigint | null;
   signedTransaction: Uint8Array | null;
   signedTransactionHash: string | null;
@@ -189,7 +196,14 @@ export type ReserveDataRegistrationAttemptInput = Readonly<{
   signerNamespace: string;
   signerAddress: string;
   signingIntentId: string;
+  targetAddress: string;
+  methodSelector: string;
   calldataHash: string;
+  signingDeadline: string;
+  valueWei: bigint;
+  gasLimit: bigint;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
   supersedesSubmissionAttemptId: string | null;
   evidenceRef: string;
 }>;
