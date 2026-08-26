@@ -95,6 +95,9 @@ async function authenticateAccess(
   request: HnsCommunityAppTransportRequest,
   composition: Extract<HnsCommunityAppApiComposition, { readonly enabled: true }>,
 ): Promise<void> {
+  if (new URL(request.url).origin !== composition.protected_origin) {
+    throw authenticationFailed();
+  }
   const assertion = request.headers.get(CF_ACCESS_ASSERTION_HEADER);
   if (assertion === null || assertion === "" || assertion.includes(",")) {
     throw authenticationFailed();

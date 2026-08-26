@@ -266,6 +266,31 @@ configuration must be reintroduced deliberately.
   CONTROL_PLANE_POSTGRES_RUNTIME_URL
 ```
 
+### Disabled HNS community API activation boundary — 2026-08-26
+
+The HTTP Worker now declares one future confidential binding name,
+`HNS_FORWARDER_V3_HMAC_KEY_REGISTRY`, for the versioned forwarder-v3 registry
+document. The document contains HMAC key bytes and is synchronized only to the
+exact gateway, Solid, or api-next consumer whose separately reviewed
+composition is being activated. api-next never receives a gateway-to-Solid or
+Solid-to-api-next Access service-token client secret; it validates only the
+Access assertion presented at its protected ingress.
+
+The intended api-next custody path is
+`/services/api-next/hns-community-app-api`. No folder, secret, placeholder, or
+Cloudflare binding was created by the repository change. The Wrangler
+`secrets.required` entries are name-only declarations in development, staging,
+and production. `HNS_COMMUNITY_APP_API_ENABLED` remains `false` in all three,
+so absence of the secret keeps the path inert rather than weakening ordinary
+HTTP traffic.
+
+The protected ingress origin, Access issuer, Access JWKS URL, Access audience,
+key-registry reference and version, freshness window, and future-clock skew are
+public Wrangler variables. Their checked-in values remain empty or invalid
+sentinels while disabled. Populating any environment requires the accepted
+single-environment operation plan and a separate credential ceremony; copying
+another environment's audience, registry, or key material is prohibited.
+
 ### Staging media-provider provisioning boundary — 2026-08-26
 
 The following names are allowed only in Infisical environment `staging` at

@@ -8,6 +8,8 @@
     "./cloudflare-access-jwt": "./src/cloudflare-access-jwt.ts",
     "./hns-community-app-api": "./src/hns-community-app-api.ts",
     "./hns-forwarder-v3": "./src/hns-forwarder-v3.ts",
+    "./hns-forwarder-replay-store": "./src/hns-forwarder-replay-store.ts",
+    "./hns-forwarder-replay-store-do": "./src/hns-forwarder-replay-store-do.ts",
     "./hns-host-persistence-repository": "./src/hns-host-persistence-repository.ts",
     "./config": "./config/index.ts",
     "./community-repository": "./src/community-repository.ts",

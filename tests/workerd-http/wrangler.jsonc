@@ -18,6 +18,10 @@
       {
         "name": "REGISTRATION_APPLICATION_LIMITER",
         "class_name": "RegistrationApplicationRateLimiterDO"
+      },
+      {
+        "name": "HNS_COMMUNITY_APP_API_REPLAY",
+        "class_name": "HnsForwarderReplayStoreDO"
       }
     ]
   },
@@ -28,6 +32,10 @@
         "RegistrationIpRateLimiterDO",
         "RegistrationApplicationRateLimiterDO"
       ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["HnsForwarderReplayStoreDO"]
     }
   ]
 }
