@@ -123,6 +123,7 @@ export * from "./megapot-approval-repository.ts";
 export * from "./megapot-claim-coordinator.ts";
 export * from "./megapot-claim-repository.ts";
 export * from "./megapot-commitment-coordinator.ts";
+export * from "./megapot-commitment-r2.ts";
 export * from "./megapot-commitment-repository.ts";
 export * from "./megapot-cutoff-coordinator.ts";
 export * from "./megapot-cutoff-repository.ts";
@@ -135,6 +136,7 @@ export * from "./megapot-sweep-repository.ts";
 export * from "./megapot-v2.ts";
 export * from "./megapot-v2-rpc.ts";
 export * from "./megapot-v2-signer.ts";
+export * from "./megapot-work-repository.ts";
 export {
   HnsControlObserverPostgresError,
   makeControlPlaneHnsControlObserverConfigurationResolver,

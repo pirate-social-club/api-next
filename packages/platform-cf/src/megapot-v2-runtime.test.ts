@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { encodeFunctionResult, type Hex, keccak256, parseAbi, parseTransaction } from "viem";
+import {
+  encodeFunctionResult,
+  type Hex,
+  keccak256,
+  parseAbi,
+  parseTransaction,
+  recoverMessageAddress,
+} from "viem";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import {
   type MegapotV2RpcClientOptions,
@@ -8,6 +15,7 @@ import {
 } from "./megapot-v2-rpc.ts";
 import {
   MegapotV2SignerFailed,
+  makeBaseSepoliaMegapotCommitmentSigner,
   makeBaseSepoliaMegapotV2PrivateKeySigner,
 } from "./megapot-v2-signer.ts";
 
@@ -204,6 +212,20 @@ describe("Megapot v2 Worker runtime adapters", () => {
         maxPriorityFeePerGas: 1_000_000_000n,
       }),
     ).rejects.toBeInstanceOf(MegapotV2SignerFailed);
+  });
+
+  test("signs commitment bytes with a publicly recoverable custody-key identity", async () => {
+    const privateKey = generatePrivateKey();
+    const account = privateKeyToAccount(privateKey);
+    const payload = new TextEncoder().encode("frozen-beneficiary-snapshot");
+    const signed = await makeBaseSepoliaMegapotCommitmentSigner({
+      privateKey,
+      expectedAddress: account.address,
+    }).sign(payload);
+    expect(signed.signingKeyId).toBe(`eip191:84532:${account.address.toLowerCase()}`);
+    await expect(
+      recoverMessageAddress({ message: { raw: payload }, signature: signed.signature as Hex }),
+    ).resolves.toBe(account.address);
   });
 
   test("quotes fees and serializes quantities without decimal ambiguity", async () => {

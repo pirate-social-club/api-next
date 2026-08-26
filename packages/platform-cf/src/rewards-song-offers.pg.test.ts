@@ -15,6 +15,7 @@ import { makeControlPlaneMegapotDrawingObservationStore } from "./megapot-drawin
 import { makeControlPlaneMegapotPurchaseStore } from "./megapot-purchase-repository.ts";
 import { makeControlPlaneMegapotSweepStore } from "./megapot-sweep-repository.ts";
 import { encodeMegapotUsdcTransfer } from "./megapot-v2.ts";
+import { makeControlPlaneMegapotWorkStore } from "./megapot-work-repository.ts";
 import { makeDirectPostgresControlPlaneLayer } from "./postgres.ts";
 import { applyPostgresMigrations } from "./postgres-migrations.ts";
 import { makeControlPlaneRewardFundingStore } from "./reward-funding-repository.ts";
@@ -870,6 +871,21 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         legId,
       ]);
 
+      const work = makeControlPlaneMegapotWorkStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      await expect(
+        Effect.runPromise(work.loadDrawings({ statuses: ["committed"], limit: 50 })),
+      ).resolves.toEqual([
+        {
+          poolLegId: legId,
+          drawingId: 101n,
+          status: "committed",
+          attestationId: "megapot-base-sepolia-v2",
+          ticketPriceAtomic: 10_000n,
+        },
+      ]);
+
       const store = makeControlPlaneMegapotPurchaseStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
@@ -914,6 +930,10 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           outcome: "accepted",
         }),
       );
+      await expect(Effect.runPromise(work.loadChainEffects(50))).resolves.toContainEqual({
+        effectId: "purchase-effect-101",
+        effectKind: "ticket_purchase",
+      });
       await Effect.runPromise(
         store.confirm({
           effectId: reserved.effectId,
@@ -966,6 +986,17 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           referral_fees_atomic: "100",
         },
       ]);
+      await expect(
+        Effect.runPromise(
+          work.loadDrawings({ statuses: ["tickets_confirmed", "drawing_pending"], limit: 50 }),
+        ),
+      ).resolves.toContainEqual({
+        poolLegId: legId,
+        drawingId: 101n,
+        status: "tickets_confirmed",
+        attestationId: "megapot-base-sepolia-v2",
+        ticketPriceAtomic: 10_000n,
+      });
       await expect(
         Effect.runPromise(
           store.reserveNonce({
@@ -1175,6 +1206,9 @@ suite("Postgres 17 Megapot rewards persistence", () => {
           allocation_count: "1",
         },
       ]);
+      const creditId = allocation.allocations[0]?.creditId;
+      if (creditId === null || creditId === undefined) throw new Error("missing payout credit");
+      await expect(Effect.runPromise(work.loadCredits(50))).resolves.toContain(creditId);
 
       await admin.query(
         `INSERT INTO persona_wallet_assignments (
@@ -1215,8 +1249,6 @@ suite("Postgres 17 Megapot rewards persistence", () => {
       const payoutStore = makeControlPlaneRewardPayoutStore(
         makeDirectPostgresControlPlaneLayer(scopedConnection),
       );
-      const creditId = allocation.allocations[0]?.creditId;
-      if (creditId === null || creditId === undefined) throw new Error("missing payout credit");
       const payoutCandidate = await Effect.runPromise(payoutStore.loadCandidate(creditId));
       const payoutReservation = await Effect.runPromise(
         payoutStore.reserveNonce({
@@ -1288,7 +1320,7 @@ suite("Postgres 17 Megapot rewards persistence", () => {
         },
       ]);
     });
-  });
+  }, 10_000);
 
   test("persists exact USDC approval evidence through the shared signer nonce fence", async () => {
     await withSchema(async (admin, scopedConnection) => {

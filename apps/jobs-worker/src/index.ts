@@ -20,6 +20,7 @@ import {
   type ScheduledCronLockDO,
 } from "@pirate/platform-cf";
 import {
+  assertMegapotRewardRuntimePosture,
   JobsWorkerConfig,
   type JobsWorkerConfigValue,
   loadConfigFrom,
@@ -44,6 +45,7 @@ import {
   makeHnsRouteRevalidationComposition,
   makeHnsRouteRevalidationJob,
 } from "./hns-route-revalidation";
+import { type MegapotRewardsJobOptions, makeMegapotRewardsJob } from "./megapot-rewards";
 import { buildJobRegistry, groupDueJobsByLane, JobContext, type JobDeclaration } from "./registry";
 import { makeCommunityCatalogIntegrityJob } from "./routing-integrity";
 
@@ -67,6 +69,17 @@ export {
   makeHnsRouteRevalidationComposition,
   makeHnsRouteRevalidationJob,
 } from "./hns-route-revalidation";
+export {
+  MEGAPOT_REWARDS_CYCLE_JOB,
+  MEGAPOT_REWARDS_CYCLE_LANE,
+  MEGAPOT_REWARDS_CYCLE_SCHEDULE,
+  MEGAPOT_REWARDS_CYCLE_TIMEOUT,
+  type MegapotRewardsCycleSummary,
+  type MegapotRewardsJobOptions,
+  type MegapotRewardsRuntime,
+  makeMegapotRewardsJob,
+  runMegapotRewardsCycle,
+} from "./megapot-rewards";
 export {
   buildJobRegistry,
   defaultRetrySchedule,
@@ -95,8 +108,25 @@ export {
 export interface JobsWorkerEnv extends AlertSinkBindings, HnsRouteRevalidationBindings {
   readonly CRON_LOCK: DurableObjectNamespace<ScheduledCronLockDO>;
   readonly CONTROL_PLANE?: HyperdriveConnection;
+  readonly MEGAPOT_COMMITMENTS?: R2Bucket;
   readonly API_NEXT_ENV?: string;
   readonly COMMUNITY_PURCHASE_FUNDING_RPC_URL?: string;
+  readonly MEGAPOT_REWARDS_ENABLED?: string;
+  readonly MEGAPOT_CHAIN_ID?: string;
+  readonly MEGAPOT_V2_RPC_URL?: string;
+  readonly MEGAPOT_ATTESTATION_ID?: string;
+  readonly MEGAPOT_REQUIRED_CONFIRMATIONS?: string;
+  readonly MEGAPOT_CUSTODY_PRIVATE_KEY?: string;
+  readonly MEGAPOT_COMMITMENT_PUBLIC_ORIGIN?: string;
+  readonly MEGAPOT_OBSERVATION_TTL_SECONDS?: string;
+  readonly MEGAPOT_APPROVED_ALLOWANCE_ATOMIC?: string;
+  readonly MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS?: string;
+  readonly MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS?: string;
+  readonly MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI?: string;
+  readonly MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING?: string;
+  readonly MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC?: string;
+  readonly MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING?: string;
+  readonly MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC?: string;
 }
 
 function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
@@ -104,10 +134,104 @@ function loadJobsWorkerConfig(env: JobsWorkerEnv): JobsWorkerConfigValue {
     return loadConfigFrom(JobsWorkerConfig, {
       API_NEXT_ENV: env.API_NEXT_ENV,
       COMMUNITY_PURCHASE_FUNDING_RPC_URL: env.COMMUNITY_PURCHASE_FUNDING_RPC_URL,
+      MEGAPOT_REWARDS_ENABLED: env.MEGAPOT_REWARDS_ENABLED,
+      MEGAPOT_CHAIN_ID: env.MEGAPOT_CHAIN_ID,
+      MEGAPOT_V2_RPC_URL: env.MEGAPOT_V2_RPC_URL,
+      MEGAPOT_ATTESTATION_ID: env.MEGAPOT_ATTESTATION_ID,
+      MEGAPOT_REQUIRED_CONFIRMATIONS: env.MEGAPOT_REQUIRED_CONFIRMATIONS,
+      MEGAPOT_CUSTODY_PRIVATE_KEY: env.MEGAPOT_CUSTODY_PRIVATE_KEY,
+      MEGAPOT_COMMITMENT_PUBLIC_ORIGIN: env.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN,
+      MEGAPOT_OBSERVATION_TTL_SECONDS: env.MEGAPOT_OBSERVATION_TTL_SECONDS,
+      MEGAPOT_APPROVED_ALLOWANCE_ATOMIC: env.MEGAPOT_APPROVED_ALLOWANCE_ATOMIC,
+      MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS: env.MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS,
+      MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS: env.MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS,
+      MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI: env.MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI,
+      MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING:
+        env.MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING,
+      MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC:
+        env.MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC,
+      MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING: env.MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING,
+      MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC:
+        env.MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC,
     });
   } catch {
     throw new Error("Jobs worker configuration is incomplete or invalid");
   }
+}
+
+const UINT256_MAX = (1n << 256n) - 1n;
+
+function bigintSetting(value: string, allowZero = false): bigint {
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(value)) {
+    throw new Error("Jobs worker configuration is incomplete or invalid");
+  }
+  const parsed = BigInt(value);
+  if (parsed > UINT256_MAX || (allowZero ? parsed < 0n : parsed < 1n)) {
+    throw new Error("Jobs worker configuration is incomplete or invalid");
+  }
+  return parsed;
+}
+
+function makeMegapotOptions(
+  env: JobsWorkerEnv,
+  config: JobsWorkerConfigValue,
+): MegapotRewardsJobOptions | null {
+  assertMegapotRewardRuntimePosture(config);
+  if (!config.MEGAPOT_REWARDS_ENABLED) return null;
+  if (env.MEGAPOT_COMMITMENTS === undefined) {
+    throw new Error("MEGAPOT_COMMITMENTS R2 binding is required when Megapot rewards are enabled");
+  }
+  const custodyPrivateKey = Redacted.value(config.MEGAPOT_CUSTODY_PRIVATE_KEY);
+  const commitmentPublicOrigin = Redacted.value(config.MEGAPOT_COMMITMENT_PUBLIC_ORIGIN);
+  let parsedCommitmentOrigin: URL;
+  try {
+    parsedCommitmentOrigin = new URL(commitmentPublicOrigin);
+  } catch {
+    throw new Error("Jobs worker configuration is incomplete or invalid");
+  }
+  if (
+    !/^0x[0-9a-f]{64}$/iu.test(custodyPrivateKey) ||
+    parsedCommitmentOrigin.protocol !== "https:" ||
+    parsedCommitmentOrigin.pathname !== "/" ||
+    parsedCommitmentOrigin.search.length > 0 ||
+    parsedCommitmentOrigin.hash.length > 0 ||
+    parsedCommitmentOrigin.username.length > 0 ||
+    parsedCommitmentOrigin.password.length > 0 ||
+    !Number.isSafeInteger(config.MEGAPOT_OBSERVATION_TTL_SECONDS) ||
+    config.MEGAPOT_OBSERVATION_TTL_SECONDS < 1 ||
+    config.MEGAPOT_OBSERVATION_TTL_SECONDS > 900 ||
+    !Number.isSafeInteger(config.MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS) ||
+    config.MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS < 1 ||
+    config.MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS > 3_600 ||
+    !Number.isSafeInteger(config.MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS) ||
+    config.MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS < 10_000 ||
+    config.MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS > 20_000 ||
+    config.MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING < 1 ||
+    config.MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING < 1
+  ) {
+    throw new Error("Jobs worker configuration is incomplete or invalid");
+  }
+  return {
+    attestationId: config.MEGAPOT_ATTESTATION_ID,
+    rpcUrl: fundingRpcUrl(Redacted.value(config.MEGAPOT_V2_RPC_URL), config.API_NEXT_ENV),
+    custodyPrivateKey,
+    commitmentBucket: env.MEGAPOT_COMMITMENTS,
+    commitmentPublicOrigin,
+    requiredConfirmations: config.MEGAPOT_REQUIRED_CONFIRMATIONS,
+    observationTtlMs: config.MEGAPOT_OBSERVATION_TTL_SECONDS * 1_000,
+    approvedAllowanceAtomic: bigintSetting(config.MEGAPOT_APPROVED_ALLOWANCE_ATOMIC),
+    purchaseSafetyMarginSeconds: config.MEGAPOT_PURCHASE_SAFETY_MARGIN_SECONDS,
+    gasLimitMultiplierBps: config.MEGAPOT_GAS_LIMIT_MULTIPLIER_BPS,
+    nativeGasReserveFloorWei: bigintSetting(config.MEGAPOT_NATIVE_GAS_RESERVE_FLOOR_WEI, true),
+    externalSponsorDailyTicketCeiling: config.MEGAPOT_EXTERNAL_SPONSOR_DAILY_TICKET_CEILING,
+    externalSponsorDailySpendCeilingAtomic: bigintSetting(
+      config.MEGAPOT_EXTERNAL_SPONSOR_DAILY_SPEND_CEILING_ATOMIC,
+    ),
+    sharedSponsorDailyTicketCeiling: config.MEGAPOT_SHARED_SPONSOR_DAILY_TICKET_CEILING,
+    sharedSponsorDailySpendCeilingAtomic: bigintSetting(
+      config.MEGAPOT_SHARED_SPONSOR_DAILY_SPEND_CEILING_ATOMIC,
+    ),
+  };
 }
 
 function fundingRpcUrl(value: string, environment: JobsWorkerConfigValue["API_NEXT_ENV"]): string {
@@ -528,6 +652,7 @@ export function makeJobsWorkerDeclarations(
   rpcUrl: string,
   hns: HnsRouteRevalidationComposition = { enabled: false },
   environment: JobsWorkerConfigValue["API_NEXT_ENV"] = "development",
+  megapot: MegapotRewardsJobOptions | null = null,
 ) {
   const declarations: Array<JobDeclaration<unknown, ControlPlaneDb | AlertCollector>> = [
     makeCommunityCatalogIntegrityJob(sink),
@@ -544,6 +669,7 @@ export function makeJobsWorkerDeclarations(
       }),
     );
   }
+  if (megapot !== null) declarations.push(makeMegapotRewardsJob(sink, megapot));
   return declarations;
 }
 
@@ -554,13 +680,20 @@ export default {
     }
     const config = loadJobsWorkerConfig(env);
     const hns = makeHnsRouteRevalidationComposition(env);
+    const megapot = makeMegapotOptions(env, config);
     const rpcUrl = fundingRpcUrl(
       Redacted.value(config.COMMUNITY_PURCHASE_FUNDING_RPC_URL),
       config.API_NEXT_ENV,
     );
     const deliveryStub = env.CRON_LOCK.getByName(`${CRON_LOCK_NAME}:alerts`);
     const sink = makeConfiguredAlertSink(env, makeAlertDeliveryLedger(deliveryStub));
-    const declarations = makeJobsWorkerDeclarations(sink, rpcUrl, hns, config.API_NEXT_ENV);
+    const declarations = makeJobsWorkerDeclarations(
+      sink,
+      rpcUrl,
+      hns,
+      config.API_NEXT_ENV,
+      megapot,
+    );
     const registry = await Effect.runPromise(buildJobRegistry(declarations));
     const dueByLane = groupDueJobsByLane(registry, event.scheduledTime);
     const runtime = makeHyperdriveControlPlaneLayer(env.CONTROL_PLANE);

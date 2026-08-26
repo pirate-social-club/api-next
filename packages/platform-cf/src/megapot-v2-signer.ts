@@ -1,5 +1,6 @@
 import { type Hex, keccak256 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import type { MegapotCommitmentSigner } from "./megapot-commitment-coordinator.ts";
 
 export class MegapotV2SignerFailed extends Error {
   readonly _tag = "MegapotV2SignerFailed";
@@ -86,5 +87,24 @@ export function makeBaseSepoliaMegapotV2PrivateKeySigner(input: {
         signedTransactionHash: keccak256(signedTransaction),
       };
     },
+  };
+}
+
+export function makeBaseSepoliaMegapotCommitmentSigner(input: {
+  readonly privateKey: string;
+  readonly expectedAddress: string;
+}): MegapotCommitmentSigner {
+  const privateKey = input.privateKey.toLowerCase();
+  if (!privateKeyPattern.test(privateKey)) throw new MegapotV2SignerFailed("invalid-config");
+  const account = privateKeyToAccount(privateKey as Hex);
+  const expectedAddress = canonicalAddress(input.expectedAddress);
+  if (account.address.toLowerCase() !== expectedAddress) {
+    throw new MegapotV2SignerFailed("signer-mismatch");
+  }
+  return {
+    sign: async (payload) => ({
+      signingKeyId: `eip191:84532:${expectedAddress}`,
+      signature: await account.signMessage({ message: { raw: payload } }),
+    }),
   };
 }
