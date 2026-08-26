@@ -56,7 +56,9 @@ plan:
     shell: |
       set -euo pipefail
       tar -xzf /ci/deps/node-v24.14.0-linux-x64.tar.gz -C /tmp
-      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      mkdir -p /tmp/ambient-bin
+      ln -sf /ci/deps/bun-linux-x64/bun /tmp/ambient-bin/bunx
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/tmp/ambient-bin:/ci/deps/bun-linux-x64:$PATH
       export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
       export CI=1
       export HOME=/tmp/ambient-home
@@ -98,7 +100,7 @@ plan:
   - action: shell
     shell: |
       set -euo pipefail
-      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/tmp/ambient-bin:/ci/deps/bun-linux-x64:$PATH
       export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
       export CI=1
       export HOME=/tmp/ambient-home
@@ -108,7 +110,7 @@ plan:
   - action: shell
     shell: |
       set -euo pipefail
-      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/tmp/ambient-bin:/ci/deps/bun-linux-x64:$PATH
       export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
       export CI=1
       export HOME=/tmp/ambient-home
@@ -118,17 +120,25 @@ plan:
   - action: shell
     shell: |
       set -euo pipefail
-      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/tmp/ambient-bin:/ci/deps/bun-linux-x64:$PATH
       export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
       export CI=1
       export HOME=/tmp/ambient-home
       export NODE_OPTIONS=--max-old-space-size=3072
       cd /ci/src
-      /tmp/run-check-gate 03-test-workerd bun run test:workerd
+      # The Haswell guest imports the Self SDK more slowly than the hosted
+      # runner. Keep the same four configs but give each test a bounded 30s
+      # ceiling instead of Vitest's 5s default.
+      /tmp/run-check-gate 03-test-workerd bash -c '
+        bun run vitest run --config tests/workerd/vitest.config.ts --testTimeout=30000 &&
+        bun run vitest run --config tests/workerd-http/vitest.config.ts --testTimeout=30000 &&
+        bun run vitest run --config tests/workerd-self/vitest.config.ts --testTimeout=30000 &&
+        bun run vitest run --config tests/workerd-hns-verifier/vitest.config.ts --testTimeout=30000
+      '
   - action: shell
     shell: |
       set -euo pipefail
-      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/tmp/ambient-bin:/ci/deps/bun-linux-x64:$PATH
       export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
       export CI=1
       export HOME=/tmp/ambient-home
@@ -140,7 +150,7 @@ plan:
   - action: shell
     shell: |
       set -euo pipefail
-      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/tmp/ambient-bin:/ci/deps/bun-linux-x64:$PATH
       export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
       export CI=1
       export HOME=/tmp/ambient-home
@@ -156,7 +166,7 @@ plan:
   - action: shell
     shell: |
       set -euo pipefail
-      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/ci/deps/bun-linux-x64:$PATH
+      export PATH=/tmp/node-v24.14.0-linux-x64/bin:/tmp/ambient-bin:/ci/deps/bun-linux-x64:$PATH
       export BUN_INSTALL_CACHE_DIR=/ci/deps/bun/default
       export CI=1
       export HOME=/tmp/ambient-home

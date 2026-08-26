@@ -2,12 +2,16 @@
 
 Status: hosted `check`-job parity reached for every step except
 `check:breaking`, proven by a network-isolated workstation rehearsal on
-2026-08-26. Two live Ambient attempts acquired the runner and installed all
-496 packages, then exposed consecutive trusted pre-plan verifier defects
-before any candidate gate ran. Both defects now have exact regression tests;
-the second repaired executor passed its pinned-source tests and host drift
-verification. A successful replacement live run is still required. No
-required-check substitution has occurred.
+2026-08-26. Two live Ambient attempts exposed consecutive trusted pre-plan
+verifier defects before candidate code ran. A third attempt proved both
+repairs, installed all 496 packages, delivered the exact Git checkout and
+entered the networkless plan VM. It then exposed two guest-portability gaps:
+the pinned Bun payload lacked the `bunx` alias used by a committed check script,
+and the slower Haswell guest exceeded Vitest's 5-second default in two Self SDK
+tests. The plan now supplies a guest-local alias to the same pinned Bun binary
+and runs the same four Workerd configs with a bounded 30-second per-test
+ceiling. Exact local probes passed both corrections. A successful replacement
+live run is still required. No required-check substitution has occurred.
 
 GitHub Actions with Blacksmith remains the preferred api-next executor. The
 Ambient plan is an independent fallback for executor outages. During the
@@ -19,7 +23,9 @@ ruleset, whose required contexts are emitted by GitHub Actions.
 `.radicle/ambient.yaml` provisions checksum-pinned Bun 1.4.0 and Node 24.14.0
 through trusted pre-plan actions. The deployed `bun_get` action builds the
 lockfile-bound cache, and the plan VM performs
-`bun install --frozen-lockfile --offline` without a network route.
+`bun install --frozen-lockfile --offline` without a network route. A
+guest-local `bunx` symlink points to that exact pinned Bun binary; it does not
+introduce another executable or a network route.
 
 The deployed adapter clones the Radicle repository, checks out the trigger
 commit and archives that checkout for the Ambient source drive. The deployed
@@ -40,7 +46,7 @@ every gate has had a chance to run. This mirrors the Solid plan contract.
 | Bun 1.4.0 and dependency install | Plan action 1 | 496 packages installed offline from the lockfile-bound cache in 0.48 s |
 | `bun run check` | `01-check` | Pass, 39 s |
 | `bun test packages apps scripts` | `02-test-host` | Pass, 12 s; 1874 passed, 283 skipped, 0 failed across 303 files |
-| `bun run test:workerd` | `03-test-workerd` | Pass, 89 s; all four Workerd groups, 84 tests across 25 files |
+| `bun run test:workerd` | `03-test-workerd` | Same four configs with a 30-second guest test ceiling; the exact hosted command passed rehearsal in 89 s, with 84 tests across 25 files |
 | Repeated `bun run check:fresh` | `04-check-fresh` | Pass, less than 1 s |
 | Jobs Worker Wrangler dry run | `05-wrangler-jobs` | Pass, 2 s |
 | HTTP Worker Wrangler dry run | `06-wrangler-http` | Pass, 2 s |
@@ -83,9 +89,8 @@ groups total 84 tests across 25 files.
 The checksum-sealed corrective harness, candidate plan and complete log are at
 `/home/t42/Documents/agents/archive/api-next-ambient-real-checkout-rehearsal-2026-08-26/`.
 
-Three differences from the guest remain, and each is why a successful live run
-is still required. The first live attempt proved that `bun_get` installed all
-496 api-next packages, including both GitHub-backed lock entries, but its
+The first live attempt proved that `bun_get` installed all 496 api-next
+packages, including both GitHub-backed lock entries, but its
 post-install verifier incorrectly sent their `github:` sources through the
 registry semantic-version path. After that repair, the second attempt passed
 both Git-backed entries and then rejected the legitimate registry package
@@ -93,9 +98,22 @@ both Git-backed entries and then rejected the legitimate registry package
 binds GitHub sources to a hexadecimal revision, exact cache tag, `.bun-tag` and
 lockfile SHA-512 field; ordinary registry names remain valid while URL-shaped
 sources still fail closed. Registry tarball checksum handling is unchanged.
-The workstation kernel, filesystem and CPU model still differ from the
-Haswell-noTSX guest. And loopback was up in the namespace, whereas the guest
-has no network at all.
+
+The third attempt, broker run `126a1497-8f3a-426b-b36d-98ebc4c36e8f`, proved
+the corrected verifier and the actual trust boundary. The pre-plan installed
+496 packages, and the plan VM had no network device, consumed the dependency
+drive read-only and verified delivered head
+`74438ebcf019852863d2df25eb2d7fcb5efaf5ab`. Four gates passed. `01-check`
+failed only because `bunx` was absent, and `03-test-workerd` passed its first 73
+tests before two Self SDK tests exceeded the 5-second default. A local probe of
+the new alias completed strict Effect diagnostics across 426 files with zero
+errors or warnings. The affected Self config passed with the new 30-second
+ceiling.
+
+The workstation kernel and filesystem still differ from the Haswell-noTSX
+guest. Loopback was also up in the rehearsal namespace, whereas the guest has
+no network at all. Those differences, plus the two plan corrections, require
+one replacement live success.
 
 The Wrangler gates carry one further caveat. With telemetry, error reporting
 and the version banner disabled, a `strace -f` route-less rehearsal of both dry
