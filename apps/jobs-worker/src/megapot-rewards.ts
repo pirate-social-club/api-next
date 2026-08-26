@@ -179,6 +179,7 @@ export function makeMegapotRewardsJob(
     const rpc = makeMegapotV2RpcClient({
       rpcUrl: options.rpcUrl,
       reuseSuccessfulAttestation: true,
+      minimumRequestIntervalMs: 250,
       attestation: {
         attestationId: deployment.attestationId,
         environment: deployment.environment,
