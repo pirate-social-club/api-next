@@ -28,7 +28,7 @@ const sentinelPath =
   process.env.CONTROL_PLANE_POSTGRES_HANDLE_SALES_TEST_SENTINEL ??
   "/tmp/api-next-control-plane-postgres-handle-sales-suite-complete";
 const sentinelContents = "api-next-control-plane-postgres-handle-sales-suite-complete\n";
-const testCount = 3;
+const testCount = 4;
 let completedTestCount = 0;
 
 const schemaIdentifier = (): string =>
@@ -1214,6 +1214,45 @@ suite("community handle sales on PostgreSQL 17", () => {
         dedicatedRootReplacementConfirmed: true,
       } as const;
 
+      const unauthorizedContext = await run(
+        sales.getManagementContext({
+          accountId: "not-the-seller",
+          communityId,
+        }),
+      );
+      expect(unauthorizedContext).toBeNull();
+      const managementContext = await run(
+        sales.getManagementContext({ accountId: "activation-seller", communityId }),
+      );
+      expect(managementContext).toMatchObject({
+        community_id: communityId,
+        sale_namespace_candidates: [
+          {
+            kind: "ready_v1",
+            family: "hns",
+            canonical_root: "charizard",
+            namespace_authority_reference: dependencies.namespaceAuthorityReference,
+            expected_namespace_authority_generation: 1,
+            dns_zone_activation_id: dependencies.dnsZoneActivationId,
+            expected_dns_zone_activation_generation: 1,
+          },
+        ],
+        offering_authoring_preset: {
+          kind: "hns_hosted_persona_free_v1",
+          reserved_labels_id: "reserved_labels_01",
+          expected_reserved_labels_revision: 1,
+          broad_qualification_policy_id: "none_v1",
+          expected_broad_qualification_policy_revision: 1,
+          expected_account_directory_binding_version: "1",
+          pricing_id: "platform_free_handles_v1",
+          expected_pricing_revision: 1,
+          issuance_driver_id: "hosted_persona-local",
+          expected_issuance_driver_version: "1",
+          quote_ttl_seconds: 120,
+          reservation_ttl_seconds: 300,
+        },
+      });
+
       const activation = await run(
         sales.createSaleNamespace({
           accountId: "activation-seller",
@@ -1244,6 +1283,20 @@ suite("community handle sales on PostgreSQL 17", () => {
           terms: terms(activation.activation.sale_namespace_activation_id),
         }),
       );
+      const activeManagedNamespaces = await run(
+        sales.listManagementSaleNamespaces({
+          accountId: "activation-seller",
+          communityId,
+        }),
+      );
+      expect(activeManagedNamespaces).toMatchObject({
+        items: [{ activation: { status: "active" }, effectiveness: { kind: "effective_v1" } }],
+      });
+      await expect(
+        run(sales.listManagementOfferings({ accountId: "activation-seller", communityId })),
+      ).resolves.toMatchObject({
+        items: [{ offering: { offering_id: offering.offering.offering_id, status: "active" } }],
+      });
       await run(
         sales.confirmPersonaReuse({
           accountId: "activation-seller",
@@ -1307,6 +1360,31 @@ suite("community handle sales on PostgreSQL 17", () => {
         items: [],
         next_cursor: null,
       });
+      await expect(
+        run(
+          sales.listManagementSaleNamespaces({
+            accountId: "activation-seller",
+            communityId,
+          }),
+        ),
+      ).resolves.toMatchObject({
+        items: [
+          {
+            activation: { status: "active" },
+            effectiveness: { kind: "ineffective_v1", reason: "community_inactive" },
+          },
+        ],
+      });
+      await expect(
+        run(sales.listManagementOfferings({ accountId: "activation-seller", communityId })),
+      ).resolves.toMatchObject({
+        items: [
+          {
+            offering: { status: "active" },
+            effectiveness: { kind: "ineffective_v1", reason: "community_inactive" },
+          },
+        ],
+      });
       const archivedAuthority = await Effect.runPromise(
         authoritySource.resolve("livehost.charizard"),
       );
@@ -1353,6 +1431,33 @@ suite("community handle sales on PostgreSQL 17", () => {
         items: [],
         next_cursor: null,
       });
+      await expect(
+        run(
+          sales.listManagementSaleNamespaces({
+            accountId: "activation-seller",
+            communityId,
+          }),
+        ),
+      ).resolves.toMatchObject({
+        items: [
+          {
+            activation: { status: "active" },
+            effectiveness: { kind: "ineffective_v1", reason: "dns_or_gateway_unhealthy" },
+          },
+        ],
+      });
+      await expect(
+        run(sales.getManagementContext({ accountId: "activation-seller", communityId })),
+      ).resolves.toMatchObject({
+        sale_namespace_candidates: [
+          {
+            kind: "unavailable_v1",
+            family: "hns",
+            canonical_root: "charizard",
+            reason: "dns_delegation_required",
+          },
+        ],
+      });
       const driftedAuthority = await Effect.runPromise(
         authoritySource.resolve("livehost.charizard"),
       );
@@ -1389,6 +1494,21 @@ suite("community handle sales on PostgreSQL 17", () => {
       expect(suspended.activation).toMatchObject({
         sale_namespace_activation_generation: 2,
         status: "suspended",
+      });
+      await expect(
+        run(
+          sales.listManagementSaleNamespaces({
+            accountId: "activation-seller",
+            communityId,
+          }),
+        ),
+      ).resolves.toMatchObject({
+        items: [
+          {
+            activation: { status: "suspended" },
+            effectiveness: { kind: "ineffective_v1", reason: "activation_inactive" },
+          },
+        ],
       });
 
       await admin.query(
@@ -1436,6 +1556,31 @@ suite("community handle sales on PostgreSQL 17", () => {
       });
       await expect(
         run(
+          sales.listManagementSaleNamespaces({
+            accountId: "activation-seller",
+            communityId,
+          }),
+        ),
+      ).resolves.toMatchObject({
+        items: [
+          {
+            activation: { status: "revoked" },
+            effectiveness: { kind: "ineffective_v1", reason: "activation_inactive" },
+          },
+        ],
+      });
+      await expect(
+        run(sales.listManagementOfferings({ accountId: "activation-seller", communityId })),
+      ).resolves.toMatchObject({
+        items: [
+          {
+            offering: { status: "active" },
+            effectiveness: { kind: "ineffective_v1", reason: "sale_namespace_inactive" },
+          },
+        ],
+      });
+      await expect(
+        run(
           sales.reviseSaleNamespace({
             accountId: "activation-seller",
             communityId,
@@ -1450,6 +1595,141 @@ suite("community handle sales on PostgreSQL 17", () => {
         _tag: "HandleSalesRejected",
         reason: "sale_namespace_inactive",
       });
+    });
+    completedTestCount += 1;
+  }, 20_000);
+
+  test("keeps seller-management paging on its first-page revision snapshot", async () => {
+    await withSchema(async ({ admin, scopedConnection }) => {
+      await seedAccount(admin, "snapshot-seller");
+      const communityId = "community_123e4567-e89b-42d3-a456-426614174064";
+      const dependencies = await seedHealthySaleDependencies(admin, "snapshot-seller", communityId);
+      const store = makeControlPlaneHandleSalesStore(
+        makeDirectPostgresControlPlaneLayer(scopedConnection),
+      );
+      const sales = makeHandleSalesService(store);
+      let sequence = 0;
+      const run = <A, E>(effect: Effect.Effect<A, E, IdGen | HandleRecipientTokenVault>) =>
+        Effect.runPromise(
+          effect.pipe(
+            Effect.provideService(IdGen, {
+              next: Effect.sync(() => `snapshot-${++sequence}`),
+            }),
+            Effect.provideService(
+              HandleRecipientTokenVault,
+              makeHandleRecipientTokenVault({
+                hmacKeys: `h1:${key(31)}`,
+                envelopeKeys: `e1:${key(32)}`,
+              }),
+            ),
+          ),
+        );
+      const activation = await run(
+        sales.createSaleNamespace({
+          accountId: "snapshot-seller",
+          communityId,
+          idempotencyKey: "snapshot-activation",
+          namespaceAuthorityReference: dependencies.namespaceAuthorityReference,
+          expectedNamespaceAuthorityGeneration: 1,
+          dnsZoneActivationId: dependencies.dnsZoneActivationId,
+          expectedDnsZoneActivationGeneration: 1,
+          dedicatedRootReplacementConfirmed: true,
+        }),
+      );
+      const offeringTerms = terms(activation.activation.sale_namespace_activation_id);
+      const first = await run(
+        sales.createOffering({
+          accountId: "snapshot-seller",
+          communityId,
+          idempotencyKey: "snapshot-offering-first",
+          terms: offeringTerms,
+        }),
+      );
+      const pausedFirst = await run(
+        sales.reviseOffering({
+          accountId: "snapshot-seller",
+          communityId,
+          offeringId: first.offering.offering_id,
+          expectedOfferingHash: first.offering.offering_hash,
+          requestedStatus: "paused",
+          idempotencyKey: "snapshot-offering-first-pause",
+          terms: offeringTerms,
+        }),
+      );
+      const second = await run(
+        sales.createOffering({
+          accountId: "snapshot-seller",
+          communityId,
+          idempotencyKey: "snapshot-offering-second",
+          terms: offeringTerms,
+        }),
+      );
+      const firstPage = await run(
+        sales.listManagementOfferings({
+          accountId: "snapshot-seller",
+          communityId,
+          limit: 1,
+        }),
+      );
+      if (
+        firstPage === null ||
+        firstPage.next_cursor === null ||
+        firstPage.items[0] === undefined
+      ) {
+        throw new Error("expected a first seller-management page");
+      }
+      const firstPageId = firstPage.items[0].offering.offering_id;
+      const remaining =
+        firstPageId === pausedFirst.offering.offering_id ? second.offering : pausedFirst.offering;
+      const remainingEffectiveness =
+        remaining.status === "active"
+          ? { kind: "effective_v1" as const }
+          : { kind: "ineffective_v1" as const, reason: "offering_inactive" as const };
+      await run(
+        sales.reviseOffering({
+          accountId: "snapshot-seller",
+          communityId,
+          offeringId: remaining.offering_id,
+          expectedOfferingHash: remaining.offering_hash,
+          requestedStatus: "retired",
+          idempotencyKey: "snapshot-offering-retire",
+          terms: offeringTerms,
+        }),
+      );
+      const secondPage = await run(
+        sales.listManagementOfferings({
+          accountId: "snapshot-seller",
+          communityId,
+          limit: 1,
+          cursor: firstPage.next_cursor,
+        }),
+      );
+      expect(secondPage).toMatchObject({
+        items: [
+          {
+            offering: { offering_id: remaining.offering_id, status: remaining.status },
+            effectiveness: remainingEffectiveness,
+          },
+        ],
+      });
+      const fresh = await run(
+        sales.listManagementOfferings({ accountId: "snapshot-seller", communityId }),
+      );
+      expect(
+        fresh?.items.find((item) => item.offering.offering_id === remaining.offering_id),
+      ).toMatchObject({
+        offering: { status: "retired" },
+        effectiveness: { kind: "ineffective_v1", reason: "offering_inactive" },
+      });
+      await expect(
+        run(
+          sales.listManagementOfferings({
+            accountId: "not-the-seller",
+            communityId,
+            cursor: "not-a-valid-cursor",
+          }),
+        ),
+      ).resolves.toBeNull();
     });
     completedTestCount += 1;
   }, 20_000);

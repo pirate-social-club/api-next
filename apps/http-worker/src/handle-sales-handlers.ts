@@ -221,6 +221,41 @@ export function makeHandleSalesHandlers(
       const path = request.params as { readonly communityId: string };
       return run(sales.listOfferings({ communityId: path.communityId, ...page(request.query) }));
     },
+    GetHandleSalesManagement: async (request) => {
+      const path = request.params as { readonly communityId: string };
+      const context = await run(
+        sales.getManagementContext({
+          accountId: accountId(request.principal),
+          communityId: path.communityId,
+        }),
+      );
+      if (context === null) throw new NotFound({ message: "Handle sales management not found" });
+      return withEndpointResult(context, 200, { "cache-control": "private, no-store" });
+    },
+    ListHandleSaleNamespaceManagement: async (request) => {
+      const path = request.params as { readonly communityId: string };
+      const result = await run(
+        sales.listManagementSaleNamespaces({
+          accountId: accountId(request.principal),
+          communityId: path.communityId,
+          ...page(request.query),
+        }),
+      );
+      if (result === null) throw new NotFound({ message: "Handle sales management not found" });
+      return withEndpointResult(result, 200, { "cache-control": "private, no-store" });
+    },
+    ListCommunityHandleOfferingManagement: async (request) => {
+      const path = request.params as { readonly communityId: string };
+      const result = await run(
+        sales.listManagementOfferings({
+          accountId: accountId(request.principal),
+          communityId: path.communityId,
+          ...page(request.query),
+        }),
+      );
+      if (result === null) throw new NotFound({ message: "Handle sales management not found" });
+      return withEndpointResult(result, 200, { "cache-control": "private, no-store" });
+    },
     ConfirmHandlePersonaReuse: async (request) => {
       const body = request.body as {
         readonly idempotency_key: string;

@@ -1,4 +1,5 @@
 import type {
+  CommunityHandleOfferingManagementItemV1,
   CommunityHandleOfferingV2,
   HandleClaimV2,
   HandleCuratedQualificationPolicyRefV1,
@@ -7,6 +8,8 @@ import type {
   HandleQuoteV2,
   HandleReservationV2,
   HandleSafeReasonV2,
+  HandleSaleNamespaceManagementItemV1,
+  HandleSalesManagementContextV1,
   PublicHandleGrantV3,
   PublicPersonaProfileV1,
   SaleNamespaceActivationV1,
@@ -215,6 +218,24 @@ export interface HandleSalesStore {
     PageResult<CommunityHandleOfferingV2>,
     HandleSalesPageRejected | HandleSalesStorageFailed
   >;
+  readonly getManagementContext: (
+    input: Readonly<{
+      accountId: string;
+      communityId: string;
+    }>,
+  ) => Effect.Effect<HandleSalesManagementContextV1 | null, HandleSalesStorageFailed>;
+  readonly listManagementSaleNamespaces: (
+    input: Readonly<{ accountId: string; communityId: string }> & PageInput,
+  ) => Effect.Effect<
+    PageResult<HandleSaleNamespaceManagementItemV1> | null,
+    HandleSalesPageRejected | HandleSalesStorageFailed
+  >;
+  readonly listManagementOfferings: (
+    input: Readonly<{ accountId: string; communityId: string }> & PageInput,
+  ) => Effect.Effect<
+    PageResult<CommunityHandleOfferingManagementItemV1> | null,
+    HandleSalesPageRejected | HandleSalesStorageFailed
+  >;
   readonly confirmPersonaReuse: (
     input: Readonly<{
       accountId: string;
@@ -375,6 +396,9 @@ export function makeHandleSalesService(store: HandleSalesStore) {
         });
       }),
     listOfferings: store.listOfferings,
+    getManagementContext: store.getManagementContext,
+    listManagementSaleNamespaces: store.listManagementSaleNamespaces,
+    listManagementOfferings: store.listManagementOfferings,
     confirmPersonaReuse: (input: {
       readonly accountId: string;
       readonly personaId: string;
