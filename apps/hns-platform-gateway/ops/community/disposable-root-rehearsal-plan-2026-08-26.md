@@ -4,7 +4,7 @@ Status: draft, non-executable
 
 Plan date: 2026-08-26
 
-Evidence cutoff: 2026-08-26T17:45:37+04:00
+Evidence cutoff: 2026-08-26T18:07:58+04:00
 
 This is the dated discovery checkpoint for the first interactive external
 community origin. It does not authorize any provider, database, DNS, key,
@@ -48,15 +48,20 @@ External work remains stopped for these reasons:
 
 1. `__UNRESOLVED_OWNER_VERIFIED_DISPOSABLE_ROOT__` and its owner account are
    not known.
-2. Live application of PostgreSQL migrations 0047, 0048, and 0049 has not
-   been proved with a migration-reader credential.
+2. Production is recorded as applied only through PostgreSQL migration 0048,
+   while the current repository ledger runs through 0055. Live ledger state
+   has not been proved with a migration-reader credential, and the separately
+   authorized 0049-through-0055 migration ceremony has not occurred.
 3. Cloudflare Access is not enabled for the account, so there is no team
    domain, application, AUD tag, or service token to bind.
-4. The primary gateway verifier reports a host-file checksum mismatch. The
-   primary and secondary DNS verifiers exit `NOTCONFIGURED`. The encrypted
-   backup job uploads and verifies retention, then exits `NOTCONFIGURED`.
-   These pre-existing conditions require a separately reviewed resolution or
-   explicit risk disposition before mutation.
+4. `pirate-deployment-verify@gateway.service` reports a checksum mismatch for
+   `/etc/caddy/caddy.json`: its installed-file manifest expects the retained
+   pre-target digest while the active, separately validated configuration has
+   a different digest. The primary and secondary DNS verifiers exit
+   `NOTCONFIGURED`. The encrypted backup job uploads and verifies retention,
+   then exits `NOTCONFIGURED`. These pre-existing conditions require a
+   separately reviewed resolution or explicit risk disposition before
+   mutation.
 5. The gateway bundle, disposable DNSSEC keyset, DANE certificate, complete
    zone bytes, Caddy candidate, and Handshake transaction bytes do not exist.
    Their placeholders make this plan non-executable.
@@ -96,10 +101,17 @@ OAuth token was passed only in process memory to read-only API calls.
 
 ### Repository and source closure
 
-The accepted api-next source commit is
-`4930e8aaf75c9a19cd90fe67f9c6586602c32ccb`. It contains the merged HTTP Worker
-production composition and the separately named community VPS bundle. The
-accepted Solid source commit is
+The source-closure audit used discovery base
+`4930e8aaf75c9a19cd90fe67f9c6586602c32ccb`, which contains the merged HTTP
+Worker production composition and separately named community VPS bundle. By
+the correction review, api-next `main` and `origin/main` had advanced to
+`1e0b4e561b6cb12e9bce275f9fe90762365f4f4f`, including changes under a package
+consumed by the gateway bundle. Neither commit is frozen as the future
+deployment candidate. The population ceremony must re-derive the exact clean
+api-next commit, audit its delta from the source-closure base, and build the
+bundle from that same commit.
+
+The accepted Solid source-closure commit is
 `37e09a1080f52f3506bf7a5327907ea1f872a0f2`. Both canonical trees were clean at
 discovery.
 
@@ -319,11 +331,35 @@ Caddy is enabled and active. The live bytes and retained rollback bytes are:
 | File | SHA-256 | Validation |
 | --- | --- | --- |
 | `/etc/caddy/caddy.json` | `4e9f56608383a66771ac27510f1aca25bef8a908784ee8b601840b89fd5b294f` | valid with `/usr/local/bin/pirate-caddy` |
-| `/etc/caddy/caddy.json.pre-target-static-gateway-20260825` | `2e450f1ebee39a0f33bf2a0fcf17de093088c47fdd6b1bc9fe5df7177608c8dbd9b` | valid with `/usr/local/bin/pirate-caddy` |
+| `/etc/caddy/caddy.json.pre-target-static-gateway-20260825` | `2e450f1ebee39a0f33bf2a0fcf17de093088c47fdd6b1bc9fe5df7177608c8db` | valid with `/usr/local/bin/pirate-caddy` |
 
 The stock `caddy validate` rejects the installed custom `rate_limit` handler;
 that is a binary mismatch, not evidence of invalid active bytes. Every planned
 validation command must use `/usr/local/bin/pirate-caddy`.
+
+The gateway drift signal was re-derived read-only. Unit
+`pirate-deployment-verify@gateway.service` last failed at
+`2026-08-26T04:44:10Z`. Its manifest
+`/srv/pirate-hns-gateway/config/INSTALLED_SHA256SUMS` expects this entry:
+
+```text
+2e450f1ebee39a0f33bf2a0fcf17de093088c47fdd6b1bc9fe5df7177608c8db  /etc/caddy/caddy.json
+```
+
+The observed active file is:
+
+```text
+4e9f56608383a66771ac27510f1aca25bef8a908784ee8b601840b89fd5b294f  /etc/caddy/caddy.json
+```
+
+The manifest was last modified `2026-08-13T19:31:34.545176523Z`; the active
+Caddy file was modified `2026-08-24T20:56:42.892088233Z`. All other six host
+files in that manifest passed, as did the two runtime-executable checks, five
+effective-systemd-unit checks, and config hash. This evidence localizes the
+mismatch to the later Caddy promotion, but it does not authorize updating the
+manifest or dismissing the verifier. The owner must accept the expected active
+bytes and separately authorize a verifier-baseline repair before rehearsal
+mutation.
 
 The production DANE certificate is evidence only and must not be reused. It is
 `CN=Pirate HNS DANE gateway`, serial
@@ -339,10 +375,11 @@ HSD runs mainnet in healthy container `pirate-hsd-observer` from image
 header height were 344322, progress was 1, and best hash was
 `0000000000000011350a491c12c0c2f838c233f2e44970943eb2faac0b110e34`.
 
-PowerDNS runs in `pirate-hns-authdns`. Its zone inventory is `tame_impala`,
-`ellaalexandra`, `xn--pokmon-dva`, `baddie`, `dankmeme`, `pirate`, `king`,
-`king.bitcoin`, `scarlett`, and `jazleeuw`. The production `pirate` zone is
-master, serial `2026072002`, and allows AXFR through logical TSIG reference
+PowerDNS runs in `pirate-hns-authdns`. Its inventory contains the eight opaque
+candidate zones indexed in the root inventory below, the protected `pirate`
+zone, and one unrelated retained child zone. The public repository deliberately
+does not retain candidate index-to-name mappings. The production `pirate` zone
+is master, serial `2026072002`, and allows AXFR through logical TSIG reference
 `pirate-axfr`. It has NSEC semantics and is signed by PowerDNS key id 1, an
 active and published 257 CSK using algorithm 13 with tag 34383. Its type-2 and
 type-4 DS digests are respectively:
@@ -392,16 +429,18 @@ The secondary deployment verifier reports no byte drift but exits 6
 The observer is on Handshake mainnet. The name and resource query was refreshed
 immediately before `2026-08-26T13:55:35Z`. All candidate names were registered,
 closed, and unrevoked. The public owner fields below are chain outpoints, not
-proof that an available wallet account controls them.
+proof that an available wallet account controls them. The opaque indices are
+local to this public plan. The index-to-name mapping belongs only in redacted,
+access-controlled owner-ceremony evidence and must not be committed.
 
 ```text
-tame_impala
+candidate-01
   owner 1a96226223c2b653147996f84ac23a2bdd0963b50c72e39c66f8745c0ae54ea6:0
   renewal 327265; expiry 432385; remaining 88057 blocks
   NS ns1.pirate.
   TXT pirate-verification=nvs_066a3309c6604cc4bcce06a2cc531275
 
-ellaalexandra
+candidate-02
   owner ce240df33c375ab6994e75d402501f43aa4bc8fc5eb53d239318152e98c77e9d:0
   renewal 340917; expiry 446037; remaining 101709 blocks
   NS ns1.pirate.; NS ns2.pirate.
@@ -409,7 +448,7 @@ ellaalexandra
   DS 56075 13 2 0ab3ce5c1e2964f49c879e1608cf609686eaf21e5f998dfe26a2ca9ecd15ed2e
   DS 56075 13 4 32aa9524ab977fca45947dd81504acd177498cc6bd9ea580483ba0cdbee7d3a5d614a204465fdc821b914f3d0d35a446
 
-xn--pokmon-dva
+candidate-03
   owner 8ae8663fefc0cff064901e5e142e11e91110931507e07cecaa4ecbccc505b497:0
   renewal 326567; expiry 431687; remaining 87359 blocks
   NS ns1.pirate.; NS ns2.pirate.
@@ -417,16 +456,16 @@ xn--pokmon-dva
   DS 49194 13 2 053c8350a8e967bc4c3a9e4705e8a133f136fc9ba1f7cd0ae1e33d97609531f1
   DS 49194 13 4 1559ca37322d04104d50d4ed8aa4eede8c2cc3252efbfd6d363b398b936793f00df0b5bc9cce08ba8366053d19b30190
 
-baddie
+candidate-04
   owner 385bc9bd22ceb39cd7d010b1e4e052a0ea6405e7eb3baa35e65b5a22687de898:0
   renewal 327935; expiry 433055; remaining 88727 blocks
-  GLUE4 ns.baddie. 45.79.214.114
+  GLUE4 ns.<candidate-root>. 45.79.214.114
   NS ns1.pirate.; NS ns2.pirate.
   TXT pirate-verification=nvs_cb84a8d43d594c02a208a68d1f2c30fd
   DS 48854 13 2 53524406e5eb3509a67e897d1301109148739d04b9e41f123e6f9261805aea46
   DS 48854 13 4 6bc07f5ae04b5c4f27f15440b10e1400fe6da8ea8ea97e70c23357b4554319ba2346976f6630851bd9f5cf0ec0bfd039
 
-dankmeme
+candidate-05
   owner 2fc060eeb66f0d99f5daa5cdecc66ba924da2c56325ba2446eef72fa314e8026:0
   renewal 326576; expiry 431696; remaining 87368 blocks
   NS ns1.pirate.; NS ns2.pirate.
@@ -434,20 +473,20 @@ dankmeme
   DS 39280 13 2 7763394f08c984b2fb71c10a8284bb7d5204a76c3a90867be3768417e27ac8e6
   DS 39280 13 4 cfc21a4cfab1a96646b472e3769aea41b28c7c4956b6f17741eb5b82b478c3781e8465a9f3c7ffebdd10443b67df46b8
 
-king
+candidate-06
   owner 219a573488da79ac6325b94c240e2992469a037d0795a829c4762a67edf2ae64:0
   renewal 313242; expiry 418362; remaining 74034 blocks
-  GLUE4 ns1.king. 44.231.6.183; NS ns1.king.
-  GLUE4 ns2.king. 54.214.136.246; NS ns2.king.
+  GLUE4 ns1.<candidate-root>. 44.231.6.183; NS ns1.<candidate-root>.
+  GLUE4 ns2.<candidate-root>. 54.214.136.246; NS ns2.<candidate-root>.
 
-scarlett
+candidate-07
   owner 1d0e6b54354562d4fa2cb901cf7bdcd22bc6b1718b91a3e902bbc4e832277707:0
   renewal 326567; expiry 431687; remaining 87359 blocks
-  GLUE4 ns1.scarlett. 44.231.6.183
+  GLUE4 ns1.<candidate-root>. 44.231.6.183
   NS ns1.pirate.
   TXT pirate-verification=nvs_b90d88b73b63409eaf445969d39176e6
 
-jazleeuw
+candidate-08
   owner e4e1afbd730f79908c06cc2567403dd49e0b37af981d145c560df99d7530def8:0
   renewal 333451; expiry 438571; remaining 94243 blocks
   NS ns1.pirate.; NS ns2.pirate.
@@ -472,11 +511,31 @@ unresolved.
 
 ### Control-plane database
 
-Repository migrations 0047, 0048, and 0049 exist. The secrets contract records
+The repository ledger expected by the current candidate line runs through
+`0055_megapot_claim_reconciliation.sql`. The secrets contract records
 production migration application only through 0048. No authorized
-migration-reader credential was available, so live application of 0049 and
-the exact live ledger were not established. No connection was made and no
-route, DNS-zone, or app-host row was created.
+migration-reader credential was available, so the complete live ledger was not
+established. No connection was made and no route, DNS-zone, or app-host row was
+created.
+
+At this correction checkpoint, the unapplied candidate range and immutable
+repository SHA-256 values are:
+
+```text
+0049_bare_hns_community_route_v2.sql       2a6f4614b3cd159fa640e9b77dcc588e06b740fa97aca50b0fa24ff144e1a02c
+0050_song_lyrics_foundation.sql            09318fe6ba64eb98d7d98a85d3dd22c631af907f62aedc01ba2448a8cbc61b57
+0051_activity_qualification.sql            6358017bcdfbe50b2707d5a2677d5b4ede4e80a00953c3b262fe299af00a70e7
+0052_media_finalize_fence.sql              2bb62ec5a5575457cace6abd4bbdbaac0a1ab6b7d508a3dafbb709382cd6d644
+0053_rewards_song_offers.sql               5c6175c5e684f6adb0742cb75141e528810ab8b2cb44b1a90391dc72dc730cc0
+0054_community_handle_sales.sql            869f13813fb28af2f850b17865057f532500a94a997c9b47587bbe499d6713bf
+0055_megapot_claim_reconciliation.sql       7080bc0156f8dfb36202c3e67321bf8bcc7fd4a6d5bd9ccf5710a26aabb7c552
+```
+
+These are evidence for the current gap, not a permanent upper bound. Plan
+population must derive the final expected migration from the exact deployment
+commit and compare the complete `checksums.json` ledger with production. Any
+new migration extends the required ceremony before the candidate can be built
+or deployed.
 
 ## Frozen environment tuple proposal
 
@@ -543,10 +602,13 @@ does not weaken the criteria.
 
 A separately supplied read-only migration credential must then query the
 selected production database's authoritative migration ledger and prove that
-0047, 0048, and 0049 are applied once, in order, with the repository-expected
-digests. The transcript also verifies that the target community and all three
-proposed activation ids are absent before creation. The migration-reader
-credential is not reused by the gateway and cannot mutate schema or data.
+the complete ledger from 0001 through the exact deployment commit's latest
+migration is applied once, in order, with the repository-expected digests. At
+this checkpoint that means proving the recorded 0001-through-0048 state and
+the 0049-through-0055 gap, not merely checking the HNS migrations. The
+transcript also verifies that the target community and all three proposed
+activation ids are absent before creation. The migration-reader credential is
+not reused by the gateway and cannot mutate schema or data.
 
 ## Cloudflare Access and secret plan
 
@@ -769,9 +831,17 @@ acknowledged at signing.
 
 ## Gateway build, deployment, and Caddy plan
 
-The candidate source commit is fixed at
-`4930e8aaf75c9a19cd90fe67f9c6586602c32ccb`. Any source change requires a plan
-amendment. An accepted clean-build ceremony runs:
+The source pin is deliberately unresolved until plan population:
+
+```text
+api_next_source_commit = __UNRESOLVED_EXACT_DEPLOYMENT_COMMIT__
+```
+
+Immediately before population, fetch without pruning, require clean and equal
+local and remote protected-main refs, choose the exact reviewed deployment
+commit, and re-audit its diff from the source-closure base. The same commit
+must supply the HTTP Worker, migration ledger, gateway package dependencies,
+and community bundle. An accepted clean-build ceremony from that commit runs:
 
 ```bash
 bun run --cwd apps/hns-platform-gateway build:community-vps-bundle
@@ -783,6 +853,13 @@ The resulting value is currently:
 ```text
 bundle_sha256 = __UNRESOLVED_COMMUNITY_GATEWAY_BUNDLE_SHA256__
 ```
+
+The bundle digest is evidence only for the exact source commit that produced
+it. Any later source pin, dependency graph, lockfile, Bun version, or build
+input change invalidates the digest, manifest, and gateway deployment
+reference and requires a new clean build plus plan amendment. The plan must
+not reuse the digest from discovery base `4930e8a` or infer equivalence from a
+source diff.
 
 Populate `deployment-manifest.template.json` with the exact protected Solid
 origin, Solid composition reference, Solid AUD, read-only database endpoint,
@@ -870,31 +947,47 @@ mutation authority, sequence reversible layers as follows:
 2. Install the forwarder registry and Access secret references in the selected
    Solid and api-next production environments. Declare every value explicitly;
    do not rely on Wrangler inheritance.
-3. Deploy api-next from the accepted commit with switch false. This explicitly
+3. Re-run the read-only full-ledger comparison, take and independently verify
+   the accepted production database backup, then execute the separately
+   authorized migration command
+   `__UNRESOLVED_ACCEPTED_PRODUCTION_MIGRATION_COMMAND__` from the exact
+   deployment commit. At this checkpoint the expected forward range is 0049
+   through 0055 with the digests above; plan population must extend it through
+   any later migration in the selected commit. Apply each migration once and
+   in order, stop on the first precondition or digest failure, and prove the
+   complete post-state ledger before continuing. These migrations are
+   production data/schema mutations with forward-repair rather than Git
+   rollback; their authorization and recovery transcript are distinct from a
+   Worker deploy.
+4. Deploy api-next from the accepted commit with switch false. This explicitly
    provisions `HNS_COMMUNITY_APP_API_REPLAY` and applies Durable Object
    migration `v4`. Record the new Worker version and preserve
-   `1d959450-d0c6-4338-921e-1929069119e3` as rollback.
-4. Deploy Solid from the accepted commit with switch false. This explicitly
+   `__UNRESOLVED_CURRENT_API_NEXT_ROLLBACK_VERSION__` as rollback. The discovery
+   baseline was `1d959450-d0c6-4338-921e-1929069119e3`, but it must be re-read
+   at population time.
+5. Deploy Solid from the accepted commit with switch false. This explicitly
    provisions `HNS_COMMUNITY_APP_REPLAY` and applies Durable Object migration
    `v1`. Record the new Worker version and preserve
-   `d20fa9cc-2e3f-41c1-b76d-f73383e5ad26` as rollback.
-5. Add exact Privy allowed origin `https://app.<root>` to production app
+   `__UNRESOLVED_CURRENT_SOLID_ROLLBACK_VERSION__` as rollback. The discovery
+   baseline was `d20fa9cc-2e3f-41c1-b76d-f73383e5ad26`, but it must be re-read
+   at population time.
+6. Add exact Privy allowed origin `https://app.<root>` to production app
    `cmnbdx9xk00ty0clapn2q8pdj` and add only the exact OAuth callback required
    by the selected provider flow. The callback is
    `__UNRESOLVED_EXACT_OAUTH_CALLBACK_OR_EXPLICIT_NONE__`. Wildcards are
    prohibited. Passkeys remain unavailable on the HNS origin.
-6. Build and deploy the shadow VPS gateway, prove source closure, then deploy
+7. Build and deploy the shadow VPS gateway, prove source closure, then deploy
    its production unit without changing Caddy.
-7. Complete chain delegation, disposable authoritative zone, DNSSEC, DANE, and
+8. Complete chain delegation, disposable authoritative zone, DNSSEC, DANE, and
    both independent-view gates.
-8. Create the operator-managed route, DNS-zone activation, and app-host
+9. Create the operator-managed route, DNS-zone activation, and app-host
    activation as pending generations using the exact ids in the accepted
    addendum. No strict third-party ownership observer is enabled.
-9. Enable and deploy api-next, then Solid, for the selected protected origins.
+10. Enable and deploy api-next, then Solid, for the selected protected origins.
    Ordinary origins must remain healthy and reject reserved fields.
-10. Activate the exact database generations only after both Workers, authority,
+11. Activate the exact database generations only after both Workers, authority,
     replay stores, gateway, DNSSEC, DANE, and health are current.
-11. Install and reload the validated Caddy candidate, then run the complete
+12. Install and reload the validated Caddy candidate, then run the complete
     acceptance suite.
 
 Every step records the exact pre-state, command or API request digest,
@@ -987,9 +1080,12 @@ and confirmation period.
 The workspace owner must supply or approve, in order:
 
 1. read-only wallet/account proof and one unused root nomination;
-2. a migration-reader ceremony proving 0047, 0048, and 0049;
+2. a migration-reader ceremony proving the complete ledger expected by the
+   exact deployment commit, followed by separate authorization for every
+   missing production migration before api-next deployment;
 3. resolution or explicit acceptance of the VPS verifier and backup
-   `NOTCONFIGURED` conditions and the gateway checksum mismatch;
+   `NOTCONFIGURED` conditions, plus separately authorized repair of the stale
+   gateway installed-file manifest after confirming the active Caddy bytes;
 4. the Cloudflare Access team domain and authority to enable Access;
 5. one-time Access service-token and forwarder-key custody ceremonies;
 6. production Privy administration for the exact HNS origin and callback;
@@ -1004,10 +1100,11 @@ The workspace owner must supply or approve, in order:
 The requested mutation authorization must name Access organization,
 applications, policies, service tokens, Worker custom domains, secrets,
 bindings, Durable Object migrations and deployments; Privy origin/callback;
-database role and activation rows; VPS credentials, releases, units and Caddy
-bytes; PowerDNS zone, transfer and DNSSEC state; DANE certificate; backups;
-and the exact Handshake transaction digest and fee. Acceptance of this draft
-alone authorizes none of them.
+production PostgreSQL migrations, database role and activation rows; VPS
+credentials, verifier-baseline repair, releases, units and Caddy bytes;
+PowerDNS zone, transfer and DNSSEC state; DANE certificate; backups; and the
+exact Handshake transaction digest and fee. Acceptance of this draft alone
+authorizes none of them.
 
 Stop here. Do not execute this plan in the authorization step that accepts or
 amends it.
